@@ -26,6 +26,7 @@ const ANTHROPIC_COST_URL = "https://api.anthropic.com/v1/organizations/cost_repo
 const ANTHROPIC_MESSAGES_USAGE_URL =
   "https://api.anthropic.com/v1/organizations/usage_report/messages";
 const ANTHROPIC_ADMIN_TOKEN_PREFIX = "openclaw:anthropic-admin:v1:";
+const ANTHROPIC_SETUP_USAGE_TOKEN_PREFIX = "openclaw:anthropic-setup-usage:v1:";
 const ANTHROPIC_USAGE_RESPONSE_MAX_BYTES = 4 * 1024 * 1024;
 const ANTHROPIC_USAGE_HISTORY_DAYS = 30;
 
@@ -46,6 +47,14 @@ function encodeAdminToken(token: string): string {
 
 function decodeAdminToken(raw: string): string | undefined {
   return decodeProviderUsageAdminToken(ANTHROPIC_ADMIN_TOKEN_PREFIX, raw);
+}
+
+function encodeSetupUsageToken(token: string): string {
+  return encodeProviderUsageAdminToken(ANTHROPIC_SETUP_USAGE_TOKEN_PREFIX, token);
+}
+
+function decodeSetupUsageToken(raw: string): string | undefined {
+  return decodeProviderUsageAdminToken(ANTHROPIC_SETUP_USAGE_TOKEN_PREFIX, raw);
 }
 
 function utcDay(value: string): string | undefined {
@@ -269,16 +278,15 @@ export async function resolveAnthropicUsageAuth(
   if (adminKey) {
     return { token: encodeAdminToken(adminKey) };
   }
-  if (apiKey && hasClaudeWebUsageFallback(ctx.env)) {
+  if (apiKey) {
     const { validateAnthropicSetupToken } = await import("openclaw/plugin-sdk/provider-auth");
     if (validateAnthropicSetupToken(apiKey) === undefined) {
-      return { token: apiKey };
+      return hasClaudeWebUsageFallback(ctx.env)
+        ? { token: encodeSetupUsageToken(apiKey) }
+        : { handled: true };
     }
   }
 
-  // Setup tokens authenticate Claude inference, but Anthropic's OAuth usage
-  // endpoint does not accept them. Without a supported claude.ai web-session
-  // fallback, skip usage polling instead of surfacing a misleading HTTP error.
   // Claude owns its native refresh-token family. Do not resolve a copied
   // claude-cli profile here: generic OAuth refresh invalidates Claude's login.
   return { handled: true };
@@ -313,7 +321,13 @@ export async function fetchAnthropicUsage(
       fetchFn: ctx.fetchFn,
     });
   }
-  const snapshot = await fetchClaudeUsage(ctx.token, ctx.timeoutMs, ctx.fetchFn);
+  const setupToken = decodeSetupUsageToken(ctx.token);
+  const snapshot = await fetchClaudeUsage(
+    setupToken ?? ctx.token,
+    ctx.timeoutMs,
+    ctx.fetchFn,
+    setupToken ? { useWebSession: true } : undefined,
+  );
   if (snapshot.error) {
     return snapshot;
   }
