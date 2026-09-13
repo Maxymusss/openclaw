@@ -34,6 +34,55 @@ describe("Anthropic setup-token usage", () => {
     expect(token).not.toBe(SETUP_TOKEN);
   });
 
+  it("classifies an onboarding-shaped stored setup-token profile before OAuth resolution", async () => {
+    const resolveOAuthToken = vi.fn(async () => ({ token: SETUP_TOKEN }));
+    const result = await resolveAnthropicUsageAuth({
+      config: {},
+      env: { CLAUDE_AI_SESSION_KEY: "sk-ant-session-key" },
+      provider: "anthropic",
+      resolveApiKeyFromConfigAndStore: () => SETUP_TOKEN,
+      resolveApiKeyCandidatesFromConfigAndStore: async () => [SETUP_TOKEN],
+      resolveOAuthToken,
+    });
+
+    expect(result).toHaveProperty("token");
+    if (!("token" in result)) {
+      throw new Error("expected stored setup-token profile to resolve a usage token");
+    }
+    expect(result.token).not.toBe(SETUP_TOKEN);
+    expect(resolveOAuthToken).not.toHaveBeenCalled();
+  });
+
+  it("keeps genuine OAuth credentials on the OAuth path when no static setup token exists", async () => {
+    const resolveOAuthToken = vi.fn(async () => ({ token: SETUP_TOKEN }));
+    const result = await resolveAnthropicUsageAuth({
+      config: {},
+      env: {},
+      provider: "anthropic",
+      resolveApiKeyFromConfigAndStore: () => undefined,
+      resolveApiKeyCandidatesFromConfigAndStore: async () => [],
+      resolveOAuthToken,
+    });
+
+    expect(result).toEqual({ token: SETUP_TOKEN });
+    expect(resolveOAuthToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips a stored setup-token profile without a supported web session", async () => {
+    const resolveOAuthToken = vi.fn(async () => ({ token: SETUP_TOKEN }));
+    const result = await resolveAnthropicUsageAuth({
+      config: {},
+      env: {},
+      provider: "anthropic",
+      resolveApiKeyFromConfigAndStore: () => SETUP_TOKEN,
+      resolveApiKeyCandidatesFromConfigAndStore: async () => [SETUP_TOKEN],
+      resolveOAuthToken,
+    });
+
+    expect(result).toEqual({ handled: true });
+    expect(resolveOAuthToken).not.toHaveBeenCalled();
+  });
+
   it("uses web usage directly for a resolved setup token without calling OAuth usage", async () => {
     vi.stubEnv("CLAUDE_AI_SESSION_KEY", "sk-ant-session-key");
     const token = await resolveSetupUsageToken(process.env);
