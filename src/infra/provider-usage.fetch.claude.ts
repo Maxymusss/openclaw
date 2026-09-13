@@ -4,6 +4,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { z } from "zod";
 import { readProviderJsonResponse } from "../agents/provider-http-errors.js";
+import { validateAnthropicSetupToken } from "../plugins/provider-auth-token.js";
 import { cancelUnreadResponseBody } from "./http-body.js";
 import {
   buildUsageHttpErrorSnapshot,
@@ -219,6 +220,24 @@ export async function fetchClaudeUsage(
   timeoutMs: number,
   fetchFn: typeof fetch,
 ): Promise<ProviderUsageSnapshot> {
+  // Setup tokens are inference credentials, not OAuth usage credentials. Avoid
+  // sending them to the usage endpoint. If the user configured the supported
+  // claude.ai web-session fallback, use it directly instead.
+  if (validateAnthropicSetupToken(token) === undefined) {
+    const sessionKey = resolveClaudeWebSessionKey();
+    if (sessionKey) {
+      const web = await fetchClaudeWebUsage(sessionKey, timeoutMs, fetchFn);
+      if (web) {
+        return web;
+      }
+    }
+    return {
+      provider: "anthropic",
+      displayName: PROVIDER_LABELS.anthropic,
+      windows: [],
+    };
+  }
+
   const res = await fetchJson(
     "https://api.anthropic.com/api/oauth/usage",
     {
@@ -248,9 +267,8 @@ export async function fetchClaudeUsage(
       // ignore parse errors
     }
 
-    // Claude Code CLI setup-token yields tokens that can be used for inference, but may not
-    // include user:profile scope required by the OAuth usage endpoint. When a claude.ai
-    // browser sessionKey is available, fall back to the web API.
+    // OAuth tokens can lack user:profile scope required by the usage endpoint.
+    // When a claude.ai browser sessionKey is available, fall back to the web API.
     if (res.status === 403 && message?.includes("scope requirement user:profile")) {
       const sessionKey = resolveClaudeWebSessionKey();
       if (sessionKey) {
