@@ -231,6 +231,14 @@ async function fetchAnthropicAdminUsage(params: {
   });
 }
 
+function hasClaudeWebUsageFallback(env: NodeJS.ProcessEnv): boolean {
+  return Boolean(
+    env.CLAUDE_AI_SESSION_KEY?.trim() ||
+      env.CLAUDE_WEB_SESSION_KEY?.trim() ||
+      env.CLAUDE_WEB_COOKIE?.trim(),
+  );
+}
+
 export async function resolveAnthropicUsageAuth(
   ctx: ProviderResolveUsageAuthContext,
 ): Promise<ProviderResolvedUsageAuth> {
@@ -261,10 +269,16 @@ export async function resolveAnthropicUsageAuth(
   if (adminKey) {
     return { token: encodeAdminToken(adminKey) };
   }
+  if (apiKey && hasClaudeWebUsageFallback(ctx.env)) {
+    const { validateAnthropicSetupToken } = await import("openclaw/plugin-sdk/provider-auth");
+    if (validateAnthropicSetupToken(apiKey) === undefined) {
+      return { token: apiKey };
+    }
+  }
 
-  // Setup tokens authenticate Claude inference, but Anthropic's usage endpoint
-  // does not accept them. Treat non-admin API credentials as handled so usage
-  // polling does not turn an otherwise healthy setup-token profile into a 429.
+  // Setup tokens authenticate Claude inference, but Anthropic's OAuth usage
+  // endpoint does not accept them. Without a supported claude.ai web-session
+  // fallback, skip usage polling instead of surfacing a misleading HTTP error.
   // Claude owns its native refresh-token family. Do not resolve a copied
   // claude-cli profile here: generic OAuth refresh invalidates Claude's login.
   return { handled: true };
