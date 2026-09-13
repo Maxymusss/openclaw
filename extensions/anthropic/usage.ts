@@ -266,6 +266,19 @@ export async function resolveAnthropicUsageAuth(
     return { token: encodeAdminToken(storedAdminKey) };
   }
 
+  // Static token candidates retain their credential provenance here. Classify
+  // setup tokens before the shared OAuth resolver, which also accepts `token`
+  // profiles and would otherwise erase that provenance before this plugin sees it.
+  const { validateAnthropicSetupToken } = await import("openclaw/plugin-sdk/provider-auth");
+  const storedSetupToken = storedCandidates.find(
+    (candidate) => validateAnthropicSetupToken(candidate) === undefined,
+  );
+  if (storedSetupToken) {
+    return hasClaudeWebUsageFallback(ctx.env)
+      ? { token: encodeSetupUsageToken(storedSetupToken) }
+      : { handled: true };
+  }
+
   const oauthToken = await ctx.resolveOAuthToken({
     excludeProfileIds: [CLAUDE_CLI_PROFILE_ID],
   });
@@ -279,7 +292,6 @@ export async function resolveAnthropicUsageAuth(
     return { token: encodeAdminToken(adminKey) };
   }
   if (apiKey) {
-    const { validateAnthropicSetupToken } = await import("openclaw/plugin-sdk/provider-auth");
     if (validateAnthropicSetupToken(apiKey) === undefined) {
       return hasClaudeWebUsageFallback(ctx.env)
         ? { token: encodeSetupUsageToken(apiKey) }
