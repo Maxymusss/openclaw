@@ -4,7 +4,6 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { z } from "zod";
 import { readProviderJsonResponse } from "../agents/provider-http-errors.js";
-import { validateAnthropicSetupToken } from "../plugins/provider-auth-token.js";
 import { cancelUnreadResponseBody } from "./http-body.js";
 import {
   buildUsageHttpErrorSnapshot,
@@ -219,11 +218,9 @@ export async function fetchClaudeUsage(
   token: string,
   timeoutMs: number,
   fetchFn: typeof fetch,
+  options?: { useWebSession?: boolean },
 ): Promise<ProviderUsageSnapshot> {
-  // Setup tokens are inference credentials, not OAuth usage credentials. Avoid
-  // sending them to the usage endpoint. If the user configured the supported
-  // claude.ai web-session fallback, use it directly instead.
-  if (validateAnthropicSetupToken(token) === undefined) {
+  if (options?.useWebSession) {
     const sessionKey = resolveClaudeWebSessionKey();
     if (sessionKey) {
       const web = await fetchClaudeWebUsage(sessionKey, timeoutMs, fetchFn);
@@ -235,6 +232,7 @@ export async function fetchClaudeUsage(
       provider: "anthropic",
       displayName: PROVIDER_LABELS.anthropic,
       windows: [],
+      error: "Claude web usage unavailable",
     };
   }
 
