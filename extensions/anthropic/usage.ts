@@ -261,13 +261,10 @@ export async function resolveAnthropicUsageAuth(
   if (adminKey) {
     return { token: encodeAdminToken(adminKey) };
   }
-  if (apiKey) {
-    const { validateAnthropicSetupToken } = await import("openclaw/plugin-sdk/provider-auth");
-    if (validateAnthropicSetupToken(apiKey) === undefined) {
-      return { token: apiKey };
-    }
-  }
 
+  // Setup tokens authenticate Claude inference, but Anthropic's usage endpoint
+  // does not accept them. Treat non-admin API credentials as handled so usage
+  // polling does not turn an otherwise healthy setup-token profile into a 429.
   // Claude owns its native refresh-token family. Do not resolve a copied
   // claude-cli profile here: generic OAuth refresh invalidates Claude's login.
   return { handled: true };
