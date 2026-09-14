@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fetchAnthropicUsage, resolveAnthropicUsageAuth } from "./usage.js";
 
 const SETUP_TOKEN = `sk-ant-oat01-${"a".repeat(80)}`;
+const OAUTH_TOKEN = `sk-ant-oat01-${"b".repeat(80)}`;
 
 function requestUrl(input: string | URL | Request): URL {
   return new URL(input instanceof Request ? input.url : input);
@@ -34,7 +35,7 @@ describe("Anthropic setup-token usage", () => {
     expect(token).not.toBe(SETUP_TOKEN);
   });
 
-  it("classifies an onboarding-shaped stored setup-token profile before OAuth resolution", async () => {
+  it("classifies an onboarding-shaped selected setup-token profile", async () => {
     const resolveOAuthToken = vi.fn(async () => ({ token: SETUP_TOKEN }));
     const result = await resolveAnthropicUsageAuth({
       config: {},
@@ -50,7 +51,22 @@ describe("Anthropic setup-token usage", () => {
       throw new Error("expected stored setup-token profile to resolve a usage token");
     }
     expect(result.token).not.toBe(SETUP_TOKEN);
-    expect(resolveOAuthToken).not.toHaveBeenCalled();
+    expect(resolveOAuthToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a preferred OAuth profile when a lower-priority setup token coexists", async () => {
+    const resolveOAuthToken = vi.fn(async () => ({ token: OAUTH_TOKEN, email: "user@example.com" }));
+    const result = await resolveAnthropicUsageAuth({
+      config: {},
+      env: { CLAUDE_AI_SESSION_KEY: "sk-ant-session-key" },
+      provider: "anthropic",
+      resolveApiKeyFromConfigAndStore: () => SETUP_TOKEN,
+      resolveApiKeyCandidatesFromConfigAndStore: async () => [SETUP_TOKEN],
+      resolveOAuthToken,
+    });
+
+    expect(result).toEqual({ token: OAUTH_TOKEN, email: "user@example.com" });
+    expect(resolveOAuthToken).toHaveBeenCalledTimes(1);
   });
 
   it("keeps genuine OAuth credentials on the OAuth path when no static setup token exists", async () => {
@@ -68,7 +84,7 @@ describe("Anthropic setup-token usage", () => {
     expect(resolveOAuthToken).toHaveBeenCalledTimes(1);
   });
 
-  it("skips a stored setup-token profile without a supported web session", async () => {
+  it("skips a selected stored setup-token profile without a supported web session", async () => {
     const resolveOAuthToken = vi.fn(async () => ({ token: SETUP_TOKEN }));
     const result = await resolveAnthropicUsageAuth({
       config: {},
@@ -80,7 +96,7 @@ describe("Anthropic setup-token usage", () => {
     });
 
     expect(result).toEqual({ handled: true });
-    expect(resolveOAuthToken).not.toHaveBeenCalled();
+    expect(resolveOAuthToken).toHaveBeenCalledTimes(1);
   });
 
   it("uses web usage directly for a resolved setup token without calling OAuth usage", async () => {
