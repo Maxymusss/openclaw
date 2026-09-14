@@ -523,6 +523,16 @@ export async function runManagedCommand({
     throw error;
   }
   const ownsProcessTree = requireProcessTreeExit || windowsJobs.has(child);
+  // Socket.closed can precede its native close callback. Observe real pipe
+  // completion before onReady can cancel or otherwise reenter finalization.
+  const pendingOutputCloses = new Set([child.stdout, child.stderr].filter((pipe) => pipe !== null));
+  const removeOutputCloseListeners = [...pendingOutputCloses].map((pipe) => {
+    const onClose = () => {
+      pendingOutputCloses.delete(pipe);
+    };
+    pipe.once("close", onClose);
+    return () => pipe.off("close", onClose);
+  });
   let timeoutTimer: ReturnType<typeof setTimeout> | undefined;
   let finalization: Promise<{ type: "failed"; error: unknown } | undefined> | undefined;
   let cancellation: ManagedCommandOutcome | undefined;
@@ -543,6 +553,7 @@ export async function runManagedCommand({
       forceKillDelayMs,
       forceKillOnLeaderExit,
       drainTimeoutMs: cleanupDrainTimeoutMs,
+      areOutputPipesClosed: () => pendingOutputCloses.size === 0,
       onTerminated: releaseOwnership,
     }).then(
       () => undefined,
@@ -645,6 +656,9 @@ export async function runManagedCommand({
     }
     return typeof outcome.exit === "string" ? signalExitCode(outcome.exit) : outcome.exit;
   } finally {
+    for (const removeListener of removeOutputCloseListeners) {
+      removeListener();
+    }
     clearTimeout(timeoutTimer);
     signal?.removeEventListener("abort", abort);
     managedChildren.delete(forwardSignal);
@@ -665,6 +679,7 @@ export async function finalizeManagedChild(
     forceKillOnLeaderExit = false,
     drainTimeoutMs = PROCESS_GROUP_DRAIN_TIMEOUT_MS,
     retainOutputOnFailure = false,
+    areOutputPipesClosed,
     onTerminated = () => {},
   }: {
     platform: NodeJS.Platform;
@@ -673,6 +688,7 @@ export async function finalizeManagedChild(
     forceKillOnLeaderExit?: boolean;
     drainTimeoutMs?: number;
     retainOutputOnFailure?: boolean;
+    areOutputPipesClosed?: () => boolean;
     onTerminated?: () => void;
   },
 ) {
@@ -695,7 +711,8 @@ export async function finalizeManagedChild(
   };
   const job = windowsJobs.get(child);
   const normalJobExit = !signal && job !== undefined;
-  const outputClosed = () => [child.stdout, child.stderr].every((pipe) => !pipe || pipe.closed);
+  const outputClosed =
+    areOutputPipesClosed ?? (() => [child.stdout, child.stderr].every((pipe) => !pipe || pipe.closed));
   let joined = false;
   const failures: unknown[] = [];
   try {
