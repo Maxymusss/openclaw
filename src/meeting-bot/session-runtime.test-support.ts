@@ -10,6 +10,7 @@ import type {
   MeetingBrowserHealth,
   MeetingBrowserTab,
   MeetingSessionRecord,
+  MeetingTranscriptSnapshot,
 } from "./session-types.js";
 
 type TestTransport = "chrome";
@@ -32,14 +33,9 @@ export type TestJoinContext = MeetingSessionRuntimeJoinContext<
 >;
 
 export function createTestRuntime(params: {
-  captureTranscript?: (options?: { finalize?: boolean }) => Promise<
-    | {
-        droppedLines: number;
-        epoch?: string;
-        lines: Array<{ at?: string; speaker?: string; text: string }>;
-      }
-    | undefined
-  >;
+  captureTranscript?: (options?: {
+    finalize?: boolean;
+  }) => Promise<MeetingTranscriptSnapshot | undefined>;
   durableTranscripts?: { stateDir: string };
   participation?: MeetingParticipationOptions<TestSession>;
   talkBack?: boolean;
