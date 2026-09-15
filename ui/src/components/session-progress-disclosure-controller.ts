@@ -17,6 +17,7 @@ export type ComposerProgressRunLifecycle = {
   gatewayScope?: object;
   sessionIdentity?: string;
   activeRunId?: string | null;
+  snapshotRunId?: string | null;
   completedRunId?: string | null;
   readingHistory?: boolean;
   onManipulate?: () => void;
