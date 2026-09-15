@@ -1,5 +1,6 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { vi } from "vitest";
+import type { MeetingParticipationOptions } from "./participation-types.js";
 import {
   MeetingSessionRuntime,
   type MeetingSessionRuntimeHandles,
@@ -40,6 +41,7 @@ export function createTestRuntime(params: {
     | undefined
   >;
   durableTranscripts?: { stateDir: string };
+  participation?: MeetingParticipationOptions<TestSession>;
   talkBack?: boolean;
   transcribe?: boolean;
   refreshReusableSession?(
@@ -70,6 +72,7 @@ export function createTestRuntime(params: {
     string,
     string
   >({
+    participation: params.participation,
     logger: { debug: vi.fn(), error: vi.fn(), info: vi.fn(), warn: vi.fn() },
     logScope: "[meeting-test]",
     formatError: coerceErrorMessage,
