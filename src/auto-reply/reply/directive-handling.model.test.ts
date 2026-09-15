@@ -213,6 +213,8 @@ vi.mock("../../agents/auth-profiles/store.js", async (importOriginal) => {
     ...(await importOriginal<typeof import("../../agents/auth-profiles/store.js")>()),
     findPersistedAuthProfileCredential: ({ profileId }: { profileId: string }) =>
       authProfilesStoreMock.profiles[profileId],
+    resolveAuthProfileProviderForSelection: ({ profileId }: { profileId: string }) =>
+      authProfilesStoreMock.profiles[profileId]?.provider,
     getRuntimeAuthProfileStoreSnapshot: store,
     hasAnyAuthProfileStoreSource: () => Object.keys(authProfilesStoreMock.profiles).length > 0,
   };

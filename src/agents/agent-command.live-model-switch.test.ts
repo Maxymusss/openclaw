@@ -641,6 +641,8 @@ vi.mock("./auth-profiles/store.js", async (importOriginal) => ({
   getRuntimeAuthProfileStoreSnapshot: () => state.authProfileStoreMock,
   findPersistedAuthProfileCredential: ({ profileId }: { profileId: string }) =>
     state.authProfileStoreMock.profiles[profileId],
+  resolveAuthProfileProviderForSelection: ({ profileId }: { profileId: string }) =>
+    state.authProfileStoreMock.profiles[profileId]?.provider,
 }));
 
 vi.mock("./auth-profiles/session-override.js", () => ({

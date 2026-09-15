@@ -2,10 +2,7 @@ import {
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import {
-  findPersistedAuthProfileCredential,
-  getRuntimeAuthProfileStoreSnapshot,
-} from "../agents/auth-profiles/store.js";
+import { resolveAuthProfileProviderForSelection } from "../agents/auth-profiles/store.js";
 import type { AuthProfileStore } from "../agents/auth-profiles/types.js";
 import { resolveModelProviderAuthConfig } from "../agents/model-auth-provider-route.js";
 import { resolveProviderIdForAuth } from "../agents/provider-auth-aliases.js";
@@ -22,23 +19,9 @@ type ModelOverrideSelection = {
   isDefault?: boolean;
 };
 
-function resolvePinnedAuthProfileProvider(params: {
-  cfg: OpenClawConfig;
-  agentDir: string;
-  profileId: string;
-}): string | undefined {
-  const storedProvider =
-    getRuntimeAuthProfileStoreSnapshot(params.agentDir)?.profiles[params.profileId]?.provider ??
-    findPersistedAuthProfileCredential({
-      agentDir: params.agentDir,
-      profileId: params.profileId,
-    })?.provider;
-  return storedProvider ?? params.cfg.auth?.profiles?.[params.profileId]?.provider;
-}
-
 type SessionAuthProfilePreservationParams = {
   cfg: OpenClawConfig;
-  agentDir: string;
+  agentDir?: string;
   entry: SessionEntry;
   currentProvider: string;
   provider: string;
@@ -69,11 +52,11 @@ export function shouldPreserveSessionAuthProfileOverride(
         resolveProviderIdForAuth(provider, lookupParams),
     );
   };
-  const recordedProvider = resolvePinnedAuthProfileProvider({
-    cfg: params.cfg,
-    agentDir: params.agentDir,
-    profileId: profileOverride,
-  });
+  const recordedProvider =
+    resolveAuthProfileProviderForSelection({
+      agentDir: params.agentDir,
+      profileId: profileOverride,
+    }) ?? params.cfg.auth?.profiles?.[profileOverride]?.provider;
   if (recordedProvider) {
     return resolvesToTargetProvider(recordedProvider, true);
   }

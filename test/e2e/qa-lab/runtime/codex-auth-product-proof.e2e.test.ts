@@ -3,6 +3,8 @@ import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createJsonlRequestTailer } from "../../../../scripts/e2e/lib/codex-media-path/jsonl-request-tail.mts";
+import { resolveSessionStorePathCore } from "../../../../src/config/sessions/paths.js";
+import { loadSessionEntryReadOnly } from "../../../../src/config/sessions/session-accessor.js";
 import { GatewayClient } from "../../../../src/gateway/client.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../../../src/state/openclaw-agent-db.js";
 import { loadBundledPluginFacade } from "../../../../src/test-utils/bundled-plugin-public-surface.js";
@@ -359,10 +361,21 @@ describe("Codex auth product proof", () => {
     },
   );
 
-  it(
-    "returns bounded recovery after the explicitly selected profile is removed",
+  it.each([
+    {
+      name: "the configured account",
+      configuredProfileId: MISSING_PROFILE_ID,
+      configuredAccountId: ACCOUNT_ID,
+    },
+    {
+      name: "a distinct selected account",
+      configuredProfileId: "openai:configured",
+      configuredAccountId: "qa-codex-configured-account",
+    },
+  ])(
+    "returns bounded recovery after removing $name",
     { timeout: 180_000 },
-    async () => {
+    async ({ configuredProfileId, configuredAccountId }) => {
       const { CODEX_APP_SERVER_VERSION } = await loadBundledPluginFacade<{
         CODEX_APP_SERVER_VERSION: string;
       }>({ pluginId: "codex", artifactBasename: "test-api.js" });
@@ -399,7 +412,7 @@ describe("Codex auth product proof", () => {
           },
           agents: {
             defaults: {
-              model: { primary: `${MODEL}@${MISSING_PROFILE_ID}`, fallbacks: [] },
+              model: { primary: `${MODEL}@${configuredProfileId}`, fallbacks: [] },
               models: { [MODEL]: { agentRuntime: { id: "codex" } } },
               workspace: "~/workspace",
               skipBootstrap: true,
@@ -416,6 +429,12 @@ describe("Codex auth product proof", () => {
       await instance.state.writeAuthProfiles({
         version: 1,
         profiles: {
+          [configuredProfileId]: {
+            type: "token",
+            provider: "openai",
+            token: chatgptAccessToken(configuredAccountId),
+            accountId: configuredAccountId,
+          },
           [MISSING_PROFILE_ID]: {
             type: "token",
             provider: "openai",
@@ -432,11 +451,12 @@ describe("Codex auth product proof", () => {
       let runId = "";
       let terminal: unknown;
       let failedHistory: GatewayHistory | undefined;
+      let failureMethods: string[] = [];
       try {
         const testInstance = instance;
-        const runConfiguredTurn = async (idempotencyKey: string) => {
+        const runConfiguredTurn = async (idempotencyKey: string, targetSessionKey = sessionKey) => {
           const setup = await client.request<{ runId?: string; status?: string }>("chat.send", {
-            sessionKey,
+            sessionKey: targetSessionKey,
             message: `Reply with ${PRODUCT_OUTPUT}.`,
             deliver: false,
             idempotencyKey,
@@ -453,6 +473,9 @@ describe("Codex auth product proof", () => {
           ).toMatchObject({ runId: setup.runId, status: "ok" });
         };
         await runConfiguredTurn("qa-codex-profile-binding-setup");
+        expect(
+          appServerLog.read().find((request) => request.method === "account/login/start")?.params,
+        ).toMatchObject({ type: "chatgptAuthTokens", chatgptAccountId: configuredAccountId });
         await expect(
           client.request("models.list", { agentId: "main", refresh: true }),
         ).resolves.toMatchObject({
@@ -473,7 +496,16 @@ describe("Codex auth product proof", () => {
           },
         });
         // A metadata patch alone does not prove the selected profile reaches native execution.
+        const beforePinnedTurn = appServerLog.read().length;
         await runConfiguredTurn("qa-codex-profile-binding-pinned");
+        if (configuredProfileId !== MISSING_PROFILE_ID) {
+          expect(
+            appServerLog
+              .read()
+              .slice(beforePinnedTurn)
+              .find((request) => request.method === "account/login/start")?.params,
+          ).toMatchObject({ type: "chatgptAuthTokens", chatgptAccountId: ACCOUNT_ID });
+        }
 
         const logoutResult = await client.request("models.authLogout", {
           provider: "openai",
@@ -548,11 +580,45 @@ describe("Codex auth product proof", () => {
           { agentId: "main", sessionKey, limit: 50 },
           { timeoutMs: 5_000 },
         );
+        expect(
+          loadSessionEntryReadOnly({
+            agentId: "main",
+            sessionKey,
+            storePath: resolveSessionStorePathCore(undefined, {
+              agentId: "main",
+              env: testInstance.env,
+            }),
+            env: testInstance.env,
+            readConsistency: "latest",
+            hydrateSkillPromptRefs: false,
+          }),
+        ).toMatchObject({
+          authProfileOverride: MISSING_PROFILE_ID,
+          authProfileOverrideSource: "user",
+        });
+        const failureAppServerLog = createJsonlRequestTailer<AppServerLogEntry>(requestLog);
+        const failureEntries = failureAppServerLog.read();
+        const beforeConfiguredControl = failureEntries.length;
+        failureMethods = failureEntries.flatMap((entry) =>
+          typeof entry.method === "string" ? [entry.method] : [],
+        );
+        // Freeze the rejected turn's evidence before a new session proves A is still usable.
+        if (configuredProfileId !== MISSING_PROFILE_ID) {
+          await runConfiguredTurn(
+            "qa-codex-configured-account-survives",
+            `${sessionKey}-configured`,
+          );
+          expect(
+            failureAppServerLog
+              .read()
+              .slice(beforeConfiguredControl)
+              .find((request) => request.method === "account/login/start")?.params,
+          ).toMatchObject({ type: "chatgptAuthTokens", chatgptAccountId: configuredAccountId });
+        }
       } finally {
         client.stop();
       }
 
-      const failureAppServerLog = createJsonlRequestTailer<AppServerLogEntry>(requestLog);
       const finalEvent = events.find(
         (event) =>
           event.event === "chat" &&
@@ -584,9 +650,6 @@ describe("Codex auth product proof", () => {
       expect(JSON.stringify(failedHistory)).not.toContain(MISSING_PROFILE_ID);
       expect(JSON.stringify(failedHistory)).not.toContain("Codex app-server auth profile");
 
-      const failureMethods = failureAppServerLog
-        .read()
-        .flatMap((entry) => (typeof entry.method === "string" ? [entry.method] : []));
       const operationalMethods = failureMethods.filter(
         (method) => method !== "initialize" && method !== "initialized",
       );
@@ -595,6 +658,8 @@ describe("Codex auth product proof", () => {
       console.log(
         `[qa-codex-missing-auth-profile] ${JSON.stringify({
           assistantOutput: SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT,
+          configuredAccountControl:
+            configuredProfileId !== MISSING_PROFILE_ID ? "passed" : "same-account-removed",
           historySessionKey: sessionKey,
           appServerInitialized: failureMethods.includes("initialize"),
           appServerOperationalRpcCount: operationalMethods.length,

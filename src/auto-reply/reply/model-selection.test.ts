@@ -1,5 +1,6 @@
 // Tests model selection resolution from directives, config, and session state.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resolveAgentDir } from "../../agents/agent-scope.js";
 import {
   getContextWindowCaches,
   providerContextTokenCacheKey,
@@ -39,6 +40,7 @@ const cliBackendsMocks = vi.hoisted(() => ({
 
 const sessionPersistenceMocks = vi.hoisted(() => ({
   persistReplySessionEntry: vi.fn<PersistReplySessionEntry>(),
+  patchSessionEntryCore: vi.fn(),
 }));
 
 const catalogRuntimeMocks = vi.hoisted(() => {
@@ -85,12 +87,20 @@ vi.mock("./session-entry-persistence.js", () => ({
   persistReplySessionEntry: sessionPersistenceMocks.persistReplySessionEntry,
 }));
 
+vi.mock("../../config/sessions/session-accessor.js", () => ({
+  patchSessionEntryCore: sessionPersistenceMocks.patchSessionEntryCore,
+}));
+
 const authProfileStoreMock = vi.hoisted(() => {
   let store = { version: 1, profiles: {} } as {
     version: 1;
     profiles: Record<string, { type: "api_key"; provider: string; key: string }>;
   };
   const ensureAuthProfileStore = vi.fn(() => store);
+  const resolveAuthProfileProviderForSelection = vi.fn(
+    ({ profileId }: { agentDir?: string; profileId: string }) =>
+      store.profiles[profileId]?.provider,
+  );
   return {
     get store() {
       return store;
@@ -99,15 +109,23 @@ const authProfileStoreMock = vi.hoisted(() => {
       store = next;
     },
     ensureAuthProfileStore,
+    resolveAuthProfileProviderForSelection,
     reset() {
       store = { version: 1, profiles: {} };
       ensureAuthProfileStore.mockClear();
+      resolveAuthProfileProviderForSelection.mockClear();
     },
   };
 });
 
 vi.mock("../../agents/auth-profiles.runtime.js", () => ({
   ensureAuthProfileStore: authProfileStoreMock.ensureAuthProfileStore,
+}));
+
+vi.mock("../../agents/auth-profiles/store.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/auth-profiles/store.js")>()),
+  resolveAuthProfileProviderForSelection:
+    authProfileStoreMock.resolveAuthProfileProviderForSelection,
 }));
 
 // Alias-aware stub: mirrors the real isStoredCredentialCompatibleWithAuthProvider
@@ -146,6 +164,7 @@ afterEach(() => {
   getContextWindowCaches().discoveredTokenCache.clear();
   cliBackendsMocks.resolveCliRuntimeCanonicalProvider.mockClear();
   sessionPersistenceMocks.persistReplySessionEntry.mockReset();
+  sessionPersistenceMocks.patchSessionEntryCore.mockReset();
   vi.mocked(loadManifestModelCatalog).mockReset();
   vi.mocked(loadManifestModelCatalog).mockReturnValue([]);
   authProfileStoreMock.reset();
@@ -2517,6 +2536,113 @@ describe("createModelSelectionState auth-profile override flapping regression", 
     // alias-compatible with the claude-cli provider.
     expect(sessionStore[sessionKey]?.authProfileOverride).toBe("anthropic:claude-cli");
     expect(sessionEntry.authProfileOverride).toBe("anthropic:claude-cli");
+  });
+});
+
+describe("createModelSelectionState unavailable explicit auth selection", () => {
+  const sessionKey = "agent:main:auth-selection";
+  const configuredProfileId = "openai:configured";
+  const selectedProfileId = "team:selected";
+
+  async function select(params: {
+    runtime: "codex" | "openclaw";
+    agentId?: string;
+    source?: SessionEntry["authProfileOverrideSource"];
+    compactionCount?: number;
+    selectedProvider?: string;
+    storePath?: string;
+  }) {
+    authProfileStoreMock.store = {
+      version: 1,
+      profiles: {
+        [configuredProfileId]: {
+          type: "api_key",
+          provider: "openai",
+          key: "usable-configured-key",
+        },
+      },
+    };
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          model: { primary: `openai/gpt-4o@${configuredProfileId}` },
+          models: { "openai/gpt-4o": { agentRuntime: { id: params.runtime } } },
+        },
+      },
+      auth: {
+        profiles: {
+          [configuredProfileId]: { provider: "openai", mode: "api_key" },
+          [selectedProfileId]: { provider: params.selectedProvider ?? "openai", mode: "api_key" },
+        },
+      },
+    };
+    const sessionEntry: SessionEntry = {
+      sessionId: "explicit-account-selection",
+      updatedAt: 1,
+      authProfileOverride: selectedProfileId,
+      ...(params.source ? { authProfileOverrideSource: params.source } : {}),
+      ...(params.compactionCount !== undefined
+        ? { authProfileOverrideCompactionCount: params.compactionCount }
+        : {}),
+    };
+    const before = { ...sessionEntry };
+    const sessionStore = { [sessionKey]: sessionEntry };
+    await createModelSelectionState({
+      cfg,
+      agentId: params.agentId,
+      agentCfg: cfg.agents?.defaults,
+      sessionEntry,
+      sessionStore,
+      sessionKey,
+      storePath: params.storePath,
+      defaultProvider: "openai",
+      defaultModel: "gpt-4o",
+      provider: "openai",
+      model: "gpt-4o",
+      hasModelDirective: false,
+    });
+    return { cfg, before, sessionEntry, sessionStore };
+  }
+
+  it.each(
+    (["codex", "openclaw"] as const).flatMap((runtime) =>
+      (["user", "user-link", undefined] as const).flatMap((source) =>
+        [undefined, "main"].map((agentId) => ({ runtime, source, agentId })),
+      ),
+    ),
+  )("keeps explicit B with usable A: $runtime/$source/$agentId", async (params) => {
+    const { cfg, before, sessionEntry, sessionStore } = await select({
+      ...params,
+      storePath: "/tmp/openclaw-auth-selection-fixture/agents/main/sessions/sessions.json",
+    });
+    expect(sessionEntry).toEqual(before);
+    expect(sessionStore[sessionKey]).toEqual(before);
+    expect(authProfileStoreMock.store.profiles[configuredProfileId]).toBeDefined();
+    expect(authProfileStoreMock.store.profiles[selectedProfileId]).toBeUndefined();
+    const agentDir = params.agentId ? resolveAgentDir(cfg, params.agentId) : undefined;
+    expect(authProfileStoreMock.ensureAuthProfileStore).toHaveBeenCalledWith(agentDir, {
+      allowKeychainPrompt: false,
+      profileId: selectedProfileId,
+    });
+    expect(authProfileStoreMock.resolveAuthProfileProviderForSelection).toHaveBeenCalledWith({
+      agentDir,
+      profileId: selectedProfileId,
+    });
+    expect(sessionPersistenceMocks.patchSessionEntryCore).not.toHaveBeenCalled();
+    expect(sessionPersistenceMocks.persistReplySessionEntry).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { source: "auto" as const, compactionCount: undefined, selectedProvider: "openai" },
+    { source: undefined, compactionCount: 2, selectedProvider: "openai" },
+    { source: "user" as const, compactionCount: undefined, selectedProvider: "anthropic" },
+  ])("clears unavailable $source pins for $selectedProvider", async (params) => {
+    const { sessionEntry, sessionStore } = await select({ ...params, runtime: "openclaw" });
+    expect(sessionEntry.authProfileOverride).toBeUndefined();
+    expect(sessionEntry.authProfileOverrideSource).toBeUndefined();
+    expect(sessionEntry.authProfileOverrideCompactionCount).toBeUndefined();
+    expect(sessionStore[sessionKey]).toEqual(sessionEntry);
+    expect(authProfileStoreMock.store.profiles[configuredProfileId]).toBeDefined();
   });
 });
 

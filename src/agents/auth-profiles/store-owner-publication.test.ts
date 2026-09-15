@@ -35,8 +35,10 @@ import {
 import { createAuthOwnerTestFixtures } from "./store-state-owner.test-support.js";
 import {
   captureAuthProfileStorePersistenceSnapshot,
+  resolveAuthProfileProviderForSelection,
   restoreAuthProfileStorePersistenceSnapshot,
   withAuthProfileStoreAgentDir,
+  withEnvOnlyAuthProfileStore,
 } from "./store.js";
 import type { AuthProfileCredential } from "./types.js";
 import { persistAuthProfileBatch } from "./upsert-with-lock.js";
@@ -45,6 +47,167 @@ const { tempDirs, saveOptions, apiKey, store, snapshotAt, unreadableOuter, seedR
   createAuthOwnerTestFixtures();
 
 describe("auth publication owner receipts", () => {
+  it("resolves selection metadata from the selected shared or agent owner", async () => {
+    const first = await seedRoot("first");
+    const second = await seedRoot("second");
+    for (const [root, provider] of [
+      [first, "openai"],
+      [second, "anthropic"],
+    ] as const) {
+      withEnv(root.env, () => {
+        writePersistedAuthProfileStoreRaw({
+          version: 1,
+          profiles: {
+            account: { ...apiKey("shared"), provider },
+            "shared-only": { ...apiKey("shared-only"), provider },
+          },
+        });
+        writePersistedAuthProfileStoreRaw(
+          { version: 1, profiles: { account: { ...apiKey("local"), provider: "google" } } },
+          root.agentDir,
+        );
+        // Selection uses the published provider first, then the same owner's persisted rows.
+        setRuntimeAuthProfileStoreSnapshot({
+          version: 1,
+          profiles: {
+            account: { ...apiKey("published-shared"), provider: "xai" },
+            runtime: { ...apiKey("runtime"), provider },
+          },
+        });
+        setRuntimeAuthProfileStoreSnapshot(
+          {
+            version: 1,
+            profiles: {
+              account: { ...apiKey("published-local"), provider: "anthropic" },
+              runtime: { ...apiKey("local-runtime"), provider: "xai" },
+            },
+          },
+          root.agentDir,
+        );
+        expect(resolveAuthProfileProviderForSelection({ profileId: "account" })).toBe("xai");
+        expect(resolveAuthProfileProviderForSelection({ profileId: "runtime" })).toBe(provider);
+        expect(
+          resolveAuthProfileProviderForSelection({ agentDir: root.agentDir, profileId: "account" }),
+        ).toBe("anthropic");
+        expect(
+          resolveAuthProfileProviderForSelection({ agentDir: root.agentDir, profileId: "runtime" }),
+        ).toBe("xai");
+        expect(
+          resolveAuthProfileProviderForSelection({
+            agentDir: root.agentDir,
+            profileId: "shared-only",
+          }),
+        ).toBe(provider);
+        expect(resolveAuthProfileProviderForSelection({ profileId: "missing" })).toBeUndefined();
+      });
+    }
+  });
+
+  it("keeps bounded selection on local rows and its captured portable shared view", async () => {
+    const root = await seedRoot("original");
+    await persistAuthProfileBatch({
+      stateDir: root.stateDir,
+      profiles: [
+        { profileId: "account", credential: apiKey("shared") },
+        {
+          profileId: "portable",
+          credential: { type: "token", provider: "anthropic", token: "fixture-token" },
+        },
+        { profileId: "private", credential: { ...apiKey("private"), copyToAgents: false } },
+        {
+          profileId: "oauth",
+          credential: {
+            type: "oauth",
+            provider: "openai",
+            access: "fixture-access",
+            refresh: "fixture-refresh",
+            expires: Date.now() + 3_600_000,
+            copyToAgents: true,
+          },
+        },
+      ],
+    });
+    await persistAuthProfileBatch({
+      stateDir: root.stateDir,
+      agentDir: root.agentDir,
+      profiles: [{ profileId: "account", credential: { ...apiKey("local"), provider: "google" } }],
+    });
+    withEnv(root.env, () =>
+      setRuntimeAuthProfileStoreSnapshot(
+        {
+          version: 1,
+          profiles: {
+            account: { ...apiKey("ambient-account"), provider: "xai" },
+            portable: { ...apiKey("ambient-portable"), provider: "xai" },
+            oauth: apiKey("ambient-oauth"),
+            "runtime-only": apiKey("ambient-runtime"),
+          },
+        },
+        root.agentDir,
+      ),
+    );
+    const before = snapshotAt(root.agentPath);
+    const assertOuterUnchanged = unreadableOuter("future");
+    withAuthProfileStoreAgentDir(root.agentDir, root.stateDir, () => {
+      for (const agentDir of [undefined, tempDirs.make("openclaw-auth-unselected-agent-")]) {
+        expect(resolveAuthProfileProviderForSelection({ agentDir, profileId: "account" })).toBe(
+          "google",
+        );
+        expect(resolveAuthProfileProviderForSelection({ agentDir, profileId: "portable" })).toBe(
+          "anthropic",
+        );
+        for (const profileId of ["private", "oauth", "runtime-only"]) {
+          expect(resolveAuthProfileProviderForSelection({ agentDir, profileId })).toBeUndefined();
+        }
+      }
+    });
+    expect(snapshotAt(root.agentPath)).toEqual(before);
+    assertOuterUnchanged();
+  });
+
+  it("retains the effective directory's runtime-only provider in a legacy bounded scope", () => {
+    const stateDir = tempDirs.make("openclaw-auth-selection-legacy-");
+    const agentDir = tempDirs.make("openclaw-auth-selection-legacy-agent-");
+    const unrelatedAgentDir = tempDirs.make("openclaw-auth-selection-unrelated-agent-");
+    withEnv({ OPENCLAW_STATE_DIR: stateDir, OPENCLAW_AGENT_DIR: undefined }, () => {
+      writePersistedAuthProfileStoreRaw(
+        { version: 1, profiles: { persisted: { ...apiKey("persisted"), provider: "anthropic" } } },
+        agentDir,
+      );
+      setRuntimeAuthProfileStoreSnapshot(
+        { version: 1, profiles: { runtime: { ...apiKey("runtime"), provider: "google" } } },
+        agentDir,
+      );
+      setRuntimeAuthProfileStoreSnapshot(store("unrelated"), unrelatedAgentDir);
+      withAuthProfileStoreAgentDir(agentDir, stateDir, () => {
+        expect(
+          resolveAuthProfileProviderForSelection({
+            agentDir: unrelatedAgentDir,
+            profileId: "runtime",
+          }),
+        ).toBe("google");
+        expect(resolveAuthProfileProviderForSelection({ profileId: "persisted" })).toBe(
+          "anthropic",
+        );
+        expect(resolveAuthProfileProviderForSelection({ profileId: "shared" })).toBeUndefined();
+      });
+    });
+  });
+
+  it("does not read ambient snapshots or an unreadable store for env-only selection", async () => {
+    const root = await seedRoot("original");
+    const before = snapshotAt(root.agentPath);
+    const assertOuterUnchanged = unreadableOuter("future");
+    withEnvOnlyAuthProfileStore(() => {
+      expect(
+        resolveAuthProfileProviderForSelection({ agentDir: root.agentDir, profileId: "local" }),
+      ).toBeUndefined();
+      expect(resolveAuthProfileProviderForSelection({ profileId: "shared" })).toBeUndefined();
+    });
+    expect(snapshotAt(root.agentPath)).toEqual(before);
+    assertOuterUnchanged();
+  });
+
   it.each(["prepare", "activate"] as const)(
     "requires a recorded migration diagnosis discovered at %s before empty-owner activation",
     async (discoveredAt) => {

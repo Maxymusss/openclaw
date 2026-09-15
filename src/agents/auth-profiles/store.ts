@@ -686,6 +686,29 @@ export function findPersistedAuthProfileCredential(params: {
   ];
 }
 
+/** Resolve selection metadata through the same shared or bounded auth-store scope. */
+export function resolveAuthProfileProviderForSelection(params: {
+  agentDir?: string;
+  profileId: string;
+}): string | undefined {
+  if (
+    isEnvOnlyAuthProfileRuntime() ||
+    (isUserModelAuthProfileId(params.profileId) && authProfileRuntimeMode.getStore())
+  ) {
+    return undefined;
+  }
+  const agentDir = resolveRuntimeAuthProfileAgentDir(params.agentDir);
+  // A captured shared view excludes non-portable profiles that ambient snapshots
+  // may contain. Legacy bounded scopes still own their directory's runtime view.
+  const runtimeProvider = getScopedSharedAuthStore()
+    ? undefined
+    : getRuntimeAuthProfileStoreSnapshot(agentDir)?.profiles[params.profileId]?.provider;
+  return (
+    runtimeProvider ??
+    findPersistedAuthProfileCredential({ agentDir, profileId: params.profileId })?.provider
+  );
+}
+
 /** Resolve which agent dir owns a persisted profile, accounting for inherited OAuth. */
 export function resolvePersistedAuthProfileOwnerAgentDir(params: {
   agentDir?: string;

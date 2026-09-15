@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { saveAuthProfileStore } from "../agents/auth-profiles/store-runtime.js";
+import { withEnvOnlyAuthProfileStore } from "../agents/auth-profiles/store.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
@@ -10,6 +11,7 @@ import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   applyModelOverrideWithAuthProfileCompatibility,
   shouldPreserveSessionAuthProfileOverride,
+  shouldPreserveUnavailableSessionAuthProfileOverride,
 } from "./auth-profile-preservation.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -39,6 +41,73 @@ const entry = {
 } satisfies SessionEntry;
 
 describe("shouldPreserveSessionAuthProfileOverride", () => {
+  it("uses shared provider metadata when the agent directory is omitted", async () => {
+    await withOpenClawTestState({ layout: "state-only" }, async (state) => {
+      const profileId = "team:account";
+      const saveOptions = { filterExternalAuthProfiles: false, syncExternalCli: false };
+      saveAuthProfileStore(
+        {
+          version: 1,
+          profiles: { [profileId]: { type: "api_key", provider: "openai", key: "shared" } },
+        },
+        undefined,
+        saveOptions,
+      );
+      saveAuthProfileStore(
+        {
+          version: 1,
+          profiles: { [profileId]: { type: "api_key", provider: "anthropic", key: "local" } },
+        },
+        state.agentDir("configured"),
+        saveOptions,
+      );
+      const params = {
+        cfg: {},
+        entry: { ...entry, authProfileOverride: profileId },
+        currentProvider: "openai",
+        provider: "openai",
+      };
+      expect(shouldPreserveSessionAuthProfileOverride(params)).toBe(true);
+      expect(
+        shouldPreserveSessionAuthProfileOverride({
+          ...params,
+          agentDir: state.agentDir("configured"),
+        }),
+      ).toBe(false);
+    });
+  });
+
+  it.each([
+    { profileId: "team:account", configuredProvider: "openai", currentProvider: "anthropic" },
+    { profileId: "openai:removed", configuredProvider: undefined, currentProvider: "anthropic" },
+    { profileId: "removed-account", configuredProvider: undefined, currentProvider: "openai" },
+  ])("keeps unavailable intent from metadata for $profileId", (testCase) => {
+    const cfg: OpenClawConfig = testCase.configuredProvider
+      ? {
+          auth: {
+            profiles: {
+              [testCase.profileId]: { provider: testCase.configuredProvider, mode: "api_key" },
+            },
+          },
+        }
+      : {};
+    expect(
+      withEnvOnlyAuthProfileStore(() =>
+        shouldPreserveUnavailableSessionAuthProfileOverride({
+          cfg,
+          entry: {
+            ...entry,
+            authProfileOverride: testCase.profileId,
+            authProfileOverrideSource: "user",
+          },
+          currentProvider: testCase.currentProvider,
+          provider: "openai",
+          store: { profiles: {} },
+        }),
+      ),
+    ).toBe(true);
+  });
+
   it.each([
     { credentialProvider: "arcee", expected: false },
     { credentialProvider: "openrouter", expected: true },
