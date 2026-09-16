@@ -19,7 +19,6 @@ import {
   type SessionTranscriptMessageByIdOptions,
 } from "../config/sessions/session-accessor.sqlite-history-events.js";
 import { readRestoredSessionTranscript } from "../config/sessions/session-cold-storage-read.js";
-import { beginHistoryProbePhase } from "../infra/session-history-probe.js";
 import type { TranscriptRecentReadLimits } from "../sessions/transcript-anchor-page.js";
 import type {
   TranscriptReadWindow,
@@ -282,18 +281,10 @@ export async function readRecentSessionMessagesWithStatsAsync(
       opts,
     );
   if (totalMessages === 0 && messages.length === 0 && opts.allowResetArchiveFallback === true) {
-    const archiveDone = beginHistoryProbePhase("reset-archive");
-    try {
-      return await archivedTranscriptReader(target).readRecentWithStats({
-        ...opts,
-        resetArchiveOnly: true,
-      });
-    } catch (error) {
-      archiveDone?.(true);
-      throw error;
-    } finally {
-      archiveDone?.();
-    }
+    return await archivedTranscriptReader(target).readRecentWithStats({
+      ...opts,
+      resetArchiveOnly: true,
+    });
   }
   return {
     ...(activeLeafEntryId !== undefined ? { activeLeafEntryId } : {}),
@@ -327,15 +318,7 @@ export async function readSessionMessagesPageWithStatsAsync(
     opts,
   );
   if (page.totalMessages === 0 && opts.allowResetArchiveFallback === true) {
-    const archiveDone = beginHistoryProbePhase("reset-archive");
-    try {
-      return await archivedTranscriptReader(target).readPage({ ...opts, resetArchiveOnly: true });
-    } catch (error) {
-      archiveDone?.(true);
-      throw error;
-    } finally {
-      archiveDone?.();
-    }
+    return await archivedTranscriptReader(target).readPage({ ...opts, resetArchiveOnly: true });
   }
   return {
     ...(Object.hasOwn(page, "activeLeafEntryId")

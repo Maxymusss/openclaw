@@ -1,5 +1,4 @@
 import type { DatabaseSync } from "node:sqlite";
-import { beginHistoryProbePhase } from "../../infra/session-history-probe.js";
 import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import type { SessionTranscriptReadScope } from "./session-accessor.sqlite-contract.js";
 import {
@@ -43,41 +42,15 @@ export async function readRestoredSessionTranscript<T>(
   if (options?.readOnly) {
     return read();
   }
-  const importDone = beginHistoryProbePhase("branch-cold-import");
-  let coldStorage: typeof import("./session-cold-storage.js");
-  try {
-    coldStorage = await import("./session-cold-storage.js");
-  } catch (error) {
-    importDone?.(true);
-    throw error;
-  } finally {
-    importDone?.();
-  }
-  const { restoreSessionColdTranscript } = coldStorage;
-  const restoreDone = beginHistoryProbePhase("branch-cold-restore");
-  try {
-    await restoreSessionColdTranscript(scope);
-  } catch (error) {
-    restoreDone?.(true);
-    throw error;
-  } finally {
-    restoreDone?.();
-  }
+  const { restoreSessionColdTranscript } = await import("./session-cold-storage.js");
+  await restoreSessionColdTranscript(scope);
   try {
     return await read();
   } catch (error) {
     if (!(error instanceof SessionTranscriptColdError) || error.sessionId !== scope.sessionId) {
       throw error;
     }
-    const retryDone = beginHistoryProbePhase("branch-cold-restore");
-    try {
-      await restoreSessionColdTranscript(scope);
-    } catch (restoreError) {
-      retryDone?.(true);
-      throw restoreError;
-    } finally {
-      retryDone?.();
-    }
+    await restoreSessionColdTranscript(scope);
     return await read();
   }
 }

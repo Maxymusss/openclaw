@@ -1,9 +1,5 @@
 import fs from "node:fs/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import {
-  projectHistoryProbeRecord,
-  type HistoryProbeRecord,
-} from "../../src/infra/session-history-probe.js";
 
 const MAX_BYTES = 1024 * 1024;
 const MAX_SPANS = 64;
@@ -15,7 +11,6 @@ type HistoryRequest =
   | { status: "matched"; connection: number; request: number };
 type HistoryWorkerTask = {
   ordinal: number;
-  probeTask?: number;
   finishedMs: number;
   outcome: "ok" | "failed";
   queueMs: number;
@@ -24,12 +19,7 @@ type HistoryWorkerTask = {
   // postMessage cost is inside runMs, not a fourth additive phase.
   transferMs: number;
 };
-type HistoryPhase =
-  | "session_entry"
-  | "history_page"
-  | "startup_projection"
-  | "session_info"
-  | "branches_list";
+type HistoryPhase = "session_entry" | "history_page" | "startup_projection" | "session_info";
 type HistorySpan = {
   ordinal: number;
   phase: HistoryPhase;
@@ -39,12 +29,6 @@ type HistorySpan = {
   outcome: "pending" | "end" | "error";
   request?: HistoryRequest;
   workerTasks?: { rows: HistoryWorkerTask[]; invalid: boolean; truncated: boolean };
-  requestProbe?: { rows: HistoryProbeRecord[]; invalid: boolean; truncated: boolean };
-  historyProbe?: {
-    version: 1;
-    tasks: { ordinal: number; rows: HistoryProbeRecord[]; invalid: boolean; truncated: boolean }[];
-    truncated: boolean;
-  };
 };
 type NativeHistoryWindow = {
   startedAtMs: number;
@@ -62,7 +46,7 @@ type NativeHistoryDiagnostic = {
     | "short-read";
   // The child buffers timeline writes. Even a complete file read cannot prove non-execution.
   writerMayBeBuffered: true;
-  cutoff: "through-native-process-failure" | "through-native-process-completion";
+  cutoff: "through-native-process-failure";
   truncated: boolean;
   incompleteLine: boolean;
   malformedLine: boolean;
@@ -86,11 +70,10 @@ function milliseconds(value: unknown): value is number {
 
 function matchHistoryRequest(
   id: unknown,
-  match: ((id: unknown, method?: "chat.history" | "sessions.branches.list") => unknown) | undefined,
-  method: "chat.history" | "sessions.branches.list",
+  match: ((id: unknown) => unknown) | undefined,
 ): HistoryRequest {
   try {
-    const result = privateKey(id) ? match?.(id, method) : undefined;
+    const result = privateKey(id) ? match?.(id) : undefined;
     if (
       isRecord(result) &&
       result.status === "matched" &&
@@ -114,24 +97,6 @@ function matchHistoryRequest(
 }
 
 function boundProjection(result: NativeHistoryDiagnostic): NativeHistoryDiagnostic {
-  const details = result.spans.flatMap((span) => [
-    ...(span.historyProbe ? [span.historyProbe] : []),
-    ...(span.requestProbe ? [span.requestProbe] : []),
-  ]);
-  if (
-    Buffer.byteLength(JSON.stringify(details)) > 16 * 1024 ||
-    Buffer.byteLength(JSON.stringify(result)) > MAX_OUTPUT_BYTES
-  ) {
-    for (const detail of details) {
-      if ("tasks" in detail) {
-        detail.tasks = [];
-      } else {
-        detail.rows = [];
-      }
-      detail.truncated = true;
-    }
-    result.truncated = true;
-  }
   // All fields are fixed or numeric and counts are already bounded. If their
   // combined encoding exceeds the public cap, retain phases and omit task rows.
   if (Buffer.byteLength(JSON.stringify(result)) > MAX_OUTPUT_BYTES) {
@@ -166,8 +131,6 @@ export async function captureNativeHistoryWindow(file: string): Promise<NativeHi
 
 function historyPhase(name: unknown): HistoryPhase | undefined {
   switch (name) {
-    case "gateway.sessions.branches.list":
-      return "branches_list";
     case "gateway.chat.history.session_entry":
       return "session_entry";
     case "gateway.chat.history.history_page":
@@ -181,18 +144,17 @@ function historyPhase(name: unknown): HistoryPhase | undefined {
   }
 }
 
-/** Reads only the private native-process window; never returns raw IDs, attributes, paths, or errors. */
+/** Reads only the private failure window; never returns raw IDs, attributes, paths, or errors. */
 export async function readNativeHistoryDiagnostic(
   file: string,
   window: NativeHistoryWindow,
-  cutoffAtMs: number,
-  matchRequest?: (id: unknown, method?: "chat.history" | "sessions.branches.list") => unknown,
-  cutoff: NativeHistoryDiagnostic["cutoff"] = "through-native-process-failure",
+  failedAtMs: number,
+  matchRequest?: (id: unknown) => unknown,
 ): Promise<NativeHistoryDiagnostic> {
   const result: NativeHistoryDiagnostic = {
     readStatus: "start-unavailable",
     writerMayBeBuffered: true,
-    cutoff,
+    cutoff: "through-native-process-failure",
     truncated: false,
     incompleteLine: false,
     malformedLine: false,
@@ -233,8 +195,6 @@ export async function readNativeHistoryDiagnostic(
     const decoder = new TextDecoder("utf-8", { fatal: true });
     const spans = new Map<string, HistorySpan>();
     let taskCount = 0;
-    let detailedTasks = 0;
-    let detailedRequests = 0;
     // One bounded framing pass; never parse oversized or partial lines.
     for (let offset = 0; offset < buffer.length;) {
       const end = buffer.indexOf(10, offset);
@@ -266,90 +226,7 @@ export async function readNativeHistoryDiagnostic(
         result.malformedLine = true;
         continue;
       }
-      if (at < window.startedAtMs || at > cutoffAtMs) {
-        continue;
-      }
-      if (event.type === "mark" && event.name === "native.branch.probe") {
-        const span = privateKey(event.parentSpanId) ? spans.get(event.parentSpanId) : undefined;
-        if (
-          !span ||
-          span.phase !== "branches_list" ||
-          span.startedMs === null ||
-          span.outcome !== "pending"
-        ) {
-          result.malformedLine = true;
-          continue;
-        }
-        if (!span.requestProbe) {
-          if (detailedRequests === 4) {
-            result.truncated = true;
-            continue;
-          }
-          detailedRequests++;
-          span.requestProbe = { rows: [], invalid: false, truncated: false };
-        }
-        const detail = span.requestProbe;
-        const fields = event.attributes;
-        const row =
-          isRecord(fields) && fields.version === 1 ? projectHistoryProbeRecord(fields) : undefined;
-        if (
-          !row ||
-          (row.kind !== "phase" && row.kind !== "truncated") ||
-          row.ordinal !== detail.rows.length + 1
-        ) {
-          detail.invalid = true;
-          continue;
-        }
-        if (detail.rows.length === 24 || row.kind === "truncated") {
-          detail.truncated = result.truncated = true;
-          continue;
-        }
-        detail.rows.push(row);
-        continue;
-      }
-      if (event.type === "mark" && event.name === "worker.history.probe") {
-        const span = privateKey(event.parentSpanId) ? spans.get(event.parentSpanId) : undefined;
-        if (!span?.workerTasks || span.startedMs === null || span.outcome !== "pending") {
-          result.orphanedWorkerTask = true;
-          continue;
-        }
-        const detail = (span.historyProbe ??= { version: 1, tasks: [], truncated: false });
-        const fields = event.attributes;
-        if (
-          !isRecord(fields) ||
-          fields.version !== 1 ||
-          typeof fields.task !== "number" ||
-          !Number.isInteger(fields.task) ||
-          fields.task < 1 ||
-          fields.task > 4
-        ) {
-          span.workerTasks.invalid = true;
-          continue;
-        }
-        let task = detail.tasks.find((row) => row.ordinal === fields.task);
-        if (!task) {
-          // Selection is after offset/timestamp filtering, never the first tasks in the process.
-          if (detailedTasks === 4) {
-            detail.truncated = result.truncated = true;
-            continue;
-          }
-          detailedTasks++;
-          task = { ordinal: fields.task, rows: [], invalid: false, truncated: false };
-          detail.tasks.push(task);
-        }
-        const row = projectHistoryProbeRecord(fields);
-        if (!row || row.ordinal !== task.rows.length + 1) {
-          task.invalid = true;
-          continue;
-        }
-        if (task.rows.length === 24) {
-          task.truncated = result.truncated = true;
-          continue;
-        }
-        task.invalid ||= row.kind === "invalid";
-        task.truncated ||= row.kind === "truncated";
-        result.truncated ||= task.truncated;
-        task.rows.push(row);
+      if (at < window.startedAtMs || at > failedAtMs) {
         continue;
       }
       if (event.type === "mark" && event.name === "worker.task") {
@@ -393,12 +270,6 @@ export async function readNativeHistoryDiagnostic(
         // no mark. Completion can also occur after the client's request timeout.
         tasks.rows.push({
           ordinal: tasks.rows.length + 1,
-          ...(typeof fields.probeTask === "number" &&
-          Number.isInteger(fields.probeTask) &&
-          fields.probeTask >= 1 &&
-          fields.probeTask <= 4
-            ? { probeTask: fields.probeTask }
-            : {}),
           finishedMs: at - window.startedAtMs,
           outcome,
           queueMs,
@@ -431,7 +302,7 @@ export async function readNativeHistoryDiagnostic(
           startedMs: null,
           finishedMs: null,
           outcome: "pending",
-          ...(phase === "history_page" || phase === "branches_list"
+          ...(phase === "history_page"
             ? {
                 request: { status: "unknown" } as HistoryRequest,
                 workerTasks: { rows: [], invalid: false, truncated: false },
@@ -458,7 +329,6 @@ export async function readNativeHistoryDiagnostic(
           span.request = matchHistoryRequest(
             isRecord(event.attributes) ? event.attributes.requestId : undefined,
             matchRequest,
-            span.phase === "branches_list" ? "sessions.branches.list" : "chat.history",
           );
         }
       } else {

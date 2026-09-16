@@ -18,7 +18,6 @@ import {
   type SessionBranchSwitchMutationResult,
   type SessionMessageCutMutationResult,
 } from "../../config/sessions/session-accessor.js";
-import { beginHistoryProbePhase } from "../../infra/session-history-probe.js";
 import { MEDIA_MAX_BYTES, readMediaBuffer } from "../../media/store.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { ModelSelectionLockedError } from "../../sessions/model-overrides.js";
@@ -116,15 +115,7 @@ export const sessionRewindHandlers: GatewayRequestHandlers = {
     ) {
       return;
     }
-    const handlerDone = beginHistoryProbePhase("branch-handler");
-    try {
-      await listBranches(options);
-    } catch (error) {
-      handlerDone?.(true);
-      throw error;
-    } finally {
-      handlerDone?.();
-    }
+    await listBranches(options);
   },
   "sessions.branches.switch": async (options) => {
     if (

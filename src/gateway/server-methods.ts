@@ -13,7 +13,6 @@ import {
   gatewayStartupUnavailableDetails,
   GATEWAY_STARTUP_RETRY_AFTER_MS,
 } from "../../packages/gateway-protocol/src/startup-unavailable.js";
-import { beginHistoryProbePhase } from "../infra/session-history-probe.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import {
@@ -536,23 +535,14 @@ export async function handleGatewayRequest(
       opts.methodRegistry?.getHandler(req.method) !== undefined
         ? opts.methodRegistry
         : createRequestGatewayMethodRegistry(opts.extraHandlers);
-    const authorizationDone = beginHistoryProbePhase("branch-authorization");
-    let authorization: Awaited<ReturnType<typeof authorizeGatewayRequestPreDispatch>>;
-    try {
-      authorization = await authorizeGatewayRequestPreDispatch({
-        method: req.method,
-        requestParams: req.params,
-        client,
-        context,
-        methodRegistry,
-        expectedProfileBinding: profileBinding,
-      });
-    } catch (error) {
-      authorizationDone?.(true);
-      throw error;
-    } finally {
-      authorizationDone?.();
-    }
+    const authorization = await authorizeGatewayRequestPreDispatch({
+      method: req.method,
+      requestParams: req.params,
+      client,
+      context,
+      methodRegistry,
+      expectedProfileBinding: profileBinding,
+    });
     entry?.assertOpen();
     if (authorization.error) {
       respond(false, undefined, authorization.error);
@@ -572,16 +562,7 @@ export async function handleGatewayRequest(
       profileBinding?.assertCurrent,
     );
     const invokeHandler = async () => {
-      const prepareDone = beginHistoryProbePhase("branch-handler-prepare");
-      let preparedHandler: GatewayRequestHandler;
-      try {
-        preparedHandler = await prepareGatewayRequestHandler(handler, entry);
-      } catch (error) {
-        prepareDone?.(true);
-        throw error;
-      } finally {
-        prepareDone?.();
-      }
+      const preparedHandler = await prepareGatewayRequestHandler(handler, entry);
       const handlerOptions = {
         req,
         params: (req.params ?? {}) as Record<string, unknown>,

@@ -146,28 +146,29 @@ export async function startQaGatewayRpcProxy({
   });
   // Freeze the existing 4 × 32 capture before an awaited private timeline read.
   // Reused IDs and saturated captures cannot establish an exact request owner.
-  const captureReadinessRequestMatcher = () => {
+  const captureHistoryRequestMatcher = () => {
     const incomplete =
       !captureReadiness || readinessTruncated || readiness.some((row) => row.truncated);
     const frozenRequests = readiness.flatMap(({ connection, requests }) =>
-      requests.map((row) => ({
-        id: row.privateRequestId,
-        method: row.method,
-        connection,
-        request: row.ordinal,
-      })),
+      requests
+        .filter((row) => row.method === "chat.history")
+        .map((row) => ({
+          id: row.privateRequestId,
+          connection,
+          request: row.ordinal,
+        })),
     );
-    /** @param {unknown} id @param {"chat.history" | "sessions.branches.list"} [method] @returns {{ status: "matched", connection: number, request: number } | { status: "unknown" }} */
-    function matchReadinessRequest(id, method = "chat.history") {
+    /** @param {unknown} id @returns {{ status: "matched", connection: number, request: number } | { status: "unknown" }} */
+    function matchHistoryRequest(id) {
       if (incomplete || typeof id !== "string" || id.length === 0 || id.length > 128) {
         return { status: "unknown" };
       }
       const matches = frozenRequests.filter((row) => row.id === id);
-      return matches.length === 1 && matches[0].method === method
+      return matches.length === 1
         ? { status: "matched", connection: matches[0].connection, request: matches[0].request }
         : { status: "unknown" };
     }
-    return matchReadinessRequest;
+    return matchHistoryRequest;
   };
   /** @type {Array<{ tag: FirstConnectionTag, elapsedMs: number } & FirstConnectionFacts>} */
   const firstConnection = [];
@@ -836,7 +837,7 @@ export async function startQaGatewayRpcProxy({
     controlUrl: `http://127.0.0.1:${address.port}/__fixture`,
     snapshot,
     readinessSnapshot,
-    captureReadinessRequestMatcher,
+    captureHistoryRequestMatcher,
     stop,
   };
 }

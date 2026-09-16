@@ -1,7 +1,5 @@
-import { getActiveDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
-import { beginHistoryProbePhase } from "../../infra/session-history-probe.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
 import type { SensitiveTextRedactionSnapshot } from "../../logging/redact.js";
 import type { SessionBranchSummaryReadRequest } from "./session-accessor.sqlite-branches.js";
@@ -112,11 +110,7 @@ export async function runSessionHistoryWorkerRequest(
   inputBytes: number,
 ) {
   return unwrapReply<"history-page">(
-    await historyPages.run(prepare, {
-      inputBytes,
-      timeoutMs: 60_000,
-      historyProbe: getActiveDiagnosticsTimelineSpan()?.workerTasks === true,
-    }),
+    await historyPages.run(prepare, { inputBytes, timeoutMs: 60_000 }),
   );
 }
 
@@ -124,30 +118,21 @@ export async function runSessionBranchSummaryWorkerRequest(
   request: SessionBranchSummaryReadRequest,
   signal: AbortSignal,
 ) {
-  const workerDone = beginHistoryProbePhase("branch-worker-await");
-  try {
-    return unwrapReply<"branch-summaries">(
-      await branchSummaries.run(
-        { kind: "branch-summaries", request },
-        {
-          inputBytes:
-            2 *
-            (request.database.agentId.length +
-              request.database.path.length +
-              request.databaseIdentity.length +
-              request.sessionKey.length +
-              request.sessionId.length +
-              (request.lifecycleRevision?.length ?? 0)),
-          timeoutMs: 60_000,
-          signal,
-          historyProbe: getActiveDiagnosticsTimelineSpan()?.workerTasks === true,
-        },
-      ),
-    );
-  } catch (error) {
-    workerDone?.(true);
-    throw error;
-  } finally {
-    workerDone?.();
-  }
+  return unwrapReply<"branch-summaries">(
+    await branchSummaries.run(
+      { kind: "branch-summaries", request },
+      {
+        inputBytes:
+          2 *
+          (request.database.agentId.length +
+            request.database.path.length +
+            request.databaseIdentity.length +
+            request.sessionKey.length +
+            request.sessionId.length +
+            (request.lifecycleRevision?.length ?? 0)),
+        timeoutMs: 60_000,
+        signal,
+      },
+    ),
+  );
 }

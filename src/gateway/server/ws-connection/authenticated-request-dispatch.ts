@@ -19,16 +19,6 @@ import {
   parseDiagnosticTraceparent,
   runWithDiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
-import {
-  emitDiagnosticsTimelineEvent,
-  getActiveDiagnosticsTimelineSpan,
-  isDiagnosticsTimelineEnabled,
-  measureDiagnosticsTimelineSpan,
-} from "../../../infra/diagnostics-timeline.js";
-import {
-  beginHistoryProbePhase,
-  createHistoryProbe,
-} from "../../../infra/session-history-probe.js";
 import { runOutsideGatewayRootWorkAdmission } from "../../../process/gateway-work-admission.js";
 import { createLazyPromise } from "../../../shared/lazy-runtime.js";
 import { createExpectedProfileBinding } from "../../expected-profile.js";
@@ -114,7 +104,6 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
       return;
     }
     const req = parsed;
-    let branchProbe: ReturnType<typeof createHistoryProbe> | undefined;
     const diagnostics = createGatewayRpcDiagnostics(req.method, getMethodRegistry, extraHandlers);
     logWs("in", "req", { connId, id: req.id, method: req.method });
     const context = buildRequestContext();
@@ -282,17 +271,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
         if (!hasCurrentClientAuthority() || !hasCurrentRuntimeAuthority()) {
           return;
         }
-        const importDone = beginHistoryProbePhase("branch-dispatch-import");
-        let serverMethods: Awaited<ReturnType<typeof loadGatewayServerMethods>>;
-        try {
-          serverMethods = await loadGatewayServerMethods();
-        } catch (error) {
-          importDone?.(true);
-          throw error;
-        } finally {
-          importDone?.();
-        }
-        const { handleGatewayRequest } = serverMethods;
+        const { handleGatewayRequest } = await loadGatewayServerMethods();
         entry?.assertOpen();
         // Node completion traffic retains its native yielding and existing close-drain
         // deadline. Operator requests share bounded starts without serializing completion.
@@ -313,15 +292,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
             );
             return;
           }
-          const admissionDone = beginHistoryProbePhase("branch-start-admission");
-          try {
-            await start;
-          } catch (error) {
-            admissionDone?.(true);
-            throw error;
-          } finally {
-            admissionDone?.();
-          }
+          await start;
           diagnostics?.finishQueue();
         }
         entry?.assertOpen();
@@ -364,7 +335,6 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
           staleInstall?.error ?? errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)),
         );
       } finally {
-        branchProbe?.close();
         policyResponse?.finish();
         diagnostics?.finish(requestController?.signal.aborted ? "cancelled" : dispatchOutcome);
         entry?.release();
@@ -384,36 +354,7 @@ export function createGatewayAuthenticatedRequestDispatcher(params: {
     const requestDispatch =
       client.connect.role === "node"
         ? params.handler.nodeLifecycleDispatch.dispatch(req.method, dispatchRequest)
-        : req.method === "sessions.branches.list" && isDiagnosticsTimelineEnabled()
-          ? measureDiagnosticsTimelineSpan(
-              "gateway.sessions.branches.list",
-              () => {
-                const span = getActiveDiagnosticsTimelineSpan();
-                if (span) {
-                  try {
-                    // Keep parent stages separate from per-Worker task ordinals.
-                    branchProbe = createHistoryProbe((row) =>
-                      emitDiagnosticsTimelineEvent({
-                        type: "mark",
-                        name: "native.branch.probe",
-                        parentSpanId: span.spanId,
-                        attributes: { version: 1, ...row },
-                      }),
-                    );
-                  } catch {
-                    // Optional probe setup cannot prevent the original request.
-                  }
-                }
-                return branchProbe ? branchProbe.run(dispatchRequest) : dispatchRequest();
-              },
-              {
-                phase: "sessions.branches.list",
-                workerTasks: true,
-                omitErrorMessage: true,
-                attributes: req.id.length > 0 && req.id.length <= 128 ? { requestId: req.id } : {},
-              },
-            )
-          : dispatchRequest();
+        : dispatchRequest();
     if (DEVICE_CREDENTIAL_INVALIDATING_METHODS.has(req.method)) {
       const barrier = requestDispatch.finally(() => {
         if (deviceCredentialMutationBarrier === barrier) {

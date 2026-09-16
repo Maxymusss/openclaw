@@ -3,7 +3,6 @@ import type { DatabaseSync } from "node:sqlite";
 import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync-cache-state.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
-import { beginHistoryProbePhase } from "../infra/session-history-probe.js";
 import { sqliteErrorCode } from "../infra/sqlite-error-diagnostics.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
 import { registerOpenClawAgentDatabaseIdentity } from "./openclaw-agent-db-identity.js";
@@ -102,19 +101,11 @@ export function openOpenClawAgentDatabaseReadOnly(
   }
   // Lock policy belongs to the open: node:sqlite has no busy handler until one
   // is set, so a later PRAGMA leaves every earlier statement unprotected.
-  const openDone = beginHistoryProbePhase("readonly-open");
-  let db: DatabaseSync;
-  try {
-    db = openNodeSqliteDatabase(pathname, {
-      readOnly: true,
-      timeout: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
-      ...(behavior.allowExtension ? { allowExtension: true } : {}),
-    });
-    openDone?.();
-  } catch (error) {
-    openDone?.(true);
-    throw error;
-  }
+  const db = openNodeSqliteDatabase(pathname, {
+    readOnly: true,
+    timeout: OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
+    ...(behavior.allowExtension ? { allowExtension: true } : {}),
+  });
   let closed = false;
   const close = () => {
     if (closed) {
@@ -124,7 +115,6 @@ export function openOpenClawAgentDatabaseReadOnly(
     db.close();
     closed = true;
   };
-  const schemaDone = beginHistoryProbePhase("readonly-schema");
   try {
     registerOpenClawAgentDatabaseIdentity(db);
     const database = { agentId, db, path: pathname, close };
@@ -134,10 +124,7 @@ export function openOpenClawAgentDatabaseReadOnly(
     }
     return { found: true, database };
   } catch (error) {
-    schemaDone?.(true);
     close();
     throw error;
-  } finally {
-    schemaDone?.();
   }
 }

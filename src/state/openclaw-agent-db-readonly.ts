@@ -1,4 +1,3 @@
-import { beginHistoryProbePhase } from "../infra/session-history-probe.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import type {
   OpenClawAgentDatabase,
@@ -120,15 +119,7 @@ export function withOpenClawAgentDatabaseReadOnly<T>(
     return withFreshOpenClawAgentDatabaseReadOnly(operation, { ...options, agentId }, behavior);
   }
   // Share only this admission's fresh value; a later read must check again.
-  const schemaDone = beginHistoryProbePhase("borrowed-schema");
-  try {
-    const userVersion = assertSupportedAgentSchemaVersion(reusable.db, pathname);
-    assertCanonicalAgentPersistenceVersion(reusable.db, pathname, userVersion);
-  } catch (error) {
-    schemaDone?.(true);
-    throw error;
-  } finally {
-    schemaDone?.();
-  }
+  const userVersion = assertSupportedAgentSchemaVersion(reusable.db, pathname);
+  assertCanonicalAgentPersistenceVersion(reusable.db, pathname, userVersion);
   return readOpenClawAgentDatabaseReadOnly(reusable, operation, behavior);
 }
