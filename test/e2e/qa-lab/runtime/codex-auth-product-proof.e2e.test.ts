@@ -545,7 +545,7 @@ describe("Codex auth product proof", () => {
           { timeoutMs: REQUEST_TIMEOUT_MS + 5_000 },
         );
         expect(terminal).toMatchObject({ runId, status: "error" });
-        await vi.waitFor(
+        const settledLifecyclePayload = await vi.waitFor(
           () => {
             expect(
               events.find(
@@ -557,17 +557,38 @@ describe("Codex auth product proof", () => {
                   (event.payload as { state?: unknown }).state === "error",
               ),
             ).toBeDefined();
-            expect(
-              events.find(
-                (event) =>
-                  event.event === "sessions.changed" &&
-                  event.payload !== null &&
-                  typeof event.payload === "object" &&
-                  (event.payload as { sessionKey?: unknown }).sessionKey === sessionKey &&
-                  (event.payload as { lastRunId?: unknown }).lastRunId === runId &&
-                  (event.payload as { reason?: unknown }).reason === "chat.dispatch-error",
-              ),
-            ).toBeDefined();
+            const lifecycleEvent = events.find((event) => {
+              if (
+                event.event !== "sessions.changed" ||
+                event.payload === null ||
+                typeof event.payload !== "object"
+              ) {
+                return false;
+              }
+              const payload = event.payload as {
+                sessionKey?: unknown;
+                lastRunId?: unknown;
+                status?: unknown;
+                hasActiveRun?: unknown;
+                activeRunIds?: unknown;
+              };
+              return (
+                payload.sessionKey === sessionKey &&
+                payload.lastRunId === runId &&
+                payload.status === "failed" &&
+                payload.hasActiveRun === false &&
+                Array.isArray(payload.activeRunIds) &&
+                payload.activeRunIds.length === 0
+              );
+            });
+            expect(lifecycleEvent).toBeDefined();
+            const lifecyclePayload = lifecycleEvent?.payload as
+              | { lastRunError?: unknown }
+              | undefined;
+            expectBoundedMissingProfileRecovery(lifecyclePayload?.lastRunError, {
+              allowSessionTruncation: true,
+            });
+            return lifecyclePayload;
           },
           { interval: 20, timeout: 5_000 },
         );
@@ -575,10 +596,15 @@ describe("Codex auth product proof", () => {
         await vi.waitFor(
           async () => {
             const listed = await client.request<{
-              sessions?: Array<{ key?: unknown; lastRunError?: unknown }>;
+              sessions?: Array<{
+                key?: unknown;
+                lastRunError?: unknown;
+                lastRunId?: unknown;
+                status?: unknown;
+              }>;
             }>("sessions.list", { limit: 20 });
             const session = listed.sessions?.find((entry) => entry.key === sessionKey);
-            expect(session).toBeDefined();
+            expect(session).toMatchObject({ key: sessionKey, lastRunId: runId, status: "failed" });
             expectBoundedMissingProfileRecovery(session?.lastRunError, {
               allowSessionTruncation: true,
             });
@@ -605,6 +631,8 @@ describe("Codex auth product proof", () => {
         ).toMatchObject({
           authProfileOverride: MISSING_PROFILE_ID,
           authProfileOverrideSource: "user",
+          status: "failed",
+          lastRunId: runId,
         });
         const retainedFailureEntries = appServerLog.read();
         const beforeConfiguredControl = retainedFailureEntries.length;
@@ -652,56 +680,45 @@ describe("Codex auth product proof", () => {
               .find((request) => request.method === "account/login/start")?.params,
           ).toMatchObject({ type: "chatgptAuthTokens", chatgptAccountId: configuredAccountId });
         }
+        const finalEvent = events.find(
+          (event) =>
+            event.event === "chat" &&
+            event.payload !== null &&
+            typeof event.payload === "object" &&
+            (event.payload as { runId?: unknown }).runId === runId &&
+            (event.payload as { state?: unknown }).state === "error",
+        );
+        expectBoundedMissingProfileRecovery(finalEvent?.payload);
+        // OpenClaw can settle an admitted run before provider operational RPC;
+        // host lifecycle publication does not imply provider execution.
+        expectBoundedMissingProfileRecovery(settledLifecyclePayload?.lastRunError, {
+          allowSessionTruncation: true,
+        });
+        expectBoundedMissingProfileRecovery(terminal);
+        expectBoundedMissingProfileRecovery(failedHistory?.sessionInfo?.lastRunError, {
+          allowSessionTruncation: true,
+        });
+        expect(JSON.stringify(failedHistory)).not.toContain(MISSING_PROFILE_ID);
+        expect(JSON.stringify(failedHistory)).not.toContain("Codex app-server auth profile");
+
+        const operationalMethods = failureMethods.filter(
+          (method) => method !== "initialize" && method !== "initialized",
+        );
+        expect(operationalMethods).toEqual([]);
+
+        console.log(
+          `[qa-codex-missing-auth-profile] ${JSON.stringify({
+            assistantOutput: SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT,
+            configuredAccountControl:
+              configuredProfileId !== MISSING_PROFILE_ID ? "passed" : "same-account-removed",
+            historySessionKey: sessionKey,
+            appServerInitialized: failureMethods.includes("initialize"),
+            appServerOperationalRpcCount: operationalMethods.length,
+          })}`,
+        );
       } finally {
         client.stop();
       }
-
-      const finalEvent = events.find(
-        (event) =>
-          event.event === "chat" &&
-          event.payload !== null &&
-          typeof event.payload === "object" &&
-          (event.payload as { runId?: unknown }).runId === runId &&
-          (event.payload as { state?: unknown }).state === "error",
-      );
-      const lifecycleEvent = events.find(
-        (event) =>
-          event.event === "sessions.changed" &&
-          event.payload !== null &&
-          typeof event.payload === "object" &&
-          (event.payload as { sessionKey?: unknown }).sessionKey === sessionKey &&
-          (event.payload as { lastRunId?: unknown }).lastRunId === runId &&
-          (event.payload as { reason?: unknown }).reason === "chat.dispatch-error",
-      );
-      expectBoundedMissingProfileRecovery(finalEvent?.payload);
-      // Rejected admission persists a session lifecycle error before broadcasting chat.error;
-      // it must not invent a native agent lifecycle for a run that never started.
-      expectBoundedMissingProfileRecovery(
-        (lifecycleEvent?.payload as { lastRunError?: unknown } | undefined)?.lastRunError,
-        { allowSessionTruncation: true },
-      );
-      expectBoundedMissingProfileRecovery(terminal);
-      expectBoundedMissingProfileRecovery(failedHistory?.sessionInfo?.lastRunError, {
-        allowSessionTruncation: true,
-      });
-      expect(JSON.stringify(failedHistory)).not.toContain(MISSING_PROFILE_ID);
-      expect(JSON.stringify(failedHistory)).not.toContain("Codex app-server auth profile");
-
-      const operationalMethods = failureMethods.filter(
-        (method) => method !== "initialize" && method !== "initialized",
-      );
-      expect(operationalMethods).toEqual([]);
-
-      console.log(
-        `[qa-codex-missing-auth-profile] ${JSON.stringify({
-          assistantOutput: SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT,
-          configuredAccountControl:
-            configuredProfileId !== MISSING_PROFILE_ID ? "passed" : "same-account-removed",
-          historySessionKey: sessionKey,
-          appServerInitialized: failureMethods.includes("initialize"),
-          appServerOperationalRpcCount: operationalMethods.length,
-        })}`,
-      );
     },
   );
 });
