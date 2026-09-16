@@ -362,18 +362,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         _ session: OpenClawNativeSessionRef,
         binding: IOSNativeActionBinding? = nil) throws
     {
-        let bindingMatches = binding.map { self.chatTransport?.nativeBinding?.canReuse($0) == true } ?? true
-        let captureIsActive = self.appModel.isTalkCaptureActive ||
-            self.appModel.isChatDictationPending || self.appModel.isChatDictationActive
-        if let chat, let binding, let previous = self.chatTransport?.nativeBinding,
-           self.matches(chat, session: session),
-           previous.canReopen(binding, preserving: chat, captureIsActive: captureIsActive)
-        {
-            return
-        }
-        if let chat, !self.matches(chat, session: session) || !bindingMatches,
-           !chat.input.isEmpty || !chat.canPreserveIdleTextDraft || captureIsActive
-        {
+        if !self.appModel.chatPresentation.canPresentNativeSession(session, appModel: self.appModel, binding: binding) {
             throw OpenClawNativeActionError("Keep or send the current draft before opening a different session.")
         }
     }

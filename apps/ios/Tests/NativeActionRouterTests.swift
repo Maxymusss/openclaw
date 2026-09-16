@@ -18,14 +18,21 @@ struct NativeActionRouterTests {
         var chatRegistrationID: UUID?
         var binding: IOSNativeActionBinding?
         var receipt: NativeActionRouter.RunPresentation?
-        var chat: OpenClawChatViewModel?
+        var chat: OpenClawChatViewModel? {
+            self.model.chatPresentation.viewModel
+        }
+
         var sent: [[String: Any]] = []
+        var createdSessions = 0
+        var presentations = 0
+        var ordinaryChat = false
         var retired = 0
         var rejectPresentation = false
         var registerPresentedChat = true
         var beforeInspectionHistory: (() -> Void)?
         var beforeResponse: ((String) -> Void)?
         var beforeSendReply: (() -> Void)?
+        var deferredSendReply: (@MainActor @Sendable () async -> Void)?
         var profileID = "alice"
         var catalogDiscovery = false
         var rejectMethod: String?
@@ -57,29 +64,22 @@ struct NativeActionRouterTests {
                 self?.receipt = nil
             }) { [weak self] request, binding, receipt in
                 guard let self, !self.rejectPresentation else { throw CancellationError() }
+                self.presentations += 1
                 self.model.setSelectedAgentId(request.session.agentID)
                 self.model.focusChatSession(request.session.sessionKey)
                 self.receipt = receipt
-                if self.binding?.canReuse(binding) == true { return }
-                self.chat?.detachTransport()
-                let transport = IOSGatewayChatTransport(gateway: self.model.operatorSession, nativeBinding: binding)
-                let relay = IOSChatSessionTargetRelay { [weak self] chat in
-                    self?.router.chatSessionChanged(chat, binding: binding, presentationID: self?.presentationID)
-                }
-                let chat = OpenClawChatViewModel(
-                    sessionKey: request.session.sessionKey, transport: transport,
-                    activeAgentId: request.session.agentID,
-                    sessionRoutingContract: binding.sessionRoutingContract,
-                    onSessionChanged: { _ in relay.sessionChanged() })
-                relay.viewModel = chat
-                self.chat = chat
+                let owner = self.model.chatPresentation
+                owner.sync(
+                    appModel: self.model, nativeBinding: binding,
+                    nativeActions: self.router, presentationID: self.presentationID)
                 self.binding = binding
-                if self.registerPresentedChat {
+                if self.registerPresentedChat, let chat = owner.viewModel, let transport = owner.transport,
+                   transport.nativeBinding?.canReuse(binding) == true
+                {
                     self.chatRegistrationID = self.router.registerChat(
-                        chat, ownerID: self.model.chatViewModelOwnerID, agentID: request.session.agentID,
+                        chat, ownerID: owner.ownerID, agentID: owner.transportAgentID,
                         transport: transport, presentationID: self.presentationID)
                 }
-                chat.load()
             }
         }
 
@@ -139,6 +139,15 @@ struct NativeActionRouterTests {
                             ["main", "research"].contains(params["agentId"] as? String ?? ""),
                             rule: "share-agent",
                             method: methodLabel)
+                    } else if self.ordinaryChat {
+                        // Only ordinary-owner tests bootstrap without a captured profile.
+                        // Native fixtures retain the exact profile assertion below.
+                        self.observeCallback([
+                            "agents.list", "chat.history", "sessions.messages.subscribe", "health",
+                            "sessions.list", "models.list", "commands.list", "chat.metadata", "tasks.list",
+                        ].contains(methodLabel), rule: "ordinary-read-method", method: methodLabel)
+                        self.observeCallback(
+                            request["expectedProfileId"] == nil, rule: "ordinary-profile", method: methodLabel)
                     } else {
                         let isCatalog = self.catalogDiscovery && (
                             request["method"] as? String == "users.self" ||
@@ -151,6 +160,7 @@ struct NativeActionRouterTests {
                             method: methodLabel)
                     }
                     if request["method"] as? String == "chat.send" { self.sent.append(params) }
+                    if request["method"] as? String == "sessions.create" { self.createdSessions += 1 }
                     if request["method"] as? String == self.rejectMethod {
                         if self.requestsBeforeRejection == 0 {
                             self.rejectMethod = nil
@@ -204,6 +214,13 @@ struct NativeActionRouterTests {
                         before?()
                         let runID = "run-\(self.sent.count)"
                         self.issuedRunIDs.insert(runID)
+                        if let deferred = self.deferredSendReply {
+                            self.deferredSendReply = nil
+                            return .deferred {
+                                await deferred()
+                                return .success(["runId": runID, "status": "ok"])
+                            }
+                        }
                         return .success(["runId": runID, "status": "ok"])
                     case "agent.wait":
                         // An accepted send can arm its waiter before terminal-ACK reconciliation.
@@ -242,6 +259,32 @@ struct NativeActionRouterTests {
             try await self.router.prepareSend(to: self.session(agent), message: "one intentional message")
         }
 
+        func openOrdinaryChat() async throws -> OpenClawChatViewModel {
+            self.ordinaryChat = true
+            self.model.setSelectedAgentId("main")
+            self.model.focusChatSession("global")
+            let owner = self.model.chatPresentation
+            owner.sync(appModel: self.model)
+            let chat = try #require(owner.viewModel)
+            let transport = try #require(owner.transport)
+            self.chatRegistrationID = self.router.registerChat(
+                chat, ownerID: owner.ownerID, agentID: owner.transportAgentID,
+                transport: transport, presentationID: self.presentationID)
+            let deadline = ContinuousClock.now + .seconds(2)
+            while chat.isLoading, ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+            #expect(!chat.isLoading)
+            #expect(chat.healthOK)
+            #expect(chat.errorText == nil)
+            return chat
+        }
+
+        func hideChat() throws {
+            try self.router.unregisterChat(#require(self.chatRegistrationID))
+            self.chatRegistrationID = nil
+        }
+
         func waitForReceipt() async throws -> NativeActionRouter.RunPresentation {
             let deadline = ContinuousClock.now + .seconds(2)
             while self.receipt == nil, ContinuousClock.now < deadline {
@@ -254,6 +297,7 @@ struct NativeActionRouterTests {
             self.beforeInspectionHistory = nil
             self.beforeResponse = nil
             self.beforeSendReply = nil
+            self.deferredSendReply = nil
             if let presentationID { self.router.unregisterPresentation(presentationID) }
             self.chat?.detachTransport()
             await self.model.operatorSession.disconnect()
@@ -284,6 +328,273 @@ struct NativeActionRouterTests {
                 host.callbackViolationCount == 0,
                 "count=\(host.callbackViolationCount) overflow=\(host.callbackViolationCount > 16) \(host.callbackViolations.joined(separator: " | "))")
             try outcome.get()
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `hidden retained drafts refuse another agent before changing selection`(native: Bool) async throws {
+        try await self.withHost { host in
+            let chat: OpenClawChatViewModel
+            if native {
+                #expect(await host.router.open(.session(host.session())) == .opened)
+                chat = try #require(host.chat)
+            } else {
+                chat = try await host.openOrdinaryChat()
+            }
+            let owner = host.model.chatPresentation
+            let binding = owner.transport?.nativeBinding
+            let target = chat.currentSessionTarget
+            chat.input = "Keep this hidden draft"
+            try host.hideChat()
+            owner.sync(appModel: host.model)
+            let retired = host.retired
+            let presentations = host.presentations
+            let config = host.model.activeGatewayConnectConfig?.controlUIInputs
+            let route = await host.model.operatorSession.currentRoute()
+
+            #expect(await host.router.open(.session(host.session("research"))) == .unavailable(
+                reason: "Keep or send the current draft before opening a different session."))
+            #expect(owner.viewModel === chat)
+            #expect(owner.transport?.nativeBinding === binding)
+            #expect(chat.currentSessionTarget == target)
+            #expect(chat.input == "Keep this hidden draft")
+            #expect(!chat.isQuestionAuthorityRetired)
+            #expect(host.model.chatDeliveryAgentId == "main")
+            #expect(host.model.chatSessionKey == "global")
+            #expect(host.model.activeGatewayConnectConfig?.controlUIInputs == config)
+            #expect(await host.model.operatorSession.currentRoute() == route)
+            #expect(host.chatRegistrationID == nil)
+            #expect(host.binding == nil)
+            #expect(host.presentations == presentations)
+            #expect(host.retired == retired)
+            #expect(host.sent.isEmpty)
+            #expect(host.createdSessions == 0)
+        }
+    }
+
+    @Test func `hidden ordinary draft refuses replacement by a native binding on the same target`() async throws {
+        try await self.withHost { host in
+            let chat = try await host.openOrdinaryChat()
+            chat.input = "Ordinary composer draft"
+            try host.hideChat()
+            host.model.chatPresentation.sync(appModel: host.model)
+            #expect(await host.router.open(.session(host.session())) == .unavailable(
+                reason: "Keep or send the current draft before opening a different session."))
+            #expect(host.model.chatPresentation.viewModel === chat)
+            #expect(host.model.chatPresentation.transport?.nativeBinding == nil)
+            #expect(chat.input == "Ordinary composer draft")
+            #expect(host.model.chatDeliveryAgentId == "main")
+            #expect(host.model.chatSessionKey == "global")
+            #expect(host.presentations == 0)
+            #expect(host.chatRegistrationID == nil)
+            #expect(host.sent.isEmpty)
+            #expect(host.createdSessions == 0)
+        }
+    }
+
+    @Test func `hidden ordinary draft refuses a saved Gateway before persisting a switch`() async throws {
+        try await self.withHost { host in
+            let chat = try await host.openOrdinaryChat()
+            chat.input = "Stay with the original Gateway"
+            try host.hideChat()
+            host.model.chatPresentation.sync(appModel: host.model)
+            let isolation = GatewayRegistryTestIsolation()
+            defer { isolation.restore() }
+            let otherGateway = "manual|127.0.0.1|2"
+            #expect(GatewaySettingsStore.upsertGatewayRegistryEntry(.init(
+                stableID: otherGateway, kind: .manual, name: "Other test Gateway",
+                host: "127.0.0.1", port: 2, useTLS: false, lastConnectedAtMs: nil)))
+            let registry = GatewaySettingsStore.loadGatewayRegistry()
+            let config = host.model.activeGatewayConnectConfig?.controlUIInputs
+            let route = await host.model.operatorSession.currentRoute()
+            let generation = host.model.gatewayConnectGeneration
+            let target = OpenClawNativeSessionRef(
+                owner: .init(gatewayID: otherGateway, profileID: "alice"),
+                agentID: "main", sessionKey: "global")
+
+            #expect(await host.router.open(.session(target)) == .unavailable(
+                reason: "Keep or send the current draft before opening a different session."))
+            #expect(GatewaySettingsStore.loadGatewayRegistry() == registry)
+            #expect(host.model.activeGatewayConnectConfig?.controlUIInputs == config)
+            #expect(await host.model.operatorSession.currentRoute() == route)
+            #expect(host.model.gatewayConnectGeneration == generation)
+            #expect(host.model.chatPresentation.viewModel === chat)
+            #expect(host.model.chatPresentation.transport?.nativeBinding == nil)
+            #expect(chat.input == "Stay with the original Gateway")
+            #expect(host.model.chatDeliveryAgentId == "main")
+            #expect(host.model.chatSessionKey == "global")
+            #expect(host.presentations == 0)
+            #expect(host.sent.isEmpty)
+            #expect(host.createdSessions == 0)
+        }
+    }
+
+    @Test func `draft arriving in a hidden owner during history refuses the verified replacement`() async throws {
+        try await self.withHost { host in
+            #expect(await host.router.open(.session(host.session())) == .opened)
+            let owner = host.model.chatPresentation
+            let chat = try #require(owner.viewModel)
+            let binding = try #require(owner.transport?.nativeBinding)
+            let target = chat.currentSessionTarget
+            try host.hideChat()
+            let presentations = host.presentations
+            host.beforeResponse = { method in
+                guard method == "chat.history" else { return }
+                host.beforeResponse = nil
+                chat.input = "Draft typed while history was loading"
+                owner.sync(appModel: host.model)
+            }
+
+            #expect(await host.router.open(.session(host.session("research"))) == .unavailable(
+                reason: "Keep or send the current draft before opening a different session."))
+            #expect(host.beforeResponse == nil)
+            #expect(owner.viewModel === chat)
+            #expect(owner.transport?.nativeBinding === binding)
+            #expect(chat.currentSessionTarget == target)
+            #expect(chat.input == "Draft typed while history was loading")
+            #expect(host.model.chatDeliveryAgentId == "main")
+            #expect(host.model.chatSessionKey == "global")
+            #expect(host.presentations == presentations)
+            #expect(host.chatRegistrationID == nil)
+            #expect(host.binding == nil)
+            #expect(host.sent.isEmpty)
+            #expect(host.createdSessions == 0)
+        }
+    }
+
+    @Test(arguments: ["text", "attachment", "capture"])
+    func `retained native composer refuses replacement and reuses the same target`(
+        composer: String) async throws
+    {
+        try await self.withHost { host in
+            #expect(await host.router.open(.session(host.session())) == .opened)
+            let chat = try #require(host.chat)
+            let binding = try #require(host.binding)
+            if composer == "text" { chat.input = "Keep the same composer" }
+            if composer == "attachment" {
+                chat.attachments = [.init(
+                    url: nil, data: Data("fixture".utf8), fileName: "fixture.txt", mimeType: "text/plain",
+                    preview: nil)]
+            }
+            if composer == "capture" { host.model.acquirePttVoiceWakeLease(for: "native-draft-test") }
+            defer { host.model.releasePttVoiceWakeLease(for: "native-draft-test") }
+            let attachments = chat.attachments.map(\.id)
+            try host.hideChat()
+            // Text and attachments survive RootTabs' ordinary synchronization too.
+            // Capture admission is checked in the interval before that task runs.
+            if composer != "capture" { host.model.chatPresentation.sync(appModel: host.model) }
+
+            #expect(await host.router.open(.session(host.session("research"))) == .unavailable(
+                reason: "Keep or send the current draft before opening a different session."))
+            #expect(await host.router.open(.session(host.session())) == .opened)
+            #expect(host.chat === chat)
+            #expect(host.model.chatPresentation.transport?.nativeBinding === binding)
+            #expect(host.binding?.canReuse(binding) == true)
+            #expect(chat.input == (composer == "text" ? "Keep the same composer" : ""))
+            #expect(chat.attachments.map(\.id) == attachments)
+            #expect(host.chatRegistrationID != nil)
+            #expect(host.sent.isEmpty)
+            #expect(host.createdSessions == 0)
+        }
+    }
+
+    @Test func `native admission protects an unregistered send until its reply joins`() async throws {
+        try await self.withHost { host in
+            let prepared = try await host.prepare()
+            let chat = try #require(host.chat)
+            let reply = AsyncStream<Void>.makeStream()
+            host.deferredSendReply = {
+                for await _ in reply.stream {
+                    return
+                }
+            }
+            let send = Task { try await prepared.submit() }
+            do {
+                let deadline = ContinuousClock.now + .seconds(2)
+                while host.sent.isEmpty, ContinuousClock.now < deadline {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try #require(host.sent.count == 1)
+                #expect(chat.input.isEmpty)
+                #expect(!chat.canPreserveIdleTextDraft)
+                // Exercise native admission before RootTabs' ordinary sync task;
+                // unregister alone does not settle or transfer this accepted send.
+                try host.hideChat()
+                let presentations = host.presentations
+                #expect(await host.router.open(.session(host.session("research"))) == .unavailable(
+                    reason: "Keep or send the current draft before opening a different session."))
+                #expect(host.chat === chat)
+                #expect(host.model.chatDeliveryAgentId == "main")
+                #expect(host.model.chatSessionKey == "global")
+                #expect(host.presentations == presentations)
+                reply.continuation.finish()
+                #expect(try await send.value.runID == "run-1")
+                #expect(host.sent.count == 1)
+                #expect(host.createdSessions == 0)
+            } catch {
+                reply.continuation.finish()
+                _ = try? await send.value
+                throw error
+            }
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `native account replacement retires questions even when composer adoption is refused`(
+        restoresOriginalAccount: Bool) async throws
+    {
+        try await self.withHost { host in
+            #expect(await host.router.open(.session(host.session())) == .opened)
+            let owner = host.model.chatPresentation
+            let chat = try #require(owner.viewModel)
+            let binding = try #require(owner.transport?.nativeBinding)
+            let original = try #require(host.model.activeGatewayConnectConfig)
+            let target = chat.currentSessionTarget
+            let attachment = OpenClawPendingAttachment(
+                url: nil, data: Data("fixture".utf8), fileName: "fixture.txt", mimeType: "text/plain", preview: nil)
+            chat.attachments = [attachment]
+            chat.input = "Keep this native draft with its attachment"
+            chat.upsertQuestion(QuestionRecord(
+                id: "native-account-question",
+                questions: [Question(
+                    questionid: "choice", header: "Choice", question: "Choose the deployment target",
+                    options: [QuestionOption(label: "Staging")])],
+                createdatms: 1, expiresatms: Int.max, status: .pending))
+            host.model.activeGatewayConnectConfig = GatewayConnectConfig(
+                url: original.url, stableID: original.stableID, tls: original.tls,
+                token: "synthetic-replacement", bootstrapToken: original.bootstrapToken,
+                password: original.password, nodeOptions: original.nodeOptions)
+
+            #expect(!owner.canPresentNativeSession(binding.session, appModel: host.model, binding: binding))
+            #expect(!chat.isQuestionAuthorityRetired)
+            #expect(chat.questionCards.map(\.id) == ["native-account-question"])
+            owner.sync(
+                appModel: host.model, nativeBinding: binding,
+                nativeActions: host.router, presentationID: host.presentationID)
+            #expect(chat.isQuestionAuthorityRetired)
+            #expect(chat.questionCards.isEmpty)
+            #expect(owner.viewModel === chat)
+            #expect(owner.transport?.nativeBinding === binding)
+            #expect(chat.currentSessionTarget == target)
+            #expect(chat.input == "Keep this native draft with its attachment")
+            #expect(chat.attachments.map(\.id) == [attachment.id])
+            if restoresOriginalAccount {
+                host.model.activeGatewayConnectConfig = original
+                owner.sync(
+                    appModel: host.model, nativeBinding: binding,
+                    nativeActions: host.router, presentationID: host.presentationID)
+                #expect(owner.viewModel === chat)
+                #expect(chat.isQuestionAuthorityRetired)
+                #expect(chat.questionCards.isEmpty)
+                #expect(chat.input == "Keep this native draft with its attachment")
+                #expect(chat.attachments.map(\.id) == [attachment.id])
+            }
+            chat.removeAttachment(attachment.id)
+            #expect(!chat.isAttachmentOwnerPinned)
+            #expect(host.model.chatDeliveryAgentId == "main")
+            #expect(host.model.chatSessionKey == "global")
+            #expect(host.sent.isEmpty)
+            #expect(host.createdSessions == 0)
         }
     }
 
@@ -734,8 +1045,12 @@ struct NativeActionRouterTests {
             #expect(chat.messages.isEmpty)
             #expect(chat.input == "preserved idle text")
             #expect(chat.canPreserveIdleTextDraft)
+            try host.hideChat()
+            host.model.chatPresentation.sync(appModel: host.model)
             #expect(await host.router.open(.session(host.session())) == .opened)
             let fresh = try #require(host.binding)
+            #expect(host.chat !== chat)
+            #expect(host.chat?.input == "preserved idle text")
             #expect(fresh.profileObservationID != binding.profileObservationID)
             #expect(await fresh.isCurrent())
             #expect(host.sent.count == 1)

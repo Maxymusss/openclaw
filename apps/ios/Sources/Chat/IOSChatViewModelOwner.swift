@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import OpenClawChatUI
+import OpenClawKit
 import OpenClawProtocol
 
 /// The view model owns its callback; the relay observes the adopted target
@@ -98,6 +99,17 @@ final class IOSChatViewModelOwner {
         nativeActions: NativeActionRouter? = nil,
         presentationID: UUID? = nil)
     {
+        let controlUIInputs = appModel.activeGatewayConnectConfig?.controlUIInputs
+        let authorityChanged = self.controlUIInputs != nil && controlUIInputs != nil &&
+            self.controlUIInputs != controlUIInputs
+        // Account retirement is independent of adopting a replacement model.
+        // A protected composer must not keep the old account's questions alive.
+        if authorityChanged { self.viewModel?.retireQuestionAuthority() }
+        if let nativeBinding,
+           !self.canPresentNativeSession(nativeBinding.session, appModel: appModel, binding: nativeBinding)
+        {
+            return
+        }
         self.viewModel?.attachmentOwnerActivityChanged()
         let ownerID = appModel.chatViewModelOwnerID
         let agentID = nativeBinding?.session.agentID ?? Self.transportAgentID(appModel.chatDeliveryAgentId)
@@ -107,12 +119,8 @@ final class IOSChatViewModelOwner {
         let routingContract = selectedRoutingContract ?? ""
         let bindingMatches = self.matchesBinding(nativeBinding)
         let connected = appModel.isOperatorGatewayConnected
-        let controlUIInputs = appModel.activeGatewayConnectConfig?.controlUIInputs
-        let authorityChanged = self.controlUIInputs != nil && controlUIInputs != nil &&
-            self.controlUIInputs != controlUIInputs
         let reconnected = connected && !self.wasConnected
         self.wasConnected = connected
-        if authorityChanged { self.viewModel?.retireQuestionAuthority() }
         if let viewModel, bindingMatches, !viewModel.isQuestionAuthorityRetired, !authorityChanged,
            !Self.requiresViewModelRebuild(
                currentOwnerID: self.ownerID,
@@ -136,19 +144,8 @@ final class IOSChatViewModelOwner {
         }
         // Recording, staging, and delivery retain their captured route until the owner releases it.
         guard self.viewModel?.isAttachmentOwnerPinned != true else { return }
-        let preservedInput: String?
-        if let viewModel, let previous = self.transport?.nativeBinding, let nativeBinding,
-           previous.canReopen(
-               nativeBinding, preserving: viewModel,
-               captureIsActive: appModel.isTalkCaptureActive ||
-                   appModel.isChatDictationPending || appModel.isChatDictationActive)
-        {
-            // Reopening retains idle text only, never the retired transport or send authority.
-            preservedInput = viewModel.input
-        } else {
-            if !bindingMatches, self.hasProtectedComposer(appModel: appModel) { return }
-            preservedInput = nil
-        }
+        let preservedInput = self.preservedReopenedInput(nativeBinding, appModel: appModel)
+        if preservedInput == nil, !bindingMatches, self.hasProtectedComposer(appModel: appModel) { return }
         self.viewModel?.detachTransport()
         self.nativeActions = nativeActions
         self.presentationID = presentationID
@@ -220,6 +217,48 @@ final class IOSChatViewModelOwner {
             self.viewModel.map {
                 !$0.input.isEmpty || $0.replyTarget != nil || $0.hasDraftToSend || $0.isAttachmentOwnerPinned
             } == true
+    }
+
+    /// Hidden chat retains its composer here. Native admission and adoption must
+    /// agree before the router changes Gateway or session selection.
+    func canPresentNativeSession(
+        _ session: OpenClawNativeSessionRef,
+        appModel: NodeAppModel,
+        binding: IOSNativeActionBinding? = nil) -> Bool
+    {
+        guard self.hasProtectedComposer(appModel: appModel) ||
+            self.viewModel?.canPreserveIdleTextDraft == false || self.captureIsActive(appModel: appModel)
+        else { return true }
+        guard self.matchesNativeTarget(session, appModel: appModel) else { return false }
+        // A same-target reopen needs the history/account read before a new binding
+        // exists. The second admission checks that verified binding against live state.
+        guard let binding else { return true }
+        return (self.matchesBinding(binding) && self.viewModel?.isQuestionAuthorityRetired == false) ||
+            self.preservedReopenedInput(binding, appModel: appModel) != nil
+    }
+
+    private func matchesNativeTarget(_ session: OpenClawNativeSessionRef, appModel: NodeAppModel) -> Bool {
+        guard let viewModel, let transport, self.isCurrent(appModel: appModel) else { return false }
+        let target = viewModel.currentSessionTarget
+        return transport.nativeBinding?.session == session && transport.gateway === appModel.operatorSession &&
+            appModel.chatTranscriptCacheGatewayID?.utf8.elementsEqual(session.owner.gatewayID.utf8) == true &&
+            self.transportAgentID.utf8.elementsEqual(session.agentID.utf8) &&
+            target.sessionKey.utf8.elementsEqual(session.sessionKey.utf8) &&
+            (OpenClawChatSessionKey.agentID(from: target.sessionKey) ?? target.agentID)?
+            .utf8.elementsEqual(session.agentID.utf8) == true
+    }
+
+    private func preservedReopenedInput(_ next: IOSNativeActionBinding?, appModel: NodeAppModel) -> String? {
+        guard let next, let viewModel, let previous = self.transport?.nativeBinding,
+              self.matchesNativeTarget(next.session, appModel: appModel),
+              previous.canReopen(next, preserving: viewModel, captureIsActive: self.captureIsActive(appModel: appModel))
+        else { return nil }
+        // Reopening retains idle text only, never the retired transport or send authority.
+        return viewModel.input
+    }
+
+    private func captureIsActive(appModel: NodeAppModel) -> Bool {
+        appModel.isTalkCaptureActive || appModel.isChatDictationPending || appModel.isChatDictationActive
     }
 
     private func matchesBinding(_ next: IOSNativeActionBinding?) -> Bool {
