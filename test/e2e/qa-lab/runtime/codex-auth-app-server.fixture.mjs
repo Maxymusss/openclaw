@@ -1,4 +1,6 @@
 // Minimal Codex app-server fixture for the QA auth product proof.
+import { randomUUID } from "node:crypto";
+import fs from "node:fs";
 import {
   createFakeInitializeResponse,
   createFakeThreadStartResponse,
@@ -14,14 +16,60 @@ if (!appServerVersion) {
   throw new Error("missing OPENCLAW_QA_CODEX_APP_SERVER_VERSION");
 }
 
-let turnCount = 0;
-const threadResponse = (params) =>
+const threads = new Map();
+const threadResponse = (params, threadId, sessionId) =>
   createFakeThreadStartResponse({
     params,
-    threadId: "thread-qa-codex-auth",
-    sessionId: "session-qa-codex-auth",
+    threadId,
+    sessionId,
     version: appServerVersion,
   });
+
+function restoreThread(threadId) {
+  try {
+    // Account changes start another app-server process. Recover from self-identifying
+    // responses, not JSON-RPC ids, which are reused by clients sharing this log.
+    const records = fs.readFileSync(requestLog, "utf8").trim().split("\n").map(JSON.parse);
+    const response = records.find(
+      (record) => record.result?.thread?.id === threadId && record.result?.model,
+    )?.result;
+    const thread = response?.thread;
+    if (
+      !thread ||
+      thread.ephemeral !== false ||
+      typeof thread.sessionId !== "string" ||
+      typeof thread.cwd !== "string" ||
+      !Number.isFinite(thread.createdAt) ||
+      !Array.isArray(thread.turns)
+    ) {
+      throw new Error("missing durable thread metadata");
+    }
+    const turns = new Map(thread.turns.map((turn) => [turn.id, turn]));
+    for (const record of records) {
+      if (record.method === "turn/completed" && record.params?.threadId === threadId) {
+        const turn = record.params.turn;
+        if (
+          !turn?.id ||
+          turn.status !== "completed" ||
+          !Array.isArray(turn.items) ||
+          turns.has(turn.id)
+        ) {
+          throw new Error("invalid completed turn history");
+        }
+        turns.set(turn.id, turn);
+      }
+    }
+    thread.turns = [...turns.values()];
+    thread.status = { type: "notLoaded" };
+    const state = { response, loaded: false, subscribed: false };
+    threads.set(threadId, state);
+    return state;
+  } catch (cause) {
+    throw new Error(`Cannot restore synthetic Codex thread ${threadId}`, { cause });
+  }
+}
+
+const getThread = (threadId) => threads.get(threadId) ?? restoreThread(threadId);
 
 runFakeCodexAppServer({
   requestLog,
@@ -77,11 +125,69 @@ runFakeCodexAppServer({
         },
         requiresOpenaiAuth: true,
       }),
-    "thread/start": ({ params, sendResult }) => sendResult(threadResponse(params)),
-    "thread/resume": ({ params, sendResult }) => sendResult(threadResponse(params)),
+    "thread/start": ({ params, sendResult }) => {
+      const response = threadResponse(params, `thread-${randomUUID()}`, `session-${randomUUID()}`);
+      response.thread.ephemeral = params?.ephemeral === true;
+      threads.set(response.thread.id, { response, loaded: true, subscribed: true });
+      sendResult(response);
+    },
+    "thread/read": ({ params, sendResult }) => {
+      const { thread } = getThread(params?.threadId).response;
+      sendResult({ thread: { ...thread, turns: params?.includeTurns ? thread.turns : [] } });
+    },
+    "thread/unsubscribe": ({ params, sendResult }) => {
+      const state = threads.get(params?.threadId);
+      const status = !state?.loaded
+        ? "notLoaded"
+        : state.subscribed
+          ? "unsubscribed"
+          : "notSubscribed";
+      if (state) {
+        state.subscribed = false;
+      }
+      sendResult({ status });
+    },
+    "thread/resume": ({ notify, params, sendResult }) => {
+      const state = getThread(params?.threadId);
+      const thread = state.response.thread;
+      if (params?.cwd !== undefined && params.cwd !== thread.cwd) {
+        throw new Error("Synthetic auth fixture cannot move a resumed thread's workspace");
+      }
+      // Native full-config adoption reloads only an idle thread with no subscribers.
+      // Unsubscribe alone retains the loaded thread and must not fabricate teardown.
+      const overrides =
+        ["config", "baseInstructions", "developerInstructions"].some(
+          (key) => params?.[key] !== undefined,
+        ) ||
+        ["model", "approvalPolicy", "approvalsReviewer"].some(
+          (key) => params?.[key] !== undefined && params[key] !== state.response[key],
+        );
+      if (state.loaded && overrides && !state.subscribed && thread.status.type === "idle") {
+        state.loaded = false;
+        thread.status = { type: "notLoaded" };
+        notify("thread/status/changed", { threadId: thread.id, status: thread.status });
+      }
+      if (!state.loaded) {
+        state.response = threadResponse(
+          { ...params, cwd: thread.cwd },
+          thread.id,
+          thread.sessionId,
+        );
+        state.response.thread = { ...thread, status: { type: "idle" } };
+        state.loaded = true;
+      }
+      state.subscribed = true;
+      sendResult(state.response);
+    },
     "turn/start": ({ notify, params, sendResult }) => {
-      const threadId = params?.threadId ?? "thread-qa-codex-auth";
-      const turnId = `turn-qa-codex-auth-${++turnCount}`;
+      const state = getThread(params?.threadId);
+      const thread = state.response.thread;
+      if (!state.loaded || thread.status.type !== "idle") {
+        throw new Error("Synthetic auth fixture requires an idle loaded thread before a turn");
+      }
+      const threadId = thread.id;
+      const turnId = `turn-${randomUUID()}`;
+      thread.status = { type: "active", activeFlags: [] };
       const message = {
         type: "agentMessage",
         id: `message-${turnId}`,
@@ -107,19 +213,19 @@ runFakeCodexAppServer({
           turnId,
           completedAtMs,
         });
-        notify("turn/completed", {
-          threadId,
-          turn: {
-            id: turnId,
-            items: [message],
-            itemsView: "full",
-            status: "completed",
-            error: null,
-            startedAt: Math.floor(completedAtMs / 1000),
-            completedAt: Math.floor(completedAtMs / 1000),
-            durationMs: 0,
-          },
-        });
+        const turn = {
+          id: turnId,
+          items: [message],
+          itemsView: "full",
+          status: "completed",
+          error: null,
+          startedAt: Math.floor(completedAtMs / 1000),
+          completedAt: Math.floor(completedAtMs / 1000),
+          durationMs: 0,
+        };
+        thread.turns.push(turn);
+        thread.status = { type: "idle" };
+        notify("turn/completed", { threadId, turn });
       });
     },
   },

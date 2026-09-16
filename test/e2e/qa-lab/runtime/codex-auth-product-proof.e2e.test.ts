@@ -517,7 +517,17 @@ describe("Codex auth product proof", () => {
           removedProfiles: [MISSING_PROFILE_ID],
           abortedRunIds: [],
         });
-        await fs.writeFile(requestLog, "", "utf8");
+        // The fixture restores durable threads from this log across account processes.
+        // Freeze an evidence cursor instead of deleting the history needed by fallback.
+        const beforeFailedTurn = appServerLog.read().length;
+        const beforeFailedTurnPrefix = JSON.stringify(
+          appServerLog.read().slice(0, beforeFailedTurn),
+        );
+        expect(beforeFailedTurn, "app-server history reached the tailer cap").toBeLessThan(1024);
+        expect(
+          (await fs.stat(requestLog)).size,
+          "app-server log reached the read cap",
+        ).toBeLessThan(2 * 1024 * 1024);
         events.length = 0;
         await client.request("sessions.messages.subscribe", { key: sessionKey });
         await client.request("sessions.subscribe", {});
@@ -596,9 +606,23 @@ describe("Codex auth product proof", () => {
           authProfileOverride: MISSING_PROFILE_ID,
           authProfileOverrideSource: "user",
         });
-        const failureAppServerLog = createJsonlRequestTailer<AppServerLogEntry>(requestLog);
-        const failureEntries = failureAppServerLog.read();
-        const beforeConfiguredControl = failureEntries.length;
+        const retainedFailureEntries = appServerLog.read();
+        const beforeConfiguredControl = retainedFailureEntries.length;
+        expect(beforeConfiguredControl, "app-server history reached the tailer cap").toBeLessThan(
+          1024,
+        );
+        expect(beforeConfiguredControl).toBeGreaterThanOrEqual(beforeFailedTurn);
+        expect(
+          (await fs.stat(requestLog)).size,
+          "app-server log reached the read cap",
+        ).toBeLessThan(2 * 1024 * 1024);
+        expect(
+          JSON.stringify(retainedFailureEntries.slice(0, beforeFailedTurn)) ===
+            beforeFailedTurnPrefix,
+          "app-server history changed before the failure cursor",
+        ).toBe(true);
+        const beforeConfiguredControlPrefix = JSON.stringify(retainedFailureEntries);
+        const failureEntries = retainedFailureEntries.slice(beforeFailedTurn);
         failureMethods = failureEntries.flatMap((entry) =>
           typeof entry.method === "string" ? [entry.method] : [],
         );
@@ -608,9 +632,22 @@ describe("Codex auth product proof", () => {
             "qa-codex-configured-account-survives",
             `${sessionKey}-configured`,
           );
+          const controlEntries = appServerLog.read();
+          expect(controlEntries.length, "app-server history reached the tailer cap").toBeLessThan(
+            1024,
+          );
+          expect(controlEntries.length).toBeGreaterThanOrEqual(beforeConfiguredControl);
           expect(
-            failureAppServerLog
-              .read()
+            (await fs.stat(requestLog)).size,
+            "app-server log reached the read cap",
+          ).toBeLessThan(2 * 1024 * 1024);
+          expect(
+            JSON.stringify(controlEntries.slice(0, beforeConfiguredControl)) ===
+              beforeConfiguredControlPrefix,
+            "app-server history changed before the control cursor",
+          ).toBe(true);
+          expect(
+            controlEntries
               .slice(beforeConfiguredControl)
               .find((request) => request.method === "account/login/start")?.params,
           ).toMatchObject({ type: "chatgptAuthTokens", chatgptAccountId: configuredAccountId });
