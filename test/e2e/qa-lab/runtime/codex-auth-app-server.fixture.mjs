@@ -16,6 +16,27 @@ if (!appServerVersion) {
   throw new Error("missing OPENCLAW_QA_CODEX_APP_SERVER_VERSION");
 }
 
+const fixtureInstanceId = randomUUID();
+let fixtureSequence = 0;
+let activeAccount = null;
+
+function recordAuthOperation(operation, { threadId, turnId } = {}, account = activeAccount) {
+  fs.appendFileSync(
+    requestLog,
+    `${JSON.stringify({
+      fixtureAuthOperation: {
+        version: 1,
+        instanceId: fixtureInstanceId,
+        sequence: ++fixtureSequence,
+        operation,
+        account: account ? { ...account } : null,
+        ...(threadId ? { threadId } : {}),
+        ...(turnId ? { turnId } : {}),
+      },
+    })}\n`,
+  );
+}
+
 const threads = new Map();
 const threadResponse = (params, threadId, sessionId) =>
   createFakeThreadStartResponse({
@@ -83,7 +104,35 @@ runFakeCodexAppServer({
           userAgent: `openclaw/${appServerVersion} (test)`,
         }),
       ),
-    "account/login/start": ({ params, sendResult }) => sendResult({ type: params?.type }),
+    "account/login/start": ({ params, sendResult }) => {
+      if (
+        params?.type === "chatgptAuthTokens" &&
+        typeof params.accessToken === "string" &&
+        params.accessToken.trim() &&
+        typeof params.chatgptAccountId === "string" &&
+        params.chatgptAccountId.trim()
+      ) {
+        activeAccount = Object.freeze({
+          type: "chatgptAuthTokens",
+          accountId: params.chatgptAccountId,
+        });
+      } else if (
+        params?.type === "apiKey" &&
+        typeof params.apiKey === "string" &&
+        params.apiKey.trim()
+      ) {
+        activeAccount = Object.freeze({ type: "apiKey" });
+      } else {
+        throw new Error("Synthetic auth fixture requires supported nonempty login credentials");
+      }
+      recordAuthOperation("auth_applied");
+      sendResult({ type: params.type });
+    },
+    "account/logout": ({ sendResult }) => {
+      activeAccount = null;
+      recordAuthOperation("auth_cleared");
+      sendResult({});
+    },
     "model/list": ({ sendResult }) =>
       sendResult({
         data: ["gpt-5.6-luna"].map((model) => ({
@@ -118,17 +167,19 @@ runFakeCodexAppServer({
       }),
     "account/read": ({ sendResult }) =>
       sendResult({
-        account: {
-          type: "chatgpt",
-          email: "qa-codex-account@example.com",
-          planType: "pro",
-        },
+        account:
+          activeAccount?.type === "chatgptAuthTokens"
+            ? { type: "chatgpt", email: "qa-codex-account@example.com", planType: "pro" }
+            : activeAccount?.type === "apiKey"
+              ? { type: "apiKey" }
+              : null,
         requiresOpenaiAuth: true,
       }),
     "thread/start": ({ params, sendResult }) => {
       const response = threadResponse(params, `thread-${randomUUID()}`, `session-${randomUUID()}`);
       response.thread.ephemeral = params?.ephemeral === true;
       threads.set(response.thread.id, { response, loaded: true, subscribed: true });
+      recordAuthOperation("thread_started", { threadId: response.thread.id });
       sendResult(response);
     },
     "thread/read": ({ params, sendResult }) => {
@@ -177,6 +228,7 @@ runFakeCodexAppServer({
         state.loaded = true;
       }
       state.subscribed = true;
+      recordAuthOperation("thread_resumed", { threadId: thread.id });
       sendResult(state.response);
     },
     "turn/start": ({ notify, params, sendResult }) => {
@@ -187,6 +239,8 @@ runFakeCodexAppServer({
       }
       const threadId = thread.id;
       const turnId = `turn-${randomUUID()}`;
+      const turnAccount = activeAccount ? Object.freeze({ ...activeAccount }) : null;
+      recordAuthOperation("turn_started", { threadId, turnId }, turnAccount);
       thread.status = { type: "active", activeFlags: [] };
       const message = {
         type: "agentMessage",
@@ -225,6 +279,7 @@ runFakeCodexAppServer({
         };
         thread.turns.push(turn);
         thread.status = { type: "idle" };
+        recordAuthOperation("turn_completed", { threadId, turnId }, turnAccount);
         notify("turn/completed", { threadId, turn });
       });
     },

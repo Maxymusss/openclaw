@@ -1,6 +1,7 @@
 // QA Lab Codex auth product proof exercises doctor, SQLite, Gateway, and app-server together.
 import fs from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createJsonlRequestTailer } from "../../../../scripts/e2e/lib/codex-media-path/jsonl-request-tail.mts";
 import { resolveSessionStorePathCore } from "../../../../src/config/sessions/paths.js";
@@ -17,7 +18,10 @@ import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
 } from "../../../helpers/openclaw-test-instance.js";
-import { runCodexAuthDoctorMigrationProof } from "./codex-auth-product-proof.test-support.js";
+import {
+  findCodexFixtureTurnAccountEvidence,
+  runCodexAuthDoctorMigrationProof,
+} from "./codex-auth-product-proof.test-support.js";
 
 const oauthAccess = "test-oauth-access";
 const ACCOUNT_ID = "qa-codex-account";
@@ -471,59 +475,199 @@ describe("Codex auth product proof", () => {
         const runConfiguredTurn = async (
           idempotencyKey: string,
           targetSessionKey = sessionKey,
-          requireNativeLifecycle = false,
+          expectedAccountId?: string,
         ) => {
-          const setup = await client.request<{ runId?: string; status?: string }>("chat.send", {
-            sessionKey: targetSessionKey,
-            message: `Reply with ${PRODUCT_OUTPUT}.`,
-            deliver: false,
-            idempotencyKey,
-          });
-          expect(setup).toMatchObject({ runId: expect.any(String), status: "started" });
-          const setupRunId = setup.runId ?? "";
-          expect(setupRunId).toMatch(/\S/);
-          const setupTerminal = await client.request(
-            "agent.wait",
-            { runId: setup.runId, timeoutMs: REQUEST_TIMEOUT_MS },
-            { timeoutMs: REQUEST_TIMEOUT_MS + 5_000 },
-          );
-          expect(
-            setupTerminal,
-            `${JSON.stringify(setupTerminal)}\n${JSON.stringify(appServerLog.read())}\n${testInstance.logs()}`,
-          ).toMatchObject({ runId: setup.runId, status: "ok" });
-          if (requireNativeLifecycle) {
-            const lifecycle = await vi.waitFor(
-              () => {
-                const matching = nativeLifecycleForRun(setupRunId)
-                  .filter(
-                    (event) =>
-                      event.event === "agent" &&
-                      (event.payload as CodexLifecyclePayload).sessionKey === targetSessionKey,
-                  )
-                  .map((event) => event.payload as CodexLifecyclePayload);
-                const startup = matching.findIndex((payload) => payload.data?.phase === "startup");
-                const ready = matching.findIndex(
-                  (payload, index) => index > startup && payload.data?.phase === "thread_ready",
+          let setupRunId = "";
+          let controlFailed = false;
+          let controlCursor: { index: number; prefix: string } | undefined;
+          let controlProof: unknown;
+          try {
+            const controlStartEntries = appServerLog.read();
+            const controlStartIndex = controlStartEntries.length;
+            const controlStartPrefix = JSON.stringify(controlStartEntries);
+            controlCursor = { index: controlStartIndex, prefix: controlStartPrefix };
+            if (expectedAccountId !== undefined) {
+              expect(controlStartIndex, "app-server history reached the tailer cap").toBeLessThan(
+                1024,
+              );
+              expect(
+                (await fs.stat(requestLog)).size,
+                "app-server log reached the read cap",
+              ).toBeLessThan(2 * 1024 * 1024);
+            }
+            const setup = await client.request<{ runId?: string; status?: string }>("chat.send", {
+              sessionKey: targetSessionKey,
+              message: `Reply with ${PRODUCT_OUTPUT}.`,
+              deliver: false,
+              idempotencyKey,
+            });
+            expect(setup).toMatchObject({ runId: expect.any(String), status: "started" });
+            setupRunId = setup.runId ?? "";
+            expect(setupRunId).toMatch(/\S/);
+            const setupTerminal = await client.request(
+              "agent.wait",
+              { runId: setup.runId, timeoutMs: REQUEST_TIMEOUT_MS },
+              { timeoutMs: REQUEST_TIMEOUT_MS + 5_000 },
+            );
+            expect(
+              setupTerminal,
+              `${JSON.stringify(setupTerminal)}\n${JSON.stringify(appServerLog.read())}\n${testInstance.logs()}`,
+            ).toMatchObject({ runId: setup.runId, status: "ok" });
+            if (expectedAccountId !== undefined) {
+              const proof = await vi.waitFor(
+                () => {
+                  const matching = nativeLifecycleForRun(setupRunId)
+                    .filter(
+                      (event) =>
+                        event.event === "agent" &&
+                        (event.payload as CodexLifecyclePayload).sessionKey === targetSessionKey,
+                    )
+                    .map((event) => event.payload as CodexLifecyclePayload);
+                  const startup = matching.findIndex(
+                    (payload) => payload.data?.phase === "startup",
+                  );
+                  const ready = matching.findIndex(
+                    (payload, index) => index > startup && payload.data?.phase === "thread_ready",
+                  );
+                  expect(startup).toBeGreaterThanOrEqual(0);
+                  expect(ready).toBeGreaterThan(startup);
+                  expect(matching[ready]?.data).toMatchObject({
+                    threadId: expect.stringMatching(/\S/),
+                    clientId: expect.stringMatching(/\S/),
+                  });
+                  const entries = appServerLog.read();
+                  expect(entries.length, "app-server history reached the tailer cap").toBeLessThan(
+                    1024,
+                  );
+                  expect(entries.length).toBeGreaterThanOrEqual(controlStartIndex);
+                  expect(
+                    JSON.stringify(entries.slice(0, controlStartIndex)) === controlStartPrefix,
+                    "app-server history changed before the control cursor",
+                  ).toBe(true);
+                  const threadId = matching[ready]?.data?.threadId;
+                  const accountEvidence = findCodexFixtureTurnAccountEvidence(entries, {
+                    afterIndex: controlStartIndex,
+                    threadId: typeof threadId === "string" ? threadId : "",
+                    accountId: expectedAccountId,
+                  });
+                  expect(
+                    accountEvidence,
+                    "missing unique completed native turn with the selected account",
+                  ).toBeDefined();
+                  return structuredClone({
+                    lifecycle: [matching[startup], matching[ready]],
+                    accountEvidence,
+                  });
+                },
+                { interval: 25, timeout: REQUEST_TIMEOUT_MS },
+              );
+              controlProof = proof;
+              expect(
+                (await fs.stat(requestLog)).size,
+                "app-server log reached the read cap",
+              ).toBeLessThan(2 * 1024 * 1024);
+            }
+            return setupRunId;
+          } catch (error) {
+            controlFailed = true;
+            throw error;
+          } finally {
+            if (expectedAccountId !== undefined) {
+              let correlationDiagnostic: unknown = { status: "capture-not-complete" };
+              try {
+                const entries = appServerLog.read();
+                const diagnosticStart = Math.max(0, entries.length - 1024);
+                const fixtureOperations = entries
+                  .slice(diagnosticStart)
+                  .flatMap((entry, offset) => {
+                    if (!isRecord(entry) || !isRecord(entry.fixtureAuthOperation)) {
+                      return [];
+                    }
+                    const value = entry.fixtureAuthOperation;
+                    const account = isRecord(value.account) ? value.account : undefined;
+                    return [
+                      {
+                        index: diagnosticStart + offset,
+                        version: typeof value.version === "number" ? value.version : null,
+                        instanceId: typeof value.instanceId === "string" ? value.instanceId : null,
+                        sequence: typeof value.sequence === "number" ? value.sequence : null,
+                        operation: typeof value.operation === "string" ? value.operation : null,
+                        account: account
+                          ? {
+                              type: typeof account.type === "string" ? account.type : null,
+                              accountId:
+                                typeof account.accountId === "string" ? account.accountId : null,
+                            }
+                          : null,
+                        threadId: typeof value.threadId === "string" ? value.threadId : null,
+                        turnId: typeof value.turnId === "string" ? value.turnId : null,
+                      },
+                    ];
+                  });
+                correlationDiagnostic = {
+                  controlStartIndex: controlCursor?.index ?? null,
+                  observedEntryCount: entries.length,
+                  omittedEntryCount: diagnosticStart,
+                  fixtureOperations,
+                  lifecycle: setupRunId
+                    ? nativeLifecycleForRun(setupRunId)
+                        .slice(-1024)
+                        .map((event) => {
+                          const payload = event.payload as CodexLifecyclePayload;
+                          return {
+                            event: event.event,
+                            runId: payload.runId,
+                            sessionKey: payload.sessionKey,
+                            phase: payload.data?.phase,
+                            threadId: payload.data?.threadId,
+                            clientId: payload.data?.clientId,
+                          };
+                        })
+                    : null,
+                };
+                expect(entries.length, "app-server history reached the tailer cap").toBeLessThan(
+                  1024,
                 );
-                expect(startup).toBeGreaterThanOrEqual(0);
-                expect(ready).toBeGreaterThan(startup);
-                expect(matching[ready]?.data).toMatchObject({
-                  threadId: expect.stringMatching(/\S/),
-                  clientId: expect.stringMatching(/\S/),
-                });
-                return structuredClone([matching[startup], matching[ready]]);
-              },
-              { interval: 25, timeout: REQUEST_TIMEOUT_MS },
-            );
-            console.log(
-              `[qa-codex-native-lifecycle] ${JSON.stringify({
-                runId: setupRunId,
-                sessionKey: targetSessionKey,
-                lifecycle,
-              })}`,
-            );
+                if (controlCursor) {
+                  expect(entries.length).toBeGreaterThanOrEqual(controlCursor.index);
+                  expect(
+                    JSON.stringify(entries.slice(0, controlCursor.index)) === controlCursor.prefix,
+                    "app-server history changed before the control cursor",
+                  ).toBe(true);
+                }
+                expect(
+                  (await fs.stat(requestLog)).size,
+                  "app-server log reached the read cap",
+                ).toBeLessThan(2 * 1024 * 1024);
+                console.log(
+                  `[qa-codex-native-account-control] ${JSON.stringify({
+                    runId: setupRunId || null,
+                    sessionKey: targetSessionKey,
+                    expectedAccountId,
+                    controlFailed,
+                    captureComplete: true,
+                    controlProof,
+                    correlationDiagnostic,
+                  })}`,
+                );
+              } catch (captureError) {
+                console.error(
+                  `[qa-codex-native-account-capture-failure] ${JSON.stringify({
+                    runId: setupRunId || null,
+                    sessionKey: targetSessionKey,
+                    expectedAccountId,
+                    controlFailed,
+                    captureComplete: false,
+                    controlProof,
+                    correlationDiagnostic,
+                  })}`,
+                );
+                if (!controlFailed) {
+                  throw captureError;
+                }
+              }
+            }
           }
-          return setupRunId;
         };
         await runConfiguredTurn("qa-codex-profile-binding-setup");
         expect(
@@ -549,21 +693,11 @@ describe("Codex auth product proof", () => {
           },
         });
         // A metadata patch alone does not prove the selected profile reaches native execution.
-        const beforePinnedTurn = appServerLog.read().length;
         const pinnedRunId = await runConfiguredTurn(
           "qa-codex-profile-binding-pinned",
           sessionKey,
-          true,
+          ACCOUNT_ID,
         );
-        if (configuredProfileId !== MISSING_PROFILE_ID) {
-          expect(
-            appServerLog
-              .read()
-              .slice(beforePinnedTurn)
-              .find((request) => request.method === "account/login/start")?.params,
-          ).toMatchObject({ type: "chatgptAuthTokens", chatgptAccountId: ACCOUNT_ID });
-        }
-
         const logoutResult = await client.request("models.authLogout", {
           provider: "openai",
           agentId: "main",
@@ -647,6 +781,23 @@ describe("Codex auth product proof", () => {
             expectBoundedMissingProfileRecovery(lifecyclePayload?.lastRunError, {
               allowSessionTruncation: true,
             });
+            // Transcript and session-state events cover separate projections of the same failure.
+            const transcriptEvent = events.find(
+              (event) =>
+                event.event === "session.message" &&
+                event.payload !== null &&
+                typeof event.payload === "object" &&
+                (event.payload as { sessionKey?: unknown }).sessionKey === sessionKey &&
+                (event.payload as { session?: { lastRunId?: unknown } }).session?.lastRunId ===
+                  runId &&
+                (event.payload as { session?: { status?: unknown } }).session?.status === "failed",
+            );
+            expect(transcriptEvent).toBeDefined();
+            expectBoundedMissingProfileRecovery(
+              (transcriptEvent?.payload as { session?: { lastRunError?: unknown } } | undefined)
+                ?.session?.lastRunError,
+              { allowSessionTruncation: true },
+            );
             return lifecyclePayload;
           },
           { interval: 20, timeout: 5_000 },
@@ -721,7 +872,7 @@ describe("Codex auth product proof", () => {
           const configuredRunId = await runConfiguredTurn(
             "qa-codex-configured-account-survives",
             `${sessionKey}-configured`,
-            true,
+            configuredAccountId,
           );
           expect(configuredRunId).not.toBe(pinnedRunId);
           expect(configuredRunId).not.toBe(runId);
@@ -739,11 +890,6 @@ describe("Codex auth product proof", () => {
               beforeConfiguredControlPrefix,
             "app-server history changed before the control cursor",
           ).toBe(true);
-          expect(
-            controlEntries
-              .slice(beforeConfiguredControl)
-              .find((request) => request.method === "account/login/start")?.params,
-          ).toMatchObject({ type: "chatgptAuthTokens", chatgptAccountId: configuredAccountId });
         }
         const finalEvent = events.find(
           (event) =>

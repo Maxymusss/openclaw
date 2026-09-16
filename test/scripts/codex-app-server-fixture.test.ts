@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createFakeThreadStartResponse } from "../../scripts/e2e/lib/codex-app-server-fixture.mjs";
+import { findCodexFixtureTurnAccountEvidence } from "../e2e/qa-lab/runtime/codex-auth-product-proof.test-support.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -250,5 +251,324 @@ describe("fake Codex configuration preflight", () => {
       { id: 1, result: { config: {}, origins: {}, layers: [] } },
       { id: 2, result: { requirements: null } },
     ]);
+  });
+});
+
+type FixtureAuthOperation = {
+  version: number;
+  instanceId: string;
+  sequence: number;
+  operation: string;
+  account: { type: string; accountId?: string } | null;
+  threadId?: string;
+  turnId?: string;
+};
+type FixtureAuthLogEntry = { fixtureAuthOperation?: FixtureAuthOperation };
+
+const FIXTURE_ACCOUNT_A = "qa-codex-configured-account";
+const FIXTURE_ACCOUNT_B = "qa-codex-account";
+
+function readFixtureAuthLog(requestLog: string): FixtureAuthLogEntry[] {
+  return fs
+    .readFileSync(requestLog, "utf8")
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as FixtureAuthLogEntry);
+}
+
+function fixtureLogin(accountId: string) {
+  return {
+    id: 1,
+    method: "account/login/start",
+    params: {
+      type: "chatgptAuthTokens",
+      accessToken: `fixture-secret-${accountId}`,
+      chatgptAccountId: accountId,
+    },
+  };
+}
+
+function seedAuthEvidenceThreads(count = 1) {
+  const workspace = tempDirs.make("codex-fixture-auth-state-");
+  const requestLog = path.join(workspace, "requests.jsonl");
+  const seed = runAuthFixture(
+    requestLog,
+    Array.from({ length: count }, (_, index) => ({
+      id: index + 1,
+      method: "thread/start",
+      params: { cwd: workspace },
+    })),
+  );
+  expect(seed.status, seed.stderr).toBe(0);
+  const threadIds = Array.from({ length: count }, (_, index) => {
+    const id = seed.messages.find((message) => message.id === index + 1)?.result?.thread?.id;
+    expect(id).toEqual(expect.stringMatching(/\S/));
+    return id!;
+  });
+  return { requestLog, workspace, threadIds };
+}
+
+function runAuthEvidence(requestLog: string, requests: Array<Record<string, unknown>>) {
+  const afterIndex = readFixtureAuthLog(requestLog).length;
+  const result = runAuthFixture(requestLog, requests);
+  expect(result.status, result.stderr).toBe(0);
+  return { result, afterIndex, entries: readFixtureAuthLog(requestLog) };
+}
+
+function authOperations(entries: readonly FixtureAuthLogEntry[]) {
+  return entries.flatMap((entry) =>
+    entry.fixtureAuthOperation ? [entry.fixtureAuthOperation] : [],
+  );
+}
+
+describe("auth fixture active-account evidence", () => {
+  it("proves warm account reuse without another login or thread setup after the cursor", () => {
+    const { requestLog, threadIds } = seedAuthEvidenceThreads(2);
+    const firstThread = threadIds[0]!;
+    const secondThread = threadIds[1]!;
+    const run = runAuthEvidence(requestLog, [
+      fixtureLogin(FIXTURE_ACCOUNT_A),
+      { id: 2, method: "thread/resume", params: { threadId: firstThread } },
+      { id: 3, method: "turn/start", params: { threadId: firstThread } },
+      { id: 4, method: "thread/resume", params: { threadId: secondThread } },
+      { id: 5, method: "turn/start", params: { threadId: secondThread } },
+    ]);
+    const first = findCodexFixtureTurnAccountEvidence(run.entries, {
+      afterIndex: run.afterIndex,
+      threadId: firstThread,
+      accountId: FIXTURE_ACCOUNT_A,
+    });
+    const second = findCodexFixtureTurnAccountEvidence(run.entries, {
+      afterIndex: run.afterIndex,
+      threadId: secondThread,
+      accountId: FIXTURE_ACCOUNT_A,
+    });
+    expect(first).toMatchObject({
+      threadId: firstThread,
+      account: { type: "chatgptAuthTokens", accountId: "qa-codex-configured-account" },
+    });
+    expect(second).toMatchObject({
+      threadId: secondThread,
+      account: { type: "chatgptAuthTokens", accountId: "qa-codex-configured-account" },
+    });
+    expect(second!.instanceId).toBe(first!.instanceId);
+    expect(second!.turnId).not.toBe(first!.turnId);
+    const operations = authOperations(run.entries).filter(
+      (row) => row.instanceId === first!.instanceId,
+    );
+    expect(operations.filter((row) => row.operation === "auth_applied")).toHaveLength(1);
+    const turnIndex = run.entries.findIndex(
+      (row) =>
+        row.fixtureAuthOperation?.threadId === secondThread &&
+        row.fixtureAuthOperation.operation === "turn_started",
+    );
+    expect(turnIndex).toBeGreaterThan(run.afterIndex);
+    expect(
+      findCodexFixtureTurnAccountEvidence(run.entries, {
+        afterIndex: turnIndex,
+        threadId: secondThread,
+        accountId: FIXTURE_ACCOUNT_A,
+      }),
+    ).toEqual(second);
+    expect(
+      operations.every(
+        (row, index) => index === 0 || row.sequence > operations[index - 1]!.sequence,
+      ),
+    ).toBe(true);
+    for (const row of operations) {
+      expect(row.instanceId).toEqual(expect.stringMatching(/\S/));
+      expect(Object.keys(row.account ?? {}).sort()).toEqual(["accountId", "type"]);
+    }
+    const safeEvidence = JSON.stringify(operations);
+    expect(safeEvidence).not.toContain(`fixture-secret-${FIXTURE_ACCOUNT_A}`);
+    expect(safeEvidence).not.toContain(`fixture-secret-${FIXTURE_ACCOUNT_B}`);
+  });
+
+  it.each(["wrong", "missing"] as const)(
+    "rejects %s active auth instead of borrowing an earlier process login",
+    (kind) => {
+      const { requestLog, threadIds } = seedAuthEvidenceThreads();
+      const threadId = threadIds[0]!;
+      const prior = runAuthEvidence(requestLog, [
+        fixtureLogin(FIXTURE_ACCOUNT_A),
+        { id: 2, method: "thread/resume", params: { threadId } },
+        { id: 3, method: "turn/start", params: { threadId } },
+      ]);
+      const previous = findCodexFixtureTurnAccountEvidence(prior.entries, {
+        afterIndex: prior.afterIndex,
+        threadId,
+        accountId: FIXTURE_ACCOUNT_A,
+      });
+      expect(previous).toBeDefined();
+      const run = runAuthEvidence(requestLog, [
+        ...(kind === "wrong" ? [fixtureLogin(FIXTURE_ACCOUNT_B)] : []),
+        { id: 2, method: "account/read" },
+        { id: 3, method: "thread/resume", params: { threadId } },
+        { id: 4, method: "turn/start", params: { threadId } },
+      ]);
+      expect(
+        findCodexFixtureTurnAccountEvidence(run.entries, {
+          afterIndex: run.afterIndex,
+          threadId,
+          accountId: FIXTURE_ACCOUNT_A,
+        }),
+      ).toBeUndefined();
+      const accepted = authOperations(run.entries.slice(run.afterIndex)).find(
+        (row) => row.operation === "turn_started",
+      );
+      expect(accepted).toBeDefined();
+      expect(accepted!.instanceId).not.toBe(previous!.instanceId);
+      if (kind === "wrong") {
+        expect(
+          findCodexFixtureTurnAccountEvidence(run.entries, {
+            afterIndex: run.afterIndex,
+            threadId,
+            accountId: FIXTURE_ACCOUNT_B,
+          }),
+        ).toMatchObject({
+          account: { type: "chatgptAuthTokens", accountId: "qa-codex-account" },
+        });
+      } else {
+        expect(accepted!.account).toBeNull();
+        expect(run.result.messages.find((message) => message.id === 2)?.result).toMatchObject({
+          account: null,
+        });
+      }
+    },
+  );
+
+  it("retains the accepted account when login changes before asynchronous completion", () => {
+    const { requestLog, threadIds } = seedAuthEvidenceThreads();
+    const threadId = threadIds[0]!;
+    const run = runAuthEvidence(requestLog, [
+      fixtureLogin(FIXTURE_ACCOUNT_B),
+      { id: 2, method: "thread/resume", params: { threadId } },
+      { id: 3, method: "turn/start", params: { threadId } },
+      { ...fixtureLogin(FIXTURE_ACCOUNT_A), id: 4 },
+    ]);
+    expect(
+      findCodexFixtureTurnAccountEvidence(run.entries, {
+        afterIndex: run.afterIndex,
+        threadId,
+        accountId: FIXTURE_ACCOUNT_B,
+      }),
+    ).toMatchObject({
+      account: { type: "chatgptAuthTokens", accountId: "qa-codex-account" },
+    });
+    expect(
+      findCodexFixtureTurnAccountEvidence(run.entries, {
+        afterIndex: run.afterIndex,
+        threadId,
+        accountId: FIXTURE_ACCOUNT_A,
+      }),
+    ).toBeUndefined();
+    const operations = authOperations(run.entries.slice(run.afterIndex));
+    const latestLogin = operations.filter((row) => row.operation === "auth_applied").at(-1)!;
+    const completed = operations.find((row) => row.operation === "turn_completed")!;
+    const started = operations.find((row) => row.operation === "turn_started")!;
+    expect(started.instanceId).toBe(latestLogin.instanceId);
+    expect(completed.instanceId).toBe(started.instanceId);
+    expect(started.sequence).toBeLessThan(latestLogin.sequence);
+    expect(latestLogin.account).toEqual({
+      type: "chatgptAuthTokens",
+      accountId: "qa-codex-configured-account",
+    });
+    expect(completed.account).toEqual({
+      type: "chatgptAuthTokens",
+      accountId: "qa-codex-account",
+    });
+    expect(latestLogin.sequence).toBeLessThan(completed.sequence);
+  });
+
+  it("clears active auth on logout without restoring it from durable thread history", () => {
+    const { requestLog, threadIds } = seedAuthEvidenceThreads();
+    const threadId = threadIds[0]!;
+    const run = runAuthEvidence(requestLog, [
+      fixtureLogin(FIXTURE_ACCOUNT_A),
+      { id: 2, method: "account/logout" },
+      { id: 3, method: "account/read" },
+      { id: 4, method: "thread/resume", params: { threadId } },
+      { id: 5, method: "turn/start", params: { threadId } },
+    ]);
+    expect(run.result.messages.find((message) => message.id === 3)?.result).toMatchObject({
+      account: null,
+    });
+    expect(
+      authOperations(run.entries.slice(run.afterIndex)).find(
+        (row) => row.operation === "auth_cleared",
+      )?.account,
+    ).toBeNull();
+    expect(
+      findCodexFixtureTurnAccountEvidence(run.entries, {
+        afterIndex: run.afterIndex,
+        threadId,
+        accountId: FIXTURE_ACCOUNT_A,
+      }),
+    ).toBeUndefined();
+  });
+
+  it.each([
+    "missing-completion",
+    "cross-instance",
+    "duplicate-completion",
+    "second-turn",
+    "changed-account",
+  ] as const)("rejects %s evidence with the same shared Gateway matcher", (fault) => {
+    const { requestLog, threadIds } = seedAuthEvidenceThreads();
+    const threadId = threadIds[0]!;
+    const run = runAuthEvidence(requestLog, [
+      fixtureLogin(FIXTURE_ACCOUNT_A),
+      { id: 2, method: "thread/resume", params: { threadId } },
+      { id: 3, method: "turn/start", params: { threadId } },
+    ]);
+    const params = { afterIndex: run.afterIndex, threadId, accountId: FIXTURE_ACCOUNT_A };
+    const valid = findCodexFixtureTurnAccountEvidence(run.entries, params);
+    expect(valid).toMatchObject({
+      account: { type: "chatgptAuthTokens", accountId: "qa-codex-configured-account" },
+    });
+    const entries = structuredClone(run.entries);
+    const startIndex = entries.findIndex(
+      (row, index) =>
+        index >= run.afterIndex && row.fixtureAuthOperation?.operation === "turn_started",
+    );
+    const completionIndex = entries.findIndex(
+      (row, index) =>
+        index >= run.afterIndex && row.fixtureAuthOperation?.operation === "turn_completed",
+    );
+    expect(startIndex).toBeGreaterThanOrEqual(run.afterIndex);
+    expect(completionIndex).toBeGreaterThan(startIndex);
+    const started = entries[startIndex]!.fixtureAuthOperation!;
+    const completed = entries[completionIndex]!.fixtureAuthOperation!;
+    if (fault === "missing-completion") {
+      entries.splice(completionIndex, 1);
+    } else if (fault === "cross-instance") {
+      const otherInstance = authOperations(entries.slice(0, run.afterIndex))[0]!.instanceId;
+      expect(otherInstance).not.toBe(valid!.instanceId);
+      completed.instanceId = otherInstance;
+    } else if (fault === "duplicate-completion") {
+      entries.push(structuredClone(entries[completionIndex]!));
+    } else if (fault === "second-turn") {
+      entries.push(
+        {
+          fixtureAuthOperation: {
+            ...started,
+            sequence: completed.sequence + 1,
+            turnId: "second-native-turn",
+          },
+        },
+        {
+          fixtureAuthOperation: {
+            ...completed,
+            sequence: completed.sequence + 2,
+            turnId: "second-native-turn",
+          },
+        },
+      );
+    } else {
+      completed.account = { type: "chatgptAuthTokens", accountId: "qa-codex-account" };
+    }
+    expect(findCodexFixtureTurnAccountEvidence(entries, params)).toBeUndefined();
+    expect(findCodexFixtureTurnAccountEvidence(run.entries, params)).toEqual(valid);
   });
 });
