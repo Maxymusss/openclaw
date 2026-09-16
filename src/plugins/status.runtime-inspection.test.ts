@@ -48,6 +48,7 @@ import { withPluginDiagnosticsReportForInspection, withPluginDiagnosticsReport }
 import {
   classifyConfigObservationError,
   classifyConfigReadErrorCode,
+  classifyConfigReadIssues,
   createDiagnosticsFixture,
 } from "./status.runtime-inspection.test-helpers.js";
 import type { OpenClawPluginService } from "./types.js";
@@ -938,26 +939,7 @@ it("retires runtime diagnostics after each actual chat inspect reply", async () 
                 readErrorCode: classifyConfigReadErrorCode(snapshot?.readError?.code),
                 issueCount: snapshot?.issues.length ?? null,
                 issuesTruncated: (snapshot?.issues.length ?? 0) > 8,
-                issues:
-                  snapshot?.issues.slice(0, 8).map((issue) => ({
-                    // Only fixed schema families and categories escape; validator messages
-                    // can contain runner paths, authored values, or environment information.
-                    field:
-                      ["agents", "plugins", "commands"].find(
-                        (key) => issue.path === key || issue.path.startsWith(`${key}.`),
-                      ) ?? (issue.path ? "other" : "root"),
-                    category: issue.message.startsWith("JSON5 parse failed:")
-                      ? "parse"
-                      : issue.message.startsWith("read failed:")
-                        ? "read-or-observe"
-                        : /include/i.test(issue.message)
-                          ? "include"
-                          : "validation-or-other",
-                    errorName:
-                      /^read failed: (TypeError|RangeError|SyntaxError|Error):/.exec(
-                        issue.message,
-                      )?.[1] ?? null,
-                  })) ?? [],
+                issues: classifyConfigReadIssues(snapshot?.issues),
               }),
             );
           } catch {
