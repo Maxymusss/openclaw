@@ -46,6 +46,12 @@ type GatewayHistory = Record<string, unknown> & {
 };
 
 type GatewayEvent = { event?: string; payload?: unknown };
+type CodexLifecyclePayload = {
+  runId?: unknown;
+  sessionKey?: unknown;
+  stream?: unknown;
+  data?: { phase?: unknown; threadId?: unknown; clientId?: unknown };
+};
 
 function expectBoundedMissingProfileRecovery(
   value: unknown,
@@ -454,7 +460,19 @@ describe("Codex auth product proof", () => {
       let failureMethods: string[] = [];
       try {
         const testInstance = instance;
-        const runConfiguredTurn = async (idempotencyKey: string, targetSessionKey = sessionKey) => {
+        const nativeLifecycleForRun = (targetRunId: string) =>
+          events.filter((event) => {
+            const payload = event.payload as CodexLifecyclePayload | undefined;
+            // A misrouted or unlabelled frame must not hide native work for this run.
+            return (
+              payload?.runId === targetRunId && payload.stream === "codex_app_server.lifecycle"
+            );
+          });
+        const runConfiguredTurn = async (
+          idempotencyKey: string,
+          targetSessionKey = sessionKey,
+          requireNativeLifecycle = false,
+        ) => {
           const setup = await client.request<{ runId?: string; status?: string }>("chat.send", {
             sessionKey: targetSessionKey,
             message: `Reply with ${PRODUCT_OUTPUT}.`,
@@ -462,6 +480,8 @@ describe("Codex auth product proof", () => {
             idempotencyKey,
           });
           expect(setup).toMatchObject({ runId: expect.any(String), status: "started" });
+          const setupRunId = setup.runId ?? "";
+          expect(setupRunId).toMatch(/\S/);
           const setupTerminal = await client.request(
             "agent.wait",
             { runId: setup.runId, timeoutMs: REQUEST_TIMEOUT_MS },
@@ -471,6 +491,39 @@ describe("Codex auth product proof", () => {
             setupTerminal,
             `${JSON.stringify(setupTerminal)}\n${JSON.stringify(appServerLog.read())}\n${testInstance.logs()}`,
           ).toMatchObject({ runId: setup.runId, status: "ok" });
+          if (requireNativeLifecycle) {
+            const lifecycle = await vi.waitFor(
+              () => {
+                const matching = nativeLifecycleForRun(setupRunId)
+                  .filter(
+                    (event) =>
+                      event.event === "agent" &&
+                      (event.payload as CodexLifecyclePayload).sessionKey === targetSessionKey,
+                  )
+                  .map((event) => event.payload as CodexLifecyclePayload);
+                const startup = matching.findIndex((payload) => payload.data?.phase === "startup");
+                const ready = matching.findIndex(
+                  (payload, index) => index > startup && payload.data?.phase === "thread_ready",
+                );
+                expect(startup).toBeGreaterThanOrEqual(0);
+                expect(ready).toBeGreaterThan(startup);
+                expect(matching[ready]?.data).toMatchObject({
+                  threadId: expect.stringMatching(/\S/),
+                  clientId: expect.stringMatching(/\S/),
+                });
+                return structuredClone([matching[startup], matching[ready]]);
+              },
+              { interval: 25, timeout: REQUEST_TIMEOUT_MS },
+            );
+            console.log(
+              `[qa-codex-native-lifecycle] ${JSON.stringify({
+                runId: setupRunId,
+                sessionKey: targetSessionKey,
+                lifecycle,
+              })}`,
+            );
+          }
+          return setupRunId;
         };
         await runConfiguredTurn("qa-codex-profile-binding-setup");
         expect(
@@ -497,7 +550,11 @@ describe("Codex auth product proof", () => {
         });
         // A metadata patch alone does not prove the selected profile reaches native execution.
         const beforePinnedTurn = appServerLog.read().length;
-        await runConfiguredTurn("qa-codex-profile-binding-pinned");
+        const pinnedRunId = await runConfiguredTurn(
+          "qa-codex-profile-binding-pinned",
+          sessionKey,
+          true,
+        );
         if (configuredProfileId !== MISSING_PROFILE_ID) {
           expect(
             appServerLog
@@ -539,6 +596,8 @@ describe("Codex auth product proof", () => {
         });
         expect(started).toMatchObject({ runId: expect.any(String), status: "started" });
         runId = started.runId ?? "";
+        expect(runId).toMatch(/\S/);
+        expect(runId).not.toBe(pinnedRunId);
         terminal = await client.request(
           "agent.wait",
           { runId: started.runId, timeoutMs: REQUEST_TIMEOUT_MS },
@@ -634,6 +693,8 @@ describe("Codex auth product proof", () => {
           status: "failed",
           lastRunId: runId,
         });
+        const failedRunLifecycle = structuredClone(nativeLifecycleForRun(runId));
+        expect(failedRunLifecycle).toEqual([]);
         const retainedFailureEntries = appServerLog.read();
         const beforeConfiguredControl = retainedFailureEntries.length;
         expect(beforeConfiguredControl, "app-server history reached the tailer cap").toBeLessThan(
@@ -654,12 +715,16 @@ describe("Codex auth product proof", () => {
         failureMethods = failureEntries.flatMap((entry) =>
           typeof entry.method === "string" ? [entry.method] : [],
         );
-        // Freeze the rejected turn's evidence before a new session proves A is still usable.
+        // The shared log includes catalog discovery; retain its methods as diagnostics
+        // before a new session proves A is still usable, without attributing them to B.
         if (configuredProfileId !== MISSING_PROFILE_ID) {
-          await runConfiguredTurn(
+          const configuredRunId = await runConfiguredTurn(
             "qa-codex-configured-account-survives",
             `${sessionKey}-configured`,
+            true,
           );
+          expect(configuredRunId).not.toBe(pinnedRunId);
+          expect(configuredRunId).not.toBe(runId);
           const controlEntries = appServerLog.read();
           expect(controlEntries.length, "app-server history reached the tailer cap").toBeLessThan(
             1024,
@@ -701,11 +766,6 @@ describe("Codex auth product proof", () => {
         expect(JSON.stringify(failedHistory)).not.toContain(MISSING_PROFILE_ID);
         expect(JSON.stringify(failedHistory)).not.toContain("Codex app-server auth profile");
 
-        const operationalMethods = failureMethods.filter(
-          (method) => method !== "initialize" && method !== "initialized",
-        );
-        expect(operationalMethods).toEqual([]);
-
         console.log(
           `[qa-codex-missing-auth-profile] ${JSON.stringify({
             assistantOutput: SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT,
@@ -713,7 +773,8 @@ describe("Codex auth product proof", () => {
               configuredProfileId !== MISSING_PROFILE_ID ? "passed" : "same-account-removed",
             historySessionKey: sessionKey,
             appServerInitialized: failureMethods.includes("initialize"),
-            appServerOperationalRpcCount: operationalMethods.length,
+            failedRunNativeLifecycleCount: failedRunLifecycle.length,
+            observedAppServerMethods: failureMethods,
           })}`,
         );
       } finally {
