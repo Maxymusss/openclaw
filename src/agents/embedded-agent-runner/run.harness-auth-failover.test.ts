@@ -199,7 +199,7 @@ describe("native harness auth failover", () => {
   });
 
   it("dispatches user-pinned token B exactly once while usable token A is ordered first", async () => {
-    const { runEmbeddedAgent, store } = prepareTokenAccountRun(true);
+    const { runEmbeddedAgent } = prepareTokenAccountRun(true);
     await expect(
       runEmbeddedAgent({
         ...createOverflowRunParams(state),
@@ -218,14 +218,23 @@ describe("native harness auth failover", () => {
       modelId: "gpt-5.6-luna",
       authProfileId: tokenProfileB,
       runtimePlan: { observability: { harnessId: "codex" } },
-      authProfileStore: { profiles: { [tokenProfileB]: store.profiles[tokenProfileB] } },
+      authProfileStore: {
+        profiles: {
+          [tokenProfileB]: {
+            type: "token",
+            provider: "openai",
+            token: "test-token-account-b",
+            accountId: "qa-codex-account",
+          },
+        },
+      },
     });
     expect(mockedGetApiKeyForModel).not.toHaveBeenCalled();
     expect(mockedMarkAuthProfileFailure).not.toHaveBeenCalled();
   });
 
   it("dispatches unpinned token A exactly once without retaining the prior B pin", async () => {
-    const { runEmbeddedAgent, store } = prepareTokenAccountRun(true);
+    const { runEmbeddedAgent } = prepareTokenAccountRun(true);
     const params = createOverflowRunParams(state);
     await replaceSessionEntry(
       { agentId: "main", sessionKey: params.sessionKey },
@@ -249,7 +258,16 @@ describe("native harness auth failover", () => {
       modelId: "gpt-5.6-luna",
       authProfileId: tokenProfileA,
       runtimePlan: { observability: { harnessId: "codex" } },
-      authProfileStore: { profiles: { [tokenProfileA]: store.profiles[tokenProfileA] } },
+      authProfileStore: {
+        profiles: {
+          [tokenProfileA]: {
+            type: "token",
+            provider: "openai",
+            token: "test-token-account-a",
+            accountId: "qa-codex-configured-account",
+          },
+        },
+      },
     });
     expect(mockedGetApiKeyForModel).not.toHaveBeenCalled();
     expect(mockedMarkAuthProfileFailure).not.toHaveBeenCalled();
