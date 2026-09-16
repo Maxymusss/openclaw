@@ -12,8 +12,8 @@ import { isPathInside } from "../../infra/path-guards.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { createCommandError } from "../../process/command-error.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
-import { withOpenClawStateLease } from "../../state/openclaw-state-lease.js";
 import { createCrustaceanSlug } from "../session-slug.js";
+import { withWorktreeAllocationLease } from "./allocation.js";
 import { resolveWorktreeBase } from "./base-ref.js";
 import {
   directorySizeBytes,
@@ -22,6 +22,7 @@ import {
   requireWorktreeDiskSpace,
   WORKTREE_SETUP_HEADROOM_BYTES,
 } from "./capacity.js";
+import { resolveWorktreeSourceProfile } from "./checkout-profiles.js";
 import {
   addManagedWorktree,
   collectWorktreeTemplates,
@@ -33,7 +34,12 @@ import {
   resolveEmptyWorktreeSourceRoot,
 } from "./empty-source.js";
 import { WorktreeRepositoryError } from "./errors.js";
-import { lockState, lockWorktreeForProcess, unlockWorktree } from "./git-lock.js";
+import {
+  createWorktreeLockPrefilter,
+  lockState,
+  lockWorktreeForProcess,
+  unlockWorktree,
+} from "./git-lock.js";
 import {
   commandError,
   listGitWorktrees,
@@ -89,9 +95,6 @@ export const SNAPSHOT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000; // Snapshot refs 
 export const WORKTREE_GC_INTERVAL_MS = 60 * 60 * 1000;
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
-const WORKTREE_CREATE_LEASE_SCOPE = "core:managed-worktrees:create";
-const WORKTREE_CREATE_LEASE_MS = 60_000;
-const WORKTREE_CREATE_LEASE_WAIT_MS = 10 * 60_000;
 
 /** Removal aborted because snapshot loss was not permitted. */
 export class WorktreeSnapshotError extends Error {
@@ -429,7 +432,10 @@ export class ManagedWorktreeService {
   }
 
   async createEmpty(
-    params: Omit<CreateManagedWorktreeParams, "repoRoot" | "baseRef" | "checkoutCommit"> & {
+    params: Omit<
+      CreateManagedWorktreeParams,
+      "repoRoot" | "baseRef" | "checkoutCommit" | "profiles"
+    > & {
       ownerKind: "session";
       ownerId: string;
     },
@@ -486,6 +492,9 @@ export class ManagedWorktreeService {
         params.ownerKind ?? "manual",
         params.ownerId,
       );
+      if (existing && params.profiles?.length) {
+        throw new Error("Source profiles require a new worktree; use a new owner and name.");
+      }
       if (existing && (await worktreePathExists(existing.path))) {
         const validated = await this.rebindLiveRepository(existing, params);
         if (validated.repoRoot !== repository.repoRoot) {
@@ -512,28 +521,7 @@ export class ManagedWorktreeService {
     params: WorktreeMutationGuard,
     run: (guard: WorktreeMutationGuard) => Promise<T>,
   ): Promise<T> {
-    // Disk headroom is shared across repositories. Hold one renewable lease
-    // through checkout, setup, snapshots, and publication, including CLI processes.
-    return await withOpenClawStateLease(
-      {
-        scope: WORKTREE_CREATE_LEASE_SCOPE,
-        key: "capacity",
-        database: { scope: "shared", options: { env: this.env } },
-        leaseMs: WORKTREE_CREATE_LEASE_MS,
-        waitMs: WORKTREE_CREATE_LEASE_WAIT_MS,
-        leaseLabel: "managed worktree allocation lease",
-        operationLabel: "agents.worktrees.allocation",
-        signal: params.signal,
-      },
-      async (lease) =>
-        await run({
-          signal: lease.signal,
-          commitGuard: () => {
-            lease.assertOwned();
-            params.commitGuard?.();
-          },
-        }),
-    );
+    return await withWorktreeAllocationLease({ ...params, env: this.env }, run);
   }
 
   private requireAllocationSpace(target: string, repository: ResolvedRepository, bytes = 0) {
@@ -561,6 +549,9 @@ export class ManagedWorktreeService {
     const existing = suppliedName
       ? findWorktreeByName(this.env, repository.fingerprint, suppliedName)
       : undefined;
+    if (existing && params.profiles?.length) {
+      throw new Error("Source profiles require a new worktree; choose an unused --name.");
+    }
     // Name reuse only ever adopts the caller's own record. Without this guard a
     // caller-chosen name could bind a new owner to another session's or a
     // manual checkout and run inside it.
@@ -622,6 +613,7 @@ export class ManagedWorktreeService {
     }
     const base = params.checkoutCommit
       ? {
+          commit: params.checkoutCommit,
           gitOperand: params.checkoutCommit,
           recordRef: params.baseRef ?? params.checkoutCommit,
           remote: false,
@@ -632,7 +624,7 @@ export class ManagedWorktreeService {
           params.signal,
           params.commitGuard,
         );
-    const gitBytes = Math.max(
+    let gitBytes = Math.max(
       await estimateWorktreeGitBytes(repository.repoRoot, base.gitOperand, {
         signal: params.signal,
         assertCurrent: params.commitGuard,
@@ -668,13 +660,32 @@ export class ManagedWorktreeService {
       : 0;
     params.signal?.throwIfAborted();
     params.commitGuard?.();
-    await fs.mkdir(root, { recursive: true });
-    params.signal?.throwIfAborted();
-    params.commitGuard?.();
-    let gitBase = base.gitOperand;
+    let gitBase = params.profiles?.length ? base.commit : base.gitOperand;
     let recordBase = base.recordRef;
-    const addCheckout = () =>
-      addManagedWorktree({
+    const addCheckout = async () => {
+      // Resolve on every attempt, including the remote-base fallback to local HEAD.
+      // Never pair one commit's source selection with another commit's checkout.
+      const sourceProfile = params.profiles?.length
+        ? await resolveWorktreeSourceProfile(repository.repoRoot, gitBase, params.profiles, {
+            signal: params.signal,
+            commitGuard: () => params.commitGuard?.(),
+          })
+        : undefined;
+      if (sourceProfile) {
+        // A fallback HEAD can advance after its first size inventory.
+        // Admission must cover the exact commit selected for this attempt.
+        gitBytes = Math.max(
+          gitBytes,
+          await estimateWorktreeGitBytes(repository.repoRoot, sourceProfile.commit, {
+            signal: params.signal,
+            assertCurrent: params.commitGuard,
+          }),
+        );
+      }
+      params.signal?.throwIfAborted();
+      params.commitGuard?.();
+      await fs.mkdir(root, { recursive: true });
+      return await addManagedWorktree({
         env: this.env,
         now: this.now,
         enabled: this.getConfig?.().worktreeAcceleration !== false,
@@ -682,8 +693,9 @@ export class ManagedWorktreeService {
         commonDir: repository.commonDir,
         worktreeRoot: path.dirname(root),
         destination: worktreePath,
-        branch,
-        base: gitBase,
+        branch: { mode: "create", name: branch },
+        base: sourceProfile?.commit ?? gitBase,
+        sourceProfile,
         requireSpace: (cloneBytes) =>
           this.requireAllocationSpace(
             worktreePath,
@@ -693,6 +705,7 @@ export class ManagedWorktreeService {
         signal: params.signal,
         commitGuard: () => params.commitGuard?.(),
       });
+    };
     let added = await addCheckout();
     if (added.code !== 0 && base.remote) {
       if (!(await canResetFailedWorktreeAdd(repository.repoRoot, worktreePath, branch, added))) {
@@ -1170,7 +1183,7 @@ export class ManagedWorktreeService {
       worktreeRoot: path.dirname(path.dirname(record.path)),
       destination: record.path,
       base: parent,
-      branch: record.branch,
+      branch: record.branch ? { mode: "create", name: record.branch } : undefined,
       deferGitCheckout: true,
       requireSpace: (cloneBytes) =>
         this.requireAllocationSpace(
@@ -1382,6 +1395,7 @@ export class ManagedWorktreeService {
 
   async gc(params: ManagedWorktreeGcParams = {}): Promise<ManagedWorktreeGcResult> {
     const now = this.now();
+    const isLocked = createWorktreeLockPrefilter();
     let removed: string[] = [];
     const records = listRegistryWorktrees(this.env);
     for (const record of records) {
@@ -1400,7 +1414,7 @@ export class ManagedWorktreeService {
           expiresWhenIdle &&
           (retiredOwner || now - record.lastActiveAt > IDLE_GC_MS)
         ) {
-          if (await this.isProtectedFromAutoRemoval(record, params.shouldProtectOwner)) {
+          if (await this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner)) {
             continue;
           }
           await this.remove({
@@ -1428,7 +1442,7 @@ export class ManagedWorktreeService {
     } catch (error) {
       log.warn(`worktree template cleanup deferred: ${String(error)}`);
     }
-    removed = removed.concat(await this.enforceCleanupLimits(params));
+    removed = removed.concat(await this.enforceCleanupLimits(params, isLocked));
     const orphansDeleted = await this.reconcileOrphans(records);
     let snapshotsPruned = 0;
     for (const record of listRegistryWorktrees(this.env)) {
@@ -1490,12 +1504,9 @@ export class ManagedWorktreeService {
     return { removed, orphansDeleted, snapshotsPruned };
   }
 
-  /**
-   * Shared auto-removal guard: owners, leases, nested repositories, and live or
-   * foreign Git locks veto removal; a dead lock is cleared.
-   */
   private async isProtectedFromAutoRemoval(
     record: ManagedWorktreeRecord,
+    isLocked: ReturnType<typeof createWorktreeLockPrefilter>,
     shouldProtectOwner?: (ownerKind: ManagedWorktreeOwnerKind, ownerId: string) => boolean,
   ): Promise<boolean> {
     if (
@@ -1518,12 +1529,8 @@ export class ManagedWorktreeService {
     if (provisioned.retainedReason !== undefined) {
       return true;
     }
-    const state = await lockState(record);
-    if (state.kind === "live" || state.kind === "foreign") {
+    if (await isLocked(record)) {
       return true;
-    }
-    if (state.kind === "dead") {
-      await requireGit(record.repoRoot, ["worktree", "unlock", record.path]);
     }
     const nested = await runGitWorkerOperation({
       type: "worktree.cleanup-inspection",
@@ -1540,7 +1547,10 @@ export class ManagedWorktreeService {
    * Manual worktrees count toward the totals but are never limit-evicted, so a
    * limit can stay exceeded when only protected worktrees remain.
    */
-  private async enforceCleanupLimits(params: ManagedWorktreeGcParams): Promise<string[]> {
+  private async enforceCleanupLimits(
+    params: ManagedWorktreeGcParams,
+    isLocked: ReturnType<typeof createWorktreeLockPrefilter>,
+  ): Promise<string[]> {
     const limits = params.limits ?? resolveWorktreeCleanupLimits();
     if (limits.maxCount === undefined && limits.maxTotalSizeBytes === undefined) {
       return [];
@@ -1606,7 +1616,7 @@ export class ManagedWorktreeService {
         continue;
       }
       try {
-        if (await this.isProtectedFromAutoRemoval(record, params.shouldProtectOwner)) {
+        if (await this.isProtectedFromAutoRemoval(record, isLocked, params.shouldProtectOwner)) {
           continue;
         }
         await this.remove({
