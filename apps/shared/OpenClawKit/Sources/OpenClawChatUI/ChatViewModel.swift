@@ -77,7 +77,12 @@ public final class OpenClawChatViewModel {
         let sessionRoutingContract: String?
     }
 
-    public private(set) var isLoading = false
+    private var isBootstrapOrCompactLoading = false
+    private var sessionResetActivities: [UUID: SessionSnapshot] = [:]
+    public var isLoading: Bool {
+        self.isBootstrapOrCompactLoading || self.sessionResetActivities.values.contains(where: self.isCurrentSession)
+    }
+
     /// Setters are module-internal for the sending extension only.
     public internal(set) var isSending = false
     public internal(set) var isSendingAttachmentDraft = false
@@ -106,6 +111,8 @@ public final class OpenClawChatViewModel {
 
     public private(set) var pendingRunCount: Int = 0
     public internal(set) var questionCards: [OpenClawQuestionCardModel] = []
+    var questionAttentionOwnerID = UUID()
+    public internal(set) var isQuestionAuthorityRetired = false
     var questionRefreshGeneration: UInt64 = 0
     var questionStateRevision: UInt64 = 0
     var questionExpiryTasks: [String: Task<Void, Never>] = [:]
@@ -254,6 +261,10 @@ public final class OpenClawChatViewModel {
     }
 
     var prefersExplicitThinkingLevel: Bool
+    // Ordinary chat follows model lifetime. Native hosts supply a factory that
+    // captures selection authority once per transition; reopening the same target
+    // must not revive a retired operation on a retained model.
+    let captureSessionTransitionAuthority: @MainActor () -> (@MainActor () -> Bool)
     private let onSessionChanged: (@MainActor (String) -> Void)?
     let onThinkingLevelChanged: (@MainActor @Sendable (String) -> Void)?
     let onThinkingPreferenceChanged: (@MainActor @Sendable (String?) -> Void)?
@@ -518,6 +529,7 @@ public final class OpenClawChatViewModel {
         initialThinkingLevel: String? = nil,
         initialVerboseLevel: String? = nil,
         onSessionChanged: (@MainActor (String) -> Void)? = nil,
+        captureSessionTransitionAuthority: @escaping @MainActor () -> (@MainActor () -> Bool) = { { true } },
         onThinkingLevelChanged: (@MainActor @Sendable (String) -> Void)? = nil,
         onToolActivity: OpenClawChatToolActivityHandler? = nil,
         onThinkingPreferenceChanged: (@MainActor @Sendable (String?) -> Void)? = nil,
@@ -559,6 +571,7 @@ public final class OpenClawChatViewModel {
         self.confirmedVerbosePreference = initialVerbosePreference
         self.emittedVerbosePreference = initialVerbosePreference
         self.onSessionChanged = onSessionChanged
+        self.captureSessionTransitionAuthority = captureSessionTransitionAuthority
         self.onThinkingLevelChanged = onThinkingLevelChanged
         self.onToolActivity = onToolActivity
         self.onThinkingPreferenceChanged = onThinkingPreferenceChanged
@@ -597,11 +610,12 @@ public final class OpenClawChatViewModel {
     /// Permanently retires a replaced presentation without aborting its gateway run.
     public func detachTransport(reason: String? = nil) {
         guard !self.isTransportDetached else { return }
+        self.retireQuestionAuthority()
         self.isTransportDetached = true
         if let reason {
             self.healthOK = false
             self.errorText = reason
-            self.isLoading = false
+            self.isBootstrapOrCompactLoading = false
         }
         self.invalidateSourceContext()
         self.endPendingToolActivities()
@@ -616,9 +630,9 @@ public final class OpenClawChatViewModel {
         self.outboxChangesTask?.cancel()
         self.activeSessionRunIndicatorTimeoutTask?.cancel()
         self.subagentActivityCleanupTask?.cancel()
-        self.questionRefreshRetryTask?.cancel()
-        self.questionExpiryTasks.values.forEach { $0.cancel() }
-        self.pendingRunOwnerTasks.values.forEach { $0.cancel() }
+        for (_, task) in self.pendingRunOwnerTasks {
+            task.cancel()
+        }
         for tail in self.settingsPatchTailsByTarget.values {
             tail.routeLeaseTask.cancel()
             tail.task.cancel()
@@ -884,7 +898,7 @@ extension OpenClawChatViewModel {
         self.unreadPatchGuard.activate(key: self.sessionMutationIdentity(for: sessionKey))
         self.bootstrapGeneration &+= 1
         self.bootstrapTask?.cancel()
-        self.isLoading = true
+        self.isBootstrapOrCompactLoading = true
         self.errorText = nil
         self.invalidateSessionMetadataReadiness()
         self.invalidateProgressCardTarget()
@@ -921,7 +935,7 @@ extension OpenClawChatViewModel {
         guard self.isCurrentBootstrap(context) else { return }
         defer {
             if self.isCurrentBootstrap(context) {
-                self.isLoading = false
+                self.isBootstrapOrCompactLoading = false
             }
         }
         do {
@@ -1293,22 +1307,26 @@ extension OpenClawChatViewModel {
         clearPendingRuns(reason: nil)
     }
 
-    func performReset() async {
+    func performReset(presentationIsCurrent: @MainActor () -> Bool) async {
+        guard presentationIsCurrent() else { return }
         let session = self.currentSessionSnapshot()
-        self.isLoading = true
+        // Each reset releases only its own contribution; retirement cannot clear
+        // an overlapping reset or bootstrap, nor strand an otherwise idle model.
+        let activityID = UUID()
+        self.sessionResetActivities[activityID] = session
+        defer { self.sessionResetActivities.removeValue(forKey: activityID) }
         self.errorText = nil
 
         do {
             try await self.transport.resetSession(sessionKey: session.key)
         } catch {
-            guard self.isCurrentSession(session) else { return }
-            self.isLoading = false
+            guard presentationIsCurrent(), self.isCurrentSession(session) else { return }
             self.errorText = error.localizedDescription
             chatUILogger.error("session reset failed \(error.localizedDescription, privacy: .public)")
             return
         }
 
-        guard self.isCurrentSession(session) else { return }
+        guard presentationIsCurrent(), self.isCurrentSession(session) else { return }
         self.replyTarget = nil
         self.runMessageScopesByRunID.removeAll()
         self.provisionalFinalMessagesByID.removeAll()
@@ -1329,7 +1347,7 @@ extension OpenClawChatViewModel {
         }
 
         self.isCompacting = true
-        self.isLoading = true
+        self.isBootstrapOrCompactLoading = true
         self.errorText = nil
         defer {
             self.isCompacting = false
@@ -1338,7 +1356,7 @@ extension OpenClawChatViewModel {
         do {
             try await self.transport.compactSession(sessionKey: self.sessionKey)
         } catch {
-            self.isLoading = false
+            self.isBootstrapOrCompactLoading = false
             self.errorText = "Unable to compact the thread. Please try again."
             let nsError = error as NSError
             chatUILogger.error(

@@ -15,6 +15,7 @@ struct NativeActionRouterTests {
         let gatewayID = "native-target-\(UUID().uuidString)"
         var fixture: NativeGatewayWebSocketFixture?
         var presentationID: UUID?
+        var chatRegistrationID: UUID?
         var binding: IOSNativeActionBinding?
         var receipt: NativeActionRouter.RunPresentation?
         var chat: OpenClawChatViewModel?
@@ -74,7 +75,7 @@ struct NativeActionRouterTests {
                 self.chat = chat
                 self.binding = binding
                 if self.registerPresentedChat {
-                    self.router.registerChat(
+                    self.chatRegistrationID = self.router.registerChat(
                         chat, ownerID: self.model.chatViewModelOwnerID, agentID: request.session.agentID,
                         transport: transport, presentationID: self.presentationID)
                 }
@@ -344,7 +345,7 @@ struct NativeActionRouterTests {
             let original = try #require(host.binding)
             let originalChat = try #require(host.chat)
             if unregister {
-                host.router.unregisterChat(originalChat, presentationID: host.presentationID)
+                host.router.unregisterChat(host.chatRegistrationID)
                 originalChat.detachTransport()
             }
             #expect(await host.router.open(.session(host.session("research"))) == .opened)
@@ -538,12 +539,12 @@ struct NativeActionRouterTests {
     func `presentation retirement clears host state in either view teardown order`(childFirst: Bool) async throws {
         try await self.withHost { host in
             let prepared = try await host.prepare()
-            let chat = try #require(host.chat)
+            let registrationID = try #require(host.chatRegistrationID)
             let binding = try #require(host.binding)
             let presentationID = try #require(host.presentationID)
-            if childFirst { host.router.unregisterChat(chat, presentationID: presentationID) }
+            if childFirst { host.router.unregisterChat(registrationID) }
             host.router.unregisterPresentation(presentationID)
-            if !childFirst { host.router.unregisterChat(chat, presentationID: presentationID) }
+            if !childFirst { host.router.unregisterChat(registrationID) }
             #expect(host.binding == nil)
             #expect(host.receipt == nil)
             #expect(await binding.isCurrent())
@@ -554,6 +555,65 @@ struct NativeActionRouterTests {
                 #expect(error.message == "The action route changed. Select the session again.")
             }
             #expect(host.sent.isEmpty)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `stale visible chat registration cannot retire a successor on the same model`(native: Bool) async throws {
+        try await self.withHost { host in
+            let prepared = try await host.prepare()
+            let chat = try #require(host.chat)
+            let binding = try #require(host.binding)
+            let transport = IOSGatewayChatTransport(
+                gateway: host.model.operatorSession, nativeBinding: native ? binding : nil)
+            let original = try #require(host.router.registerChat(
+                chat, ownerID: host.model.chatViewModelOwnerID, agentID: host.session().agentID,
+                transport: transport, presentationID: host.presentationID))
+            let successor = try #require(host.router.registerChat(
+                chat, ownerID: host.model.chatViewModelOwnerID, agentID: host.session().agentID,
+                transport: transport, presentationID: host.presentationID))
+            #expect(original != successor)
+            let retired = host.retired
+            host.router.unregisterChat(original)
+            #expect(host.retired == retired)
+            #expect(host.binding === binding)
+            if native {
+                #expect(try await prepared.submit().session == host.session())
+                #expect(host.sent.count == 1)
+            }
+            host.router.unregisterChat(successor)
+            #expect(host.retired == retired + 1)
+            #expect(host.binding == nil)
+            host.router.unregisterChat(successor)
+            #expect(host.retired == retired + 1)
+        }
+    }
+
+    @Test func `session transition authority cannot revive when the same retained chat registers again`() async throws {
+        try await self.withHost { host in
+            _ = try await host.prepare()
+            let chat = try #require(host.chat)
+            let binding = try #require(host.binding)
+            let presentationID = try #require(host.presentationID)
+            let transport = IOSGatewayChatTransport(gateway: host.model.operatorSession, nativeBinding: binding)
+            let target = chat.currentSessionTarget
+            let captured = host.router.captureSessionTransitionAuthority(
+                chat, binding: binding, presentationID: presentationID)
+            #expect(captured())
+            host.router.unregisterChat(host.chatRegistrationID)
+            #expect(!captured())
+            host.chatRegistrationID = host.router.registerChat(
+                chat, ownerID: host.model.chatViewModelOwnerID, agentID: host.session().agentID,
+                transport: transport, presentationID: presentationID)
+            #expect(chat.currentSessionTarget == target)
+            #expect(await binding.isCurrent())
+            #expect(!captured())
+            let reopened = host.router.captureSessionTransitionAuthority(
+                chat, binding: binding, presentationID: presentationID)
+            #expect(reopened())
+            host.router.unregisterPresentation(presentationID)
+            #expect(!reopened())
+            #expect(await binding.isCurrent())
         }
     }
 

@@ -84,6 +84,7 @@ struct NativeActionGatewayWireTests {
         let scopes: [String]
         let pairAction: String
         var presentationID: UUID?
+        var chatRegistrationID: UUID?
         var binding: IOSNativeActionBinding?
         var chat: OpenClawChatViewModel?
         var transport: IOSGatewayChatTransport?
@@ -121,7 +122,7 @@ struct NativeActionGatewayWireTests {
                 self.binding = binding
                 self.chat = chat
                 self.transport = transport
-                self.router.registerChat(
+                self.chatRegistrationID = self.router.registerChat(
                     chat,
                     ownerID: self.model.chatViewModelOwnerID,
                     agentID: request.session.agentID,
@@ -589,7 +590,7 @@ struct NativeActionGatewayWireTests {
         let fixture = presentation.fixture
         if second == "profile" {
             presentation.chat?.detachTransport()
-            presentation.router.unregisterChat(presentation.chat, presentationID: presentation.presentationID)
+            presentation.router.unregisterChat(presentation.chatRegistrationID)
         }
         let suspended = try await presentation.prepare(first)
         let firstBinding = try #require(presentation.binding)
@@ -606,7 +607,7 @@ struct NativeActionGatewayWireTests {
             // Close the real presentation subscribers. A later account broadcast
             // must not stand in for propagation of the retained confirmation's refusal.
             presentation.chat?.detachTransport()
-            presentation.router.unregisterChat(presentation.chat, presentationID: presentation.presentationID)
+            presentation.router.unregisterChat(presentation.chatRegistrationID)
             try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
                 while await secondBinding.gateway._test_serverEventSubscriberCount() != 0 {
                     try await Task.sleep(for: .milliseconds(1))

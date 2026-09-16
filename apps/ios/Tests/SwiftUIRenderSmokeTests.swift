@@ -14,6 +14,8 @@ struct SwiftUIRenderSmokeTests {
     }
 
     private struct NativeChatHost: View {
+        @Environment(NodeAppModel.self) private var appModel
+        @Environment(NativeActionRouter.self) private var nativeActions: NativeActionRouter?
         let presentation: NativeChatPresentation
         let presentationID: UUID?
 
@@ -21,6 +23,14 @@ struct SwiftUIRenderSmokeTests {
             ChatProTab(
                 nativeBinding: self.presentation.binding,
                 nativePresentationID: self.presentationID)
+                .task(id: self.appModel.chatPresentation.taskIdentity(
+                    appModel: self.appModel, nativeBinding: self.presentation.binding,
+                    presentationID: self.presentationID))
+                {
+                    await self.appModel.chatPresentation.synchronizePresentation(
+                        appModel: self.appModel, nativeBinding: self.presentation.binding,
+                        nativeActions: self.nativeActions, presentationID: self.presentationID)
+                }
         }
     }
 
@@ -329,7 +339,7 @@ struct SwiftUIRenderSmokeTests {
                 callbackViolationCount += 1
                 guard callbackViolations.count < 16 else { return }
                 let profileClass = profile == nil ? "nil" : (profile == expectedProfile ? "expected" : "other")
-                let published = diagnosticAppModel?.presentedChatViewModel
+                let published = diagnosticAppModel?.chatPresentation.viewModel
                 let same = diagnosticCreatingModel != nil && diagnosticCreatingModel === published
                 let commandsShape = Set(params.keys) == ["scope", "includeArgs", "agentId"]
                 let subscribeShape = Set(params.keys).isSubset(of: ["key", "agentId"]) && params["key"] is String
@@ -370,7 +380,7 @@ struct SwiftUIRenderSmokeTests {
                     if retiresDuringCreate, frame["expectedProfileId"] == nil,
                        let appModel = diagnosticAppModel,
                        let creating = diagnosticCreatingModel,
-                       let published = appModel.presentedChatViewModel,
+                       let published = appModel.chatPresentation.viewModel,
                        !hasObservedOrdinaryReplacement || ordinaryReplacementModel === published,
                        creating !== published, creating.isTransportDetached, !published.isTransportDetached,
                        let creatingTransport = creating.transport as? IOSGatewayChatTransport,
@@ -649,8 +659,10 @@ struct SwiftUIRenderSmokeTests {
                     } else {
                         nil
                     }
-                    let creatingModel = try #require(appModel.presentedChatViewModel)
+                    let creatingModel = try #require(appModel.chatPresentation.viewModel)
                     diagnosticCreatingModel = creatingModel
+                    let creatingTarget = creatingModel.currentSessionTarget
+                    let creatingHistoryRequestID = creatingModel.lastIssuedHistoryRequestID
                     if retiresDuringCreate {
                         beforeCreateResponse = {
                             creatingAtResponse = creatingModel.isCreatingSession
@@ -679,6 +691,8 @@ struct SwiftUIRenderSmokeTests {
                         // The original owner's defer settles even when retirement suppresses
                         // bootstrap. A history request does not define create completion.
                         try #require(!creatingModel.isCreatingSession)
+                        #expect(creatingModel.currentSessionTarget == creatingTarget)
+                        #expect(creatingModel.lastIssuedHistoryRequestID == creatingHistoryRequestID)
                         #expect(appModel.chatSessionKey == session.sessionKey)
                         await #expect(throws: Error.self) { try await prepared.submit() }
                         #expect(sentParams.isEmpty)

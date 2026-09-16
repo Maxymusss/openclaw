@@ -30,6 +30,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     // Presentation departure retires selection, not this captured account lifetime.
     @ObservationIgnored private var accountBinding: IOSNativeActionBinding?
     @ObservationIgnored private var chatPresentationID: UUID?
+    @ObservationIgnored private var chatRegistrationID: UUID?
     @ObservationIgnored private var preparing = false
 
     init(appModel: NodeAppModel, gatewayController: GatewayConnectionController) {
@@ -51,7 +52,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     func unregisterPresentation(_ id: UUID) {
         guard self.presentation?.id == id else { return }
         // Retire even before a chat registers, while its host cleanup is reachable.
-        self.unregisterChat(self.chat, presentationID: self.chatPresentationID)
+        self.clearRegisteredChat()
         self.presentation = nil
     }
 
@@ -60,24 +61,48 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         ownerID: String,
         agentID: String,
         transport: IOSGatewayChatTransport?,
-        presentationID: UUID?)
+        presentationID: UUID?) -> UUID?
     {
-        guard let presentationID, self.presentation?.id == presentationID else { return }
+        guard let presentationID, self.presentation?.id == presentationID else { return nil }
+        let registrationID = UUID()
+        self.chatRegistrationID = registrationID
         self.chat = chat
         self.chatOwnerID = ownerID
         self.chatAgentID = agentID
         self.chatTransport = transport
         self.chatPresentationID = presentationID
+        return registrationID
     }
 
-    func unregisterChat(_ chat: OpenClawChatViewModel?, presentationID: UUID?) {
-        guard self.chat === chat, self.chatPresentationID == presentationID else { return }
+    func unregisterChat(_ registrationID: UUID?) {
+        // Successive visible views may share the root-owned model and presentation.
+        // A disappearing view can retire only the registration it acquired.
+        guard let registrationID, self.chatRegistrationID == registrationID else { return }
+        self.clearRegisteredChat()
+    }
+
+    private func clearRegisteredChat() {
+        self.chatRegistrationID = nil
         self.chat = nil
         self.chatOwnerID = nil
         self.chatAgentID = nil
         self.chatTransport = nil
         self.chatPresentationID = nil
         self.retireChatSelection()
+    }
+
+    func captureSessionTransitionAuthority(
+        _ chat: OpenClawChatViewModel,
+        binding: IOSNativeActionBinding,
+        presentationID: UUID?) -> @MainActor () -> Bool
+    {
+        let selectionID = self.selectionID
+        return { [weak self, weak chat] in
+            guard let self, let chat, let presentationID else { return false }
+            return self.presentation?.id == presentationID && self.selectionID == selectionID &&
+                self.chatPresentationID == presentationID && self.matches(chat, session: binding.session) &&
+                self.chatTransport?.nativeBinding?.canReuse(binding) == true
+        }
     }
 
     func chatSessionChanged(

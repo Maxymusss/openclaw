@@ -190,27 +190,6 @@ suite.define(() => {
           url.pathname = `/${route}`;
           await page.goto(url.href);
           await waitForControlUiGatewayReady(page);
-          if (route === "new") {
-            await page.waitForFunction(async () => {
-              const app = document.querySelector<
-                HTMLElement & { runtime?: { context: ApplicationContext } }
-              >("openclaw-app");
-              const context = app?.runtime?.context;
-              const agents = context?.agents.state;
-              if (
-                !agents?.connected ||
-                agents.client !== context?.gateway.snapshot.client ||
-                !agents.agentsList?.agents.some((agent) => agent.id === "main")
-              ) {
-                return false;
-              }
-              // Discovery starts in updated(), after the current roster arrives.
-              const view = document.querySelector<
-                HTMLElement & { updateComplete: Promise<boolean> }
-              >("openclaw-new-session-page");
-              return (await view?.updateComplete) === true;
-            });
-          }
           const composer = page.locator(".agent-chat__input").first();
           const model = composer.locator("[data-chat-model-select]");
           // Summary elements do not participate in Playwright's disabled actionability check.
@@ -218,12 +197,39 @@ suite.define(() => {
           await model.click();
           // A failed background refresh must not add chrome above a usable list.
           await composer.locator('[data-chat-model-option="openai/gpt-5.4"]').waitFor();
-          // An absent loading row can also mean discovery has not started yet.
-          // Only the latest matching read on this Gateway connection can settle it.
           if (route === "new") {
-            await expect.poll(() => latestCatalogRead?.succeeded === true).toBe(true);
+            // An absent CLI group can mean discovery has not started, or a completed empty result.
+            await expect
+              .poll(async () => {
+                const discovery = latestCatalogRead;
+                const socket = gatewaySocket;
+                if (!discovery?.succeeded || !socket) {
+                  return false;
+                }
+                const settled = await page.evaluate(async () => {
+                  const app = document.querySelector<
+                    HTMLElement & { runtime?: { context: ApplicationContext } }
+                  >("openclaw-app");
+                  const context = app?.runtime?.context;
+                  const agents = context?.agents.state;
+                  if (
+                    context?.config.current.cliAgentsEnabled !== true ||
+                    !agents?.connected ||
+                    agents.client !== context.gateway.snapshot.client ||
+                    !agents.agentsList?.agents.some((agent) => agent.id === "main")
+                  ) {
+                    return false;
+                  }
+                  const view = document.querySelector<
+                    HTMLElement & { updateComplete: Promise<boolean> }
+                  >("openclaw-new-session-page");
+                  return (await view?.updateComplete) === true;
+                });
+                // updated() can reset discovery; require the same completed request after rendering.
+                return settled && latestCatalogRead === discovery && gatewaySocket === socket;
+              })
+              .toBe(true);
           }
-          // CLI discovery starts with agent hydration and can outlive model loading.
           await composer
             .locator(
               '[data-chat-model-target-group="cliAgents"] [data-chat-model-catalog-state="loading"]',

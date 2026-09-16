@@ -77,12 +77,14 @@ type ManagedCommandOptions = {
 type RunManagedCommandOptions = ManagedCommandOptions & {
   timeoutMs?: number;
   timeoutKillGraceMs?: number;
+  signalKillGraceMs?: number;
   timeoutForceKillOnLeaderExit?: boolean;
   requireProcessTreeExit?: boolean;
   runTaskkill?: TaskkillRunner;
   onReady?: (child: ChildProcess) => void;
   signal?: AbortSignal;
   abortKillGraceMs?: number;
+  cleanupDrainTimeoutMs?: number;
   onSignal?: (signal: NodeJS.Signals) => void;
 };
 
@@ -410,12 +412,14 @@ export async function runManagedCommand({
   platform = process.platform,
   timeoutMs,
   timeoutKillGraceMs,
+  signalKillGraceMs,
   timeoutForceKillOnLeaderExit = false,
   requireProcessTreeExit = false,
   runTaskkill = spawnSync,
   onReady,
   signal,
   abortKillGraceMs,
+  cleanupDrainTimeoutMs,
   onSignal,
   ...commandOptions
 }: RunManagedCommandOptions) {
@@ -488,6 +492,7 @@ export async function runManagedCommand({
       runTaskkill,
       forceKillDelayMs,
       forceKillOnLeaderExit,
+      drainTimeoutMs: cleanupDrainTimeoutMs,
       onTerminated: releaseOwnership,
     }).then(
       () => undefined,
@@ -503,7 +508,7 @@ export async function runManagedCommand({
   };
   const forwardSignal = (received: NodeJS.Signals) => {
     onSignal?.(received);
-    void stop({ type: "signal", signal: received }, received);
+    void stop({ type: "signal", signal: received }, received, signalKillGraceMs);
   };
   const abort = () => {
     void stop({ type: "aborted" }, "SIGTERM", abortKillGraceMs);
@@ -604,12 +609,14 @@ async function finalizeManagedChild(
     runTaskkill,
     forceKillDelayMs = FORCE_KILL_DELAY_MS,
     forceKillOnLeaderExit = false,
+    drainTimeoutMs = PROCESS_GROUP_DRAIN_TIMEOUT_MS,
     onTerminated,
   }: {
     platform: NodeJS.Platform;
     runTaskkill: TaskkillRunner;
     forceKillDelayMs?: number;
     forceKillOnLeaderExit?: boolean;
+    drainTimeoutMs?: number;
     onTerminated: () => void;
   },
 ) {
@@ -624,7 +631,7 @@ async function finalizeManagedChild(
     ? undefined
     : {
         initialState: inspectManagedProcessGroup(child, {
-          deadlineAt: startedAt + forceDelay + PROCESS_GROUP_DRAIN_TIMEOUT_MS,
+          deadlineAt: startedAt + forceDelay + drainTimeoutMs,
           errorPolicy: "indeterminate",
           inspection,
           platform,
@@ -647,7 +654,7 @@ async function finalizeManagedChild(
   // POSIX probes share the original budget; Windows retains its existing
   // post-taskkill drainage allowance.
   const forceAt = (platform === "win32" ? Date.now() : startedAt) + forceDelay;
-  const deadline = forceAt + PROCESS_GROUP_DRAIN_TIMEOUT_MS;
+  const deadline = forceAt + drainTimeoutMs;
   let forced = !signal || platform === "win32";
   let groupState: "dead" | "indeterminate" | "live" = "indeterminate";
   while (true) {

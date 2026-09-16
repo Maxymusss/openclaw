@@ -138,6 +138,14 @@ struct RootTabs: View {
             .overlay(alignment: .topLeading) {
                 self.uiTestReadinessMarker
             }
+            .task(id: self.appModel.chatPresentation.taskIdentity(
+                appModel: self.appModel, nativeBinding: self.nativeChatBinding,
+                presentationID: self.nativePresentationID))
+            {
+                await self.appModel.chatPresentation.synchronizePresentation(
+                    appModel: self.appModel, nativeBinding: self.nativeChatBinding,
+                    nativeActions: self.nativeActions, presentationID: self.nativePresentationID)
+            }
     }
 
     @ViewBuilder
@@ -190,10 +198,12 @@ struct RootTabs: View {
             .task(id: self.sidebarRefreshID) {
                 guard self.scenePhase == .active else { return }
                 await self.sidebarModel.refresh(appModel: self.appModel)
+                await self.appModel.refreshPendingApprovalInbox()
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(600))
                     guard !Task.isCancelled else { return }
                     await self.sidebarModel.refresh(appModel: self.appModel)
+                    await self.appModel.refreshPendingApprovalInbox()
                 }
             }
             .task(id: "\(self.sidebarRefreshID):events") {
@@ -219,6 +229,7 @@ struct RootTabs: View {
         [
             self.appModel.chatViewModelIdentityID,
             self.appModel.chatSessionKey,
+            String(self.appModel.operatorAuthorityGeneration),
             self.scenePhase == .active ? "active" : "inactive",
         ].joined(separator: ":")
     }

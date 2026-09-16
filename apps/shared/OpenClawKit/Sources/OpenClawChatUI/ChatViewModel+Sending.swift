@@ -446,19 +446,23 @@ extension OpenClawChatViewModel {
         return nil
     }
 
-    private func handleLocalSlashCommandIfNeeded(_ command: String, draftInput: String) async -> Bool {
+    private func handleLocalSlashCommandIfNeeded(
+        _ command: String,
+        draftInput: String,
+        presentationIsCurrent: @escaping @MainActor () -> Bool) async -> Bool
+    {
         if command == "/new" {
             if input == draftInput {
                 input = ""
             }
-            await performStartNewSession(worktree: false)
+            await performStartNewSession(worktree: false, presentationIsCurrent: presentationIsCurrent)
             return true
         }
         if Self.resetTriggers.contains(command) {
             if input == draftInput {
                 input = ""
             }
-            await performReset()
+            await performReset(presentationIsCurrent: presentationIsCurrent)
             return true
         }
         if Self.compactTriggers.contains(command) {
@@ -475,12 +479,15 @@ extension OpenClawChatViewModel {
         command == "/new" || self.resetTriggers.contains(command) || self.compactTriggers.contains(command)
     }
 
-    private func prepareLiveOnlyLocalSlashCommand(session: SessionSnapshot) async -> Bool {
+    private func prepareLiveOnlyLocalSlashCommand(
+        session: SessionSnapshot,
+        presentationIsCurrent: @MainActor () -> Bool) async -> Bool
+    {
         // Always probe: a preserved view model can retain stale healthy state
         // after its transport disconnects without a health event. performSend
         // owns the send gate across this await.
         await pollHealthIfNeeded(force: true, sessionSnapshot: session)
-        guard isCurrentSession(session) else { return false }
+        guard presentationIsCurrent(), isCurrentSession(session) else { return false }
         guard healthOK else {
             errorText = "Connect to the gateway to run this command."
             return false
@@ -645,16 +652,19 @@ extension OpenClawChatViewModel {
 
     private func validateSendDraft(_ draft: SendDraft) async -> Bool {
         let command = draft.trimmed.lowercased()
+        let presentationIsCurrent = self.captureSessionTransitionAuthority()
         if Self.isLiveOnlyLocalSlashCommand(command) {
             guard draft.isComposer else {
                 errorText = "Open the session to run this command."
                 return false
             }
-            let canRunCommand = await prepareLiveOnlyLocalSlashCommand(session: draft.session)
+            let canRunCommand = await prepareLiveOnlyLocalSlashCommand(
+                session: draft.session, presentationIsCurrent: presentationIsCurrent)
             guard canRunCommand else { return false }
         }
         if case let .composer(_, composerSessionKey, revision) = draft.source,
-           await self.handleLocalSlashCommandIfNeeded(command, draftInput: draft.input)
+           await self.handleLocalSlashCommandIfNeeded(
+               command, draftInput: draft.input, presentationIsCurrent: presentationIsCurrent)
         {
             self.recordSuccessfulInput(
                 draft.trimmed,

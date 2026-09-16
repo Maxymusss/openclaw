@@ -57,6 +57,7 @@ export async function startSkillLibraryNodeProcess(
     },
   });
   const abort = new AbortController();
+  const logFile = path.join(node.stateDir, "node.log");
   let failure: Error | undefined;
   let logs = "";
   let completion: Promise<void> | undefined;
@@ -75,7 +76,7 @@ export async function startSkillLibraryNodeProcess(
     await fs.mkdir(workerTmpDir, { recursive: true, mode: 0o700 });
     await node.state.writeConfig({
       nodeHost: { workerRuns: { enabled: true } },
-      ...(diagnostics.logging ? { logging: diagnostics.logging } : {}),
+      logging: { file: logFile, ...diagnostics.logging },
     });
     const entrypoint = await node.entrypoint();
     completion = runManagedCommand({
@@ -166,6 +167,7 @@ export async function startSkillLibraryNodeProcess(
     return {
       nodeId: admission.nodeId,
       stateDir: node.stateDir,
+      logFile,
       stop,
       diagnosticOutput: () => output?.snapshot(),
     };
