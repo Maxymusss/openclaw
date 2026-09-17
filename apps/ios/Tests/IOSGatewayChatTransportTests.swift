@@ -158,6 +158,7 @@ struct IOSGatewayChatTransportTests {
     private func withSessionTransport(
         unreadAckAdvertisement: Bool? = true,
         nativeSocket: Bool = false,
+        upgradeRedirect: NativeGatewayWebSocketFixture.UpgradeRedirect? = nil,
         gatewayID: String? = nil,
         capabilities: [String] = [],
         nativeProfileID: String? = nil,
@@ -262,6 +263,7 @@ struct IOSGatewayChatTransportTests {
                     role: "operator",
                     scopes: ["operator.read", "operator.write"],
                     capabilities: capabilities),
+                upgradeRedirect: upgradeRedirect,
                 rpcHandler: { request in
                     .deferred {
                         let data = try JSONSerialization.data(withJSONObject: request)
@@ -274,7 +276,9 @@ struct IOSGatewayChatTransportTests {
         }
         do {
             try await gateway.connect(
-                url: nativeFixture?.url() ?? #require(URL(string: "ws://session-transport-test.invalid")),
+                url: nativeFixture.map {
+                    URL(string: $0.url().absoluteString + (upgradeRedirect?.fromPath ?? ""))!
+                } ?? #require(URL(string: "ws://session-transport-test.invalid")),
                 credentials: .init(),
                 connectOptions: options,
                 sessionBox: nativeFixture == nil ? WebSocketSessionBox(session: session) : nil,
@@ -471,6 +475,30 @@ struct IOSGatewayChatTransportTests {
                     attachments: [])
             }
             #expect(await recorder.all().map(\.method) == ["agents.list"])
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func `fork uses the captured route and explicit row agent`(retireBeforeDispatch: Bool) async throws {
+        try await self.withSessionTransport(nativeSocket: true, gatewayID: "fork-route") { transport, recorder in
+            let route = try #require(await transport.gateway.currentRoute(ifGatewayID: "fork-route"))
+            if retireBeforeDispatch { await transport.gateway.disconnect() }
+            do {
+                let key = try await transport.forkSession(
+                    parentKey: "global", fromLastCompleted: true, agentID: "research", ifCurrentRoute: route)
+                #expect(!retireBeforeDispatch)
+                #expect(key == "forked")
+            } catch {
+                #expect(retireBeforeDispatch)
+            }
+            let requests = await recorder.all()
+            #expect(requests.count == (retireBeforeDispatch ? 0 : 1))
+            if let request = requests.first {
+                #expect(request.method == "sessions.create")
+                #expect(request.params["parentSessionKey"]?.value as? String == "global")
+                #expect(request.params["agentId"]?.value as? String == "research")
+                #expect(request.params["forkFrom"]?.value as? String == "last-completed")
+            }
         }
     }
 
@@ -1976,6 +2004,54 @@ extension IOSGatewayChatTransportTests {
             }
             #expect(await recorder.all().map(\.method) == (send
                     ? ["health", "agents.list", "chat.send"] : ["health", "health"]))
+        }
+    }
+
+    @Test
+    func `native media uses the mount admitted by a redirected WebSocket`() async throws {
+        let bytes = Data([1, 2, 3])
+        let artifactID = "artifact_redirected_mount"
+        let ticket = "/api/chat/media/outgoing/main/fixture/full?mediaTicket=fixture"
+        let result = ArtifactsDownloadResult(
+            artifact: .init(id: artifactID, type: "image", title: "Fixture", mimetype: "image/png", download: [:]),
+            url: ticket)
+        let payload = try String(decoding: JSONEncoder().encode(result), as: UTF8.self)
+        try await self.withSessionTransport(
+            nativeSocket: true,
+            upgradeRedirect: .init(fromPath: "/old", toPath: "/new%2Fmount//path"),
+            gatewayID: "gateway-a", capabilities: ["profile-binding-v1"], nativeProfileID: "alice",
+            responsePayloads: ["artifacts.download": payload])
+        { transport, recorder in
+            let original = try #require(transport.nativeBinding)
+            let binding = try await IOSNativeActionBinding.capture(
+                session: original.session, gateway: original.gateway, route: original.route,
+                reservation: original.reserveRetirement())
+            let connection = try #require(binding.mediaConnection)
+            #expect(URLComponents(url: connection.gatewayURL, resolvingAgainstBaseURL: false)?
+                .percentEncodedPath == "/new%2Fmount//path")
+            let loader = IOSMediaArtifactLoader(connectionProvider: { connection }, requestFactory: { captured, _ in
+                #expect(captured.nativeBinding === binding)
+                return { request in
+                    let url = try #require(request.url)
+                    #expect(URLComponents(url: url, resolvingAgainstBaseURL: false)?.percentEncodedPath ==
+                        "/new%2Fmount//path/api/chat/media/outgoing/main/fixture/full")
+                    #expect(url.query == "mediaTicket=fixture")
+                    return try (bytes, #require(HTTPURLResponse(
+                        url: url, statusCode: 200, httpVersion: nil, headerFields: ["Content-Type": "image/png"])))
+                }
+            })
+            let media = IOSGatewayChatTransport(
+                gateway: transport.gateway,
+                mediaArtifactLoader: loader,
+                nativeBinding: binding)
+            guard case let .data(loaded) = try await media.loadMediaArtifact(
+                sessionKey: binding.session.sessionKey, artifactId: artifactID, kind: .image, playback: nil)
+            else { Issue.record("Redirected native media must load its bytes")
+                return
+            }
+            #expect(loaded.data == bytes)
+            #expect(await binding.isCurrent())
+            #expect(await recorder.all().map(\.method) == ["agents.list", "artifacts.download"])
         }
     }
 

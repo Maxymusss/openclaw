@@ -31,6 +31,11 @@ final class NativeGatewayWebSocketFixture {
         var capabilities: [String] = []
     }
 
+    struct UpgradeRedirect: Sendable {
+        let fromPath: String
+        let toPath: String
+    }
+
     enum RPCResponse {
         case success([String: Any])
         case failure(code: String, message: String, details: [String: Any]? = nil)
@@ -57,6 +62,7 @@ final class NativeGatewayWebSocketFixture {
     private let connectFailures: [Int: ConnectFailure]
     private let hello: HelloMetadata
     private let rpcHandler: RPCHandler?
+    private let upgradeRedirect: UpgradeRedirect?
     private var clients: [Int: Client] = [:]
     private var connectAuth: [ConnectAuth] = []
     private var upgradeHeaders: [Int: String] = [:]
@@ -73,7 +79,8 @@ final class NativeGatewayWebSocketFixture {
         connectFailures: [Int: ConnectFailure],
         usesTLS: Bool,
         hello: HelloMetadata,
-        rpcHandler: RPCHandler?)
+        rpcHandler: RPCHandler?,
+        upgradeRedirect: UpgradeRedirect?)
     {
         self.listener = listener
         self.port = port
@@ -82,6 +89,7 @@ final class NativeGatewayWebSocketFixture {
         self.usesTLS = usesTLS
         self.hello = hello
         self.rpcHandler = rpcHandler
+        self.upgradeRedirect = upgradeRedirect
         self.listener.newConnectionHandler = { [weak self] connection in
             Task { @MainActor [weak self] in
                 guard let self else {
@@ -100,6 +108,7 @@ final class NativeGatewayWebSocketFixture {
         connectFailures: [Int: ConnectFailure] = [:],
         tlsIdentity: sec_identity_t? = nil,
         hello: HelloMetadata = .init(),
+        upgradeRedirect: UpgradeRedirect? = nil,
         rpcHandler: RPCHandler? = nil) async throws -> NativeGatewayWebSocketFixture
     {
         let parameters: NWParameters
@@ -130,7 +139,8 @@ final class NativeGatewayWebSocketFixture {
                         connectFailures: connectFailures,
                         usesTLS: tlsIdentity != nil,
                         hello: hello,
-                        rpcHandler: rpcHandler)
+                        rpcHandler: rpcHandler,
+                        upgradeRedirect: upgradeRedirect)
                     try Task.checkCancellation()
                     return fixture
                 case let .failed(error):
@@ -175,6 +185,11 @@ final class NativeGatewayWebSocketFixture {
             .first(where: { $0.lowercased().hasPrefix("\(name.lowercased()):") })?
             .split(separator: ":", maxSplits: 1).last?
             .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    func capturedUpgradeTarget(at index: Int) -> String? {
+        self.upgradeHeaders[index]?.components(separatedBy: "\r\n").first?
+            .split(separator: " ").dropFirst().first.map(String.init)
     }
 
     func closeConnection(at index: Int) {
@@ -281,6 +296,18 @@ final class NativeGatewayWebSocketFixture {
             return
         }
         self.upgradeHeaders[index] = headers
+
+        if let redirect = self.upgradeRedirect,
+           self.capturedUpgradeTarget(at: index) == redirect.fromPath
+        {
+            let location = "\(self.usesTLS ? "https" : "http")://127.0.0.1:\(self.port)\(redirect.toPath)"
+            let response = "HTTP/1.1 302 Found\r\nLocation: \(location)\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            // The redirect response must leave the socket before closing it.
+            client.connection.send(content: Data(response.utf8), completion: .contentProcessed { [weak self] _ in
+                MainActor.assumeIsolated { self?.close(index) }
+            })
+            return
+        }
 
         let digest = Insecure.SHA1.hash(data: Data((key + Self.websocketGUID).utf8))
         let accept = Data(digest).base64EncodedString()

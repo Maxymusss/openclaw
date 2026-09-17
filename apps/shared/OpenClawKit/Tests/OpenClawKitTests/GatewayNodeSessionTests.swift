@@ -2399,18 +2399,22 @@ struct GatewayNodeSessionTests {
     }
 
     #if os(macOS)
-    @Test
+    @Test(arguments: [false, true])
     @MainActor
-    func `admitted HTTP context retains upgrade headers and retires with the physical socket`() async throws {
+    func `admitted HTTP context retains upgrade headers and retires with the physical socket`(
+        redirected: Bool) async throws
+    {
         let identity = try NativeGatewayTLSIdentity()
+        let admittedPath = redirected ? "/gateway/new%2Fmount//path" : "/gateway/mount"
         let fixture = try await NativeGatewayWebSocketFixture.start(
             issuedDeviceTokens: [nil, nil],
-            tlsIdentity: identity.identity)
+            tlsIdentity: identity.identity,
+            upgradeRedirect: redirected ? .init(fromPath: "/gateway/mount", toPath: admittedPath) : nil)
         defer { fixture.stop() }
         let session = GatewayTLSPinningSession(
             params: .init(
                 required: true, expectedFingerprint: identity.fingerprint, allowTOFU: false, storeKey: nil),
-            allowsRedirects: false,
+            allowsRedirects: redirected,
             allowsStoredCredentials: false)
         defer { session.finishTasksAndInvalidate() }
         let secret = MutableHeaderValue(value: "first-secret")
@@ -2432,10 +2436,20 @@ struct GatewayNodeSessionTests {
             try await connect()
             let firstRoute = try #require(await gateway.currentRoute())
             let first = try #require(await gateway.admittedHTTPContext(ifCurrentRoute: firstRoute))
-            #expect(first.gatewayURL == url)
+            #expect(URLComponents(url: first.gatewayURL, resolvingAgainstBaseURL: false)?
+                .percentEncodedPath == admittedPath)
+            #expect(first.gatewayURL.host == url.host && first.gatewayURL.port == url.port)
+            #expect(["wss", "https"].contains(first.gatewayURL.scheme ?? ""))
             #expect(first.tlsFingerprintSHA256 == identity.fingerprint)
             #expect(first.customHeaders == ["CF-Access-Client-Secret": "first-secret"])
-            #expect(fixture.capturedUpgradeHeader("CF-Access-Client-Secret", at: 0) == "first-secret")
+            let firstSocket = redirected ? 1 : 0
+            #expect(fixture.capturedUpgradeTarget(at: firstSocket) == admittedPath)
+            #expect(fixture.capturedUpgradeHeader("CF-Access-Client-Secret", at: firstSocket) == "first-secret")
+            #expect(OpenClawChatMediaURL.resolve(
+                gatewayURL: first.gatewayURL,
+                ticketedPath: "/api/chat/media/outgoing/main/image/full?mediaTicket=fixture", playback: nil)?
+                .absoluteString ==
+                "https://127.0.0.1:\(fixture.port)\(admittedPath)/api/chat/media/outgoing/main/image/full?mediaTicket=fixture")
             #expect(secret.readCount() == 1)
 
             secret.set("second-secret")
@@ -2444,7 +2458,7 @@ struct GatewayNodeSessionTests {
             #expect(unchanged.customHeaders == first.customHeaders)
             #expect(secret.readCount() == 1)
 
-            fixture.closeConnection(at: 0)
+            fixture.closeConnection(at: firstSocket)
             try await waitUntil("replacement socket admitted") {
                 guard let route = await gateway.currentRoute(), route != firstRoute else { return false }
                 return await gateway.admittedHTTPContext(ifCurrentRoute: route) != nil
@@ -2452,10 +2466,11 @@ struct GatewayNodeSessionTests {
             let nextRoute = try #require(await gateway.currentRoute())
             let next = try #require(await gateway.admittedHTTPContext(ifCurrentRoute: nextRoute))
             #expect(await gateway.admittedHTTPContext(ifCurrentRoute: firstRoute) == nil)
-            #expect(next.gatewayURL == url)
+            #expect(next.gatewayURL == first.gatewayURL)
             #expect(next.tlsFingerprintSHA256 == identity.fingerprint)
             #expect(next.customHeaders == ["CF-Access-Client-Secret": "second-secret"])
-            #expect(fixture.capturedUpgradeHeader("CF-Access-Client-Secret", at: 1) == "second-secret")
+            #expect(fixture.capturedUpgradeTarget(at: redirected ? 3 : 1) == admittedPath)
+            #expect(fixture.capturedUpgradeHeader("CF-Access-Client-Secret", at: redirected ? 3 : 1) == "second-secret")
             #expect(first.customHeaders == ["CF-Access-Client-Secret": "first-secret"])
             #expect(secret.readCount() == 2)
             await gateway.disconnect()
@@ -2773,7 +2788,7 @@ struct GatewayNodeSessionTests {
             request.cancel()
             await resumed.release()
             if ["receipt", "unbound-receipt", "ack-first-disconnect"].contains(scenario) {
-                let payload = try JSONDecoder().decode([String: String].self, from: await request.value)
+                let payload = try await JSONDecoder().decode([String: String].self, from: request.value)
                 #expect(payload == ["runId": "original-run", "status": "started"])
             } else {
                 await #expect(throws: CancellationError.self) { try await request.value }

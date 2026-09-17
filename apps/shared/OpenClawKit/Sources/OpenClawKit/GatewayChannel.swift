@@ -278,13 +278,14 @@ public actor GatewayChannelActor {
         request: URLRequest,
         task: WebSocketTaskBox) -> GatewayAdmittedHTTPContext?
     {
-        guard let gatewayURL = request.url,
-              self.usesDefaultURLSession || self.session is GatewayTLSPinningSession
+        guard self.usesDefaultURLSession || self.session is GatewayTLSPinningSession,
+              let admittedRequest = (task.task as? URLSessionWebSocketTask)?.currentRequest,
+              let gatewayURL = admittedRequest.url
         else { return nil }
 
         let fingerprint: String?
         switch gatewayURL.scheme?.lowercased() {
-        case "wss":
+        case "wss", "https":
             if self.usesDefaultURLSession {
                 fingerprint = nil
             } else {
@@ -300,15 +301,22 @@ public actor GatewayChannelActor {
                     return nil
                 }
             }
-        case "ws":
+        case "ws", "http":
             fingerprint = nil
         default:
             return nil
         }
+        // Foundation may redirect the upgrade. Carry only operator-supplied
+        // header names still present on that final request, never ambient credentials.
+        let headers = GatewayCustomHeaders.sanitized(request.allHTTPHeaderFields ?? [:]).keys.reduce(
+            into: [String: String]())
+        { headers, name in
+            if let value = admittedRequest.value(forHTTPHeaderField: name) { headers[name] = value }
+        }
         return GatewayAdmittedHTTPContext(
             gatewayURL: gatewayURL,
             tlsFingerprintSHA256: fingerprint,
-            customHeaders: request.allHTTPHeaderFields ?? [:])
+            customHeaders: GatewayCustomHeaders.sanitized(headers))
     }
 
     public func connect() async throws {
