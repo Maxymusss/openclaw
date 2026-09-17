@@ -26,6 +26,11 @@ private actor NativeSubmissionGate {
 
 private final class NativeSubmissionLifetime: Sendable {}
 
+@MainActor
+private final class NativeSubmissionPresentation {
+    var isCurrent = true
+}
+
 private actor NativeSubmissionTransport: OpenClawChatTransport {
     enum Response: Sendable {
         case accepted
@@ -48,6 +53,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
     let sendGate: NativeSubmissionGate?
     let historyGate: NativeSubmissionGate?
     let validationGate: NativeSubmissionGate?
+    let settingsPatchGate: NativeSubmissionGate?
     let response: Response
     let ackStatus: String
     let ackRunID: String?
@@ -71,6 +77,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         sendGate: NativeSubmissionGate? = nil,
         historyGate: NativeSubmissionGate? = nil,
         validationGate: NativeSubmissionGate? = nil,
+        settingsPatchGate: NativeSubmissionGate? = nil,
         validationGateCall: Int = 1,
         supportsComposerCapabilities: Bool = false,
         supportsSessionSettingsCAS: Bool = true,
@@ -84,6 +91,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         self.sendGate = sendGate
         self.historyGate = historyGate
         self.validationGate = validationGate
+        self.settingsPatchGate = settingsPatchGate
         self.validationGateCall = validationGateCall
         self.supportsComposerCapabilities = supportsComposerCapabilities
         self.supportsSessionSettingsCAS = supportsSessionSettingsCAS
@@ -200,10 +208,20 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         AsyncStream { $0.finish() }
     }
 
+    func patchSessionSettings(
+        sessionKey _: String,
+        agentID _: String?,
+        patch _: OpenClawChatSessionSettingsPatch) async throws -> OpenClawChatModelPatchResult?
+    {
+        await self.settingsPatchGate?.wait()
+        throw NSError(domain: "SettingsTest", code: 1, userInfo: [NSLocalizedDescriptionKey: "Settings rejected"])
+    }
+
     func release() async {
         await self.sendGate?.open()
         await self.historyGate?.open()
         await self.validationGate?.open()
+        await self.settingsPatchGate?.open()
     }
 }
 
@@ -802,6 +820,89 @@ private struct ChatExternalSubmissionTests {
         await fixture.close()
     }
 
+    @Test(arguments: [false, true])
+    func `failed settings settle only the retired presentation's unsent attempt`(successorSession: Bool) async throws {
+        let patchGate = NativeSubmissionGate()
+        let historyGate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            historyGate: historyGate, settingsPatchGate: patchGate, supportsComposerCapabilities: true))
+        await fixture.prepare()
+        let target = fixture.vm.currentModelPatchTarget()
+        fixture.vm.selectComposerPermissionMode(.readOnly)
+        let presentation = NativeSubmissionPresentation()
+        let physicalRoute = await fixture.transport.route(fixture.target)
+        let route = OpenClawChatExternalSubmissionRoute(target: fixture.target, lease: physicalRoute.lease) {
+            guard await physicalRoute.isCurrent() else { return false }
+            return await presentation.isCurrent
+        }
+        var submissionTask: Task<OpenClawChatSubmissionOutcome, Never>?
+        do {
+            try await waitUntil("actual settings patch entered") { await patchGate.entered }
+            let snapshot = fixture.vm.currentSessionSnapshot()
+            let invocation = fixture.request()
+            let runID = invocation.operationID.uuidString
+            let task = Task { await fixture.vm.submit(invocation, using: route) }
+            submissionTask = task
+            try await waitUntil("external attempt reserved behind settings") {
+                await MainActor.run {
+                    fixture.vm.pendingLocalUserEchoMessageIDsByRunID[runID] != nil &&
+                        fixture.vm.inFlightSettingsPatchCountsByTarget[target] == 1
+                }
+            }
+            let echoID = try #require(fixture.vm.pendingLocalUserEchoMessageIDsByRunID[runID])
+            #expect(await fixture.transport.sent.isEmpty)
+            presentation.isCurrent = false
+            if successorSession {
+                fixture.vm.switchSession(to: "agent:agent-a:other", agentID: fixture.target.agentID)
+                fixture.vm.switchSession(to: fixture.target.sessionKey, agentID: fixture.target.agentID)
+                #expect(fixture.vm.currentSessionSnapshot() != snapshot)
+            } else {
+                #expect(fixture.vm.currentSessionSnapshot() == snapshot)
+            }
+            let unrelated = OpenClawChatMessage(
+                role: "user", content: [], timestamp: 1, idempotencyKey: "other-run:user")
+            fixture.vm.appendMessage(unrelated)
+            fixture.vm.pendingRuns.insert("other-run")
+            fixture.vm.pendingLocalUserEchoMessageIDsByRunID["other-run"] = unrelated.id
+            fixture.vm.runMessageScopesByRunID["other-run"] = fixture.vm.currentRunMessageScope()
+            fixture.vm.input = "edited current draft"
+            fixture.vm.setReplyTarget(messageID: UUID(), text: "current reply", senderLabel: "User")
+            let reply = fixture.vm.replyTarget
+            let attachment = OpenClawPendingAttachment(
+                url: nil, data: Data([1]), fileName: "draft.png", mimeType: "image/png", preview: nil)
+            fixture.vm.attachments = [attachment]
+            #expect(await physicalRoute.isCurrent())
+            await patchGate.open()
+            #expect(await task.value == .notDispatched(reason: "Settings rejected"))
+            #expect(await fixture.transport.sent.isEmpty)
+            #expect(!fixture.vm.pendingRuns.contains(runID))
+            #expect(fixture.vm.pendingLocalUserEchoMessageIDsByRunID[runID] == nil)
+            #expect(fixture.vm.runMessageScopesByRunID[runID] == nil)
+            #expect(!fixture.vm.messages.contains { $0.id == echoID })
+            #expect(fixture.vm.pendingRuns == ["other-run"])
+            #expect(fixture.vm.pendingLocalUserEchoMessageIDsByRunID == ["other-run": unrelated.id])
+            #expect(fixture.vm.runMessageScopesByRunID["other-run"] != nil)
+            #expect(fixture.vm.messages.contains { $0.id == unrelated.id })
+            #expect(fixture.vm.input == "edited current draft")
+            #expect(fixture.vm.replyTarget == reply)
+            #expect(fixture.vm.attachments.map(\.id) == [attachment.id])
+            #expect(!fixture.vm.isSending && !fixture.vm.isSubmittingDraft)
+            #expect(await fixture.vm.submit(invocation, using: route) == .uncertain(
+                reason: "Reconnect to the selected account to check this operation. Do not send it again."))
+            #expect(await fixture.transport.sent.isEmpty)
+        } catch {
+            await fixture.transport.release()
+            _ = await submissionTask?.value
+            await fixture.vm.waitForPendingSessionSettings(for: target)
+            await fixture.close()
+            throw error
+        }
+        await fixture.transport.release()
+        _ = await submissionTask?.value
+        await fixture.vm.waitForPendingSessionSettings(for: target)
+        await fixture.close()
+    }
+
     @Test(arguments: ["accepted", "failed patch", "changed lease", "stale metadata", "wrong agent"])
     func `external send waits for settings and revalidates the owner`(completion: String) async throws {
         let gate = NativeSubmissionGate()
@@ -847,7 +948,7 @@ private struct ChatExternalSubmissionTests {
                 #expect(sent.first?.settings == OpenClawChatSessionSettingsExpectation(
                     permissionMode: .full, toolOverrides: nil))
             case "failed patch":
-                if case .rejected = result {} else { Issue.record("Failed settings must reject submission") }
+                #expect(result == .notDispatched(reason: "Settings rejected"))
                 #expect(sent.isEmpty)
             default:
                 if case .notDispatched = result {} else { Issue.record("Changed ownership must prevent dispatch") }

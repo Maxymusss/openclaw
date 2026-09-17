@@ -916,7 +916,7 @@ extension OpenClawChatViewModel {
                         userInfo: [NSLocalizedDescriptionKey: settingsError]),
                     attempt: attempt,
                     canPreserveInOutbox: false)
-                return .rejected(reason: settingsError)
+                return .notDispatched(reason: settingsError)
             }
             guard isCurrentSession(attempt.draft.session) else {
                 return .notDispatched(reason: "The selected session changed before sending.")
