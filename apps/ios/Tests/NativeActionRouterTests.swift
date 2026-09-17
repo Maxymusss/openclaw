@@ -1,12 +1,140 @@
 import Foundation
-import OpenClawChatUI
 import OpenClawKit
 import OpenClawProtocol
 import Testing
 @testable import OpenClaw
+@testable import OpenClawChatUI
+
+private enum NativeRouteReadContext {
+    @TaskLocal static var held = false
+}
+
+private final class NativeRouteReadGate: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var released = false
+    private var waiting = false
+    private var expired = false
+
+    var entered: Bool {
+        self.condition.lock()
+        defer { self.condition.unlock() }
+        return self.waiting
+    }
+
+    var timedOut: Bool {
+        self.condition.lock()
+        defer { self.condition.unlock() }
+        return self.expired
+    }
+
+    func wait() {
+        self.condition.lock()
+        defer { self.condition.unlock() }
+        self.waiting = true
+        let deadline = Date().addingTimeInterval(5)
+        while !self.released {
+            if !self.condition.wait(until: deadline) { self.expired = true
+                return
+            }
+        }
+    }
+
+    func release() {
+        self.condition.lock()
+        self.released = true
+        self.condition.broadcast()
+        self.condition.unlock()
+    }
+}
+
+private final class NativeRouteReadSession: WebSocketSessioning, @unchecked Sendable {
+    private final class Socket: WebSocketTasking {
+        let task: URLSessionWebSocketTask
+        let gate: NativeRouteReadGate
+        init(task: URLSessionWebSocketTask, gate: NativeRouteReadGate) {
+            self.task = task
+            self.gate = gate
+        }
+
+        var state: URLSessionTask.State {
+            if NativeRouteReadContext.held { self.gate.wait() }
+            return self.task.state
+        }
+
+        func resume() {
+            self.task.resume()
+        }
+
+        func cancel(with closeCode: URLSessionWebSocketTask.CloseCode, reason: Data?) {
+            self.task.cancel(with: closeCode, reason: reason)
+        }
+
+        func send(_ message: URLSessionWebSocketTask.Message) async throws {
+            try await self.task.send(message)
+        }
+
+        func sendPing(pongReceiveHandler: @escaping @Sendable (Error?) -> Void) {
+            self.task.sendPing(pongReceiveHandler: pongReceiveHandler)
+        }
+
+        func receive() async throws -> URLSessionWebSocketTask.Message {
+            try await self.task.receive()
+        }
+
+        func receive(completionHandler: @escaping @Sendable (Result<URLSessionWebSocketTask.Message, Error>) -> Void) {
+            self.task.receive(completionHandler: completionHandler)
+        }
+    }
+
+    let session = URLSession(configuration: .ephemeral)
+    let gate = NativeRouteReadGate()
+    func makeWebSocketTask(url: URL) -> WebSocketTaskBox {
+        self.makeWebSocketTask(request: URLRequest(url: url))
+    }
+
+    func makeWebSocketTask(request: URLRequest) -> WebSocketTaskBox {
+        WebSocketTaskBox(task: Socket(task: self.session.webSocketTask(with: request), gate: self.gate))
+    }
+}
 
 @MainActor
 struct NativeActionRouterTests {
+    @Test func `user navigation admits only its captured root and never revives an old selection`() {
+        let model = NodeAppModel(audioAdmissionInitiallyAllowed: false)
+        let controller = GatewayConnectionController(appModel: model, startDiscovery: false)
+        let router = NativeActionRouter(appModel: model, gatewayController: controller)
+        let root = router.registerPresentation(onRetire: {}, { _, _, _ in })
+        let original = router.capturePresentationAuthority(root)
+        #expect(!router.userNavigationDidChange(presentationID: UUID()))
+        #expect(original.map(router.isCurrentPresentation) == true)
+        #expect(router.userNavigationDidChange(presentationID: root))
+        #expect(original.map(router.isCurrentPresentation) == false)
+        let successor = router.registerPresentation(onRetire: {}, { _, _, _ in })
+        let current = router.capturePresentationAuthority(successor)
+        #expect(!router.userNavigationDidChange(presentationID: root))
+        #expect(current.map(router.isCurrentPresentation) == true)
+        router.unregisterPresentation(successor)
+    }
+
+    @Test func `local fixture fork keeps its deliberate unsupported outcome`() async {
+        var adopted = false
+        let prepared = PreparedChatNavigation(
+            parent: .init(sessionKey: "global", agentID: "main"),
+            transport: LocalFixtureChatTransport(fixture: .appleReviewDemo),
+            gatewayID: nil, isLocalFixture: true, isCurrent: { true },
+            open: { _ in adopted = true
+                return true
+            })
+        do {
+            _ = try await prepared.fork(fromLastCompleted: false)
+            Issue.record("Local fixtures do not implement fork")
+        } catch OpenClawChatTransportSendError.notDispatched {
+        } catch {
+            Issue.record("Unexpected local fixture outcome: \(error)")
+        }
+        #expect(!adopted)
+    }
+
     @MainActor
     private final class Host {
         let model: NodeAppModel
@@ -33,6 +161,7 @@ struct NativeActionRouterTests {
         var beforeResponse: ((String) -> Void)?
         var beforeSendReply: (() -> Void)?
         var deferredSendReply: (@MainActor @Sendable () async -> Void)?
+        var deferredForkReply: (@MainActor @Sendable () async -> Void)?
         var profileID = "alice"
         var catalogDiscovery = false
         var rejectMethod: String?
@@ -40,6 +169,7 @@ struct NativeActionRouterTests {
         var requestsBeforeRejection = 0
         var widgetRefreshes = 0
         var rosterRequests = 0
+        var nativeReads: [String] = []
         var issuedRunIDs: Set<String> = []
         var callbackViolations: [String] = []
         var callbackViolationCount = 0
@@ -87,7 +217,7 @@ struct NativeActionRouterTests {
             .init(owner: .init(gatewayID: self.gatewayID, profileID: "alice"), agentID: agent, sessionKey: "global")
         }
 
-        func connect() async throws {
+        func startFixture(acceptsStartup: Bool = false) async throws -> NativeGatewayWebSocketFixture {
             let fixture = try await NativeGatewayWebSocketFixture.start(
                 issuedDeviceTokens: [],
                 hello: .init(role: "operator", scopes: ["operator.read", "operator.write"], capabilities: [
@@ -105,6 +235,7 @@ struct NativeActionRouterTests {
                         "agents.list",
                         "chat.history",
                         "sessions.messages.subscribe",
+                        "sessions.create",
                         "health",
                         "sessions.list",
                         "chat.send",
@@ -113,11 +244,24 @@ struct NativeActionRouterTests {
                         "commands.list",
                         "chat.metadata",
                         "tasks.list",
+                        "config.get", "users.prefs.get", "talk.config", "voicewake.get",
+                        "exec.approval.list", "plugin.approval.list", "openclaw.approval.list",
+                        "node.event", "node.pending.pull",
                     ]
                         .contains(method): method
                     default: "unknown"
                     }
-                    if request["method"] as? String == "sessions.list", params["limit"] as? Int == 80 {
+                    if methodLabel == "sessions.create", self.deferredForkReply != nil {
+                        self.observeCallback(
+                            request["expectedProfileId"] == nil && Set(params.keys) == [
+                                "parentSessionKey",
+                                "agentId",
+                                "fork",
+                            ] &&
+                                params["parentSessionKey"] as? String == "global" &&
+                                params["agentId"] as? String == "main" && params["fork"] as? Bool == true,
+                            rule: "prepared-fork-route", method: methodLabel)
+                    } else if request["method"] as? String == "sessions.list", params["limit"] as? Int == 80 {
                         // Agent selection also refreshes the ordinary UI share route.
                         self.observeCallback(
                             request["expectedProfileId"] == nil,
@@ -139,6 +283,27 @@ struct NativeActionRouterTests {
                             ["main", "research"].contains(params["agentId"] as? String ?? ""),
                             rule: "share-agent",
                             method: methodLabel)
+                    } else if acceptsStartup, request["expectedProfileId"] == nil {
+                        // The saved-Gateway path starts both real loops. Only these
+                        // hydration calls are unprofiled; native reads still require alice.
+                        let valid: Bool = switch methodLabel {
+                        case "config.get", "agents.list", "health", "voicewake.get", "node.pending.pull",
+                             "exec.approval.list", "plugin.approval.list", "openclaw.approval.list":
+                            params.isEmpty
+                        case "users.prefs.get":
+                            Set(params.keys) == ["keys"] && params["keys"] as? [String] == ["ui.accent"]
+                        case "talk.config":
+                            params.isEmpty || (Set(params.keys) == ["includeSecrets"] &&
+                                params["includeSecrets"] as? Bool == true)
+                        case "node.event":
+                            Set(params.keys) == ["event", "payloadJSON"] &&
+                                params["event"] as? String == "node.host.stats" && params["payloadJSON"] is String
+                        case "chat.history":
+                            Set(params.keys).isSubset(of: ["sessionKey", "agentId"]) &&
+                                params["sessionKey"] is String
+                        default: false
+                        }
+                        self.observeCallback(valid, rule: "startup-read-shape", method: methodLabel)
                     } else if self.ordinaryChat {
                         // Only ordinary-owner tests bootstrap without a captured profile.
                         // Native fixtures retain the exact profile assertion below.
@@ -160,6 +325,9 @@ struct NativeActionRouterTests {
                             method: methodLabel)
                     }
                     if request["method"] as? String == "chat.send" { self.sent.append(params) }
+                    if request["expectedProfileId"] != nil, ["users.self", "chat.history"].contains(methodLabel) {
+                        self.nativeReads.append(methodLabel)
+                    }
                     if request["method"] as? String == "sessions.create" { self.createdSessions += 1 }
                     if request["method"] as? String == self.rejectMethod {
                         if self.requestsBeforeRejection == 0 {
@@ -172,6 +340,15 @@ struct NativeActionRouterTests {
                     }
                     self.beforeResponse?(request["method"] as? String ?? "")
                     switch request["method"] as? String {
+                    case "config.get": return .success([
+                            "config": ["session": ["mainKey": "main", "scope": "per-sender"]],
+                        ])
+                    case "users.prefs.get": return .success(["status": "ok", "entries": [:]])
+                    case "node.pending.pull": return .success(["actions": []])
+                    case "node.event": return .success([:])
+                    case "talk.config", "voicewake.get", "exec.approval.list", "plugin.approval.list",
+                         "openclaw.approval.list":
+                        return .failure(code: "UNAVAILABLE", message: "Optional fixture capability unavailable")
                     case "users.self": return .success(["profile": ["id": self.profileID]])
                     case "plugin.surface.refresh":
                         self.widgetRefreshes += 1
@@ -208,6 +385,16 @@ struct NativeActionRouterTests {
                                 ["key": "global", "agentId": $0, "permissionMode": "guarded", "toolOverrides": [:]]
                             },
                         ])
+                    case "sessions.create":
+                        guard let deferred = self.deferredForkReply else {
+                            self.observeCallback(false, rule: "unowned-fork", method: methodLabel)
+                            return .failure(code: "INVALID_REQUEST", message: "Unowned fixture fork")
+                        }
+                        self.deferredForkReply = nil
+                        return .deferred {
+                            await deferred()
+                            return .success(["key": "agent:main:forked"])
+                        }
                     case "chat.send":
                         let before = self.beforeSendReply
                         self.beforeSendReply = nil
@@ -242,11 +429,16 @@ struct NativeActionRouterTests {
                     }
                 })
             self.fixture = fixture
+            return fixture
+        }
+
+        func connect(sessionBox: WebSocketSessionBox? = nil) async throws {
+            let fixture = try await self.startFixture()
             var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
             options.allowStoredDeviceAuth = false
             options.deviceAuthGatewayID = self.gatewayID
             try await self.model.operatorSession.connect(
-                url: fixture.url(), credentials: .init(), connectOptions: options, sessionBox: nil,
+                url: fixture.url(), credentials: .init(), connectOptions: options, sessionBox: sessionBox,
                 onConnected: {}, onDisconnected: { _ in }, onInvoke: { .init(id: $0.id, ok: true) })
             self.model.activeGatewayConnectConfig = GatewayConnectConfig(
                 url: fixture.url(), stableID: self.gatewayID, tls: nil, token: nil,
@@ -298,6 +490,7 @@ struct NativeActionRouterTests {
             self.beforeResponse = nil
             self.beforeSendReply = nil
             self.deferredSendReply = nil
+            self.deferredForkReply = nil
             if let presentationID { self.router.unregisterPresentation(presentationID) }
             self.chat?.detachTransport()
             await self.model.operatorSession.disconnect()
@@ -308,14 +501,14 @@ struct NativeActionRouterTests {
         }
     }
 
-    private func withHost(_ run: (Host) async throws -> Void) async throws {
+    private func withHost(sessionBox: WebSocketSessionBox? = nil, _ run: (Host) async throws -> Void) async throws {
         try await withUserDefaults([
             "talk.enabled": false, "talk.background.enabled": false, VoiceWakePreferences.enabledKey: false,
         ]) {
             let host = Host()
             let outcome: Result<Void, Error>
             do {
-                try await host.connect()
+                try await host.connect(sessionBox: sessionBox)
                 try await run(host)
                 outcome = .success(())
             } catch {
@@ -328,6 +521,250 @@ struct NativeActionRouterTests {
                 host.callbackViolationCount == 0,
                 "count=\(host.callbackViolationCount) overflow=\(host.callbackViolationCount > 16) \(host.callbackViolations.joined(separator: " | "))")
             try outcome.get()
+        }
+    }
+
+    @Test(arguments: ["readiness", "route"], ["agent", "session", "session-aba", "root", "chat"])
+    func `early native preparation cannot adopt a later navigation`(phase: String, departure: String) async throws {
+        let session = NativeRouteReadSession()
+        defer { session.gate.release()
+            session.session.finishTasksAndInvalidate()
+        }
+        try await self.withHost(sessionBox: phase == "route" ? WebSocketSessionBox(session: session) : nil) { host in
+            host.model.setSelectedAgentId("main")
+            host.model.focusChatSession("global")
+            if departure == "chat" { _ = try await host.openOrdinaryChat() }
+            if phase == "readiness" { host.model.setOperatorConnected(false) }
+            let reads = host.nativeReads
+            let presentations = host.presentations
+            let started = AsyncStream<Void>.makeStream()
+            let opening = Task {
+                // The MainActor observer runs only once open reaches its first await.
+                started.continuation.yield(())
+                if phase == "route" {
+                    return await NativeRouteReadContext.$held.withValue(true) {
+                        await host.router.open(.session(host.session()))
+                    }
+                }
+                return await host.router.open(.session(host.session()))
+            }
+            do {
+                var iterator = started.stream.makeAsyncIterator()
+                _ = await iterator.next()
+                if phase == "route" {
+                    let deadline = ContinuousClock.now + .seconds(2)
+                    while !session.gate.entered, ContinuousClock.now < deadline {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try #require(session.gate.entered)
+                }
+                switch departure {
+                case "agent": host.model.setSelectedAgentId("research")
+                case "session", "session-aba":
+                    host.model.focusChatSession("other")
+                    if departure == "session-aba" { host.model.focusChatSession("global") }
+                case "root":
+                    try host.router.unregisterPresentation(#require(host.presentationID))
+                    host.presentationID = host.router.registerPresentation(onRetire: {}) { _, _, _ in
+                        host.presentations += 1
+                    }
+                default: try host.hideChat()
+                }
+                let selectedAgent = host.model.chatDeliveryAgentId
+                let selectedSession = host.model.chatSessionKey
+                session.gate.release()
+                host.model.setOperatorConnected(true)
+                #expect(await opening.value == .cancelled)
+                #expect(host.model.chatDeliveryAgentId == selectedAgent)
+                #expect(host.model.chatSessionKey == selectedSession)
+                #expect(host.presentations == presentations)
+                #expect(host.nativeReads == reads)
+                #expect(host.sent.isEmpty)
+                #expect(!session.gate.timedOut)
+            } catch {
+                session.gate.release()
+                opening.cancel()
+                _ = await opening.value
+                throw error
+            }
+            started.continuation.finish()
+        }
+    }
+
+    @Test func `cold root initial focus precedes native preparation authority`() async throws {
+        try await self.withHost { host in
+            try host.router.unregisterPresentation(#require(host.presentationID))
+            host.presentationID = nil
+            let started = AsyncStream<Void>.makeStream()
+            let opening = Task {
+                started.continuation.yield(())
+                return await host.router.open(.session(host.session()))
+            }
+            var iterator = started.stream.makeAsyncIterator()
+            _ = await iterator.next()
+            host.model.focusChatSession("initial-root-session")
+            host.presentationID = host.router
+                .registerPresentation(onRetire: { host.binding = nil }) { request, binding, _ in
+                    host.model.setSelectedAgentId(request.session.agentID)
+                    host.model.focusChatSession(request.session.sessionKey)
+                    let owner = host.model.chatPresentation
+                    owner.sync(
+                        appModel: host.model,
+                        nativeBinding: binding,
+                        nativeActions: host.router,
+                        presentationID: host.presentationID)
+                    host.binding = binding
+                    if let chat = owner.viewModel {
+                        host.chatRegistrationID = host.router.registerChat(
+                            chat, ownerID: owner.ownerID, agentID: owner.transportAgentID,
+                            transport: owner.transport, presentationID: host.presentationID)
+                    }
+                }
+            #expect(await opening.value == .opened)
+            #expect(host.model.chatSessionKey == host.session().sessionKey)
+            #expect(host.binding?.session == host.session())
+            started.continuation.finish()
+        }
+    }
+
+    @Test(arguments: ["early-user", "history-projection", "history-user", "history-aba"])
+    func `saved Gateway preparation waits for its physical route without adopting navigation`(
+        interruption: String) async throws
+    {
+        let stateDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("native-saved-gateway-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: stateDirectory) }
+        try await DeviceIdentityStore.withStateDirectory(stateDirectory) {
+            try await withUserDefaults(["push.apns.deviceTokenHex": nil, "gateway.autoconnect": false]) {
+                try await self.withHost { host in
+                    let registry = GatewayRegistryTestIsolation()
+                    defer { registry.restore() }
+                    let destination = Host()
+                    let fixture = try await destination.startFixture(acceptsStartup: true)
+                    let gatewayID = "manual|127.0.0.1|\(fixture.port)"
+                    let instanceID = GatewaySettingsStore.currentInstanceID()
+                    defer { GatewaySettingsStore.deleteGatewayCredentials(instanceId: instanceID, stableID: gatewayID) }
+                    let release = AsyncStream<Void>.makeStream()
+                    var opening: Task<OpenClawNativeOpenOutcome, Never>?
+                    let outcome: Result<Void, Error>
+                    do {
+                        try #require(GatewaySettingsStore.upsertGatewayRegistryEntry(.init(
+                            stableID: gatewayID, kind: .manual, name: "Saved fixture Gateway",
+                            host: "127.0.0.1", port: Int(fixture.port), useTLS: false, lastConnectedAtMs: nil)))
+                        try #require(GatewaySettingsStore.saveGatewayCredentials(
+                            token: "fixture-b-token", bootstrapToken: nil, password: nil,
+                            gatewayStableID: gatewayID, suppressStoredDeviceAuth: true, instanceId: instanceID))
+                        #expect(await host.router.open(.session(host.session())) == .opened)
+                        let initialBinding = try #require(host.binding)
+                        let initialReads = host.nativeReads
+                        let initialPresentations = host.presentations
+                        var historyInterruptionApplied = false
+                        var bindingAtHistory: IOSNativeActionBinding?
+                        var userNavigationAccepted = false
+                        var selectedAfterInterruption: (agent: String?, session: String)?
+                        if interruption != "early-user" {
+                            destination.beforeResponse = { method in
+                                // Profiled reads are recorded immediately before this callback.
+                                // Ordinary startup history cannot satisfy this first native pair.
+                                guard method == "chat.history",
+                                      destination.nativeReads == ["users.self", "chat.history"]
+                                else { return }
+                                destination.beforeResponse = nil
+                                historyInterruptionApplied = true
+                                bindingAtHistory = host.binding
+                                switch interruption {
+                                case "history-projection":
+                                    host.router.retireChatSelection(presentationID: host.presentationID)
+                                case "history-user":
+                                    userNavigationAccepted = host.router.userNavigationDidChange(
+                                        presentationID: host.presentationID)
+                                default:
+                                    let originalSession = host.model.chatSessionKey
+                                    host.model.focusChatSession("chosen-during-history")
+                                    host.model.focusChatSession(originalSession)
+                                }
+                                selectedAfterInterruption = (host.model.chatDeliveryAgentId, host.model.chatSessionKey)
+                            }
+                        }
+                        host.model._test_setGatewaySessionResetTask(Task {
+                            for await _ in release.stream {
+                                return
+                            }
+                        })
+                        let route = try #require(await host.model.operatorSession.currentRoute())
+                        let target = OpenClawNativeSessionRef(
+                            owner: .init(gatewayID: gatewayID, profileID: "alice"),
+                            agentID: "main", sessionKey: "global")
+                        let task = Task { await host.router.open(.session(target)) }
+                        opening = task
+                        let deadline = ContinuousClock.now + .seconds(2)
+                        while !host.controller.hasPendingConnectionHandoff, ContinuousClock.now < deadline {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        try #require(host.controller.hasPendingConnectionHandoff)
+                        // Acceptance queues the reset; the old socket remains genuinely connected.
+                        #expect(host.model.isOperatorGatewayConnected)
+                        #expect(host.model.activeGatewayConnectConfig?.effectiveStableID == host.gatewayID)
+                        #expect(await host.model.operatorSession.currentRoute() == route)
+                        #expect(host.nativeReads == initialReads)
+                        if interruption == "early-user" {
+                            host.model.focusChatSession("chosen-during-handoff")
+                        }
+                        release.continuation.finish()
+                        let result = await task.value
+                        #expect(host.nativeReads == initialReads)
+                        #expect(host.sent.isEmpty)
+                        #expect(destination.sent.isEmpty)
+                        #expect(host.createdSessions == 0)
+                        #expect(destination.createdSessions == 0)
+                        #expect(historyInterruptionApplied == (interruption != "early-user"))
+                        if interruption == "early-user" {
+                            #expect(result == .cancelled)
+                            #expect(host.presentations == initialPresentations)
+                            #expect(destination.nativeReads.isEmpty)
+                        } else {
+                            #expect(bindingAtHistory === initialBinding)
+                            #expect(host.model.activeGatewayConnectConfig?.effectiveStableID == gatewayID)
+                            #expect(host.model.isOperatorGatewayConnected)
+                            #expect(await host.model.operatorSession.currentRoute(ifGatewayID: gatewayID) != nil)
+                            if interruption == "history-projection" {
+                                #expect(result == .opened)
+                                #expect(host.presentations == initialPresentations + 1)
+                                #expect(host.binding?.session == target)
+                                #expect(destination.nativeReads.contains("users.self"))
+                                #expect(destination.nativeReads.contains("chat.history"))
+                            } else {
+                                #expect(result == .cancelled)
+                                #expect(host.presentations == initialPresentations)
+                                #expect(destination.nativeReads == ["users.self", "chat.history"])
+                                #expect(userNavigationAccepted == (interruption == "history-user"))
+                                let selected = try #require(selectedAfterInterruption)
+                                #expect(host.model.chatDeliveryAgentId == selected.agent)
+                                #expect(host.model.chatSessionKey == selected.session)
+                            }
+                        }
+                        outcome = .success(())
+                    } catch {
+                        outcome = .failure(error)
+                    }
+                    release.continuation.finish()
+                    host.model.disconnectGateway()
+                    await host.model.waitForGatewaySessionResetIfNeeded()
+                    let shutdownDeadline = ContinuousClock.now + .seconds(2)
+                    while host.controller.hasPendingConnectionHandoff, ContinuousClock.now < shutdownDeadline {
+                        try? await Task.sleep(for: .milliseconds(10))
+                    }
+                    #expect(!host.controller.hasPendingConnectionHandoff)
+                    opening?.cancel()
+                    _ = await opening?.value
+                    await host.model.purgeChatTranscriptCache(gatewayID: gatewayID)
+                    await destination.close()
+                    #expect(
+                        destination.callbackViolationCount == 0,
+                        "\(destination.callbackViolations.joined(separator: " | "))")
+                    try outcome.get()
+                }
+            }
         }
     }
 
@@ -925,6 +1362,131 @@ struct NativeActionRouterTests {
             host.router.unregisterPresentation(presentationID)
             #expect(!reopened())
             #expect(await binding.isCurrent())
+        }
+    }
+
+    @Test(arguments: ["warm", "hidden", "ownSync", "selectionABA", "root", "route", "afterRefresh"])
+    func `prepared sidebar fork cannot replace a newer same target native inspection`(mode: String) async throws {
+        try await self.withHost { host in
+            #expect(await host.router.open(.session(host.session())) == .opened)
+            let chat = try #require(host.chat)
+            chat.inputText = "Retained draft"
+            if mode != "warm" {
+                try host.hideChat()
+                host.model.chatPresentation.sync(appModel: host.model)
+                #expect(host.chat === chat)
+            }
+            let root = try #require(host.presentationID)
+            #expect(host.router.userNavigationDidChange(presentationID: root))
+            #expect(host.binding == nil)
+            let captured = try #require(PreparedChatNavigation.capture(
+                appModel: host.model, router: host.router, presentationID: root,
+                session: .init(key: "global", agentId: "main"), isCurrentContext: { true },
+                currentNativeBinding: { host.binding }, open: { target in
+                    host.model.focusChatSession(target)
+                    host.model.openChat(sessionKey: target.sessionKey)
+                }))
+            let entered = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let release = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let forkReturned = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            let commitRelease = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            defer {
+                entered.continuation.finish()
+                release.continuation.finish()
+                forkReturned.continuation.finish()
+                commitRelease.continuation.finish()
+            }
+            host.deferredForkReply = {
+                entered.continuation.yield(())
+                for await _ in release.stream {
+                    break
+                }
+            }
+            let fork = Task {
+                let result = try await captured.fork(fromLastCompleted: false)
+                if mode == "afterRefresh" {
+                    forkReturned.continuation.yield(())
+                    for await _ in commitRelease.stream {
+                        break
+                    }
+                }
+                return await captured.commit(result)
+            }
+            var inspecting: Task<OpenClawNativeRunInspection, Error>?
+            do {
+                try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                    for await _ in entered.stream {
+                        break
+                    }
+                }
+                if mode == "ownSync" {
+                    host.model.chatPresentation.sync(appModel: host.model)
+                    #expect(host.binding == nil)
+                    #expect(host.chat === chat)
+                    #expect(captured.isCurrent())
+                } else if mode == "selectionABA" {
+                    host.model.focusChatSession("other")
+                    host.model.focusChatSession("global")
+                } else if mode == "root" {
+                    host.router.unregisterPresentation(root)
+                    host.presentationID = host.router.registerPresentation(onRetire: {}, { _, _, _ in })
+                } else if mode == "route" {
+                    await host.model.operatorSession.disconnect()
+                } else if mode != "afterRefresh" {
+                    let run = OpenClawNativeRunRef(session: host.session(), runID: "newer-inspection")
+                    let task = Task { try await host.router.inspect(run) }
+                    inspecting = task
+                    let receipt = try await host.waitForReceipt()
+                    host.router.acknowledgeInspection(receipt, presentationID: root)
+                    #expect(try await task.value.run == run)
+                    #expect(!captured.isCurrent())
+                    #expect(host.model.chatSessionKey == "global")
+                    #expect(host.model.chatDeliveryAgentId == "main")
+                }
+                let requestID = host.model.openChatRequestID
+                let binding = host.binding
+                let receipt = host.receipt
+                release.continuation.finish()
+                if mode == "afterRefresh" {
+                    try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) {
+                        for await _ in forkReturned.stream {
+                            break
+                        }
+                    }
+                    // The CommandCenter producers await refresh before their final commit.
+                    #expect(host.router.userNavigationDidChange(presentationID: root))
+                    commitRelease.continuation.finish()
+                    #expect(try await fork.value == false)
+                } else if mode == "ownSync" {
+                    #expect(try await fork.value)
+                    #expect(host.model.chatSessionKey == "agent:main:forked")
+                    #expect(host.model.openChatRequestID == requestID + 1)
+                } else {
+                    await #expect(throws: CancellationError.self) { _ = try await fork.value }
+                    #expect(host.binding === binding)
+                    #expect(host.receipt?.id == receipt?.id)
+                    if mode == "warm" || mode == "hidden" {
+                        #expect(try host.router.isInspectionPresented(#require(receipt)))
+                    }
+                    #expect(host.model.chatSessionKey == "global")
+                    #expect(host.model.openChatRequestID == requestID)
+                }
+                if mode != "ownSync" {
+                    #expect(host.model.chatSessionKey == "global")
+                    #expect(host.model.openChatRequestID == requestID)
+                }
+                #expect(chat.inputText == "Retained draft")
+                #expect(host.createdSessions == 1)
+                #expect(host.sent.isEmpty)
+            } catch {
+                release.continuation.finish()
+                commitRelease.continuation.finish()
+                fork.cancel()
+                inspecting?.cancel()
+                _ = try? await fork.value
+                _ = try? await inspecting?.value
+                throw error
+            }
         }
     }
 

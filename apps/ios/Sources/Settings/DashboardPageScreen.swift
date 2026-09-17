@@ -6,6 +6,7 @@ struct DashboardPageScreen: View {
     @Environment(NodeAppModel.self) private var appModel
     @Environment(AppAppearanceModel.self) private var appearanceModel
     @Environment(GatewayConnectionController.self) private var gatewayController
+    @Environment(\.userNavigationAction) private var userNavigationAction
     @State private var navigationPath: [SettingsRoute] = []
     let path: String
     let title: String
@@ -15,7 +16,7 @@ struct DashboardPageScreen: View {
     var onApprovalNotificationsRoute: ((String?) -> Void)?
 
     var body: some View {
-        NavigationStack(path: self.$navigationPath) {
+        NavigationStack(path: self.userNavigationPath) {
             self.root
                 .toolbar {
                     if let onClose {
@@ -40,8 +41,17 @@ struct DashboardPageScreen: View {
         }
     }
 
+    private var userNavigationPath: Binding<[SettingsRoute]> {
+        let action = self.userNavigationAction
+        return Binding(get: { self.navigationPath }, set: { path in
+            guard path != self.navigationPath, action?() ?? true else { return }
+            self.navigationPath = path
+        })
+    }
+
     @ViewBuilder private var root: some View {
         let config = self.appModel.activeGatewayConnectConfig
+        let navigationPath = self.userNavigationPath
         if SettingsHubScreen.usesDashboard(
             isOperatorConnected: self.appModel.isOperatorGatewayConnected,
             hasOperatorAdminScope: self.appModel.hasOperatorAdminScope,
@@ -57,7 +67,7 @@ struct DashboardPageScreen: View {
                 config: config,
                 openPanel: { panel in
                     if let route = SettingsHubScreen.route(for: panel) {
-                        self.navigationPath.append(route)
+                        navigationPath.wrappedValue.append(route)
                     }
                 })
                 .navigationTitle(self.title)

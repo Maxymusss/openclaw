@@ -11,6 +11,14 @@ struct SwiftUIRenderSmokeTests {
     @MainActor @Observable
     fileprivate final class NativeChatPresentation {
         var binding: IOSNativeActionBinding?
+        var isVisible = true
+        var ordinarySynchronizations = 0
+        var synchronizedRequestID = 0
+        var synchronizedRegistrationID: UUID?
+        var startedNewChats: [UUID: (requestID: Int, taskID: ObjectIdentifier)] = [:]
+        var startedSynchronizations: [UUID: Int] = [:]
+        var completedSynchronizations: Set<UUID> = []
+        var completedNewChats: [UUID: Bool] = [:]
     }
 
     private struct NativeChatHost: View {
@@ -19,17 +27,48 @@ struct SwiftUIRenderSmokeTests {
         let presentation: NativeChatPresentation
         let presentationID: UUID?
 
+        private var currentPresentation: IOSChatViewModelOwner.Presentation {
+            .init(binding: self.presentation.binding, router: self.nativeActions, id: self.presentationID)
+        }
+
         var body: some View {
-            ChatProTab(
-                nativeBinding: self.presentation.binding,
-                nativePresentationID: self.presentationID)
-                .task(id: self.appModel.chatPresentation.taskIdentity(
-                    appModel: self.appModel, nativeBinding: self.presentation.binding,
-                    presentationID: self.presentationID))
-                {
-                    await self.appModel.chatPresentation.synchronizePresentation(
-                        appModel: self.appModel, nativeBinding: self.presentation.binding,
-                        nativeActions: self.nativeActions, presentationID: self.presentationID)
+            let newChat = self.appModel.chatPresentation.currentNewChatRequest(
+                appModel: self.appModel, presentation: self.currentPresentation)
+            return ZStack {
+                if self.presentation.isVisible {
+                    ChatProTab(nativeBinding: self.presentation.binding, nativePresentationID: self.presentationID)
+                } else {
+                    Color.clear
+                }
+            }
+            .task(id: self.appModel.chatPresentation.taskIdentity(
+                appModel: self.appModel, nativeBinding: self.presentation.binding,
+                presentationID: self.presentationID,
+                chatRegistrationID: self.nativeActions?.chatRegistrationID))
+            {
+                let binding = self.presentation.binding
+                let requestID = self.appModel.newChatRequestID
+                let synchronizationID = UUID()
+                self.presentation.startedSynchronizations[synchronizationID] = requestID
+                defer { self.presentation.completedSynchronizations.insert(synchronizationID) }
+                let registrationID = self.nativeActions?.chatRegistrationID
+                await self.appModel.chatPresentation.synchronizePresentation(
+                    appModel: self.appModel, currentPresentation: { self.currentPresentation })
+                if !Task.isCancelled, registrationID == self.nativeActions?.chatRegistrationID {
+                    self.presentation.synchronizedRegistrationID = registrationID
+                }
+                if !Task.isCancelled, binding == nil {
+                    self.presentation.ordinarySynchronizations += 1
+                    self.presentation.synchronizedRequestID = requestID
+                }
+            }
+            .task(id: newChat.map(ObjectIdentifier.init)) {
+                    guard let newChat else { return }
+                    let invocationID = UUID()
+                    self.presentation.startedNewChats[invocationID] = (newChat.id, ObjectIdentifier(newChat))
+                    let result = await self.appModel.chatPresentation.performNewChat(
+                        newChat, appModel: self.appModel, currentPresentation: { self.currentPresentation })
+                    self.presentation.completedNewChats[invocationID] = result
                 }
         }
     }
@@ -129,24 +168,27 @@ struct SwiftUIRenderSmokeTests {
         }
     }
 
-    @Test @MainActor func `settings Licenses destination builds in light and dark mode`() {
+    @Test @MainActor func `settings Licenses destination builds in light and dark mode`() throws {
         var windows: [UIWindow] = []
         defer { windows.forEach { $0.isHidden = true } }
 
+        let document = try #require(LicenseDocumentLoader.bundledDocuments().first)
         for scheme in [ColorScheme.light, ColorScheme.dark] {
-            let appModel = NodeAppModel()
-            let gatewayController = GatewayConnectionController(appModel: appModel, startDiscovery: false)
+            for route in [SettingsRoute.licenses, .licenseDocument(id: document.id)] {
+                let appModel = NodeAppModel()
+                let gatewayController = GatewayConnectionController(appModel: appModel, startDiscovery: false)
 
-            let root = NavigationStack {
-                SettingsProTab(directRoute: .licenses)
+                let root = NavigationStack {
+                    SettingsProTab(directRoute: route)
+                }
+                .environment(AppAppearanceModel())
+                .environment(appModel)
+                .environment(appModel.voiceWake)
+                .environment(gatewayController)
+                .preferredColorScheme(scheme)
+
+                windows.append(Self.host(root, size: CGSize(width: 393, height: 852)))
             }
-            .environment(AppAppearanceModel())
-            .environment(appModel)
-            .environment(appModel.voiceWake)
-            .environment(gatewayController)
-            .preferredColorScheme(scheme)
-
-            windows.append(Self.host(root, size: CGSize(width: 393, height: 852)))
         }
     }
 
@@ -292,6 +334,61 @@ struct SwiftUIRenderSmokeTests {
         try await Self.nativeChatFixture(action: "retired-new-chat")
     }
 
+    @Test(arguments: ["text", "attachment", "queued", "queued-retired"])
+    @MainActor func `ordinary sidebar return attests the retained native owner`(state: String) async throws {
+        try await Self.nativeChatFixture(action: "sidebar-\(state)")
+    }
+
+    @Test(arguments: ["native-renewal", "native-renewal-departure", "ordinary-renewal", "ordinary-renewal-departure"])
+    @MainActor func `same-model registration does not cancel admitted New Chat`(action: String) async throws {
+        try await Self.nativeChatFixture(action: action)
+    }
+
+    @Test(arguments: [
+        "ordinary-cold-routing",
+        "ordinary-cold-connection",
+        "ordinary-pending-user-aba",
+        "ordinary-pending-account-aba",
+        "ordinary-stale-sync",
+    ])
+    @MainActor func `New Chat preserves its origin through readiness`(action: String) async throws {
+        try await Self.nativeChatFixture(action: action)
+    }
+
+    @Test @MainActor func `standalone fixture New Chat keeps its factory transport`() async throws {
+        try await withUserDefaults([
+            "talk.enabled": false, "talk.background.enabled": false, VoiceWakePreferences.enabledKey: false,
+        ]) {
+            let appModel = NodeAppModel()
+            appModel.enterAppleReviewDemoMode()
+            let owner = appModel.chatPresentation
+            let presentation = IOSChatViewModelOwner.Presentation(binding: nil, router: nil, id: nil)
+            let result: Result<Void, Error>
+            do {
+                owner.requestNewChat(appModel: appModel, presentation: presentation)
+                await owner.synchronizePresentation(appModel: appModel, currentPresentation: { presentation })
+                let request = try #require(owner.currentNewChatRequest(appModel: appModel, presentation: presentation))
+                let model = try #require(owner.viewModel)
+                let initial = model.currentSessionTarget
+                #expect(owner.transport == nil)
+                #expect(model.transport is LocalFixtureChatTransport)
+                let adopted = await owner.performNewChat(
+                    request, appModel: appModel, currentPresentation: { presentation })
+                #expect(adopted)
+                #expect(model.currentSessionTarget != initial)
+                #expect(!appModel.consumeNewChatRequest(request.id))
+                result = .success(())
+            } catch {
+                result = .failure(error)
+            }
+            owner.viewModel?.detachTransport()
+            appModel.disconnectGateway()
+            await appModel.waitForGatewaySessionResetIfNeeded()
+            appModel.voiceWake.stop()
+            try result.get()
+        }
+    }
+
     @MainActor private static func nativeChatFixture(action: String) async throws {
         weak var routerLifetime: NativeActionRouter?
         try await withUserDefaults([
@@ -299,15 +396,32 @@ struct SwiftUIRenderSmokeTests {
         ]) {
             let isDictation = action == "dictation-pending" || action == "dictation-reserved"
             let isUnbound = action == "unbound-new-chat"
+            let isOrdinary = isUnbound || action.hasPrefix("ordinary-")
+            let renewsDuringCreate = action.contains("-renewal")
+            let testsReadiness = isOrdinary && !isUnbound && !renewsDuringCreate
+            let connectsDuringRestore = action == "ordinary-cold-connection"
             let retiresDuringCreate = action == "retired-new-chat"
+            let sidebarReturn = action.hasPrefix("sidebar-")
             let session = OpenClawNativeSessionRef(
                 owner: .init(gatewayID: "chat-activation-\(UUID().uuidString)", profileID: "profile-b"),
                 agentID: "main",
                 sessionKey: "agent:main:native-b")
-            let expectedProfile = isUnbound ? nil : session.owner.profileID
+            let expectedProfile = isOrdinary ? nil : session.owner.profileID
             var createdProfiles: [String?] = []
             var createdKeys: [String] = []
+            var createdAgentIDs: [String?] = []
+            var createdParentKeys: [String?] = []
             var beforeCreateResponse: (@MainActor () -> Void)?
+            var createWaiters: [CheckedContinuation<Void, Never>] = []
+            var createReleased = false
+            @MainActor func releaseCreates() {
+                createReleased = true
+                let waiters = createWaiters
+                createWaiters.removeAll()
+                for waiter in waiters {
+                    waiter.resume()
+                }
+            }
             var sentParams: [[String: Any]] = []
             var issuedRunIDs: Set<String> = []
             var routingReads = 0
@@ -528,6 +642,8 @@ struct SwiftUIRenderSmokeTests {
                         return .success(["tasks": []])
                     case "sessions.create":
                         createdProfiles.append(profile)
+                        createdAgentIDs.append(params["agentId"] as? String)
+                        createdParentKeys.append(params["parentSessionKey"] as? String)
                         guard let key = params["key"] as? String else {
                             observeCallback(
                                 false,
@@ -540,6 +656,12 @@ struct SwiftUIRenderSmokeTests {
                         createdKeys.append(key)
                         beforeCreateResponse?()
                         beforeCreateResponse = nil
+                        if renewsDuringCreate || testsReadiness {
+                            return .deferred {
+                                if !createReleased { await withCheckedContinuation { createWaiters.append($0) } }
+                                return .success(["ok": true, "key": key])
+                            }
+                        }
                         return .success(["ok": true, "key": key])
                     default:
                         observeCallback(
@@ -566,8 +688,27 @@ struct SwiftUIRenderSmokeTests {
                 }
             var releaseRestore: CheckedContinuation<Void, Never>?
             var restoreReturned = false
+            var restoreWaiters: [(requestID: Int, continuation: CheckedContinuation<Void, Never>)] = []
+            var releasedRestoreRequests: Set<Int> = []
+            var restoreAllReleased = false
+            @MainActor func releaseRestores(for requestID: Int? = nil) {
+                if let requestID { releasedRestoreRequests.insert(requestID) } else { restoreAllReleased = true }
+                let ready = restoreWaiters.filter { requestID == nil || $0.requestID == requestID }
+                restoreWaiters.removeAll { requestID == nil || $0.requestID == requestID }
+                for waiter in ready {
+                    waiter.continuation.resume()
+                }
+            }
             appModel.testChatSessionRoutingRestoreHandler = {
-                await withCheckedContinuation { releaseRestore = $0 }
+                if testsReadiness {
+                    let requestID = appModel.newChatRequestID
+                    if !restoreAllReleased, !releasedRestoreRequests.contains(requestID) {
+                        await withCheckedContinuation { restoreWaiters.append((requestID, $0)) }
+                    }
+                } else {
+                    if sidebarReturn || renewsDuringCreate, restoreReturned { return }
+                    await withCheckedContinuation { releaseRestore = $0 }
+                }
                 restoreReturned = true
             }
             var options = GatewayWebSocketTestSupport.identityFreeOperatorConnectOptions
@@ -593,67 +734,367 @@ struct SwiftUIRenderSmokeTests {
             do {
                 defer {
                     phase = "cleanup"
+                    releaseRestores()
                     releaseRestore?.resume()
                     releaseRestore = nil
                     appModel.testChatSessionRoutingRestoreHandler = nil
                     beforeCreateResponse = nil
+                    releaseCreates()
                     releaseWindow()
                     router.unregisterPresentation(presentationID)
                     appModel.setOperatorConnected(false)
                     appModel.activeGatewayConnectConfig = nil
                     appModel.voiceWake.stop()
                 }
-                try await gateway.connect(
-                    url: fixture.url(),
-                    credentials: .init(),
-                    connectOptions: options,
-                    sessionBox: nil,
-                    onConnected: {},
-                    onDisconnected: { _ in },
-                    onInvoke: { BridgeInvokeResponse(id: $0.id, ok: true) })
-                appModel.activeGatewayConnectConfig = GatewayConnectConfig(
-                    url: fixture.url(),
-                    stableID: session.owner.gatewayID,
-                    tls: nil,
-                    token: nil,
-                    bootstrapToken: nil,
-                    password: nil,
-                    nodeOptions: options)
+                let fixtureConfig = GatewayConnectConfig(
+                    url: fixture.url(), stableID: session.owner.gatewayID, tls: nil,
+                    token: nil, bootstrapToken: nil, password: nil, nodeOptions: options)
+                if !connectsDuringRestore {
+                    try await gateway.connect(
+                        url: fixture.url(), credentials: .init(), connectOptions: options, sessionBox: nil,
+                        onConnected: {}, onDisconnected: { _ in },
+                        onInvoke: { BridgeInvokeResponse(id: $0.id, ok: true) })
+                    appModel.activeGatewayConnectConfig = fixtureConfig
+                }
                 appModel.connectedGatewayID = session.owner.gatewayID
-                appModel.setOperatorConnected(true)
-                appModel.focusChatSession(session.sessionKey)
+                appModel.setOperatorConnected(!connectsDuringRestore)
+                appModel.focusChatSession(testsReadiness ? nil : session.sessionKey)
+                let cachedRouting = try #require(OpenClawChatSessionRoutingIdentity(
+                    scope: "per-sender", mainSessionKey: "restored-main", defaultAgentID: "main"))
+                if testsReadiness {
+                    let databases = try OpenClawClientDatabases(
+                        directoryURL: #require(NodeAppModel.chatDatabaseDirectoryURL()))
+                    let store = databases.store(gatewayID: session.owner.gatewayID)
+                    await store.storeSessionRoutingIdentity(cachedRouting)
+                    await store.retire()
+                }
                 window = try Self.hostNativeChat(
                     NativeChatHost(presentation: presentation, presentationID: isUnbound ? nil : presentationID)
                         .environment(appModel)
                         .environment(gatewayController)
                         .environment(router),
                     previousKeyWindow: &previousKeyWindow)
-                let restoreDeadline = ContinuousClock.now + .seconds(2)
-                while releaseRestore == nil, ContinuousClock.now < restoreDeadline {
-                    try await Task.sleep(for: .milliseconds(10))
-                }
-                let release = try #require(releaseRestore)
+                if !testsReadiness {
+                    let restoreDeadline = ContinuousClock.now + .seconds(2)
+                    while releaseRestore == nil, ContinuousClock.now < restoreDeadline {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    let release = try #require(releaseRestore)
 
-                if !isUnbound {
-                    phase = "opening"
-                    let opening: OpenClawNativeOpenRequest = (action == "reopen" || action == "profile-reopen")
-                        ? .compose(session, draft: "retained idle text") : .session(session)
-                    #expect(await router.open(opening) == .opened)
-                    #expect(presentation.binding?.session == session)
-                } else {
-                    #expect(presentation.binding == nil)
+                    if !isOrdinary {
+                        phase = "opening"
+                        let opening: OpenClawNativeOpenRequest = (action == "reopen" || action == "profile-reopen")
+                            ? .compose(session, draft: "retained idle text") : .session(session)
+                        #expect(await router.open(opening) == .opened)
+                        #expect(presentation.binding?.session == session)
+                    } else {
+                        #expect(presentation.binding == nil)
+                    }
+                    releaseRestore = nil
+                    release.resume()
+                    let releaseDeadline = ContinuousClock.now + .seconds(2)
+                    while !restoreReturned, ContinuousClock.now < releaseDeadline {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try #require(restoreReturned)
                 }
-                releaseRestore = nil
-                release.resume()
-                let releaseDeadline = ContinuousClock.now + .seconds(2)
-                while !restoreReturned, ContinuousClock.now < releaseDeadline {
-                    try await Task.sleep(for: .milliseconds(10))
-                }
-                try #require(restoreReturned)
                 phase = "presented"
                 try #require(createdProfiles.isEmpty)
-                #expect(restoreReturned)
-                if action == "new-chat" || isUnbound || retiresDuringCreate {
+                #expect(testsReadiness || restoreReturned)
+                if testsReadiness {
+                    let owner = appModel.chatPresentation
+                    let current: @MainActor () -> IOSChatViewModelOwner.Presentation = {
+                        .init(binding: presentation.binding, router: router, id: presentationID)
+                    }
+                    @MainActor func queueNewChat() throws -> Int {
+                        try #require(router.userNavigationDidChange(presentationID: presentationID))
+                        owner.requestNewChat(appModel: appModel, presentation: current())
+                        return appModel.newChatRequestID
+                    }
+                    let first = try queueNewChat()
+                    let waitingDeadline = ContinuousClock.now + .seconds(2)
+                    while !restoreWaiters.contains(where: { $0.requestID == first }),
+                          ContinuousClock.now < waitingDeadline
+                    {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try #require(restoreWaiters.contains { $0.requestID == first })
+                    try #require(createdKeys.isEmpty)
+                    var latest = first
+                    if connectsDuringRestore {
+                        #expect(appModel.activeGatewayConnectConfig == nil)
+                        try await gateway.connect(
+                            url: fixture.url(), credentials: .init(), connectOptions: options, sessionBox: nil,
+                            onConnected: {}, onDisconnected: { _ in },
+                            onInvoke: { BridgeInvokeResponse(id: $0.id, ok: true) })
+                        appModel.activeGatewayConnectConfig = fixtureConfig
+                        appModel.setOperatorConnected(true)
+                    }
+                    if action == "ordinary-pending-user-aba" {
+                        let original = appModel.chatSessionKey
+                        appModel.focusChatSession("agent:main:other")
+                        appModel.focusChatSession(original)
+                    } else if action == "ordinary-pending-account-aba" {
+                        appModel.activeGatewayConnectConfig = GatewayConnectConfig(
+                            url: fixture.url(), stableID: session.owner.gatewayID, tls: nil,
+                            token: "replacement-fixture-account", bootstrapToken: nil, password: nil,
+                            nodeOptions: options)
+                        appModel.activeGatewayConnectConfig = fixtureConfig
+                    }
+                    if action.contains("-pending-") {
+                        releaseRestores()
+                        let rejectedDeadline = ContinuousClock.now + .seconds(2)
+                        while presentation.synchronizedRequestID != first,
+                              ContinuousClock.now < rejectedDeadline
+                        {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        try #require(presentation.synchronizedRequestID == first)
+                        #expect(owner.currentNewChatRequest(appModel: appModel, presentation: current()) == nil)
+                        try #require(createdKeys.isEmpty)
+                        latest = try queueNewChat()
+                    } else if action == "ordinary-stale-sync" {
+                        latest = try queueNewChat()
+                        let replacementDeadline = ContinuousClock.now + .seconds(2)
+                        while !restoreWaiters.contains(where: { $0.requestID == latest }),
+                              ContinuousClock.now < replacementDeadline
+                        {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        try #require(restoreWaiters.contains { $0.requestID == latest })
+                        releaseRestores(for: latest)
+                    } else {
+                        releaseRestores()
+                    }
+                    let createDeadline = ContinuousClock.now + .seconds(2)
+                    while createWaiters.isEmpty, ContinuousClock.now < createDeadline {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try #require(!createWaiters.isEmpty)
+                    let request = try #require(owner.currentNewChatRequest(appModel: appModel, presentation: current()))
+                    #expect(request.id == latest)
+                    let invocations = presentation.startedNewChats.filter { $0.value.requestID == latest }
+                    try #require(invocations.count == 1)
+                    let invocationID = try #require(invocations.keys.first)
+                    #expect(invocations[invocationID]?.taskID == ObjectIdentifier(request))
+                    #expect(!appModel.consumeNewChatRequest(latest))
+                    if action == "ordinary-stale-sync" {
+                        let obsolete = Set(presentation.startedSynchronizations
+                            .filter { $0.value != latest }.map(\.key))
+                        releaseRestores()
+                        let oldDeadline = ContinuousClock.now + .seconds(2)
+                        while !obsolete.isSubset(of: presentation.completedSynchronizations),
+                              ContinuousClock.now < oldDeadline
+                        {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        try #require(obsolete.isSubset(of: presentation.completedSynchronizations))
+                        #expect(owner.currentNewChatRequest(appModel: appModel, presentation: current()) === request)
+                    }
+                    #expect(appModel.chatSessionRoutingContract == cachedRouting.contract)
+                    #expect(appModel.chatDeliveryAgentId == "main")
+                    let restoredTarget = try #require(owner.transport).sessionTarget(for: cachedRouting.mainSessionKey)
+                    #expect(restoredTarget.agentID == cachedRouting.defaultAgentID)
+                    #expect(createdAgentIDs == [restoredTarget.agentID])
+                    #expect(createdParentKeys == [restoredTarget.sessionKey])
+                    let creating = try #require(owner.viewModel)
+                    #expect(creating.isCreatingSession)
+                    releaseCreates()
+                    let completionDeadline = ContinuousClock.now + .seconds(2)
+                    while presentation.completedNewChats[invocationID] == nil,
+                          ContinuousClock.now < completionDeadline
+                    {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    let adopted = try #require(presentation.completedNewChats[invocationID])
+                    #expect(adopted)
+                    #expect(!creating.isCreatingSession)
+                    #expect(createdKeys.count == 1)
+                    #expect(createdProfiles == [nil])
+                    #expect(presentation.startedNewChats.values.filter { $0.requestID == latest }.count == 1)
+                    #expect(appModel.chatSessionKey == createdKeys.first)
+                    #expect(creating.errorText == nil)
+                    #expect(sentParams.isEmpty)
+                } else if renewsDuringCreate {
+                    let chat = try #require(appModel.chatPresentation.viewModel)
+                    let owner = appModel.chatPresentation
+                    let originalTarget = chat.currentSessionTarget
+                    chat.input = "retained new-chat draft"
+                    let registrationDeadline = ContinuousClock.now + .seconds(2)
+                    while router.chatRegistrationID == nil, ContinuousClock.now < registrationDeadline {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try #require(router.chatRegistrationID != nil)
+                    try #require(router.userNavigationDidChange(presentationID: presentationID))
+                    owner.requestNewChat(
+                        appModel: appModel,
+                        presentation: .init(binding: presentation.binding, router: router, id: presentationID))
+                    let requestID = appModel.newChatRequestID
+                    let createDeadline = ContinuousClock.now + .seconds(2)
+                    while createWaiters.isEmpty, ContinuousClock.now < createDeadline {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try #require(!createWaiters.isEmpty)
+                    let current: @MainActor () -> IOSChatViewModelOwner.Presentation = {
+                        .init(binding: presentation.binding, router: router, id: presentationID)
+                    }
+                    let request = try #require(owner.currentNewChatRequest(appModel: appModel, presentation: current()))
+                    #expect(request.id == requestID)
+                    let invocations = presentation.startedNewChats.filter { $0.value.requestID == requestID }
+                    try #require(invocations.count == 1)
+                    let invocationID = try #require(invocations.keys.first)
+                    #expect(invocations[invocationID]?.taskID == ObjectIdentifier(request))
+                    #expect(!appModel.consumeNewChatRequest(requestID))
+                    #expect(chat.isCreatingSession)
+                    #expect(owner.viewModel === chat)
+                    #expect((owner.transport?.nativeBinding == nil) == isOrdinary)
+                    let previousRegistration = router.chatRegistrationID
+                    let registration = try #require(router.registerChat(
+                        chat, ownerID: owner.ownerID, agentID: owner.transportAgentID,
+                        transport: owner.transport, presentationID: presentationID))
+                    #expect(registration != previousRegistration)
+                    let renewedDeadline = ContinuousClock.now + .seconds(2)
+                    while presentation.synchronizedRegistrationID != registration,
+                          ContinuousClock.now < renewedDeadline
+                    {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try #require(presentation.synchronizedRegistrationID == registration)
+                    #expect(owner.currentNewChatRequest(appModel: appModel, presentation: current()) === request)
+                    #expect(presentation.completedNewChats[invocationID] == nil)
+                    if action.hasSuffix("-departure") {
+                        router.unregisterPresentation(presentationID)
+                        releaseWindow()
+                        // Join actual task cancellation before releasing the server reply.
+                        // Ordinary chat deliberately has no synchronous native-authority fence.
+                        let departureDeadline = ContinuousClock.now + .seconds(2)
+                        while presentation.completedNewChats[invocationID] == nil,
+                              ContinuousClock.now < departureDeadline
+                        {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        let departed = try #require(presentation.completedNewChats[invocationID])
+                        #expect(!departed)
+                    }
+                    releaseCreates()
+                    let completionDeadline = ContinuousClock.now + .seconds(2)
+                    while presentation.completedNewChats[invocationID] == nil,
+                          ContinuousClock.now < completionDeadline
+                    {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    let adopted = try #require(presentation.completedNewChats[invocationID])
+                    #expect(adopted == !action.hasSuffix("-departure"))
+                    #expect(!chat.isCreatingSession)
+                    #expect(createdKeys.count == 1)
+                    #expect(createdProfiles == [expectedProfile])
+                    #expect(presentation.startedNewChats.values.filter { $0.requestID == requestID }.count == 1)
+                    #expect(sentParams.isEmpty)
+                    if adopted {
+                        #expect(appModel.chatSessionKey == createdKeys[0])
+                        #expect(chat.errorText == nil)
+                    } else {
+                        #expect(chat.currentSessionTarget == originalTarget)
+                        #expect(appModel.chatSessionKey == originalTarget.sessionKey)
+                    }
+                } else if sidebarReturn {
+                    let chat = try #require(appModel.chatPresentation.viewModel)
+                    let binding = try #require(presentation.binding)
+                    let oldRegistration = try #require(router.chatRegistrationID)
+                    let originalTarget = chat.currentSessionTarget
+                    chat.input = "retained sidebar draft"
+                    if action == "sidebar-attachment" {
+                        chat.attachments = [.init(
+                            url: nil, data: Data([1]), fileName: "draft.png", mimeType: "image/png", preview: nil)]
+                    }
+                    let attachmentIDs = chat.attachments.map(\.id)
+                    let oldAuthority = chat.captureSessionTransitionAuthority()
+                    #expect(oldAuthority())
+                    _ = try await Self.composer(in: #require(window), expectedText: chat.input)
+                    let ordinarySyncs = presentation.ordinarySynchronizations
+                    presentation.isVisible = false
+                    let hiddenDeadline = ContinuousClock.now + .seconds(2)
+                    while presentation.binding != nil || router.chatRegistrationID != nil ||
+                        presentation.ordinarySynchronizations == ordinarySyncs, ContinuousClock.now < hiddenDeadline
+                    {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    try #require(presentation.binding == nil && router.chatRegistrationID == nil)
+                    try #require(presentation.ordinarySynchronizations > ordinarySyncs)
+                    #expect(!oldAuthority())
+                    #expect(appModel.chatPresentation.viewModel === chat)
+                    #expect(appModel.chatPresentation.transport?.nativeBinding === binding)
+                    #expect(chat.currentSessionTarget == originalTarget)
+                    #expect(chat.input == "retained sidebar draft")
+                    #expect(chat.attachments.map(\.id) == attachmentIDs)
+                    if action.hasPrefix("sidebar-queued") {
+                        appModel.chatPresentation.requestNewChat(
+                            appModel: appModel,
+                            presentation: .init(
+                                binding: presentation.binding, router: router,
+                                id: isUnbound ? nil : presentationID))
+                        let queued = appModel.newChatRequestID
+                        let queueDeadline = ContinuousClock.now + .seconds(2)
+                        while presentation.synchronizedRequestID != queued, ContinuousClock.now < queueDeadline {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        try #require(presentation.synchronizedRequestID == queued)
+                        #expect(createdKeys.isEmpty)
+                    }
+                    if action == "sidebar-queued-retired" {
+                        try #require(router.userNavigationDidChange(presentationID: presentationID))
+                    }
+                    presentation.isVisible = true
+                    if !action.hasPrefix("sidebar-queued") {
+                        let visibleDeadline = ContinuousClock.now + .seconds(2)
+                        while router.chatRegistrationID == nil, ContinuousClock.now < visibleDeadline {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        try #require(router.chatRegistrationID != nil && router.chatRegistrationID != oldRegistration)
+                        #expect(presentation.binding == nil)
+                        #expect(appModel.chatPresentation.viewModel === chat)
+                        #expect(appModel.chatPresentation.transport?.nativeBinding === binding)
+                        #expect(chat.input == "retained sidebar draft")
+                        #expect(chat.attachments.map(\.id) == attachmentIDs)
+                        #expect(chat.captureSessionTransitionAuthority()())
+                        #expect(!oldAuthority())
+                        for id in attachmentIDs {
+                            chat.removeAttachment(id)
+                        }
+                        appModel.chatPresentation.requestNewChat(
+                            appModel: appModel,
+                            presentation: .init(
+                                binding: presentation.binding, router: router,
+                                id: isUnbound ? nil : presentationID))
+                    } else if action == "sidebar-queued-retired" {
+                        let registrationDeadline = ContinuousClock.now + .seconds(2)
+                        while router.chatRegistrationID == nil ||
+                            presentation.synchronizedRegistrationID != router.chatRegistrationID,
+                            ContinuousClock.now < registrationDeadline
+                        {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        try #require(router.chatRegistrationID != nil)
+                        try #require(presentation.synchronizedRegistrationID == router.chatRegistrationID)
+                        try #require(createdKeys.isEmpty)
+                        #expect(appModel.chatPresentation.currentNewChatRequest(
+                            appModel: appModel,
+                            presentation: .init(binding: nil, router: router, id: presentationID)) == nil)
+                        try #require(router.userNavigationDidChange(presentationID: presentationID))
+                        appModel.chatPresentation.requestNewChat(
+                            appModel: appModel,
+                            presentation: .init(binding: nil, router: router, id: presentationID))
+                    }
+                    let createDeadline = ContinuousClock.now + .seconds(2)
+                    while createdKeys.isEmpty || chat.isCreatingSession, ContinuousClock.now < createDeadline {
+                        try await Task.sleep(for: .milliseconds(10))
+                    }
+                    #expect(createdKeys.count == 1)
+                    #expect(createdProfiles == [expectedProfile])
+                    #expect(appModel.chatSessionKey == createdKeys.first)
+                    #expect(!oldAuthority())
+                    #expect(sentParams.isEmpty)
+                } else if action == "new-chat" || isUnbound || retiresDuringCreate {
                     let prepared: OpenClawNativePreparedSend? = if retiresDuringCreate {
                         try await router.prepareSend(to: session, message: "retired confirmation")
                     } else {
@@ -675,7 +1116,11 @@ struct SwiftUIRenderSmokeTests {
                     }
                     // A's suspended restore cannot consume the native command.
                     phase = "creating"
-                    appModel.requestNewChat()
+                    appModel.chatPresentation.requestNewChat(
+                        appModel: appModel,
+                        presentation: .init(
+                            binding: presentation.binding, router: router,
+                            id: isUnbound ? nil : presentationID))
                     let commandDeadline = ContinuousClock.now + .seconds(2)
                     while ContinuousClock.now < commandDeadline {
                         if retiresDuringCreate {
@@ -827,9 +1272,35 @@ struct SwiftUIRenderSmokeTests {
             } catch {
                 outcome = .failure(error)
             }
+            // Close transport and join reply writers even if the body or a terminal wait throws.
             await gateway.disconnect()
             await fixture.stopAndWait()
-            await appModel.purgeChatTranscriptCache(gatewayID: session.owner.gatewayID)
+            let completion: Result<Void, Error>
+            do {
+                let taskDeadline = ContinuousClock.now + .seconds(2)
+                while !Set(presentation.startedNewChats.keys).isSubset(of: Set(presentation.completedNewChats.keys)),
+                      ContinuousClock.now < taskDeadline
+                {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try #require(Set(presentation.startedNewChats.keys)
+                    .isSubset(of: Set(presentation.completedNewChats.keys)))
+                let syncDeadline = ContinuousClock.now + .seconds(2)
+                while !Set(presentation.startedSynchronizations.keys)
+                    .isSubset(of: presentation.completedSynchronizations),
+                    ContinuousClock.now < syncDeadline
+                {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                try #require(Set(presentation.startedSynchronizations.keys)
+                    .isSubset(of: presentation.completedSynchronizations))
+                await appModel.purgeChatTranscriptCache(gatewayID: session.owner.gatewayID)
+                completion = .success(())
+            } catch {
+                // Unknown task lifetime retains its cache; report this even if the body also failed.
+                Issue.record("Hosted chat tasks did not finish; retaining fixture cache")
+                completion = .failure(error)
+            }
             // NW callbacks have no originating Swift Testing task. Assert after
             // admission closes and all retained reply writers join, even on body failure.
             #expect(
@@ -837,6 +1308,7 @@ struct SwiftUIRenderSmokeTests {
                 "count=\(callbackViolationCount) overflow=\(callbackViolationCount > 16) \(callbackViolations.joined(separator: " | "))")
             if let creatingAtResponse { #expect(creatingAtResponse) }
             try outcome.get()
+            try completion.get()
         }
         if action == "retired-new-chat" {
             // Hosting, registration, restore, and prepared-send references have left scope.

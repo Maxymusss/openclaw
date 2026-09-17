@@ -19,6 +19,9 @@ struct RootSidebar: View {
     let isDismissButtonEnabled: Bool
     let selectDestination: (RootTabs.SidebarDestination) -> Void
     let selectSession: (OpenClawChatSessionEntry) -> Void
+    let openChat: (OpenClawChatSessionTarget) -> Void
+    let requestNewChat: () -> Void
+    let prepareFork: (OpenClawChatSessionEntry) -> PreparedChatNavigation?
     let hideSidebar: () -> Void
 
     var body: some View {
@@ -220,8 +223,7 @@ struct RootSidebar: View {
 
     private var newChatButton: some View {
         Button {
-            self.appModel.requestNewChat()
-            self.selectSidebarDestination(.chat)
+            self.requestNewChat()
         } label: {
             Label {
                 Text(String(localized: "New Chat"))
@@ -456,8 +458,9 @@ struct RootSidebar: View {
         let mainSession = self.mainSessionEntry
         return HStack(spacing: 0) {
             Button {
-                self.appModel.openChat(sessionKey: mainKey)
-                self.selectSidebarDestination(.chat)
+                self.openChat(IOSGatewayChatTransport.sessionTarget(
+                    for: mainKey, selectedAgentID: self.appModel.chatDeliveryAgentId,
+                    overrideAgentID: mainSession?.agentId))
             } label: {
                 HStack(spacing: 9) {
                     Image(systemName: "house")
@@ -853,15 +856,17 @@ struct RootSidebar: View {
     }
 
     private func forkSession(_ session: OpenClawChatSessionEntry) {
+        guard let prepared = prepareFork(session) else { return }
+        let fromLastCompleted = session.hasActiveRun == true
         Task {
             do {
-                let key = try await self.appModel.makeChatTransport().forkSession(
-                    parentKey: session.key,
-                    fromLastCompleted: session.hasActiveRun == true)
-                self.appModel.openChat(sessionKey: key)
-                self.selectSidebarDestination(.chat)
+                let fork = try await prepared.fork(fromLastCompleted: fromLastCompleted)
+                guard await prepared.commit(fork) else { return }
                 await self.model.refreshSessions(appModel: self.appModel)
+            } catch is CancellationError {
+                return
             } catch {
+                guard prepared.isCurrent(), !Task.isCancelled else { return }
                 self.model.reportSessionError(error)
             }
         }

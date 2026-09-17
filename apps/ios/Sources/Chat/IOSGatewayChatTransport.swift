@@ -519,13 +519,27 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
     }
 
     func forkSession(parentKey: String, fromLastCompleted: Bool, agentID: String?) async throws -> String {
+        try await self.forkSession(
+            parentKey: parentKey, fromLastCompleted: fromLastCompleted, agentID: agentID, ifCurrentRoute: nil)
+    }
+
+    func forkSession(
+        parentKey: String,
+        fromLastCompleted: Bool,
+        agentID: String?,
+        ifCurrentRoute route: GatewayNodeSessionRoute?) async throws -> String
+    {
         let target = self.sessionTarget(for: parentKey, overrideAgentID: agentID)
         let childAgentID = target.agentID ?? OpenClawChatSessionKey.agentID(from: target.sessionKey)
         let request = OpenClawChatGatewayRequests.forkSession(
             parentSessionKey: target.sessionKey,
             agentID: childAgentID,
             fromLastCompleted: fromLastCompleted)
-        let response = try await self.requestChatGateway(request)
+        let response = if let route {
+            try await self.requestSessionMutation(request, ifCurrentRoute: route)
+        } else {
+            try await self.requestChatGateway(request)
+        }
         return try JSONDecoder().decode(OpenClawChatCreateSessionResponse.self, from: response).key
     }
 

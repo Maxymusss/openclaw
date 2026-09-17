@@ -51,12 +51,14 @@ final class IOSChatViewModelOwner {
         let authority: GatewayConnectConfig.ControlUIInputs?
         let nativeBinding: ObjectIdentifier?
         let presentationID: UUID?
+        let chatRegistrationID: UUID?
     }
 
     func taskIdentity(
         appModel: NodeAppModel,
         nativeBinding: IOSNativeActionBinding?,
-        presentationID: UUID?) -> TaskIdentity
+        presentationID: UUID?,
+        chatRegistrationID: UUID? = nil) -> TaskIdentity
     {
         TaskIdentity(
             route: appModel.chatViewModelIdentityID,
@@ -69,28 +71,231 @@ final class IOSChatViewModelOwner {
             newChatRequestID: appModel.newChatRequestID,
             authority: appModel.activeGatewayConnectConfig?.controlUIInputs,
             nativeBinding: nativeBinding.map(ObjectIdentifier.init),
-            presentationID: presentationID)
+            presentationID: presentationID,
+            chatRegistrationID: chatRegistrationID)
+    }
+
+    struct Presentation {
+        let binding: IOSNativeActionBinding?
+        let router: NativeActionRouter?
+        let id: UUID?
+    }
+
+    @MainActor
+    struct NewChatOrigin {
+        let ownerID: String
+        let agentID: String?
+        let inputs: GatewayConnectConfig.ControlUIInputs?
+        let accountGeneration: UInt64?
+        let binding: IOSNativeActionBinding?
+        let rootID: UUID?
+        weak var router: NativeActionRouter?
+        let hadRouter: Bool
+        let authority: NativeActionRouter.PresentationAuthority?
+
+        init?(appModel: NodeAppModel, presentation: Presentation) {
+            let authority = presentation.router?.capturePresentationAuthority(presentation.id)
+            guard presentation.id == nil || authority != nil,
+                  presentation.binding == nil || authority != nil else { return nil }
+            self.ownerID = appModel.chatViewModelOwnerID
+            self.agentID = appModel.chatDeliveryAgentId
+            let inputs = appModel.activeGatewayConnectConfig?.controlUIInputs
+            self.inputs = inputs
+            self.accountGeneration = inputs == nil ? nil : appModel.operatorAuthorityGeneration
+            self.binding = presentation.binding
+            self.rootID = presentation.id
+            self.router = presentation.router
+            self.hadRouter = presentation.router != nil
+            self.authority = authority
+        }
+
+        func isCurrent(appModel: NodeAppModel, presentation: Presentation) -> Bool {
+            self.ownerID == appModel.chatViewModelOwnerID &&
+                (self.agentID == nil || self.agentID == appModel.chatDeliveryAgentId) &&
+                (self.inputs == nil || self.inputs == appModel.activeGatewayConnectConfig?.controlUIInputs) &&
+                (self.accountGeneration == nil || self.accountGeneration == appModel.operatorAuthorityGeneration) &&
+                self.binding === presentation.binding && self.rootID == presentation.id &&
+                self.hadRouter == (presentation.router != nil) && self.router === presentation.router &&
+                (self.authority.map { presentation.router?.isCurrentPresentation($0) == true } ??
+                    (self.rootID == nil))
+        }
+    }
+
+    @MainActor
+    final class NewChatRequest {
+        let id: Int
+        let origin: NewChatOrigin
+        weak var viewModel: OpenClawChatViewModel?
+        let scope: TaskIdentity?
+        let generation: UInt64?
+        let accountGeneration: UInt64?
+        let gateway: GatewayNodeSession?
+        let binding: IOSNativeActionBinding?
+
+        init(
+            id: Int, origin: NewChatOrigin, viewModel: OpenClawChatViewModel? = nil,
+            scope: TaskIdentity? = nil, transport: IOSGatewayChatTransport? = nil,
+            generation: UInt64? = nil, accountGeneration: UInt64? = nil)
+        {
+            self.id = id
+            self.origin = origin
+            self.viewModel = viewModel
+            self.scope = scope
+            self.generation = generation
+            self.accountGeneration = accountGeneration
+            self.gateway = transport?.gateway
+            self.binding = transport?.nativeBinding
+        }
+    }
+
+    private var newChatRequest: NewChatRequest?
+
+    func requestNewChat(appModel: NodeAppModel, presentation: Presentation) {
+        guard let origin = NewChatOrigin(appModel: appModel, presentation: presentation) else { return }
+        appModel.requestNewChat()
+        // Bind the click before SwiftUI schedules readiness. The same request
+        // must never acquire a successor's target or account after an await.
+        self.newChatRequest = NewChatRequest(id: appModel.newChatRequestID, origin: origin)
+    }
+
+    func currentNewChatRequest(appModel: NodeAppModel, presentation: Presentation) -> NewChatRequest? {
+        guard let request = self.newChatRequest, let viewModel = request.viewModel, let scope = request.scope,
+              request.id == appModel.newChatRequestID, request.origin.isCurrent(
+                  appModel: appModel,
+                  presentation: presentation),
+              self.viewModel === viewModel, !viewModel.isQuestionAuthorityRetired,
+              request.generation == appModel.gatewayConnectGeneration,
+              request.accountGeneration == appModel.operatorAuthorityGeneration,
+              self.transport?.gateway === request.gateway, self.transport?.nativeBinding === request.binding,
+              scope == self.taskIdentity(
+                  appModel: appModel, nativeBinding: presentation.binding, presentationID: presentation.id)
+        else { return nil }
+        // Consuming the counter and setting isCreatingSession do not retire this
+        // identity. Registration wakes readiness but cannot cancel admitted work.
+        return request
     }
 
     func synchronizePresentation(
         appModel: NodeAppModel,
-        nativeBinding: IOSNativeActionBinding?,
-        nativeActions: NativeActionRouter?,
-        presentationID: UUID?) async
+        currentPresentation: @MainActor () -> Presentation) async
     {
-        if nativeBinding == nil {
+        let presentation = currentPresentation()
+        guard let origin = NewChatOrigin(appModel: appModel, presentation: presentation) else { return }
+        let pending = self.newChatRequest
+        let inputs = appModel.activeGatewayConnectConfig?.controlUIInputs
+        let generation = appModel.gatewayConnectGeneration
+        let accountGeneration = appModel.operatorAuthorityGeneration
+        if presentation.binding == nil {
             await appModel.restoreChatSessionRoutingIdentityIfNeeded()
         }
-        // A suspended ordinary restore cannot replace a newer native presentation.
-        guard !Task.isCancelled else { return }
+        // Restore may resolve cached routing, but cannot renew user/account
+        // authority. A first connection invalidates this attempt, not its intent.
+        guard !Task.isCancelled, origin.isCurrent(appModel: appModel, presentation: currentPresentation()),
+              inputs == appModel.activeGatewayConnectConfig?.controlUIInputs,
+              generation == appModel.gatewayConnectGeneration,
+              accountGeneration == appModel.operatorAuthorityGeneration else { return }
         self.sync(
-            appModel: appModel, nativeBinding: nativeBinding,
-            nativeActions: nativeActions, presentationID: presentationID)
-        if self.matchesBinding(nativeBinding), let viewModel,
-           appModel.consumeNewChatRequest(appModel.newChatRequestID)
-        {
-            _ = await viewModel.startNewSession()
+            appModel: appModel, nativeBinding: presentation.binding,
+            nativeActions: presentation.router, presentationID: presentation.id)
+        guard let pending, pending.scope == nil, self.newChatRequest === pending,
+              pending.id == appModel.newChatRequestID,
+              pending.origin.isCurrent(appModel: appModel, presentation: currentPresentation()),
+              let viewModel else { return }
+        let scope = self.taskIdentity(
+            appModel: appModel, nativeBinding: presentation.binding, presentationID: presentation.id)
+        guard let context = await self.readyNewChatPresentation(appModel: appModel, presentation: presentation),
+              !Task.isCancelled, context.viewModel === viewModel, self.viewModel === viewModel,
+              self.newChatRequest === pending,
+              generation == appModel.gatewayConnectGeneration,
+              accountGeneration == appModel.operatorAuthorityGeneration,
+              origin.isCurrent(appModel: appModel, presentation: currentPresentation()),
+              pending.origin.isCurrent(appModel: appModel, presentation: currentPresentation()),
+              scope == self.taskIdentity(
+                  appModel: appModel, nativeBinding: currentPresentation().binding,
+                  presentationID: currentPresentation().id)
+        else { return }
+        // Compare-and-publish once. Obsolete attempts never clear a newer slot;
+        // registration renewals never replace an already prepared request.
+        self.newChatRequest = NewChatRequest(
+            id: pending.id, origin: pending.origin, viewModel: viewModel, scope: scope, transport: context.transport,
+            generation: generation, accountGeneration: accountGeneration)
+    }
+
+    private func readyNewChatPresentation(
+        appModel: NodeAppModel, presentation: Presentation) async -> VisiblePresentation?
+    {
+        guard let context = await self.visiblePresentation(
+            appModel: appModel, nativeBinding: presentation.binding,
+            nativeActions: presentation.router, presentationID: presentation.id) else { return nil }
+        if let binding = context.transport?.nativeBinding {
+            guard let authority = context.authority,
+                  presentation.router?
+                      .hasRegisteredChat(context.viewModel, binding: binding, authority: authority) == true
+            else { return nil }
         }
+        return context
+    }
+
+    @discardableResult
+    func performNewChat(
+        _ request: NewChatRequest, appModel: NodeAppModel,
+        currentPresentation: @MainActor () -> Presentation) async -> Bool
+    {
+        guard self.currentNewChatRequest(appModel: appModel, presentation: currentPresentation()) === request,
+              let viewModel = request.viewModel,
+              let context = await self.readyNewChatPresentation(
+                  appModel: appModel, presentation: currentPresentation()),
+              !Task.isCancelled, context.viewModel === viewModel,
+              self.currentNewChatRequest(appModel: appModel, presentation: currentPresentation()) === request,
+              appModel.consumeNewChatRequest(request.id) else { return false }
+        return await viewModel.startNewSession()
+    }
+
+    struct VisiblePresentation {
+        let viewModel: OpenClawChatViewModel
+        let transport: IOSGatewayChatTransport?
+        let ownerID: String
+        let agentID: String
+        let authority: NativeActionRouter.PresentationAuthority?
+    }
+
+    /// Reappearing UI may attest a retained native owner without receiving a new
+    /// intent binding. Visibility is acquired separately; old selections stay retired.
+    func visiblePresentation(
+        appModel: NodeAppModel,
+        nativeBinding: IOSNativeActionBinding?,
+        nativeActions: NativeActionRouter?,
+        presentationID: UUID?) async -> VisiblePresentation?
+    {
+        guard !Task.isCancelled, let viewModel else { return nil }
+        let transport = self.transport
+        let ownerID = self.ownerID
+        let agentID = self.transportAgentID
+        var authority: NativeActionRouter.PresentationAuthority?
+        if let binding = transport?.nativeBinding {
+            guard let nativeActions,
+                  let captured = nativeActions.capturePresentationAuthority(presentationID)
+            else { return nil }
+            func ownerMatches() -> Bool {
+                self.viewModel === viewModel && !viewModel.isQuestionAuthorityRetired &&
+                    self.ownerID == ownerID && self.transportAgentID == agentID &&
+                    self.transport?.nativeBinding === binding && self.transport?.gateway === transport?.gateway &&
+                    self.nativeActions === nativeActions && self.presentationID == presentationID &&
+                    self.matchesNativeTarget(binding.session, appModel: appModel) &&
+                    appModel.chatSessionKey.utf8.elementsEqual(binding.session.sessionKey.utf8) &&
+                    appModel.chatDeliveryAgentId?.utf8.elementsEqual(binding.session.agentID.utf8) == true &&
+                    binding.canReuse(nativeBinding ?? binding)
+            }
+            guard ownerMatches(), await binding.isCurrent(), !Task.isCancelled,
+                  nativeActions.isCurrentPresentation(captured), ownerMatches()
+            else { return nil }
+            authority = captured
+        } else if nativeBinding != nil {
+            return nil
+        }
+        return VisiblePresentation(
+            viewModel: viewModel, transport: transport, ownerID: ownerID,
+            agentID: agentID, authority: authority)
     }
 
     func sync(

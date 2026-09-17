@@ -328,15 +328,25 @@ private struct ExecApprovalPromptCard: View {
 
 struct ApprovalDashboardReviewButton: View {
     @Environment(NodeAppModel.self) private var appModel
+    @Environment(\.userNavigationAction) private var userNavigationAction
     @State private var isPresented = false
     @State private var authorityGeneration: UInt64?
     let prompt: NodeAppModel.ExecApprovalPrompt
 
     var body: some View {
-        Group {
+        let action = self.userNavigationAction
+        let generation = self.authorityGeneration
+        let presentation = Binding(get: { self.isPresented }, set: { value in
+            guard value != self.isPresented,
+                  generation == self.authorityGeneration,
+                  generation == self.appModel.operatorAuthorityGeneration,
+                  action?() ?? true else { return }
+            self.isPresented = value
+        })
+        return Group {
             if self.isCurrentPrompt {
                 Button {
-                    guard self.isCurrentPrompt else { return }
+                    guard self.isCurrentPrompt, action?() ?? true else { return }
                     self.authorityGeneration = self.appModel.operatorAuthorityGeneration
                     self.isPresented = true
                 } label: {
@@ -349,7 +359,7 @@ struct ApprovalDashboardReviewButton: View {
                     .font(OpenClawType.footnote)
             }
         }
-        .sheet(isPresented: self.$isPresented) {
+        .sheet(isPresented: presentation) {
             if self.isCurrentPrompt,
                self.authorityGeneration == self.appModel.operatorAuthorityGeneration,
                let id = AuthenticatedControlUI.percentEncodedPathSegment(self.prompt.id)
@@ -357,7 +367,11 @@ struct ApprovalDashboardReviewButton: View {
                 DashboardPageScreen(
                     path: "/approve/\(id)",
                     title: String(localized: "Review approval"),
-                    onClose: { self.isPresented = false })
+                    onClose: { presentation.wrappedValue = false })
+                    .environment(\.userNavigationAction) {
+                        self.isPresented && self.isCurrentPrompt && generation == self.authorityGeneration &&
+                            generation == self.appModel.operatorAuthorityGeneration && (action?() ?? true)
+                    }
             }
         }
         .onChange(of: self.appModel.operatorAuthorityGeneration) { _, _ in

@@ -80,7 +80,7 @@ struct ChatProTab: View {
             .disabled(self.isGatewayTransitionPending)
             .task(id: self.visibleChatIdentity) {
                 guard !Task.isCancelled else { return }
-                self.registerVisibleChat()
+                await self.registerVisibleChat()
             }
             .onDisappear {
                 self.nativeActions?.unregisterChat(self.chatRegistrationID)
@@ -95,20 +95,19 @@ struct ChatProTab: View {
             presentationID: self.nativePresentationID)
     }
 
-    private func registerVisibleChat() {
+    private func registerVisibleChat() async {
         let owner = self.appModel.chatPresentation
-        guard let viewModel = owner.viewModel else { return }
-        switch (owner.transport?.nativeBinding, self.nativeBinding) {
-        case (nil, nil): break
-        case let (current?, expected?) where current.canReuse(expected): break
-        default: return
-        }
+        guard let context = await owner.visiblePresentation(
+            appModel: self.appModel, nativeBinding: self.nativeBinding,
+            nativeActions: self.nativeActions, presentationID: self.nativePresentationID), !Task.isCancelled
+        else { return }
+        let viewModel = context.viewModel
         // RootTabs owns the model; registration only attests this visible chat.
         self.chatRegistrationID = self.nativeActions?.registerChat(
-            viewModel, ownerID: owner.ownerID, agentID: owner.transportAgentID,
-            transport: owner.transport, presentationID: self.nativePresentationID)
+            viewModel, ownerID: context.ownerID, agentID: context.agentID,
+            transport: context.transport, presentationID: self.nativePresentationID)
         self.speech?.stop()
-        let binding = owner.transport?.nativeBinding
+        let binding = context.transport?.nativeBinding
         let gateway = self.appModel.operatorSession
         self.speech = OpenClawChatSpeechController { text in
             if let binding {
