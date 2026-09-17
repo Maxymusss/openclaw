@@ -488,48 +488,56 @@ export async function startQaGatewayRpcProxy({
     recordFirstConnection(id, "upstream-create-start");
     const back = new WebSocket(`ws://127.0.0.1:${backendPort}`, {
       headers: upstreamHeaders,
-      ...(diagnostic
-        ? {
-            /** @param {import("node:http").ClientRequest} req */
-            finishRequest(req) {
-              const { handshake } = diagnostic;
-              handshake.requestReadyMs = readinessTime();
-              req.once("socket", (socket) => {
-                handshake.socketAssigned = {
-                  elapsedMs: readinessTime(),
-                  connecting: socket.connecting,
-                };
-                socket.once("connect", () => {
-                  handshake.tcpConnectedMs = readinessTime();
-                });
-              });
-              req.once("finish", () => {
-                // This is local OS handoff, not receipt by the Gateway.
-                handshake.requestFinishedMs = readinessTime();
-              });
-              req.once("response", (response) => {
-                const status = response.statusCode;
-                handshake.httpResponse = {
-                  elapsedMs: readinessTime(),
-                  statusCode:
-                    typeof status === "number" &&
-                    Number.isInteger(status) &&
-                    status >= 100 &&
-                    status <= 599
-                      ? status
-                      : "other",
-                };
-              });
-              // ws installs its abort/upgrade handlers before this hook. Keep
-              // its default synchronous end; observing unexpected-response would disable abort.
-              req.end();
-            },
-          }
-        : {}),
+      /** @param {import("node:http").ClientRequest} req */
+      finishRequest(req) {
+        // CONNECTING abort can close ws before its request. Upgrade emits the
+        // request close after handing the established socket to the ws owner.
+        httpRequests.add(req);
+        req.once("close", () => httpRequests.delete(req));
+        if (diagnostic) {
+          const { handshake } = diagnostic;
+          handshake.requestReadyMs = readinessTime();
+          req.once("socket", (socket) => {
+            handshake.socketAssigned = {
+              elapsedMs: readinessTime(),
+              connecting: socket.connecting,
+            };
+            socket.once("connect", () => {
+              handshake.tcpConnectedMs = readinessTime();
+            });
+          });
+          req.once("finish", () => {
+            // This is local OS handoff, not receipt by the Gateway.
+            handshake.requestFinishedMs = readinessTime();
+          });
+          req.once("response", (response) => {
+            const status = response.statusCode;
+            handshake.httpResponse = {
+              elapsedMs: readinessTime(),
+              statusCode:
+                typeof status === "number" &&
+                Number.isInteger(status) &&
+                status >= 100 &&
+                status <= 599
+                  ? status
+                  : "other",
+            };
+          });
+        }
+        // ws installs its abort/upgrade handlers before this hook. Keep
+        // its default synchronous end; observing unexpected-response would disable abort.
+        req.end();
+      },
     });
     recordFirstConnection(id, "upstream-create-return");
-    const peer = { id, front, back };
+    const closed = Promise.all(
+      [front, back].map((socket) => new Promise((resolve) => socket.once("close", resolve))),
+    );
+    const peer = { id, front, back, closed };
     peers.add(peer);
+    // The frontend can close before its upstream receiver finishes. Keep both
+    // endpoints owned until their close handlers have run, including before stop.
+    void closed.then(() => peers.delete(peer));
     const methods = new Map();
     const diagnosticRequests = new Map();
     const sendUpstream = (raw, trace) => {
@@ -773,7 +781,6 @@ export async function startQaGatewayRpcProxy({
       recordFirstConnection(id, "front-close");
       recordFirstTermination(id, "upstream", back, "front-close");
       back.terminate();
-      peers.delete(peer);
       if (held?.front === front) {
         held = undefined;
       }
@@ -806,26 +813,48 @@ export async function startQaGatewayRpcProxy({
   let stopping;
   const stop = () =>
     (stopping ??= (async () => {
+      // Close admission before draining media: an aborted body iterator can
+      // settle later, after an already accepted upgrade reaches this server.
+      const websocketClosed = new Promise((resolve, reject) => {
+        sockets.close((error) => (error ? reject(error) : resolve()));
+      });
+      const serverClosed = new Promise((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
       heldWaiter?.(new Error("proxy stopped"));
       heldResponse = undefined;
-      for (const peer of peers) {
+      const closingPeers = [...peers];
+      const closingRequests = [...httpRequests];
+      const requestsClosed = closingRequests.map(
+        (upstream) => new Promise((resolve) => upstream.once("close", resolve)),
+      );
+      for (const peer of closingPeers) {
         recordFirstTermination(peer.id, "front", peer.front, "stop");
         peer.front.terminate();
         recordFirstTermination(peer.id, "upstream", peer.back, "stop");
         peer.back.terminate();
       }
-      for (const upstream of httpRequests) {
+      for (const upstream of closingRequests) {
         upstream.destroy();
       }
-      await mediaTask;
-      heldResponse = undefined;
       server.closeAllConnections();
-      await new Promise((resolve) => {
-        sockets.close(resolve);
-      });
-      await new Promise((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
+      const results = await Promise.allSettled([
+        mediaTask,
+        websocketClosed,
+        serverClosed,
+        ...closingPeers.map((peer) => peer.closed),
+        ...requestsClosed,
+      ]);
+      heldResponse = undefined;
+      const errors = results
+        .filter((result) => result.status === "rejected")
+        .map((result) => result.reason);
+      if (errors.length === 1) {
+        throw errors[0];
+      }
+      if (errors.length > 1) {
+        throw new AggregateError(errors, "QA proxy shutdown failed");
+      }
     })());
   await new Promise((resolve, reject) => {
     server.once("error", reject);
