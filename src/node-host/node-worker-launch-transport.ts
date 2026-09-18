@@ -7,6 +7,10 @@ import {
 import { supportsNodeWorkerProcessOwner } from "../process/supervisor/service-child-protocol.js";
 import { createServiceChildRelayAdapter } from "../process/supervisor/service-child-relay-host.js";
 import type { WorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
+import {
+  projectNativeInferenceStartup,
+  WORKER_NATIVE_INFERENCE_STARTUP_ENV,
+} from "../worker/native-inference-startup.js";
 import { parseNodeWorkerConnectionFailureMessage } from "../worker/node-supervisor-protocol.js";
 import {
   buildWorkerProcessTurn,
@@ -26,6 +30,7 @@ import type {
   NodeWorkerLaunchReceipt,
   NodeWorkerLaunchStore,
 } from "./node-worker-launch-store.js";
+import type { NodeWorkerNativeInferenceStartup } from "./node-worker-native-inference.js";
 import {
   sanitizeNodeWorkerDiagnostic,
   type NodeWorkerCredentialScrubber,
@@ -40,6 +45,7 @@ export type NodeWorkerChildAdapter = AwaitedStdoutChildAdapter & {
 type NodeWorkerLaunchTransportOptions = {
   bundleRoot: string;
   workerEnv: NodeJS.ProcessEnv;
+  nativeInferenceStartup?: NodeWorkerNativeInferenceStartup;
   engineEnv: NodeJS.ProcessEnv;
   input: NodeWorkerLaunchInput;
   descriptor: WorkerLaunchDescriptor;
@@ -66,6 +72,25 @@ type NodeWorkerLaunchTransport =
 export async function prepareNodeWorkerLaunchTransport(
   options: NodeWorkerLaunchTransportOptions,
 ): Promise<NodeWorkerLaunchTransport> {
+  // Only the trusted snapshot can grant inference custody. Never forward a
+  // caller-provided carrier, including to ordinary proxied children.
+  const workerEnv = { ...options.workerEnv };
+  delete workerEnv[WORKER_NATIVE_INFERENCE_STARTUP_ENV];
+  if (options.descriptor.assignment.inference === "runtime-local") {
+    if (options.containerEngine) {
+      throw new Error(
+        "Node worker native inference requires isolation none, not a nested container",
+      );
+    }
+    if (!options.nativeInferenceStartup) {
+      throw new Error("Node worker native inference requires node-local startup configuration");
+    }
+    const startup = projectNativeInferenceStartup(
+      options.nativeInferenceStartup,
+      options.descriptor,
+    );
+    workerEnv[WORKER_NATIVE_INFERENCE_STARTUP_ENV] = JSON.stringify(startup);
+  }
   const entry = resolveNodeWorkerEntry({
     bundleRoot: options.bundleRoot,
     expectedBundleHash: options.input.expectedBundleHash,
@@ -74,7 +99,7 @@ export async function prepareNodeWorkerLaunchTransport(
   if (!options.containerEngine) {
     const args = [entry, "--internal-worker-ipc", "--internal-worker-session"];
     const workerOptions = {
-      env: options.workerEnv,
+      env: workerEnv,
       ownedWorker: true,
       stdinMode: "pipe-open",
       stdoutConsumption: "awaited",
@@ -149,7 +174,7 @@ export async function prepareNodeWorkerLaunchTransport(
       workspaceDir: options.descriptor.assignment.workspaceDir,
       gatewayNamespace: options.input.gatewayNamespace,
       launchId: options.input.launchId,
-      env: options.workerEnv,
+      env: workerEnv,
       ...(options.containerImage ? { image: options.containerImage } : {}),
     });
     const claimed = await options.store.get(options.input.launchId);

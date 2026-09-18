@@ -15,6 +15,8 @@ export const runtimeProcessDeclarationEntries = {
     "extensions/memory-core/src/memory/manager-search-knn-entrypoint.ts",
 };
 export const vitestWorkerDeclarationEntries = {
+  "worker/native-worker-entrypoints.test-support":
+    "src/worker/native-worker-entrypoints.test-support.ts",
   ...runtimeProcessDeclarationEntries,
   "extensions/discord/src/voice/audio-worker-entrypoints.test-support":
     "extensions/discord/src/voice/audio-worker-entrypoints.test-support.ts",

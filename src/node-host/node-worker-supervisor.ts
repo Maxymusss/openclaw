@@ -4,6 +4,7 @@ import {
   completeWorkerLaunchDescriptor,
   type WorkerLaunchDescriptor,
 } from "../worker/launch-descriptor.js";
+import { assertNativeInferenceAssignment } from "../worker/native-inference-startup.js";
 import {
   nodeWorkerPlanHash,
   validateNodeWorkerLaunchInput,
@@ -34,6 +35,11 @@ import {
   startNodeWorkerChild,
   stopNodeWorkerChild,
 } from "./node-worker-launch.js";
+import {
+  nodeWorkerNativeInferenceSecrets,
+  snapshotNodeWorkerNativeInference,
+  type NodeWorkerNativeInferenceStartup,
+} from "./node-worker-native-inference.js";
 import {
   inspectNodeWorkerProcessIdentity,
   requireNodeWorkerProcessIdentity,
@@ -84,6 +90,7 @@ class NodeWorkerSupervisor {
   private readonly admissions = new Map<string, NodeWorkerPendingAdmission>();
   private readonly retentions = new Set<Promise<NodeWorkerWorkspaceRetainResult>>();
   private readonly stoppingEnvironments = new Map<string, number>();
+  private readonly nativeInferenceStartup?: NodeWorkerNativeInferenceStartup;
   private readonly workerEnv: NodeJS.ProcessEnv;
   private readonly engineEnv: NodeJS.ProcessEnv;
   private readonly capacity: NodeWorkerCapacity;
@@ -99,6 +106,10 @@ class NodeWorkerSupervisor {
 
   constructor(options: NodeWorkerSupervisorOptions = {}) {
     const env = options.env ?? process.env;
+    this.nativeInferenceStartup = snapshotNodeWorkerNativeInference(
+      options.nativeInferenceConfig,
+      env,
+    );
     this.bundleRoot = path.resolve(
       options.bundleRoot ?? path.join(resolveStateDir(env), "node-host"),
     );
@@ -300,6 +311,12 @@ class NodeWorkerSupervisor {
         signal.throwIfAborted();
         continue;
       }
+      if (descriptor.assignment.inference === "runtime-local") {
+        if (!this.nativeInferenceStartup) {
+          throw new Error("Node worker native inference requires node-local startup configuration");
+        }
+        assertNativeInferenceAssignment(this.nativeInferenceStartup, descriptor);
+      }
       return await startNodeWorkerTurn({
         active: owner,
         descriptor,
@@ -309,6 +326,10 @@ class NodeWorkerSupervisor {
         cancel: (expected) => this.cancellation.cancelTurn(expected),
         stopChild: (active, state) => this.stopChild(active, state),
         isCurrent: () => this.active.get(owner.launchId) === owner && !this.closed,
+        additionalSecrets:
+          descriptor.assignment.inference === "runtime-local" && this.nativeInferenceStartup
+            ? nodeWorkerNativeInferenceSecrets(this.nativeInferenceStartup)
+            : [],
       });
     }
     const claim = await this.capacity.claim(claimInput, supervisor, signal);
@@ -348,6 +369,7 @@ class NodeWorkerSupervisor {
         bundleRoot: this.bundleRoot,
         workerEnv: homeDir ? snapshotNodeWorkerEnv(this.workerEnv, homeDir) : this.workerEnv,
         engineEnv: this.engineEnv,
+        nativeInferenceStartup: this.nativeInferenceStartup,
         store: this.store,
         turns: this.turns,
         capacity: this.capacity,

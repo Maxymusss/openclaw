@@ -47,6 +47,7 @@ import {
 } from "../../src/state/openclaw-state-lease-runtime.test-support.ts";
 import { groqSetupSdkEntrypoints } from "../../src/system-agent/setup-inference-groq-sdk.test-support.ts";
 import { tuiPtyRuntimeEntrypoints } from "../../src/tui/tui-pty-runtime-test-support.ts";
+import { nativeWorkerTestEntrypoint } from "../../src/worker/native-worker-entrypoints.test-support.ts";
 import { workerBackgroundExecEntrypoints } from "../../src/worker/worker-runtime-background-exec-entrypoints.test-support.ts";
 import { channelIngressGatewayRestartEntrypoint } from "../../test/fixtures/channel-ingress-gateway-restart-entrypoint.ts";
 import { runtimeProcessBuildEntrypoints } from "./runtime-process-build-entries.mts";
@@ -97,6 +98,7 @@ export const vitestWorkerBuildEntries = {
     ...runtimeProcessBuildEntrypoints,
     ...Object.values(discordAudioTestEntrypoints),
     codexCatalogPageWorkerEntrypoint,
+    nativeWorkerTestEntrypoint,
     agentWorkerStoreFixtureEntrypoint,
     memoryPublicationFaultEntrypoint,
     ...Object.values(triageTestRuntimeEntrypoints),
