@@ -8,7 +8,7 @@ import OpenClawKit
 final class NativeActionRouter: OpenClawNativeActionHost {
     /// The current single scene acknowledges presentation here. Scene ownership
     /// can replace this callback without changing the intent or submission owner.
-    struct RunPresentation: Identifiable {
+    struct RunPresentation: Identifiable, Equatable {
         let id = UUID()
         let inspection: OpenClawNativeRunInspection
     }

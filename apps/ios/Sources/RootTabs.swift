@@ -639,7 +639,8 @@ struct RootTabs: View {
     }
 
     private func rootAppearLifecycle(_ content: some View) -> some View {
-        content
+        let inspections = self.userModalBinding(self.$nativeRunInspection)
+        return content
             .onAppear {
                 self.updateIdleTimer()
                 self.evaluateOnboardingPresentation(force: false)
@@ -676,7 +677,7 @@ struct RootTabs: View {
                     self.nativeRunInspection = receipt
                 })
             }
-            .sheet(item: self.$nativeRunInspection) { presentation in
+            .sheet(item: inspections) { presentation in
                 NavigationStack {
                     Form {
                         LabeledContent {
@@ -712,7 +713,9 @@ struct RootTabs: View {
                     .toolbar {
                         ToolbarItem(placement: .confirmationAction) {
                             Button {
-                                self.nativeRunInspection = nil
+                                // A replaced sheet may retain Done for its old receipt.
+                                guard inspections.wrappedValue?.id == presentation.id else { return }
+                                inspections.wrappedValue = nil
                             } label: {
                                 Text("Done").font(OpenClawType.body)
                             }

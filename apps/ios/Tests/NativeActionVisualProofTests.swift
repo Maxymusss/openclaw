@@ -11,6 +11,16 @@ final class NativeActionVisualProofTests: XCTestCase {
         try await self.runNativeVisualProof(.inspection)
     }
 
+    func testClosingRunInspectionCancelsHeldSameRunReopen() async throws {
+        for scenario in [Scenario.inspectionDone, .inspectionEscape] {
+            try await self.runNativeVisualProof(scenario)
+        }
+    }
+
+    func testNativeSameRunInspectionReplacementKeepsPresentationAuthority() async throws {
+        try await self.runNativeVisualProof(.inspectionReplacement)
+    }
+
     func testHiddenSidebarChoiceCancelsNativePreparation() async throws {
         try await self.runNativeVisualProof(.sidebarChoice)
     }
@@ -51,7 +61,7 @@ final class NativeActionVisualProofTests: XCTestCase {
     }
 
     private enum Scenario {
-        case inspection
+        case inspection, inspectionDone, inspectionEscape, inspectionReplacement
         case sidebarChoice
         case sidebarABA
         case overviewGear, sameKeySession, settingsPush, settingsPop, settingsABA
@@ -358,6 +368,65 @@ final class NativeActionVisualProofTests: XCTestCase {
                     await cleanup()
                     return
                 }
+                if scenario == .inspectionDone || scenario == .inspectionEscape || scenario == .inspectionReplacement {
+                    // The first real Run sheet has acknowledged appearance before the
+                    // second same-run read begins, so opening cannot pre-cancel the read.
+                    let inspected = try await router.inspect(run)
+                    XCTAssertEqual(inspected.run, run)
+                    try await self.waitUntil {
+                        guard hosting.presentedViewController?.view.window === ownedWindow else { return false }
+                        return try self.accessibilityElement(
+                            nil, label: "Done", in: ownedWindow, button: true) != nil
+                    }
+                    let sheet = try XCTUnwrap(hosting.presentedViewController)
+                    let done = try XCTUnwrap(self.accessibilityElement(
+                        nil, label: "Done", in: ownedWindow, button: true))
+                    let binding = try XCTUnwrap(model.chatPresentation.transport?.nativeBinding)
+                    holdNativeHistory = true
+                    let task = Task { await router.open(.inspect(run)) }
+                    opening = task
+                    try await self.waitUntil { historyEntered }
+                    guard hosting.presentedViewController === sheet, sheet.view.window === ownedWindow else {
+                        throw OpenClawNativeActionError("Run sheet changed before the held inspection action")
+                    }
+                    XCTAssertEqual(inspectedRuns, [[run.runID], [run.runID]])
+                    if scenario == .inspectionReplacement {
+                        // A native receipt replacement is a projection, not a user departure.
+                        historyRelease.continuation.finish()
+                        let result = await task.value
+                        XCTAssertEqual(result, .opened)
+                        try await self.waitUntil { hosting.presentedViewController?.view.window === ownedWindow }
+                    } else {
+                        if scenario == .inspectionDone {
+                            guard done.accessibilityActivate() else {
+                                throw OpenClawNativeActionError("Run Done action did not activate")
+                            }
+                        } else {
+                            guard sheet.view.accessibilityPerformEscape() else {
+                                throw OpenClawNativeActionError("Run sheet did not accept accessibility dismissal")
+                            }
+                        }
+                        try await self.waitUntil { hosting.presentedViewController == nil }
+                        historyRelease.continuation.finish()
+                        let result = await task.value
+                        XCTAssertEqual(result, .cancelled)
+                        XCTAssertNil(hosting.presentedViewController)
+                        let routeIsCurrent = await binding.isCurrent()
+                        XCTAssertTrue(routeIsCurrent)
+                        try await self.waitForComposer(in: ownedWindow)
+                        // A later explicit action may open a fresh, acknowledged receipt.
+                        let reopened = try await router.inspect(run)
+                        XCTAssertEqual(reopened.run, run)
+                        try await self.waitUntil { hosting.presentedViewController?.view.window === ownedWindow }
+                        XCTAssertEqual(inspectedRuns, [[run.runID], [run.runID], [run.runID]])
+                    }
+                    XCTAssertEqual(model.chatSessionKey, session.sessionKey)
+                    XCTAssertEqual(model.chatDeliveryAgentId, session.agentID)
+                    XCTAssertEqual(sends, 0)
+                    XCTAssertEqual(creates, 0)
+                    await cleanup()
+                    return
+                }
                 if scenario != .inspection {
                     try await self.selectSidebarDestination(scenario.initialDestination, in: ownedWindow)
                     try await self.waitUntil { router.chatRegistrationID == nil }
@@ -503,7 +572,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 in: ownedWindow,
                                 button: true) != nil
                         }
-                    case .inspection, .nativeFromSettingsPath, .nativeAfterUserChat, .sidebarFork, .sidebarNewChat:
+                    case .inspection, .inspectionDone, .inspectionEscape, .inspectionReplacement,
+                         .nativeFromSettingsPath, .nativeAfterUserChat, .sidebarFork, .sidebarNewChat:
                         XCTFail("Unexpected held-history scenario")
                     }
                     if let finalTitle { try await self.waitForNavigationTitle(finalTitle, in: ownedWindow) }
