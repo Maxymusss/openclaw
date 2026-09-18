@@ -507,6 +507,7 @@ export class EmbeddedBlockChunker {
               start,
               maxChars - reopenPrefix.length,
               hardMaxChars - reopenPrefix.length,
+              maxChars,
               openFence,
             );
       if (breakResult.index <= 0) {
@@ -690,6 +691,7 @@ export class EmbeddedBlockChunker {
     offset = 0,
     maxCharsOverride?: number,
     hardMaxCharsOverride?: number,
+    totalMaxCharsOverride?: number,
     openFence?: FenceSpan,
   ): BreakResult {
     const { minChars, maxChars, hardMaxChars } = normalizeChunkLimits({
@@ -697,6 +699,7 @@ export class EmbeddedBlockChunker {
       maxChars: maxCharsOverride ?? chunking.maxChars,
       hardMaxChars: hardMaxCharsOverride ?? chunking.hardMaxChars,
     });
+    const totalMaxChars = totalMaxCharsOverride ?? maxChars;
     if (buffer.length < minChars) {
       return { index: -1 };
     }
@@ -749,7 +752,7 @@ export class EmbeddedBlockChunker {
         findFenceSpanAt(fenceSpans, absoluteBreakIndex) ??
         (openFence?.end === absoluteBreakIndex ? openFence : undefined);
       if (fence) {
-        const reopenFenceLine = resolveFenceReopenLine(fence, chunking.maxChars);
+        const reopenFenceLine = resolveFenceReopenLine(fence, totalMaxChars);
         if (!reopenFenceLine) {
           return { index: protectBreakIndex(unbreakableSpans, forcedBreakIndex, offset, force) };
         }
