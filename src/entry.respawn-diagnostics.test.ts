@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { formatOpenClawProcessTitle } from "./infra/openclaw-installation-id.js";
 
 const boundary = vi.hoisted(() => ({
   mode: "flags" as "flags" | "compile-cache" | "none",
@@ -130,5 +131,5 @@ it("names the final executing CLI after startup respawn decisions", async () => 
   await import("./entry.js");
 
   expect(boundary.spawnTitle).toBeUndefined();
-  expect(process.title).toBe("openclaw");
+  expect(process.title).toBe(formatOpenClawProcessTitle("openclaw-cli", "/fixture/openclaw"));
 });
