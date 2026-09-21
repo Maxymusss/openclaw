@@ -1,6 +1,9 @@
 # Fixture-only lifecycle. Dot-source after bundle verification. No product-source mutation.
 function Initialize-ProofNative {
-    if ('ProofHeldProcess' -as [type]) { return }
+    if ('ProofHeldProcess' -as [type]) {
+        if (-not ('ProofBaseline' -as [type])) { Add-Type -Path (Join-Path $PSScriptRoot 'held-job.cs') }
+        return
+    }
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -23,7 +26,9 @@ public static class ProofHeldProcess {
  }
 }
 '@
+    Add-Type -Path (Join-Path $PSScriptRoot 'held-job.cs')
 }
+function Read-ProofJobCounts($Process) { $Process.JobCounts() }
 function Read-ProofIdentity($Handle) {
     $v=[ProofHeldProcess]::Read($Handle)
     return @{ pid=$v[0]; created100ns=$v[1]; exited100ns=$v[2]; executable=$v[3]; imageError=$v[4]; processMachine=$v[5]; nativeMachine=$v[6] }
@@ -99,7 +104,11 @@ function Assert-ProofBaselineOwner($Process,$Handle,$Launch) {
     $current=Read-ProofIdentity $Handle
     $null=Assert-ProofIdentity $Launch $current
     if ((Get-FileHash -LiteralPath $current.executable -Algorithm SHA256).Hash.ToLowerInvariant() -cne $script:proof.baselineGateway.executableSha256) { throw 'Baseline executable changed.' }
-    # Enumerations are affirmative custody guards, never a historical absence claim.
+    # Job accounting includes descendants even after every intermediate parent exits.
+    $counts=Read-ProofJobCounts $Process
+    $script:proof.baselineGateway.jobBefore=$counts
+    if ($counts.TotalProcesses -ne 1 -or $counts.ActiveProcesses -ne 1) { throw 'Baseline job is not singleton; descendants/uncertain custody retained.' }
+    # Enumerations supplement the held handle and job, never authorize a PID-only action.
     $rows=@(Get-CimInstance -ClassName Win32_Process -OperationTimeoutSec 5 -ErrorAction Stop)
     $descendants=@($rows | Where-Object { $_.ParentProcessId -eq $Launch.pid })
     $script:proof.baselineGateway.descendantsBefore=@($descendants | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath)
@@ -119,10 +128,14 @@ function Start-ProofGateway {
     [IO.File]::WriteAllText((Join-Path $root 'fixture-owner'),$script:baselineNonce)
     $script:proof.baselineGateway=@{status='STARTING';root=$root;profile=$profile;healthyBeforeMaintenance=$false;stoppedBeforeUpdate=$false;action='NONE';fixtureOnly=$true;gracefulServiceAcceptance=$false}
     # This is the release's own Windows startup flag, supplied up front to keep the held foreground root.
-    $script:gateway=Start-ProofOwnedProcess $Name $node @('--stack-size=8192',$Entry,'gateway','run','--allow-unconfigured')
+    $script:gateway=[ProofBaseline]::Start($node,@('--stack-size=8192',$Entry,'gateway','run','--allow-unconfigured'),$root,(Join-Path $EvidenceRoot "$Name.stdout.log"),(Join-Path $EvidenceRoot "$Name.stderr.log"))
     $script:gatewayHandle=$script:gateway.SafeHandle
     $launch=Read-ProofIdentity $script:gatewayHandle
     $script:proof.baselineGateway.identity=$launch
+    $script:proof.baselineGateway.jobAssignedBeforeResume=$script:gateway.AssignedBeforeResume
+    $script:proof.baselineGateway.resumed=$script:gateway.Resumed
+    $script:proof.baselineGateway.launchError=$script:gateway.LaunchError
+    if ($script:gateway.LaunchError -or -not $script:gateway.AssignedBeforeResume -or -not $script:gateway.Resumed) { throw 'Baseline launch/assignment unsettled; retain original suspended process, no cleanup kill.' }
     $null=Assert-ProofIdentity $launch $launch
     $script:proof.baselineGateway.executableSha256=(Get-FileHash -LiteralPath $launch.executable -Algorithm SHA256).Hash.ToLowerInvariant()
     $clock=[Diagnostics.Stopwatch]::StartNew()
@@ -146,7 +159,7 @@ function Stop-ProofGateway {
     $record.preActionIdentity=Assert-ProofBaselineOwner $script:gateway $script:gatewayHandle $record.identity
     $record.action='ROOT_ONLY_TERMINATION';$record.actionUtc=[DateTime]::UtcNow.ToString('o')
     try {
-        # Process.Kill() is root-only, using this exact retained Process/SafeHandle.
+        # This fixture object's Kill() uses TerminateProcess on its ORIGINAL CreateProcess handle, root only.
         # Released CLI stop uses service/PID lookup; no fixture-scoped cooperative external command exists.
         $script:gateway.Kill()
         $record.actionReturned=$true
@@ -157,6 +170,8 @@ function Stop-ProofGateway {
         $rows=@(Get-CimInstance -ClassName Win32_Process -OperationTimeoutSec 5 -ErrorAction Stop)
         $record.descendantsAfter=@($rows | Where-Object { $_.ParentProcessId -eq $record.identity.pid } | Select-Object ProcessId,ParentProcessId,CreationDate,ExecutablePath)
         if ($record.descendantsAfter.Count) { throw 'Descendant custody remains; no observer/update admission.' }
+        $record.jobAfter=Read-ProofJobCounts $script:gateway
+        if ($record.jobAfter.TotalProcesses -ne 1 -or $record.jobAfter.ActiveProcesses -ne 0) { throw 'Baseline job descendants or uncertain settlement; no observer/update admission.' }
         $record.status='TERMINAL';$record.stoppedBeforeUpdate=$true
         $script:gateway.Dispose();$script:gateway=$null;$script:gatewayHandle=$null
     } catch { $record.error=$_.Exception.Message;$record.status='UNSETTLED';$script:proof.unsettled=$true;throw }

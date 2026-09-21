@@ -12,5 +12,6 @@
   "externalStopDecision": "Hosted lifecycle exposes cooperative stop internally to the owning system-agent engine, requiring inference/caller authority not provided for this fixture. The public CLI stop is service/PID/port discovery and signalVerifiedGatewayPidSync, not held-handle routing. Console Ctrl-C would share process group. None is a qualified external exact-held-root cooperative fixture route; use the expressly authorized root-only fallback.",
   "releaseRespawn": "entry.respawn.ts on win32 adds --stack-size=8192 when absent. Supply that same supported flag at baseline launch; root listener and no descendants mandatory. Product update argv untouched.",
   "internalHostedStopExists": true,
-  "scopedStopNotGracefulServiceAcceptance": true
+  "scopedStopNotGracefulServiceAcceptance": true,
+  "descendantRepair": "Hosted lifecycle exposes cooperative stop internally to the owning system-agent engine, requiring inference/caller authority not provided for this fixture. The public CLI stop is service/PID/port discovery and signalVerifiedGatewayPidSync, not held-handle routing. Console Ctrl-C would share process group. None is a qualified external exact-held-root cooperative fixture route; use the expressly authorized root-only fallback.; job accounting is fixture custody evidence, not a maintainer execution sandbox or tree termination authority."
 }

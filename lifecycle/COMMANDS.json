@@ -5,7 +5,7 @@
   "freshNamespace": "observer393-product-<fresh GITHUB_RUN_ID>-1",
   "runtime": "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime",
   "pathResolution": "RUNNER_TEMP from newly admitted github-hosted windows-2025 runner, not a filesystem glob",
-  "bundleSha256": "bb847844486fe79442af78a3dce6cdd3a3624ed0828c645c28a4afd2acbaa94f",
+  "bundleSha256": "7b4e15de518b62713b034be4c7b392353906455d298ee33e24e3eecdb1604f0e",
   "pythonArchive": {
     "url": "https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip",
     "version": "3.13.7",
@@ -74,7 +74,7 @@
     "--manifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "--manifest-sha",
-    "bb847844486fe79442af78a3dce6cdd3a3624ed0828c645c28a4afd2acbaa94f",
+    "7b4e15de518b62713b034be4c7b392353906455d298ee33e24e3eecdb1604f0e",
     "--evidence",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke",
     "--run",
@@ -99,7 +99,7 @@
     "-ObserverManifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "-ObserverManifestSha256",
-    "bb847844486fe79442af78a3dce6cdd3a3624ed0828c645c28a4afd2acbaa94f",
+    "7b4e15de518b62713b034be4c7b392353906455d298ee33e24e3eecdb1604f0e",
     "-ObserverSmokeResult",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke\\result.json",
     "-ObserverSmokeSha256",
@@ -133,7 +133,7 @@
     "evidenceRun": 35596476995,
     "nativeProductQualified": false
   },
-  "stageSha256": "bd8ebec73af4fada1d41d2ff422780a73f33684eec6bbc8ea33b209cfb59cb61",
+  "stageSha256": "30f460c6bb7afb44ec4bdff91e0d819e7a1f975c135133b4f80a160f1d5a11c5",
   "stagingBehavior": "Stages hashed payload, release manifest and exact official Python archive; parses diagnostic parameters without body execution; performs own25s smoke and raw preflight; removes inert fixture only; returns same-job runtime tuple with NO product fall-through. Terminal caller owns runtime cleanup after custody/settlement.",
   "futureWorkflowContract": {
     "runner": "windows-2025",
@@ -183,6 +183,7 @@
       "relativeToolCachePath": "node/24.20.0/x64/node.exe",
       "hashSource": "https://nodejs.org/dist/v24.20.0/SHASUMS256.txt",
       "abi": "137"
-    }
+    },
+    "descendants": "Accounting-only unnamed Windows job assigned to original CreateProcess handle before ResumeThread; no kill-on-close. Total1/active1 before action, total1/active0 after. Lost accounting or any descendant-ever blocks arming; failed launch retains suspended process."
   }
 }

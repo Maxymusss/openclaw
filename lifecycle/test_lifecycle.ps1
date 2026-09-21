@@ -24,7 +24,11 @@ function Reset {
  $script:baselineRoot=$root;$script:baselineProfile=$profile;$script:baselineNonce='unit-owner'
  [IO.File]::WriteAllText((Join-Path $root 'fixture-owner'),$script:baselineNonce)
  $script:proof.baselineGateway=@{identity=$script:launch;executableSha256=(Get-FileHash $exe).Hash.ToLowerInvariant();healthyBeforeMaintenance=$true;action='NONE';status='READY';stoppedBeforeUpdate=$false}
- $script:foreign=$false;$script:descendant=$false;$script:censusError=$false
+ $script:foreign=$false;$script:descendant=$false;$script:censusError=$false;$script:everGrandchild=$false;$script:jobError=$false;$script:raceDescendant=$false
+}
+function Read-ProofJobCounts($Process) {
+ if($script:jobError){throw 'Job accounting unavailable'}
+ return @{TotalProcesses=$(if($script:everGrandchild -or ($script:terminal -and $script:raceDescendant)){2}else{1});ActiveProcesses=$(if($script:terminal){0}else{1});TerminatedProcesses=0}
 }
 function Read-ProofIdentity($Handle) {
  if($script:readError -and $script:terminal){throw 'original Windows query failed'}
@@ -106,7 +110,19 @@ try {
   try{Stop-ProofGateway}catch{}
   Assert ($script:kills.Count -eq 1 -and -not $script:waits.Contains(-1)) 'stop retried or unbounded'
  }
- Check 'other terminal image errors stay unqualified' {
+ Check 'orphan grandchild job history blocks action even with empty parent census' {
+  $script:everGrandchild=$true;try{Stop-ProofGateway}catch{}
+  Assert ($script:kills.Count -eq 0) 'orphan grandchild omitted'
+ }
+ Check 'lost job accounting blocks action' {
+  $script:jobError=$true;try{Stop-ProofGateway}catch{}
+  Assert ($script:kills.Count -eq 0) 'job accounting failure admitted'
+ }
+ Check 'child racing preaction snapshot blocks subsequent arming' {
+  $script:raceDescendant=$true;try{Stop-ProofGateway}catch{}
+  Assert ($proof.unsettled -and -not $proof.baselineGateway.stoppedBeforeUpdate) 'racing descendant admitted observation'
+ }
+ Check 'other terminal image errors stay unqualified'  {
   $end=$script:launch.Clone();$end.exited100ns=[DateTime]::UtcNow.ToFileTimeUtc().ToString();$end.imageError=5;$end.executable=$null
   $err=$null;try{$null=Assert-ProofIdentity $script:launch $end -Terminal}catch{$err=$_}
   Assert ($null -ne $err) 'image error5 accepted'
