@@ -1,9 +1,9 @@
 {
   "payload": {
     "bounded_observe.py": "fe796cbd0fccbcc1ceec7e894e8b7bef6bd7f1a1f960829512a652a8fa57c7e7",
-    "compose.py": "151ae8f5efc40361b3229defdfc0437edb40c40ae9766db5d4a145f344422a82",
+    "compose.py": "733d9886c50cab3499c69c32335f7188e5cbfb192eb75151a8501def0cfa65b9",
     "control.py": "b80ef628d7707148a8c54db2b3849f79386bb2271d917412de44ddda5ce4c6ff",
-    "diagnostic.ps1": "f3d5b5baa851003d344b9f6479eba30f80d80447e4876c5f85f59b435ab530c3",
+    "diagnostic.ps1": "cbfa2d5b52902189a3eb8ecc5227d31b924e77dc0759986a91e10979148c621d",
     "fixture.py": "63001eb1c682b03001b4fcbced540a202ad21dd1afe77996b42ccfec71aa3167",
     "host-pin.json": "68546493e2d33a6a345d3157dc618bedea7f073dbd9b4f2c75d9d79072ecc8f6",
     "host_contract.py": "29ba1af0fe072cc393e8773e1189a74fd8b73a40732832189ef1facfc167a102",

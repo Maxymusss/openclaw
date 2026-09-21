@@ -5,7 +5,7 @@
   "freshNamespace": "observer393-product-<fresh GITHUB_RUN_ID>-1",
   "runtime": "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime",
   "pathResolution": "RUNNER_TEMP from newly admitted github-hosted windows-2025 runner, not a filesystem glob",
-  "bundleSha256": "0317c5e296fbee6dc727ce1631bc4fe689c5d5eaf43604cb966b1fe6eb8857a4",
+  "bundleSha256": "bb847844486fe79442af78a3dce6cdd3a3624ed0828c645c28a4afd2acbaa94f",
   "pythonArchive": {
     "url": "https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip",
     "version": "3.13.7",
@@ -74,7 +74,7 @@
     "--manifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "--manifest-sha",
-    "0317c5e296fbee6dc727ce1631bc4fe689c5d5eaf43604cb966b1fe6eb8857a4",
+    "bb847844486fe79442af78a3dce6cdd3a3624ed0828c645c28a4afd2acbaa94f",
     "--evidence",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke",
     "--run",
@@ -99,7 +99,7 @@
     "-ObserverManifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "-ObserverManifestSha256",
-    "0317c5e296fbee6dc727ce1631bc4fe689c5d5eaf43604cb966b1fe6eb8857a4",
+    "bb847844486fe79442af78a3dce6cdd3a3624ed0828c645c28a4afd2acbaa94f",
     "-ObserverSmokeResult",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke\\result.json",
     "-ObserverSmokeSha256",
@@ -133,7 +133,7 @@
     "evidenceRun": 35596476995,
     "nativeProductQualified": false
   },
-  "stageSha256": "b126884c74bcb99070f5ca6aff9f365c56e75ea3a5412c58e6f6bd85a0a608a9",
+  "stageSha256": "bd8ebec73af4fada1d41d2ff422780a73f33684eec6bbc8ea33b209cfb59cb61",
   "stagingBehavior": "Stages hashed payload, release manifest and exact official Python archive; parses diagnostic parameters without body execution; performs own25s smoke and raw preflight; removes inert fixture only; returns same-job runtime tuple with NO product fall-through. Terminal caller owns runtime cleanup after custody/settlement.",
   "futureWorkflowContract": {
     "runner": "windows-2025",

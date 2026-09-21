@@ -130,7 +130,7 @@ New-Item -ItemType Directory -Path $EvidenceRoot | Out-Null''')
 $node = Join-Path $env:RUNNER_TOOL_CACHE $nodePin.relativeToolCachePath
 if ((Get-FileHash -LiteralPath $node -Algorithm SHA256).Hash.ToLowerInvariant() -cne $nodePin.exeSha256) { throw 'Pinned Node changed before setup.' }
 if ((Get-Command node -CommandType Application | Select-Object -First 1).Source -ine $node) { throw 'Installer Node path differs from the admitted native runtime.' }""")
-    return text
+    return '\n'.join(line.rstrip() for line in text.splitlines())+'\n'
 
 
 def main():

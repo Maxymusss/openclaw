@@ -216,7 +216,7 @@ try {
     # The child is joined and the Gateway is stopped before read-only diagnostic capture.
     # Capture failure must never replace the original acceptance error or skip cleanup.
     # Do not launch ledger/product code after an unsettled update. Original on-disk ledger retained.
-    $proof.updateLedgerCapture = 'not invoked; retained original proof root for read-only follow-up' 
+    $proof.updateLedgerCapture = 'not invoked; retained original proof root for read-only follow-up'
     try {
         [Environment]::SetEnvironmentVariable('Path', $userPath, 'User')
         if ([Environment]::GetEnvironmentVariable('Path', 'User') -cne $userPath) { throw 'User PATH restoration mismatch.' }

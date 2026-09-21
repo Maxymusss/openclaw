@@ -2,7 +2,7 @@
 param([Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedWorkflowSha)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$bundleSha = '0317c5e296fbee6dc727ce1631bc4fe689c5d5eaf43604cb966b1fe6eb8857a4'
+$bundleSha = 'bb847844486fe79442af78a3dce6cdd3a3624ed0828c645c28a4afd2acbaa94f'
 $candidate = '393c80255dea6605a5665c6e0836d01fb6d18304'
 function Hash([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Save([string]$Path, $Value) {
@@ -105,7 +105,7 @@ try {
     & $proof.pwshPath -NoLogo -NoProfile -File (Join-Path $runtime 'test_lifecycle.ps1') *> (Join-Path $evidence 'lifecycle-controls.json')
     if ($LASTEXITCODE -ne 0) { throw 'Lifecycle affected controls failed on native PowerShell.' }
     $proof.lifecycle=@{parsed=$true;compiled=$true;mockedControlsPassed=$true;actualBaselineExecuted=$false}
-    $smokeRoot=Join-Path $evidence 'smoke' 
+    $smokeRoot=Join-Path $evidence 'smoke'
     $argv=@('-E','-S','-B',(Join-Path $runtime 'run.py'),'smoke','--manifest',(Join-Path $runtime 'bundle.json'),'--manifest-sha',$bundleSha,'--evidence',$smokeRoot,'--run',($namespace + '-smoke'))
     $psi=[Diagnostics.ProcessStartInfo]::new()
     $psi.FileName=$python; $psi.WorkingDirectory=$runtime; $psi.UseShellExecute=$false
