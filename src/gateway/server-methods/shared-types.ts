@@ -463,6 +463,9 @@ export type GatewayRequestOptions = {
 
 /** Commit-time guard captured by the pre-dispatch session participation check. */
 export type SessionMutationAuthorization = {
+  authorizePendingInput?: (
+    facts: import("../../config/sessions/session-pending-input-stage.js").SessionPendingInputAuthorityFacts,
+  ) => void;
   talkSessionTarget?: import("../talk/session-target.types.js").PreparedTalkSessionTarget;
   assertCurrent: () => void;
   /** Original host/session authority for committed input custody, without the selection precondition. */

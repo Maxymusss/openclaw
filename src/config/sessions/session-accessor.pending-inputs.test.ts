@@ -2,8 +2,16 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import {
+  observeHostDataSql,
+  trackSqliteStatementExecutions,
+} from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { MAX_PAYLOAD_BYTES } from "../../gateway/server-constants.js";
+import {
+  identifiedClient,
+  sessionSharingTestContext,
+} from "../../gateway/server-methods/sessions-sharing.test-support.js";
+import { resolveSessionMutationAuthorization } from "../../gateway/session-sharing.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
@@ -13,6 +21,7 @@ import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../../state/openclaw-agent-db.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import {
   appendTranscriptMessage,
   appendTranscriptMessageSync,
@@ -41,6 +50,7 @@ import {
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
 import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
+import { addSessionMember, removeSessionMember } from "./session-sharing-store.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
 
@@ -99,6 +109,99 @@ describe("accepted input custody", () => {
       receipt.finish("interrupted");
     }
     closeOpenClawAgentDatabasesForTest();
+  });
+
+  it("stages through the worker without host SQL and prepares approved bytes once", async () => {
+    const prepare = vi.fn((input: PersistedUserTurnMessage) => ({
+      ...input,
+      content: "Approved worker input",
+    }));
+    const authorize = vi.fn((facts) => {
+      expect(facts).toMatchObject({
+        kind: "session.pending-input",
+        sessionKey,
+        entry: { sessionId },
+      });
+    });
+    const host = observeHostDataSql();
+    let receipt: SessionPendingInputReceipt;
+    try {
+      receipt = await stage("worker-stage", {
+        assertCurrent: () => {
+          throw new Error("legacy storage guard invoked");
+        },
+        assertAdmittedCurrent: () => {},
+        prepareMessageAfterIdempotencyCheck: prepare,
+        workerAuthority: { assertCurrent: () => {}, authorize },
+      });
+      expect(host.calls.flatMap((call) => call.mock.calls)).toEqual([]);
+    } finally {
+      host.restore();
+    }
+    expect(prepare).toHaveBeenCalledTimes(1);
+    expect(authorize).toHaveBeenCalled();
+    expect(receipt!.message.content).toBe("Approved worker input");
+    expect(listSessionPendingInputs(scope()).items).toMatchObject([
+      { message: { content: "Approved worker input" } },
+    ]);
+    expect(await loadTranscriptEvents(scope())).toEqual([]);
+    await expect(
+      stage("worker-stage", {
+        workerAuthority: { assertCurrent: () => {}, authorize },
+        prepareMessageAfterIdempotencyCheck: prepare,
+      }),
+    ).rejects.toThrow("already admitted");
+    expect(prepare).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks canonical sharing membership after the approved-input hook", async () => {
+    const member = ensureProfileForEmail("pending-member@example.test").id;
+    await upsertSessionEntryCore(scope(), {
+      visibility: "suggest",
+      createdActor: { type: "human", source: "profile", id: "someone-else" },
+    });
+    addSessionMember(scope(), { identityId: member, addedBy: "someone-else" });
+    const authorization = resolveSessionMutationAuthorization({
+      method: "chat.send",
+      requestParams: { sessionKey },
+      client: identifiedClient(member),
+      context: sessionSharingTestContext(vi.fn(), {
+        session: { store: fixture.storePath() },
+        agents: { list: [{ id: "main", default: true }] },
+      }),
+    });
+    expect(authorization.error).toBeNull();
+    const authorize = authorization.authorization?.authorizePendingInput;
+    if (!authorize) throw new Error("chat sharing did not supply its transaction-facts authorizer");
+    await expect(
+      stage("worker-membership-revoked", {
+        workerAuthority: { assertCurrent: () => {}, authorize },
+        prepareMessageAfterIdempotencyCheck(message) {
+          removeSessionMember(scope(), member);
+          return message;
+        },
+      }),
+    ).rejects.toThrow("session is suggest");
+    expect(listSessionPendingInputs(scope()).items).toEqual([]);
+  });
+
+  it("refuses worker custody when its host authority ends during message preparation", async () => {
+    let current = true;
+    await expect(
+      stage("worker-revoked", {
+        workerAuthority: {
+          assertCurrent() {
+            if (!current) throw new Error("request retired");
+          },
+          authorize() {},
+        },
+        prepareMessageAfterIdempotencyCheck(message) {
+          current = false;
+          return message;
+        },
+      }),
+    ).rejects.toThrow("request retired");
+    expect(listSessionPendingInputs(scope()).items).toEqual([]);
   });
 
   it("keeps accepted input outside the active transcript and applies its hook once across replay and promotion", async () => {

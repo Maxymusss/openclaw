@@ -173,6 +173,19 @@ export function withSessionMutationCommitGuard(
   };
   return {
     ...authorization,
+    ...(authorization?.authorizePendingInput
+      ? {
+          authorizePendingInput: (
+            facts: Parameters<
+              NonNullable<SessionMutationAuthorization["authorizePendingInput"]>
+            >[0],
+          ) => {
+            assertExpectedProfile?.();
+            assertCommitAllowed?.();
+            authorization.authorizePendingInput!(facts);
+          },
+        }
+      : {}),
     assertAdmittedInputCurrent,
     assertCurrent: () => {
       assertExpectedProfile?.();

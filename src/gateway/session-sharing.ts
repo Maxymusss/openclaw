@@ -6,6 +6,7 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { AgentSelectionRequiredError } from "../agents/agent-scope.js";
 import type { SessionEntry } from "../config/sessions.js";
+import type { SessionPendingInputAuthorityFacts } from "../config/sessions/session-pending-input-stage.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { prepareGatewayRecipientProfile } from "./expected-profile.js";
@@ -360,6 +361,7 @@ export function resolveSessionMutationAuthorization(params: {
             canonicalKey: target.canonicalKey,
             storeKey: target.storeKey,
             storePath: target.storePath,
+            ...(target.readSource ? { readSource: target.readSource } : {}),
           }
         : null,
       sessionId: target?.entry.sessionId?.trim() || null,
@@ -410,14 +412,20 @@ export function resolveSessionMutationAuthorization(params: {
         currentCfg: OpenClawConfig,
         currentLookupCaches?: ReturnType<typeof createLookupCaches>,
         ensuredSessionId?: string,
+        prepared?: {
+          target: SessionSharingTarget | null;
+          members: SessionPendingInputAuthorityFacts["members"];
+        },
       ) => {
-        const current = resolveSessionSharingTarget({
-          cfg: currentCfg,
-          sessionKey: targetRef.sessionKey,
-          agentId: targetRef.agentId,
-          ...currentLookupCaches,
-          exactRead: !currentLookupCaches || authorizedTargets.length === 1,
-        });
+        const current = prepared
+          ? prepared.target
+          : resolveSessionSharingTarget({
+              cfg: currentCfg,
+              sessionKey: targetRef.sessionKey,
+              agentId: targetRef.agentId,
+              ...currentLookupCaches,
+              exactRead: !currentLookupCaches || authorizedTargets.length === 1,
+            });
         // The guarded ensure may mint this row/id. Its result permits only that
         // materialization, never a replacement of an already admitted session.
         const ensuredTarget =
@@ -470,6 +478,16 @@ export function resolveSessionMutationAuthorization(params: {
             cfg: currentCfg,
             client: params.client,
             target: current,
+            ...(prepared
+              ? {
+                  isMember: prepared.members.some(
+                    (member) =>
+                      member.identityId ===
+                      sharingIdentity(params.client, resolveGatewayOperatorRoleActor(params.client))
+                        ?.id,
+                  ),
+                }
+              : {}),
           });
         if (error) {
           throw new SessionMutationAuthorizationChangedError(error);
@@ -477,6 +495,33 @@ export function resolveSessionMutationAuthorization(params: {
       };
       return {
         ...(talkSessionTarget ? { talkSessionTarget } : {}),
+        ...(params.method === "chat.send" && authorizedTargets.length === 1 && !talkSessionTarget
+          ? {
+              authorizePendingInput(facts: SessionPendingInputAuthorityFacts) {
+                const expected = authorizedTargets[0]!;
+                const target = expected.resolved;
+                if (
+                  !target ||
+                  facts.agentId !== target.agentId ||
+                  facts.storePath !== target.readSource?.path ||
+                  facts.sessionKey !== target.storeKey
+                ) {
+                  throw targetChanged(expected.sessionKey);
+                }
+                const current = facts.entry
+                  ? { ...target, entry: facts.entry, storeKeys: [target.storeKey] }
+                  : null;
+                assertTargetCurrent(
+                  expected,
+                  expected,
+                  params.context.getRuntimeConfig(),
+                  undefined,
+                  undefined,
+                  { target: current, members: facts.members },
+                );
+              },
+            }
+          : {}),
         assertCurrent: () => {
           const currentCfg = params.context.getRuntimeConfig();
           assertTalkTargetCurrent(currentCfg);

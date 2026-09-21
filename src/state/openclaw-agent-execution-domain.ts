@@ -1,12 +1,16 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isPromise } from "node:util/types";
+import { serialize } from "node:v8";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   SQLITE_WORKER_PREPARE_COMMAND,
+  SQLITE_WORKER_MAX_MESSAGE_BYTES,
   type SqliteWorkerPreparedBackend,
   type SqliteWorkerCommand,
   type SqliteWorkerOperations,
 } from "../infra/sqlite-worker-contract.js";
+
+export type AgentDatabaseDomainAdmissionFacts = { id: string; value: unknown };
 
 export type AgentDatabaseDomainOperations = {
   "database.domain.bind": {
@@ -24,7 +28,7 @@ export type AgentDatabaseDomainOperations = {
 export function createAgentDatabaseDomainOwner(context: {
   databasePath: string;
   assertCurrent(): DatabaseSync;
-  admit(stage: "transaction" | "commit"): void;
+  admit(stage: "transaction" | "commit", domain?: AgentDatabaseDomainAdmissionFacts): void;
 }) {
   let binding:
     | { id: string; backend: SqliteWorkerPreparedBackend<SqliteWorkerOperations>; closing: boolean }
@@ -84,7 +88,17 @@ export function createAgentDatabaseDomainOwner(context: {
         const backend = factory(command.input.input, {
           databasePath: context.databasePath,
           database,
-          admit: (stage: "transaction" | "commit") => context.admit(stage),
+          admit: (stage: "transaction" | "commit", facts?: unknown) => {
+            if (facts === undefined) {
+              context.admit(stage);
+              return;
+            }
+            const domain = { id: command.input.id, value: facts };
+            if (serialize(domain).byteLength > SQLITE_WORKER_MAX_MESSAGE_BYTES) {
+              throw new Error("Agent domain admission facts exceed the transport limit");
+            }
+            context.admit(stage, domain);
+          },
         });
         if (isPromise(backend)) {
           void backend.catch(() => {});

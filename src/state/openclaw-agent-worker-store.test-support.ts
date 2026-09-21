@@ -13,7 +13,13 @@ import {
 
 export type AgentWorkerFixtureOperations = {
   append: {
-    input: { value: string; transactionMarker?: string; commitMarker?: string; delayMs?: number };
+    input: {
+      value: string;
+      transactionMarker?: string;
+      commitMarker?: string;
+      delayMs?: number;
+      admissionFacts?: unknown;
+    };
     output: number;
   };
 };
@@ -32,7 +38,7 @@ export function bindSqliteWorkerBackend(
     | undefined,
   context: {
     database: DatabaseSync;
-    admit(stage: "transaction" | "commit"): void;
+    admit(stage: "transaction" | "commit", facts?: unknown): void;
   },
 ): SqliteWorkerPreparedBackend<AgentWorkerFixtureOperations> {
   const { database: db } = context;
@@ -80,14 +86,14 @@ export function bindSqliteWorkerBackend(
       return runSqliteImmediateTransactionSync(
         db,
         () => {
-          context.admit("transaction");
+          context.admit("transaction", input.admissionFacts);
           pause(input.transactionMarker, input.delayMs ?? 200);
           db.prepare("INSERT INTO worker_proof(value) VALUES (?)").run(input.value);
           return threadId;
         },
         {
           withCommit(commit) {
-            context.admit("commit");
+            context.admit("commit", input.admissionFacts);
             pause(input.commitMarker, input.delayMs ?? 200);
             commit();
           },

@@ -7,15 +7,20 @@ import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import * as sqliteWal from "../infra/sqlite-wal.js";
 import * as admission from "../infra/sqlite-worker-operation-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { closeOpenClawAgentDatabasesAsync } from "./openclaw-agent-db-lifecycle.js";
+import {
+  closeOpenClawAgentDatabaseByPathAsync,
+  closeOpenClawAgentDatabasesAsync,
+} from "./openclaw-agent-db-lifecycle.js";
 import { revokeAgentDatabaseResources } from "./openclaw-agent-db-resources.js";
 import { withOpenClawAgentDatabaseWrite } from "./openclaw-agent-db-write.js";
 import {
   openOpenClawAgentDatabase,
   closeOpenClawAgentDatabasesForTest,
+  getOpenClawAgentDatabaseIfOpen,
 } from "./openclaw-agent-db.js";
 import {
   openOpenClawAgentSqliteWorkerStore,
+  openExistingOpenClawAgentSqliteWorkerStore,
   type OpenClawAgentSqliteWorkerStore,
 } from "./openclaw-agent-worker-store.js";
 import { agentWorkerStoreFixtureEntrypoint } from "./openclaw-agent-worker-store.runtime.test-support.js";
@@ -479,5 +484,73 @@ describe("pooled agent publication owner", () => {
     await withOpenClawAgentDatabaseWrite(options, () => undefined, db);
     expect(exec.mock.calls.some(([sql]) => sql.includes("incremental_vacuum"))).toBe(true);
     expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([{ value: "published" }]);
+  });
+});
+
+describe("existing-only domain publication", () => {
+  it.each(["accepted", "refused"] as const)(
+    "uses its canonical worker without a host handle and preserves %s authority",
+    async (outcome) => {
+      const database = openOpenClawAgentDatabase(options);
+      database.db.exec("CREATE TABLE worker_proof (value TEXT NOT NULL)");
+      await closeOpenClawAgentDatabaseByPathAsync(options.path);
+      expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
+      const worker = await openExistingOpenClawAgentSqliteWorkerStore<AgentWorkerFixtureOperations>(
+        options,
+        {
+          moduleUrl: resolveRuntimeWorkerUrl(agentWorkerStoreFixtureEntrypoint),
+          input: undefined,
+        },
+      );
+      if (!worker) throw new Error("Expected existing-only store");
+      workers.add(worker);
+      const facts = { kind: "fixture.append", value: "owned" };
+      const authorize = vi.fn((stage: "transaction" | "commit", received: unknown) => {
+        expect(received).toEqual(facts);
+        expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
+        if (outcome === "refused" && stage === "commit")
+          throw new Error("fixture authority revoked");
+      });
+      const operation = worker.run(
+        (scope) =>
+          scope.execute({ type: "append", input: { value: "owned", admissionFacts: facts } }),
+        () => {},
+        authorize,
+      );
+      if (outcome === "refused")
+        await expect(operation).rejects.toThrow("fixture authority revoked");
+      else expect(await operation).toBeGreaterThan(0);
+      expect(authorize.mock.calls.map(([stage]) => stage)).toEqual(["transaction", "commit"]);
+      expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
+      await worker.close();
+      const reopened = openOpenClawAgentDatabase(options);
+      expect(reopened.db.prepare("SELECT value FROM worker_proof").all()).toEqual(
+        outcome === "accepted" ? [{ value: "owned" }] : [],
+      );
+    },
+  );
+
+  it("does not create missing stores or authorize domain facts without their host authorizer", async () => {
+    const missing = await openExistingOpenClawAgentSqliteWorkerStore<AgentWorkerFixtureOperations>(
+      options,
+      {
+        moduleUrl: resolveRuntimeWorkerUrl(agentWorkerStoreFixtureEntrypoint),
+        input: undefined,
+      },
+    );
+    expect(missing).toBeUndefined();
+    expect(fs.existsSync(options.path)).toBe(false);
+    const { db, worker } = await setup();
+    await expect(
+      worker.run(
+        (scope) =>
+          scope.execute({
+            type: "append",
+            input: { value: "denied", admissionFacts: { kind: "fixture.append" } },
+          }),
+        () => {},
+      ),
+    ).rejects.toThrow("Agent domain authority differs from its retained binding");
+    expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([]);
   });
 });

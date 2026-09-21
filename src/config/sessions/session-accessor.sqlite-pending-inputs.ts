@@ -150,6 +150,24 @@ export function withSessionPendingInputRelocation<T>(
   return owners.relocation.run({ owner, sourceInputId }, append);
 }
 
+/** Process-local custody remains on the host; durable session identity is validated separately. */
+export function hasLiveSessionPendingInputOwner(
+  databasePath: string,
+  row: Pick<
+    SessionPendingInputRow,
+    "input_id" | "session_id" | "session_key" | "lifecycle_generation"
+  >,
+): boolean {
+  const owner = owners.live.get(row.input_id);
+  return Boolean(
+    owner?.databasePath === databasePath &&
+    owner.sessionId === row.session_id &&
+    owner.sessionKey === row.session_key &&
+    owner.lifecycleGeneration === row.lifecycle_generation &&
+    isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration),
+  );
+}
+
 /** Registration owns disposition; execution and promotion check the private operational predicates. */
 export function readSessionPendingInputOwnerIds(
   database: PendingInputDatabase,
@@ -158,16 +176,7 @@ export function readSessionPendingInputOwnerIds(
     "input_id" | "session_key" | "session_id" | "lifecycle_generation"
   >[],
 ): Set<string> {
-  const candidates = rows.filter((row) => {
-    const owner = owners.live.get(row.input_id);
-    return (
-      owner?.databasePath === database.path &&
-      owner.sessionId === row.session_id &&
-      owner.sessionKey === row.session_key &&
-      owner.lifecycleGeneration === row.lifecycle_generation &&
-      isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration)
-    );
-  });
+  const candidates = rows.filter((row) => hasLiveSessionPendingInputOwner(database.path, row));
   if (!candidates.length) {
     return new Set();
   }

@@ -74,6 +74,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../worker/skills-worker-entry",
     distWorkerPath: "worker/skills-worker-entry.js",
   },
+  pendingInputStage: {
+    currentModuleUrl,
+    sourceWorkerName: "../config/sessions/session-pending-input-stage.worker",
+    distWorkerPath: "config/sessions/session-pending-input-stage.worker.js",
+  },
   boardStore: {
     currentModuleUrl,
     sourceWorkerName: "../boards/sqlite-board-store.worker",

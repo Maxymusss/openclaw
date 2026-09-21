@@ -1,11 +1,16 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Result } from "@openclaw/normalization-core/result";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { resolveStateDir } from "../config/state-dir.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
-import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
+import {
+  assertExistingDatabaseIdentity,
+  readDatabasePathIdentitySync,
+  type DatabasePathIdentity,
+} from "../infra/sqlite-worker-identity.js";
 import { createSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import type { SqliteWorkerOperations, SqliteWorkerStore } from "../infra/sqlite-worker-store.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -43,6 +48,7 @@ export type OpenClawAgentSqliteWorkerStore<Operations extends SqliteWorkerOperat
   run<T>(
     operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => Promise<T>,
     assertCurrent: () => void,
+    authorizeDomain?: (stage: "transaction" | "commit", facts: unknown) => void,
   ): Promise<T>;
   close(): Promise<void>;
 };
@@ -53,6 +59,20 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
   expectedDatabase: DatabaseSync,
   worker: { moduleUrl: URL; input: unknown },
 ): Promise<OpenClawAgentSqliteWorkerStore<Operations>> {
+  return createOpenClawAgentSqliteWorkerStore<Operations>(
+    inputOptions,
+    { database: expectedDatabase },
+    worker,
+  );
+}
+
+/** Capture a pre-existing physical owner without opening SQLite on the caller thread. */
+export async function openExistingOpenClawAgentSqliteWorkerStore<
+  Operations extends SqliteWorkerOperations,
+>(
+  inputOptions: OpenClawAgentDatabaseOptions,
+  worker: { moduleUrl: URL; input: unknown },
+): Promise<OpenClawAgentSqliteWorkerStore<Operations> | undefined> {
   const env = cloneEnvWithPlatformSemantics(inputOptions.env ?? process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
   const options = {
@@ -60,7 +80,31 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
     env,
     path: resolveOpenClawAgentSqlitePath({ ...inputOptions, env }),
   };
-  const prepared = readOpenClawAgentDatabaseIdentity({ db: expectedDatabase });
+  const identity = readDatabasePathIdentitySync(options.path);
+  if (!identity.key.startsWith("file:")) return undefined;
+  return createOpenClawAgentSqliteWorkerStore<Operations>(options, { identity }, worker);
+}
+
+async function createOpenClawAgentSqliteWorkerStore<Operations extends SqliteWorkerOperations>(
+  inputOptions: OpenClawAgentDatabaseOptions,
+  source: { database: DatabaseSync } | { identity: DatabasePathIdentity },
+  worker: { moduleUrl: URL; input: unknown },
+): Promise<OpenClawAgentSqliteWorkerStore<Operations>> {
+  const env = cloneEnvWithPlatformSemantics(inputOptions.env ?? process.env);
+  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  const options = {
+    ...inputOptions,
+    env,
+    path: resolveOpenClawAgentSqlitePath({ ...inputOptions, env }),
+  };
+  const expectedDatabase = "database" in source ? source.database : undefined;
+  const prepared =
+    "identity" in source
+      ? {
+          identity: source.identity.key.slice("file:".length),
+          filename: source.identity.canonicalPath,
+        }
+      : readOpenClawAgentDatabaseIdentity({ db: source.database });
   if (typeof prepared.identity !== "string") {
     throw new Error("Agent Worker requires its existing file owner");
   }
@@ -86,14 +130,16 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
       throw new Error("Agent database Worker owner is closed");
     }
     state.assertCurrent();
-    const current = getOpenClawAgentDatabaseIfOpen(options);
-    if (
-      !current ||
-      current.db !== expectedDatabase ||
-      !expectedDatabase.isOpen ||
-      !isOpenClawAgentDatabasePathCurrent(current)
-    ) {
-      throw new Error("Borrowed agent database closed or changed before Worker admission");
+    if (expectedDatabase) {
+      const current = getOpenClawAgentDatabaseIfOpen(options);
+      if (
+        !current ||
+        current.db !== expectedDatabase ||
+        !expectedDatabase.isOpen ||
+        !isOpenClawAgentDatabasePathCurrent(current)
+      ) {
+        throw new Error("Borrowed agent database closed or changed before Worker admission");
+      }
     }
     assertExistingDatabaseIdentity(options.path, identity);
   };
@@ -128,7 +174,7 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
         }
       },
     });
-    releaseBorrow = retainAgentDatabase(expectedDatabase);
+    if (expectedDatabase) releaseBorrow = retainAgentDatabase(expectedDatabase);
   } catch (error) {
     try {
       await close();
@@ -147,6 +193,7 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
     run<T>(
       operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => Promise<T>,
       assertCurrent: () => void,
+      authorizeDomain?: (stage: "transaction" | "commit", facts: unknown) => void,
     ): Promise<T> {
       if (revoked) {
         return Promise.reject(new Error("Agent database Worker owner is closed"));
@@ -156,6 +203,7 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
         assertCurrent();
       };
       const execution = captureOpenClawAgentDatabaseExecution(options, { expectedIdentity });
+      const id = randomUUID();
       const source: AgentDatabaseRequestExecutionSource = {
         assertCurrent: assert,
         createAdmission(binding) {
@@ -174,6 +222,13 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
                     )
                   ) {
                     throw new Error("Agent publication authority requested out of order");
+                  }
+                  const domain = isRecord(request.facts) ? request.facts.domain : undefined;
+                  if (authorizeDomain || domain !== undefined) {
+                    if (!authorizeDomain || !isRecord(domain) || domain.id !== id) {
+                      throw new Error("Agent domain authority differs from its retained binding");
+                    }
+                    authorizeDomain(request.stage, domain.value);
                   }
                   phase = request.stage;
                 }
@@ -207,7 +262,6 @@ export async function openOpenClawAgentSqliteWorkerStore<Operations extends Sqli
         let completed: Result<T, unknown>;
         try {
           const publicationValue = await runOpenClawAgentWorkerWrite(options, async () => {
-            const id = randomUUID();
             let bound = false;
             const failures: unknown[] = [];
             let outcome: Result<T, unknown>;

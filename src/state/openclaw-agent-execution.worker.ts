@@ -182,9 +182,12 @@ export function openExistingSqliteWorkerBackend(
       assertFileIdentity();
       return current.db;
     },
-    admit(stage) {
+    admit(stage, domain) {
       assertFileIdentity();
-      requestSqliteWorkerOperationAdmission({ stage, facts: { identity } });
+      requestSqliteWorkerOperationAdmission({
+        stage,
+        facts: { identity, ...(domain ? { domain } : {}) },
+      });
       if (stage === "commit") {
         ensureOpenClawAgentDatabasePermissions(input.databasePath, options);
       }

@@ -39,6 +39,7 @@ export type SessionSharingTarget = {
   storeKey: string;
   storeKeys: string[];
   storePath: string;
+  readSource?: { agentId: string; path: string };
 };
 
 export function resolveSessionVisibility(
@@ -134,6 +135,7 @@ function toSessionSharingTarget(
         storeKey: match.key,
         storeKeys: target.storeKeys,
         storePath: target.storePath,
+        ...(target.readSource ? { readSource: target.readSource } : {}),
       }
     : null;
 }

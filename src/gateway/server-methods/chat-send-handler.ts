@@ -59,6 +59,7 @@ import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
 import { publishCommittedSessionGoalChange } from "./session-goal-change.js";
+import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import type { GatewayRequestHandlerOptions, SessionMutationAuthorization } from "./types.js";
 
 type ChatSendInternalOptions = {
@@ -75,7 +76,12 @@ const mediaDocumentContextLoader = createLazyImportLoader(
 );
 
 async function handleChatSendWithOptions(
-  {
+  handlerOptions: GatewayRequestHandlerOptions,
+  onAdmissionOwned?: () => Promise<boolean>,
+  externalAuthorityAdmission?: ChatSendExternalAuthorityAdmission,
+  options?: ChatSendInternalOptions,
+): Promise<void> {
+  const {
     req,
     params,
     respond,
@@ -84,11 +90,8 @@ async function handleChatSendWithOptions(
     hasCurrentClientAuthority,
     sessionMutationAuthorization,
     sessionMutationCommitGuard,
-  }: GatewayRequestHandlerOptions,
-  onAdmissionOwned?: () => Promise<boolean>,
-  externalAuthorityAdmission?: ChatSendExternalAuthorityAdmission,
-  options?: ChatSendInternalOptions,
-): Promise<void> {
+  } = handlerOptions;
+  const mutationAuthority = readGatewayRequestMutationAuthority(handlerOptions);
   const setup = await prepareAndAdmitChatSend(
     { params, respond, context, client, hasCurrentClientAuthority, sessionMutationAuthorization },
     onAdmissionOwned,
@@ -338,6 +341,23 @@ async function handleChatSendWithOptions(
       };
       const staged = await userTurnRecorder.stageApproved?.({
         runId: clientRunId,
+        ...(mutationAuthority.family === "worker" &&
+        sessionMutationAuthorization?.authorizePendingInput
+          ? {
+              workerAuthority: {
+                assertCurrent: () => {
+                  mutationAuthority.assertWorkerCurrent();
+                  mutationAuthority.expectedProfileBinding?.assertCurrent();
+                  admitted.value.assertWorkAdmissionCurrent();
+                  if (sessionRoutingChanged(context.getRuntimeConfig()))
+                    throw new Error(
+                      "Session routing changed before input admission; refresh and retry.",
+                    );
+                },
+                authorize: sessionMutationAuthorization.authorizePendingInput,
+              },
+            }
+          : {}),
         assertCurrent: () => {
           sessionMutationCommitGuard?.();
           assertCustodyCurrent();
