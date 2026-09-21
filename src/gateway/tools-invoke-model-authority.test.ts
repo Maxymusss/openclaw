@@ -3,8 +3,11 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as loaderModule from "../plugins/loader-module-runtime.js";
 import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtures.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
+import { createPluginRuntime } from "../plugins/runtime/index.js";
+import * as sdkAlias from "../plugins/sdk-alias.js";
 import { createColdPluginFixture } from "../plugins/test-helpers/cold-plugin-fixtures.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
@@ -151,6 +154,24 @@ describe("standalone registered plugin completion authority", () => {
           stopReason: "stop",
           usage: { input: 1, output: 1, total: 2 },
         });
+        const resolveRuntime = vi.spyOn(sdkAlias, "resolvePluginRuntimeModulePathWithDiagnostics");
+        const createLoader = loaderModule.createPluginModuleLoader;
+        // Native host loading bypasses Vitest's preparation/transport doubles. Bridge only
+        // that module; plugin instances and the real runtime factory keep their ownership.
+        const loadRuntime = vi
+          .spyOn(loaderModule, "createPluginModuleLoader")
+          .mockImplementation((options) => {
+            const load = createLoader(options);
+            return (modulePath, owner) => {
+              if (
+                !owner &&
+                modulePath === resolveRuntime.mock.results.at(-1)?.value?.resolvedPath
+              ) {
+                return { createPluginRuntime };
+              }
+              return load(modulePath, owner);
+            };
+          });
         const respond = vi.fn<RespondFn>();
         const request = handleGatewayRequest({
           req: {
@@ -180,6 +201,11 @@ describe("standalone registered plugin completion authority", () => {
           await request;
           expect(runtime.beforeHook).toHaveBeenCalledOnce();
           expect(respond).toHaveBeenCalledOnce();
+          if (["allowed", "system", "provider-revoked", "provider-widened"].includes(mode)) {
+            expect(runtime.acquire).toHaveBeenCalledOnce();
+          } else {
+            expect(runtime.acquire).not.toHaveBeenCalled();
+          }
           if (mode === "allowed" || mode === "system") {
             expect(respond).toHaveBeenCalledWith(
               true,
@@ -206,9 +232,14 @@ describe("standalone registered plugin completion authority", () => {
           }
         } finally {
           release.resolve();
-          await request.catch(() => {});
-          resetPluginLoaderTestStateForTest();
-          clearPluginMetadataLifecycleCaches();
+          try {
+            await request.catch(() => {});
+            resetPluginLoaderTestStateForTest();
+            clearPluginMetadataLifecycleCaches();
+          } finally {
+            loadRuntime.mockRestore();
+            resolveRuntime.mockRestore();
+          }
         }
       },
     );
