@@ -5,7 +5,7 @@
   "freshNamespace": "observer393-product-<fresh GITHUB_RUN_ID>-1",
   "runtime": "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime",
   "pathResolution": "RUNNER_TEMP from newly admitted github-hosted windows-2025 runner, not a filesystem glob",
-  "bundleSha256": "7b4e15de518b62713b034be4c7b392353906455d298ee33e24e3eecdb1604f0e",
+  "bundleSha256": "81efb9e94dc2c951763795494c96e60701ce4ce0dab48d86bd328aa6d148d2a6",
   "pythonArchive": {
     "url": "https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip",
     "version": "3.13.7",
@@ -74,7 +74,7 @@
     "--manifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "--manifest-sha",
-    "7b4e15de518b62713b034be4c7b392353906455d298ee33e24e3eecdb1604f0e",
+    "81efb9e94dc2c951763795494c96e60701ce4ce0dab48d86bd328aa6d148d2a6",
     "--evidence",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke",
     "--run",
@@ -99,7 +99,7 @@
     "-ObserverManifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "-ObserverManifestSha256",
-    "7b4e15de518b62713b034be4c7b392353906455d298ee33e24e3eecdb1604f0e",
+    "81efb9e94dc2c951763795494c96e60701ce4ce0dab48d86bd328aa6d148d2a6",
     "-ObserverSmokeResult",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke\\result.json",
     "-ObserverSmokeSha256",
@@ -133,7 +133,7 @@
     "evidenceRun": 35596476995,
     "nativeProductQualified": false
   },
-  "stageSha256": "30f460c6bb7afb44ec4bdff91e0d819e7a1f975c135133b4f80a160f1d5a11c5",
+  "stageSha256": "2a27bad7cf58068db9e41702c9998bc99787c653ee46e07b679a920042434e07",
   "stagingBehavior": "Stages hashed payload, release manifest and exact official Python archive; parses diagnostic parameters without body execution; performs own25s smoke and raw preflight; removes inert fixture only; returns same-job runtime tuple with NO product fall-through. Terminal caller owns runtime cleanup after custody/settlement.",
   "futureWorkflowContract": {
     "runner": "windows-2025",
@@ -155,7 +155,7 @@
   },
   "observerOutput": {
     "entry": "bounded_observe.py",
-    "entrySha256": "fe796cbd0fccbcc1ceec7e894e8b7bef6bd7f1a1f960829512a652a8fa57c7e7",
+    "entrySha256": "ff5fed0f03bb69e80ec103ea24d062c6af9afccff01174efa5d0d63b43e88037",
     "originalObserverUnchanged": true,
     "outputPolicy": "lossless-gaps-v1",
     "productSamples": 60,
@@ -167,7 +167,9 @@
     "allRawGapPayloadsPreserved": true,
     "sameRunSmokePhysicalProjectionMargin": 2,
     "runtimeVerified": false,
-    "smokeCapacityRequires": "two starts and two sample-end records plus terminal sample-limit"
+    "smokeCapacityRequires": "two starts and two sample-end records plus terminal sample-limit",
+    "finalizationReserveSeconds": 60,
+    "sameJobValidationProjection": "Measured complete raw smoke revalidation x30 sample scaling x2 margin must fit40s;60s finalization reserve includes20s result/settlement margin. Observer/update join admission ends inside original3600s aggregate; no kill or timeout increase."
   },
   "hookSha256": "92f13bf73e4a1e175e7c4931e0a67327b79a265a4419949caa213cac84f52a95",
   "lifecycle": {

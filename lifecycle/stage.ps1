@@ -2,7 +2,7 @@
 param([Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedWorkflowSha)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$bundleSha = '7b4e15de518b62713b034be4c7b392353906455d298ee33e24e3eecdb1604f0e'
+$bundleSha = '81efb9e94dc2c951763795494c96e60701ce4ce0dab48d86bd328aa6d148d2a6'
 $candidate = '393c80255dea6605a5665c6e0836d01fb6d18304'
 function Hash([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Save([string]$Path, $Value) {

@@ -60,7 +60,10 @@ class GapWriter(Writer):
         super().emit(kind,**payload)
 
 
-def verify_sidecar(output, rows, binding):
+def verify_sidecar(output, rows, binding, deadline=None):
+    def check():
+        if deadline is not None and time.monotonic()>=deadline:raise ValueError('validation deadline exhausted')
+    check()
     end=rows[-1].get('gapSidecar',{})
     if binding.get('outputPolicy')!=POLICY or end.get('policy')!=POLICY or end.get('complete') is not True:
         raise ValueError('missing complete lossless gap sidecar')
@@ -69,11 +72,15 @@ def verify_sidecar(output, rows, binding):
     if not 0<size<=binding['maxBytes'] or end.get('compressedBytes')!=size:
         raise ValueError('gap sidecar size/budget mismatch')
     with path.open('rb') as f:
-        if hashlib.file_digest(f,'sha256').hexdigest()!=end.get('compressedSha256'):
+        compressed_digest=hashlib.sha256()
+        while chunk:=f.read(1024*1024):
+            check();compressed_digest.update(chunk)
+        if compressed_digest.hexdigest()!=end.get('compressedSha256'):
             raise ValueError('gap sidecar changed')
     count=logical=0;digest=hashlib.sha256()
     with gzip.open(path,'rb') as f:
         while raw:=f.readline(1024*1024+1):
+            check()
             logical+=len(raw)
             if len(raw)>1024*1024 or not raw.endswith(b'\n') or logical>LOGICAL_LIMIT:
                 raise ValueError('truncated/excessive gap payload')
@@ -85,6 +92,7 @@ def verify_sidecar(output, rows, binding):
         raise ValueError('incomplete gap sidecar')
     if sum(r.get('detail',{}).get('count',0) for r in rows if r.get('kind')=='gap' and isinstance(r.get('detail'),dict) and r['detail'].get('sidecar')==POLICY)!=count:
         raise ValueError('gap primary/sidecar coverage mismatch')
+    check()
     return end
 
 

@@ -17,6 +17,14 @@ from host_contract import validate_host
 from bounded_observe import verify_sidecar, smoke_capacity, POLICY
 
 HERE = Path(__file__).resolve().parent
+FINALIZATION_SECONDS = 60
+
+def validation_capacity(seconds):
+    projected=seconds*60 #60 samples /2 smoke samples, with2x throughput margin
+    if not math.isfinite(seconds) or seconds<0 or projected>40:
+        raise ValueError('same-job validation throughput cannot fit unchanged aggregate budget')
+    return {'measuredSeconds':seconds,'projectedSeconds':projected,'reserveSeconds':FINALIZATION_SECONDS,
+            'workloadMargin':2,'resultMarginSeconds':20,'notFutureWorkloadGuarantee':True}
 
 
 def write(path, value):
@@ -152,8 +160,9 @@ class Session:
 
     def finish(self):
         # All children share the SAME deadline, including denial/launch-error paths.
-        while any(p.poll() is None for p,_ in self.children) and time.monotonic() < self.deadline:
-            time.sleep(min(.05, max(0,self.deadline-time.monotonic())))
+        until=min(self.deadline,getattr(self,'work_deadline',self.deadline))
+        while any(p.poll() is None for p,_ in self.children) and time.monotonic() < until:
+            time.sleep(min(.05, max(0,until-time.monotonic())))
         for child, record in self.children:
             record.update(exitCode=child.poll(), exited=child.poll() is not None)
             try:
@@ -166,7 +175,8 @@ class Session:
 
 
 def make_binding(session, package_parent, harness, run_id, smoke=False):
-    seconds = min(10 if smoke else 3598, math.floor(session.deadline-time.monotonic())-1)
+    seconds = min(10 if smoke else 3600-FINALIZATION_SECONDS-1,
+                  math.floor(session.deadline-time.monotonic())-(1 if smoke else FINALIZATION_SECONDS+1))
     binding = dict(schema=1, run=run_id, candidateHead=HEAD, releasedDriver=DRIVER,
                    driverVersion='2026.9.5', packageParent=str(package_parent),
                    harnessPid=harness['pid'], harnessCreated100ns=harness['created100ns'],
@@ -176,9 +186,11 @@ def make_binding(session, package_parent, harness, run_id, smoke=False):
     return validate_binding(binding)
 
 
-def observer_terminal(output,binding,digest,code,pid):
+def observer_terminal(output,binding,digest,code,pid,deadline=None):
+    if deadline is not None and time.monotonic()>=deadline:raise ValueError('validation deadline exhausted')
+    if Path(output).stat().st_size>binding['maxBytes']:raise ValueError('primary output cap exceeded')
     rows=terminal(Path(output).read_bytes(),binding,digest,code,pid)
-    verify_sidecar(output,rows,binding)
+    verify_sidecar(output,rows,binding,deadline=deadline)
     return rows
 
 
@@ -315,6 +327,7 @@ def validate_smoke(path, digest, bundle, manifest):
     if (arming['bindingSha256'] != sha(binding_raw)
             or not same_process(arming['observerIdentity'],observer['identity'])):
         raise ValueError('smoke arming changed')
+    validation_start=time.monotonic()
     rows=observer_terminal(root/'observer.jsonl',binding,sha(binding_raw),observer['exitCode'],observer['pid'])
     smoke_capacity(root/'observer.jsonl',rows,binding)
     ready_raw=(root/'fixture.stdout.log').read_bytes()
@@ -326,6 +339,7 @@ def validate_smoke(path, digest, bundle, manifest):
             raise ValueError('fixture/observer baseline mismatch')
     if smoke_matches(rows,fixture['identity'],ready['baseline']) != proof['matched']:
         raise ValueError('positive smoke evidence changed')
+    proof['validationCapacity']=validation_capacity(time.monotonic()-validation_start)
     return proof
 
 
@@ -349,13 +363,17 @@ def diagnostic(args, api, me, manifest):
     for relative, expected in json.loads(release_raw).items():
         if sha((Path(spec['packageParent'])/'openclaw'/relative).read_bytes()) != expected:
             raise ValueError('released installed source mismatch: '+relative)
-    validate_smoke(Path(spec['smokeResult']),spec['smokeSha256'],args.manifest_sha,manifest)
+    bound_smoke=validate_smoke(Path(spec['smokeResult']),spec['smokeSha256'],args.manifest_sha,manifest)
     harness = process_identity(api,spec['harness']['pid'])
     if not same_process(harness,spec['harness']) or harness.get('exited100ns') != '0':
         raise ValueError('PowerShell PID incarnation mismatch')
     remaining = inherited_deadline-time.monotonic()
-    if remaining < 3: raise ValueError('deadline exhausted before observation')
+    if remaining < FINALIZATION_SECONDS+3: raise ValueError('deadline exhausted before observation')
     session = Session(api,args.evidence,remaining)
+    session.work_deadline=session.deadline-FINALIZATION_SECONDS
+    session.result['validationCapacity']=bound_smoke['validationCapacity']
+    session.result['aggregateBudgetSeconds']=3600
+    session.result['finalizationReserveSeconds']=FINALIZATION_SECONDS
     obs = update = None
     try:
         session.result.update(specSha256=sha(spec_raw), manifestSha256=args.manifest_sha)
@@ -366,7 +384,7 @@ def diagnostic(args, api, me, manifest):
                 'update','--channel','dev','--yes','--json','--no-restart','--timeout','1200']
         update, ident = session.launch('published-driver-update',argv,spec['proofRoot'])
         session.finish()
-        rows = observer_terminal(obs[3],obs[1],obs[2],obs[0].poll(),obs[0].pid)
+        rows = observer_terminal(obs[3],obs[1],obs[2],obs[0].poll(),obs[0].pid,deadline=inherited_deadline-2)
         complete_diagnostic(session, rows, update, ident)
     except Exception as exc:
         session.result['error']=repr(exc)
@@ -390,7 +408,8 @@ def main():
     manifest=validate_manifest(args.manifest,args.manifest_sha)
     api=WinAPI(); me=require_native(api)
     if args.mode=='preflight':
-        validate_smoke(Path(args.smoke_result),args.smoke_sha,args.manifest_sha,manifest)
+        checked=validate_smoke(Path(args.smoke_result),args.smoke_sha,args.manifest_sha,manifest)
+        write(Path(args.evidence)/('capacity-'+args.run+'.json'), {'host':host(),'bundleSha256':args.manifest_sha,'smokeSha256':args.smoke_sha,'validationCapacity':checked['validationCapacity']})
         return 0
     return smoke(args,api,me,manifest) if args.mode=='smoke' else diagnostic(args,api,me,manifest)
 
