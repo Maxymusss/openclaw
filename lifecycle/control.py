@@ -2,6 +2,7 @@
 import hashlib
 import json
 from identity import LEAVES, canonical, correlate, file_key, parse_events
+from primary import check_deadline
 
 
 def sha(data):
@@ -66,17 +67,23 @@ def armed(raw, binding, binding_sha, observer, parent_file):
 
 
 def terminal(raw, binding, binding_sha, observer_exit, observer_pid):
-    rows = records(raw)
+    return terminal_rows(records(raw),binding,binding_sha,observer_exit,observer_pid)
+
+
+def terminal_rows(rows,binding,binding_sha,observer_exit,observer_pid,deadline=None):
+    check_deadline(deadline)
     if rows[0].get('binding') != dict(binding, bindingSha256=binding_sha):
         raise ValueError('terminal binding mismatch')
-    if any(r['run'] != binding['run'] for r in rows):
-        raise ValueError('mixed run')
-    endings = [i for i,r in enumerate(rows) if r['kind'] == 'settled']
+    endings=[];arm_indices=[]
+    for i,r in enumerate(rows):
+        check_deadline(deadline)
+        if r['run']!=binding['run']:raise ValueError('mixed run')
+        if r['kind']=='settled':endings.append(i)
+        if r['kind']=='armed':arm_indices.append(i)
     if endings != [len(rows)-1] or observer_exit != 0:
         raise ValueError('observer unsettled/failed')
     if type(observer_pid) is not int or observer_pid <= 0 or rows[0].get('observerPid') != observer_pid:
         raise ValueError('missing/wrong observer identity')
-    arm_indices = [i for i,r in enumerate(rows) if r['kind']=='armed']
     if arm_indices != [5]:
         raise ValueError('missing/duplicate arming in final evidence')
     prefix = b''.join((json.dumps(r)+'\n').encode('ascii') for r in rows[:6])
@@ -84,6 +91,7 @@ def terminal(raw, binding, binding_sha, observer_exit, observer_pid):
     end = rows[-1]
     if end.get('armed') is not True or end.get('reason') not in ('wall-budget','sample-limit'):
         raise ValueError('observer unsuccessful terminal')
+    check_deadline(deadline)
     return rows
 
 

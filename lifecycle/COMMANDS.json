@@ -5,7 +5,7 @@
   "freshNamespace": "observer393-product-<fresh GITHUB_RUN_ID>-1",
   "runtime": "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime",
   "pathResolution": "RUNNER_TEMP from newly admitted github-hosted windows-2025 runner, not a filesystem glob",
-  "bundleSha256": "677955555df12b60627000bfb043c8e9d50095046302a50241be081174884069",
+  "bundleSha256": "8eb5241ec3bd3ba0da545ccbb7d91c81145c846209afceaf896649d1833e8c11",
   "pythonArchive": {
     "url": "https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip",
     "version": "3.13.7",
@@ -74,7 +74,7 @@
     "--manifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "--manifest-sha",
-    "677955555df12b60627000bfb043c8e9d50095046302a50241be081174884069",
+    "8eb5241ec3bd3ba0da545ccbb7d91c81145c846209afceaf896649d1833e8c11",
     "--evidence",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke",
     "--run",
@@ -99,7 +99,7 @@
     "-ObserverManifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "-ObserverManifestSha256",
-    "677955555df12b60627000bfb043c8e9d50095046302a50241be081174884069",
+    "8eb5241ec3bd3ba0da545ccbb7d91c81145c846209afceaf896649d1833e8c11",
     "-ObserverSmokeResult",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke\\result.json",
     "-ObserverSmokeSha256",
@@ -133,7 +133,7 @@
     "evidenceRun": 35596476995,
     "nativeProductQualified": false
   },
-  "stageSha256": "ebc0307fad108ae15eefb956b64df7d9f07dcf88c9a0b272ac77df511639f930",
+  "stageSha256": "c8c72b8b3c2334b255e12af4cc1448c9d46b70ec5003135b188861793518591b",
   "stagingBehavior": "Stages hashed payload, release manifest and exact official Python archive; parses diagnostic parameters without body execution; performs own25s smoke and raw preflight; removes inert fixture only; returns same-job runtime tuple with NO product fall-through. Terminal caller owns runtime cleanup after custody/settlement.",
   "futureWorkflowContract": {
     "runner": "windows-2025",
@@ -170,7 +170,8 @@
     "smokeCapacityRequires": "two starts and two sample-end records plus terminal sample-limit",
     "finalizationReserveSeconds": 60,
     "sameJobValidationProjection": "Measured complete raw smoke revalidation x30 sample scaling x2 margin must fit40s;60s finalization reserve includes20s result/settlement margin. Observer/update join admission ends inside original3600s aggregate; no kill or timeout increase.",
-    "coverage": "Actual starts/ends and fullSampleCountGate retained; bounded wall-budget is not complete60-sample or exhaustive coverage. Strict same-run smoke still requires0/1 complete/sample-limit."
+    "coverage": "Actual starts/ends and fullSampleCountGate retained; bounded wall-budget is not complete60-sample or exhaustive coverage. Strict same-run smoke still requires0/1 complete/sample-limit.",
+    "primaryValidation": "Read-only streaming, <=1MiB per record, <=64MiB overall, deadline before/after bounded reads and JSON parse plus terminal gate iteration; original schema/sequence/run checks preserved; denied raw file retained."
   },
   "hookSha256": "92f13bf73e4a1e175e7c4931e0a67327b79a265a4419949caa213cac84f52a95",
   "lifecycle": {

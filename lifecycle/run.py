@@ -9,10 +9,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from control import armed, joins, same_process, sha, smoke_matches, terminal
+from control import armed, joins, same_process, sha, smoke_matches, terminal, terminal_rows
 from identity import HEAD, LEAVES, canonical, file_key
 from observe import DRIVER, validate_binding
 from windows_api import WinAPI
+from primary import primary_records
 from host_contract import validate_host
 from bounded_observe import verify_sidecar, smoke_capacity, POLICY
 
@@ -197,9 +198,8 @@ def make_binding(session, package_parent, harness, run_id, smoke=False):
 
 
 def observer_terminal(output,binding,digest,code,pid,deadline=None):
-    if deadline is not None and time.monotonic()>=deadline:raise ValueError('validation deadline exhausted')
-    if Path(output).stat().st_size>binding['maxBytes']:raise ValueError('primary output cap exceeded')
-    rows=terminal(Path(output).read_bytes(),binding,digest,code,pid)
+    rows=primary_records(output,binding['maxBytes'],deadline)
+    rows=terminal_rows(rows,binding,digest,code,pid,deadline)
     verify_sidecar(output,rows,binding,deadline=deadline)
     return rows
 
