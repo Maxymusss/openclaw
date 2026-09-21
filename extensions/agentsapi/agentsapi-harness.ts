@@ -41,6 +41,7 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { createAgentsApiBindings } from "./agentsapi-bindings.js";
 import { AgentsApiClient } from "./agentsapi-client.js";
+import { collectOutputs, prepareInputs, uploadInputs } from "./agentsapi-files.js";
 import { createAgentsApiMessageProjection } from "./agentsapi-messages.js";
 import { createAgentsApiSession } from "./agentsapi-session.js";
 import { buildAgentsApiToolSurface } from "./agentsapi-tools.js";
@@ -276,6 +277,7 @@ async function runAgentsApiSession(
   let terminalTurnId: string | undefined;
   const toolCleanups: Array<(reason: string) => Promise<void>> = [];
   let toolSurface: ReturnType<typeof buildAgentsApiToolSurface> | undefined;
+  let outputMedia: Awaited<ReturnType<typeof collectOutputs>> | undefined;
   let startedToolCount = 0;
   let completedToolCount = 0;
   const handle = {
@@ -318,10 +320,19 @@ async function runAgentsApiSession(
       params.agentId,
     );
     assertCurrent();
-    const surface = buildAgentsApiToolSurface(runParams, controller.signal, assertCurrent, (cleanup) =>
-      toolCleanups.push(cleanup),
+    const surface = buildAgentsApiToolSurface(
+      runParams,
+      controller.signal,
+      assertCurrent,
+      (cleanup) => toolCleanups.push(cleanup),
     );
     toolSurface = surface;
+    const inputs = await prepareInputs(
+      params.media,
+      params.workspaceDir,
+      assertCurrent,
+      controller.signal,
+    );
     const fingerprint = createHash("sha256")
       .update(JSON.stringify([params.model.id, params.resolvedApiKey, surface.declarations]))
       .digest("hex");
@@ -332,13 +343,15 @@ async function runAgentsApiSession(
     }
     const client = new AgentsApiClient(params.resolvedApiKey!, assertOwnerCurrent);
     const reasoningEffort = resolveAgentsApiReasoningEffort(params);
+    const creatingSession = !remoteSessionId;
     if (!remoteSessionId) {
       remoteSessionId = await client.create(
         controller.signal,
         [
           "You are the OpenClaw assistant. Use your hosted Linux workspace for commands and files.",
           "OpenClaw functions run in the Gateway and use its workspace; your hosted VM owns shell commands and VM files.",
-          "Apps, connectors, file transfers, and image generation are unavailable.",
+          "Uploaded attachments are mapped to hosted VM paths in each user message. Files you finish writing under /workspace/outputs are transferred and attached to your final reply after your turn completes.",
+          "Gateway messaging functions cannot open VM paths. Complete your assistant turn to deliver VM output attachments. Image generation is unavailable.",
           params.extraSystemPrompt,
         ]
           .filter(Boolean)
@@ -347,6 +360,7 @@ async function runAgentsApiSession(
         reasoningEffort,
         {
           functions: surface.declarations,
+          files: inputs.files,
           reasoning: {
             effort: reasoningEffort,
             ...(params.reasoningLevel && params.reasoningLevel !== "off"
@@ -360,6 +374,9 @@ async function runAgentsApiSession(
     } else {
       await client.setReasoningEffort(remoteSessionId, reasoningEffort, controller.signal);
       assertCurrent();
+    }
+    if (!creatingSession && inputs.files.length) {
+      await uploadInputs(client, remoteSessionId, inputs.files, assertCurrent, controller.signal);
     }
     projection = createAgentsApiMessageProjection(
       projectionSettlement.params,
@@ -448,7 +465,12 @@ async function runAgentsApiSession(
     });
     lifecycle.emitLifecycleStart({ provider: "openai", model: params.model.id });
     const result = await native.run(
-      buildCurrentInboundPrompt({ context: params.currentInboundContext, prompt: params.prompt }),
+      [
+        buildCurrentInboundPrompt({ context: params.currentInboundContext, prompt: params.prompt }),
+        inputs.mappingText,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
       async () => {
         await params.userTurnTranscriptRecorder?.persistApproved();
       },
@@ -466,6 +488,13 @@ async function runAgentsApiSession(
     } else if (!result.terminatedByTool) {
       const items = await client.items(remoteSessionId, result.turn.id, controller.signal);
       assertCurrent();
+      outputMedia = await collectOutputs(
+        client,
+        remoteSessionId,
+        result.turn.id,
+        assertCurrent,
+        controller.signal,
+      );
       await projection.commit(result.turn, items);
       assertCurrent();
     }
@@ -586,6 +615,17 @@ async function runAgentsApiSession(
     messagingToolSentMediaUrls: [],
     messagingToolSentTargets: [],
     ...toolSurface?.delivery,
+    ...(outputMedia && {
+      hostOwnedToolMediaUrls: outputMedia.hostOwnedToolMediaUrls,
+      toolMediaUrls: [
+        ...new Set([...(toolSurface?.delivery.toolMediaUrls ?? []), ...outputMedia.toolMediaUrls]),
+      ],
+      // Verified hosted artifacts must not promote unrelated plugin media.
+      toolTrustedLocalMedia:
+        outputMedia.toolMediaUrls.length && !toolSurface?.delivery.toolMediaUrls?.length
+          ? true
+          : toolSurface?.delivery.toolTrustedLocalMedia,
+    }),
     cloudCodeAssistFormatError: false,
     attemptUsage: projection?.tokenUsage,
     agentHarnessResultClassification: projection?.resultClassification,
