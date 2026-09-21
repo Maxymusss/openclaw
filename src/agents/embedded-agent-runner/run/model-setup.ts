@@ -2,6 +2,10 @@ import { loadSessionEntryReadOnly } from "../../../config/sessions/session-acces
 import { assertAgentRunLifecycleGenerationCurrent } from "../../../infra/agent-events.js";
 import { requireActivePluginRegistry } from "../../../plugins/runtime.js";
 import { resolveSessionPinnedHarnessId } from "../../../sessions/agent-harness-session-key.js";
+import {
+  readAdmittedRunOperatorAuthority,
+  readPreparedRunOperatorAuthority,
+} from "../../admitted-run-context.js";
 import { FailoverError } from "../../failover-error.js";
 import { AgentHarnessPreflightError } from "../../harness/errors.js";
 import {
@@ -17,6 +21,10 @@ import type { AgentHarness } from "../../harness/types.js";
 import type { ModelCatalogEntry } from "../../model-catalog.types.js";
 import type { ModelRef } from "../../model-selection.js";
 import { resolveSelectedOpenAIRuntimeProvider } from "../../openai-routing.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelHarnessSupported,
+} from "../../operator-model-policy.js";
 import { assertPreparedModelRuntimeInputCurrent } from "../../prepared-model-runtime.errors.js";
 import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.js";
 import { resolveTieredModel } from "../model-resolution.js";
@@ -121,6 +129,10 @@ export async function resolveEmbeddedRunModelSetup(params: {
   preparedModelRuntime?: PreparedModelRuntimeSnapshot;
 }) {
   const runParams = params.runParams;
+  const operatorAuthority =
+    readAdmittedRunOperatorAuthority(runParams.admittedRunContext) ??
+    readPreparedRunOperatorAuthority(runParams.preparedRunAdmission);
+  assertOperatorModelAllowed(operatorAuthority, params.provider, params.modelId);
   const hookSelection = await resolveHookModelSelection({
     prompt: runParams.prompt,
     attachments: buildBeforeModelResolveAttachments(runParams.images),
@@ -134,6 +146,7 @@ export async function resolveEmbeddedRunModelSetup(params: {
     hookSelection.provider !== params.provider || hookSelection.modelId !== params.modelId;
   let provider = hookSelection.provider;
   let modelId = hookSelection.modelId;
+  assertOperatorModelAllowed(operatorAuthority, provider, modelId);
   const requestStreamTransportOverrides = resolveRequestStreamTransportOverrides(
     runParams.streamParams,
   );
@@ -191,6 +204,8 @@ export async function resolveEmbeddedRunModelSetup(params: {
     agentHarness,
     runParams,
   );
+  assertOperatorModelAllowed(operatorAuthority, provider, modelId);
+  assertOperatorModelHarnessSupported(operatorAuthority, agentHarness);
   if (agentHarness.executionEnvironment === "host-only" && !nativePermissionsConsented) {
     assertPluginHarnessConversationToolPolicySupport(
       agentHarness,
@@ -299,6 +314,8 @@ export async function resolveEmbeddedRunModelSetup(params: {
     });
   }
   const { model, authStorage, modelRegistry } = modelResolution;
+  assertOperatorModelAllowed(operatorAuthority, provider, modelId);
+  assertOperatorModelAllowed(operatorAuthority, model.provider, model.id);
 
   return {
     provider,

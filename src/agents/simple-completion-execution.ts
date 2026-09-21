@@ -15,7 +15,14 @@ import {
 } from "../llm/model-runtime-binding.js";
 import { completeSimple } from "../llm/stream.js";
 import type { AssistantMessage, Model, SimpleStreamOptions } from "../llm/types.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import type { ResolvedProviderAuth } from "./model-auth.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelResponse,
+  runWithOperatorModelAuthority,
+  runWithOperatorModelRequest,
+} from "./operator-model-policy.js";
 
 type SimpleCompletionModelOptions = {
   headers?: Record<string, string>;
@@ -29,6 +36,7 @@ type SimpleCompletionModelOptions = {
 };
 
 type PreparedCompletionParams = {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   assertCurrent?: () => void;
   model: Model;
   auth: ResolvedProviderAuth;
@@ -40,19 +48,27 @@ type PreparedCompletionParams = {
 export async function completeWithPreparedSimpleCompletionModel(
   params: PreparedCompletionParams,
 ): Promise<AssistantMessage> {
-  const owner = getModelCompletionOwner(params.model);
-  if (!owner) {
-    return await completePreparedModel(params);
-  }
-  return await owner.run(() =>
-    completePreparedModel({
-      ...params,
-      assertCurrent: () => {
-        owner.assertCurrent();
-        params.assertCurrent?.();
-      },
-    }),
-  );
+  return await runWithOperatorModelRequest(params.operatorAuthority, async (operatorAuthority) => {
+    const owner = getModelCompletionOwner(params.model);
+    // SDK ownership can replace the ambient work scope. Retain inside it so
+    // accepted provider callbacks and cleanup keep this source until they drain.
+    const run = () =>
+      runWithOperatorModelAuthority(operatorAuthority, async () => {
+        const result = await completePreparedModel({
+          ...params,
+          operatorAuthority,
+          assertCurrent: owner
+            ? () => {
+                owner.assertCurrent();
+                params.assertCurrent?.();
+              }
+            : params.assertCurrent,
+        });
+        assertOperatorModelResponse(result);
+        return result;
+      });
+    return owner ? await owner.run(run) : await run();
+  });
 }
 
 async function completePreparedModel(params: PreparedCompletionParams): Promise<AssistantMessage> {
@@ -73,6 +89,15 @@ async function completePreparedModel(params: PreparedCompletionParams): Promise<
   if (runtime) {
     completionModel = bindModelLlmRuntime(completionModel, runtime);
   }
+  const assertCurrent = () => {
+    params.assertCurrent?.();
+    assertOperatorModelAllowed(
+      params.operatorAuthority,
+      completionModel.provider,
+      completionModel.id,
+    );
+  };
+  assertCurrent();
   const { reasoning: rawReasoning, strictReasoningTags, ...options } = params.options ?? {};
   const reasoning =
     rawReasoning === "adaptive" ? "medium" : rawReasoning === "ultra" ? "max" : rawReasoning;
@@ -86,10 +111,5 @@ async function completePreparedModel(params: PreparedCompletionParams): Promise<
   if (strictReasoningTags) {
     reasoningTagTextPolicy.markStrict(completionOptions);
   }
-  return await completeSimple(
-    completionModel,
-    params.context,
-    completionOptions,
-    params.assertCurrent,
-  );
+  return await completeSimple(completionModel, params.context, completionOptions, assertCurrent);
 }

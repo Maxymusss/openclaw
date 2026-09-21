@@ -4,9 +4,15 @@ import {
   errorShape,
   validateSessionsTitlePrepareParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import {
+  assertOperatorModelAuthorityCurrent,
+  isOperatorModelPolicyError,
+} from "../../agents/operator-model-policy.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { prepareDashboardSessionTitle } from "../dashboard-session-title.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
+import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { resolveSessionCreateModelSelection } from "../session-create-model-selection.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
@@ -16,7 +22,14 @@ import { preparePersonalModelSelection } from "./users-model-account-access.js";
 import { assertValidParams } from "./validation.js";
 
 export const sessionTitleHandlers: GatewayRequestHandlers = {
-  "sessions.title.prepare": async ({ params, respond, context, client, signal }) => {
+  "sessions.title.prepare": async ({
+    params,
+    respond,
+    context,
+    client,
+    signal,
+    hasCurrentClientAuthority,
+  }) => {
     if (
       !assertValidParams(
         params,
@@ -64,12 +77,18 @@ export const sessionTitleHandlers: GatewayRequestHandlers = {
       respond(true, { title: null });
       return;
     }
+    const captured = captureGatewayOperatorRunAuthority({
+      client,
+      context,
+      hasCurrentClientAuthority,
+    });
     try {
       const personalSelection = preparePersonalModelSelection(
         { client, context, signal },
         params.model,
       );
       const assertCurrent = () => {
+        assertOperatorModelAuthorityCurrent(captured?.authority);
         personalSelection?.assertCurrent();
         const currentCreationError = authorizeGatewaySessionCreation({
           cfg: context.getRuntimeConfig(),
@@ -90,6 +109,7 @@ export const sessionTitleHandlers: GatewayRequestHandlers = {
         return;
       }
       const title = await prepareDashboardSessionTitle({
+        operatorAuthority: captured?.authority,
         cfg,
         agentId: agent.agentId,
         entry,
@@ -101,8 +121,8 @@ export const sessionTitleHandlers: GatewayRequestHandlers = {
       respond(true, { title });
     } catch (error) {
       const failure =
-        error instanceof ModelAccountConnectAuthorityError
-          ? errorShape(ErrorCodes.FORBIDDEN, error.message)
+        error instanceof ModelAccountConnectAuthorityError || isOperatorModelPolicyError(error)
+          ? errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error))
           : error instanceof SessionMutationAuthorizationChangedError
             ? error.error
             : undefined;
@@ -110,6 +130,8 @@ export const sessionTitleHandlers: GatewayRequestHandlers = {
         throw error;
       }
       respond(false, undefined, failure);
+    } finally {
+      captured?.release();
     }
   },
 };

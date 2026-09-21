@@ -1,3 +1,5 @@
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import type { FailoverReason } from "./failover/signal.js";
 
 export const MODEL_FALLBACK_SKIPPED_CODE = "MODEL_FALLBACK_SKIPPED";
@@ -32,4 +34,17 @@ export type ModelFallbackAttemptProvenance = {
   requestedModel: string;
   stage: "initial" | "fallback";
   fallbackReason?: FailoverReason;
+};
+
+export type ModelFallbackRuntimeContext = {
+  cfg?: OpenClawConfig;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
+  agentId?: string;
+  sessionKey?: string;
+  resolveAgentHarnessRuntimeOverride?: (provider: string, model: string) => string | undefined;
+  prepareAgentHarnessRuntime?: (params: {
+    provider: string;
+    model: string;
+    agentHarnessRuntimeOverride?: string;
+  }) => Promise<void> | void;
 };

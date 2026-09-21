@@ -9,9 +9,12 @@ import type {
   ModelsSnapshotEvent,
   SessionsResolveResult,
 } from "../../../../packages/gateway-protocol/src/index.js";
+import { ErrorCodes, errorShape } from "../../../../packages/gateway-protocol/src/index.js";
 import { listAgentIds } from "../../../agents/agent-scope-config.js";
+import { isOperatorModelPolicyError } from "../../../agents/operator-model-policy.js";
 import { normalizeAgentId } from "../../../routing/session-key.js";
 import { resolveGatewayAgentSelectionState } from "../../agent-list.js";
+import { resolveOperatorModelCatalogAgentId } from "../../operator-model-catalog.js";
 import type { createGatewayAuthenticatedRequestDispatcher } from "./authenticated-request-dispatch.js";
 import type { GatewayWsMessageHandlerParams } from "./message-handler-types.js";
 
@@ -64,12 +67,29 @@ export async function publishConnectModelCatalog(
     const requestedAgentId = requestedScope.agentId
       ? normalizeAgentId(requestedScope.agentId)
       : undefined;
-    scope = {
-      agentId:
-        requestedAgentId && listAgentIds(cfg).includes(requestedAgentId)
-          ? requestedAgentId
-          : resolveGatewayAgentSelectionState(cfg).defaultId,
-    };
+    try {
+      scope = {
+        agentId:
+          resolveOperatorModelCatalogAgentId(
+            client,
+            cfg,
+            requestedAgentId && listAgentIds(cfg).includes(requestedAgentId)
+              ? requestedAgentId
+              : undefined,
+          ) ?? resolveGatewayAgentSelectionState(cfg).defaultId,
+      };
+    } catch (error) {
+      if (!isOperatorModelPolicyError(error)) {
+        throw error;
+      }
+      handler.send({
+        type: "res",
+        id: `catalog:${handler.connId}`,
+        ok: false,
+        error: errorShape(ErrorCodes.FORBIDDEN, error.message),
+      });
+      return;
+    }
   }
   const request = {
     type: "req" as const,

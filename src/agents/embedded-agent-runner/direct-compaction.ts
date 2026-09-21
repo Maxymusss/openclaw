@@ -8,6 +8,7 @@ import {
 } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { hasModelFallbackStop } from "../failover-error.js";
+import { isOperatorModelPolicyError } from "../operator-model-policy.js";
 import { executePreparedCompactionSession } from "./compaction-session-execution.js";
 import {
   prepareDirectCompactionAttempt,
@@ -48,7 +49,7 @@ export async function compactEmbeddedAgentSessionDirectOnce(
       });
       return await executePreparedCompactionSession(runtime);
     } catch (err) {
-      if (hasModelFallbackStop(err)) {
+      if (isOperatorModelPolicyError(err) || hasModelFallbackStop(err)) {
         throw err;
       }
       return preparation.value.fail(formatErrorMessage(err), err);

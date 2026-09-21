@@ -237,6 +237,31 @@ actions. Session restrictions do not turn that scope into a per-person
 isolation boundary. Use separate Gateways when mutually untrusted people must
 not share diagnostics or control-plane write authority.
 
+### Optional model ceiling
+
+A role can add `models: { allow: ["provider/model"] }` to restrict operator-owned
+inference to exact model references. Omitting `models` preserves existing
+behavior; `allow: []` denies all models. Model wildcards are not accepted.
+`agents: "*"` remains valid, and model limits do not grant session access,
+operator scopes, provider accounts, or runtime support.
+
+The original admitted ceiling remains attached to owned work. Current policy can
+tighten it; widening or removing the field cannot expand an existing request's
+authority. The same limit applies to fallback candidates and utility work such
+as compaction, titles, image analysis, and PDF analysis. An unsupported selected
+runtime is refused without substituting another runtime or removing the limit.
+
+Catalogs and session metadata hide model and runtime details outside the caller's
+ceiling. An allowed explicit selection can be used when the agent default is
+hidden. The agent allowlist governs catalog selection; it does not remove an
+otherwise authorized shared session's history or read access.
+
+**Release status:** finite runtime support is not yet qualified. The built-in
+runtime does not declare enforcement support. Provider-boundary proof and the
+authority policy for queued collector work across restart or rollback remain
+release requirements. Do not enable finite model ceilings for deployed visitors
+until those requirements are complete.
+
 ## Identity scope grants
 
 `gateway.auth.identityScopes` grants operator scopes to verified user

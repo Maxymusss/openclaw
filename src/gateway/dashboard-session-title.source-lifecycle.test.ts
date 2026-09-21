@@ -24,6 +24,7 @@ vi.mock("./session-transcript-title-reader.js", () => ({
   readSessionTitleFieldsFromTranscript: mocks.readTranscript,
 }));
 
+import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-operator-authority.js";
 import type { WorktreeSourceStage } from "../agents/worktrees/types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -109,6 +110,71 @@ beforeEach(() => {
 });
 
 describe("worktree title source lifecycle", () => {
+  it.each([false, true])(
+    "retains the model source through title persistence (revoked: %s)",
+    async (revoked) => {
+      const started = createDeferredCore();
+      const complete = createDeferredCore<string>();
+      const released = createDeferredCore();
+      let active = true;
+      let holds = 0;
+      const authority = createAdmittedRunOperatorAuthority({
+        profileId: "title-operator",
+        scopes: ["operator.write"],
+        permissions: { models: { allow: ["openai/gpt-5.5"] } },
+        assertCurrent: () => {
+          if (!active) {
+            throw new Error("title model source revoked");
+          }
+        },
+        retain: () => {
+          holds += 1;
+          return () => {
+            holds -= 1;
+            released.resolve();
+          };
+        },
+      });
+      mocks.generate.mockImplementation(async (params) => {
+        expect(params.operatorAuthority).toBe(authority);
+        started.resolve();
+        return await complete.promise;
+      });
+      const request = maybeGenerateSessionTitle({
+        ...titleParams(`operator-${revoked}`),
+        operatorAuthority: authority,
+      });
+      const settled = request.then(
+        () => undefined,
+        () => undefined,
+      );
+      try {
+        await Promise.race([
+          started.promise,
+          request.then(() => {
+            throw new Error("title settled before inference");
+          }),
+        ]);
+        expect(holds).toBe(1);
+        active = !revoked;
+        complete.resolve("Allowed original title");
+        if (revoked) {
+          await expect(request).rejects.toThrow("title model source revoked");
+          expect(current).toEqual(baseEntry);
+        } else {
+          await expect(request).resolves.toBe(true);
+          expect(current.displayName).toBe("Allowed original title");
+        }
+        await released.promise;
+        expect(holds).toBe(0);
+        expect(mocks.generate).toHaveBeenCalledOnce();
+      } finally {
+        complete.resolve("Fixture cleanup");
+        await settled;
+      }
+    },
+  );
+
   it.each([false, true])(
     "uses fresh source authority for persistence (late completion: %s)",
     async (late) => {

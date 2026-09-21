@@ -11,6 +11,7 @@ import type {
 } from "../llm/types.js";
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
 import { runPluginStreamConsumer } from "../plugins/plugin-instance-scope.js";
+import { isOperatorModelPolicyError } from "./operator-model-policy.js";
 import { buildStreamErrorAssistantMessage } from "./stream-message-shared.js";
 
 const CUSTOM_API_SOURCE_PREFIX = "openclaw-custom-api:";
@@ -43,6 +44,9 @@ function adaptCustomStream(
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : String(error);
       const message = buildStreamErrorAssistantMessage({ model, errorMessage });
+      if (isOperatorModelPolicyError(error)) {
+        message.errorCode = "OPERATOR_MODEL_POLICY_DENIED";
+      }
       adapted.push({ type: "error", reason: "error", error: message });
     }
   })();

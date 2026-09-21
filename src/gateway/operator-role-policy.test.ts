@@ -12,6 +12,7 @@ import {
   publishOperatorRoleConfigChange,
   resolveCreatorSandbox,
   resolveGatewayOperatorRoleActor,
+  resolveOperatorPermissionCeiling,
   resolveOperatorRolePolicy,
   resolveOperatorRolePolicyForAssignment,
   resolveOperatorRolePolicyForProfile,
@@ -142,7 +143,7 @@ describe("operator role policy", () => {
       }
     });
   });
-  it.each(["agents", "sessions", "sandbox"] as const)(
+  it.each(["agents", "sessions", "sandbox", "models"] as const)(
     "retires only affected sources after a committed %s policy change with unchanged scopes",
     async (restriction) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -175,8 +176,10 @@ describe("operator role policy", () => {
             changedRole.agents = [];
           } else if (restriction === "sessions") {
             changedRole.sessions.others = "none";
-          } else {
+          } else if (restriction === "sandbox") {
             changedRole.sandbox = "required";
+          } else {
+            changedRole.models = { allow: [] };
           }
           expect(
             authorizeCurrentOperatorRoleScopes(identifiedClient(profile.id), candidate),
@@ -205,6 +208,48 @@ describe("operator role policy", () => {
       });
     },
   );
+
+  it("retains the admitted model ceiling across current widening and rejects identity substitution", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const profile = ensureProfileForEmail("model-source@example.test");
+      const cfg = roleConfig();
+      const role = expectDefined(cfg.gateway?.roles?.definitions.guest, "guest role");
+      role.models = { allow: ["provider/allowed"] };
+      const client = identifiedClient(profile.id);
+      const captured = expectDefined(
+        captureGatewayOperatorRunAuthority({ client, context: { getRuntimeConfig: () => cfg } }),
+        "operator source",
+      );
+      client.internal = { operatorRunAuthority: captured.authority };
+      try {
+        role.models.allow.push("provider/later");
+        expect(resolveOperatorPermissionCeiling(client, cfg)).toEqual({
+          models: { allow: ["provider/allowed"] },
+        });
+        delete role.models;
+        expect(resolveOperatorPermissionCeiling(client, cfg)).toEqual({
+          models: { allow: ["provider/allowed"] },
+        });
+        client.internal.operatorRoleActor = { kind: "system" };
+        expect(() => resolveOperatorPermissionCeiling(client, cfg)).toThrow(
+          "operator source identity changed",
+        );
+      } finally {
+        captured.release();
+      }
+    });
+  });
+
+  it("keeps omitted, system and internal model behavior while unresolved external identities deny", () => {
+    const cfg = roleConfig();
+    const client = identifiedClient("unresolved");
+    delete client.authenticatedUserProfile;
+    expect(resolveOperatorPermissionCeiling(client, cfg)).toEqual({ models: { allow: [] } });
+    expect(resolveOperatorPermissionCeiling(client, {})).toBeUndefined();
+    expect(resolveOperatorPermissionCeiling(null, cfg)).toBeUndefined();
+    client.internal = { operatorRoleActor: { kind: "system" } };
+    expect(resolveOperatorPermissionCeiling(client, cfg)).toBeUndefined();
+  });
 
   it("preserves legacy access only when operator roles are not configured", () => {
     expect(resolveOperatorRolePolicyForProfile("unread-profile", {})).toBeUndefined();

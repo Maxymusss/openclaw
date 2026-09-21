@@ -2,6 +2,7 @@ import type {
   ErrorShape,
   SessionsCatalogContinueParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { bindPluginSessionConversation } from "../../plugins/session-conversation-binding.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import { recordSessionStateEvent } from "../../sessions/session-state-events.js";
@@ -17,6 +18,7 @@ export async function continueAuthorizedSessionCatalog(params: {
   allowProcessHomeFallback: boolean;
   client: GatewayClient | null;
   context: GatewayRequestContext;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   commitGuard?: () => void;
 }): Promise<{ ok: true; sessionKey: string } | { ok: false; error: ErrorShape }> {
   const { catalogId: _catalogId, ...providerRequest } = params.request;
@@ -41,6 +43,7 @@ export async function continueAuthorizedSessionCatalog(params: {
       clientScopes,
       client: params.client,
       context: params.context,
+      operatorAuthority: params.operatorAuthority,
       commitGuard: params.commitGuard,
     });
   }

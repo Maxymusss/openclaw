@@ -1,3 +1,4 @@
+import type { AdmittedRunOperatorAuthority } from "../admitted-run-context.js";
 /**
  * Built-in OpenClaw harness registration.
  *
@@ -84,11 +85,14 @@ function buildRestrictedFinalizationAttempt(
 }
 
 /** Creates the built-in harness backed by the embedded OpenClaw agent runner. */
-export function createOpenClawAgentHarness(): AgentHarnessV2 {
+export function createOpenClawAgentHarness(
+  operatorAuthority?: AdmittedRunOperatorAuthority,
+): AgentHarnessV2 {
   const harness: AgentHarnessV2 = {
     ...BUILTIN_AGENT_HARNESS_METADATA,
     runAttempt: (params) => runEmbeddedAttempt(params as EmbeddedRunAttemptParams),
-    runIsolatedCompletionV2: runHostPreparedIsolatedCompletion,
+    runIsolatedCompletionV2: (params) =>
+      runHostPreparedIsolatedCompletion(params, operatorAuthority),
     finalizeSettledTurn: async ({ attempt }) => {
       // Preserve only transcript/model transport state. The operation-specific
       // runner path suppresses every ambient prompt and capability contributor.

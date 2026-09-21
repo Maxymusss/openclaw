@@ -84,6 +84,15 @@ describe("isRetryableAssistantError", () => {
     ).toBe(false);
   });
 
+  it("does not retry an operator policy denial with transient-looking text", () => {
+    expect(
+      isRetryableAssistantError({
+        ...errorMessage("HTTP 503: source revoked while waiting for the provider"),
+        errorCode: "OPERATOR_MODEL_POLICY_DENIED",
+      }),
+    ).toBe(false);
+  });
+
   it.each([
     { errorCode: "ERR_WEBSOCKET_NON_RETRYABLE_CLOSE", expected: false },
     { errorCode: "ERR_WEBSOCKET_TRANSPORT", expected: true },

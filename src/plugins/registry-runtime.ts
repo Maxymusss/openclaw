@@ -33,6 +33,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimePluginScope,
 } from "./runtime/gateway-request-scope.js";
+import { runWithRuntimeOperatorModelAuthority } from "./runtime/operator-model-authority.js";
 import type { PluginRuntime } from "./runtime/types.js";
 
 export function createPluginRuntimeResolver(state: PluginRegistryState) {
@@ -410,50 +411,51 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             resolveStorePath: session.resolveStorePath,
             getSessionEntry: session.getSessionEntry,
             listSessionEntries: session.listSessionEntries,
-            createSessionEntry: async (params) => {
-              const { assertOwnedHarness, assertReservedSessionKeyOwned } =
-                await loadSessionOwnership();
-              return await runWithPluginScope(async () => {
-                const runtimeOwnerCount = [
-                  "agentHarnessId" in params.initialEntry,
-                  "cliBackendId" in params.initialEntry,
-                  "acpSessionBinding" in params.initialEntry,
-                ].filter(Boolean).length;
-                if (runtimeOwnerCount !== 1) {
-                  throw new Error(
-                    `Plugin "${pluginId}" session creation requires exactly one runtime owner.`,
-                  );
-                }
-                if ("agentHarnessId" in params.initialEntry) {
-                  // Session ownership follows the registered harness capability,
-                  // independently of whether the caller chooses its reserved namespace.
-                  assertOwnedHarness(params.initialEntry.agentHarnessId, "create its sessions");
-                  assertReservedSessionKeyOwned(params.key, "create");
-                  return await session.createSessionEntry(params);
-                }
-                const initialEntry = params.initialEntry;
-                if (!("acpSessionBinding" in initialEntry)) {
-                  const backend = currentRegistry().cliBackends.find(
-                    (entry) => entry.backend.id === initialEntry.cliBackendId,
-                  );
-                  if (!backend || backend.pluginId !== pluginId) {
+            createSessionEntry: (params) =>
+              runWithRuntimeOperatorModelAuthority(async () => {
+                const { assertOwnedHarness, assertReservedSessionKeyOwned } =
+                  await loadSessionOwnership();
+                return await runWithPluginScope(async () => {
+                  const runtimeOwnerCount = [
+                    "agentHarnessId" in params.initialEntry,
+                    "cliBackendId" in params.initialEntry,
+                    "acpSessionBinding" in params.initialEntry,
+                  ].filter(Boolean).length;
+                  if (runtimeOwnerCount !== 1) {
                     throw new Error(
-                      `Plugin "${pluginId}" must own CLI backend "${initialEntry.cliBackendId}" to create its sessions.`,
+                      `Plugin "${pluginId}" session creation requires exactly one runtime owner.`,
                     );
                   }
-                }
-                // Plugin-owned sessions stay inside a namespace that no other plugin can claim.
-                if (!params.key.startsWith(`plugin:${pluginId}:`)) {
-                  throw new Error(
-                    `Plugin "${pluginId}" session keys must start with "plugin:${pluginId}:".`,
-                  );
-                }
-                return await session.createSessionEntry({
-                  ...params,
-                  initialEntry: { ...initialEntry, pluginOwnerId: pluginId },
+                  if ("agentHarnessId" in params.initialEntry) {
+                    // Session ownership follows the registered harness capability,
+                    // independently of whether the caller chooses its reserved namespace.
+                    assertOwnedHarness(params.initialEntry.agentHarnessId, "create its sessions");
+                    assertReservedSessionKeyOwned(params.key, "create");
+                    return await session.createSessionEntry(params);
+                  }
+                  const initialEntry = params.initialEntry;
+                  if (!("acpSessionBinding" in initialEntry)) {
+                    const backend = currentRegistry().cliBackends.find(
+                      (entry) => entry.backend.id === initialEntry.cliBackendId,
+                    );
+                    if (!backend || backend.pluginId !== pluginId) {
+                      throw new Error(
+                        `Plugin "${pluginId}" must own CLI backend "${initialEntry.cliBackendId}" to create its sessions.`,
+                      );
+                    }
+                  }
+                  // Plugin-owned sessions stay inside a namespace that no other plugin can claim.
+                  if (!params.key.startsWith(`plugin:${pluginId}:`)) {
+                    throw new Error(
+                      `Plugin "${pluginId}" session keys must start with "plugin:${pluginId}:".`,
+                    );
+                  }
+                  return await session.createSessionEntry({
+                    ...params,
+                    initialEntry: { ...initialEntry, pluginOwnerId: pluginId },
+                  });
                 });
-              });
-            },
+              }),
             patchSessionEntry: async (params) => {
               const { assertStoredSessionEntryOwned, assertStoreEntryOwned } =
                 await loadSessionOwnership();

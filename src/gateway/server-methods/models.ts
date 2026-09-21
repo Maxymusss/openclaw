@@ -10,8 +10,17 @@ import {
   validateModelsListParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { tryResolveAmbientOwnerAgentId } from "../../agents/agent-scope-config.js";
+import {
+  isOperatorModelPolicyError,
+  OperatorModelPolicyError,
+} from "../../agents/operator-model-policy.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
+import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
+import {
+  captureOperatorModelCatalogAccess,
+  resolveOperatorModelCatalogAgentId,
+} from "../operator-model-catalog.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import type { ChatMetadataReadParams } from "./chat-metadata-contract.js";
 import { resolveChatMetadataReadParams } from "./chat-metadata-handler.js";
@@ -30,7 +39,9 @@ export const modelsHandlers: GatewayRequestHandlers = {
       return;
     }
     let scope: ChatMetadataReadParams | undefined;
+    let access: ReturnType<typeof captureOperatorModelCatalogAccess> | undefined;
     try {
+      access = captureOperatorModelCatalogAccess(options);
       const scoped = Boolean(params.sessionKey || params.authProfileId);
       scope = scoped ? resolveChatMetadataReadParams(options, params) : undefined;
       if (scoped && !scope) {
@@ -40,13 +51,23 @@ export const modelsHandlers: GatewayRequestHandlers = {
       const resolved =
         scope ??
         resolveAgentIdOrRespondError({
-          rawAgentId: params.agentId ?? tryResolveAmbientOwnerAgentId(cfg),
+          rawAgentId:
+            resolveOperatorModelCatalogAgentId(
+              client,
+              cfg,
+              normalizeOptionalString(params.agentId),
+            ) ?? tryResolveAmbientOwnerAgentId(cfg),
           respond,
           cfg,
           normalize: normalizeOptionalString,
         });
       if (!resolved) {
         return;
+      }
+      if (!access.allowsAgent(resolved.agentId)) {
+        throw new OperatorModelPolicyError(
+          "Your operator role has no access to this agent's model catalog.",
+        );
       }
       const result = await buildModelsListResult({
         source: { kind: "gateway", context },
@@ -61,14 +82,28 @@ export const modelsHandlers: GatewayRequestHandlers = {
       });
       scope?.draftAccountSelection?.assertCurrent();
       scope?.assertCurrent?.();
-      respond(
-        true,
+      if (!access.allowsAgent(resolved.agentId)) {
+        throw new OperatorModelPolicyError(
+          "Your operator role has no access to this agent's model catalog.",
+        );
+      }
+      const projected =
         scope && params.view !== "provider-config"
           ? {
               ...result,
               models: projectSessionModelCatalog(scope, result.models, context.getRuntimeConfig()),
             }
-          : result,
+          : result;
+      const selected = resolveSessionModelRef(cfg, scope?.sessionEntry, resolved.agentId, {
+        allowPluginNormalization: false,
+      });
+      respond(
+        true,
+        access.projectCatalog(
+          projected,
+          `${selected.provider}/${selected.model}`,
+          scope?.draftAccountSelection,
+        ),
         undefined,
       );
     } catch (error) {
@@ -80,11 +115,15 @@ export const modelsHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      if (!(error instanceof ModelAccountConnectAuthorityError)) {
+      if (
+        !(error instanceof ModelAccountConnectAuthorityError) &&
+        !isOperatorModelPolicyError(error)
+      ) {
         throw error;
       }
       respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, error.message));
     } finally {
+      access?.release();
       scope?.release?.();
     }
   },

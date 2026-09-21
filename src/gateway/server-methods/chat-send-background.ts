@@ -1,4 +1,9 @@
 import { createHash } from "node:crypto";
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
+import {
+  assertOperatorModelAuthorityCurrent,
+  runWithOperatorModelAuthority,
+} from "../../agents/operator-model-policy.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
@@ -38,6 +43,7 @@ export function resolveWebchatPromptCacheKey(params: {
 }
 
 type DashboardSessionTitleRequest = {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   admittedSessionId: string;
   agentId: string;
   cfg: OpenClawConfig;
@@ -63,6 +69,7 @@ export function scheduleCreatedDashboardSessionTitle(
   cfg: OpenClawConfig,
   context: GatewayRequestContext,
   titleSource?: string,
+  operatorAuthority?: AdmittedRunOperatorAuthority,
 ): void {
   if (!created.isNew || created.entry.incognito || !titleSource) {
     return;
@@ -71,6 +78,7 @@ export function scheduleCreatedDashboardSessionTitle(
   // The title writer still checks the exact session generation and existing name.
   scheduleDashboardSessionTitle(
     {
+      operatorAuthority,
       admittedSessionId: created.entry.sessionId,
       agentId: created.agentId,
       cfg,
@@ -97,45 +105,51 @@ function scheduleDashboardSessionTitle(
   ) {
     return;
   }
-  void runWithGatewayIndependentRootWorkContinuation(async () => {
-    const generateTitle = async () => {
-      const titleEntry = loadSessionEntry(params.sessionKey, params.sessionLoadOptions).entry;
-      if (titleEntry?.sessionId !== params.admittedSessionId) {
+  // Reserve the original source before the parent can finish. Independent title
+  // work owns its runtime lifetime, but never acquires a different model ceiling.
+  void runWithOperatorModelAuthority(params.operatorAuthority, () =>
+    runWithGatewayIndependentRootWorkContinuation(async () => {
+      const generateTitle = async () => {
+        assertOperatorModelAuthorityCurrent(params.operatorAuthority);
+        const titleEntry = loadSessionEntry(params.sessionKey, params.sessionLoadOptions).entry;
+        if (titleEntry?.sessionId !== params.admittedSessionId) {
+          return;
+        }
+        const updated = await maybeGenerateDashboardSessionTitle({
+          operatorAuthority: params.operatorAuthority,
+          cfg: params.cfg,
+          agentId: params.agentId,
+          entry: titleEntry,
+          sessionId: params.admittedSessionId,
+          sessionKey: params.sessionKey,
+          storePath: params.storePath,
+          currentUserMessage: params.request.rawMessage,
+          userMessage: titleSource,
+        });
+        if (updated) {
+          emitSessionsChanged(params.context, {
+            sessionKey: params.sessionKey,
+            agentId: params.agentId,
+            reason: "chat.title",
+          });
+        }
+      };
+      if (admissionScope === "gateway") {
+        await generateTitle();
         return;
       }
-      const updated = await maybeGenerateDashboardSessionTitle({
-        cfg: params.cfg,
-        agentId: params.agentId,
-        entry: titleEntry,
-        sessionId: params.admittedSessionId,
-        sessionKey: params.sessionKey,
-        storePath: params.storePath,
-        currentUserMessage: params.request.rawMessage,
-        userMessage: titleSource,
+      const admission = await beginSessionWorkAdmission({
+        scope: params.storePath,
+        identities: [params.sessionKey, params.admittedSessionId],
+        assertAllowed: () => assertOperatorModelAuthorityCurrent(params.operatorAuthority),
       });
-      if (updated) {
-        emitSessionsChanged(params.context, {
-          sessionKey: params.sessionKey,
-          agentId: params.agentId,
-          reason: "chat.title",
-        });
+      try {
+        await admission.run(generateTitle);
+      } finally {
+        admission.release();
       }
-    };
-    if (admissionScope === "gateway") {
-      await generateTitle();
-      return;
-    }
-    const admission = await beginSessionWorkAdmission({
-      scope: params.storePath,
-      identities: [params.sessionKey, params.admittedSessionId],
-      assertAllowed: () => {},
-    });
-    try {
-      await admission.run(generateTitle);
-    } finally {
-      admission.release();
-    }
-  }, "chat-send:background").catch((err: unknown) => {
+    }, "chat-send:background"),
+  ).catch((err: unknown) => {
     params.context.logGateway.warn(
       `dashboard session title generation failed: ${formatForLog(err)}`,
     );

@@ -71,9 +71,9 @@ import { formatTokenCount } from "../../utils/token-format.js";
 import { isRenderablePayload } from "../reply-payload.js";
 import type { VerboseLevel } from "../thinking.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
+import { resolveMemoryFlushModelFallbackOptions } from "./agent-runner-run-params.js";
 import {
   buildEmbeddedRunExecutionParams,
-  resolveModelFallbackOptions,
   resolveRunThinkingLevelForFallbackCandidate,
 } from "./agent-runner-utils.js";
 import type { CompactionNoticePhase } from "./compaction-notice.js";
@@ -147,40 +147,6 @@ function estimatePromptTokensForMemoryFlush(prompt?: string): number | undefined
     return undefined;
   }
   return Math.ceil(tokens);
-}
-
-function resolveMemoryFlushModelFallbackOptions(
-  run: FollowupRun["run"],
-  model?: string,
-  configOverride: FollowupRun["run"]["config"] = run.config,
-) {
-  const options = resolveModelFallbackOptions(run, configOverride);
-  const override = normalizeOptionalString(model);
-  if (!override) {
-    return options;
-  }
-  // A memory-flush maintenance model is an exact override: do not let a failed
-  // local flush silently fall through to the paid active conversation fallback.
-  const slashIdx = override.indexOf("/");
-  if (slashIdx > 0) {
-    const overrideProvider = override.slice(0, slashIdx).trim();
-    const overrideModel = override.slice(slashIdx + 1).trim();
-    if (overrideProvider && overrideModel) {
-      return {
-        ...options,
-        provider: overrideProvider,
-        model: overrideModel,
-        requestedRouteResolution: "raw" as const,
-        fallbacksOverride: [],
-      };
-    }
-  }
-  return {
-    ...options,
-    model: override,
-    requestedRouteResolution: "raw" as const,
-    fallbacksOverride: [],
-  };
 }
 
 type FollowupRuntimeParams = {
@@ -972,6 +938,7 @@ export async function runSessionCompactionIfNeeded(params: {
     assertActive();
     const result = await compactEmbeddedAgentSession(
       {
+        operatorAuthority: params.followupRun.operatorAuthority,
         sessionId: entry.sessionId,
         sessionKey: compactionSessionKey,
         sessionTarget: { ...compactionTarget, sessionId: entry.sessionId },

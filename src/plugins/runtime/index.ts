@@ -7,6 +7,7 @@ import {
   listVideoGenerationProviders,
 } from "../../media-generation/registry.js";
 import { RequestScopedSubagentRuntimeError } from "../../plugin-sdk/error-runtime.js";
+import { runWithAsyncWorkResources } from "../../shared/async-work-resources.js";
 import {
   createLazyRuntimeMethod,
   createLazyRuntimeMethodBinder,
@@ -19,6 +20,7 @@ import {
   resolveNativePluginModelAuth,
   resolveNativePluginModelConfig,
 } from "../loader-runtime-load.js";
+import { captureRuntimeOperatorModelAuthority } from "./operator-model-authority.js";
 import { createRuntimeAgent } from "./runtime-agent.js";
 import { createRuntimeBase } from "./runtime-base.js";
 import { createRuntimeChannel } from "./runtime-channel.js";
@@ -89,22 +91,23 @@ function createRuntimeLlmFacade(): PluginRuntime["llm"] {
     () => import("../../agents/provider-local-service.js"),
     (runtime) => runtime.createConfiguredProviderLocalServiceAcquirer(getRuntimeConfig),
   );
-  const loadLlm = createLazyRuntimeSurface(
-    () => import("./runtime-llm.runtime.js"),
-    (m) =>
-      m.createRuntimeLlm({
-        getConfig: getRuntimeConfig,
-        authority: {
-          allowComplete: true,
-        },
-      }),
-  );
+  const loadLlm = createLazyRuntimeModule(() => import("./runtime-llm.runtime.js"));
   return {
     acquireLocalService: (...args) => loadAcquireLocalService(...args),
-    complete: async (params) => {
-      const llm = await loadLlm();
-      return llm.complete(params);
-    },
+    complete: (params) =>
+      runWithAsyncWorkResources(async (onAcquired) => {
+        const source = captureRuntimeOperatorModelAuthority();
+        if (source) {
+          onAcquired({ release: source.release });
+        }
+        const runtime = await loadLlm();
+        return runtime
+          .createRuntimeLlm({
+            getConfig: getRuntimeConfig,
+            authority: { allowComplete: true, operatorAuthority: source?.authority },
+          })
+          .complete(params);
+      }),
   };
 }
 

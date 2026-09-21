@@ -686,6 +686,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
   // serially before dispatch (a cold utility runtime can starve the turn) or wait for completion
   // (long or interrupted first turns would silently remain untitled, and restart loses the chain).
   scheduleChatDashboardSessionTitle({
+    operatorAuthority: admission.operatorAuthority,
     admittedSessionId,
     agentId,
     cfg,

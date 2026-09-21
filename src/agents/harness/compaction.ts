@@ -17,6 +17,11 @@ import {
 } from "../model-auth.js";
 import { isCliRuntimeAliasForProvider, isCliRuntimeProvider } from "../model-runtime-aliases.js";
 import { isOpenAIProvider } from "../openai-routing.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelHarnessSupported,
+  isOperatorModelPolicyError,
+} from "../operator-model-policy.js";
 import type { PreparedModelRuntimeSnapshot } from "../prepared-model-runtime.js";
 import {
   unwrapModelHeaderSentinelsForProviderEgress,
@@ -105,6 +110,7 @@ async function resolveHarnessCompactApiKey(params: {
   }
   const provider = compactParams.provider;
   const modelId = compactParams.model;
+  assertOperatorModelAllowed(compactParams.operatorAuthority, provider, modelId);
   const providedRuntimeAuthPlan = compactParams.runtimeAuthPlan ?? compactParams.runtimePlan?.auth;
   const reusableRuntimeAuthPlan =
     providedRuntimeAuthPlan &&
@@ -205,6 +211,7 @@ async function resolveHarnessCompactApiKey(params: {
   if (!model) {
     return fallbackResolution(initialHarness);
   }
+  assertOperatorModelAllowed(compactParams.operatorAuthority, model.provider, model.id);
   const runtimeAuthProfileStore = isOpenAIProvider(provider)
     ? ensureAuthProfileStore(agentDir, {
         profileId: compactParams.authProfileId ?? reusableRuntimeAuthPlan?.forwardedAuthProfileId,
@@ -275,6 +282,7 @@ async function resolveHarnessCompactApiKey(params: {
     forceResolve?: boolean;
   }) => {
     const materialized = await materializePreparedRuntimeModel<Model>({
+      operatorAuthority: compactParams.operatorAuthority,
       plan: input.plan,
       provider,
       modelId,
@@ -335,6 +343,9 @@ async function resolveHarnessCompactApiKey(params: {
       errorMessage: `Prepared native compaction auth attempts could not be resolved for ${provider}/${modelId}.`,
     });
   } catch (error) {
+    if (isOperatorModelPolicyError(error)) {
+      throw error;
+    }
     compactParams.abortSignal?.throwIfAborted();
     log.warn(
       `native compaction prepared auth resolution failed for ${provider}/${modelId}: ${error instanceof Error ? error.message : String(error)}`,
@@ -421,6 +432,7 @@ export async function maybeCompactAgentHarnessSession(
         ],
       })
     : selectAgentHarness(harnessSelectionParams);
+  assertOperatorModelHarnessSupported(params.operatorAuthority, harness);
   const initialNativeCompaction = resolveCodexAgentHarnessNativeCompaction(harness);
   if (options.nativeCompactionRequest === "after_context_engine" && !initialNativeCompaction) {
     return undefined;
@@ -462,6 +474,14 @@ export async function maybeCompactAgentHarnessSession(
     preparedModelRuntime: options.preparedModelRuntime,
   });
   harness = resolved.harness;
+  assertOperatorModelHarnessSupported(params.operatorAuthority, harness);
+  if (resolved.runtimeModel) {
+    assertOperatorModelAllowed(
+      params.operatorAuthority,
+      resolved.runtimeModel.provider,
+      resolved.runtimeModel.id,
+    );
+  }
   const nativeToolPolicyRestricted = resolveNativeToolPolicyRestricted(harness);
   compactParams.nativeToolSurface = nativeToolPolicyRestricted ? "host-isolated" : "unrestricted";
   const resolvedRuntimeAuthPlan = resolved.runtimeAuthPlan ?? runtimeAuthPlan;

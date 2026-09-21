@@ -1,5 +1,6 @@
 import type { FastMode } from "@openclaw/normalization-core/string-coerce";
 import type { ErrorShape, SessionVisibility } from "../../packages/gateway-protocol/src/index.js";
+import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import type { ModelCatalogSnapshot } from "../agents/model-catalog.types.js";
 import type { ModelRef } from "../agents/model-selection.js";
 import type {
@@ -66,6 +67,7 @@ export type CreateGatewaySessionResult =
 
 export type CreateGatewaySessionParams = {
   cfg: OpenClawConfig;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   key?: string;
   agentId?: string;
   label?: string;

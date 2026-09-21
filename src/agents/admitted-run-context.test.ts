@@ -427,6 +427,7 @@ describe("prepared run admission", () => {
     async (refusedRebind) => {
       let current = true;
       let sourceHolds = 0;
+      const models = ["provider/allowed"];
       const { runtime, ...admissionFacts } = facts;
       const source = prepareAgentRunAdmission({
         cfg: {},
@@ -435,6 +436,7 @@ describe("prepared run admission", () => {
         operatorAuthority: createAdmittedRunOperatorAuthority({
           profileId: "native-operator",
           scopes: ["operator.write"],
+          permissions: { models: { allow: models } },
           assertCurrent: () => {
             if (!current || sourceHolds === 0) {
               throw new Error("source claim lost");
@@ -454,7 +456,12 @@ describe("prepared run admission", () => {
       });
       const prepared = withPostAdmissionExecutionOwnerBinding(source, () => {});
       expect(readPreparedRunOperatorAuthority(prepared)?.profileId).toBe("native-operator");
+      models.push("provider/forbidden");
+      const permissions = readPreparedRunOperatorAuthority(prepared)?.permissions;
+      expect(permissions).toEqual({ models: { allow: ["provider/allowed"] } });
+      expect(Object.isFrozen(permissions?.models?.allow)).toBe(true);
       const admitted = await prepared.admit(runtime.kind);
+      expect(readAdmittedRunOperatorAuthority(admitted)?.permissions).toBe(permissions);
       const recovery = retainAdmittedRunBeforeToolCallRecovery(admitted);
       expect(recovery).toBeDefined();
       try {

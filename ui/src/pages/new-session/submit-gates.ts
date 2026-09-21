@@ -121,6 +121,7 @@ export function requiresNewSessionModelSetup(options: {
     agentsLoaded: snapshot.context?.agents.state.agentsList !== null,
     selectedAgentFound: selectedAgent !== undefined,
     agentModel: selectedAgent?.model?.primary,
+    selectedModelAvailable: place.modelControl.hasAvailableModelSelection(),
   });
 }
 

@@ -268,3 +268,28 @@ export function resolveProviderVisionModelFromConfig(params: {
   const selectedProvider = normalizeLowercaseStringOrEmpty(params.provider);
   return idProvider && idProvider === selectedProvider ? id : `${params.provider}/${id}`;
 }
+
+export function resolveImageToolMaxTokens(
+  modelMaxTokens: number | undefined,
+  requestedMaxTokens = 4096,
+) {
+  if (
+    typeof modelMaxTokens !== "number" ||
+    !Number.isFinite(modelMaxTokens) ||
+    modelMaxTokens <= 0
+  ) {
+    return requestedMaxTokens;
+  }
+  return Math.min(requestedMaxTokens, modelMaxTokens);
+}
+
+export function pickMaxBytes(cfg?: OpenClawConfig, maxBytesMb?: number): number | undefined {
+  if (typeof maxBytesMb === "number" && Number.isFinite(maxBytesMb) && maxBytesMb > 0) {
+    return Math.floor(maxBytesMb * 1024 * 1024);
+  }
+  const configured = cfg?.agents?.defaults?.mediaMaxMb;
+  if (typeof configured === "number" && Number.isFinite(configured) && configured > 0) {
+    return Math.floor(configured * 1024 * 1024);
+  }
+  return undefined;
+}

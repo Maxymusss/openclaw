@@ -14,11 +14,7 @@ import {
   resolveContextEngineOwnerPluginId,
 } from "../../context-engine/registry.js";
 import { buildContextEngineRuntimeSettings } from "../../context-engine/runtime-settings.js";
-import type {
-  ContextEngine,
-  ContextEngineRuntimeContext,
-  ContextEngineRuntimeSettings,
-} from "../../context-engine/types.js";
+import type { ContextEngine, ContextEngineRuntimeContext } from "../../context-engine/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { requireActivePluginRegistry } from "../../plugins/runtime.js";
@@ -33,6 +29,12 @@ import { isRecoverableNativeHarnessBindingFailure } from "../harness/compaction-
 import { maybeCompactAgentHarnessSession } from "../harness/compaction.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import {
+  assertOperatorModelAllowed,
+  assertOperatorModelAuthorityCurrent,
+  assertOperatorModelHarnessSupported,
+  runWithOperatorModelAuthority,
+} from "../operator-model-policy.js";
+import {
   acquireAgentRunPreparedModelRuntime,
   type PreparedModelRuntimeSnapshot,
 } from "../prepared-model-runtime.js";
@@ -41,7 +43,6 @@ import { materializePreparedRuntimeModel } from "../runtime-plan/materialize-mod
 import type { SandboxContext } from "../sandbox/types.js";
 import { beginForegroundSessionMaintenance } from "../session-maintenance/coordinator.js";
 import { resolveSessionPlacementSandbox } from "../session-placement-admission.js";
-import { DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON } from "./compact-reasons.js";
 import {
   runForegroundCompactionWork,
   type ForegroundCompactionOwner,
@@ -55,6 +56,7 @@ import {
   type QueuedCompactionHostOptions,
   withQueuedCompactionCancellationResult,
 } from "./compact.queued-execution.js";
+import { deferOwningContextEngineBudgetCompaction } from "./compact.queued-maintenance.js";
 import type { CompactEmbeddedAgentSessionParams } from "./compact.types.js";
 import {
   buildEmbeddedCompactionRuntimeContext,
@@ -68,7 +70,6 @@ import {
 import type { acceptCompactionSuccessor } from "./compaction-successor.js";
 import { resolveContextEngineCapabilities } from "./context-engine-capabilities.js";
 import type { ContextEngineMaintenanceResources } from "./context-engine-maintenance-work.js";
-import { runContextEngineMaintenance } from "./context-engine-maintenance.js";
 import { log } from "./logger.js";
 import { resolveTieredModel } from "./model-resolution.js";
 import { resolveModelAsync } from "./model.js";
@@ -99,8 +100,6 @@ function lockedCompactionRuntimeFailure(runtime?: string): EmbeddedAgentCompactR
   };
 }
 
-const DEFERRED_CONTEXT_ENGINE_COMPACTION_SCHEDULE_FAILURE_REASON =
-  "failed to schedule background context-engine maintenance";
 const MANUAL_COMPACTION_ACTIVE_RUN_REASON =
   "manual compaction unavailable while another embedded run is active";
 
@@ -111,6 +110,7 @@ function assertQueuedCompactionPreparationActive(
   // Preparation runs outside the execution queue. Revalidate after each await
   // so a cancelled or replaced owner cannot continue expensive setup.
   params.abortSignal?.throwIfAborted();
+  assertOperatorModelAuthorityCurrent(params.operatorAuthority);
   host.assertActive?.();
 }
 
@@ -124,71 +124,6 @@ function resolveManualCompactionActiveRunSessionId(
   );
 }
 
-async function deferOwningContextEngineBudgetCompaction(params: {
-  compactParams: CompactEmbeddedAgentSessionParams;
-  contextEngineSessionKey?: string;
-  contextEngine: ContextEngine;
-  contextEngineRuntimeContext: ContextEngineRuntimeContext;
-  contextEngineRuntimeSettings: ContextEngineRuntimeSettings;
-  onDeferredMaintenance: (completion: Promise<void>) => void;
-  factoryResources: ContextEngineMaintenanceResources;
-}): Promise<EmbeddedAgentCompactResult> {
-  let deferredScheduled = false;
-  let deferredScheduleFailure: unknown;
-  try {
-    await runContextEngineMaintenance({
-      contextEngine: params.contextEngine,
-      sessionId: params.compactParams.sessionId,
-      sessionKey: params.contextEngineSessionKey ?? params.compactParams.sessionKey,
-      sessionTarget: projectQueuedCompactionSessionTarget(params.compactParams),
-      sessionFile: params.compactParams.sessionFile,
-      reason: "turn",
-      runtimeContext: params.contextEngineRuntimeContext,
-      runtimeSettings: params.contextEngineRuntimeSettings,
-      config: params.compactParams.config,
-      contextEngineAgentId: params.compactParams.contextEngineAgentId,
-      disposeDeferredContextEngineAfterMaintenance: true,
-      factoryResources: params.factoryResources,
-      onDeferredMaintenance: (completion) => {
-        deferredScheduled = true;
-        params.onDeferredMaintenance(completion);
-      },
-      onDeferredMaintenanceFailure: (error) => {
-        deferredScheduleFailure = error;
-      },
-    });
-  } catch (err) {
-    log.warn("failed to defer context-engine budget compaction", {
-      errorMessage: formatErrorMessage(err),
-    });
-  }
-
-  if (!deferredScheduled || deferredScheduleFailure) {
-    log.warn(
-      `[compaction] failed to schedule context-engine-owned budget compaction background maintenance ` +
-        `(sessionKey=${params.compactParams.sessionKey ?? params.compactParams.sessionId}` +
-        `${deferredScheduleFailure ? ` error=${formatErrorMessage(deferredScheduleFailure)}` : ""})`,
-    );
-    return {
-      ok: false,
-      compacted: false,
-      reason: DEFERRED_CONTEXT_ENGINE_COMPACTION_SCHEDULE_FAILURE_REASON,
-      failure: { reason: "deferred_compaction_not_scheduled" },
-    };
-  }
-
-  log.info(
-    `[compaction] deferred context-engine-owned budget compaction to background maintenance ` +
-      `(sessionKey=${params.compactParams.sessionKey ?? params.compactParams.sessionId} ` +
-      `scheduled=${String(deferredScheduled)})`,
-  );
-  return {
-    ok: true,
-    compacted: false,
-    reason: DEFERRED_CONTEXT_ENGINE_COMPACTION_REASON,
-  };
-}
-
 /**
  * Compacts a session with lane queueing (session lane + global lane).
  * Use this from outside a lane context. If already inside a lane, use
@@ -197,6 +132,15 @@ async function deferOwningContextEngineBudgetCompaction(params: {
 export async function compactEmbeddedAgentSession(
   params: CompactEmbeddedAgentSessionParams,
   host: QueuedCompactionHostOptions = {},
+): Promise<EmbeddedAgentCompactResult> {
+  return await runWithOperatorModelAuthority(params.operatorAuthority, () =>
+    compactQueuedOwned(params, host),
+  );
+}
+
+async function compactQueuedOwned(
+  params: CompactEmbeddedAgentSessionParams,
+  host: QueuedCompactionHostOptions,
 ): Promise<EmbeddedAgentCompactResult> {
   const projectedConfig = projectCodexHostTranscriptBytePreflightConfig(
     params.config,
@@ -350,6 +294,11 @@ async function compactEmbeddedAgentSessionPrepared(
     selectedHarnessRuntime: resolveSessionPinnedHarnessId(params.sessionEntry),
   };
   const runtimeSelection = resolveCompactionRuntimeSelection(requestedSelection);
+  assertOperatorModelAllowed(
+    params.operatorAuthority,
+    runtimeSelection.provider,
+    runtimeSelection.modelId,
+  );
   // Native control operations reuse the backend's existing authenticated session.
   // Run them before generic model preparation so subscription-only CLI sessions do
   // not incorrectly require an OpenClaw model API credential.
@@ -477,6 +426,7 @@ async function compactResolvedContextEngine(
     preparedRuntimePlan: params.runtimePlan,
     selectedHarnessRuntime: lockedHarnessRuntime,
   });
+  assertOperatorModelAllowed(params.operatorAuthority, ceProvider, ceModelId);
   const lockedNativeHarness = Boolean(lockedHarnessRuntime && lockedHarnessRuntime !== "openclaw");
   // Ensure the policy-selected harness plugin so selection can pick implicit codex.
   await ensureSelectedAgentHarnessPlugin({
@@ -504,6 +454,13 @@ async function compactResolvedContextEngine(
   assertQueuedCompactionPreparationActive(params, host);
   const { model: ceModel, authStorage, modelRegistry } = modelResolution;
   const ceRuntimeModel = ceModel as ProviderRuntimeModel | undefined;
+  if (ceRuntimeModel) {
+    assertOperatorModelAllowed(
+      params.operatorAuthority,
+      ceRuntimeModel.provider,
+      ceRuntimeModel.id,
+    );
+  }
   // Overrides stay unset when no bound/planned/explicit harness resolved so auth-aware
   // selection can pick the credential-owning harness (codex for ChatGPT OAuth).
   const preparedAuth = await prepareCompactionHarnessAuth({
@@ -530,6 +487,7 @@ async function compactResolvedContextEngine(
     selectedPreparedHarness,
     providerUsesProfileScopedModelMetadata,
   } = preparedAuth;
+  assertOperatorModelHarnessSupported(params.operatorAuthority, selectedPreparedHarness);
   const preparedHarnessRuntime = selectedPreparedHarness.id;
   const transcriptBytePreflightAuthority =
     host.transcriptBytePreflightHarness === preparedHarnessRuntime
@@ -542,6 +500,7 @@ async function compactResolvedContextEngine(
     selectedNativeHarnessCompaction && preparedHarnessRuntime !== "openclaw";
   const runtimeAuthPlan = runtimeAuthPreparation.plan;
   const effectiveRuntimeModel = await materializePreparedRuntimeModel<ProviderRuntimeModel>({
+    operatorAuthority: params.operatorAuthority,
     plan: runtimeAuthPlan,
     provider: ceProvider,
     modelId: ceModelId,
@@ -731,6 +690,7 @@ function buildCompactionContextEngineRuntimeContext(params: {
       harnessRuntime: params.harnessRuntime,
     }),
     ...resolveContextEngineCapabilities({
+      operatorAuthority: params.params.operatorAuthority,
       config: params.params.config,
       sessionKey: params.contextEngineSessionKey ?? params.params.sessionKey,
       explicitAgentId: contextEngineAgentId,

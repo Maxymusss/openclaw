@@ -5,6 +5,7 @@ export type SessionMutationOperatorScope = "operator.write" | "operator.admin";
 export type SessionOperatorScope = "operator.sessions.read" | "operator.sessions.write";
 
 const SESSION_READ_METHODS: ReadonlySet<string> = new Set([
+  "agents.list",
   "sessions.list",
   "sessions.subscribe",
   "sessions.messages.subscribe",
@@ -53,6 +54,17 @@ export function resolveSessionMethodScope(
   method: string,
   params?: unknown,
 ): SessionOperatorScope | undefined {
+  if (method === "models.list") {
+    // The selection catalog is caller-projected. Account and provider diagnostics
+    // retain their broad authority even when the same caller can read sessions.
+    return isRecord(params) &&
+      (params.refresh === true ||
+        params.view === "provider-config" ||
+        params.authProfileId !== undefined ||
+        params.provider !== undefined)
+      ? undefined
+      : "operator.sessions.read";
+  }
   if (SESSION_READ_METHODS.has(method)) {
     return "operator.sessions.read";
   }

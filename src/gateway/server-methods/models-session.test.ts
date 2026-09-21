@@ -24,6 +24,7 @@ import { ensureProfileForEmail, setDisplayName } from "../../state/user-profiles
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { bumpGatewayAccessRevision } from "../gateway-access-revision.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
+import { handleGatewayRequest } from "../server-methods.js";
 import {
   registerGatewayModelCatalogPrivateAccess,
   type PreparedGatewayModelCatalogSnapshot,
@@ -32,13 +33,14 @@ import { handleChatMetadataRequest } from "./chat-metadata-handler.js";
 import {
   connectChatMetadataAccount,
   createChatMetadataOwner,
+  createChatMetadataHarness,
   createOpenAIChatMetadataConfig,
 } from "./chat-metadata-runtime.test-support.js";
 import { WITHOUT_OPENAI_ENV_AUTH } from "./models-list-result.openai-routes.test-support.js";
 import { modelsHandlers } from "./models.js";
 import type { GatewayRequestHandlerOptions, RespondFn } from "./types.js";
 
-function fixture() {
+function fixture(restrictions?: { models?: string[]; agents?: "*" | string[]; narrow?: boolean }) {
   const person = ensureProfileForEmail("catalog-reader@example.test");
   setDisplayName(person.id, "Catalog Reader");
   const authProfileId = connectChatMetadataAccount(person.id);
@@ -48,7 +50,12 @@ function fixture() {
       roles: {
         default: "reader",
         definitions: {
-          reader: { agents: "*", scopes: ["operator.read"], sessions: { others: "none" } },
+          reader: {
+            agents: restrictions?.agents ?? "*",
+            scopes: restrictions?.narrow ? ["operator.sessions.read"] : ["operator.read"],
+            sessions: { others: "none" },
+            ...(restrictions?.models ? { models: { allow: restrictions.models } } : {}),
+          },
         },
       },
     },
@@ -83,7 +90,7 @@ function fixture() {
       maxProtocol: 1,
       client: { id: "openclaw-control-ui", version: "test", platform: "test", mode: "webchat" },
       role: "operator",
-      scopes: ["operator.read"],
+      scopes: restrictions?.narrow ? ["operator.sessions.read"] : ["operator.read"],
     },
     authenticatedUserProfile: {
       profileId: person.id,
@@ -133,6 +140,7 @@ function fixture() {
     client,
     clients,
     snapshot,
+    owner,
     invalidateSnapshot: () => {
       snapshotCurrent = false;
     },
@@ -150,6 +158,224 @@ const isolated = {
 } as const;
 
 describe("direct session model catalogs", () => {
+  it.each(["models.list", "chat.metadata"] as const)(
+    "%s preserves only permitted draft and default-pinned personal account selections",
+    async (method) => {
+      for (const mode of [
+        "draft",
+        "hidden-default",
+        "saved-default",
+        "none",
+        "tightened",
+      ] as const) {
+        await withOpenClawTestState(isolated, async (state) => {
+          const f = fixture({ models: mode === "none" ? [] : ["openai/gpt-5.6-luna"] });
+          if (mode === "hidden-default") {
+            f.config.agents = {
+              ...f.config.agents,
+              defaults: { ...f.config.agents?.defaults, model: { primary: "openai/gpt-5" } },
+            };
+          }
+          await state.writeConfig(f.config);
+          const sessionKey = "agent:main:personal-default";
+          if (mode === "saved-default") {
+            await upsertSessionEntryCore(
+              { agentId: "main", sessionKey },
+              {
+                sessionId: "personal-default-generation",
+                updatedAt: 1,
+                createdActor: { type: "human", source: "profile", id: f.person.id },
+                authProfileOverride: f.authProfileId,
+                authProfileOverrideSource: "user",
+              },
+            );
+          }
+          clearUserProfileAuthLink({ profileId: f.person.id, provider: "openai" });
+          const harness = createChatMetadataHarness(f.config, { useDefaultProjection: true });
+          harness.setOwner(f.owner);
+          const tighten = () => {
+            if (mode === "tightened") {
+              f.config.gateway.roles.definitions.reader.models = { allow: [] };
+            }
+          };
+          f.readPrepared.mockImplementation(async () => {
+            await Promise.resolve();
+            tighten();
+            return f.snapshot;
+          });
+          f.context.readChatMetadata = async (params) => {
+            const metadata = await harness.runtime.read(params);
+            tighten();
+            return metadata;
+          };
+          try {
+            await harness.runtime.refresh();
+            const params =
+              mode === "saved-default"
+                ? { sessionKey }
+                : { agentId: "main", authProfileId: f.authProfileId };
+            const respond = vi.fn<RespondFn>();
+            await handleGatewayRequest({
+              req: { type: "req", id: `account-${mode}`, method, params },
+              context: f.context,
+              client: f.client,
+              respond,
+              isWebchatConnect: () => false,
+              extraHandlers: { ...modelsHandlers, "chat.metadata": handleChatMetadataRequest },
+            });
+            expect(respond.mock.calls[0]?.[0]).toBe(true);
+            const result = respond.mock.calls[0]?.[1];
+            if (mode === "none" || mode === "tightened") {
+              expect(result).toMatchObject({ models: [] });
+              expect(result).not.toHaveProperty("accountSelection");
+            } else {
+              expect(result).toMatchObject({
+                models: [expect.objectContaining({ provider: "openai", id: "gpt-5.6-luna" })],
+                accountSelection: {
+                  kind: "personal",
+                  authProfileId: f.authProfileId,
+                  source: "user",
+                },
+              });
+            }
+            expect(f.snapshot.authStore.profiles).toEqual({});
+            expect(listUserProfileAuthLinks(f.person.id)).toEqual([]);
+          } finally {
+            await harness.runtime.stop();
+          }
+        });
+      }
+    },
+  );
+
+  it.each(["before", "after"] as const)(
+    "denies a draft agent catalog %s metadata acquisition when its agent is outside the ceiling",
+    async (change) => {
+      await withOpenClawTestState(isolated, async (state) => {
+        const f = fixture({ narrow: true, agents: change === "before" ? ["other"] : ["main"] });
+        await state.writeConfig(f.config);
+        const read = vi.spyOn(f.context, "readChatMetadata").mockImplementation(async () => {
+          f.config.gateway.roles.definitions.reader.agents = ["other"];
+          return { swarmEnabled: false, models: [] };
+        });
+        const respond = vi.fn<RespondFn>();
+        await handleGatewayRequest({
+          req: {
+            type: "req",
+            id: "draft-metadata-agent",
+            method: "chat.metadata",
+            params: { agentId: "main" },
+          },
+          context: f.context,
+          client: f.client,
+          respond,
+          isWebchatConnect: () => false,
+          extraHandlers: { "chat.metadata": handleChatMetadataRequest },
+        });
+        expect(respond).toHaveBeenCalledExactlyOnceWith(
+          false,
+          undefined,
+          expect.objectContaining({
+            code: "FORBIDDEN",
+            message: "Your operator role has no access to this agent's model catalog.",
+          }),
+        );
+        expect(read).toHaveBeenCalledTimes(change === "before" ? 0 : 1);
+      });
+    },
+  );
+
+  it("serves an allowed caller-local catalog through the narrow router admission", async () => {
+    await withOpenClawTestState(isolated, async (state) => {
+      const f = fixture({ narrow: true, models: ["openai/gpt-5.6-luna"] });
+      await state.writeConfig(f.config);
+      const respond = vi.fn<RespondFn>();
+      await handleGatewayRequest({
+        req: {
+          type: "req",
+          id: "narrow-catalog",
+          method: "models.list",
+          params: { agentId: "main", view: "all" },
+        },
+        context: f.context,
+        client: f.client,
+        respond,
+        isWebchatConnect: () => false,
+        extraHandlers: modelsHandlers,
+      });
+      expect(respond).toHaveBeenCalledOnce();
+      expect(respond).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({
+          models: expect.arrayContaining([
+            expect.objectContaining({ provider: "openai", id: "gpt-5.6-luna" }),
+          ]),
+        }),
+        undefined,
+      );
+      expect(f.readPrepared).toHaveBeenCalled();
+    });
+  });
+
+  it.each([
+    { view: "provider-config" },
+    { refresh: true },
+    { provider: "openai" },
+    { authProfileId: "another-account" },
+  ])("keeps diagnostic catalog controls on broad read: %j", async (params) => {
+    await withOpenClawTestState(isolated, async (state) => {
+      const f = fixture({ narrow: true, models: ["openai/gpt-5.6-luna"] });
+      await state.writeConfig(f.config);
+      const respond = vi.fn<RespondFn>();
+      await handleGatewayRequest({
+        req: { type: "req", id: "catalog-diagnostics", method: "models.list", params },
+        context: f.context,
+        client: f.client,
+        respond,
+        isWebchatConnect: () => false,
+        extraHandlers: modelsHandlers,
+      });
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({ message: "missing scope: operator.read" }),
+      );
+      expect(f.readPrepared).not.toHaveBeenCalled();
+      expect(f.loadDeferred).not.toHaveBeenCalled();
+    });
+  });
+
+  it("denies a foreign agent catalog before acquiring its prepared inventory", async () => {
+    await withOpenClawTestState(isolated, async (state) => {
+      const f = fixture({ narrow: true, agents: ["other"] });
+      await state.writeConfig(f.config);
+      const respond = vi.fn<RespondFn>();
+      await handleGatewayRequest({
+        req: {
+          type: "req",
+          id: "foreign-agent-catalog",
+          method: "models.list",
+          params: { agentId: "main" },
+        },
+        context: f.context,
+        client: f.client,
+        respond,
+        isWebchatConnect: () => false,
+        extraHandlers: modelsHandlers,
+      });
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          code: "FORBIDDEN",
+          message: "Your operator role has no access to this agent's model catalog.",
+        }),
+      );
+      expect(f.readPrepared).not.toHaveBeenCalled();
+      expect(f.loadDeferred).not.toHaveBeenCalled();
+    });
+  });
+
   it.each(["missing", "foreign"] as const)(
     "rejects a saved session with %s ownership before catalog I/O",
     async (ownership) => {

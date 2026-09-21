@@ -2,6 +2,10 @@ import {
   providerOwnsDynamicModelPreparation,
   resolveProviderAuthProfileId,
 } from "../../../plugins/provider-runtime.js";
+import {
+  readAdmittedRunOperatorAuthority,
+  readPreparedRunOperatorAuthority,
+} from "../../admitted-run-context.js";
 import type { AuthProfileStore } from "../../auth-profiles.js";
 import { resolveExternalCliAuthOverlayScopeFromSelection } from "../../auth-profiles/external-cli-auth-selection.js";
 import type { AgentHarness } from "../../harness/types.js";
@@ -10,6 +14,10 @@ import {
   ensureAuthProfileStoreWithoutExternalProfiles,
 } from "../../model-auth.js";
 import { OPENAI_PROVIDER_ID } from "../../openai-routing.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelHarnessSupported,
+} from "../../operator-model-policy.js";
 import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.js";
 import { buildAgentRuntimeAuthPlan } from "../../runtime-plan/auth.js";
 import {
@@ -73,6 +81,16 @@ export async function prepareEmbeddedRunAuthPlan(params: {
   markStage?: (stage: string) => void;
 }) {
   const runParams = params.runParams;
+  const operatorAuthority =
+    readAdmittedRunOperatorAuthority(runParams.admittedRunContext) ??
+    readPreparedRunOperatorAuthority(runParams.preparedRunAdmission);
+  const assertModelCurrent = (model: RuntimeModel) => {
+    params.assertCurrent();
+    assertOperatorModelAllowed(operatorAuthority, params.provider, params.modelId);
+    assertOperatorModelAllowed(operatorAuthority, model.provider, model.id);
+    assertOperatorModelHarnessSupported(operatorAuthority, params.getAgentHarness());
+  };
+  assertModelCurrent(params.model);
   const usesOpenAIAuthRouting = params.provider === OPENAI_PROVIDER_ID;
   const initialHarness = params.getAgentHarness();
   const initialPluginHarnessOwnsTransport = initialHarness.id !== "openclaw";
@@ -156,6 +174,7 @@ export async function prepareEmbeddedRunAuthPlan(params: {
       ? undefined
       : requestedProfileId;
   const createAuthPreparation = (): PreparedAgentRuntimeAuth => {
+    assertModelCurrent(params.getEffectiveModel());
     const harness = params.getAgentHarness();
     if (params.nativeSessionRuntime?.auth === "native") {
       // Only the binding-owned connection bypasses host credentials and routes;
@@ -214,34 +233,50 @@ export async function prepareEmbeddedRunAuthPlan(params: {
     config: runParams.config,
     workspaceDir: params.workspaceDir,
   });
-  const { materialize: materializeAuthPlan, materializeUncached: materializeAuthPlanUncached } =
-    createPreparedRuntimeModelMaterializer({
-      provider: params.provider,
-      modelId: params.modelId,
-      config: runParams.config,
-      workspaceDir: params.workspaceDir,
-      metadataSnapshot: params.preparedModelRuntime?.metadataSnapshot,
-      getModel: params.getRuntimeModel,
-      nativeModelOwned: params.nativeModelOwned,
-      requestedProfileId: runParams.authProfileId,
-      providerUsesProfileScopedModelMetadata,
-      providerOwnsDynamicModelRefresh,
-      generationRouteModelMemo: params.preparedModelRuntime?.routeModelResolutionMemo,
-      resolveModel: ({ config, authProfileId, authProfileMode }) =>
-        resolveModelAsync(params.provider, params.modelId, params.agentDir, config, {
-          abortSignal: runParams.abortSignal,
-          assertCurrent: params.assertCurrent,
-          modelIdSource: "selected",
-          authStorage: params.authStorage,
-          modelRegistry: params.modelRegistry,
-          skipAgentDiscovery: true,
-          allowBundledStaticCatalogFallback: true,
-          preparedModelRuntime: params.preparedModelRuntime,
-          workspaceDir: params.workspaceDir,
-          authProfileId,
-          authProfileMode,
-        }),
-    });
+  const materializer = createPreparedRuntimeModelMaterializer({
+    provider: params.provider,
+    modelId: params.modelId,
+    config: runParams.config,
+    workspaceDir: params.workspaceDir,
+    metadataSnapshot: params.preparedModelRuntime?.metadataSnapshot,
+    getModel: params.getRuntimeModel,
+    nativeModelOwned: params.nativeModelOwned,
+    requestedProfileId: runParams.authProfileId,
+    providerUsesProfileScopedModelMetadata,
+    providerOwnsDynamicModelRefresh,
+    generationRouteModelMemo: params.preparedModelRuntime?.routeModelResolutionMemo,
+    resolveModel: ({ config, authProfileId, authProfileMode }) =>
+      resolveModelAsync(params.provider, params.modelId, params.agentDir, config, {
+        abortSignal: runParams.abortSignal,
+        assertCurrent: params.assertCurrent,
+        modelIdSource: "selected",
+        authStorage: params.authStorage,
+        modelRegistry: params.modelRegistry,
+        skipAgentDiscovery: true,
+        allowBundledStaticCatalogFallback: true,
+        preparedModelRuntime: params.preparedModelRuntime,
+        workspaceDir: params.workspaceDir,
+        authProfileId,
+        authProfileMode,
+      }),
+  });
+
+  // Shared generation caches contain model facts only. Each caller checks its
+  // original ceiling around cache consumption, without retaining it in the memo.
+  const materializeAuthPlan = async (...args: Parameters<typeof materializer.materialize>) => {
+    assertModelCurrent(params.getRuntimeModel());
+    const model = await materializer.materialize(...args);
+    assertModelCurrent(model);
+    return model;
+  };
+  const materializeAuthPlanUncached = async (
+    ...args: Parameters<typeof materializer.materializeUncached>
+  ) => {
+    assertModelCurrent(params.getRuntimeModel());
+    const model = await materializer.materializeUncached(...args);
+    assertModelCurrent(model);
+    return model;
+  };
 
   let resolvedAuthPreparation = createAuthPreparation();
   let preparedAuthAttempts = resolvedAuthPreparation.attempts;

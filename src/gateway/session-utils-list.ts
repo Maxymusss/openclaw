@@ -6,8 +6,11 @@ import { isConfiguredGatewaySessionEntry } from "../config/sessions/combined-sto
 import { canonicalSessionKeyMigrationRequiredError } from "../config/sessions/session-canonical-key.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
+import type { OperatorPermissionCeiling } from "../shared/operator-permissions.js";
 import { SESSIONS_LIST_OWNER_LIMIT } from "../shared/session-list-limits.js";
 import { runSynchronousWork, type SynchronousWork } from "../shared/synchronous-work.js";
+import { projectOperatorSessionDefaults } from "./operator-model-projection.js";
+import { resolveOperatorPermissionCeiling } from "./operator-role-policy.js";
 import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
 import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
 import { resolveGatewayModelSelectionPolicy } from "./server-methods/session-model-selection-policy.js";
@@ -314,6 +317,7 @@ export function prepareProjectedSessionList(params: {
   context?: GatewayRequestContext;
   client?: GatewayClient | null;
   now: number;
+  readModelPermissions?: () => OperatorPermissionCeiling | undefined;
 }) {
   const { projection, opts, key: exactKey, context, client, now } = params;
   const presentation = prepareProjectedSessionPresentation(
@@ -326,6 +330,7 @@ export function prepareProjectedSessionList(params: {
           projection.state.rowContext.projectedAgentRuns,
         )
       : undefined,
+    params.readModelPermissions,
   );
   const prepared = prepareSessionRowSelection(projection, opts, {
     key: exactKey,
@@ -385,6 +390,7 @@ export async function listProjectedSessions(params: {
   context?: GatewayRequestContext;
   client?: GatewayClient | null;
   diagnostics?: SessionListDiagnostics;
+  readModelPermissions?: () => OperatorPermissionCeiling | undefined;
   onResult?: (result: SessionsListResult) => void;
 }): Promise<SessionsListResult> {
   const { projection, opts, key: exactKey, context, client, diagnostics } = params;
@@ -411,6 +417,7 @@ export async function listProjectedSessions(params: {
         context,
         client,
         now,
+        readModelPermissions: params.readModelPermissions,
       });
       diagnostics?.mark("filterSetup");
       const selection = withAgentRosterFactsBatch(prepared.cfg, () =>
@@ -487,6 +494,12 @@ export async function listProjectedSessions(params: {
           sessions,
         );
         if (client !== undefined) {
+          result.defaults = projectOperatorSessionDefaults(
+            result.defaults,
+            params.readModelPermissions
+              ? params.readModelPermissions()
+              : resolveOperatorPermissionCeiling(client, cfg),
+          );
           result.defaults.modelSelectionTarget = resolveGatewayModelSelectionPolicy({
             callerScopes: client?.connect?.scopes ?? [],
             cfg,

@@ -109,6 +109,49 @@ describe("gateway operator role config", () => {
     scopes: ["operator.read", "operator.write"],
   };
 
+  test.each([undefined, { allow: [] }, { allow: ["provider/model", "provider/other"] }])(
+    "preserves optional exact model ceilings with wildcard agents: %j",
+    (models) => {
+      const result = OpenClawSchema.parse({
+        gateway: {
+          roles: {
+            default: "guest",
+            definitions: {
+              guest: {
+                ...validRole,
+                agents: "*",
+                accessPolicyPlugin: "visitor-access",
+                ...(models ? { models } : {}),
+              },
+            },
+          },
+        },
+      });
+      expect(result.gateway?.roles?.definitions.guest).toEqual({
+        ...validRole,
+        agents: "*",
+        accessPolicyPlugin: "visitor-access",
+        ...(models ? { models } : {}),
+      });
+    },
+  );
+
+  test.each(["model", "provider/", "/model", "provider/*", "*/model", " "])(
+    "rejects non-exact operator model ref %j",
+    (ref) => {
+      expect(
+        OpenClawSchema.safeParse({
+          gateway: {
+            roles: {
+              default: "guest",
+              definitions: { guest: { ...validRole, models: { allow: [ref] } } },
+            },
+          },
+        }).success,
+      ).toBe(false);
+    },
+  );
+
   test.each(["none", "view", "suggest", "write"])(
     "accepts the closed foreign-session access level %s",
     (others) => {

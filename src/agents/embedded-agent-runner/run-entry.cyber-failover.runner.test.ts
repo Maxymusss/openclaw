@@ -4,6 +4,7 @@ import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { isProfileInCooldown, markAuthProfileFailure } from "../auth-profiles/usage.js";
 import { FailoverError } from "../failover-error.js";
 import { resetFallbackSkipCacheForTest } from "../fallback-skip-cache.test-support.js";
+import { OperatorModelPolicyError } from "../operator-model-policy.js";
 import { runEmbeddedAgentEntry } from "./run-entry.js";
 import { resolveAuthProfileFailureReason } from "./run/auth-profile-failure-policy.js";
 import type { AuthProfileFailurePolicy } from "./run/auth-profile-failure-policy.types.js";
@@ -95,6 +96,42 @@ describe("runEmbeddedAgentEntry cyber failover against the real fallback runner"
     authStoreRuntimeMocks.state.store = undefined;
     authStoreRuntimeMocks.updateAuthProfileStoreWithLock.mockClear();
   });
+
+  it.each(["direct", "cause", "aggregate"])(
+    "preserves a %s model-policy denial from the target attempt",
+    async (wrapper) => {
+      const denial = new OperatorModelPolicyError("provider overloaded while source revoked");
+      const failure =
+        wrapper === "cause"
+          ? new Error("503 service unavailable", { cause: denial })
+          : wrapper === "aggregate"
+            ? new AggregateError([denial], "429 rate limit")
+            : denial;
+      const attempts: string[] = [];
+      await expect(
+        runEmbeddedAgentEntry({
+          selection: { cfg: {}, provider: "openai", model: "gpt-5.6" },
+          identity: { runId: "run-policy-terminal", agentId: "main", sessionId: "session-1" },
+          harness: {
+            workspaceDir: "/tmp/workspace",
+            preparation: { kind: "direct" as const },
+            resolveRuntimeOverride: () => undefined,
+          },
+          behavior: { kind: "command-rpc", hasCommittedSideEffect: () => false },
+          sessionOverride: { kind: "preserve" },
+          runCandidate: async (provider, model) => {
+            attempts.push(model);
+            if (model === "gpt-daybreak-blue-latest") {
+              throw failure;
+            }
+            return makeRefusalResult({ provider, model });
+          },
+        }),
+      ).rejects.toBe(failure);
+      expect(attempts).toEqual(["gpt-5.6", "gpt-daybreak-blue-latest"]);
+      expect(authStoreRuntimeMocks.updateAuthProfileStoreWithLock).not.toHaveBeenCalled();
+    },
+  );
 
   it("propagates a recognized provider error thrown after the Daybreak retry delivered", async () => {
     // `overloaded` is an ordinary failover-class reason, so error classification

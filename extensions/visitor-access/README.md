@@ -86,6 +86,18 @@ Visitor Access validates the configured role; the Gateway provides those
 capabilities. Preserve existing staff assignments and apply the guest
 configuration as the final rollout step.
 
+The optional Gateway role field `models: { allow: ["provider/model"] }` adds a
+model ceiling; Visitor Access does not require it or grant model access itself.
+Omission keeps existing model behavior, and `allow: []` denies all inference.
+The field also works with `agents: "*"`. Invitation, renewal, and expiry still use
+the same live grant authority.
+
+Finite model limits are not ready for visitor rollout. The built-in runtime does
+not declare enforcement support, and provider-boundary qualification plus the
+collector restart/rollback authority policy remain release requirements. Keep
+existing deployments unchanged until those requirements are complete. See
+[Operator model ceilings](https://docs.openclaw.ai/gateway/operator-scopes#optional-model-ceiling).
+
 Guest admission is unsupported on Gateway versions that predate this role
 binding. Those versions reject `accessPolicyPlugin` and cannot enforce the local
 grant lifetime. Keep the binding and restricted Guest role intact when recovering

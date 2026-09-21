@@ -5,8 +5,10 @@ import {
   type ErrorShape,
   type SessionsPatchParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { resolveAgentHarnessSessionExecutionRestriction } from "../../agents/harness/execution-environment.js";
+import { getRegisteredAgentHarness } from "../../agents/harness/registry.js";
 import type { AgentHarness } from "../../agents/harness/types.js";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
@@ -24,6 +26,7 @@ import { refreshQueuedFollowupSession } from "../../auto-reply/reply/queue.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { resolveSessionModelAuthorityError } from "../session-model-authority.js";
 import type { SessionWorkerPlacementContext } from "../worker-environments/session-placement-lifecycle.js";
 import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-policy.js";
 import { resolveSessionWorkerPlacementPatchError } from "./sessions-shared.js";
@@ -214,6 +217,8 @@ export function resolveSessionNativeRuntimeRestriction(params: {
 /** Bind runtime availability and placement checks to the selection's commit guard. */
 export async function prepareSessionPatchRuntimeSelection(params: {
   cfg: OpenClawConfig;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
+  creation?: boolean;
   agentId: string;
   patch: SessionsPatchParams;
   entry: SessionEntry;
@@ -230,11 +235,25 @@ export async function prepareSessionPatchRuntimeSelection(params: {
   });
   let validateRuntime: (() => string | undefined) | undefined;
   let validateEnvironment: (() => ErrorShape | undefined) | undefined;
+  let validateModel: (() => ErrorShape | undefined) | undefined;
   const grantingConsent = typeof params.patch.nativeRuntimeConsent === "string";
+  const selectingModel =
+    params.patch.model !== undefined ||
+    params.patch.agentRuntime !== undefined ||
+    grantingConsent ||
+    (params.creation === true && params.operatorAuthority?.permissions?.models !== undefined);
+  if (selectingModel) {
+    validateModel = () => resolveSessionModelAuthorityError(params);
+    const error = resolveSessionModelAuthorityError(params);
+    if (error) {
+      return { ok: false, error };
+    }
+  }
   if (
     typeof params.patch.agentRuntime === "string" ||
     typeof params.patch.model === "string" ||
-    grantingConsent
+    grantingConsent ||
+    (selectingModel && params.operatorAuthority?.permissions?.models !== undefined)
   ) {
     const model = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
     const previousModel = params.expectedEntry
@@ -251,6 +270,24 @@ export async function prepareSessionPatchRuntimeSelection(params: {
       previousModel?.provider === model.provider &&
       previousModel.model === model.model &&
       params.expectedEntry?.authProfileOverride === params.entry.authProfileOverride;
+    if (preservesRuntimeSelection && params.operatorAuthority?.permissions?.models !== undefined) {
+      // Repinning the same account preserves its runtime. Retain that exact owner
+      // for the model ceiling and COMMIT check without selecting a replacement.
+      const runtime = resolveEffectiveAgentRuntime({
+        cfg: params.cfg,
+        agentId: params.agentId,
+        provider: model.provider,
+        modelId: model.model,
+        sessionEntry: params.entry,
+      });
+      const harness = getRegisteredAgentHarness(runtime)?.harness;
+      validateModel = () =>
+        resolveSessionModelAuthorityError({ ...params, preparedRuntime: { harness } });
+      validateRuntime = () =>
+        getRegisteredAgentHarness(runtime)?.harness === harness
+          ? undefined
+          : "Runtime owner changed during selection. Retry the request.";
+    }
     if (!preservesRuntimeSelection) {
       const choice = await prepareModelSelectionRuntime({
         cfg: params.cfg,
@@ -271,6 +308,8 @@ export async function prepareSessionPatchRuntimeSelection(params: {
       applyModelRuntimeDirective(params.entry, choice.runtime);
       validateRuntime = choice.validateRuntimeSelection;
       const harness = choice.harness;
+      validateModel = () =>
+        resolveSessionModelAuthorityError({ ...params, preparedRuntime: { harness } });
       if (grantingConsent) {
         if (
           !harness ||
@@ -299,6 +338,10 @@ export async function prepareSessionPatchRuntimeSelection(params: {
     }
   }
   const validate = () => {
+    const modelError = validateModel?.();
+    if (modelError) {
+      return modelError;
+    }
     const environmentError = validateEnvironment?.();
     if (environmentError) {
       return environmentError;
@@ -326,7 +369,8 @@ export async function prepareSessionPatchRuntimeSelection(params: {
         ok: true,
         ...(params.patch.agentRuntime !== undefined ||
         params.patch.model !== undefined ||
-        grantingConsent
+        grantingConsent ||
+        validateModel
           ? { validate }
           : {}),
       };

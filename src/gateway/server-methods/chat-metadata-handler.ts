@@ -5,10 +5,19 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { ChatMetadataParams } from "../../../packages/gateway-protocol/src/index.js";
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import {
+  isOperatorModelPolicyError,
+  OperatorModelPolicyError,
+} from "../../agents/operator-model-policy.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
+import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
+import {
+  captureOperatorModelCatalogAccess,
+  resolveOperatorModelCatalogAgentId,
+} from "../operator-model-catalog.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { hiddenSessionNotFound } from "../session-sharing-policy.js";
 import {
@@ -96,7 +105,11 @@ export function resolveChatMetadataReadParams(
     }
   }
   const resolved = resolveAgentIdOrRespondError({
-    rawAgentId: params.agentId,
+    rawAgentId: resolveOperatorModelCatalogAgentId(
+      client,
+      cfg,
+      normalizeOptionalChatText(params.agentId),
+    ),
     respond,
     cfg,
     normalize: (id) => (typeof id === "string" && id.trim() ? normalizeAgentId(id) : undefined),
@@ -126,7 +139,9 @@ export async function handleChatMetadataRequest(
     return;
   }
   let scope: ChatMetadataReadParams | undefined;
+  let access: ReturnType<typeof captureOperatorModelCatalogAccess> | undefined;
   try {
+    access = captureOperatorModelCatalogAccess(options);
     scope = resolveChatMetadataReadParams(options, params);
     if (!scope) {
       return;
@@ -134,13 +149,38 @@ export async function handleChatMetadataRequest(
     const metadata = await context.readChatMetadata(scope);
     scope.draftAccountSelection?.assertCurrent();
     scope.assertCurrent?.();
-    respond(true, metadata);
+    access.assertCurrent();
+    if (!scope.sessionKey && !access.allowsAgent(scope.agentId)) {
+      throw new OperatorModelPolicyError(
+        "Your operator role has no access to this agent's model catalog.",
+      );
+    }
+    const selected = resolveSessionModelRef(
+      context.getRuntimeConfig(),
+      scope.sessionEntry,
+      scope.agentId,
+      {
+        allowPluginNormalization: false,
+      },
+    );
+    respond(
+      true,
+      access.projectMetadata(
+        metadata,
+        `${selected.provider}/${selected.model}`,
+        scope.draftAccountSelection,
+      ),
+    );
   } catch (error) {
-    if (!(error instanceof ModelAccountConnectAuthorityError)) {
+    if (
+      !(error instanceof ModelAccountConnectAuthorityError) &&
+      !isOperatorModelPolicyError(error)
+    ) {
       throw error;
     }
     respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, error.message));
   } finally {
+    access?.release();
     scope?.release?.();
   }
 }

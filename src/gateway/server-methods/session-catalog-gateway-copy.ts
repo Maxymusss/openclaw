@@ -4,6 +4,7 @@ import type {
   ErrorShape,
   SessionsCatalogContinueParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { parseModelRef } from "../../agents/model-selection-normalize.js";
 import { getModelRefStatus } from "../../agents/model-selection-shared.js";
 import { resolveDefaultModelForAgent } from "../../agents/model-selection.js";
@@ -101,6 +102,7 @@ export async function copySessionCatalogToGateway(params: {
   clientScopes: readonly string[];
   client: GatewayClient | null;
   context: GatewayRequestContext;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   commitGuard?: () => void;
 }): Promise<{ ok: true; sessionKey: string } | { ok: false; error: ErrorShape }> {
   const copyToGatewaySession = params.provider.copyToGatewaySession;
@@ -116,6 +118,7 @@ export async function copySessionCatalogToGateway(params: {
   });
   const created = await createGatewaySession({
     cfg,
+    operatorAuthority: params.operatorAuthority,
     agentId: params.agentId,
     displayName: gatewayCopy.displayName,
     ...(model.preferredModel ? { model: model.preferredModel } : {}),

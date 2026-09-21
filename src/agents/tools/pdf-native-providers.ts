@@ -45,6 +45,7 @@ type NativePdfJsonRequest = {
   request?: ModelProviderRequestTransportOverrides;
   defaultAuthHeader: string;
   signal?: AbortSignal;
+  assertCurrent?: () => void;
 };
 
 async function postNativePdfJson(params: NativePdfJsonRequest): Promise<Record<string, unknown>> {
@@ -66,7 +67,10 @@ async function postNativePdfJson(params: NativePdfJsonRequest): Promise<Record<s
     body: params.body,
     timeoutMs: NATIVE_PDF_PROVIDER_FETCH_TIMEOUT_MS,
     ...(params.signal ? { signal: params.signal } : {}),
-    fetchFn: fetch,
+    fetchFn: (input, init) => {
+      params.assertCurrent?.();
+      return fetch(input, init);
+    },
     allowPrivateNetwork: params.allowPrivateNetwork,
     ssrfPolicy: params.ssrfPolicy,
     dispatcherPolicy: params.dispatcherPolicy,
@@ -125,6 +129,7 @@ export async function anthropicAnalyzePdf(params: {
   baseUrl?: string;
   requestConfig?: NativePdfProviderRequestConfig;
   signal?: AbortSignal;
+  assertCurrent?: () => void;
 }): Promise<string> {
   const apiKey = normalizeSecretInput(params.apiKey);
   if (!apiKey) {
@@ -185,6 +190,7 @@ export async function anthropicAnalyzePdf(params: {
     request: params.requestConfig?.request,
     defaultAuthHeader: "x-api-key",
     signal: params.signal,
+    assertCurrent: params.assertCurrent,
   });
 
   const responseContent = json.content as AnthropicResponseContent | undefined;
@@ -222,6 +228,7 @@ export async function geminiAnalyzePdf(params: {
   baseUrl?: string;
   requestConfig?: NativePdfProviderRequestConfig;
   signal?: AbortSignal;
+  assertCurrent?: () => void;
 }): Promise<string> {
   const apiKey = normalizeSecretInput(params.apiKey);
   if (!apiKey) {
@@ -285,6 +292,7 @@ export async function geminiAnalyzePdf(params: {
     request: params.requestConfig?.request,
     defaultAuthHeader: "x-goog-api-key",
     signal: params.signal,
+    assertCurrent: params.assertCurrent,
   });
 
   const candidates = json.candidates as GeminiCandidate[] | undefined;

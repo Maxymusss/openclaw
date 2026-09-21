@@ -5,6 +5,7 @@ import { OAuthRefreshFailureError } from "../auth-profiles/oauth-refresh-failure
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { isProfileInCooldown } from "../auth-profiles/usage-state.js";
 import { getApiKeyForModelCore } from "../model-auth.js";
+import { isOperatorModelPolicyError } from "../operator-model-policy.js";
 import { providerModelRouteAcceptsAuthMode } from "../provider-model-route-auth.js";
 import { shouldForceDirectAuthFallbackModelResolve } from "./credential-scoped-model.js";
 import { sameAgentRuntimeAuthModelRoute } from "./model-route.js";
@@ -130,6 +131,7 @@ export async function resolvePreparedRuntimeAuthAttempts<Model, Auth>(params: {
     } catch (error) {
       if (
         error instanceof SecretSurfaceUnavailableError ||
+        isOperatorModelPolicyError(error) ||
         error instanceof OAuthRefreshFailureError
       ) {
         throw error;

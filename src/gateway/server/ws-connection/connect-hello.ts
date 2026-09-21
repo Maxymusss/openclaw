@@ -33,6 +33,7 @@ import {
 import { canReadDetailedUpdateMetadata } from "../../events.js";
 import { ADMIN_SCOPE } from "../../method-scopes.js";
 import { scheduleNodeConnectionNotification } from "../../node-connection-notifications.js";
+import { resolveOperatorRolePolicyForProfile } from "../../operator-role-policy.js";
 import { resolveBrowserAuthOrigin } from "../../provider-browser-auth.js";
 import {
   MAX_BUFFERED_BYTES,
@@ -194,6 +195,11 @@ export async function sendGatewayHello(
       method: authMethod,
       role,
       scopes,
+      ...(role === "operator" &&
+      resolveOperatorRolePolicyForProfile(authenticatedUserProfileId, context.configSnapshot)
+        ?.models
+        ? { modelRestricted: true as const }
+        : {}),
       ...(recoveryScope ? { recoveryScope } : {}),
       ...(canMigrateRecovery ? { recoveryMigrationAllowed: true as const } : {}),
       ...(deviceToken

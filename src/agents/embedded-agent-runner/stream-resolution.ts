@@ -8,7 +8,9 @@ import { createBoundaryAwareStreamFnForModel } from "@openclaw/ai/transports";
 import { hasNonEmptyString as hasResolvedRuntimeApiKey } from "@openclaw/normalization-core/string-coerce";
 import { getStreamLlmRuntime } from "../../llm/model-runtime-binding.js";
 import "../ai-transport-runtime-host.js";
+import type { AdmittedRunOperatorAuthority } from "../admitted-run-operator-authority.js";
 import { createAnthropicVertexStreamFnForModel } from "../anthropic-vertex-stream.js";
+import { wrapOperatorModelStream } from "../operator-model-policy.js";
 import type { StreamFn } from "../runtime/index.js";
 import type { EmbeddedRunAttemptParams } from "./run/types.js";
 
@@ -107,6 +109,18 @@ export async function resolveEmbeddedAgentApiKey(params: {
 }
 
 export function resolveEmbeddedAgentStream(
+  params: Parameters<typeof resolveEmbeddedAgentStreamCore>[0] & {
+    operatorAuthority?: AdmittedRunOperatorAuthority;
+  },
+): { streamFn: StreamFn; strategy: string } {
+  const resolved = resolveEmbeddedAgentStreamCore(params);
+  return {
+    ...resolved,
+    streamFn: wrapOperatorModelStream(resolved.streamFn, params.operatorAuthority),
+  };
+}
+
+function resolveEmbeddedAgentStreamCore(
   params: EmbeddedStreamRuntimeOwner & {
     providerStreamFn?: StreamFn;
     sessionId: string;
@@ -118,6 +132,7 @@ export function resolveEmbeddedAgentStream(
     authProfileId?: string;
     authStorage?: { getApiKey(provider: string): Promise<string | undefined> };
     assertCurrent?: () => void;
+    assertModelCurrent?: (model: Parameters<StreamFn>[0]) => void;
   },
 ): { streamFn: StreamFn; strategy: string } {
   const llmRuntime = resolveEmbeddedStreamRuntime(params);
@@ -129,6 +144,7 @@ export function resolveEmbeddedAgentStream(
     providerId: params.model.provider,
     promptCacheKey: params.promptCacheKey,
     assertCurrent: params.assertCurrent,
+    assertModelCurrent: params.assertModelCurrent,
   };
   const stripCacheBoundary = (context: Parameters<StreamFn>[1]) =>
     context.systemPrompt
@@ -147,11 +163,12 @@ export function resolveEmbeddedAgentStream(
     const vertexStreamFn = createAnthropicVertexStreamFnForModel(params.model);
     return {
       streamFn:
-        params.signal || params.assertCurrent
+        params.signal || params.assertCurrent || params.assertModelCurrent
           ? wrapEmbeddedAgentStreamFn(vertexStreamFn, {
               runSignal: params.signal,
               providerId: params.model.provider,
               assertCurrent: params.assertCurrent,
+              assertModelCurrent: params.assertModelCurrent,
             })
           : vertexStreamFn,
       strategy: "anthropic-vertex",
@@ -202,13 +219,14 @@ export function resolveEmbeddedAgentStream(
   const promptCacheKey = params.promptCacheKey?.trim();
   return {
     streamFn:
-      !promptCacheKey && !params.signal && !params.assertCurrent
+      !promptCacheKey && !params.signal && !params.assertCurrent && !params.assertModelCurrent
         ? currentStreamFn
         : wrapEmbeddedAgentStreamFn(currentStreamFn, {
             runSignal: params.signal,
             providerId: params.model.provider,
             promptCacheKey,
             assertCurrent: params.assertCurrent,
+            assertModelCurrent: params.assertModelCurrent,
           }),
     strategy: isDefault ? "stream-simple" : "session-custom",
   };
@@ -239,6 +257,7 @@ function wrapEmbeddedAgentStreamFn(
     promptCacheKey?: string;
     transformContext?: (context: Parameters<StreamFn>[1]) => Parameters<StreamFn>[1];
     assertCurrent?: () => void;
+    assertModelCurrent?: (model: Parameters<StreamFn>[0]) => void;
   },
 ): StreamFn {
   const transformContext =
@@ -266,18 +285,21 @@ function wrapEmbeddedAgentStreamFn(
   if (!params.authStorage && !params.resolvedApiKey) {
     return (m, context, options) => {
       params.assertCurrent?.();
+      params.assertModelCurrent?.(m);
       return inner(m, transformContext(context), mergeRunSignal(options));
     };
   }
   const { authStorage, providerId, resolvedApiKey } = params;
   return async (m, context, options) => {
     params.assertCurrent?.();
+    params.assertModelCurrent?.(m);
     const apiKey = await resolveEmbeddedAgentApiKey({
       provider: providerId,
       resolvedApiKey,
       authStorage,
     });
     params.assertCurrent?.();
+    params.assertModelCurrent?.(m);
     const selectedApiKey = apiKey ?? options?.apiKey;
     return inner(m, transformContext(context), {
       ...mergeRunSignal(options),

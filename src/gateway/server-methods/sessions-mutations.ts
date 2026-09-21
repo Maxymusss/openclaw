@@ -19,7 +19,12 @@ import {
 import { patchPluginSessionExtension } from "../../plugins/host-hook-state.js";
 import { isPluginJsonValue } from "../../plugins/host-hooks.js";
 import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
+import { intersectOperatorPermissionCeilings } from "../../shared/operator-permissions.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
+import { captureOperatorModelCatalogAccess } from "../operator-model-catalog.js";
+import { projectOperatorSessionPatch } from "../operator-model-projection.js";
+import { resolveOperatorPermissionCeiling } from "../operator-role-policy.js";
+import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import {
   projectAssignableSessionOwner,
@@ -48,14 +53,10 @@ import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 export const sessionMutationHandlers: GatewayRequestHandlers = {
-  "sessions.patchMany": async ({
-    params,
-    respond,
-    context,
-    client,
-    sessionMutationAuthorization,
-  }) => {
+  "sessions.patchMany": async (options) => {
+    const { params, respond, context, client, sessionMutationAuthorization } = options;
     const diagnostics = startSessionPatchDiagnostics("sessions.patchMany");
+    let modelSource: ReturnType<typeof captureGatewayOperatorRunAuthority>;
     try {
       if (
         !assertValidParams(params, validateSessionsPatchManyParams, "sessions.patchMany", respond)
@@ -77,10 +78,12 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
         );
         return;
       }
+      modelSource = captureGatewayOperatorRunAuthority(options);
       const targets = params.targets;
       const executed = await executeSessionPatchMutations({
         client,
         context,
+        operatorAuthority: modelSource?.authority,
         diagnostics,
         patch: params.patch,
         targets: targets.map((target) => ({
@@ -111,11 +114,14 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       }
       respond(true, { outcomes }, undefined);
     } finally {
+      modelSource?.release();
       diagnostics?.finish();
     }
   },
-  "sessions.patch": async ({ params, respond, context, client, sessionMutationAuthorization }) => {
+  "sessions.patch": async (options) => {
+    const { params, respond, context, client, sessionMutationAuthorization } = options;
     const diagnostics = startSessionPatchDiagnostics("sessions.patch");
+    let modelSource: ReturnType<typeof captureGatewayOperatorRunAuthority>;
     try {
       if (!assertValidParams(params, validateSessionsPatchParams, "sessions.patch", respond)) {
         return;
@@ -140,10 +146,12 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
         return;
       }
       const patch = { ...params, key };
+      modelSource = captureGatewayOperatorRunAuthority(options);
       const target = sessionPatchTargetIdentity(patch);
       const executed = await executeSessionPatchMutations({
         client,
         context,
+        operatorAuthority: modelSource?.authority,
         diagnostics,
         patch,
         targets: [
@@ -165,6 +173,7 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       const prepared = executed.preparedByIndex[0]!;
       diagnostics?.scope("response");
       const catalog = await executed.catalogs.available(prepared.targetAgentId);
+      modelSource?.authority.assertCurrent();
       respond(
         true,
         projectSessionPatchResult({
@@ -173,10 +182,15 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
           entry: outcome.entry,
           modelCatalog: catalog?.entries,
           modelCatalogRouteVariants: catalog?.routeVariants,
+          operatorPermissions: intersectOperatorPermissionCeilings(
+            modelSource?.authority.permissions,
+            resolveOperatorPermissionCeiling(client, context.getRuntimeConfig()),
+          ),
         }),
         undefined,
       );
     } finally {
+      modelSource?.release();
       diagnostics?.finish();
     }
   },
@@ -518,7 +532,8 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       reason: "plugin-patch",
     });
   },
-  "sessions.reset": async ({ params, respond, context, client, sessionMutationAuthorization }) => {
+  "sessions.reset": async (options) => {
+    const { params, respond, context, client, sessionMutationAuthorization } = options;
     if (!assertValidParams(params, validateSessionsResetParams, "sessions.reset", respond)) {
       return;
     }
@@ -528,49 +543,58 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       return;
     }
 
-    const reason = p.reason === "new" ? "new" : "reset";
-    const { performGatewaySessionReset } = await loadSessionsRuntimeModule();
-    const result = await performGatewaySessionReset({
-      key,
-      ...(p.agentId ? { agentId: p.agentId } : {}),
-      reason,
-      commandSource: "gateway:sessions.reset",
-      creation: resolveOperatorSessionCreation(client),
-      ...(client?.authenticatedUserProfile
-        ? { requestingOperatorProfileId: client.authenticatedUserProfile.profileId }
-        : {}),
-      ...(client?.internal?.operatorRoleActor
-        ? { operatorRoleActor: client.internal.operatorRoleActor }
-        : {}),
-      authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
-      armSessionDiffBaselineCapture: true,
-      workerPlacementContext: context,
-      assertAuthorizedInstance: sessionMutationAuthorization?.assertCurrent,
-      expectedSessionId: p.expectedSessionId,
-    });
-    if (!result.ok) {
-      respond(false, undefined, result.error);
-      return;
-    }
-    if ("incognitoDeleted" in result) {
-      respond(true, { ok: true, key: result.key, deleted: true }, undefined);
+    const modelAccess = captureOperatorModelCatalogAccess(options);
+    try {
+      const reason = p.reason === "new" ? "new" : "reset";
+      const { performGatewaySessionReset } = await loadSessionsRuntimeModule();
+      const result = await performGatewaySessionReset({
+        key,
+        ...(p.agentId ? { agentId: p.agentId } : {}),
+        reason,
+        commandSource: "gateway:sessions.reset",
+        creation: resolveOperatorSessionCreation(client),
+        ...(client?.authenticatedUserProfile
+          ? { requestingOperatorProfileId: client.authenticatedUserProfile.profileId }
+          : {}),
+        ...(client?.internal?.operatorRoleActor
+          ? { operatorRoleActor: client.internal.operatorRoleActor }
+          : {}),
+        authorizedPluginId: normalizeOptionalString(client?.internal?.pluginRuntimeOwnerId),
+        armSessionDiffBaselineCapture: true,
+        workerPlacementContext: context,
+        assertAuthorizedInstance: sessionMutationAuthorization?.assertCurrent,
+        expectedSessionId: p.expectedSessionId,
+      });
+      if (!result.ok) {
+        respond(false, undefined, result.error);
+        return;
+      }
+      if ("incognitoDeleted" in result) {
+        respond(true, { ok: true, key: result.key, deleted: true }, undefined);
+        emitSessionsChanged(context, {
+          sessionKey: result.key,
+          agentId: result.agentId,
+          sessionId: result.deletedSessionId,
+          reason: "delete",
+        });
+        return;
+      }
+      respond(
+        true,
+        projectOperatorSessionPatch(
+          { ok: true, key: result.key, entry: result.entry, resolved: result.resolved },
+          modelAccess.permissions(),
+          { provider: result.resolved.modelProvider, model: result.resolved.model },
+        ),
+        undefined,
+      );
       emitSessionsChanged(context, {
         sessionKey: result.key,
         agentId: result.agentId,
-        sessionId: result.deletedSessionId,
-        reason: "delete",
+        reason,
       });
-      return;
+    } finally {
+      modelAccess.release();
     }
-    respond(
-      true,
-      { ok: true, key: result.key, entry: result.entry, resolved: result.resolved },
-      undefined,
-    );
-    emitSessionsChanged(context, {
-      sessionKey: result.key,
-      agentId: result.agentId,
-      reason,
-    });
   },
 };

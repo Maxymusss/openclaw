@@ -8,6 +8,7 @@ import {
 import type { Message } from "@openclaw/llm-core";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { isOperatorModelPolicyError } from "../operator-model-policy.js";
 import type { AgentMessage } from "../runtime/index.js";
 import { withSessionManagerWrite } from "../sessions/session-manager-write-admission.js";
 import { redactTranscriptMessage } from "../transcript-redact.js";
@@ -119,7 +120,7 @@ export async function attemptServerEndpointCompaction(params: {
   } catch (err) {
     // Observer or handle-release failures after commit must not trigger a
     // second client compaction of the already replaced context.
-    if (compactionCommitted) {
+    if (compactionCommitted || isOperatorModelPolicyError(err)) {
       throw err;
     }
     params.assertActive?.();

@@ -17,21 +17,18 @@ import {
   type DiagnosticEmbeddedRunOwner,
   markDiagnosticEmbeddedRunStarted,
 } from "../../logging/diagnostic-run-activity.js";
-import { getCurrentPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-snapshot.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import {
   consumeCompactionSafeguardCancellation,
   getCompactionSafeguardRuntime,
   setCompactionSafeguardCancellation,
 } from "../agent-hooks/compaction-safeguard-runtime.js";
-import { createPreparedEmbeddedAgentSettingsManager } from "../agent-project-settings.js";
-import {
-  applyAgentAutoCompactionGuard,
-  applyAgentCompactionSettingsFromConfig,
-  isSilentOverflowProneModel,
-  resolveEffectiveCompactionMode,
-} from "../agent-settings.js";
+import { resolveEffectiveCompactionMode } from "../agent-settings.js";
 import { pickFallbackThinkingLevel } from "../embedded-agent-helpers.js";
+import {
+  assertOperatorModelAllowed,
+  isOperatorModelPolicyError,
+} from "../operator-model-policy.js";
 import { resolveAgentRunSessionTarget } from "../run-session-target.js";
 import { guardSessionManager } from "../session-tool-result-guard-wrapper.js";
 import { sanitizeToolUseResultPairingForModel } from "../session-transcript-repair.js";
@@ -65,12 +62,11 @@ import {
   resolveCompactionTimeoutMs,
 } from "./compaction-safety-timeout.js";
 import { prepareCompactionSessionAgent } from "./compaction-session-agent.js";
-import { buildEmbeddedExtensionFactories } from "./extensions.js";
+import { prepareCompactionSessionSettings } from "./compaction-session-settings.js";
 import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "./history.js";
 import { log } from "./logger.js";
 import type { PreparedCompactionRuntime } from "./prepared-compaction-runtime.js";
 import { sanitizeSessionHistory, validateReplayTurns } from "./replay-history.js";
-import { createEmbeddedAgentResourceLoader } from "./resource-loader.js";
 import { wrapStreamFnWithDiagnosticModelCallEvents } from "./run/attempt.model-diagnostic-events.js";
 import { readCompactionAccountingRecorder } from "./run/compaction-accounting-bridge.js";
 import { estimateLlmBoundaryTokenPressure } from "./run/preemptive-compaction.js";
@@ -135,8 +131,16 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
         sessionKey: params.sessionKey,
         sessionTarget: params.sessionTarget,
       }));
-    const assertActive =
+    const assertTranscriptActive =
       memoryTranscript?.assertActive ?? captureOwnedTranscriptWriteAssertion(sessionTarget);
+    const assertActive = () => {
+      assertTranscriptActive();
+      assertOperatorModelAllowed(
+        params.operatorAuthority,
+        effectiveModel.provider,
+        effectiveModel.id,
+      );
+    };
     assertActive();
     const transcriptPolicy = runtimePlan.transcript.resolvePolicy(runtimePlanModelContext);
     const sessionManager = guardSessionManager(
@@ -170,56 +174,10 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
     if (recordUsage) {
       setSessionModelUsageSink(sessionManager, recordUsage);
     }
-    const settingsManager = createPreparedEmbeddedAgentSettingsManager({
-      cwd: effectiveCwd,
-      agentDir,
-      cfg: params.config,
-      pluginMetadataSnapshot: getCurrentPluginMetadataSnapshot({
-        config: params.config,
-        env: process.env,
-        workspaceDir: effectiveWorkspace,
-      }),
-      contextTokenBudget,
-    });
-    // Sets compaction/pruning runtime state and returns extension factories
-    // that must be passed to the resource loader for the safeguard to be active.
-    const extensionFactories = buildEmbeddedExtensionFactories({
-      cfg: params.config,
+    const { settingsManager, resourceLoader } = await prepareCompactionSessionSettings(
+      runtime,
       sessionManager,
-      provider,
-      modelId,
-      model: effectiveModel,
-      contextTokenBudget,
-      agentId: sessionAgentId,
-      sessionId: params.sessionId,
-      sessionKey: params.sessionKey ?? sandboxSessionKey,
-      runId,
-    });
-    const resourceLoader = createEmbeddedAgentResourceLoader({
-      cwd: effectiveCwd,
-      agentDir,
-      settingsManager,
-      extensionFactories,
-    });
-    await resourceLoader.reload();
-    // Reloading settings discards prepared compaction overrides and restores
-    // runtime auto-compaction, so reapply both guards after reload.
-    applyAgentCompactionSettingsFromConfig({
-      settingsManager,
-      cfg: params.config,
-      contextTokenBudget,
-    });
-    // contextEngineInfo is intentionally omitted: this guard runs inside the
-    // compaction LLM session, which is not the user-facing agent session and
-    // has no associated context engine.
-    applyAgentAutoCompactionGuard({
-      settingsManager,
-      silentOverflowProneProvider: isSilentOverflowProneModel({
-        provider,
-        modelId,
-        baseUrl: effectiveModel.baseUrl ?? undefined,
-      }),
-    });
+    );
 
     const { customTools } = splitSdkTools({
       tools: effectiveTools,
@@ -288,6 +246,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
         // Compaction builds the same embedded system prompt, so it must flow
         // through the same transport/payload shaping stack as normal turns.
         const { effectiveExtraParams, transportApiKey } = await prepareCompactionSessionAgent({
+          operatorAuthority: params.operatorAuthority,
           session,
           llmRuntime: getModelRegistryRuntime(modelRegistry).llmRuntime,
           providerStreamFn,
@@ -657,6 +616,9 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
           },
         };
       } catch (err) {
+        if (isOperatorModelPolicyError(err)) {
+          throw err;
+        }
         const failure = resolveCompactionFailure({
           error: err,
           safeguardCancellation: getCompactionSafeguardRuntime(sessionManager)?.cancellation,
@@ -700,6 +662,9 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
       }
     }
   } catch (err) {
+    if (isOperatorModelPolicyError(err)) {
+      throw err;
+    }
     const failure = resolveCompactionFailure({
       error: err,
       safeguardCancellation: consumeCompactionSafeguardCancellation(compactionSessionManager),

@@ -13,10 +13,14 @@ import {
   resolveCompactionSuccessorTranscript,
   type ContextEngineSessionTarget,
 } from "../../../context-engine/types.js";
-import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
+import {
+  resolveAdmittedRunActiveAssertion,
+  readAdmittedRunOperatorAuthority,
+} from "../../admitted-run-context.js";
 import { retireSessionMcpRuntime } from "../../agent-bundle-mcp-manager-api.js";
 import { listActiveProcessSessionReferences } from "../../bash-process-references.js";
 import { resolveProcessToolScopeKey } from "../../bash-process-scope.js";
+import { isOperatorModelPolicyError } from "../../operator-model-policy.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { buildEmbeddedCompactionRuntimeContext } from "../compaction-runtime-context.js";
 import {
@@ -122,6 +126,7 @@ export async function compactEmbeddedRunForRecovery(
   owner.assertActive();
   const runtimeContext = {
     ...buildEmbeddedCompactionRuntimeContext({
+      operatorAuthority: readAdmittedRunOperatorAuthority(runParams.admittedRunContext),
       sessionKey: runParams.sessionKey,
       sandboxSessionKey: runParams.sandboxSessionKey,
       sandboxAgentId: runParams.sandboxAgentId,
@@ -171,6 +176,7 @@ export async function compactEmbeddedRunForRecovery(
       }),
     }),
     ...resolveContextEngineCapabilities({
+      operatorAuthority: readAdmittedRunOperatorAuthority(runParams.admittedRunContext),
       config: runParams.config,
       sessionKey: runParams.sessionKey,
       explicitAgentId: input.contextEngineAgentId,
@@ -260,6 +266,9 @@ export async function compactEmbeddedRunForRecovery(
       runParams.abortSignal,
     );
   } catch (error) {
+    if (isOperatorModelPolicyError(error)) {
+      throw error;
+    }
     // Only a live owner's backend failure is recoverable. Caller cancellation,
     // replacement, and claim loss must never become a truncation/retry request.
     owner.assertActive();

@@ -1,3 +1,6 @@
+import type { ModelFallbackRuntimeContext } from "./model-fallback.types.js";
+import { isOperatorModelPolicyError } from "./operator-model-policy.js";
+export type { ModelFallbackRuntimeContext } from "./model-fallback.types.js";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { TRANSCRIPT_NOT_CONTINUABLE_ERROR_CODE } from "../../packages/agent-core/src/errors.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -80,18 +83,6 @@ export function resolveFallbackAuthScope(params: {
   // resolveAuthProfileOrder places the profile selected for this model first.
   return params.userLockedAuthProfileId || params.profileIds?.find((id) => id.trim())?.trim();
 }
-
-export type ModelFallbackRuntimeContext = {
-  cfg?: OpenClawConfig;
-  agentId?: string;
-  sessionKey?: string;
-  resolveAgentHarnessRuntimeOverride?: (provider: string, model: string) => string | undefined;
-  prepareAgentHarnessRuntime?: (params: {
-    provider: string;
-    model: string;
-    agentHarnessRuntimeOverride?: string;
-  }) => Promise<void> | void;
-};
 
 export type ModelFallbackRunFn<T> = (
   provider: string,
@@ -250,6 +241,9 @@ async function runFallbackCandidate<T>(
       : await run();
     return { ok: true, result };
   } catch (err) {
+    if (isOperatorModelPolicyError(err)) {
+      throw err;
+    }
     const harnessPreflight = isAgentHarnessPreflightError(err);
     const chainStopReason = resolveChainStopReason({
       err,
@@ -687,6 +681,7 @@ export function shouldDiscardDeferredSessionSuspension(params: {
   abortSignal?: AbortSignal;
 }): boolean {
   if (
+    isOperatorModelPolicyError(params.error) ||
     params.abortSignal?.aborted ||
     findAgentRunTerminalOutcome(params.error)?.status === "timeout" ||
     isAgentRunDirectAbortReason(params.error) ||

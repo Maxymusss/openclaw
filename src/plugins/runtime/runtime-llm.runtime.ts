@@ -2,14 +2,18 @@
 import { asFiniteNumber, asFiniteNumberInRange } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
 import { normalizeModelRef } from "../../agents/model-ref-shared.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelAuthorityCurrent,
+} from "../../agents/operator-model-policy.js";
 import type { UsageLike } from "../../agents/usage.js";
 import { hasRecordedUsageCost, normalizeUsage } from "../../agents/usage.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { emitTrustedDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { markHostPluginUsageDiagnosticEvent } from "../../infra/diagnostic-plugin-usage-provenance.js";
-import type { Api, Message } from "../../llm/types.js";
 import { getChildLogger } from "../../logging.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { AsyncWorkScope, captureAsyncWorkTracker } from "../../shared/async-work-scope.js";
@@ -29,6 +33,7 @@ import {
   isIsolatedAgentRuntimeRequest,
   runIsolatedAgentRuntimeCompletion,
 } from "./runtime-llm-isolated.js";
+import { buildMessages, buildSystemPrompt } from "./runtime-llm-messages.js";
 import { writeRuntimeLog } from "./runtime-logging.js";
 import type {
   LlmCompleteCaller,
@@ -40,6 +45,7 @@ import type {
 } from "./types-core.js";
 
 export type RuntimeLlmAuthority = {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   caller?: LlmCompleteCaller;
   /** Trusted host-derived plugin id used only for config policy lookup. */
   pluginIdForPolicy?: string;
@@ -152,48 +158,6 @@ async function resolveAgentId(params: {
   }
   const { resolveAmbientOwnerAgentId } = await import("../../agents/agent-scope.js");
   return resolveAmbientOwnerAgentId(params.cfg);
-}
-
-function buildSystemPrompt(params: LlmCompleteParams): string | undefined {
-  const segments = [
-    normalizeOptionalString(params.systemPrompt),
-    ...params.messages
-      .filter((message) => message.role === "system")
-      .map((message) => normalizeOptionalString(message.content)),
-  ].filter((segment): segment is string => Boolean(segment));
-  return segments.length > 0 ? segments.join("\n\n") : undefined;
-}
-
-function buildMessages(params: {
-  request: LlmCompleteParams;
-  provider: string;
-  model: string;
-  api: Api;
-}): Message[] {
-  const now = Date.now();
-  return params.request.messages
-    .filter((message) => message.role !== "system")
-    .map((message) =>
-      message.role === "user"
-        ? { role: "user" as const, content: message.content, timestamp: now }
-        : {
-            role: "assistant" as const,
-            content: [{ type: "text" as const, text: message.content }],
-            api: params.api,
-            provider: params.provider,
-            model: params.model,
-            usage: {
-              input: 0,
-              output: 0,
-              cacheRead: 0,
-              cacheWrite: 0,
-              totalTokens: 0,
-              cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-            },
-            stopReason: "stop" as const,
-            timestamp: now,
-          },
-    );
 }
 
 function readFiniteNonNegativeNumber(value: unknown): number | undefined {
@@ -459,6 +423,8 @@ export function createRuntimeLlm(
   const logger = options.logger ?? toRuntimeLogger(defaultLogger);
   return {
     complete: async (params: LlmCompleteParams): Promise<LlmCompleteResult> => {
+      const operatorAuthority = options.authority?.operatorAuthority;
+      assertOperatorModelAuthorityCurrent(operatorAuthority);
       const caller = resolveTrustedCaller(options.authority);
       if (options.authority?.allowComplete === false) {
         const reason = options.authority.denyReason ?? "capability denied";
@@ -517,6 +483,11 @@ export function createRuntimeLlm(
         throw completionError("LLM_COMPLETION_FAILED", `No model configured for agent ${agentId}.`);
       }
       const normalizedSelection = normalizeModelRef(selection.provider, selection.modelId);
+      assertOperatorModelAllowed(
+        operatorAuthority,
+        normalizedSelection.provider,
+        normalizedSelection.model,
+      );
       const resolvedModelRef = modelKey(normalizedSelection.provider, normalizedSelection.model);
       assertModelAllowed({ kind: "completion", resolvedModelRef, policy: authorityPolicy });
       assertModelAllowed({
@@ -555,6 +526,7 @@ export function createRuntimeLlm(
           pluginPolicy,
         });
         const result = await runIsolatedAgentRuntimeCompletion({
+          operatorAuthority,
           request: params,
           cfg,
           agentId,
@@ -589,6 +561,7 @@ export function createRuntimeLlm(
           cfg,
           agentId,
           modelRef: params.model,
+          operatorAuthority,
           preferredProfile,
           ...(requestedModelProfile ? { bindAuthOwner: true } : {}),
           allowBundledStaticCatalogFallback: true,
@@ -630,6 +603,7 @@ export function createRuntimeLlm(
               };
 
               const result = await completeWithPreparedSimpleCompletionModel({
+                operatorAuthority,
                 model: prepared.model,
                 auth: prepared.auth,
                 cfg,

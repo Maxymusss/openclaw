@@ -303,6 +303,7 @@ export async function prepareSessionWorkspace(params: {
     const title =
       pending && !pending.name
         ? await generateWorktreeSessionTitle({
+            operatorAuthority: admission.operatorAuthority,
             cfg,
             agentId,
             entry: saved,

@@ -14,6 +14,7 @@ import type { RuntimePluginToolGrant } from "../../plugins/runtime/tool-grant.js
 import type { CommandQueueEnqueueFn } from "../../process/command-queue.types.js";
 import type { InputProvenance } from "../../sessions/input-provenance.js";
 import type { SkillSnapshot } from "../../skills/types.js";
+import type { AdmittedRunOperatorAuthority } from "../admitted-run-context.js";
 import type { ExecElevatedDefaults, ExecToolDefaults } from "../bash-tools.exec-types.js";
 import type { AgentRunSessionTarget } from "../run-session-target.types.js";
 import type { AgentRuntimeAuthPlan, AgentRuntimePlan } from "../runtime-plan/types.js";
@@ -24,6 +25,7 @@ export type CompactEmbeddedAgentSessionParams = Pick<
   import("./run/params.js").RunEmbeddedAgentParams,
   "requireWorkspaceOnly" | "requireWritableSandbox"
 > & {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   /** Explicit session owner captured before fallback agent resolution. */
   contextEngineAgentId?: string;
   sessionId: string;

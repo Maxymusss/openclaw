@@ -17,11 +17,13 @@ import {
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { runWithGatewayIndependentRootWorkAdmission } from "../../process/gateway-work-admission.js";
 import { beginSessionWorkAdmission } from "../../sessions/session-lifecycle-admission.js";
+import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { createCommandBudget } from "../command/maintenance-budget.js";
 import {
   loadAgentRunnerMemoryRuntime,
   loadSessionStoreRuntime,
 } from "../command/runtime-loaders.js";
+import { assertOperatorModelAuthorityCurrent } from "../operator-model-policy.js";
 import type { CompactionRequestBudget } from "../sessions/compaction/request-budget.js";
 import { createSessionMaintenanceOwner } from "./coordinator.js";
 
@@ -44,8 +46,9 @@ export type SessionMaintenanceRequest = {
   compactionRequestBudget?: CompactionRequestBudget;
 };
 
-/** Copy data only: turn callbacks, tool grants, delivery context and writer custody stay behind. */
+/** Keep the original source ceiling; tool grants, callbacks and writer custody stay behind. */
 export function createSessionMaintenanceFollowup(params: {
+  operatorAuthority?: FollowupRun["operatorAuthority"];
   run: Pick<
     FollowupRun["run"],
     | "agentId"
@@ -77,6 +80,7 @@ export function createSessionMaintenanceFollowup(params: {
 }): FollowupRun {
   const { run, sessionEntry } = params;
   return {
+    operatorAuthority: params.operatorAuthority,
     prompt: "",
     enqueuedAt: Date.now(),
     run: {
@@ -147,127 +151,134 @@ export function scheduleSessionMaintenance(
     abortSignal: AbortSignal.any([interrupted.signal, budget.signal]),
   });
   const assertCurrent = () => {
+    assertOperatorModelAuthorityCurrent(followupRun.operatorAuthority);
     owner.assertCurrent();
     assertAgentRunLifecycleGenerationCurrent(request.lifecycleGeneration);
     if (resolveGatewayContext && !resolveGatewayContext()) {
       throw createAbortError("Optional maintenance Gateway instance retired");
     }
   };
-  const run = withPluginRuntimeGatewayRequestScope(
-    {
-      pluginRegistry,
-      resolveGatewayContext,
-      isWebchatConnect: () => false,
-    },
-    async () => {
-      if (
-        afterOwnerSettles &&
-        !(await racePromiseWithAbortSignal(afterOwnerSettles, owner.signal))
-      ) {
-        log.debug(
-          "Optional session maintenance skipped: foreground owner did not complete successfully.",
-        );
-        return;
-      }
-      return owner.run(() =>
-        runWithGatewayIndependentRootWorkAdmission(
-          async () => {
-            assertCurrent();
-            const { loadSessionEntryReadOnly } = await loadSessionStoreRuntime();
-            let entry: SessionEntry | undefined;
-            const admission = await beginSessionWorkAdmission({
-              scope: prepared.storePath,
-              identities: [sessionKey, request.sessionId],
-              signal: owner.signal,
-              onInterrupt: () =>
-                interrupted.abort(
-                  createAbortError("Session maintenance writer admission interrupted"),
-                ),
-              assertAllowed: () => {
-                assertCurrent();
-                entry = loadSessionEntryReadOnly({
-                  storePath: prepared.storePath,
-                  sessionKey,
-                  readConsistency: "latest",
-                });
-                if (
-                  !entry ||
-                  entry.sessionId !== request.sessionId ||
-                  entry.lifecycleRevision !== request.lifecycleRevision
-                ) {
-                  throw createAbortError("Session changed before optional maintenance admission");
-                }
-                if (entry.pendingFinalDelivery) {
-                  throw createAbortError(
-                    "Optional maintenance skipped while final delivery is pending",
-                  );
-                }
-              },
-            });
-            try {
-              await admission.run(async () => {
-                assertCurrent();
-                if (!entry) {
-                  throw createAbortError("Session maintenance has no admitted session");
-                }
-                const sessionStore = { [sessionKey]: entry };
-                const memory = await loadAgentRunnerMemoryRuntime();
-                assertCurrent();
-                followupRun.run.timeoutMs = budget.remainingMs();
-                assertCurrent();
-                const flushed = await memory.runMemoryFlushIfNeeded({
-                  cfg: prepared.cfg,
-                  followupRun,
-                  promptForEstimate: "",
-                  defaultModel: followupRun.run.model,
-                  resolvedVerboseLevel: followupRun.run.verboseLevel ?? "off",
-                  sessionEntry: entry,
-                  sessionStore,
-                  sessionKey,
-                  runtimePolicySessionKey: prepared.runtimePolicySessionKey ?? sessionKey,
-                  storePath: prepared.storePath,
-                  isHeartbeat: false,
-                  abortSignal: owner.signal,
-                });
-                // Flush reports aborted attempts as failed outcomes; cancellation still forbids compaction.
-                assertCurrent();
-                entry = flushed.sessionEntry ?? entry;
-                followupRun.run.sessionId = entry.sessionId;
-                followupRun.run.timeoutMs = budget.remainingMs();
-                assertCurrent();
-                await memory.runSessionCompactionIfNeeded({
-                  cfg: prepared.cfg,
-                  followupRun,
-                  promptForEstimate: "",
-                  // The completed user is canonical history; do not reserve its input twice.
-                  compactionRequestBudget: request.compactionRequestBudget
-                    ? { ...request.compactionRequestBudget, pendingTokens: 0 }
-                    : undefined,
-                  sessionEntry: entry,
-                  sessionStore,
-                  sessionKey,
-                  runtimePolicySessionKey: prepared.runtimePolicySessionKey ?? sessionKey,
-                  storePath: prepared.storePath,
-                  defaultModel: followupRun.run.model,
-                  isHeartbeat: false,
-                  agentHarnessId: request.agentHarnessId,
-                  abortSignal: owner.signal,
-                  authorize: () => {
-                    assertCurrent();
-                    return true;
-                  },
-                });
+  const work = new AsyncWorkScope();
+  let releaseSource: (() => void) | undefined;
+  const run = work.run(async () => {
+    assertOperatorModelAuthorityCurrent(followupRun.operatorAuthority);
+    releaseSource = followupRun.operatorAuthority?.retain?.();
+    return withPluginRuntimeGatewayRequestScope(
+      {
+        pluginRegistry,
+        resolveGatewayContext,
+        isWebchatConnect: () => false,
+      },
+      async () => {
+        if (
+          afterOwnerSettles &&
+          !(await racePromiseWithAbortSignal(afterOwnerSettles, owner.signal))
+        ) {
+          log.debug(
+            "Optional session maintenance skipped: foreground owner did not complete successfully.",
+          );
+          return;
+        }
+        return owner.run(() =>
+          runWithGatewayIndependentRootWorkAdmission(
+            async () => {
+              assertCurrent();
+              const { loadSessionEntryReadOnly } = await loadSessionStoreRuntime();
+              let entry: SessionEntry | undefined;
+              const admission = await beginSessionWorkAdmission({
+                scope: prepared.storePath,
+                identities: [sessionKey, request.sessionId],
+                signal: owner.signal,
+                onInterrupt: () =>
+                  interrupted.abort(
+                    createAbortError("Session maintenance writer admission interrupted"),
+                  ),
+                assertAllowed: () => {
+                  assertCurrent();
+                  entry = loadSessionEntryReadOnly({
+                    storePath: prepared.storePath,
+                    sessionKey,
+                    readConsistency: "latest",
+                  });
+                  if (
+                    !entry ||
+                    entry.sessionId !== request.sessionId ||
+                    entry.lifecycleRevision !== request.lifecycleRevision
+                  ) {
+                    throw createAbortError("Session changed before optional maintenance admission");
+                  }
+                  if (entry.pendingFinalDelivery) {
+                    throw createAbortError(
+                      "Optional maintenance skipped while final delivery is pending",
+                    );
+                  }
+                },
               });
-            } finally {
-              admission.release();
-            }
-          },
-          "session-maintenance",
-          owner.signal,
-        ),
-      );
-    },
-  );
+              try {
+                await admission.run(async () => {
+                  assertCurrent();
+                  if (!entry) {
+                    throw createAbortError("Session maintenance has no admitted session");
+                  }
+                  const sessionStore = { [sessionKey]: entry };
+                  const memory = await loadAgentRunnerMemoryRuntime();
+                  assertCurrent();
+                  followupRun.run.timeoutMs = budget.remainingMs();
+                  assertCurrent();
+                  const flushed = await memory.runMemoryFlushIfNeeded({
+                    cfg: prepared.cfg,
+                    followupRun,
+                    promptForEstimate: "",
+                    defaultModel: followupRun.run.model,
+                    resolvedVerboseLevel: followupRun.run.verboseLevel ?? "off",
+                    sessionEntry: entry,
+                    sessionStore,
+                    sessionKey,
+                    runtimePolicySessionKey: prepared.runtimePolicySessionKey ?? sessionKey,
+                    storePath: prepared.storePath,
+                    isHeartbeat: false,
+                    abortSignal: owner.signal,
+                  });
+                  // Flush reports aborted attempts as failed outcomes; cancellation still forbids compaction.
+                  assertCurrent();
+                  entry = flushed.sessionEntry ?? entry;
+                  followupRun.run.sessionId = entry.sessionId;
+                  followupRun.run.timeoutMs = budget.remainingMs();
+                  assertCurrent();
+                  await memory.runSessionCompactionIfNeeded({
+                    cfg: prepared.cfg,
+                    followupRun,
+                    promptForEstimate: "",
+                    // The completed user is canonical history; do not reserve its input twice.
+                    compactionRequestBudget: request.compactionRequestBudget
+                      ? { ...request.compactionRequestBudget, pendingTokens: 0 }
+                      : undefined,
+                    sessionEntry: entry,
+                    sessionStore,
+                    sessionKey,
+                    runtimePolicySessionKey: prepared.runtimePolicySessionKey ?? sessionKey,
+                    storePath: prepared.storePath,
+                    defaultModel: followupRun.run.model,
+                    isHeartbeat: false,
+                    agentHarnessId: request.agentHarnessId,
+                    abortSignal: owner.signal,
+                    authorize: () => {
+                      assertCurrent();
+                      return true;
+                    },
+                  });
+                });
+              } finally {
+                admission.release();
+              }
+            },
+            "session-maintenance",
+            owner.signal,
+          ),
+        );
+      },
+    );
+  });
   void owner
     .track(run)
     .catch((error: unknown) => {
@@ -277,5 +288,16 @@ export function scheduleSessionMaintenance(
         log.warn(`Optional session maintenance failed: ${formatErrorMessage(error)}`);
       }
     })
-    .finally(() => budget.dispose());
+    .finally(async () => {
+      try {
+        // A timeout can settle the logical result while the provider still owns work.
+        await AsyncWorkScope.runWhenAllIdle(
+          () => [work],
+          () => work.drain(),
+        );
+      } finally {
+        releaseSource?.();
+        budget.dispose();
+      }
+    });
 }

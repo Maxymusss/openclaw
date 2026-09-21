@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { validateSessionsDescribeParams } from "../../../packages/gateway-protocol/src/index.js";
+import { captureOperatorModelCatalogAccess } from "../operator-model-catalog.js";
 import { hasOperatorBoundary } from "../operator-role-policy.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { prepareProjectedSessionPresentation } from "../session-row-presentation.js";
@@ -14,7 +15,8 @@ import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
-  "sessions.describe": async ({ params, respond, context, client }) => {
+  "sessions.describe": async (options) => {
+    const { params, respond, context, client } = options;
     if (!assertValidParams(params, validateSessionsDescribeParams, "sessions.describe", respond)) {
       return;
     }
@@ -26,52 +28,64 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
     if (!projection) {
       throw new Error("Session projection is unavailable before Gateway startup completes");
     }
-    while (true) {
-      const prepared = await projection.withPreparedExactRows(
-        (cfg) => {
-          const agent = resolveRequestedSessionAgentId(cfg, key, params.agentId);
-          const denied = authorizeIncognitoSessionTarget({
-            client: client ?? null,
-            sessionKey: key,
-            target: null,
-          });
-          return agent.ok && !denied ? [{ key, agentId: agent.agentId }] : [];
-        },
-        (read) => {
-          const requestedAgent = resolveRequestedSessionAgentId(
-            read.state.cfg,
-            key,
-            params.agentId,
-          );
-          if (!requestedAgent.ok) {
-            respond(false, undefined, requestedAgent.error);
-            return;
-          }
-          const query = { key, agentId: requestedAgent.agentId };
-          const presentation = prepareProjectedSessionPresentation(read, client);
-          const denied = presentation.authorizeDescription(query);
-          if (denied) {
-            respond(false, undefined, denied);
-            return;
-          }
-          const record = read.describe(query);
-          if (
-            !record ||
-            (presentation.sharing.sessionCap !== undefined &&
-              presentation.sharing.entryFilter?.(record.key, record.entry) === false)
-          ) {
-            respond(true, { session: null });
-            return;
-          }
-          respond(true, { session: presentation.present(record, params) });
-        },
-      );
-      if (prepared.kind === "complete") {
-        return;
+    const access = captureOperatorModelCatalogAccess(options);
+    try {
+      while (true) {
+        const prepared = await projection.withPreparedExactRows(
+          (cfg) => {
+            const agent = resolveRequestedSessionAgentId(cfg, key, params.agentId);
+            const denied = authorizeIncognitoSessionTarget({
+              client: client ?? null,
+              sessionKey: key,
+              target: null,
+            });
+            return agent.ok && !denied ? [{ key, agentId: agent.agentId }] : [];
+          },
+          (read) => {
+            access.assertCurrent();
+            const requestedAgent = resolveRequestedSessionAgentId(
+              read.state.cfg,
+              key,
+              params.agentId,
+            );
+            if (!requestedAgent.ok) {
+              respond(false, undefined, requestedAgent.error);
+              return;
+            }
+            const query = { key, agentId: requestedAgent.agentId };
+            const presentation = prepareProjectedSessionPresentation(
+              read,
+              client,
+              undefined,
+              undefined,
+              access.permissions,
+            );
+            const denied = presentation.authorizeDescription(query);
+            if (denied) {
+              respond(false, undefined, denied);
+              return;
+            }
+            const record = read.describe(query);
+            if (
+              !record ||
+              (presentation.sharing.sessionCap !== undefined &&
+                presentation.sharing.entryFilter?.(record.key, record.entry) === false)
+            ) {
+              respond(true, { session: null });
+              return;
+            }
+            respond(true, { session: presentation.present(record, params) });
+          },
+        );
+        if (prepared.kind === "complete") {
+          return;
+        }
+        const { certifySessionCanonicalValidationPending } =
+          await import("../../config/sessions/session-canonical-validation-readiness.js");
+        await certifySessionCanonicalValidationPending(prepared.database);
       }
-      const { certifySessionCanonicalValidationPending } =
-        await import("../../config/sessions/session-canonical-validation-readiness.js");
-      await certifySessionCanonicalValidationPending(prepared.database);
+    } finally {
+      access.release();
     }
   },
   "sessions.get": async ({ params, respond, context, client }) => {

@@ -26,6 +26,7 @@ import {
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
+import { captureOperatorModelCatalogAccess } from "../operator-model-catalog.js";
 import { hasOperatorBoundary } from "../operator-role-policy.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import type { SessionRowReadView } from "../session-row-prepared-read.js";
@@ -257,14 +258,23 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
     if (!projection) {
       throw new Error("Session projection is unavailable before Gateway startup completes");
     }
-    await listProjectedSessions({
-      projection,
-      opts: params as SessionsListParams,
-      context,
-      client,
-      diagnostics,
-      onResult: (result) => respond(true, result),
-    });
+    const access = captureOperatorModelCatalogAccess(args);
+    try {
+      await listProjectedSessions({
+        projection,
+        opts: params as SessionsListParams,
+        context,
+        client,
+        diagnostics,
+        readModelPermissions: access.permissions,
+        onResult: (result) => {
+          access.assertCurrent();
+          respond(true, result);
+        },
+      });
+    } finally {
+      access.release();
+    }
   }),
   "sessions.preview": async ({ params, respond, context, client }) => {
     if (!assertValidParams(params, validateSessionsPreviewParams, "sessions.preview", respond)) {

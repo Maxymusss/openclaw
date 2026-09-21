@@ -4,11 +4,17 @@ import {
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
+import { assertAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import type { SessionCreatedActor } from "../config/sessions/session-entry-provenance.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { notifyListeners, registerListener } from "../shared/listeners.js";
+import {
+  freezeOperatorPermissionCeiling,
+  intersectOperatorPermissionCeilings,
+  type OperatorPermissionCeiling,
+} from "../shared/operator-permissions.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { getUserProfileRole } from "../state/user-profiles.js";
 import { bumpGatewayAccessRevision } from "./gateway-access-revision.js";
@@ -31,6 +37,7 @@ const deniedOperatorRole: GatewayOperatorRoleDefinition = {
   sessions: { others: "none" },
   agents: [],
   scopes: [],
+  models: { allow: [] },
 };
 
 type GatewaySessionAgentAuthorization = {
@@ -201,6 +208,41 @@ export function authorizeCurrentOperatorRoleScopes(
 
 export function operatorSessionCap(client: GatewayClient | null, cfg: OpenClawConfig) {
   return resolveOperatorRolePolicy(client, cfg)?.sessions.others;
+}
+
+export function operatorRolePermissionCeiling(
+  role: GatewayOperatorRoleDefinition | undefined,
+): OperatorPermissionCeiling | undefined {
+  return role?.models ? freezeOperatorPermissionCeiling({ models: role.models }) : undefined;
+}
+
+/** Published catalog and request checks share the original retained source's ceiling. */
+export function resolveOperatorPermissionCeiling(
+  client: GatewayClient | null,
+  cfg: OpenClawConfig,
+): OperatorPermissionCeiling | undefined {
+  if (!client) {
+    return undefined;
+  }
+  const inherited = client?.internal?.operatorRunAuthority;
+  if (inherited !== undefined) {
+    assertAdmittedRunOperatorAuthority(inherited);
+    inherited.assertCurrent();
+    const actor = resolveGatewayOperatorRoleActor(client);
+    if (actor?.kind !== "operator" || actor.profileId !== inherited.profileId) {
+      throw new Error("operator source identity changed; start a new request");
+    }
+  }
+  const role =
+    !inherited &&
+    !client.internal?.operatorRoleActor &&
+    client.authenticatedUserProfile?.profileId === GATEWAY_OWNER_PROFILE_ID
+      ? undefined
+      : resolveOperatorRolePolicy(client, cfg);
+  return intersectOperatorPermissionCeilings(
+    inherited?.permissions,
+    operatorRolePermissionCeiling(role),
+  );
 }
 
 export function hasOperatorBoundary(client: GatewayClient | null, cfg: OpenClawConfig): boolean {

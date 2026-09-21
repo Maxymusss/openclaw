@@ -135,6 +135,31 @@ describe("VisitorAccessService", () => {
   });
 
   it.each([
+    { name: "omitted models", models: undefined },
+    { name: "finite models", models: { allow: ["fixture/approved"] } },
+    { name: "empty models", models: { allow: [] } },
+  ])("accepts $name without changing invitation authority", async ({ models }) => {
+    for (const agents of [guestRole.agents, "*" as const]) {
+      const role = { ...guestRole, agents, ...(models ? { models } : {}) };
+      const fixture = visitorFixture({
+        gatewayConfig: {
+          gateway: { roles: { default: "guest", definitions: { guest: role } } },
+        },
+      });
+      const result = await fixture.service.invite(
+        { email: "visitor@example.com" },
+        fixture.authority,
+      );
+      expect(result).toContain("restricted guest");
+      expect(fixture.emails()).toEqual(["visitor@example.com"]);
+      expect(fixture.grants.get("visitor@example.com")).toMatchObject({
+        email: "visitor@example.com",
+        expiresAt: NOW + 14 * DAY_MS,
+      });
+    }
+  });
+
+  it.each([
     {
       name: "the explicitly assigned default role",
       assignedRole: "guest",

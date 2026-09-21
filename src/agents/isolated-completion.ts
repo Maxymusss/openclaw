@@ -5,20 +5,12 @@
  * transcript, hook, and delivery lifecycle. Execution owners either prove a
  * literal empty native tool surface or fail before inference starts.
  */
-import { randomUUID } from "node:crypto";
-import path from "node:path";
-import type { ThinkLevel } from "../auto-reply/thinking.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { withTempWorkspace } from "../infra/private-temp-workspace.js";
-import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import type { Model } from "../llm/types.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
-import { prepareSystemAgentRunAdmission } from "./admitted-run-context.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir, resolveDefaultAgentId } from "./agent-scope.js";
 import { reconcileAuthProfileQuotaBlocks } from "./auth-profiles/usage.js";
-import { resolveCliBackendConfig, resolveCliRuntimeCanonicalProvider } from "./cli-backends.js";
-import { normalizeCliModel } from "./cli-runner/helpers.js";
+import { resolveCliRuntimeCanonicalProvider } from "./cli-backends.js";
 import { resolveEmbeddedCliBackendDispatchEligibility } from "./embedded-agent-runner/cli-backend-dispatch-eligibility.js";
 import { resolveModelAsync } from "./embedded-agent-runner/model.js";
 import { ensureSelectedAgentHarnessPlugin } from "./harness/runtime-plugin.js";
@@ -26,19 +18,31 @@ import { resolveAgentHarnessSelectionDecision } from "./harness/selection-decisi
 import type {
   AgentHarness,
   AgentHarnessIsolatedCompletionAuthorization,
-  AgentHarnessIsolatedCompletionParamsV2,
   AgentHarnessIsolatedCompletionResult,
 } from "./harness/types.js";
+import { runCliIsolatedCompletion } from "./isolated-completion-cli.js";
 import {
   IsolatedCompletionError,
   isRetryableIsolatedQuotaFailure,
   requireIsolatedAssistantText,
 } from "./isolated-completion-output.js";
+import type {
+  RunIsolatedCompletionParams,
+  IsolatedCompletionResult,
+} from "./isolated-completion.types.js";
+export type { IsolatedCompletionResult } from "./isolated-completion.types.js";
 import { ensureAuthProfileStore } from "./model-auth.js";
 import {
   isCliRuntimeAliasForProvider,
   resolveCliRuntimeExecutionProvider,
 } from "./model-runtime-aliases.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelAuthorityCurrent,
+  assertOperatorModelHarnessSupported,
+  isOperatorModelPolicyError,
+  runWithOperatorModelRequest,
+} from "./operator-model-policy.js";
 import { acquireAgentRunPreparedModelRuntime } from "./prepared-model-runtime.js";
 import {
   unwrapModelHeaderSentinelsForProviderEgress,
@@ -53,38 +57,6 @@ import {
 } from "./runtime-plan/prepare-auth.js";
 import { scopeAuthProfileStoreToPreparedPlan } from "./runtime-plan/resolve-auth.js";
 import { prepareSimpleCompletionModel } from "./simple-completion-runtime.js";
-import type { UsageLike } from "./usage.js";
-
-type RunIsolatedCompletionParams = {
-  config?: OpenClawConfig;
-  provider: string;
-  model: string;
-  /** Explicit credential owner. CLI and harness paths must not replace it with another profile. */
-  authProfileId?: string;
-  agentId?: string;
-  agentDir?: string;
-  workspaceDir?: string;
-  /** Concrete owner already resolved by the caller, when available. */
-  agentHarnessRuntimeOverride?: string;
-  systemPrompt: string;
-  prompt: string;
-  timeoutMs: number;
-  abortSignal?: AbortSignal;
-  /** Revalidate the caller's authority before credential handoff and dispatch. */
-  assertCurrent?: () => void;
-  thinkLevel?: ThinkLevel;
-  outputTextPolicy?: AgentHarnessIsolatedCompletionParamsV2["outputTextPolicy"];
-  streamParams?: AgentHarnessIsolatedCompletionParamsV2["streamParams"];
-};
-
-export type IsolatedCompletionResult = {
-  text: string;
-  provider: string;
-  model: string;
-  owner: { kind: "cli" | "harness"; id: string };
-  /** CLI runtimes may not report token usage; absence must not be projected as zero. */
-  usage?: UsageLike;
-};
 
 type AgentHarnessIsolatedCompletionParams = Parameters<
   NonNullable<AgentHarness["runIsolatedCompletion"]>
@@ -111,133 +83,6 @@ function selectIsolatedHarnessAuthPlan(attempt: PreparedAgentRuntimeAuthAttempt)
     // snapshot per call so it cannot inspect or reorder fallback profiles.
     forwardedAuthProfileCandidateIds: [attempt.profileId],
   };
-}
-
-function hasCliSideEffectEvidence(result: {
-  didSendViaMessagingTool?: boolean;
-  didDeliverSourceReplyViaMessageTool?: boolean;
-  messagingToolSentTexts?: unknown[];
-  messagingToolSentMediaUrls?: unknown[];
-  messagingToolSentTargets?: unknown[];
-  messagingToolSourceReplyPayloads?: unknown[];
-  acceptedSessionSpawns?: unknown[];
-  successfulCronAdds?: number;
-}): boolean {
-  return Boolean(
-    result.didSendViaMessagingTool ||
-    result.didDeliverSourceReplyViaMessageTool ||
-    result.messagingToolSentTexts?.length ||
-    result.messagingToolSentMediaUrls?.length ||
-    result.messagingToolSentTargets?.length ||
-    result.messagingToolSourceReplyPayloads?.length ||
-    result.acceptedSessionSpawns?.length ||
-    result.successfulCronAdds,
-  );
-}
-
-async function runCliIsolatedCompletion(params: {
-  request: RunIsolatedCompletionParams & { config: OpenClawConfig };
-  provider: string;
-  modelProvider: string;
-  agentId: string;
-  agentDir: string;
-  workspaceDir: string;
-}): Promise<{ model: string; text: string; usage?: UsageLike }> {
-  return await withTempWorkspace(
-    { rootDir: resolvePreferredOpenClawTmpDir(), prefix: "openclaw-isolated-completion-" },
-    async ({ dir }) => {
-      const { runCliAgent } = await import("./cli-runner.runtime.js");
-      params.request.assertCurrent?.();
-      const sessionId = `isolated-completion-${randomUUID()}`;
-      const config = params.request.config;
-      const preparedRunAdmission = prepareSystemAgentRunAdmission(
-        config,
-        sessionId,
-        params.agentId,
-        "isolated-completion",
-      );
-      try {
-        params.request.assertCurrent?.();
-        const result = await runCliAgent({
-          preparedRunAdmission,
-          sessionId,
-          sessionFile: path.join(dir, "session.json"),
-          workspaceDir: params.workspaceDir,
-          cwd: dir,
-          agentDir: params.agentDir,
-          agentId: params.agentId,
-          config,
-          prompt: params.request.prompt,
-          extraSystemPrompt: params.request.systemPrompt,
-          timeoutMs: params.request.timeoutMs,
-          runId: sessionId,
-          provider: params.provider,
-          modelProvider: params.modelProvider,
-          model: params.request.model,
-          // The CLI runner treats a supplied profile as exact; it auto-selects only
-          // when this field is absent. This path has no embedded-run fallback loop.
-          authProfileId: params.request.authProfileId,
-          thinkLevel: params.request.thinkLevel,
-          streamParams: params.request.streamParams,
-          abortSignal: params.request.abortSignal,
-          assertCurrent: params.request.assertCurrent,
-          executionMode: "side-question",
-          cliToolAvailability: { native: [], openClaw: [] },
-          disableTools: true,
-          disableCliLiveSession: true,
-          cleanupCliLiveSessionOnRunEnd: true,
-          cleanupBundleMcpOnRunEnd: true,
-          requireExplicitMessageTarget: true,
-          isolatedCompletion: true,
-          outputTextPolicy: params.request.outputTextPolicy,
-        });
-        if (hasCliSideEffectEvidence(result)) {
-          throw new IsolatedCompletionError(
-            "output-rejected",
-            "Isolated CLI completion returned side-effect evidence; result rejected.",
-          );
-        }
-        const payloads = result.payloads ?? [];
-        if (
-          payloads.some(
-            (payload) =>
-              payload.isError ||
-              payload.mediaUrl ||
-              payload.mediaUrls?.length ||
-              payload.audioAsVoice ||
-              payload.channelData,
-          )
-        ) {
-          throw new IsolatedCompletionError(
-            "output-rejected",
-            "Isolated CLI completion returned non-text output; result rejected.",
-          );
-        }
-        const text = payloads
-          .filter((payload) => !payload.isReasoning && typeof payload.text === "string")
-          .map((payload) => payload.text ?? "")
-          .join("\n")
-          .trim();
-        const backend = resolveCliBackendConfig(params.provider, params.request.config, {
-          agentId: params.agentId,
-        });
-        if (!backend) {
-          throw new IsolatedCompletionError(
-            "runtime-unavailable",
-            `CLI backend ${params.provider} became unavailable after execution.`,
-          );
-        }
-        const usage = result.meta?.agentMeta?.usage;
-        return {
-          text,
-          model: normalizeCliModel(params.request.model, backend.config),
-          ...(usage ? { usage } : {}),
-        };
-      } finally {
-        preparedRunAdmission.close();
-      }
-    },
-  );
 }
 
 function resolveCliOwner(params: {
@@ -309,8 +154,28 @@ function prepareIsolatedHostAuthorization<
 export async function runIsolatedCompletion(
   params: RunIsolatedCompletionParams,
 ): Promise<IsolatedCompletionResult> {
-  return await runWithAsyncWorkResources((onAcquired, captureWorkContext) =>
-    runIsolatedCompletionOwned(params, onAcquired, captureWorkContext),
+  return await runWithOperatorModelRequest(params.operatorAuthority, (operatorAuthority) =>
+    runWithAsyncWorkResources((onAcquired, captureWorkContext) => {
+      assertOperatorModelAuthorityCurrent(operatorAuthority);
+      const release = operatorAuthority?.retain?.();
+      if (release) {
+        onAcquired({ release: async () => release() });
+      }
+      return runIsolatedCompletionOwned(
+        { ...params, operatorAuthority },
+        (resources) =>
+          onAcquired({
+            release: async () => {
+              try {
+                await resources.release();
+              } finally {
+                release?.();
+              }
+            },
+          }),
+        captureWorkContext,
+      );
+    }),
   );
 }
 
@@ -330,6 +195,7 @@ async function runIsolatedCompletionOwned(
       throw new IsolatedCompletionError("runtime-unavailable", "Isolated completion has ended.");
     }
     input.assertCurrent?.();
+    assertOperatorModelAuthorityCurrent(input.operatorAuthority);
     input.abortSignal?.throwIfAborted();
   };
   assertCurrent();
@@ -344,6 +210,7 @@ async function runIsolatedCompletionOwned(
     includeSetupRegistry: true,
   });
   const provider = canonicalProvider ?? input.provider;
+  assertOperatorModelAllowed(input.operatorAuthority, provider, input.model);
   // Canonicalizing a CLI model ref must not discard its explicit execution owner.
   const runtimeOverride =
     input.agentHarnessRuntimeOverride ?? (canonicalProvider ? input.provider : undefined);
@@ -404,6 +271,7 @@ async function runIsolatedCompletionOwned(
         ...context,
       });
       if (cliOwner) {
+        assertOperatorModelHarnessSupported(input.operatorAuthority, {});
         const completion = await runCliIsolatedCompletion({
           request,
           provider: cliOwner,
@@ -421,9 +289,12 @@ async function runIsolatedCompletionOwned(
 
       // Retain the validated plugin instance; load the built-in runner only when selected.
       const harness = selection.builtIn
-        ? (await import("./harness/builtin-openclaw.js")).createOpenClawAgentHarness()
+        ? (await import("./harness/builtin-openclaw.js")).createOpenClawAgentHarness(
+            input.operatorAuthority,
+          )
         : selection.harness;
       assertCurrent();
+      assertOperatorModelHarnessSupported(input.operatorAuthority, harness);
       if (!harness.runIsolatedCompletionV2 && !harness.runIsolatedCompletion) {
         throw new IsolatedCompletionError(
           "unsupported",
@@ -448,6 +319,7 @@ async function runIsolatedCompletionOwned(
         const prepared = await prepareSimpleCompletionModel(
           {
             cfg: config,
+            operatorAuthority: input.operatorAuthority,
             agentId,
             provider,
             modelId: request.model,
@@ -467,6 +339,11 @@ async function runIsolatedCompletionOwned(
         if ("error" in prepared) {
           throw new Error(`Isolated completion preparation failed: ${prepared.error}`);
         }
+        assertOperatorModelAllowed(
+          input.operatorAuthority,
+          prepared.model.provider,
+          prepared.model.id,
+        );
         return { owner: "host", ...prepared };
       };
       let result: AgentHarnessIsolatedCompletionResult | undefined;
@@ -498,6 +375,11 @@ async function runIsolatedCompletionOwned(
               resolution.error ?? `Unknown isolated completion model ${provider}/${request.model}.`,
             );
           }
+          assertOperatorModelAllowed(
+            input.operatorAuthority,
+            runtimeModel.provider,
+            runtimeModel.id,
+          );
           assertCurrent();
           const authProfileStore = ensureAuthProfileStore(agentDir, {
             profileId: request.authProfileId,
@@ -600,6 +482,9 @@ async function runIsolatedCompletionOwned(
                   }),
               });
               assertCurrent();
+              if (model) {
+                assertOperatorModelAllowed(input.operatorAuthority, model.provider, model.id);
+              }
               modelMaxTokens = model?.maxTokens;
               authorization = {
                 owner: "harness",
@@ -645,6 +530,9 @@ async function runIsolatedCompletionOwned(
             result = candidate;
             break;
           } catch (error) {
+            if (isOperatorModelPolicyError(error)) {
+              throw error;
+            }
             // A retired caller cannot authorize another credential attempt.
             assertCurrent();
             firstError ??= error;

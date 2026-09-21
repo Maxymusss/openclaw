@@ -34,6 +34,13 @@ import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { isFallbackSummaryError } from "../model-fallback-attempt.js";
 import { resolveModelCandidateChain } from "../model-fallback-candidates.js";
 import { runWithModelFallback } from "../model-fallback-runner.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelHarnessSupported,
+  isOperatorModelPolicyError,
+  restrictOperatorModelCandidates,
+  runWithOperatorModelAuthority,
+} from "../operator-model-policy.js";
 import { acquireAgentRunPreparedModelRuntime } from "../prepared-model-runtime.js";
 import { resolveProjectKey } from "../project-memory-scope.js";
 import { resolveProviderIdForAuth } from "../provider-auth-aliases.js";
@@ -98,6 +105,7 @@ export async function compactNativeCliSession(params: {
   if (!backend?.ownsNativeCompaction) {
     return undefined;
   }
+  assertOperatorModelHarnessSupported(params.compactParams.operatorAuthority, {});
   const manualCompaction = backend.manualCompaction;
   if (!manualCompaction) {
     return {
@@ -127,6 +135,8 @@ export async function compactNativeCliSession(params: {
     runId,
     sessionAgentId,
     "agents.native-compaction",
+    undefined,
+    params.compactParams.operatorAuthority,
   );
   try {
     const runControlOperation = async () => {
@@ -174,6 +184,9 @@ export async function compactNativeCliSession(params: {
       await runControlOperation();
     }
   } catch (err) {
+    if (isOperatorModelPolicyError(err)) {
+      throw err;
+    }
     const signal = params.compactParams.abortSignal;
     if (signal?.aborted && (isAbortError(err) || err === signal.reason)) {
       throw err;
@@ -254,6 +267,14 @@ function fallbackFailureToCompactionResult(err: unknown): EmbeddedAgentCompactRe
 export async function compactEmbeddedAgentSessionDirect(
   paramsInput: CompactEmbeddedAgentSessionRuntimeParams,
 ): Promise<EmbeddedAgentCompactResult> {
+  return await runWithOperatorModelAuthority(paramsInput.operatorAuthority, () =>
+    compactDirectOwned(paramsInput),
+  );
+}
+
+async function compactDirectOwned(
+  paramsInput: CompactEmbeddedAgentSessionRuntimeParams,
+): Promise<EmbeddedAgentCompactResult> {
   const paramsBase = applyAgentRunSessionTargetIdentity(paramsInput);
   const memoryTranscript = readCompactionAccountingRecorder(
     paramsBase.contextEngineRuntimeContext,
@@ -315,6 +336,11 @@ export async function compactEmbeddedAgentSessionDirect(
     boundHarnessRuntime: requestedParams.agentHarnessId,
     preparedRuntimePlan: requestedParams.runtimePlan,
   });
+  assertOperatorModelAllowed(
+    requestedParams.operatorAuthority,
+    runtimeSelection.provider,
+    runtimeSelection.modelId,
+  );
   // Native control operations reuse the backend's existing authenticated session.
   // Run them before generic model preparation so subscription-only CLI sessions do
   // not incorrectly require an OpenClaw model API credential.
@@ -377,18 +403,21 @@ export async function compactEmbeddedAgentSessionDirect(
               manifestPlugins: metadataSnapshot,
               allowPluginNormalization: false,
             });
-            const pluginPlanCandidates = resolveModelCandidateChain({
-              cfg: config,
-              agentId: requestedAgentIds.sessionAgentId,
-              manifestPlugins: metadataSnapshot,
-              allowPluginNormalization: false,
-              provider: selected.provider,
-              model: selected.modelId,
-              requestedRouteResolution: "resolved",
-              fallbacksOverride: transcriptBytePreflightAuthority
-                ? []
-                : resolveCompactionFallbacksOverride({ ...requestedParams, config }),
-            });
+            const pluginPlanCandidates = restrictOperatorModelCandidates(
+              requestedParams.operatorAuthority,
+              resolveModelCandidateChain({
+                cfg: config,
+                agentId: requestedAgentIds.sessionAgentId,
+                manifestPlugins: metadataSnapshot,
+                allowPluginNormalization: false,
+                provider: selected.provider,
+                model: selected.modelId,
+                requestedRouteResolution: "resolved",
+                fallbacksOverride: transcriptBytePreflightAuthority
+                  ? []
+                  : resolveCompactionFallbacksOverride({ ...requestedParams, config }),
+              }),
+            );
             return [
               {
                 provider: selected.provider,
@@ -510,6 +539,7 @@ export async function compactEmbeddedAgentSessionDirect(
         const fallbackSessionKey =
           params.sandboxSessionKey ?? params.sessionKey ?? params.sessionId;
         const fallbackResult = await runWithModelFallback<EmbeddedAgentCompactResult>({
+          operatorAuthority: params.operatorAuthority,
           cfg: params.config,
           manifestPlugins: preparedModelRuntime.metadataSnapshot,
           provider: primaryProvider,
@@ -566,6 +596,9 @@ export async function compactEmbeddedAgentSessionDirect(
         return compactPrepared();
       });
     } catch (err) {
+      if (isOperatorModelPolicyError(err)) {
+        throw err;
+      }
       return fallbackFailureToCompactionResult(err);
     }
   };

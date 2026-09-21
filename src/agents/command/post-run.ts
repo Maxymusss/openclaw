@@ -412,6 +412,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
         ? {
             prepared: { cfg, sessionKey, storePath, timeoutMs },
             followupRun: createCommandMaintenanceFollowup({
+              operatorAuthority: params.opts.operatorAuthority,
               prepared: params.prepared,
               sessionEntry,
               embeddedSessionState: params.embeddedSessionState,
@@ -465,6 +466,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
           const { runCliTurnCompactionLifecycle } = await loadCliCompactionRuntime();
           sessionEntry = await runCliTurnCompactionLifecycle(
             {
+              operatorAuthority: params.opts.operatorAuthority,
               cfg,
               sessionId: sessionEntry?.sessionId ?? effectiveSessionId,
               sessionKey: sessionKey ?? effectiveSessionId,

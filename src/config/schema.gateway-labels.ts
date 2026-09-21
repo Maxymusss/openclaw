@@ -41,6 +41,8 @@ export const GATEWAY_FIELD_LABELS: Record<string, string> = {
   "gateway.roles.definitions.*.sandbox": "Operator Role Sandbox Isolation",
   "gateway.roles.definitions.*.agents": "Operator Role Allowed Agents",
   "gateway.roles.definitions.*.scopes": "Operator Role Scope Ceiling",
+  "gateway.roles.definitions.*.models": "Operator Role Model Ceiling",
+  "gateway.roles.definitions.*.models.allow": "Operator Role Allowed Models",
   "gateway.roles.definitions.*.accessPolicyPlugin": "Operator Role Access Policy Plugin",
   "gateway.trustedProxies": "Gateway Trusted Proxy CIDRs",
   "gateway.allowRealIpFallback": "Gateway Allow x-real-ip Fallback",

@@ -1,6 +1,7 @@
 /** Runs image model candidates through the shared fallback attempt machinery. */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
 import {
   type ModelFallbackErrorHandler,
   type ModelFallbackRunResult,
@@ -10,8 +11,13 @@ import {
 import { resolveImageFallbackCandidates } from "./model-fallback-candidates.js";
 import type { FallbackAttempt } from "./model-fallback.types.js";
 import type { ModelManifestNormalizationContext } from "./model-ref-shared.js";
+import {
+  assertOperatorModelAllowed,
+  restrictOperatorModelCandidates,
+} from "./operator-model-policy.js";
 
 export async function runWithImageModelFallback<T>(params: {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg: OpenClawConfig | undefined;
   modelOverride?: string;
   manifestPlugins?: ModelManifestNormalizationContext["manifestPlugins"];
@@ -19,11 +25,14 @@ export async function runWithImageModelFallback<T>(params: {
   onError?: ModelFallbackErrorHandler;
   abortSignal?: AbortSignal;
 }): Promise<ModelFallbackRunResult<T>> {
-  const candidates = resolveImageFallbackCandidates({
-    cfg: params.cfg,
-    modelOverride: params.modelOverride,
-    manifestPlugins: params.manifestPlugins,
-  });
+  const candidates = restrictOperatorModelCandidates(
+    params.operatorAuthority,
+    resolveImageFallbackCandidates({
+      cfg: params.cfg,
+      modelOverride: params.modelOverride,
+      manifestPlugins: params.manifestPlugins,
+    }),
+  );
   if (candidates.length === 0) {
     throw new Error(
       "No image model configured. Set agents.defaults.imageModel.primary or agents.defaults.imageModel.fallbacks.",
@@ -34,6 +43,7 @@ export async function runWithImageModelFallback<T>(params: {
   let lastError: unknown;
 
   for (const [i, candidate] of candidates.entries()) {
+    assertOperatorModelAllowed(params.operatorAuthority, candidate.provider, candidate.model);
     const attemptRun = await runFallbackAttempt({
       run: params.run,
       ...candidate,

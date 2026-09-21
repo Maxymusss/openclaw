@@ -1,8 +1,10 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
+import type { AdmittedRunOperatorAuthority } from "../admitted-run-context.js";
 import { FailoverError } from "../failover/error.js";
 import { resolveBuiltInModelSuppressionFromManifest } from "../model-suppression.js";
+import { assertOperatorModelAllowed } from "../operator-model-policy.js";
 import {
   resolveProviderModelMaterializationAuthMode,
   resolveProviderModelRouteMaterializationAuthMode,
@@ -50,6 +52,7 @@ type PreparedRuntimeModelRequest = {
 };
 
 type PreparedRuntimeModelTarget = {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   provider: string;
   modelId: string;
   config?: OpenClawConfig;
@@ -78,6 +81,11 @@ export function validatePreparedRuntimeModel<Model extends RuntimeRouteModel>(
 ): Model {
   validatePreparedTarget(params);
   const { model, route } = params;
+  assertOperatorModelAllowed(
+    params.operatorAuthority,
+    model.provider ?? params.provider,
+    model.id ?? params.modelId,
+  );
   if (route && !modelMatchesPreparedTarget({ ...params, route })) {
     throw new Error(
       `Caller-provided ${params.provider}/${params.modelId} metadata does not match its prepared ${route.authRequirement} route.`,
@@ -103,6 +111,7 @@ export function validatePreparedRuntimeModel<Model extends RuntimeRouteModel>(
 
 /** Resolves the exact model tuple selected by a prepared runtime auth plan. */
 export async function materializePreparedRuntimeModel<Model extends RuntimeRouteModel>(params: {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   plan: AgentRuntimeAuthPlan;
   provider: string;
   modelId: string;
@@ -117,6 +126,7 @@ export async function materializePreparedRuntimeModel<Model extends RuntimeRoute
     request: PreparedRuntimeModelRequest,
   ): Promise<{ model?: Model | null; error?: string }>;
 }): Promise<Model | undefined> {
+  assertOperatorModelAllowed(params.operatorAuthority, params.provider, params.modelId);
   const route = params.plan.modelRoute;
   const config = route
     ? projectProviderModelRouteConfig({ provider: params.provider, config: params.config, route })

@@ -1,4 +1,5 @@
 import type { AssistantMessage, Model } from "@openclaw/llm-core";
+import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 import type { AgentEvent, AgentMessage } from "./types.js";
 
 /** Canonical empty aborted/error assistant recorded when a run ends without output. */
@@ -7,6 +8,7 @@ export function createFailureMessage(
   error: unknown,
   aborted: boolean,
 ): AssistantMessage {
+  const errorCode = extractErrorCode(error);
   return {
     role: "assistant",
     content: [{ type: "text", text: "" }],
@@ -15,6 +17,7 @@ export function createFailureMessage(
     model: model.id,
     stopReason: aborted ? "aborted" : "error",
     errorMessage: error instanceof Error ? error.message : String(error),
+    ...(errorCode ? { errorCode } : {}),
     timestamp: Date.now(),
     usage: {
       input: 0,

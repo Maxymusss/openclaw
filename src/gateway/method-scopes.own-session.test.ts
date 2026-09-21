@@ -8,13 +8,11 @@ import {
 
 describe("session-scoped method admission", () => {
   it.each([
-    ["agents.list", {}],
-    ["models.list", {}],
-    ["models.list", { agentId: "main" }],
-    ["models.list", { sessionKey: "agent:main:own" }],
     ["models.list", { sessionKey: "agent:main:own", view: "provider-config" }],
     ["models.list", { agentId: "main", authProfileId: "personal-account" }],
-  ] as const)("keeps %s catalogs behind broad read authority (%j)", (method, params) => {
+    ["models.list", { agentId: "main", refresh: true }],
+    ["models.list", { agentId: "main", provider: "fixture" }],
+  ] as const)("keeps %s diagnostics behind broad read authority (%j)", (method, params) => {
     expect(resolveSessionMethodScope(method, params)).toBeUndefined();
     for (const scopes of [
       ["operator.sessions.read"],
@@ -31,6 +29,24 @@ describe("session-scoped method admission", () => {
         authorizeOperatorScopesForMethod(method, [scope, "operator.sessions.read"], params),
       ).toEqual({ allowed: true });
     }
+  });
+
+  it.each([
+    ["agents.list", {}],
+    ["models.list", {}],
+    ["models.list", { agentId: "main", view: "all" }],
+    ["models.list", { sessionKey: "agent:main:own", preparedOnly: true }],
+  ] as const)("admits the projected %s selection catalog (%j)", (method, params) => {
+    for (const scope of ["operator.sessions.read", "operator.sessions.write"]) {
+      expect(authorizeOperatorScopesForMethod(method, [scope], params)).toEqual({
+        allowed: true,
+        sessionScope: "operator.sessions.read",
+      });
+    }
+    expect(authorizeOperatorScopesForMethod(method, [], params)).toEqual({
+      allowed: false,
+      missingScope: "operator.read",
+    });
   });
 
   it.each(["sessions.list", "chat.history", "sessions.describe", "session.members.list"])(

@@ -57,6 +57,7 @@ type ChatContextWindowTarget = Pick<
 >;
 
 type ChatModelControlsProps = {
+  modelRestricted?: boolean;
   modelAuthStatusResult?: ModelAuthStatusResult | null;
   accountSelection?: ChatAccountSelection | null;
   renderAccountSection?: (model: string) => ChatModelAccountSection | undefined;
@@ -259,6 +260,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
     modelOverrideSource,
     options: selectOptions,
   } = resolveChatModelSelectState({
+    modelRestricted: props.modelRestricted,
     activeSession: props.selectedSession,
     agentDefaultModel: props.agentDefaultModel,
     chatModelCatalog: props.modelCatalog,
@@ -313,7 +315,7 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
         : props.modelObservedRunId === activeRunId));
   // The row can still describe the previous turn while a send is being admitted.
   // Only the current run's complete provider/model pair identifies its execution.
-  const activeModelValue = hasPendingModelSelection
+  const observedActiveModelValue = hasPendingModelSelection
     ? ""
     : executionPending
       ? currentRunMatches &&
@@ -326,6 +328,10 @@ export function renderChatModelControls(props: ChatModelControlsProps) {
           activeSession?.activeModelProvider,
           props.modelCatalog,
         );
+  const activeModelValue =
+    props.modelRestricted && !catalog.entry(observedActiveModelValue)
+      ? ""
+      : observedActiveModelValue;
   const modelPending = executionPending && !activeModelValue;
   // A pending execution does not erase the saved choice or reuse the previous
   // turn's fallback. Keep the choice visible until this run identifies its model.

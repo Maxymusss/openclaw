@@ -31,6 +31,7 @@ import {
   isAgentHarnessPreflightError,
 } from "./harness/errors.js";
 import { isRecordedModelFallbackStop } from "./model-fallback-stop.js";
+import { isOperatorModelPolicyError } from "./operator-model-policy.js";
 import {
   isSessionPlacementSettlementClosedError,
   isAgentRunSupersededAbortReason,
@@ -683,9 +684,8 @@ export function resolveModelFallbackError(
   if (hasSessionTranscriptWriterClaimRebound(err)) {
     return { kind: "coordination", error: err };
   }
-  // Recorded terminal stops prohibit replay regardless of provider policy.
-  // Keep the wrapper identity before coercion can discard the terminal fact.
-  if (hasModelFallbackStop(err)) {
+  // Preserve wrapper identity: recorded stops and nested policy denials prohibit replay.
+  if (hasModelFallbackStop(err) || isOperatorModelPolicyError(err)) {
     return { kind: "terminal", error: err };
   }
   if (isAgentHarnessPreflightError(err)) {

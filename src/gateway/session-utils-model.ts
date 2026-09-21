@@ -5,7 +5,6 @@ import {
 } from "@openclaw/normalization-core/string-coerce";
 import { resolveModelAgentRuntimeMetadata } from "../agents/agent-runtime-metadata.js";
 import { resolveSessionAgentId } from "../agents/agent-scope.js";
-import { resolveCliRuntimeCanonicalProvider } from "../agents/cli-backends.js";
 import { resolveContextTokensForModel } from "../agents/context.js";
 import { DEFAULT_CONTEXT_TOKENS, DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js";
@@ -17,8 +16,6 @@ import {
 import { resolveModelContextWindowProfile } from "../agents/model-context-window.js";
 import {
   findNormalizedProviderValue,
-  isCliProvider,
-  parseModelRef,
   resolveConfiguredModelRef,
   resolveDefaultModelForAgent,
 } from "../agents/model-selection.js";
@@ -42,6 +39,10 @@ import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/sess
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
+import type { OperatorPermissionCeiling } from "../shared/operator-permissions.js";
+import { projectOperatorSessionPatch } from "./operator-model-projection.js";
+import { resolveSessionDisplayModelIdentityRef } from "./session-model-display.js";
+export { resolveSessionDisplayModelIdentityRefCached } from "./session-model-display.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
 import {
   createSessionRowModelCacheKey,
@@ -591,54 +592,6 @@ export async function resolveGatewayModelSupportsImages(params: {
   }
 }
 
-export function resolveSessionDisplayModelIdentityRefCached(params: {
-  cfg: OpenClawConfig;
-  provider?: string;
-  model?: string;
-  rowContext?: SessionListRowContext;
-}): { provider?: string; model?: string } {
-  const ctx = params.rowContext;
-  if (!ctx) {
-    return resolveSessionDisplayModelIdentityRef(params);
-  }
-  const key = createSessionRowModelCacheKey(params.provider, params.model);
-  const cached = ctx.displayModelIdentityByKey.get(key);
-  if (cached) {
-    return cached;
-  }
-  const value = resolveSessionDisplayModelIdentityRef(params);
-  ctx.displayModelIdentityByKey.set(key, value);
-  return value;
-}
-
-function resolveSessionDisplayModelIdentityRef(params: {
-  cfg: OpenClawConfig;
-  provider?: string;
-  model?: string;
-}): { provider?: string; model?: string } {
-  const provider = normalizeOptionalString(params.provider);
-  const model = normalizeOptionalString(params.model);
-  if (!provider || !model || !isCliProvider(provider, params.cfg)) {
-    return { provider, model };
-  }
-
-  const identity = (model.includes("/")
-    ? parseModelRef(model, provider, {
-        allowPluginNormalization: false,
-        allowManifestNormalization: false,
-      })
-    : null) ?? { provider, model };
-  return {
-    provider:
-      resolveCliRuntimeCanonicalProvider({
-        runtime: identity.provider,
-        config: params.cfg,
-        includeSetupRegistry: true,
-      }) ?? identity.provider,
-    model: identity.model,
-  };
-}
-
 export function projectSessionPatchResult(params: {
   canonicalKey: string;
   cfg: OpenClawConfig;
@@ -647,6 +600,7 @@ export function projectSessionPatchResult(params: {
   modelCatalogRouteVariants?: readonly ModelCatalogEntry[];
   storePath: string;
   targetAgentId: string;
+  operatorPermissions?: OperatorPermissionCeiling;
 }): SessionsPatchResult {
   const agentId = resolveSessionAgentId({
     config: params.cfg,
@@ -674,26 +628,30 @@ export function projectSessionPatchResult(params: {
     catalogEntry: thinking.catalogEntry,
     selected: params.entry.contextWindow,
   });
-  return {
-    ok: true,
-    path: resolveSqliteTargetFromSessionStorePath(params.storePath, {
-      agentId: params.targetAgentId,
-    }).path,
-    key: params.canonicalKey,
-    entry: projectPublicSessionEntry(params.entry),
-    resolved: {
-      modelProvider: displayModel.provider,
-      model: displayModel.model,
-      agentRuntime: thinking.agentRuntime,
-      runtimeSelectionLocked: thinking.runtimeSelectionLocked,
-      ...(modelCatalog
-        ? {
-            contextWindow: contextWindow.contextWindow,
-            contextWindows: contextWindow.contextWindows,
-            thinkingLevel: thinking.effectiveThinkingLevel,
-            thinkingLevels: thinking.thinkingLevels,
-          }
-        : {}),
+  return projectOperatorSessionPatch(
+    {
+      ok: true,
+      path: resolveSqliteTargetFromSessionStorePath(params.storePath, {
+        agentId: params.targetAgentId,
+      }).path,
+      key: params.canonicalKey,
+      entry: projectPublicSessionEntry(params.entry),
+      resolved: {
+        modelProvider: displayModel.provider,
+        model: displayModel.model,
+        agentRuntime: thinking.agentRuntime,
+        runtimeSelectionLocked: thinking.runtimeSelectionLocked,
+        ...(modelCatalog
+          ? {
+              contextWindow: contextWindow.contextWindow,
+              contextWindows: contextWindow.contextWindows,
+              thinkingLevel: thinking.effectiveThinkingLevel,
+              thinkingLevels: thinking.thinkingLevels,
+            }
+          : {}),
+      },
     },
-  };
+    params.operatorPermissions,
+    resolved,
+  );
 }

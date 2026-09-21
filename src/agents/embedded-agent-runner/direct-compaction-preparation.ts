@@ -18,6 +18,11 @@ import { describeFailoverError } from "../failover-error.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { MissingProviderAuthError } from "../model-auth.js";
 import { projectModelThinkingCompat } from "../model-catalog-lookup.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelHarnessSupported,
+  isOperatorModelPolicyError,
+} from "../operator-model-policy.js";
 import type { PreparedModelRuntimeSnapshot } from "../prepared-model-runtime.js";
 import { applyPreparedRuntimeAuthToModel } from "../provider-request-config.js";
 import { protectPreparedProviderRuntimeAuth } from "../provider-runtime-auth-protection.js";
@@ -98,6 +103,7 @@ export async function prepareDirectCompactionAttempt(
     boundHarnessRuntime: params.agentHarnessId,
     preparedRuntimePlan: params.runtimePlan,
   });
+  assertOperatorModelAllowed(params.operatorAuthority, provider, modelId);
   // Keep the configured provider for harness policy, while auth/model loading below can
   // route OpenAI compaction through Codex OAuth when that runtime owns the session credentials.
   // Ensure the policy-selected harness plugin so selection can pick implicit codex.
@@ -156,6 +162,7 @@ export async function prepareDirectCompactionAttempt(
     const reason = error ?? `Unknown model: ${runtimeProvider}/${modelId}`;
     return { ok: false as const, result: fail(reason) };
   }
+  assertOperatorModelAllowed(params.operatorAuthority, model.provider, model.id);
   const modelResolutionOptions = {
     authStorage,
     modelRegistry,
@@ -193,6 +200,7 @@ export async function prepareDirectCompactionAttempt(
     selectedPreparedHarness,
     providerUsesProfileScopedModelMetadata,
   } = harnessAuth;
+  assertOperatorModelHarnessSupported(params.operatorAuthority, selectedPreparedHarness);
   const preparedHarnessRuntime = selectedPreparedHarness.id;
   const resolvePreparedModel = ({
     config,
@@ -216,6 +224,7 @@ export async function prepareDirectCompactionAttempt(
     forceResolve?: boolean;
   }): Promise<ProviderRuntimeModel> =>
     (await materializePreparedRuntimeModel<ProviderRuntimeModel>({
+      operatorAuthority: params.operatorAuthority,
       plan: materializeParams.plan,
       provider,
       modelId,
@@ -254,9 +263,13 @@ export async function prepareDirectCompactionAttempt(
     resolvedAuthAttempt = await resolveRuntimeAuthAttempt();
     params.abortSignal?.throwIfAborted();
   } catch (err) {
+    if (isOperatorModelPolicyError(err)) {
+      throw err;
+    }
     return { ok: false as const, result: fail(formatErrorMessage(err), err) };
   }
   let runtimeModel: ProviderRuntimeModel = resolvedAuthAttempt.model;
+  assertOperatorModelAllowed(params.operatorAuthority, runtimeModel.provider, runtimeModel.id);
   const apiKeyInfo = resolvedAuthAttempt.auth;
   const resolvedRuntimeAuthPlan = resolvedAuthAttempt.plan;
   let hasRuntimeAuthExchange = false;
@@ -293,6 +306,7 @@ export async function prepareDirectCompactionAttempt(
         preparedAuth: runtimeAuth,
       });
       runtimeModel = applyPreparedRuntimeAuthToModel(runtimeModel, preparedAuth);
+      assertOperatorModelAllowed(params.operatorAuthority, runtimeModel.provider, runtimeModel.id);
       const runtimeApiKey = preparedAuth?.apiKey ?? apiKeyInfo.apiKey;
       hasRuntimeAuthExchange = Boolean(preparedAuth?.apiKey);
       if (!runtimeApiKey) {
@@ -301,6 +315,9 @@ export async function prepareDirectCompactionAttempt(
       authStorage.setRuntimeApiKey(runtimeModel.provider, runtimeApiKey);
     }
   } catch (err) {
+    if (isOperatorModelPolicyError(err)) {
+      throw err;
+    }
     const reason = formatErrorMessage(err);
     return { ok: false as const, result: fail(reason, err) };
   }

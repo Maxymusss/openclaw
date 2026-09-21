@@ -23,6 +23,7 @@ import { buildAssistantFailoverSignal } from "../../embedded-agent-helpers/assis
 import { FailoverError, resolveFailoverStatus } from "../../failover-error.js";
 import type { PreparedProviderFailoverOwner } from "../../failover/provider-patterns.js";
 import { classifyRateLimitWindow } from "../../failover/retry-evidence.js";
+import { assertOperatorModelResponse } from "../../operator-model-policy.js";
 import {
   resolveSessionSuspensionReason,
   type SessionSuspensionParams,
@@ -96,6 +97,9 @@ export async function handleEmbeddedAssistantFailure(input: {
   // may drive retries, profile health, or failure copy.
   const failedAssistant =
     input.attemptAssistant?.stopReason === "error" ? input.attemptAssistant : undefined;
+  if (failedAssistant) {
+    assertOperatorModelResponse(failedAssistant);
+  }
   if (classifyGatewayStorageFailure(failedAssistant)) {
     return buildOutcome(input, { action: "proceed", assistantProfileFailureReason: null });
   }

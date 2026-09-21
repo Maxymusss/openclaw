@@ -4,6 +4,8 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getModelProviderRuntimePluginHandle } from "../../plugins/provider-hook-runtime.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { resolveProviderTextTransforms } from "../../plugins/provider-runtime.js";
+import type { AdmittedRunOperatorAuthority } from "../admitted-run-context.js";
+import { assertOperatorModelAllowed } from "../operator-model-policy.js";
 import { wrapStreamFnTextTransforms } from "../plugin-text-transforms.js";
 import type { AgentRuntimePlan } from "../runtime-plan/types.js";
 import { applyExtraParamsToAgent } from "./extra-params.js";
@@ -15,6 +17,7 @@ import {
 import { mapThinkingLevelForProvider } from "./utils.js";
 
 export async function prepareCompactionSessionAgent(params: {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   session: { agent: { streamFn?: unknown } };
   llmRuntime: LlmRuntime;
   providerStreamFn: unknown;
@@ -44,6 +47,11 @@ export async function prepareCompactionSessionAgent(params: {
   senderUsername?: string | null;
   senderE164?: string | null;
 }) {
+  assertOperatorModelAllowed(
+    params.operatorAuthority,
+    params.effectiveModel.provider,
+    params.effectiveModel.id,
+  );
   const authStorage =
     params.authStorage &&
     typeof params.authStorage === "object" &&
@@ -61,6 +69,7 @@ export async function prepareCompactionSessionAgent(params: {
       })
     : params.resolvedApiKey;
   params.session.agent.streamFn = resolveEmbeddedAgentStream({
+    operatorAuthority: params.operatorAuthority,
     llmRuntime: params.llmRuntime,
     currentStreamFn: resolveEmbeddedAgentBaseStreamFn({ session: params.session as never }),
     providerStreamFn: params.providerStreamFn as never,
@@ -71,6 +80,8 @@ export async function prepareCompactionSessionAgent(params: {
     transportAuthAvailable: Boolean(transportApiKey?.trim()),
     authProfileId: params.runtimePlan?.auth.forwardedAuthProfileId,
     authStorage: params.authStorage as never,
+    assertModelCurrent: (model) =>
+      assertOperatorModelAllowed(params.operatorAuthority, model.provider, model.id),
   }).streamFn;
   const providerTextTransforms = resolveProviderTextTransforms({
     provider: params.provider,

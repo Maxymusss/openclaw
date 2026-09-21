@@ -4,6 +4,7 @@ import {
   buildAssistantFailoverSignal,
   classifyAssistantFailoverReason,
 } from "./embedded-agent-helpers/assistant-message-failures.js";
+import { assertOperatorModelResponse } from "./operator-model-policy.js";
 
 type IsolatedCompletionErrorCode =
   | "unsupported"
@@ -22,6 +23,7 @@ export class IsolatedCompletionError extends Error {
 }
 
 export function requireIsolatedAssistantText(assistant: AssistantMessage): string {
+  assertOperatorModelResponse(assistant);
   if (assistant.stopReason !== "stop" && assistant.stopReason !== "length") {
     throw new IsolatedCompletionError(
       "output-rejected",
@@ -50,6 +52,7 @@ export function requireIsolatedAssistantText(assistant: AssistantMessage): strin
 
 /** Account quota failures can rotate; terminal or tool-bearing output cannot be replayed. */
 export function isRetryableIsolatedQuotaFailure(assistant: AssistantMessage): boolean {
+  assertOperatorModelResponse(assistant);
   const reason = classifyAssistantFailoverReason(assistant);
   return (
     (reason === "rate_limit" || reason === "billing") &&

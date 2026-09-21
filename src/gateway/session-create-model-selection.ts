@@ -6,19 +6,82 @@ import {
   type SessionsCreateParams,
 } from "../../packages/gateway-protocol/src/index.js";
 import { normalizeOptionalAgentRuntimeId } from "../agents/agent-runtime-id.js";
+import { resolveAgentDir } from "../agents/agent-scope.js";
 import { resolveContextTokensForModel } from "../agents/context.js";
+import { resolveModelProviderAuthConfig } from "../agents/model-auth-provider-route.js";
 import { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js";
 import { findModelCatalogEntry } from "../agents/model-catalog.js";
 import type { ModelCatalogSnapshot } from "../agents/model-catalog.types.js";
 import { resolveModelContextWindowProfile } from "../agents/model-context-window.js";
+import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import { resolveDefaultModelForAgent, type ModelRef } from "../agents/model-selection.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import { resolveEffectiveAgentRuntime } from "../agents/thinking-runtime.js";
 import { inheritSessionSelection } from "../config/sessions/session-entry-selection.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import { isUserModelAuthProfileId } from "../state/user-model-account-id.js";
+import type { ModelAccountConnectAction } from "./model-account-authority.js";
 import { resolveSessionPatchModelSelection } from "./server-methods/sessions-patch-model-selection.js";
+import type { CreateGatewaySessionParams } from "./session-create-service.types.js";
 import type { GatewaySessionTitleModelSelection } from "./session-lifecycle-preparation.js";
+
+const loadSessionAuthRuntime = createLazyRuntimeModule(
+  () => import("../agents/auth-profiles/session-override.js"),
+);
+
+export function resolveSessionCreateModelInputError(
+  params: Pick<
+    CreateGatewaySessionParams,
+    "agentRuntime" | "model" | "catalogTarget" | "personalModelSelection"
+  >,
+): ErrorShape | undefined {
+  if (params.agentRuntime !== undefined && (!params.model || params.catalogTarget)) {
+    return errorShape(
+      ErrorCodes.INVALID_REQUEST,
+      "agentRuntime requires an explicit canonical provider/model selection",
+    );
+  }
+  const requestedProfile = splitTrailingAuthProfile(
+    params.catalogTarget?.model ?? params.model ?? "",
+  ).profile;
+  if (
+    requestedProfile &&
+    isUserModelAuthProfileId(requestedProfile) &&
+    params.personalModelSelection?.authProfileId !== requestedProfile
+  ) {
+    return errorShape(
+      ErrorCodes.FORBIDDEN,
+      "Choose your personal account from an identified Gateway connection.",
+    );
+  }
+  return undefined;
+}
+
+/** Resolve a new session's personal default under its original account authority. */
+export async function resolveSessionCreatePersonalModelDefault(params: {
+  cfg: OpenClawConfig;
+  agentId: string;
+  entry: SessionEntry;
+  defaults: ModelAccountConnectAction;
+  commitGuard?: () => void;
+}): Promise<string | undefined> {
+  const { resolveUserLinkedAuthProfile } = await loadSessionAuthRuntime();
+  params.commitGuard?.();
+  const model = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
+  const linked = resolveUserLinkedAuthProfile({
+    cfg: resolveModelProviderAuthConfig({
+      config: params.cfg,
+      provider: model.provider,
+      modelId: model.model,
+    }),
+    agentDir: resolveAgentDir(params.cfg, params.agentId),
+    provider: model.provider,
+    requesterProfileId: params.defaults.owner,
+  });
+  return linked?.profileId;
+}
 
 export function resolveSessionCreateModelSelection(
   cfg: OpenClawConfig,

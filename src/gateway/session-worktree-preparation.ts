@@ -9,6 +9,7 @@ import {
   type ErrorShape,
   type SessionsCreateParams,
 } from "../../packages/gateway-protocol/src/index.js";
+import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-operator-authority.js";
 import { resolveAgentWorkspaceDir } from "../agents/agent-scope.js";
 import { resolveSandboxRuntimeStatus } from "../agents/sandbox/runtime-status.js";
 import { InvalidWorktreeBaseRefError, resolveWorktreeBase } from "../agents/worktrees/base-ref.js";
@@ -475,6 +476,7 @@ export async function prepareSessionWorktree(params: {
 
 /** Select and prepare worktree intent while the existing session lifecycle owns the target. */
 export async function prepareSessionWorktreeCreation(params: {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg: OpenClawConfig;
   target: Parameters<PrepareGatewaySessionLifecycle>[0];
   workspace?: string | { kind: "empty" };
@@ -592,6 +594,7 @@ export async function prepareSessionWorktreeCreation(params: {
   const title =
     !name && !params.label && lifecycleTarget.entry && lifecycleTarget.titleModelSelection !== null
       ? await generateWorktreeSessionTitle({
+          operatorAuthority: params.operatorAuthority,
           cfg,
           agentId: lifecycleTarget.agentId,
           // Pre-commit naming uses the saved account until this chat owns a new selection.

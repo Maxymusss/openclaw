@@ -438,18 +438,8 @@ async function invokeGatewayToolWithSignal(
         },
       };
     }
-    const result = await withOperatorToolGatewayAuthority(
-      {
-        authenticatedUserProfile,
-        operatorRoleActor: params.operatorRoleActor,
-        scopes: client.connect.scopes ?? [],
-        assertCurrent: assertInvocationCurrent,
-      },
-      async () => {
-        assertInvocationCurrent();
-        return await gatewayTool.execute?.(toolCallId, hookResult.params, params.signal);
-      },
-    );
+    assertInvocationCurrent();
+    const result = await gatewayTool.execute?.(toolCallId, hookResult.params, params.signal);
     return {
       ok: true,
       status: 200,
@@ -491,7 +481,23 @@ export async function invokeGatewayTool(
     ? AbortSignal.any([params.signal, requestAbort.signal])
     : requestAbort.signal;
   try {
-    return await invokeGatewayToolWithSignal({ ...params, signal });
+    const run = () => invokeGatewayToolWithSignal({ ...params, signal });
+    // Capture before tool preparation/hooks can await a role change. Routing-only
+    // wrappers must not let a later SDK call mint a wider source for this request.
+    return await withOperatorToolGatewayAuthority(
+      {
+        authenticatedUserProfile: params.cfg.gateway?.roles
+          ? params.authenticatedUserProfile
+          : undefined,
+        operatorRoleActor: params.operatorRoleActor,
+        scopes: params.senderIsOwner ? [ADMIN_SCOPE] : (params.operatorScopes ?? []),
+        assertCurrent: () => {
+          signal.throwIfAborted();
+          params.assertInvocationCurrent?.();
+        },
+      },
+      run,
+    );
   } finally {
     requestAbort.abort();
   }

@@ -30,6 +30,47 @@ function snapshot(params: {
 }
 
 describe("readSessionMethodAccess", () => {
+  it.each([
+    { method: "sessions.create", params: { agentId: "main", model: "fixture/allowed" } },
+    { method: "sessions.patch", params: { key: "agent:main:own", model: "fixture/allowed" } },
+  ])("admits the narrow alternative for $method", ({ method, params }) => {
+    expect(
+      readSessionMethodAccess(
+        snapshot({ methods: [method], scopes: ["operator.sessions.write"] }),
+        { method, params },
+      ),
+    ).toEqual({ allowed: true, requiredScope: "operator.write" });
+  });
+
+  it.each([
+    { method: "sessions.create", params: { agentId: "main", incognito: true } },
+    { method: "sessions.patch", params: { key: "agent:main:own", permissionMode: "full" } },
+    { method: "sessions.delete", params: { key: "agent:main:own" } },
+  ])("keeps the stronger policy for narrow $method", ({ method, params }) => {
+    expect(
+      readSessionMethodAccess(
+        snapshot({ methods: [method], scopes: ["operator.sessions.write"] }),
+        { method, params },
+      ),
+    ).toMatchObject({ allowed: false, requiredScope: "operator.admin" });
+  });
+
+  it("preserves an explicit admin requirement on an otherwise narrow operation", () => {
+    expect(
+      readSessionMethodAccess(
+        snapshot({
+          methods: ["sessions.reset"],
+          scopes: ["operator.sessions.write", "operator.write"],
+        }),
+        {
+          method: "sessions.reset",
+          params: { key: "agent:main:own" },
+          requiredScope: "operator.admin",
+        },
+      ),
+    ).toMatchObject({ allowed: false, requiredScope: "operator.admin" });
+  });
+
   it("allows a write-scoped operator to create ordinary sessions", () => {
     expect(
       readSessionMethodAccess(snapshot({}), {

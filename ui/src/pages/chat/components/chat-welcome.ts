@@ -208,6 +208,7 @@ export function renderWelcomeState(props: ChatWelcomeProps) {
               </button>`
             : nothing
         }
+        ${props.composer ?? nothing}
       </div>
     `;
   }

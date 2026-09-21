@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.js";
 import {
@@ -13,13 +14,20 @@ import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { getSessionRowProjection } from "../session-row-projection-access.js";
+import { withCurrentSessionListRows } from "../session-list-read-result.js";
+import {
+  bindSessionRowProjection,
+  getSessionRowProjection,
+} from "../session-row-projection-access.js";
+import { createSessionRowProjection } from "../session-row-projection.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import {
   identifiedClient,
   listSessions,
   requestContext,
 } from "./sessions-read-cache.test-support.js";
+import { sessionReadHandlers } from "./sessions-read.js";
+import type { RespondFn } from "./types.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -39,6 +47,146 @@ function viewerConfig(others: "view" | "none"): OpenClawConfig {
     },
   };
 }
+
+it.each(["sessions.list", "sessions.describe"] as const)(
+  "%s retains its original model ceiling through actual placement readiness",
+  async (method) => {
+    for (const change of ["widen", "remove", "tighten", "allowed", "omitted", "revoke"] as const) {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const viewer = ensureProfileForEmail("model-reader@example.test").id;
+        const owner = ensureProfileForEmail("model-owner@example.test").id;
+        const scope = { agentId: "main", sessionKey: "agent:main:model-read" };
+        let config = viewerConfig("view");
+        config.agents = { entries: { main: {} }, defaults: { model: "fixture/model-b" } };
+        const role = expectDefined(config.gateway?.roles?.definitions.viewer, "viewer role");
+        if (change !== "omitted") {
+          role.models = {
+            allow:
+              change === "tighten" || change === "allowed"
+                ? ["fixture/model-a", "fixture/model-b"]
+                : ["fixture/model-a"],
+          };
+        }
+        setRuntimeConfigSnapshot(config);
+        const context = requestContext(config);
+        context.getRuntimeConfig = () => config;
+        const entered = createDeferred();
+        const release = createDeferred();
+        let hold = false;
+        let current = true;
+        const projection = await createSessionRowProjection({
+          cfg: config,
+          getConfig: context.getRuntimeConfig,
+          context,
+          placementFactsReader: {
+            async readProjection() {
+              if (hold) {
+                entered.resolve();
+                await release.promise;
+              }
+              return {
+                placements: new Map(),
+                moves: new Map(),
+                environments: new Map(),
+                workspaceResultReconcilingSessionIds: new Set(),
+              };
+            },
+          },
+        });
+        bindSessionRowProjection(context, () => projection);
+        replaceSessionEntrySync(scope, {
+          sessionId: "model-read-generation",
+          updatedAt: 1,
+          visibility: "shared",
+          createdActor: { type: "human", source: "profile", id: owner },
+          providerOverride: "fixture",
+          modelOverride: "model-b",
+        });
+        hold = true;
+        const respond = vi.fn<RespondFn>();
+        const params = method === "sessions.list" ? { agentId: "main" } : { key: scope.sessionKey };
+        const pending = expectDefined(
+          sessionReadHandlers[method],
+          "read handler",
+        )({
+          req: { type: "req", id: "model-read", method, params },
+          params,
+          context,
+          client: identifiedClient(viewer),
+          respond,
+          hasCurrentClientAuthority: () => current,
+          isWebchatConnect: () => false,
+        });
+        const settled = Promise.resolve(pending);
+        void settled.catch(() => {});
+        try {
+          expect(
+            await Promise.race([
+              entered.promise.then(() => "held"),
+              settled.then(() => "finished"),
+            ]),
+          ).toBe("held");
+          if (change === "revoke") {
+            current = false;
+          } else if (change === "widen" || change === "remove" || change === "tighten") {
+            config = structuredClone(config);
+            const next = expectDefined(
+              config.gateway?.roles?.definitions.viewer,
+              "current viewer role",
+            );
+            if (change === "remove") {
+              delete next.models;
+            } else {
+              next.models = {
+                allow:
+                  change === "widen" ? ["fixture/model-a", "fixture/model-b"] : ["fixture/model-a"],
+              };
+            }
+            setRuntimeConfigSnapshot(config);
+          }
+          release.resolve();
+          if (change === "revoke") {
+            await expect(settled).rejects.toThrow("Gateway caller authority is no longer active.");
+            expect(respond).not.toHaveBeenCalled();
+          } else {
+            await settled;
+            expect(respond).toHaveBeenCalledOnce();
+            expect(respond.mock.calls[0]?.[0]).toBe(true);
+            const payload = respond.mock.calls[0]?.[1];
+            const visible = change === "allowed" || change === "omitted";
+            if (method === "sessions.list") {
+              expect(payload).toMatchObject({
+                sessions: [{ key: scope.sessionKey, sharingRole: "viewer" }],
+                defaults: { model: visible ? "model-b" : null },
+              });
+              if (
+                payload &&
+                typeof payload === "object" &&
+                "sessions" in payload &&
+                Array.isArray(payload.sessions)
+              ) {
+                expect(
+                  await withCurrentSessionListRows(payload.sessions, (rows) => rows, true),
+                ).toEqual([true]);
+              } else {
+                throw new Error("Expected the real list result");
+              }
+            } else {
+              expect(payload).toMatchObject({
+                session: { key: scope.sessionKey, sharingRole: "viewer" },
+              });
+            }
+            expect(JSON.stringify(payload).includes("model-b")).toBe(visible);
+          }
+        } finally {
+          release.resolve();
+          await settled.catch(() => {});
+          projection.dispose();
+        }
+      });
+    }
+  },
+);
 
 it.each([
   "membership",

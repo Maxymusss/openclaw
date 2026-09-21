@@ -15,6 +15,7 @@ import {
 import { createAnthropicVertexStreamFnForModel } from "./anthropic-vertex-stream.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./copilot-dynamic-headers.js";
 import { ensureCustomApiRegistered } from "./custom-api-registry.js";
+import { guardOperatorModelProviderStream } from "./operator-model-policy.js";
 import { resolveProviderRequestCapabilities } from "./provider-attribution.js";
 import {
   attachModelProviderLocalService,
@@ -71,6 +72,7 @@ export function configureAiTransportRuntimeHost(): void {
             ...params.context,
             config: params.context.config as OpenClawConfig | undefined,
             model: params.context.model as ProviderRuntimeModel,
+            streamFn: guardOperatorModelProviderStream(params.context.streamFn),
           },
         }),
       createAnthropicVertexStream: createAnthropicVertexStreamFnForModel,

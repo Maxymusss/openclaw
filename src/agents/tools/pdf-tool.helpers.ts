@@ -8,8 +8,9 @@ import {
   resolveAgentModelPrimaryValue,
 } from "../../config/model-input.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { AssistantMessage } from "../../llm/types.js";
+import type { AssistantMessage, Context } from "../../llm/types.js";
 import { providerSupportsNativePdfDocument } from "../../media-understanding/defaults.js";
+import type { PdfExtractedContent } from "../../media/pdf-extract.js";
 import { extractEmbeddedAssistantText } from "../embedded-agent-utils.js";
 
 /** Normalized PDF model preference used by tool registration and execution. */
@@ -143,4 +144,39 @@ export function resolvePdfToolMaxTokens(
     return requestedMaxTokens;
   }
   return Math.min(requestedMaxTokens, modelMaxTokens);
+}
+
+const CODEX_PDF_INSTRUCTIONS =
+  "Analyze the provided PDF content and answer the user's request accurately.";
+
+export function buildPdfExtractionContext(
+  prompt: string,
+  extractions: PdfExtractedContent[],
+  model?: { api?: string },
+): Context {
+  const content: Array<
+    { type: "text"; text: string } | { type: "image"; data: string; mimeType: string }
+  > = [];
+
+  // Add extracted text and images
+  for (const [i, extraction] of extractions.entries()) {
+    if (extraction.text.trim()) {
+      const label = extractions.length > 1 ? `[PDF ${i + 1} text]\n` : "[PDF text]\n";
+      content.push({ type: "text", text: label + extraction.text });
+    }
+    for (const img of extraction.images) {
+      content.push({ type: "image", data: img.data, mimeType: img.mimeType });
+    }
+  }
+
+  // Add the user prompt
+  content.push({ type: "text", text: prompt });
+
+  const systemPrompt =
+    model?.api === "openai-chatgpt-responses" ? CODEX_PDF_INSTRUCTIONS : undefined;
+
+  return {
+    ...(systemPrompt ? { systemPrompt } : {}),
+    messages: [{ role: "user", content, timestamp: Date.now() }],
+  };
 }

@@ -7,7 +7,7 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import type { AccountedAgentTurn } from "./agent-runner-result-accounting.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
 
-/** The descriptor contains no foreground authority; actual delivery settlement gates its new owner. */
+/** Delivery gates the new writer; the original operator ceiling remains on its inference. */
 export function scheduleReplySessionMaintenance(params: {
   context: FinalizeReplyAgentRunInput;
   accounting: AccountedAgentTurn;
@@ -49,6 +49,7 @@ export function scheduleReplySessionMaintenance(params: {
     {
       prepared,
       followupRun: createSessionMaintenanceFollowup({
+        operatorAuthority: followupRun.operatorAuthority,
         run: followupRun.run,
         sessionEntry,
         cfg,

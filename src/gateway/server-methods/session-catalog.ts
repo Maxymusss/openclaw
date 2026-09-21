@@ -14,6 +14,7 @@ import {
   validateSessionsCatalogListParams,
   validateSessionsCatalogReadParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { runWithOperatorModelAuthority } from "../../agents/operator-model-policy.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   capturePluginLifecycleAuthority,
@@ -27,10 +28,12 @@ import type {
 } from "../../plugins/session-catalog.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
 import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
+import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import { authorizeSessionCatalogThread } from "./session-catalog-authorization.js";
 import { continueAuthorizedSessionCatalog } from "./session-catalog-continue.js";
+import { resolveProviderCreateTarget } from "./session-catalog-create-target.js";
 import {
   createSessionCatalogRequestEntrySnapshot,
   type SessionCatalogInstances,
@@ -53,7 +56,7 @@ import {
   catalogRegistrationSnapshot,
 } from "./session-catalog-provider-access.js";
 import { readAuthorizedSessionCatalog } from "./session-catalog-read.js";
-import { catalogResult } from "./session-catalog-result.js";
+import { catalogError, catalogResult } from "./session-catalog-result.js";
 import { catalogStartHandler } from "./session-catalog-terminal-start.js";
 import {
   filterSessionCatalogHost,
@@ -76,17 +79,6 @@ function normalizeSessionCatalogSearch(search: string | undefined): string | und
     : undefined;
 }
 
-function catalogError(error: unknown): { code: string; message: string } {
-  const record =
-    error && typeof error === "object" ? (error as Record<string, unknown>) : undefined;
-  const recordMessage = typeof record?.message === "string" ? record.message.trim() : "";
-  const fallbackMessage = typeof error === "string" ? error.trim() : "";
-  return {
-    code: typeof record?.code === "string" && record.code ? record.code : "catalog_error",
-    message: recordMessage || fallbackMessage || "session catalog provider failed",
-  };
-}
-
 export function resolveSessionCatalogProvider(
   catalogId: string,
 ): SessionCatalogProvider | undefined {
@@ -97,63 +89,7 @@ type SessionCatalogCreateTargetResolution =
   | { ok: true; target: SessionCatalogCreateTarget & { pluginOwnerId: string } }
   | { ok: false; message: string; unknownCatalog?: true };
 
-type ProviderCreateTargetResolution =
-  | { ok: true; target: SessionCatalogCreateTarget }
-  | { ok: false; message: string };
-
-const providerCreateTargetsByConfig = new WeakMap<
-  OpenClawConfig,
-  WeakMap<SessionCatalogProvider, Map<string, ProviderCreateTargetResolution>>
->();
-
 type CatalogListResult = { catalogs: SessionCatalog[] };
-
-function providerCreateTargetCache(
-  config: OpenClawConfig,
-  provider: SessionCatalogProvider,
-): Map<string, ProviderCreateTargetResolution> {
-  let byProvider = providerCreateTargetsByConfig.get(config);
-  if (!byProvider) {
-    byProvider = new WeakMap();
-    providerCreateTargetsByConfig.set(config, byProvider);
-  }
-  let byAgent = byProvider.get(provider);
-  if (!byAgent) {
-    byAgent = new Map();
-    byProvider.set(provider, byAgent);
-  }
-  return byAgent;
-}
-
-function resolveProviderCreateTarget(
-  provider: SessionCatalogProvider,
-  agentId: string,
-  config: OpenClawConfig,
-): ProviderCreateTargetResolution {
-  const cache = providerCreateTargetCache(config, provider);
-  const cached = cache.get(agentId);
-  if (cached) {
-    // The provider contract makes create targets config-derived. A reload changes config identity;
-    // retaining the old target would advertise a model no longer allowed.
-    return cached;
-  }
-  let resolution: ProviderCreateTargetResolution;
-  try {
-    const target = provider.resolveCreateSession?.({ agentId });
-    const model = target?.model.trim();
-    const agentRuntime = target?.agentRuntime.trim();
-    resolution =
-      model && agentRuntime
-        ? { ok: true, target: { model, agentRuntime } }
-        : { ok: false, message: `session catalog ${provider.id} cannot create sessions` };
-  } catch (error) {
-    // Resolver exceptions are not config state. Retry them on the next request so a transient
-    // provider initialization failure cannot suppress session creation until config reload.
-    return { ok: false, message: catalogError(error).message };
-  }
-  cache.set(agentId, resolution);
-  return resolution;
-}
 
 /** Resolves a catalog-owned create target at the start of sessions.create. */
 export function resolveRegisteredCatalogCreateTarget(
@@ -577,13 +513,8 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
     }
   },
 
-  "sessions.catalog.continue": async ({
-    params,
-    respond,
-    client,
-    context,
-    sessionMutationCommitGuard,
-  }) => {
+  "sessions.catalog.continue": async (options) => {
+    const { params, respond, client, context, sessionMutationCommitGuard } = options;
     if (
       !assertValidParams(
         params,
@@ -604,7 +535,9 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
       respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "catalog is view-only"));
       return;
     }
+    let modelSource: ReturnType<typeof captureGatewayOperatorRunAuthority>;
     try {
+      modelSource = captureGatewayOperatorRunAuthority(options);
       const authorization = await authorizeCatalogRequest({
         access: "mutate",
         request,
@@ -625,15 +558,23 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
         respond(false, undefined, creationError);
         return;
       }
-      const continued = await continueAuthorizedSessionCatalog({
-        request,
-        registration,
-        agentId: authorization.agentId,
-        allowProcessHomeFallback: authorization.allowProcessHomeFallback,
-        client,
-        context,
-        commitGuard: sessionMutationCommitGuard,
-      });
+      const continued = await runWithOperatorModelAuthority(
+        modelSource?.authority,
+        async (operatorAuthority) =>
+          continueAuthorizedSessionCatalog({
+            request,
+            registration,
+            agentId: authorization.agentId,
+            allowProcessHomeFallback: authorization.allowProcessHomeFallback,
+            client,
+            context,
+            operatorAuthority,
+            commitGuard: () => {
+              operatorAuthority?.assertCurrent();
+              sessionMutationCommitGuard?.();
+            },
+          }),
+      );
       if (!continued.ok) {
         respond(false, undefined, continued.error);
         return;
@@ -646,6 +587,8 @@ export const sessionCatalogHandlers: GatewayRequestHandlers = {
         undefined,
         errorShape(ErrorCodes.INVALID_REQUEST, details.message, { details }),
       );
+    } finally {
+      modelSource?.release();
     }
   },
 

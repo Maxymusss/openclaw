@@ -14,9 +14,13 @@ import { getAgentScopedMediaLocalRoots } from "../../../media/local-roots.js";
 import type { ProviderRuntimePluginHandle } from "../../../plugins/provider-hook-runtime.js";
 import { resolveProviderTextTransforms } from "../../../plugins/provider-runtime.js";
 import type { NestedToolActivity } from "../../../sessions/nested-tool-activity.js";
-import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
+import {
+  readAdmittedRunOperatorAuthority,
+  resolveAdmittedRunActiveAssertion,
+} from "../../admitted-run-context.js";
 import type { AgentRunAttemptFailureSource } from "../../agent-run-terminal-outcome.js";
 import type { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
+import { assertOperatorModelAllowed } from "../../operator-model-policy.js";
 import { wrapStreamFnTextTransforms } from "../../plugin-text-transforms.js";
 import { registerProviderStreamForModel } from "../../provider-stream.js";
 import type { AgentMessage } from "../../runtime/index.js";
@@ -463,6 +467,7 @@ export async function prepareEmbeddedAttemptTransport(input: {
 }) {
   const attempt = input.attempt;
   const session = input.session;
+  const operatorAuthority = readAdmittedRunOperatorAuthority(attempt.admittedRunContext);
   const assertRunCurrent = resolveAdmittedRunActiveAssertion(
     attempt.admittedRunContext,
     input.abortSignal,
@@ -541,6 +546,7 @@ export async function prepareEmbeddedAttemptTransport(input: {
     authStorage: attempt.authStorage,
   });
   const { streamFn, strategy: streamStrategy } = resolveEmbeddedAgentStream({
+    operatorAuthority,
     currentStreamFn: defaultSessionStreamFn,
     providerStreamFn: directProviderStreamFn,
     sessionId: attempt.sessionId,
@@ -552,6 +558,8 @@ export async function prepareEmbeddedAttemptTransport(input: {
     authProfileId: resolveAttemptStreamAuthProfileId(attempt),
     authStorage: attempt.authStorage,
     assertCurrent: assertRunCurrent,
+    assertModelCurrent: (model) =>
+      assertOperatorModelAllowed(operatorAuthority, model.provider, model.id),
   });
   session.agent.streamFn = streamFn;
   // Install inside provider/config wrappers so their full onPayload chain runs

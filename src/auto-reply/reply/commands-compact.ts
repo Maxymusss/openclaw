@@ -319,6 +319,7 @@ export async function handleCompactCommand(
   replyOperation?.setPhase("preflight_compacting");
   const compaction = runtime.compactEmbeddedAgentSession(
     {
+      operatorAuthority: params.opts?.operatorAuthority,
       abortSignal: params.opts?.abortSignal,
       contextEngineAgentId: sessionAgentId,
       sessionId,

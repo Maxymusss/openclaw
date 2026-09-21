@@ -337,6 +337,7 @@ export function buildEmbeddedCompactionRuntimeContext(
       scopeKey: processScopeKey,
     });
   return {
+    operatorAuthority: params.operatorAuthority,
     sessionKey: params.sessionKey ?? undefined,
     sandboxSessionKey: params.sandboxSessionKey,
     sandboxAgentId: params.sandboxAgentId,

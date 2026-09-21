@@ -1,3 +1,7 @@
+import {
+  buildModelCatalogRef,
+  parseProviderModelRef,
+} from "@openclaw/model-catalog-core/model-catalog-refs";
 import { isValidAgentId, normalizeAgentId } from "@openclaw/normalization-core/agent-id";
 import { uniqueValues } from "@openclaw/normalization-core/string-normalization";
 import { z } from "zod";
@@ -54,6 +58,26 @@ const GatewayOperatorRoleDefinitionSchema = z.strictObject({
   ]),
   /** Ceiling applied to the authenticated profile's granted operator scopes. */
   scopes: z.array(OperatorScopeSchema).transform((scopes) => uniqueValues(scopes)),
+  /** Optional additional model ceiling. An empty allowlist denies all model inference. */
+  models: z
+    .strictObject({
+      allow: z
+        .array(
+          z
+            .string()
+            .trim()
+            .refine(
+              (ref) => !ref.includes("*") && parseProviderModelRef(ref) !== null,
+              "Operator models require exact provider/model references.",
+            )
+            .transform((ref) => {
+              const parsed = parseProviderModelRef(ref);
+              return parsed ? buildModelCatalogRef(parsed.provider, parsed.model) : ref;
+            }),
+        )
+        .transform(uniqueValues),
+    })
+    .optional(),
   /** Required access-policy plugin; availability is checked at admission, not config parsing. */
   accessPolicyPlugin: z.string().trim().min(1).max(128).optional(),
 });

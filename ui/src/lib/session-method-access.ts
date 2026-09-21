@@ -1,6 +1,7 @@
 import { roleScopesAllow } from "../../../src/shared/operator-scope-compat.js";
 import {
   resolveBaseSessionMutationRequiredScope,
+  resolveSessionMethodScope,
   type SessionMutationOperatorScope,
 } from "../../../src/shared/session-method-scopes-base.js";
 import type { ApplicationGatewaySnapshot } from "../app/gateway.ts";
@@ -52,8 +53,10 @@ export function readSessionMethodAccess(
   request: SessionMethodAccessRequest,
 ): SessionMethodAccess {
   const requiredScope =
-    resolveBaseSessionMutationRequiredScope(request.method, request.params) ??
-    request.requiredScope;
+    request.requiredScope === "operator.admin"
+      ? "operator.admin"
+      : (resolveBaseSessionMutationRequiredScope(request.method, request.params) ??
+        request.requiredScope);
   if (!requiredScope) {
     throw new Error(`Missing required scope for session mutation method: ${request.method}`);
   }
@@ -74,14 +77,24 @@ export function readSessionMethodAccess(
     };
   }
   const auth = snapshot.hello?.auth;
+  const sessionScope =
+    requiredScope !== "operator.admin"
+      ? resolveSessionMethodScope(request.method, request.params)
+      : undefined;
   if (
     auth &&
     Array.isArray(auth.scopes) &&
-    roleScopesAllow({
+    (roleScopesAllow({
       role: auth.role,
       requestedScopes: [requiredScope],
       allowedScopes: auth.scopes,
-    })
+    }) ||
+      (sessionScope !== undefined &&
+        roleScopesAllow({
+          role: auth.role,
+          requestedScopes: [sessionScope],
+          allowedScopes: auth.scopes,
+        })))
   ) {
     return { allowed: true, requiredScope };
   }

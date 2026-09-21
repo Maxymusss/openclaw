@@ -21,6 +21,7 @@ import {
 registerModelControlsEnglish();
 
 type ChatModelSelectStateInput = {
+  modelRestricted?: boolean;
   activeSession?: GatewaySessionRow;
   agentDefaultModel?: string;
   chatModelCatalog: ModelCatalogEntry[];
@@ -98,26 +99,54 @@ export function resolveChatModelOverrideValue(state: ChatModelSelectStateInput):
 
   const sharedOverrides = state.modelOverrides;
   if (Object.hasOwn(sharedOverrides, state.sessionKey)) {
-    return normalizeChatModelOverrideValue(sharedOverrides[state.sessionKey], catalog);
+    return restrictChatModelValue(
+      normalizeChatModelOverrideValue(sharedOverrides[state.sessionKey], catalog),
+      state,
+    );
   }
 
   const active = state.activeSession;
-  return resolvePreferredServerChatModelValue(active?.model, active?.modelProvider, catalog);
+  return restrictChatModelValue(
+    resolvePreferredServerChatModelValue(active?.model, active?.modelProvider, catalog),
+    state,
+  );
+}
+
+function restrictChatModelValue(value: string, state: ChatModelSelectStateInput): string {
+  if (!state.modelRestricted || !value) {
+    return value;
+  }
+  const key = normalizeChatModelAvailabilityKey(value);
+  // Restricted catalogs are authoritative across hello and identity changes;
+  // stale rows and local preferences cannot recreate an omitted option.
+  return state.chatModelCatalog.some(
+    (entry) =>
+      normalizeChatModelAvailabilityKey(buildQualifiedChatModelValue(entry.id, entry.provider)) ===
+      key,
+  )
+    ? value
+    : "";
 }
 
 function resolveDefaultModelValue(state: ChatModelSelectStateInput): string {
-  const agentDefault = resolvePreferredServerChatModelValue(
-    state.agentDefaultModel,
-    undefined,
-    state.chatModelCatalog ?? [],
+  const agentDefault = restrictChatModelValue(
+    resolvePreferredServerChatModelValue(
+      state.agentDefaultModel,
+      undefined,
+      state.chatModelCatalog ?? [],
+    ),
+    state,
   );
   if (agentDefault) {
     return agentDefault;
   }
-  return resolvePreferredServerChatModelValue(
-    state.sessionsResult?.defaults?.model,
-    state.sessionsResult?.defaults?.modelProvider,
-    state.chatModelCatalog ?? [],
+  return restrictChatModelValue(
+    resolvePreferredServerChatModelValue(
+      state.sessionsResult?.defaults?.model,
+      state.sessionsResult?.defaults?.modelProvider,
+      state.chatModelCatalog ?? [],
+    ),
+    state,
   );
 }
 
@@ -209,6 +238,9 @@ export function resolveChatModelUnavailableReason(
   // permanent auth failure turn a transient catalog snapshot into a send gate.
   if (matches.some((entry) => entry.unavailableReason === "cooldown")) {
     return "cooldown";
+  }
+  if (matches.some((entry) => entry.unavailableReason === "unsupported-runtime")) {
+    return "unsupported-runtime";
   }
   return matches.some((entry) => entry.unavailableReason === "auth-failed")
     ? "auth-failed"

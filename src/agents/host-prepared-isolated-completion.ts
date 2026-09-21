@@ -1,3 +1,4 @@
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import type {
   AgentHarnessIsolatedCompletionParamsV2,
   AgentHarnessIsolatedCompletionResult,
@@ -7,6 +8,7 @@ import { completeWithPreparedSimpleCompletionModel } from "./simple-completion-e
 /** Executes one zero-tool completion using the exact host-prepared model and credential. */
 export async function runHostPreparedIsolatedCompletion(
   params: AgentHarnessIsolatedCompletionParamsV2,
+  operatorAuthority?: AdmittedRunOperatorAuthority,
 ): Promise<AgentHarnessIsolatedCompletionResult> {
   if (params.authorization.owner !== "host") {
     throw new Error("Isolated completion requires host-prepared authorization.");
@@ -17,6 +19,7 @@ export async function runHostPreparedIsolatedCompletion(
     ? AbortSignal.any([params.abortSignal, timeoutSignal])
     : timeoutSignal;
   const assistant = await completeWithPreparedSimpleCompletionModel({
+    operatorAuthority,
     assertCurrent: params.assertCurrent,
     model: params.authorization.model,
     auth: params.authorization.auth,

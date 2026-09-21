@@ -1,5 +1,3 @@
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { ContextEngineHostSupport } from "../../context-engine/host-compat.js";
 import {
   captureAgentRunLifecycleGeneration,
   emitAgentEvent,
@@ -8,16 +6,10 @@ import {
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { requireActivePluginRegistry } from "../../plugins/runtime.js";
 import { mergeAcceptedSessionSpawnsForRun } from "../accepted-session-spawn.js";
-import type { PreparedAgentRunAdmission } from "../admitted-run-context.js";
-import {
-  createAssistantErrorTranscript,
-  type AssistantErrorTranscript,
-} from "../assistant-error-transcript.js";
+import { readPreparedRunOperatorAuthority } from "../admitted-run-context.js";
+import { createAssistantErrorTranscript } from "../assistant-error-transcript.js";
 import { resolveModelFallbackError } from "../failover-error.js";
-import {
-  createContextEngineLogicalTurnLease,
-  type ContextEngineLogicalTurnLease,
-} from "../harness/context-engine-logical-turn.js";
+import { createContextEngineLogicalTurnLease } from "../harness/context-engine-logical-turn.js";
 import {
   discardContextEngineTurnAttemptIntent,
   finalizeAcceptedContextEngineTurn,
@@ -27,14 +19,7 @@ import { resolveAgentHarnessPolicy } from "../harness/policy.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { selectAgentHarness } from "../harness/selection.js";
 import type { ModelFallbackResultClassification } from "../model-fallback-attempt.js";
-import type { ModelFallbackStepFields } from "../model-fallback-observation.js";
 import { runWithModelFallback } from "../model-fallback-runner.js";
-import type {
-  FallbackAttempt,
-  ModelFallbackAttemptProvenance,
-  ModelFallbackRouteResolution,
-} from "../model-fallback.types.js";
-import type { ModelManifestNormalizationContext } from "../model-ref-shared.js";
 import { settleFailedRequesterRun, settleRequesterRun } from "../requester-run-settlement.js";
 import { resolveAgentRunAbortLifecycleFields } from "../run-termination.js";
 import { resolveSessionPlacementRuntimeOverride } from "../session-placement-admission.js";
@@ -59,94 +44,15 @@ import {
   mergeRunEntryExecutionTrace,
   preserveFollowupResultForDelivery,
   resolveRunEntryTerminalOutcome,
-  type EmbeddedAgentRunEntryTerminal,
-  type RunEntryTerminalBehavior,
 } from "./run-entry-terminal.js";
-import type { AuthProfileFailurePolicy } from "./run/auth-profile-failure-policy.types.js";
+import type {
+  EmbeddedAgentRunEntryParams,
+  EmbeddedAgentRunEntryResult,
+  RunEntryCandidate,
+} from "./run-entry.types.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
 
 export type { EmbeddedAgentRunEntryTerminal } from "./run-entry-terminal.js";
-
-type RunEntryCandidateOptions = {
-  agentHarnessRuntimeOverride: string | undefined;
-  assistantErrorTranscript: AssistantErrorTranscript;
-  authProfileFailurePolicy?: AuthProfileFailurePolicy;
-  classifyResult: (result: EmbeddedAgentRunResult) => ModelFallbackResultClassification;
-  allowTransientCooldownProbe?: boolean;
-  isFinalFallbackAttempt?: boolean;
-  isFallbackRetry: boolean;
-  modelRoutingProvenance: ModelFallbackAttemptProvenance;
-  contextEngineLogicalTurnLease: ContextEngineLogicalTurnLease;
-  onContextEngineTurnCandidate: (facts: ContextEngineTurnAttemptFacts) => void;
-};
-
-type RunEntryCandidate<T> = {
-  result: T;
-  classification?: ModelFallbackResultClassification;
-  turnAttempt?: ContextEngineTurnAttemptFacts;
-};
-
-type RunEntryHarnessPreparation =
-  | { kind: "direct" }
-  | {
-      kind: "measured";
-      run: (prepare: () => Promise<void>) => Promise<void>;
-    };
-
-type RunEntrySessionOverride =
-  | { kind: "preserve" }
-  | {
-      kind: "reconcile-completed";
-      reconcile: (candidate: { provider: string; model: string }) => Promise<void>;
-    };
-
-type EmbeddedAgentRunEntryResult<T extends EmbeddedAgentRunResult> = {
-  outcome: "completed" | "exhausted";
-  result: T;
-  provider: string;
-  model: string;
-  attempts: FallbackAttempt[];
-  terminal: EmbeddedAgentRunEntryTerminal;
-  settleSessionOverride: () => Promise<void>;
-};
-
-type EmbeddedAgentRunEntryParams<T extends EmbeddedAgentRunResult> = {
-  preparedRunAdmission?: PreparedAgentRunAdmission;
-  selection: {
-    cfg: OpenClawConfig;
-    provider: string;
-    model: string;
-    requestedRouteResolution?: ModelFallbackRouteResolution;
-    fallbacksOverride?: string[];
-    agentDir?: string;
-    userLockedAuthProfileId?: string;
-  } & ModelManifestNormalizationContext;
-  identity: {
-    runId: string;
-    agentId: string;
-    sessionId: string;
-    sessionKey?: string;
-    lane?: string;
-  };
-  harness: {
-    workspaceDir: string;
-    sessionKey?: string;
-    preparation: RunEntryHarnessPreparation;
-    resolveRuntimeOverride: (provider: string, model: string) => string | undefined;
-    resolveContextEngineHost?: (
-      provider: string,
-      model: string,
-      agentHarnessRuntimeOverride: string | undefined,
-    ) => ContextEngineHostSupport | undefined;
-  };
-  behavior: RunEntryTerminalBehavior;
-  sessionOverride: RunEntrySessionOverride;
-  abortSignal?: AbortSignal;
-  onFallbackStep?: (step: ModelFallbackStepFields) => void | Promise<void>;
-  /** Runs once after the successful winner is accepted, before post-turn context commit. */
-  onAcceptedTerminal?: () => void | (() => void) | Promise<void | (() => void)>;
-  runCandidate: (provider: string, model: string, options: RunEntryCandidateOptions) => Promise<T>;
-};
 
 /** Runs one logical turn across model candidates and advances only the accepted winner. */
 export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
@@ -277,6 +183,7 @@ async function runEmbeddedAgentEntryInternal<T extends EmbeddedAgentRunResult>(
       runWithModelFallback<RunEntryCandidate<T>>({
         ...selection,
         ...params.identity,
+        operatorAuthority: readPreparedRunOperatorAuthority(params.preparedRunAdmission),
         abortSignal: params.abortSignal,
         resolveAgentHarnessRuntimeOverride: resolveRuntimeOverride,
         prepareCandidateChain: async (candidates) => {

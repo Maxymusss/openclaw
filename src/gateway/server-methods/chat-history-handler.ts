@@ -5,9 +5,6 @@ import {
   validateChatHistoryParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { CHAT_HISTORY_MAX_ENTRIES } from "../../../packages/gateway-protocol/src/schema/chat-history-constants.js";
-import { resolveAgentConfig } from "../../agents/agent-scope.js";
-import { findModelCatalogEntry } from "../../agents/model-catalog.js";
-import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
 import {
   getSubagentSessionListReadSnapshotIdentity,
   prepareOptionalSubagentSessionListReadCache,
@@ -29,6 +26,11 @@ import {
 } from "../chat-abort.js";
 import { resolveEffectiveChatHistoryMaxChars } from "../chat-display-projection.js";
 import { resolveClaudeCliBindingSessionId } from "../cli-session-history.js";
+import { captureOperatorModelCatalogAccess } from "../operator-model-catalog.js";
+import {
+  projectOperatorSessionDefaults,
+  projectOperatorSessionModel,
+} from "../operator-model-projection.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import { resolveSessionHistoryUnavailableMessage } from "../session-history-error.js";
@@ -46,7 +48,6 @@ import {
   resolveSessionVisibility,
 } from "../session-sharing.js";
 import { capArrayByJsonBytes } from "../session-transcript-readers.js";
-import { resolveGatewayModelThinkingProfile } from "../session-utils-model.js";
 import { buildGatewaySessionRow } from "../session-utils-row.js";
 import {
   getSessionDefaults,
@@ -63,6 +64,7 @@ import {
   trimChatHistoryActivity,
 } from "./chat-history-budget.js";
 import { readChatHistoryDelta } from "./chat-history-delta.js";
+import { projectChatHistoryThinking } from "./chat-history-model-projection.js";
 import {
   capChatHistoryAroundMessage,
   enrichChatHistoryCompactionMarkers,
@@ -84,18 +86,24 @@ import { resolveGatewayModelSelectionPolicy } from "./session-model-selection-po
 import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
-export async function handleChatHistoryRequest({
-  params,
-  respond,
-  client,
-  context,
-  method,
-  signal,
-  retainedSessionId,
-}: GatewayRequestHandlerOptions & {
+type HistoryOptions = GatewayRequestHandlerOptions & {
   method: ChatHistoryMethod;
   retainedSessionId?: string;
-}) {
+};
+
+export async function handleChatHistoryRequest(options: HistoryOptions) {
+  const modelAccess = captureOperatorModelCatalogAccess(options);
+  try {
+    return await readChatHistoryRequest(options, modelAccess);
+  } finally {
+    modelAccess.release();
+  }
+}
+
+async function readChatHistoryRequest(
+  { params, respond, client, context, method, signal, retainedSessionId }: HistoryOptions,
+  modelAccess: ReturnType<typeof captureOperatorModelCatalogAccess>,
+) {
   if (!assertValidParams(params, validateChatHistoryParams, method, respond)) {
     return;
   }
@@ -436,7 +444,13 @@ export async function handleChatHistoryRequest({
   });
   const compatibilityOwnerAgentId = tryResolveSessionCompatibilityOwnerAgentId(cfg, sessionKey);
   const startupProjection = await (startupProjectionPromise ?? readStartupProjection());
-  const startupMetadata = method === "chat.startup" ? startupProjection?.metadata : undefined;
+  const startupMetadata =
+    method === "chat.startup" && startupProjection?.metadata
+      ? modelAccess.projectMetadata(
+          startupProjection.metadata,
+          `${resolvedSessionModel.provider}/${resolvedSessionModel.model}`,
+        )
+      : undefined;
   const { sessionModelCatalog, defaultModelCatalog } = startupProjection ?? {};
   const rowProjection = getSessionRowProjection(context);
   if (!rowProjection) {
@@ -460,7 +474,7 @@ export async function handleChatHistoryRequest({
       if (!currentSharing) {
         return undefined;
       }
-      const sessionInfo = measureDiagnosticsTimelineSpanSync(
+      let sessionInfo = measureDiagnosticsTimelineSpanSync(
         `gateway.${method}.session_info`,
         () =>
           prepareProjectedSessionPresentation(read, client).snapshot(query).row ??
@@ -520,7 +534,7 @@ export async function handleChatHistoryRequest({
         sessionInfo.activeLeafEntryId = historyPage.activeLeafEntryId ?? null;
       }
       // Cursor responses publish sessionInfo only; the default-model projection is unused.
-      const defaults =
+      let defaults =
         cursor === undefined
           ? {
               ...getSessionDefaults(cfg, defaultModelCatalog, {
@@ -534,46 +548,21 @@ export async function handleChatHistoryRequest({
               }).target,
             }
           : undefined;
-      // Unprepared catalog facts are unknown, not an Off default or a smaller profile.
-      // Omission lets clients retain richer same-identity metadata; authored defaults still apply.
-      for (const [projection, catalog] of [
-        [sessionInfo, sessionModelCatalog],
-        [defaults, defaultModelCatalog],
-      ] as const) {
-        if (!projection) {
-          continue;
-        }
-        const provider = projection.modelProvider;
-        const model = projection.model;
-        const catalogEntry =
-          catalog && provider && model
-            ? findModelCatalogEntry(catalog, { provider, modelId: model })
-            : undefined;
-        if (typeof catalogEntry?.reasoning === "boolean" && provider && model) {
-          // Chat metadata carries the selected session auth route's capabilities.
-          Object.assign(
-            projection,
-            resolveGatewayModelThinkingProfile({
-              cfg,
-              agentId: sessionAgentId,
-              provider,
-              model,
-              modelCatalog: catalog,
-              agentRuntime: projection.agentRuntime?.id,
-              sessionKey: projection === sessionInfo ? canonicalKey : undefined,
-              providerPolicySource: "active",
-            }),
-          );
-          projection.thinkingOptions = projection.thinkingLevels?.map(({ label }) => label);
-          continue;
-        }
-        delete projection.thinkingLevels;
-        delete projection.thinkingOptions;
-        projection.thinkingDefault =
-          resolveAgentConfig(cfg, sessionAgentId)?.thinkingDefault ??
-          (provider && model
-            ? resolveConfiguredThinkingDefault({ cfg, provider, model })
-            : cfg.agents?.defaults?.thinkingDefault);
+      projectChatHistoryThinking({
+        cfg,
+        sessionAgentId,
+        canonicalKey,
+        sessionInfo,
+        defaults,
+        sessionModelCatalog,
+        defaultModelCatalog,
+      });
+      const permissions = modelAccess.permissions();
+      if (sessionInfo) {
+        sessionInfo = projectOperatorSessionModel(sessionInfo, permissions);
+      }
+      if (defaults) {
+        defaults = projectOperatorSessionDefaults(defaults, permissions);
       }
       const thinkingLevel =
         sessionInfo?.thinkingLevel ?? sessionInfo?.thinkingDefault ?? defaults?.thinkingDefault;
@@ -664,6 +653,7 @@ export async function handleChatHistoryRequest({
             getMessagesBytes: () => delta.messagesBytes,
             maxBytes: maxHistoryBytes - delta.activityBytes,
           });
+          modelAccess.assertCurrent();
           respond(true, {
             kind: "delta",
             messages: delta.messages,
@@ -710,6 +700,7 @@ export async function handleChatHistoryRequest({
         ...(boundedInFlightRun ? { inFlightRun: boundedInFlightRun } : {}),
         ...(startupMetadata ? { metadata: startupMetadata } : {}),
       };
+      modelAccess.assertCurrent();
       respond(true, payload);
       return undefined;
     },

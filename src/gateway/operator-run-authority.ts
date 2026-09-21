@@ -18,6 +18,7 @@ import {
 import {
   authorizeCurrentOperatorRoleScopes,
   onOperatorRolePolicyChanged,
+  operatorRolePermissionCeiling,
   resolveGatewayOperatorRoleActor,
   resolveOperatorRolePolicyForProfile,
 } from "./operator-role-policy.js";
@@ -195,6 +196,7 @@ export function captureGatewayOperatorRunAuthority(params: {
         profileId,
         scopes,
         gatewayAccessGrant: sourceAuthority === null ? null : sourceAuthority?.gatewayAccessGrant,
+        permissions: operatorRolePermissionCeiling(capturedRole),
         source,
         assertCurrent,
         signal: revocation.signal,

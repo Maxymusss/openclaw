@@ -2,6 +2,7 @@ import type {
   ErrorShape,
   SessionsPatchParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { isInternalSessionEffectsKey } from "../../config/sessions/internal-session-key.js";
 import {
@@ -20,12 +21,10 @@ import type { UserModelAccountSelection } from "../model-account-authority.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
-import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import { hasSessionReadAccessChanged } from "../session-sharing-policy.js";
 import {
   resolveCanonicalGatewaySessionStoreKey,
   resolveCanonicalSessionEntryFromStoreKeys,
-  resolveGatewaySessionStoreTargetWithStore,
 } from "../session-utils.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { resolveOperatorSessionCreation } from "./session-creation-provenance.js";
@@ -50,6 +49,7 @@ import {
 } from "./sessions-patch-errors.js";
 import * as sessionPatchExpectations from "./sessions-patch-expectations.js";
 import * as modelSelection from "./sessions-patch-model-selection.js";
+import { prepareSessionPatchTargets } from "./sessions-patch-targets.js";
 import type {
   GroupAdmissionResult,
   GroupMutationOperation,
@@ -69,6 +69,7 @@ type ArchiveTransition = Awaited<ReturnType<typeof prepareSessionPatchArchiveTra
 
 export async function executeSessionPatchMutations(params: {
   client: GatewayClient | null;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   context: GatewayRequestContext;
   diagnostics?: SessionPatchDiagnostics;
   patch: Omit<SessionsPatchParams, keyof PatchTargetIdentity>;
@@ -98,36 +99,11 @@ export async function executeSessionPatchMutations(params: {
     "sandboxMode" in params.patch || "nativeRuntimeConsent" in params.patch
       ? await import("./sessions-patch-sandbox.runtime.js")
       : undefined;
-  const targetDiscoveryCache = new Map();
-  const preflightTargets = params.targets.map((input) => {
-    const key = input.key.trim();
-    const requestedAgent = resolveRequestedGlobalAgentId(cfg, key, input.agentId);
-    return {
-      input,
-      key,
-      requestedAgent,
-      resolved: requestedAgent.ok
-        ? resolveGatewaySessionStoreTargetWithStore({
-            cfg,
-            key,
-            agentId: requestedAgent.agentId,
-            exactRead: true,
-            targetDiscoveryCache,
-          })
-        : undefined,
-    };
-  });
-  const logicalTargets = new Set<string>();
-  for (const { key, resolved } of preflightTargets) {
-    if (!resolved) {
-      continue;
-    }
-    const logicalId = `${resolved.storePath}\0${resolved.canonicalKey ?? key}`;
-    if (logicalTargets.has(logicalId)) {
-      return invalidSessionPatchOutcome("Duplicate target.");
-    }
-    logicalTargets.add(logicalId);
+  const preflight = prepareSessionPatchTargets({ cfg, targets: params.targets });
+  if (!preflight.ok) {
+    return preflight;
   }
+  const preflightTargets = preflight.targets;
 
   const outcomes = Array.from<MutationOutcome | undefined>({ length: params.targets.length });
   const permissionErrors = new Map<number, ErrorShape>();
@@ -461,6 +437,8 @@ export async function executeSessionPatchMutations(params: {
                         const runtimeSelection =
                           await modelSelection.prepareSessionPatchRuntimeSelection({
                             cfg,
+                            operatorAuthority: params.operatorAuthority,
+                            creation: !existingEntry,
                             agentId: target.targetAgentId,
                             patch: target.fullPatch,
                             entry: projected.entry,

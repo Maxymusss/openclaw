@@ -21,6 +21,7 @@ import {
 import { runWithImageModelFallback } from "./model-fallback-image.js";
 import { runWithModelFallback } from "./model-fallback-runner.js";
 import { recordModelFallbackStop as recordLightweightStop } from "./model-fallback-stop.js";
+import { OperatorModelPolicyError } from "./operator-model-policy.js";
 import {
   createSessionPlacementSettlementClosedAbortError,
   isSessionPlacementSettlementClosedError,
@@ -157,6 +158,15 @@ const wrappers = [
     wrap: (error: Error): unknown => new AgentHarnessPreflightError("wrapper", { cause: error }),
   },
 ];
+
+it.each(wrappers)("keeps original model denial terminal through $name", async ({ wrap }) => {
+  const error = wrap(new OperatorModelPolicyError("original model authority denied"));
+  const run = vi.fn().mockRejectedValueOnce(error).mockResolvedValueOnce("unexpected fallback");
+  await expect(runWithModelFallback({ ...fallbackOptions, run })).rejects.toBe(error);
+  expect(run).toHaveBeenCalledOnce();
+  expect(providerHook).not.toHaveBeenCalled();
+  expect(shouldDiscardDeferredSessionSuspension({ error })).toBe(true);
+});
 
 it.each(
   wrappers.flatMap((wrapper) =>

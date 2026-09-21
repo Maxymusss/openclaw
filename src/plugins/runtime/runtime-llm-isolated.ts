@@ -2,6 +2,7 @@
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import type { IsolatedCompletionResult } from "../../agents/isolated-completion.js";
 import { buildConfiguredModelCatalog } from "../../agents/model-selection-shared.js";
+import { isOperatorModelPolicyError } from "../../agents/operator-model-policy.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { resolveThinkingProfile } from "../../auto-reply/thinking.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -110,6 +111,7 @@ function assertIsolatedReasoningSupported(params: {
 }
 
 export async function runIsolatedAgentRuntimeCompletion(params: {
+  operatorAuthority?: import("../../agents/admitted-run-context.js").AdmittedRunOperatorAuthority;
   request: LlmIsolatedAgentRuntimeCompleteParams;
   cfg: OpenClawConfig;
   agentId: string;
@@ -150,6 +152,7 @@ export async function runIsolatedAgentRuntimeCompletion(params: {
     const operation = (async () => {
       const { runIsolatedCompletion } = await import("../../agents/isolated-completion.js");
       return await runIsolatedCompletion({
+        operatorAuthority: params.operatorAuthority,
         config: params.cfg,
         provider: params.provider,
         model: params.model,
@@ -168,6 +171,9 @@ export async function runIsolatedAgentRuntimeCompletion(params: {
     })();
     return await Promise.race([operation, abortPromise]);
   } catch (error) {
+    if (isOperatorModelPolicyError(error)) {
+      throw error;
+    }
     if (timedOut) {
       throw completionError(
         "LLM_COMPLETION_TIMEOUT",

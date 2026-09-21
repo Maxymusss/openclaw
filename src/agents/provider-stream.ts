@@ -17,6 +17,7 @@ import {
 } from "../plugins/provider-hook-runtime.js";
 import { resolveProviderStreamFn } from "../plugins/provider-runtime.js";
 import { ensureCustomApiRegistered } from "./custom-api-registry.js";
+import { guardOperatorModelProviderStream } from "./operator-model-policy.js";
 import {
   unwrapHeaderSentinelsForProviderEgress,
   unwrapModelHeaderSentinelsForProviderEgress,
@@ -83,14 +84,15 @@ export function registerProviderStreamForModel<TApi extends Api>(params: {
           env: params.env,
         },
       );
-  const streamFn = providerStreamFn
+  const baseStreamFn = providerStreamFn
     ? wrapPluginProviderStream(providerStreamFn)
     : transportFallback && params.model.api === "google-generative-ai"
       ? wrapPluginProviderStream(transportFallback)
       : transportFallback;
-  if (!streamFn) {
+  if (!baseStreamFn) {
     return undefined;
   }
+  const streamFn = guardOperatorModelProviderStream(baseStreamFn);
   const providerWrappedStreamFn =
     params.wrapProviderStream && runtimeHandle
       ? (runtimeHandle.plugin?.wrapStreamFn?.({

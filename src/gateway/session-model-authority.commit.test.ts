@@ -1,0 +1,541 @@
+import { expectDefined } from "@openclaw/normalization-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
+import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import type { AgentHarness } from "../agents/harness/types.js";
+import { createModelRuntimeChoiceOwnerFixture } from "../agents/model-runtime-choice.test-support.js";
+import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runtime.types.js";
+import { resolveSessionModelRef } from "../agents/session-model-ref.js";
+import {
+  listSessionEntriesCore,
+  loadSessionEntry,
+  upsertSessionEntryCore,
+} from "../config/sessions/session-accessor.js";
+import { markPluginRegistryActive } from "../plugins/registry-lifecycle.js";
+import { createRuntimeTestRegistry } from "../plugins/registry-runtime.test-helpers.js";
+import { disposePluginRegistryInstances } from "../plugins/runtime.js";
+import {
+  withPluginRuntimeGatewayRequestScope,
+  withPluginRuntimeRegistryScope,
+} from "../plugins/runtime/gateway-request-scope.js";
+import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
+import { createPluginRuntime } from "../plugins/runtime/index.js";
+import type { SessionCatalogProvider } from "../plugins/session-catalog.js";
+import { createPluginRecord } from "../plugins/status.test-fixtures.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
+import { handleGatewayRequest } from "./server-methods.js";
+import { sessionCatalogHandlers } from "./server-methods/session-catalog.js";
+import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
+import type { RespondFn } from "./server-methods/types.js";
+import { createGatewaySession } from "./session-create-service.js";
+import type { PreparedGatewaySessionLifecycle } from "./session-lifecycle-preparation.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
+import { createSessionRowProjectionFixture } from "./session-row-projection.test-support.js";
+import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
+
+const published = vi.hoisted(
+  (): { owner?: PreparedModelRuntimeSnapshot; beforeOwnership?: () => void } => ({}),
+);
+const registries = new Set<ReturnType<typeof createRuntimeTestRegistry>["registry"]>();
+afterEach(async () => {
+  published.beforeOwnership = undefined;
+  for (const registry of registries) {
+    await disposePluginRegistryInstances(registry);
+  }
+  registries.clear();
+});
+vi.mock("../plugins/registry-runtime-session-ownership.js", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../plugins/registry-runtime-session-ownership.js")>();
+  return {
+    ...actual,
+    createPluginSessionOwnership: (
+      ...args: Parameters<typeof actual.createPluginSessionOwnership>
+    ) => {
+      published.beforeOwnership?.();
+      return actual.createPluginSessionOwnership(...args);
+    },
+  };
+});
+vi.mock("../agents/prepared-model-catalog.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/prepared-model-catalog.js")>()),
+  getPublishedPreparedModelCatalogOwnerSnapshot: () => published.owner,
+  materializePreparedModelCatalogOwner: (owner: PreparedModelRuntimeSnapshot) => owner,
+}));
+
+function fixture(mode: string, scopes = ["operator.sessions.write"]) {
+  const client = roleClient("view", "model-selection-owner");
+  client.connect.scopes = scopes;
+  const profileId = client.authenticatedUserProfile!.profileId;
+  const cfg = rolePolicyConfig();
+  const role = expectDefined(cfg.gateway?.roles?.definitions.view, "selection role");
+  role.scopes = scopes;
+  if (mode !== "unrestricted") {
+    role.models = { allow: ["fixture/allowed"] };
+  }
+  cfg.agents = {
+    defaults: {
+      model: "fixture/hidden",
+      models: { "fixture/hidden": {}, "fixture/allowed": {} },
+    },
+  };
+  let active = true;
+  const operatorAuthority = createAdmittedRunOperatorAuthority({
+    profileId,
+    scopes: client.connect.scopes,
+    permissions: mode === "unrestricted" ? undefined : { models: { allow: ["fixture/allowed"] } },
+    assertCurrent: () => {
+      if (!active) {
+        throw new Error("original model selection authority revoked");
+      }
+    },
+  });
+  client.internal = { ...client.internal, operatorRunAuthority: operatorAuthority };
+  const harness: AgentHarness = {
+    id: "selection-runtime",
+    label: "Selection fixture",
+    authBootstrap: "harness",
+    ...(mode === "unsupported" || mode === "unrestricted"
+      ? {}
+      : { operatorModelPolicySupport: "exact" as const }),
+    supports: () => ({ supported: true }),
+    readModelCatalogReadiness: () => ({ accountType: "subscription", authMode: "oauth" }),
+    async runAttempt() {
+      throw new Error("Model selection must not start inference");
+    },
+  };
+  const builder = createRuntimeTestRegistry(createPluginRuntime());
+  const registry = builder.registry;
+  registries.add(registry);
+  const api = builder.createApi(
+    createPluginRecord({ id: "selection-runtime", origin: "bundled" }),
+    { config: cfg },
+  );
+  api.registerAgentHarness(harness);
+  markPluginRegistryActive(registry);
+  const entries = ["allowed", "hidden"].map((id) => ({
+    provider: "fixture",
+    id,
+    name: id,
+    reasoning: false,
+    nativeRuntime: harness.id,
+  }));
+  const owner = createModelRuntimeChoiceOwnerFixture(cfg, () => true, {
+    pluginRegistry: registry,
+    modelCatalog: { entries, routeVariants: entries },
+  });
+  published.owner = owner;
+  return {
+    cfg,
+    client,
+    profileId,
+    operatorAuthority,
+    owner,
+    registry,
+    api,
+    role,
+    dispose: async () => {
+      await disposePluginRegistryInstances(registry);
+      registries.delete(registry);
+    },
+    catalog: { entries, routeVariants: entries },
+    revoke: () => {
+      active = false;
+    },
+  };
+}
+
+describe("durable session model selection authority", () => {
+  it.each(["allowed", "default-denied", "widened", "unrestricted"])(
+    "binds scoped plugin session creation without a catalog intermediary: %s",
+    async (mode) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+        const f = fixture(mode, ["operator.write"]);
+        if (mode === "allowed") {
+          f.cfg.agents!.defaults!.model = "fixture/allowed";
+        }
+        await state.writeConfig(f.cfg);
+        const scope = { agentId: "main", sessionKey: "agent:main:plugin-model" };
+        delete f.client.internal!.operatorRunAuthority;
+        if (mode === "widened") {
+          published.beforeOwnership = () => {
+            f.role.models = { allow: ["fixture/allowed", "fixture/hidden"] };
+          };
+        }
+        const request = withPluginRuntimeGenerationScope(f.owner, () =>
+          withPluginRuntimeGatewayRequestScope(
+            {
+              client: f.client,
+              context: createDirectChatContext({ getRuntimeConfig: () => f.cfg }),
+              isWebchatConnect: () => false,
+              pluginRegistry: f.registry,
+            },
+            () =>
+              f.api.runtime.agent.session.createSessionEntry({
+                cfg: f.cfg,
+                key: scope.sessionKey,
+                agentId: scope.agentId,
+                initialEntry: { agentHarnessId: "selection-runtime" },
+              }),
+          ),
+        );
+        try {
+          if (mode === "default-denied" || mode === "widened") {
+            await expect(request).rejects.toThrow("does not allow this model");
+            expect(loadSessionEntry(scope)).toBeUndefined();
+          } else {
+            const created = await request;
+            const stored = expectDefined(loadSessionEntry(scope), "plugin-created row");
+            expect(stored.sessionId).toBe(created.sessionId);
+            expect(resolveSessionModelRef(f.cfg, stored, "main")).toMatchObject({
+              provider: "fixture",
+              model: mode === "allowed" ? "allowed" : "hidden",
+            });
+          }
+        } finally {
+          published.owner = undefined;
+          await f.dispose();
+        }
+      });
+    },
+  );
+
+  it.each([
+    ["copy", "allowed"],
+    ["copy", "default-denied"],
+    ["copy", "explicit-denied"],
+    ["copy", "revoked"],
+    ["copy", "widened"],
+    ["copy", "unrestricted"],
+    ["provider", "allowed"],
+    ["provider", "default-denied"],
+    ["provider", "revoked"],
+    ["provider", "widened"],
+    ["provider", "unrestricted"],
+  ])("keeps catalog %s creation under its original %s authority", async (route, mode) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const f = fixture(mode, ["operator.admin"]);
+      if (mode === "widened") {
+        delete f.client.internal!.operatorRunAuthority;
+      }
+      if (mode === "allowed" || mode === "revoked" || mode === "explicit-denied") {
+        f.cfg.agents!.defaults!.model = "fixture/allowed";
+      }
+      await state.writeConfig(f.cfg);
+      const scope = { agentId: "main", sessionKey: "agent:main:catalog-model" };
+      const entered = createDeferred();
+      const release = createDeferred();
+      const prepare = async () => {
+        if (mode === "revoked" || mode === "widened") {
+          entered.resolve();
+          await release.promise;
+        }
+      };
+      const provider: SessionCatalogProvider = {
+        id: "model-catalog",
+        label: "Model catalog",
+        audience: "gateway-operators",
+        list: vi.fn(async () => []),
+        read: vi.fn(async ({ hostId, threadId }) => ({ hostId, threadId, items: [] })),
+        ...(route === "copy"
+          ? {
+              copyToGatewaySession: async () => {
+                await prepare();
+                return {
+                  displayName: "Catalog copy",
+                  ...(mode === "explicit-denied" ? { preferredModel: "fixture/hidden" } : {}),
+                };
+              },
+            }
+          : {
+              continueSession: async () => {
+                await prepare();
+                const created = await f.api.runtime.agent.session.createSessionEntry({
+                  cfg: f.cfg,
+                  key: scope.sessionKey,
+                  agentId: scope.agentId,
+                  initialEntry: { agentHarnessId: "selection-runtime" },
+                });
+                return { sessionKey: created.key };
+              },
+            }),
+      };
+      f.registry.sessionCatalogs.push({
+        pluginId: "selection-runtime",
+        source: "fixture",
+        provider,
+      });
+      markPluginRegistryActive(f.registry);
+      const projection = createSessionRowProjectionFixture({ cfg: f.cfg, store: {} });
+      const context = bindSessionRowProjection(
+        createDirectChatContext({
+          getRuntimeConfig: () => f.cfg,
+          loadGatewayModelCatalogSnapshot: async () => f.catalog,
+        }),
+        () => projection,
+      );
+      const respond = vi.fn<RespondFn>();
+      const request = withPluginRuntimeGenerationScope(f.owner, () =>
+        withPluginRuntimeRegistryScope(f.registry, () =>
+          handleGatewayRequest({
+            req: {
+              type: "req",
+              id: "model-catalog",
+              method: "sessions.catalog.continue",
+              params: {
+                catalogId: provider.id,
+                hostId: "gateway",
+                threadId: "source",
+                agentId: "main",
+              },
+            },
+            client: f.client,
+            context,
+            respond,
+            isWebchatConnect: () => false,
+            extraHandlers: sessionCatalogHandlers,
+          }),
+        ),
+      );
+      try {
+        if (mode === "revoked" || mode === "widened") {
+          expect(
+            await Promise.race([entered.promise.then(() => true), request.then(() => false)]),
+          ).toBe(true);
+          expect(listSessionEntriesCore({ agentId: "main" })).toEqual([]);
+          if (mode === "widened") {
+            f.role.models = { allow: ["fixture/allowed", "fixture/hidden"] };
+          } else {
+            f.revoke();
+          }
+          release.resolve();
+        }
+        await request;
+        expect(respond).toHaveBeenCalledOnce();
+        const rows = listSessionEntriesCore({ agentId: "main" });
+        if (mode === "allowed" || mode === "unrestricted") {
+          expect(respond.mock.calls[0]?.[0]).toBe(true);
+          expect(rows).toHaveLength(1);
+          expect(respond.mock.calls[0]?.[1]).toEqual({ sessionKey: rows[0]?.sessionKey });
+          expect(rows[0]?.entry.sessionId).toEqual(expect.any(String));
+          const row = expectDefined(rows[0], "catalog-created row");
+          expect(resolveSessionModelRef(f.cfg, row.entry, "main")).toMatchObject({
+            provider: "fixture",
+            model: mode === "allowed" ? "allowed" : "hidden",
+          });
+          if (route === "copy") {
+            expect(provider.read).toHaveBeenCalledOnce();
+          }
+        } else {
+          expect(respond.mock.calls[0]?.[0]).toBe(false);
+          expect(respond.mock.calls[0]?.[1]).toBeUndefined();
+          expect(respond.mock.calls[0]?.[2]?.message).toContain(
+            mode === "revoked" ? "no longer active" : "does not allow this model",
+          );
+          expect(rows).toEqual([]);
+          expect(provider.read).not.toHaveBeenCalled();
+        }
+      } finally {
+        release.resolve();
+        await request.catch(() => {});
+        projection.dispose();
+        published.owner = undefined;
+        await f.dispose();
+      }
+    });
+  });
+
+  it.each(["allowed", "default-denied", "explicit-denied", "unsupported", "unrestricted"])(
+    "creates a session only for an admitted %s selection",
+    async (mode) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const f = fixture(mode);
+        const scope = { agentId: "main", sessionKey: "agent:main:model-create" };
+        try {
+          const result = await withPluginRuntimeGenerationScope(f.owner, () =>
+            createGatewaySession({
+              cfg: f.cfg,
+              key: scope.sessionKey,
+              commandSource: "test",
+              operatorRoleActor: { kind: "operator", profileId: f.profileId },
+              requestingOperatorScopes: f.client.connect.scopes,
+              requestingOperatorProfileId: f.profileId,
+              operatorAuthority: f.operatorAuthority,
+              creation: {
+                via: "operator",
+                actor: { type: "human", source: "profile", id: f.profileId },
+              },
+              ...(mode === "default-denied"
+                ? {}
+                : { model: mode === "explicit-denied" ? "fixture/hidden" : "fixture/allowed" }),
+              loadGatewayModelCatalogSnapshot: async () => f.catalog,
+            }),
+          );
+          if (mode === "allowed" || mode === "unrestricted") {
+            expect(result).toMatchObject({ ok: true, postCommit: { status: "completed" } });
+            expect(loadSessionEntry(scope)).toMatchObject({
+              providerOverride: "fixture",
+              modelOverride: "allowed",
+              agentRuntimeOverride: "selection-runtime",
+              createdActor: { type: "human", source: "profile", id: f.profileId },
+            });
+          } else {
+            expect(result).toMatchObject({
+              ok: false,
+              error: {
+                code: "FORBIDDEN",
+                message: expect.stringContaining(
+                  mode === "unsupported" ? "cannot enforce" : "does not allow this model",
+                ),
+              },
+            });
+            expect(loadSessionEntry(scope)).toBeUndefined();
+          }
+        } finally {
+          published.owner = undefined;
+          await f.dispose();
+        }
+      });
+    },
+  );
+
+  it("rejects source revocation after runtime preparation and before creation COMMIT", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const f = fixture("allowed");
+      const scope = { agentId: "main", sessionKey: "agent:main:model-create-revoked" };
+      const entered = createDeferred();
+      const release = createDeferred();
+      const committed = vi.fn();
+      const withCommit: NonNullable<PreparedGatewaySessionLifecycle["withCommit"]> = async (
+        run,
+      ) => {
+        entered.resolve();
+        await release.promise;
+        return await run(() => {});
+      };
+      const request = withPluginRuntimeGenerationScope(f.owner, () =>
+        createGatewaySession({
+          cfg: f.cfg,
+          key: scope.sessionKey,
+          model: "fixture/allowed",
+          commandSource: "test",
+          operatorRoleActor: { kind: "operator", profileId: f.profileId },
+          operatorAuthority: f.operatorAuthority,
+          requestingOperatorScopes: f.client.connect.scopes,
+          loadGatewayModelCatalogSnapshot: async () => f.catalog,
+          prepareLifecycle: async () => ({
+            ok: true,
+            value: { withCommit },
+          }),
+          onCreatedSessionCommitted: committed,
+        }),
+      );
+      try {
+        expect(
+          await Promise.race([entered.promise.then(() => true), request.then(() => false)]),
+        ).toBe(true);
+        expect(loadSessionEntry(scope)).toBeUndefined();
+        f.revoke();
+        const rejected = expect(request).rejects.toThrow(
+          "operator execution authority is no longer active",
+        );
+        release.resolve();
+        await rejected;
+        expect(committed).not.toHaveBeenCalled();
+        expect(loadSessionEntry(scope)).toBeUndefined();
+      } finally {
+        release.resolve();
+        await request.catch(() => {});
+        published.owner = undefined;
+        await f.dispose();
+      }
+    });
+  });
+
+  it.each(["allowed", "explicit-denied", "unsupported", "revoked", "unrestricted"])(
+    "patches the exact stored generation only for an admitted %s selection",
+    async (mode) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const f = fixture(mode);
+        const scope = { agentId: "main", sessionKey: "agent:main:model-patch" };
+        const original = {
+          sessionId: "selection-generation",
+          updatedAt: 1,
+          providerOverride: "fixture",
+          modelOverride: "hidden",
+          createdActor: { type: "human" as const, source: "profile" as const, id: f.profileId },
+        };
+        await upsertSessionEntryCore(scope, original);
+        const storedOriginal = expectDefined(loadSessionEntry(scope), "original stored generation");
+        const catalogRead = vi.fn(async () => {
+          if (mode === "revoked" || mode === "widened") {
+            f.revoke();
+          }
+          return f.catalog;
+        });
+        const respond = vi.fn<RespondFn>();
+        try {
+          await withPluginRuntimeGenerationScope(f.owner, () =>
+            handleGatewayRequest({
+              req: {
+                type: "req",
+                id: "model-patch",
+                method: "sessions.patch",
+                params: {
+                  key: scope.sessionKey,
+                  expectedSessionId: original.sessionId,
+                  model: mode === "explicit-denied" ? "fixture/hidden" : "fixture/allowed",
+                },
+              },
+              context: createDirectChatContext({
+                getRuntimeConfig: () => f.cfg,
+                loadGatewayModelCatalogSnapshot: catalogRead,
+              }),
+              client: f.client,
+              respond,
+              isWebchatConnect: () => false,
+              extraHandlers: sessionMutationHandlers,
+            }),
+          );
+          expect(catalogRead).toHaveBeenCalled();
+          if (mode === "allowed" || mode === "unrestricted") {
+            expect(respond).toHaveBeenCalledWith(
+              true,
+              expect.objectContaining({
+                ok: true,
+                resolved: { modelProvider: "fixture", model: "allowed" },
+              }),
+              undefined,
+            );
+            expect(loadSessionEntry(scope)).toMatchObject({
+              sessionId: original.sessionId,
+              providerOverride: "fixture",
+              modelOverride: "allowed",
+              agentRuntimeOverride: "selection-runtime",
+            });
+          } else {
+            expect(respond).toHaveBeenCalledWith(
+              false,
+              undefined,
+              expect.objectContaining({
+                code: "FORBIDDEN",
+                message: expect.stringContaining(
+                  mode === "revoked"
+                    ? "original model selection authority revoked"
+                    : mode === "unsupported"
+                      ? "cannot enforce"
+                      : "does not allow this model",
+                ),
+              }),
+            );
+            expect(loadSessionEntry(scope)).toEqual(storedOriginal);
+          }
+        } finally {
+          published.owner = undefined;
+          await f.dispose();
+        }
+      });
+    },
+  );
+});

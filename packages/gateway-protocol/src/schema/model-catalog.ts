@@ -51,6 +51,7 @@ const ModelUnavailableReasonSchema = Type.Union([
   Type.Literal("missing-auth"),
   Type.Literal("auth-failed"),
   Type.Literal("cooldown"),
+  Type.Literal("unsupported-runtime"),
 ]);
 
 const ModelRuntimeProperties = {
@@ -89,9 +90,7 @@ const ModelRuntimeProperties = {
 export const ModelRuntimeChoiceSchema = closedObject({
   agentRuntime: GatewayAgentRuntimeSchema,
   ...ModelRuntimeProperties,
-  unavailableReason: Type.Optional(
-    Type.Union([ModelUnavailableReasonSchema, Type.Literal("unsupported-runtime")]),
-  ),
+  unavailableReason: Type.Optional(ModelUnavailableReasonSchema),
 });
 
 export const ModelChoiceSchema = closedObject({

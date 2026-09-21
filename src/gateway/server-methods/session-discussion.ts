@@ -9,6 +9,7 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { getSessionDiscussionProvider } from "../../plugins/session-discussion-registry.js";
 import { maybeGenerateSessionTitle } from "../dashboard-session-title.js";
+import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { resolveStoredSessionKeyForAgentStore } from "../session-store-key.js";
 import { hasExplicitSessionName } from "../session-title-state.js";
@@ -19,17 +20,21 @@ import type {
   GatewayRequestContext,
   GatewayRequestHandler,
   GatewayRequestHandlers,
+  GatewayRequestHandlerOptions,
 } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 const DISCUSSION_TITLE_TIMEOUT_MS = 10_000;
 
 async function maybeGenerateTitleBeforeDiscussionOpen(params: {
+  source: Pick<GatewayRequestHandlerOptions, "client" | "hasCurrentClientAuthority">;
   context: GatewayRequestContext;
   sessionKey: string;
   agentId?: string;
 }): Promise<void> {
+  let captured: ReturnType<typeof captureGatewayOperatorRunAuthority>;
   try {
+    captured = captureGatewayOperatorRunAuthority({ ...params.source, context: params.context });
     const cfg = params.context.getRuntimeConfig();
     const resolved = loadAccessorSessionEntryForGatewayTarget({
       cfg,
@@ -43,6 +48,7 @@ async function maybeGenerateTitleBeforeDiscussionOpen(params: {
     }
 
     const titleRequest = maybeGenerateSessionTitle({
+      operatorAuthority: captured?.authority,
       cfg,
       agentId: resolved.target.agentId,
       entry,
@@ -87,6 +93,8 @@ async function maybeGenerateTitleBeforeDiscussionOpen(params: {
     params.context.logGateway.warn(
       `dashboard session title generation failed: ${formatForLog(error)}`,
     );
+  } finally {
+    captured?.release();
   }
 }
 
@@ -100,7 +108,7 @@ function sessionDiscussionHandler(operation: "info" | "open"): GatewayRequestHan
     operation === "info"
       ? validateSessionDiscussionInfoResult
       : validateSessionDiscussionOpenResult;
-  return async ({ params, respond, context }) => {
+  return async ({ params, respond, context, client, hasCurrentClientAuthority }) => {
     if (!assertValidParams(params, validateParams, method, respond)) {
       return;
     }
@@ -121,6 +129,7 @@ function sessionDiscussionHandler(operation: "info" | "open"): GatewayRequestHan
     try {
       if (operation === "open") {
         await maybeGenerateTitleBeforeDiscussionOpen({
+          source: { client, hasCurrentClientAuthority },
           context,
           sessionKey: params.sessionKey,
           agentId: requestedAgent.agentId,

@@ -21,6 +21,7 @@ import { isCronSessionKey, isSubagentSessionKey } from "../../../routing/session
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../../sessions/input-provenance.js";
 import { joinPresentTextSegments } from "../../../shared/text/join-segments.js";
 import { truncateUtf16Safe } from "../../../utils.js";
+import { readAdmittedRunOperatorAuthority } from "../../admitted-run-context.js";
 import { listActiveProcessSessionReferences } from "../../bash-process-references.js";
 import { resolveProcessToolScopeKey } from "../../bash-process-scope.js";
 import { wrapPluginSystemContextSection } from "../../hook-system-context-boundary.js";
@@ -446,6 +447,7 @@ export function prependSystemPromptAddition(params: {
 
 type AfterTurnRuntimeContextAttempt = Pick<
   EmbeddedRunAttemptParams,
+  | "admittedRunContext"
   | "sessionTarget"
   | "contextEngineAgentId"
   | "sessionKey"
@@ -522,6 +524,7 @@ export function buildAfterTurnRuntimeContext(params: {
   });
   return {
     ...buildEmbeddedCompactionRuntimeContext({
+      operatorAuthority: readAdmittedRunOperatorAuthority(params.attempt.admittedRunContext),
       sessionKey: params.attempt.sessionKey,
       sandboxSessionKey: params.attempt.sandboxSessionKey,
       sandboxAgentId: params.attempt.sandboxAgentId,
@@ -559,6 +562,7 @@ export function buildAfterTurnRuntimeContext(params: {
       }),
     }),
     ...resolveContextEngineCapabilities({
+      operatorAuthority: readAdmittedRunOperatorAuthority(params.attempt.admittedRunContext),
       config: params.attempt.config,
       sessionKey: params.attempt.sessionKey,
       explicitAgentId: params.attempt.contextEngineAgentId,

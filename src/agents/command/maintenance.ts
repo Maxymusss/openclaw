@@ -15,8 +15,9 @@ import { loadAgentRunnerMemoryRuntime } from "./runtime-loaders.js";
 import type { EmbeddedSessionState } from "./session-preparation.js";
 import type { AgentCommandOpts } from "./types.js";
 
-/** Build a new system-owned request, without retaining foreground callbacks or writer custody. */
+/** Maintenance keeps the original source ceiling, but no foreground tool or writer custody. */
 export function createCommandMaintenanceFollowup(params: {
+  operatorAuthority?: FollowupRun["operatorAuthority"];
   prepared: PreparedAgentCommandExecution;
   sessionEntry: SessionEntry;
   embeddedSessionState: EmbeddedSessionState;
@@ -27,6 +28,7 @@ export function createCommandMaintenanceFollowup(params: {
 }): FollowupRun {
   const { prepared, sessionEntry } = params;
   return createSessionMaintenanceFollowup({
+    operatorAuthority: params.operatorAuthority,
     run: {
       agentId: prepared.sessionAgentId,
       agentDir: prepared.agentDir,
@@ -147,6 +149,7 @@ async function runCommandPreflightMaintenance(
   assertActive();
   const followupRun = createCommandMaintenanceFollowup({
     ...params,
+    operatorAuthority: opts.operatorAuthority,
     sessionEntry,
     provider: modelSelection.provider,
     model: modelSelection.model,

@@ -3,8 +3,16 @@ import {
   GATEWAY_CLIENT_IDS,
   hasGatewayClientCap,
 } from "../../../packages/gateway-protocol/src/client-info.js";
-import { validateAgentsListParams } from "../../../packages/gateway-protocol/src/index.js";
-import { listAgentIds } from "../../agents/agent-scope.js";
+import {
+  ErrorCodes,
+  errorShape,
+  validateAgentsListParams,
+} from "../../../packages/gateway-protocol/src/index.js";
+import {
+  isOperatorModelPolicyError,
+  OperatorModelPolicyError,
+} from "../../agents/operator-model-policy.js";
+import { captureOperatorModelCatalogAccess } from "../operator-model-catalog.js";
 import { listAgentsForGateway } from "../session-utils.js";
 import {
   readPreparedServerMethodModelCatalog,
@@ -13,38 +21,90 @@ import {
 import type { GatewayRequestHandler } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
-export const agentListHandler: GatewayRequestHandler = async ({
-  params,
-  respond,
-  context,
-  client,
-}) => {
+export const agentListHandler: GatewayRequestHandler = async (options) => {
+  const { params, respond, context, client } = options;
   if (!assertValidParams(params, validateAgentsListParams, "agents.list", respond)) {
     return;
   }
 
-  const cfg = context.getRuntimeConfig();
-  const agentIds = listAgentIds(cfg);
-  const modelCatalogByAgentId = context.readPreparedGatewayModelCatalogBatch
-    ? await readPreparedServerMethodModelCatalogs(context, agentIds)
-    : new Map(
-        await Promise.all(
-          agentIds.map(
-            async (agentId) =>
-              [agentId, await readPreparedServerMethodModelCatalog(context, { agentId })] as const,
+  let release: (() => void) | undefined;
+  try {
+    const access = captureOperatorModelCatalogAccess(options);
+    release = access.release;
+    const cfg = context.getRuntimeConfig();
+    const agentIds = access.agentIds();
+    if (agentIds.length === 0) {
+      throw new OperatorModelPolicyError("Your operator role has no available agents.");
+    }
+    const modelCatalogByAgentId = context.readPreparedGatewayModelCatalogBatch
+      ? await readPreparedServerMethodModelCatalogs(context, agentIds)
+      : new Map(
+          await Promise.all(
+            agentIds.map(
+              async (agentId) =>
+                [
+                  agentId,
+                  await readPreparedServerMethodModelCatalog(context, { agentId }),
+                ] as const,
+            ),
           ),
-        ),
-      );
-  respond(
-    true,
-    await listAgentsForGateway(cfg, undefined, {
+        );
+    access.assertCurrent();
+    const result = await listAgentsForGateway(cfg, undefined, {
+      isAgentAllowed: access.allowsAgent,
       modelCatalogByAgentId,
       includeSystem: hasGatewayClientCap(client?.connect.caps, GATEWAY_CLIENT_CAPS.AGENT_KIND),
       httpAvatarBasePath:
         client?.connect.client.id === GATEWAY_CLIENT_IDS.CONTROL_UI
           ? (cfg.gateway?.controlUi?.basePath ?? "")
           : undefined,
-    }),
-    undefined,
-  );
+    });
+    const agents = result.agents
+      .filter((agent) => access.allowsAgent(agent.id))
+      .map((agent) => {
+        if (!access.restricted()) {
+          return agent;
+        }
+        const {
+          model,
+          utilityModel,
+          agentRuntime,
+          thinkingLevels,
+          thinkingOptions,
+          thinkingDefault,
+          ...rest
+        } = agent;
+        const primary = model?.primary;
+        const visiblePrimary = Boolean(primary && access.allowsRef(primary));
+        return {
+          ...rest,
+          ...(model
+            ? {
+                model: {
+                  ...(visiblePrimary ? { primary } : {}),
+                  ...(model.fallbacks
+                    ? { fallbacks: model.fallbacks.filter(access.allowsRef) }
+                    : {}),
+                },
+              }
+            : {}),
+          ...(utilityModel && access.allowsRef(utilityModel) ? { utilityModel } : {}),
+          ...(visiblePrimary
+            ? { agentRuntime, thinkingLevels, thinkingOptions, thinkingDefault }
+            : {}),
+        };
+      });
+    const defaultId = agents.find((agent) => agent.id === result.defaultId)?.id ?? agents[0]?.id;
+    if (!defaultId) {
+      throw new OperatorModelPolicyError("Your operator role has no available agents.");
+    }
+    respond(true, { ...result, defaultId, agents }, undefined);
+  } catch (error) {
+    if (!isOperatorModelPolicyError(error)) {
+      throw error;
+    }
+    respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, error.message));
+  } finally {
+    release?.();
+  }
 };

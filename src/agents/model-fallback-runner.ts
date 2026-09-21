@@ -1,5 +1,4 @@
 import { sanitizeForLog } from "../../packages/terminal-core/src/ansi.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitFailoverEvent } from "../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -40,13 +39,9 @@ import {
   isTranscriptNotContinuableError,
   type ModelFallbackAuthRuntime,
   type ModelFallbackClassifiedResult,
-  type ModelFallbackErrorHandler,
   type ModelFallbackExhaustionResult,
-  type ModelFallbackResultClassifier,
-  type ModelFallbackRunFn,
   type ModelFallbackRunOptions,
   type ModelFallbackRunResult,
-  type ModelFallbackRuntimeContext,
   type ModelFallbackStepHandler,
   recordFailedCandidateAttempt,
   resolveFallbackAuthScope,
@@ -70,13 +65,17 @@ import {
   logModelFallbackDecision,
   type ModelFallbackDecisionParams,
 } from "./model-fallback-observation.js";
+import type { RunWithModelFallbackParams } from "./model-fallback-runner.types.js";
 import {
   MODEL_FALLBACK_SKIPPED_CODE,
   type FallbackAttempt,
   type ModelFallbackCandidate,
-  type ModelFallbackRouteResolution,
 } from "./model-fallback.types.js";
-import type { ModelManifestNormalizationContext } from "./model-ref-shared.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelAuthorityCurrent,
+  restrictOperatorModelCandidates,
+} from "./operator-model-policy.js";
 import {
   resolveSessionSuspensionReason,
   suspendSession,
@@ -87,32 +86,6 @@ const log = createSubsystemLogger("model-fallback");
 const modelFallbackAuthRuntimeLoader = createLazyImportLoader<ModelFallbackAuthRuntime>(
   () => import("./auth-profiles.runtime.js"),
 );
-
-type RunWithModelFallbackParams<T> = ModelFallbackRuntimeContext & {
-  cfg: OpenClawConfig | undefined;
-  provider: string;
-  model: string;
-  runId?: string;
-  sessionId?: string;
-  userLockedAuthProfileId?: string;
-  prepareCandidateChain?: (candidates: readonly ModelFallbackCandidate[]) => Promise<void> | void;
-  lane?: string;
-  agentDir?: string;
-  /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
-  fallbacksOverride?: string[];
-  requestedRouteResolution?: ModelFallbackRouteResolution;
-  run: ModelFallbackRunFn<T>;
-  onError?: ModelFallbackErrorHandler;
-  onFallbackStep?: ModelFallbackStepHandler;
-  classifyResult?: ModelFallbackResultClassifier<T>;
-  /** Return false when a thrown attempt committed work that must not be replayed. */
-  canFallbackAfterError?: (
-    attempt: Parameters<ModelFallbackErrorHandler>[0],
-  ) => boolean | Promise<boolean>;
-  mergeExhaustedResult?: (params: { latestResult: T; preferredResult: T }) => T;
-  skipAuthProfileRuntime?: boolean;
-  abortSignal?: AbortSignal;
-} & ModelManifestNormalizationContext;
 
 type DeferredSessionSuspensionState = {
   pending?: SessionSuspensionParams;
@@ -149,16 +122,20 @@ async function runWithModelFallbackInternal<T>(
   params: RunWithModelFallbackParams<T>,
   deferredSuspension: DeferredSessionSuspensionState,
 ): Promise<ModelFallbackRunResult<T>> {
-  const candidates = resolveModelCandidateChain({
-    cfg: params.cfg,
-    agentId: params.agentId,
-    provider: params.provider,
-    model: params.model,
-    fallbacksOverride: params.fallbacksOverride,
-    requestedRouteResolution: params.requestedRouteResolution,
-    manifestPlugins: params.manifestPlugins,
-  });
+  const candidates = restrictOperatorModelCandidates(
+    params.operatorAuthority,
+    resolveModelCandidateChain({
+      cfg: params.cfg,
+      agentId: params.agentId,
+      provider: params.provider,
+      model: params.model,
+      fallbacksOverride: params.fallbacksOverride,
+      requestedRouteResolution: params.requestedRouteResolution,
+      manifestPlugins: params.manifestPlugins,
+    }),
+  );
   await params.prepareCandidateChain?.(candidates);
+  assertOperatorModelAuthorityCurrent(params.operatorAuthority);
   const userLockedAuthProfileId = params.userLockedAuthProfileId?.trim() || undefined;
   const authRuntime =
     !params.skipAuthProfileRuntime &&
@@ -251,6 +228,7 @@ async function runWithModelFallbackInternal<T>(
     if (tlsFailedProviders.has(candidate.provider)) {
       continue;
     }
+    assertOperatorModelAllowed(params.operatorAuthority, candidate.provider, candidate.model);
     const candidateRef = { provider: candidate.provider, model: candidate.model };
     const nextCandidateIndex = resolveNextFallbackCandidateIndex({
       candidates,
@@ -476,7 +454,10 @@ async function runWithModelFallbackInternal<T>(
     }
 
     const attemptRun = await runFallbackAttempt({
-      run: params.run,
+      run: (provider, model, options) => {
+        assertOperatorModelAllowed(params.operatorAuthority, provider, model);
+        return params.run(provider, model, options);
+      },
       ...candidate,
       attempts,
       captureHarnessPreflight: true,

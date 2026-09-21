@@ -18,6 +18,7 @@ import {
   type AdmittedRunContext,
   type OperationalRunInstanceRef,
 } from "../admitted-run-context.js";
+import { assertAdmittedRunOperatorAuthority } from "../admitted-run-operator-authority.js";
 import { copyAgentToolMetadata } from "../agent-tool-metadata.js";
 import type { EmbeddedRunToolAuthorityBinding } from "../embedded-agent-runner/run-state.js";
 import {
@@ -196,6 +197,17 @@ export function createAdmittedGatewayToolCallerIdentity(
 
 export function getGatewayToolCallerIdentity(): GatewayToolCallerIdentity | undefined {
   return gatewayToolCallerStorage.getStore();
+}
+
+/** Capture before auxiliary inference yields; a later caller cannot replace this source. */
+export function captureGatewayToolOperatorAuthority(): AdmittedRunOperatorAuthority | undefined {
+  captureGatewayToolCallerAssertion()?.();
+  const authority = getGatewayToolCallerIdentity()?.operatorAuthority;
+  if (authority) {
+    assertAdmittedRunOperatorAuthority(authority);
+    authority.assertCurrent();
+  }
+  return authority;
 }
 
 /** Capture the admitted run and worker owner, independently of optional audit collection. */

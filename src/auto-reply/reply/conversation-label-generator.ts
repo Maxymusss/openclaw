@@ -1,9 +1,16 @@
 // Generates short labels for sessions from conversation context.
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { createReasoningTagTextPartitioner } from "../../../packages/markdown-core/src/reasoning-tags.js";
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { runIsolatedCompletion } from "../../agents/isolated-completion.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelAuthorityCurrent,
+  isOperatorModelPolicyError,
+  runWithOperatorModelAuthority,
+} from "../../agents/operator-model-policy.js";
 import { resolveCompatibleAgentRuntimeForProvider } from "../../agents/session-runtime-compat.js";
 import { resolveSimpleCompletionSelectionForAgent } from "../../agents/simple-completion-runtime.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -23,6 +30,7 @@ type ConversationLabelAttempt = {
 
 /** Inputs for generating a short conversation label from the configured utility model. */
 export type ConversationLabelParams = {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   userMessage: string;
   prompt: string;
   cfg: OpenClawConfig;
@@ -102,7 +110,16 @@ async function runLabelAttempts(
     normalizeLabel?: (label: string) => string | null;
   },
 ): Promise<string | null> {
+  return runWithOperatorModelAuthority(params.operatorAuthority, () =>
+    runOwnedLabelAttempts(params),
+  );
+}
+
+async function runOwnedLabelAttempts(
+  params: Parameters<typeof runLabelAttempts>[0],
+): Promise<string | null> {
   const assertCurrent = () => {
+    assertOperatorModelAuthorityCurrent(params.operatorAuthority);
     params.assertCurrent?.();
     params.abortSignal?.throwIfAborted();
   };
@@ -120,6 +137,7 @@ async function runLabelAttempts(
       if (!selection) {
         throw new Error("conversation label model selection unavailable");
       }
+      assertOperatorModelAllowed(params.operatorAuthority, selection.provider, selection.modelId);
       // The session's runtime override was resolved for its primary provider; a
       // utility model on another provider cannot run through that harness.
       const agentHarnessRuntimeOverride = resolveCompatibleAgentRuntimeForProvider({
@@ -128,6 +146,7 @@ async function runLabelAttempts(
         cfg: params.cfg,
       });
       const completion = await runIsolatedCompletion({
+        operatorAuthority: params.operatorAuthority,
         config: params.cfg,
         provider: selection.runtimeProvider ?? selection.provider,
         model: selection.modelId,
@@ -160,7 +179,10 @@ async function runLabelAttempts(
       if (normalized) {
         return normalized;
       }
-    } catch {
+    } catch (error) {
+      if (isOperatorModelPolicyError(error)) {
+        throw error;
+      }
       assertCurrent();
       failures.push(attempt.phase);
     }

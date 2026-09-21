@@ -7,13 +7,140 @@ import type { ApplicationGatewaySnapshot } from "../../app/gateway.ts";
 import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
 import { sessionMutationGatewayHello } from "../../test-helpers/gateway-methods.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
+import { resolveChatModelSetup } from "./chat-model-setup.ts";
 import {
   readChatPaneMutationAccess,
   renderChatPaneComposerControls,
 } from "./chat-pane-session-controls.ts";
+import { handleSendChat } from "./chat-send-submit.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
+import { useChatSendBrowserFixture } from "./outbox-browser.test-support.ts";
+
+useChatSendBrowserFixture();
 
 describe("chat pane model-setting permissions", () => {
+  it("selects, commits and sends an approved model on an existing thread with a redacted default", async () => {
+    const initial: GatewaySessionRow = {
+      key: "agent:main:restricted",
+      kind: "direct",
+      sessionId: "existing-generation",
+    };
+    let row = initial;
+    const result = () => ({
+      ...createSessionsListResult({ defaultsModel: null }),
+      sessions: [row],
+    });
+    const hello = sessionMutationGatewayHello([
+      "operator.sessions.read",
+      "operator.sessions.write",
+    ]);
+    hello.auth!.modelRestricted = true;
+    const host = makeChatHost({
+      sessionKey: row.key,
+      sessionsResult: result(),
+      hello,
+      chatModelCatalog: [{ id: "approved", provider: "fixture", available: true }],
+      chatModelSwitchPromises: {},
+      requestHandlers: {
+        "sessions.patch": () => {
+          row = { ...row, model: "approved", modelProvider: "fixture" };
+          return {
+            ok: true,
+            key: row.key,
+            entry: {
+              sessionId: row.sessionId,
+              modelOverride: "approved",
+              providerOverride: "fixture",
+            },
+            resolved: { model: "approved", modelProvider: "fixture" },
+          };
+        },
+        "sessions.list": result,
+        "chat.send": { status: "started", runId: "approved-model-run" },
+      },
+    });
+    const state = host as unknown as ChatPageHost;
+    state.chatModelPickerOpenSessionKey = row.key;
+    const selectedSession = () =>
+      state.sessions.state.result?.sessions.find((session) => session.key === initial.key) ??
+      initial;
+    const setup = () =>
+      resolveChatModelSetup({
+        state,
+        session: selectedSession(),
+        agent: { id: "main" },
+        agentsLoaded: true,
+        catalog: false,
+        onSetup: vi.fn(),
+      });
+    const container = document.createElement("div");
+    const draw = () => {
+      const access = readChatPaneMutationAccess(
+        { client: state.client, phase: "connected", hello } as ApplicationGatewaySnapshot,
+        row.key,
+      );
+      const controls = renderChatPaneComposerControls({
+        state,
+        selectedSession: selectedSession(),
+        agentDefaultModel: undefined,
+        modelAccess: access.model,
+        effortAccess: access.effort,
+        contextWindowAccess: access.contextWindow,
+        permissionAccess: access.permission,
+        canSelectFull: false,
+        onModelSetup: vi.fn(),
+      });
+      render(controls.composerControls, container);
+    };
+    try {
+      expect(setup().modelSetupRequired).toBe(true);
+      draw();
+      const choice = container.querySelector<HTMLButtonElement>(
+        '[data-chat-model-option="fixture/approved"]',
+      );
+      expect(choice).not.toBeNull();
+      choice!.click();
+      const patch = state.chatModelSwitchPromises[row.key];
+      expect(patch).toBeDefined();
+      expect(await patch).toBe(true);
+      expect(host.request).toHaveBeenCalledWith(
+        "sessions.patch",
+        expect.objectContaining({
+          key: row.key,
+          model: "fixture/approved",
+          expectedSessionId: row.sessionId,
+        }),
+      );
+      expect(Object.hasOwn(state.sessions.state.modelOverrides, initial.key)).toBe(false);
+      expect(state.sessions.state.result?.sessions).toEqual([
+        expect.objectContaining({
+          key: initial.key,
+          sessionId: initial.sessionId,
+          model: "approved",
+          modelProvider: "fixture",
+        }),
+      ]);
+      state.sessionsResult = state.sessions.state.result;
+      expect(setup().modelSetupRequired).toBe(false);
+      expect(setup().modelUnavailableBanner).toBeUndefined();
+      draw();
+      expect(
+        container.querySelector<HTMLElement>("[data-chat-model-select]")?.dataset.chatSelectValue,
+      ).toBe("fixture/approved");
+      await handleSendChat(host, "Use this approved model");
+      expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toEqual([
+        [
+          "chat.send",
+          expect.objectContaining({ sessionKey: row.key, message: "Use this approved model" }),
+        ],
+      ]);
+      expect(host.lastError).toBeNull();
+    } finally {
+      render(null, container);
+      host.sessions.dispose();
+    }
+  });
+
   it.each(["operator.read", "operator.write", "operator.admin"])(
     "uses exact field permissions for an existing session with %s",
     async (scope) => {

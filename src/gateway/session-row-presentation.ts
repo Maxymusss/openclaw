@@ -1,4 +1,7 @@
 import { isIncognitoSessionKey } from "../routing/session-key.js";
+import type { OperatorPermissionCeiling } from "../shared/operator-permissions.js";
+import { projectOperatorSessionModel } from "./operator-model-projection.js";
+import { resolveOperatorPermissionCeiling } from "./operator-role-policy.js";
 import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
 import type { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
 import type { GatewayClient } from "./server-methods/types.js";
@@ -39,6 +42,7 @@ export function prepareProjectedSessionPresentation(
   client?: GatewayClient | null,
   now = Date.now(),
   projectRun?: ReturnType<typeof createVisibleActiveSessionRunProjector>,
+  readModelPermissions?: () => OperatorPermissionCeiling | undefined,
 ) {
   const { cfg, rowContext } = projection.state;
   const subagentRuns = rowContext.subagentRuns.atTime(now);
@@ -148,7 +152,14 @@ export function prepareProjectedSessionPresentation(
         };
       }
     }
-    return row;
+    return client === undefined && !readModelPermissions
+      ? row
+      : projectOperatorSessionModel(
+          row,
+          readModelPermissions
+            ? readModelPermissions()
+            : resolveOperatorPermissionCeiling(client ?? null, cfg),
+        );
   };
   return {
     rowContext: { ...rowContext, subagentRuns },

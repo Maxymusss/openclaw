@@ -1,8 +1,14 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isValidBase64 } from "@openclaw/media-core/base64";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-operator-authority.js";
 import { resolveAgentEffectiveModelPrimary } from "../agents/agent-scope.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
+import {
+  assertOperatorModelAuthorityCurrent,
+  isOperatorModelPolicyError,
+  runWithOperatorModelAuthority,
+} from "../agents/operator-model-policy.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../agents/session-runtime-compat.js";
 import { createCrustaceanSlug } from "../agents/session-slug.js";
@@ -95,6 +101,7 @@ export function buildDashboardSessionTitleSource(params: {
 }
 
 type SessionTitleParams = {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg: OpenClawConfig;
   agentId: string;
   entry: SessionEntry | undefined;
@@ -160,6 +167,7 @@ function normalizeDashboardSessionTitle(raw: string): string | null {
 }
 
 async function generateDashboardSessionTitle(params: {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg: OpenClawConfig;
   agentId: string;
   entry?: DashboardSessionTitleModelEntry;
@@ -201,6 +209,7 @@ async function generateDashboardSessionTitle(params: {
     params.assertCurrent?.();
     params.abortSignal?.throwIfAborted();
     const generated = await generateConversationLabelWithFallback({
+      operatorAuthority: params.operatorAuthority,
       userMessage: sourceText,
       prompt: DASHBOARD_SESSION_TITLE_PROMPT,
       cfg: params.cfg,
@@ -218,7 +227,10 @@ async function generateDashboardSessionTitle(params: {
     if (generated) {
       return normalizeDashboardSessionTitle(generated);
     }
-  } catch {
+  } catch (error) {
+    if (isOperatorModelPolicyError(error)) {
+      throw error;
+    }
     params.assertCurrent?.();
     params.abortSignal?.throwIfAborted();
   }
@@ -233,6 +245,7 @@ async function generateDashboardSessionTitle(params: {
 
 /** Prepares a creation draft's title without creating or updating a session. */
 export async function prepareDashboardSessionTitle(params: {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg: OpenClawConfig;
   agentId: string;
   entry?: DashboardSessionTitleModelEntry;
@@ -242,7 +255,10 @@ export async function prepareDashboardSessionTitle(params: {
 }): Promise<string | null> {
   try {
     return await generateDashboardSessionTitle({ ...params, utilityOnly: true });
-  } catch {
+  } catch (error) {
+    if (isOperatorModelPolicyError(error)) {
+      throw error;
+    }
     params.assertCurrent?.();
     params.abortSignal?.throwIfAborted();
     // Speculation is optional; a failed utility pass must not invent a title.
@@ -296,6 +312,12 @@ export async function maybeGenerateDashboardSessionTitle(
 
 /** Joins existing work; only the caller that persists a title returns true. */
 export async function maybeGenerateSessionTitle(params: SessionTitleParams): Promise<boolean> {
+  return runWithOperatorModelAuthority(params.operatorAuthority, () =>
+    maybeGenerateOwnedSessionTitle(params),
+  );
+}
+
+async function maybeGenerateOwnedSessionTitle(params: SessionTitleParams): Promise<boolean> {
   const sessionKey = resolveStoredSessionKeyForAgentStore(params);
   const scope = { agentId: params.agentId, sessionKey, storePath: params.storePath };
   const entry = loadSessionEntry(scope);
@@ -306,7 +328,14 @@ export async function maybeGenerateSessionTitle(params: SessionTitleParams): Pro
   const requestTarget = { ...scope, sessionId: params.sessionId };
   const existing = sessionTitleRequests.get(requestTarget);
   if (existing) {
-    const persisted = await (params.retryFailedJoin ? existing.catch(() => false) : existing);
+    const persisted = await (params.retryFailedJoin
+      ? existing.catch((error: unknown) => {
+          if (isOperatorModelPolicyError(error)) {
+            throw error;
+          }
+          return false;
+        })
+      : existing);
     // A failed join can retry once with fresh session state and this caller's authority.
     return !persisted && params.retryFailedJoin
       ? await maybeGenerateSessionTitle({ ...params, retryFailedJoin: false })
@@ -337,6 +366,7 @@ export async function maybeGenerateSessionTitle(params: SessionTitleParams): Pro
 
   const generate = (abortSignal?: AbortSignal) =>
     generateDashboardSessionTitle({
+      operatorAuthority: params.operatorAuthority,
       cfg: params.cfg,
       agentId: params.agentId,
       entry: params.entry ?? entry,
@@ -349,12 +379,11 @@ export async function maybeGenerateSessionTitle(params: SessionTitleParams): Pro
       return false;
     }
     const persist = async (assertSourceCurrent?: () => void) => {
-      const assertCommitAllowed = assertSourceCurrent
-        ? () => {
-            params.commitGuard?.();
-            assertSourceCurrent();
-          }
-        : params.commitGuard;
+      const assertCommitAllowed = () => {
+        assertOperatorModelAuthorityCurrent(params.operatorAuthority);
+        params.commitGuard?.();
+        assertSourceCurrent?.();
+      };
       if (assertSourceCurrent) {
         assertCommitAllowed?.();
       }

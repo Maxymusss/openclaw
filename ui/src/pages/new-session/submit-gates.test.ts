@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectsListResult } from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.ts";
+import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
 import { CHAT_ROUTE_READY_EVENT } from "../chat/chat-history-events.ts";
 import { createDraftFixture } from "./draft-submission-flow.test-support.ts";
 import { renderControl } from "./model-control.test-support.ts";
@@ -88,6 +89,53 @@ describe("DraftSubmissionFlow submit gates", () => {
     expect(vi.mocked(context.sessions.createResult).mock.calls[0]?.[0]).not.toHaveProperty(
       "projectId",
     );
+  });
+
+  it("submits an approved explicit model with a redacted default and narrow session grants", async () => {
+    const { context, flow, place } = createDraftFixture({
+      agents: [{ id: "main", workspace: "/workspace", workspaceGit: false }],
+      methods: ["models.list", "sessions.create"],
+      scopes: ["operator.sessions.read", "operator.sessions.write"],
+      modelCatalog: async () => ({
+        models: [{ id: "allowed", provider: "fixture", available: true }],
+      }),
+    });
+    context.gateway.snapshot.hello!.auth!.modelRestricted = true;
+    await loadModelCatalog(context.gateway.snapshot.client!, { agentId: "main" });
+    place.modelControl.load(context, "main", true, { agent: place.selectedAgent() });
+    flow.setMessage("Use the approved model");
+    try {
+      expect(flow.submitBlock()?.gate).toBe("model-setup");
+      expect(flow.canSubmit()).toBe(false);
+      const view = renderControl(place.modelControl, context, "main", place.selectedAgent());
+      const choice = view.querySelector<HTMLButtonElement>(
+        '[data-chat-model-option="fixture/allowed"]',
+      );
+      expect(choice).not.toBeNull();
+      choice!.click();
+      expect(place.modelControl.selected).toBe("fixture/allowed");
+      expect(flow.submitBlock()).toBeUndefined();
+      expect(flow.canSubmit()).toBe(true);
+      vi.mocked(context.sessions.createResult).mockResolvedValue({
+        key: "agent:main:approved",
+        initialRun: { status: "idle" },
+      });
+      vi.mocked(context.navigateAndWait).mockImplementation(async () => {
+        queueMicrotask(() => document.dispatchEvent(new Event(CHAT_ROUTE_READY_EVENT)));
+      });
+      await flow.submit();
+      expect(context.sessions.createResult).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          agentId: "main",
+          model: "fixture/allowed",
+          message: "Use the approved model",
+        }),
+        { reconciliation: "background" },
+      );
+      expect(flow.error).toBeNull();
+    } finally {
+      place.modelControl.reset();
+    }
   });
 
   it.each([

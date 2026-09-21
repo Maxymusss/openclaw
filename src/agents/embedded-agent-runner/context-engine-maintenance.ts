@@ -2,7 +2,6 @@
  * Schedules and runs deferred context-engine turn maintenance.
  */
 import { AsyncLocalStorage } from "node:async_hooks";
-import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import { publishTranscriptUpdate } from "../../config/sessions/session-accessor.js";
@@ -33,7 +32,6 @@ import {
 } from "../../tasks/context-engine-maintenance-task-owner.js";
 import {
   completeTaskRunByRunId,
-  createQueuedTaskRun,
   failTaskRunByRunId,
   recordTaskRunProgressByRunId,
   startTaskRunByRunId,
@@ -43,6 +41,7 @@ import {
   findTaskByRunIdForOwner,
   updateTaskNotifyPolicyForOwner,
 } from "../../tasks/task-owner-access.js";
+import { isOperatorModelPolicyError } from "../operator-model-policy.js";
 import { findActiveSessionTask } from "../session-async-task-status.js";
 import {
   createSessionMaintenanceOwner,
@@ -50,7 +49,11 @@ import {
 } from "../session-maintenance/coordinator.js";
 import { SessionManager } from "../sessions/index.js";
 import { withSessionManagerWrite } from "../sessions/session-manager-write-admission.js";
-import { resolveContextEngineCapabilities } from "./context-engine-capabilities.js";
+import {
+  resolveContextEngineCapabilities,
+  readContextEngineOperatorAuthority,
+} from "./context-engine-capabilities.js";
+import { buildTurnMaintenanceTaskDescriptor } from "./context-engine-maintenance-task.js";
 import {
   disposeDeferredMaintenanceContextEngine,
   mergeContextEngineFactoryWork,
@@ -210,33 +213,6 @@ export async function waitForDeferredTurnMaintenanceForSession(sessionKey?: stri
   await waitForSessionMaintenance(sessionKey);
 }
 
-function buildTurnMaintenanceTaskDescriptor(params: {
-  sessionKey: string;
-  runId?: string;
-  notifyPolicy?: "silent" | "done_only" | "state_changes";
-  deliveryStatus?: "not_applicable" | "pending";
-}) {
-  const runId =
-    params.runId ??
-    `turn-maint:${params.sessionKey}:${Date.now().toString(36)}:${randomUUID().slice(0, 8)}`;
-  return createQueuedTaskRun({
-    runtime: "acp",
-    taskKind: TURN_MAINTENANCE_TASK_KIND,
-    sourceId: TURN_MAINTENANCE_TASK_KIND,
-    requesterSessionKey: params.sessionKey,
-    ownerKey: params.sessionKey,
-    scopeKind: "session",
-    runId,
-    label: "Context engine turn maintenance",
-    task: "Deferred context-engine maintenance after turn.",
-    notifyPolicy: params.notifyPolicy ?? "silent",
-    // Fast maintenance stays silent and must not create a one-task flow.
-    // Long-running and failed workers promote it to pending before notifying.
-    deliveryStatus: params.deliveryStatus ?? "not_applicable",
-    preferMetadata: true,
-  });
-}
-
 /**
  * Attach runtime-owned transcript rewrite helpers to an existing
  * context-engine runtime context payload.
@@ -251,6 +227,7 @@ function buildContextEngineMaintenanceRuntimeContext(
   return {
     ...params.runtimeContext,
     ...resolveContextEngineCapabilities({
+      operatorAuthority: readContextEngineOperatorAuthority(params.runtimeContext),
       config: params.config,
       sessionKey: params.sessionKey,
       explicitAgentId: params.contextEngineAgentId,
@@ -706,6 +683,9 @@ export async function runContextEngineMaintenance(
     contextEngine.info.turnMaintenanceMode === "background";
 
   if (shouldDefer) {
+    const authority = readContextEngineOperatorAuthority(params.runtimeContext);
+    const release = authority?.retain?.();
+    let transferred = false;
     try {
       const sessionKey = normalizeOptionalString(params.sessionKey);
       if (!sessionKey) {
@@ -725,10 +705,23 @@ export async function runContextEngineMaintenance(
         onScheduleFailure: params.onDeferredMaintenanceFailure,
       });
       if (deferred) {
+        // The returned promise includes reruns, factory disposal and the actual work drain.
+        transferred = true;
+        void deferred.then(
+          () => release?.(),
+          () => release?.(),
+        );
         params.onDeferredMaintenance?.(deferred);
       }
     } catch (err) {
+      if (isOperatorModelPolicyError(err)) {
+        throw err;
+      }
       log.warn(`failed to schedule deferred context engine maintenance: ${String(err)}`);
+    } finally {
+      if (!transferred) {
+        release?.();
+      }
     }
     return undefined;
   }
@@ -736,6 +729,9 @@ export async function runContextEngineMaintenance(
   try {
     return await executeContextEngineMaintenance({ ...params, contextEngine, executionMode });
   } catch (err) {
+    if (isOperatorModelPolicyError(err)) {
+      throw err;
+    }
     params.abortSignal?.throwIfAborted();
     params.assertActive?.();
     log.warn(`context engine maintain failed (${params.reason}): ${String(err)}`);

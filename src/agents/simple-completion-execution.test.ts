@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { findSourceImportBackedges } from "../../test/helpers/source-import-closure.js";
 import { bindModelCompletionOwner } from "../llm/model-runtime-binding.js";
 import type { Model } from "../llm/types.js";
+import { createAdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 
 const mocks = vi.hoisted(() => ({
   complete: vi.fn(),
@@ -60,6 +61,44 @@ describe("prepared completion import boundary", () => {
 });
 
 describe("completeWithPreparedSimpleCompletionModel", () => {
+  it.each(["allowed", "forbidden", "revoked"] as const)(
+    "checks the final transport model and original source: %s",
+    async (mode) => {
+      let current = true;
+      const authority = createAdmittedRunOperatorAuthority({
+        profileId: "viewer",
+        scopes: ["operator.sessions.write"],
+        permissions: { models: { allow: ["openai/gpt-5.4"] } },
+        assertCurrent: () => {
+          if (!current) {
+            throw new Error("original source revoked");
+          }
+        },
+      });
+      const preparedModel = { ...baseModel, id: mode === "forbidden" ? "other" : baseModel.id };
+      mocks.prepareModel.mockImplementationOnce(() => {
+        current = mode !== "revoked";
+        return preparedModel;
+      });
+      const completion = completeWithPreparedSimpleCompletionModel({
+        operatorAuthority: authority,
+        model: baseModel,
+        auth: { apiKey: "test-key", source: "test", mode: "api-key" },
+        context,
+      });
+      if (mode === "allowed") {
+        await expect(completion).resolves.toEqual({ content: [{ type: "text", text: "ok" }] });
+        expect(completionRequests()).toEqual([
+          { model: preparedModel, context, options: { apiKey: "test-key" } },
+        ]);
+      } else {
+        await expect(completion).rejects.toMatchObject({ code: "OPERATOR_MODEL_POLICY_DENIED" });
+        expect(mocks.complete).not.toHaveBeenCalled();
+      }
+      expect(mocks.prepareModel).toHaveBeenCalledOnce();
+    },
+  );
+
   it("stops before transport preparation when its owner retires during host initialization", async () => {
     const retired = new Error("Completion owner retired.");
     let current = true;

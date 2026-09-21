@@ -12,7 +12,10 @@ import {
 import { formatErrorMessage } from "../../infra/errors.js";
 import { claimHeartbeatContextForUserRun } from "../../infra/heartbeat-outcome-store.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import { resolveAdmittedRunActiveAssertion } from "../admitted-run-context.js";
+import {
+  readAdmittedRunOperatorAuthority,
+  resolveAdmittedRunActiveAssertion,
+} from "../admitted-run-context.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import {
   isHostScopedAgentToolActive,
@@ -25,6 +28,10 @@ import type {
   EmbeddedRunAttemptParams,
   EmbeddedRunAttemptResult,
 } from "../embedded-agent-runner/run/types.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelHarnessSupported,
+} from "../operator-model-policy.js";
 import {
   unwrapModelHeaderSentinelsForProviderEgress,
   unwrapSecretSentinelsForProviderEgress,
@@ -153,6 +160,9 @@ export async function runAgentHarnessAttempt(
   params: EmbeddedRunAttemptParams,
   nativeSessionRuntime?: import("../embedded-agent-runner/run/model-setup.js").PreparedNativeSessionRuntime,
 ): Promise<EmbeddedRunAttemptResult> {
+  const operatorAuthority = readAdmittedRunOperatorAuthority(params.admittedRunContext);
+  assertOperatorModelAllowed(operatorAuthority, params.provider, params.modelId);
+  assertOperatorModelAllowed(operatorAuthority, params.model.provider, params.model.id);
   let internalParams = params as EmbeddedRunAttemptParams & {
     systemAgentTool?: SystemAgentToolOptions;
   };
@@ -171,6 +181,13 @@ export async function runAgentHarnessAttempt(
         })
       : selectPreparedAgentHarness(params);
   const harness = selection.harness;
+  assertOperatorModelHarnessSupported(operatorAuthority, harness);
+  const runCapturedHarness = (prepared: import("./types.js").AgentHarnessAttemptParamsV2) => {
+    assertOperatorModelHarnessSupported(operatorAuthority, harness);
+    assertOperatorModelAllowed(operatorAuthority, prepared.provider, prepared.modelId);
+    assertOperatorModelAllowed(operatorAuthority, prepared.model.provider, prepared.model.id);
+    return runAgentHarnessLifecycleAttempt(harness, prepared);
+  };
   assertAgentHarnessExecutionEnvironment(harness, params);
   if (nativeSessionRuntime && harness !== nativeSessionRuntime.harness) {
     throw new AgentHarnessPreflightError(
@@ -292,7 +309,7 @@ export async function runAgentHarnessAttempt(
               (prepared) =>
                 pluginAttempt.runWithHostScope(async () => {
                   if (prepared.trigger !== "user" || !prepared.sessionKey) {
-                    return runAgentHarnessLifecycleAttempt(harness, prepared);
+                    return runCapturedHarness(prepared);
                   }
                   const note = await claimHeartbeatContextForUserRun({
                     ...prepared,
@@ -305,9 +322,9 @@ export async function runAgentHarnessAttempt(
                     ),
                   });
                   if (!note) {
-                    return runAgentHarnessLifecycleAttempt(harness, prepared);
+                    return runCapturedHarness(prepared);
                   }
-                  return runAgentHarnessLifecycleAttempt(harness, {
+                  return runCapturedHarness({
                     ...prepared,
                     currentInboundContext: appendCurrentInboundContext(
                       prepared.currentInboundContext,
@@ -390,7 +407,15 @@ async function runAgentHarnessOperation<T>(
   params: EmbeddedRunAttemptParams,
   execute: () => Promise<T>,
 ): Promise<T> {
+  const authority = readAdmittedRunOperatorAuthority(params.admittedRunContext);
+  const assertModels = () => {
+    assertOperatorModelHarnessSupported(authority, harness);
+    assertOperatorModelAllowed(authority, params.provider, params.modelId);
+    assertOperatorModelAllowed(authority, params.model.provider, params.model.id);
+  };
+  assertModels();
   await prepareActiveNodeContext();
+  assertModels();
   resolveAdmittedRunActiveAssertion(params.admittedRunContext, params.abortSignal)?.();
   const activeTrace = getActiveDiagnosticTraceContext();
   const harnessTrace = freezeDiagnosticTraceContext(

@@ -1,5 +1,7 @@
 /** Tests generated conversation labels for reply sessions. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
+import { OperatorModelPolicyError } from "../../agents/operator-model-policy.js";
 
 const runIsolatedCompletion = vi.hoisted(() => vi.fn());
 const resolveSimpleCompletionSelectionForAgent = vi.hoisted(() => vi.fn());
@@ -195,6 +197,63 @@ describe("generateConversationLabelWithFallback", () => {
     regularModelRef: "openai/gpt-main@work",
     preferredProfile: "work",
   };
+
+  it.each(["allowed", "selected-denied", "source-revoked", "materialized-denied"] as const)(
+    "retains the original model authority and terminal policy outcome (%s)",
+    async (outcome) => {
+      let current = true;
+      const authority = createAdmittedRunOperatorAuthority({
+        profileId: "label-operator",
+        scopes: ["operator.write"],
+        permissions: {
+          models: {
+            allow:
+              outcome === "selected-denied"
+                ? ["openai/gpt-main"]
+                : ["openai/gpt-mini", "openai/gpt-main"],
+          },
+        },
+        assertCurrent: () => {
+          if (!current) {
+            throw new Error("label source revoked");
+          }
+        },
+      });
+      runIsolatedCompletion.mockImplementationOnce(async () => {
+        if (outcome === "source-revoked") {
+          current = false;
+          throw new Error("provider unavailable");
+        }
+        if (outcome === "materialized-denied") {
+          throw new AggregateError(
+            [new OperatorModelPolicyError("materialized model denied")],
+            "completion cleanup failed",
+          );
+        }
+        return { text: "Allowed title" };
+      });
+      const request = generateConversationLabelWithFallback({
+        ...params,
+        operatorAuthority: authority,
+      });
+      if (outcome === "allowed") {
+        await expect(request).resolves.toBe("Allowed title");
+      } else {
+        await expect(request).rejects.toThrow(
+          outcome === "selected-denied"
+            ? "does not allow this model"
+            : outcome === "source-revoked"
+              ? "label source revoked"
+              : "completion cleanup failed",
+        );
+      }
+      expect(runIsolatedCompletion).toHaveBeenCalledTimes(outcome === "selected-denied" ? 0 : 1);
+      if (outcome !== "selected-denied") {
+        expect(runIsolatedCompletion.mock.calls[0]?.[0].operatorAuthority).toBe(authority);
+        expect(runIsolatedCompletion.mock.calls[0]?.[0].model).toBe("gpt-mini");
+      }
+    },
+  );
 
   it("locks an inherited profile onto a same-provider utility ref", async () => {
     await generateConversationLabelWithFallback({ ...params, utilityModelRef: "openai/gpt-mini" });

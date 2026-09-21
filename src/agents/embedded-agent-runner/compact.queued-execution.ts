@@ -29,6 +29,10 @@ import { enqueueCommandInLane } from "../../process/command-queue.js";
 import { normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
 import { resolveSessionAgentIds } from "../agent-scope.js";
 import { maybeCompactAgentHarnessSession } from "../harness/compaction.js";
+import {
+  assertOperatorModelAuthorityCurrent,
+  isOperatorModelPolicyError,
+} from "../operator-model-policy.js";
 import type { PreparedModelRuntimeSnapshot } from "../prepared-model-runtime.js";
 import type { CompactionRequestConstraints } from "../sessions/compaction/request-budget.js";
 import { SessionManager } from "../sessions/index.js";
@@ -208,6 +212,7 @@ export async function executeQueuedContextEngineCompaction(input: {
     let closed = false;
     const assertCallerActive = () => {
       params.abortSignal?.throwIfAborted();
+      assertOperatorModelAuthorityCurrent(params.operatorAuthority);
       if (closed) {
         throw new Error("queued compaction is no longer active");
       }
@@ -379,6 +384,9 @@ export async function executeQueuedContextEngineCompaction(input: {
           params.abortSignal,
         );
       } catch (compactErr) {
+        if (!committedCompaction && isOperatorModelPolicyError(compactErr)) {
+          throw compactErr;
+        }
         log.warn(
           committedCompaction
             ? "post-compaction work failed after the transcript commit"
