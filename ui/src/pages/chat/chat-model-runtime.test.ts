@@ -2,10 +2,11 @@
 
 import { render } from "lit";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { ModelCatalogEntry } from "../../api/types.ts";
 import { createSessionsListResult } from "../../test-helpers/chat-model.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
-import { switchChatModel } from "./chat-session.ts";
+import { switchChatModel, switchChatThinkingLevel } from "./chat-session.ts";
 import { renderChatModelControls } from "./components/chat-model-controls.ts";
 
 const model: ModelCatalogEntry = {
@@ -46,6 +47,137 @@ function renderRuntimeModel(entry: ModelCatalogEntry, selectedRuntime?: string) 
 }
 
 describe("chat model runtime choices", () => {
+  it("materializes a model selection without requiring a preexisting session ID", async () => {
+    const materialized = createSessionsListResult({ model: "selected", modelProvider: "fixture" });
+    materialized.sessions[0]!.sessionId = "created-session";
+    const host = makeChatHost({
+      sessionKey: "main",
+      sessionsResult: createSessionsListResult({ omitSessionFromList: true }),
+      chatModelSwitchPromises: {},
+      requestHandlers: {
+        "sessions.patch": {
+          ok: true,
+          key: "main",
+          entry: { sessionId: "created-session", modelOverride: "selected" },
+          resolved: { model: "selected", modelProvider: "fixture" },
+        },
+        "sessions.list": materialized,
+      },
+    });
+    try {
+      await expect(switchChatModel(host, "fixture/selected")).resolves.toBe(true);
+      expect(host.request).toHaveBeenCalledWith("sessions.patch", {
+        key: "main",
+        model: "fixture/selected",
+      });
+      expect(host.sessions.state.result?.sessions[0]).toMatchObject({
+        sessionId: "created-session",
+        model: "selected",
+        modelProvider: "fixture",
+      });
+    } finally {
+      host.sessions.dispose();
+    }
+  });
+
+  it.each(["unchanged", "replacement", "newer-selection"] as const)(
+    "keeps queued model intent bound to its selection after %s",
+    async (change) => {
+      const sessionKey = "agent:main:selection";
+      let result = createSessionsListResult({ model: "original", modelProvider: "fixture" });
+      result.sessions[0]!.key = sessionKey;
+      result.sessions[0]!.sessionId = "original-session";
+      const entered = createDeferred();
+      const release = createDeferred();
+      const host = makeChatHost({
+        sessionKey,
+        sessionsResult: result,
+        chatModelSwitchPromises: {},
+        requestHandlers: {
+          "sessions.patch": async (params: { model?: string; thinkingLevel?: string }) => {
+            if (params.thinkingLevel) {
+              entered.resolve();
+              await release.promise;
+              return {
+                ok: true,
+                key: sessionKey,
+                entry: { sessionId: "original-session", thinkingLevel: params.thinkingLevel },
+              };
+            }
+            result = {
+              ...result,
+              sessions: [{ ...result.sessions[0]!, model: params.model, modelProvider: "fixture" }],
+            };
+            return {
+              ok: true,
+              key: sessionKey,
+              entry: { sessionId: result.sessions[0]!.sessionId, modelOverride: params.model },
+              resolved: { model: params.model, modelProvider: "fixture" },
+            };
+          },
+          "sessions.list": () => result,
+        },
+      });
+      const work: Promise<unknown>[] = [];
+      const patches = () =>
+        host.request.mock.calls.filter(([method]) => method === "sessions.patch");
+      try {
+        const preceding = switchChatThinkingLevel(host, "high");
+        work.push(preceding);
+        expect(
+          await Promise.race([entered.promise.then(() => true), preceding.then(() => false)]),
+        ).toBe(true);
+        const selection = switchChatModel(host, "fixture/selected");
+        work.push(selection);
+        expect(patches()).toHaveLength(1);
+        let newer: Promise<boolean> | undefined;
+        if (change === "replacement") {
+          result = {
+            ...result,
+            sessions: [{ ...result.sessions[0]!, sessionId: "replacement-session" }],
+          };
+          host.sessions.reconcile(result.sessions[0]!, result.defaults);
+          host.sessionsResult = host.sessions.state.result;
+          expect(host.sessionsResult?.sessions[0]?.sessionId).toBe("replacement-session");
+        } else if (change === "newer-selection") {
+          newer = switchChatModel(host, "fixture/newer");
+          work.push(newer);
+          expect(patches()).toHaveLength(1);
+        }
+        release.resolve();
+        await preceding;
+        await expect(selection).resolves.toBe(change === "unchanged");
+        if (newer) {
+          await expect(newer).resolves.toBe(true);
+        }
+        expect(patches().map(([, params]) => params)).toEqual([
+          { key: sessionKey, thinkingLevel: "high", expectedSessionId: "original-session" },
+          ...(change === "replacement"
+            ? []
+            : [
+                {
+                  key: sessionKey,
+                  model: change === "newer-selection" ? "fixture/newer" : "fixture/selected",
+                  expectedSessionId: "original-session",
+                },
+              ]),
+        ]);
+        if (change === "replacement") {
+          expect(host.sessions.state.result?.sessions[0]).toMatchObject({
+            sessionId: "replacement-session",
+            model: "original",
+            modelProvider: "fixture",
+          });
+        }
+        expect(host.sessions.state.modelOverrides).not.toHaveProperty(sessionKey);
+      } finally {
+        release.resolve();
+        await Promise.allSettled(work);
+        host.sessions.dispose();
+      }
+    },
+  );
+
   it.each([false, true])(
     "preserves runtime selection when changing only the model (locked: %s)",
     async (runtimeLocked) => {

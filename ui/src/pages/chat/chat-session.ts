@@ -499,6 +499,9 @@ export async function switchChatModel(
         },
         {
           ...agentScope,
+          // A queued choice must not retarget a replacement row or outlive a newer selection.
+          expectedSessionId: selection.expectedSessionId,
+          canDispatch: ownsSelection,
           ownsModelOverride,
           reconcile: async () => {
             await refreshCurrentChatSessionList(host);
