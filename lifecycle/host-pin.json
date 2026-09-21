@@ -1,0 +1,9 @@
+{
+  "imageOS": "win25-vs2026",
+  "imageVersion": "20260907.229.1",
+  "windowsVersion": "10.0.26100",
+  "powershellVersion": "7.6.5",
+  "powershellSha256": "362a356ce7f0940ec74f73a8fc2c990a2cc24a38a11c90bbd8eca947110ad139",
+  "evidenceRun": 35596476995,
+  "nativeProductQualified": false
+}

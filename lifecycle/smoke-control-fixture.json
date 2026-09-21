@@ -1,0 +1,576 @@
+{
+  "binding": {
+    "candidateHead": "393c80255dea6605a5665c6e0836d01fb6d18304",
+    "driverVersion": "2026.9.5",
+    "harnessCreated100ns": "134344652413100819",
+    "harnessExecutable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+    "harnessPid": 6116,
+    "interval": 1,
+    "maxBytes": 67108864,
+    "packageParent": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules",
+    "releasedDriver": "ec9c1a13db8938e5a3eaa51fca2e981cde2395a9",
+    "run": "observer393-product-99999999999-1-smoke",
+    "samples": 2,
+    "schema": 1,
+    "seconds": 10,
+    "unchangedHarnessBudgetSeconds": 3600
+  },
+  "proof": {
+    "allExited": true,
+    "arming": {
+      "arm": {
+        "baseline": {
+          "node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node": {
+            "attributes": 32,
+            "created100ns": "134344652415346119",
+            "fileId": "b7010000000001000000000000000000",
+            "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+            "path": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+            "size": 4096,
+            "volume": "6a48939a4893641b",
+            "written100ns": "134344652415346119"
+          },
+          "node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node": {
+            "attributes": 32,
+            "created100ns": "134344652415346119",
+            "fileId": "b3010000000001000000000000000000",
+            "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+            "path": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+            "size": 4096,
+            "volume": "6a48939a4893641b",
+            "written100ns": "134344652415346119"
+          }
+        },
+        "kind": "armed",
+        "monotonicSeconds": 0.0007453999999711414,
+        "parentNt": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules",
+        "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+        "schema": 1,
+        "seq": 5,
+        "utcNs": "1789991641648584000"
+      },
+      "bindingSha256": "74aed90632aabca64d76bbe40dd65e144a7ce950675217f0da5d98b7c2544ac8",
+      "observerIdentity": {
+        "created100ns": "134344652415858222",
+        "executable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+        "exited100ns": "0",
+        "nativeMachine": 34404,
+        "pid": 6024,
+        "processMachine": 0
+      }
+    },
+    "commands": [
+      {
+        "argv": [
+          "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+          "-E",
+          "-S",
+          "-B",
+          "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\fixture.py",
+          "--root",
+          "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture"
+        ],
+        "cwd": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime",
+        "exitCode": 0,
+        "exited": true,
+        "identity": {
+          "created100ns": "134344652414813547",
+          "executable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+          "exited100ns": "0",
+          "nativeMachine": 34404,
+          "pid": 6892,
+          "processMachine": 0
+        },
+        "launch": "started",
+        "name": "fixture",
+        "pid": 6892,
+        "settlement": {
+          "basis": "same-retained-handle-times-and-live-launch-image; post-exit-image-query31-retained",
+          "verified": true
+        },
+        "terminalIdentity": {
+          "created100ns": "134344652414813547",
+          "executableError": {
+            "api": "QueryFullProcessImageNameW",
+            "winerror": 31
+          },
+          "exited100ns": "134344652565425307",
+          "nativeMachine": 34404,
+          "pid": 6892,
+          "processMachine": 0
+        }
+      },
+      {
+        "argv": [
+          "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+          "-E",
+          "-S",
+          "-B",
+          "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\observe.py",
+          "--binding",
+          "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\binding.json",
+          "--output",
+          "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\observer.jsonl"
+        ],
+        "cwd": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime",
+        "exitCode": 0,
+        "exited": true,
+        "identity": {
+          "created100ns": "134344652415858222",
+          "executable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+          "exited100ns": "0",
+          "nativeMachine": 34404,
+          "pid": 6024,
+          "processMachine": 0
+        },
+        "launch": "started",
+        "name": "observer",
+        "pid": 6024,
+        "settlement": {
+          "basis": "same-retained-handle-times-and-live-launch-image; post-exit-image-query31-retained",
+          "verified": true
+        },
+        "terminalIdentity": {
+          "created100ns": "134344652415858222",
+          "executableError": {
+            "api": "QueryFullProcessImageNameW",
+            "winerror": 31
+          },
+          "exited100ns": "134344652448229033",
+          "nativeMachine": 34404,
+          "pid": 6024,
+          "processMachine": 0
+        }
+      }
+    ],
+    "deadlineSeconds": 25,
+    "historicalAttribution": false,
+    "holder": "UNKNOWN",
+    "host": {
+      "attempt": "1",
+      "imageOS": "win25-vs2026",
+      "imageVersion": "20260907.229.1",
+      "node": "runnervmvmocb",
+      "run": "99999999999",
+      "version": "10.0.26100",
+      "workflowSha": "336e7b15271ba0c878547cf1077d9000ff0237e6",
+      "runtime": "D:\\fresh\\runtime",
+      "pythonExecutable": "D:\\fresh\\runtime\\python.exe"
+    },
+    "manifestSha256": "96c2e3e1631866ac8ebf82eeb22a4b33e33f360c0160aa7feffe28b1491ecdcc",
+    "matched": [
+      "node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+      "node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node"
+    ],
+    "nativeAcceptance": false,
+    "observerSha256": "2d15b778cad88e5b26b4c0b60b2ccd2c1af65120e5eee297dc5f5473a066d206",
+    "pythonSha256": "d932e5e2f324d57f392e8fd063dcf6d0185be8a664c57c6d24e7762ed02c28ca",
+    "schema": 1,
+    "status": "SMOKE_PASSED",
+    "run": "observer393-product-99999999999-1-smoke"
+  },
+  "rows": [
+    {
+      "binding": {
+        "bindingSha256": "74aed90632aabca64d76bbe40dd65e144a7ce950675217f0da5d98b7c2544ac8",
+        "candidateHead": "393c80255dea6605a5665c6e0836d01fb6d18304",
+        "driverVersion": "2026.9.5",
+        "harnessCreated100ns": "134344652413100819",
+        "harnessExecutable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+        "harnessPid": 6116,
+        "interval": 1,
+        "maxBytes": 67108864,
+        "packageParent": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules",
+        "releasedDriver": "ec9c1a13db8938e5a3eaa51fca2e981cde2395a9",
+        "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+        "samples": 2,
+        "schema": 1,
+        "seconds": 10,
+        "unchangedHarnessBudgetSeconds": 3600
+      },
+      "kind": "start",
+      "limitations": [
+        "sampling-not-continuous",
+        "no-handle-enumeration",
+        "no-kernel/protected-process-coverage",
+        "reopened-path-not-section-object-identity",
+        "cannot-attribute-historical35529432478"
+      ],
+      "monotonicSeconds": 4.799999999249849e-06,
+      "observerPid": 6024,
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "schema": 1,
+      "seq": 0,
+      "utcNs": "1789991641647858900"
+    },
+    {
+      "identity": {
+        "created100ns": "134344652413100819",
+        "executable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+        "exited100ns": "0",
+        "nativeMachine": 34404,
+        "processMachine": 0
+      },
+      "kind": "harness",
+      "monotonicSeconds": 0.00027829999999084976,
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "schema": 1,
+      "seq": 1,
+      "utcNs": "1789991641648117900"
+    },
+    {
+      "file": {
+        "attributes": 16,
+        "created100ns": "134344652415341696",
+        "fileId": "ae010000000001000000000000000000",
+        "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules",
+        "path": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules",
+        "size": 0,
+        "volume": "6a48939a4893641b",
+        "written100ns": "134344652415341696"
+      },
+      "kind": "package-parent",
+      "monotonicSeconds": 0.0004073000000062166,
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "schema": 1,
+      "seq": 2,
+      "utcNs": "1789991641648246000"
+    },
+    {
+      "file": {
+        "attributes": 32,
+        "created100ns": "134344652415346119",
+        "fileId": "b3010000000001000000000000000000",
+        "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+        "path": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+        "size": 4096,
+        "volume": "6a48939a4893641b",
+        "written100ns": "134344652415346119"
+      },
+      "kind": "baseline",
+      "leaf": "node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+      "monotonicSeconds": 0.0006046999999966829,
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "schema": 1,
+      "seq": 3,
+      "utcNs": "1789991641648443400"
+    },
+    {
+      "file": {
+        "attributes": 32,
+        "created100ns": "134344652415346119",
+        "fileId": "b7010000000001000000000000000000",
+        "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+        "path": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+        "size": 4096,
+        "volume": "6a48939a4893641b",
+        "written100ns": "134344652415346119"
+      },
+      "kind": "baseline",
+      "leaf": "node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+      "monotonicSeconds": 0.0007111999999551699,
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "schema": 1,
+      "seq": 4,
+      "utcNs": "1789991641648549900"
+    },
+    {
+      "baseline": {
+        "node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node": {
+          "attributes": 32,
+          "created100ns": "134344652415346119",
+          "fileId": "b7010000000001000000000000000000",
+          "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+          "path": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+          "size": 4096,
+          "volume": "6a48939a4893641b",
+          "written100ns": "134344652415346119"
+        },
+        "node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node": {
+          "attributes": 32,
+          "created100ns": "134344652415346119",
+          "fileId": "b3010000000001000000000000000000",
+          "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+          "path": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+          "size": 4096,
+          "volume": "6a48939a4893641b",
+          "written100ns": "134344652415346119"
+        }
+      },
+      "kind": "armed",
+      "monotonicSeconds": 0.0007453999999711414,
+      "parentNt": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules",
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "schema": 1,
+      "seq": 5,
+      "utcNs": "1789991641648584000"
+    },
+    {
+      "kind": "sample",
+      "monotonicSeconds": 0.000835800000004383,
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "sample": 0,
+      "schema": 1,
+      "seq": 6,
+      "utcNs": "1789991641648674400"
+    },
+    {
+      "correlation": {
+        "causationProven": false,
+        "gap": "mapping-to-path-reopen is non-atomic; rename/replacement/unmap may race",
+        "identity": "same-file-id-at-reopened-path",
+        "leaf": "node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+        "package": "openclaw",
+        "scope": "exact-leaf-path",
+        "sectionIdentityProven": false
+      },
+      "kind": "mapping",
+      "monotonicSeconds": 1.0850851999999804,
+      "pid": 6892,
+      "processIdentity": {
+        "created100ns": "134344652414813547",
+        "executable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+        "exited100ns": "0",
+        "nativeMachine": 34404,
+        "processMachine": 0
+      },
+      "raw": {
+        "address": "0x25c9ef20000",
+        "allocation": "0x25c9ef20000",
+        "mappedPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+        "pathChars": 158,
+        "protect": 2,
+        "regionBytes": 4096,
+        "reopenedFile": {
+          "attributes": 32,
+          "created100ns": "134344652415346119",
+          "fileId": "b3010000000001000000000000000000",
+          "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+          "path": "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+          "size": 4096,
+          "volume": "6a48939a4893641b",
+          "written100ns": "134344652415346119"
+        },
+        "state": 4096,
+        "type": 262144
+      },
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "sample": 0,
+      "schema": 1,
+      "seq": 12371,
+      "utcNs": "1789991642732935300"
+    },
+    {
+      "correlation": {
+        "causationProven": false,
+        "gap": "mapping-to-path-reopen is non-atomic; rename/replacement/unmap may race",
+        "identity": "same-file-id-at-reopened-path",
+        "leaf": "node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+        "package": "openclaw",
+        "scope": "exact-leaf-path",
+        "sectionIdentityProven": false
+      },
+      "kind": "mapping",
+      "monotonicSeconds": 1.0852284000000054,
+      "pid": 6892,
+      "processIdentity": {
+        "created100ns": "134344652414813547",
+        "executable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+        "exited100ns": "0",
+        "nativeMachine": 34404,
+        "processMachine": 0
+      },
+      "raw": {
+        "address": "0x25c9ef30000",
+        "allocation": "0x25c9ef30000",
+        "mappedPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+        "pathChars": 151,
+        "protect": 2,
+        "regionBytes": 4096,
+        "reopenedFile": {
+          "attributes": 32,
+          "created100ns": "134344652415346119",
+          "fileId": "b7010000000001000000000000000000",
+          "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+          "path": "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+          "size": 4096,
+          "volume": "6a48939a4893641b",
+          "written100ns": "134344652415346119"
+        },
+        "state": 4096,
+        "type": 262144
+      },
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "sample": 0,
+      "schema": 1,
+      "seq": 12372,
+      "utcNs": "1789991642733078400"
+    },
+    {
+      "kind": "sample-end",
+      "monotonicSeconds": 1.0919573999999557,
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "sample": 0,
+      "schema": 1,
+      "seq": 12552,
+      "utcNs": "1789991642739807500"
+    },
+    {
+      "kind": "sample",
+      "monotonicSeconds": 2.0925411000000054,
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "sample": 1,
+      "schema": 1,
+      "seq": 12553,
+      "utcNs": "1789991643740403200"
+    },
+    {
+      "correlation": {
+        "causationProven": false,
+        "gap": "mapping-to-path-reopen is non-atomic; rename/replacement/unmap may race",
+        "identity": "same-file-id-at-reopened-path",
+        "leaf": "node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+        "package": "openclaw",
+        "scope": "exact-leaf-path",
+        "sectionIdentityProven": false
+      },
+      "kind": "mapping",
+      "monotonicSeconds": 3.1607644999999707,
+      "pid": 6892,
+      "processIdentity": {
+        "created100ns": "134344652414813547",
+        "executable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+        "exited100ns": "0",
+        "nativeMachine": 34404,
+        "processMachine": 0
+      },
+      "raw": {
+        "address": "0x25c9ef20000",
+        "allocation": "0x25c9ef20000",
+        "mappedPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+        "pathChars": 158,
+        "protect": 2,
+        "regionBytes": 4096,
+        "reopenedFile": {
+          "attributes": 32,
+          "created100ns": "134344652415346119",
+          "fileId": "b3010000000001000000000000000000",
+          "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+          "path": "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+          "size": 4096,
+          "volume": "6a48939a4893641b",
+          "written100ns": "134344652415346119"
+        },
+        "state": 4096,
+        "type": 262144
+      },
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "sample": 1,
+      "schema": 1,
+      "seq": 24946,
+      "utcNs": "1789991644808634300"
+    },
+    {
+      "correlation": {
+        "causationProven": false,
+        "gap": "mapping-to-path-reopen is non-atomic; rename/replacement/unmap may race",
+        "identity": "same-file-id-at-reopened-path",
+        "leaf": "node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+        "package": "openclaw",
+        "scope": "exact-leaf-path",
+        "sectionIdentityProven": false
+      },
+      "kind": "mapping",
+      "monotonicSeconds": 3.1609116999999856,
+      "pid": 6892,
+      "processIdentity": {
+        "created100ns": "134344652414813547",
+        "executable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+        "exited100ns": "0",
+        "nativeMachine": 34404,
+        "processMachine": 0
+      },
+      "raw": {
+        "address": "0x25c9ef30000",
+        "allocation": "0x25c9ef30000",
+        "mappedPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+        "pathChars": 151,
+        "protect": 2,
+        "regionBytes": 4096,
+        "reopenedFile": {
+          "attributes": 32,
+          "created100ns": "134344652415346119",
+          "fileId": "b7010000000001000000000000000000",
+          "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+          "path": "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+          "size": 4096,
+          "volume": "6a48939a4893641b",
+          "written100ns": "134344652415346119"
+        },
+        "state": 4096,
+        "type": 262144
+      },
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "sample": 1,
+      "schema": 1,
+      "seq": 24947,
+      "utcNs": "1789991644808781400"
+    },
+    {
+      "kind": "sample-end",
+      "monotonicSeconds": 3.1683430999999587,
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "sample": 1,
+      "schema": 1,
+      "seq": 25127,
+      "utcNs": "1789991644816212700"
+    },
+    {
+      "absenceProven": false,
+      "armed": true,
+      "handleDisposition": "owned context managers closed or emitted an error; inspect gaps",
+      "holderConclusion": "UNKNOWN",
+      "kind": "settled",
+      "monotonicSeconds": 3.168353400000001,
+      "nativeAcceptance": false,
+      "reason": "sample-limit",
+      "run": "observer393-smoke-9e026cee92d7-35596476995-1",
+      "schema": 1,
+      "seq": 25128,
+      "utcNs": "1789991644816223100"
+    }
+  ],
+  "ready": {
+    "schema": 1,
+    "process": {
+      "created100ns": "134344652414813547",
+      "exited100ns": "0",
+      "executable": "D:\\a\\_temp\\observer393-smoke-9e026cee92d7-35596476995-1\\runtime\\python.exe",
+      "processMachine": 0,
+      "nativeMachine": 34404,
+      "pid": 6892
+    },
+    "baseline": {
+      "node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node": {
+        "path": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node",
+        "volume": "6a48939a4893641b",
+        "fileId": "b3010000000001000000000000000000",
+        "size": 4096,
+        "created100ns": "134344652415346119",
+        "written100ns": "134344652415346119",
+        "attributes": 32,
+        "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@openclaw\\fs-safe-win32-x64-msvc\\fs-safe-native.node"
+      },
+      "node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node": {
+        "path": "D:\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node",
+        "volume": "6a48939a4893641b",
+        "fileId": "b7010000000001000000000000000000",
+        "size": 4096,
+        "created100ns": "134344652415346119",
+        "written100ns": "134344652415346119",
+        "attributes": 32,
+        "ntPath": "\\Device\\HarddiskVolume6\\a\\openclaw\\openclaw\\evidence\\smoke\\fixture\\npm\\node_modules\\openclaw\\node_modules\\@koromix\\koffi-win32-x64\\win32_x64\\koffi.node"
+      }
+    }
+  }
+}

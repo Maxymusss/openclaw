@@ -1,0 +1,16 @@
+{
+  "release": "ec9c1a13db8938e5a3eaa51fca2e981cde2395a9",
+  "hashes": {
+    "src/cli/gateway-cli/host-lifecycle.ts": "3d58aaa7e2e570481be1d6917bd31a00ccae4a6fd2738b170cc35f16d58bb970",
+    "src/cli/gateway-cli/run-loop.ts": "8a53c6dd8d07878378c2b12f1b57d0535a9da8ec038e308d8c8d4a10fdcc91ff",
+    "src/entry.respawn.ts": "b8eb64838a6f023c21d7c358df6d8a39932d8f48cfd14fe1727e9297e8a33c15",
+    "openclaw.mjs": "538e8ee2b65a0b24bb8a5ed3421bfe66621b1e0b5f726a167758c004f566fb36",
+    "src/daemon/hosted-stop.ts": "90488c53a6ab9ae0f1ab33f8ef14da18d1b98a15179c0c9f06aa6f74d8a2cdec",
+    "src/gateway/server-methods/system-agent.ts": "021db628b44923618af278cd0005571361af9b60dced7e6a71860e55244c890a",
+    "src/cli/daemon-cli/lifecycle.ts": "86649860fea16bbc42c4c090297e7d28674f92c106a6fbae0cc678c2d419b05e"
+  },
+  "externalStopDecision": "Hosted lifecycle exposes cooperative stop internally to the owning system-agent engine, requiring inference/caller authority not provided for this fixture. The public CLI stop is service/PID/port discovery and signalVerifiedGatewayPidSync, not held-handle routing. Console Ctrl-C would share process group. None is a qualified external exact-held-root cooperative fixture route; use the expressly authorized root-only fallback.",
+  "releaseRespawn": "entry.respawn.ts on win32 adds --stack-size=8192 when absent. Supply that same supported flag at baseline launch; root listener and no descendants mandatory. Product update argv untouched.",
+  "internalHostedStopExists": true,
+  "scopedStopNotGracefulServiceAcceptance": true
+}

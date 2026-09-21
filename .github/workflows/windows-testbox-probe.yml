@@ -3,6 +3,11 @@ name: Windows Testbox Probe
 on:
   workflow_dispatch:
     inputs:
+      run_passive_observer_125286:
+        description: "One reviewed PR125286 passive diagnostic; no native acceptance"
+        required: false
+        default: false
+        type: boolean
       target_ref:
         description: "Git ref or SHA to check out"
         required: false
@@ -97,7 +102,7 @@ env:
 
 jobs:
   probe:
-    if: ${{ inputs.run_private_node_provisioning || (!inputs.run_windows_git_installer_only && !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery) }}
+    if: ${{ !inputs.run_passive_observer_125286 && (inputs.run_private_node_provisioning || (!inputs.run_windows_git_installer_only && !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery) ) }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -731,7 +736,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ !inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_windows_ci }}
+    if: ${{ !inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_windows_ci ) }}
     runs-on: windows-2025
     timeout-minutes: 75
     steps:
@@ -990,7 +995,7 @@ jobs:
 
   winget-acceptance:
     name: Native Winget acceptance (${{ matrix.scenario }})
-    if: ${{ !inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_winget_acceptance }}
+    if: ${{ !inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_winget_acceptance ) }}
     runs-on: windows-2025
     timeout-minutes: 35
     strategy:
@@ -1078,7 +1083,7 @@ jobs:
 
   portable-node-recovery:
     name: Portable Node recovery (${{ matrix.engine }})
-    if: ${{ !inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_portable_node_recovery }}
+    if: ${{ !inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_portable_node_recovery ) }}
     runs-on: windows-2025
     timeout-minutes: 20
     strategy:
@@ -1164,7 +1169,7 @@ jobs:
 
   native-git-installer:
     name: Full Windows Git installer and published-driver proof
-    if: ${{ !inputs.run_private_node_provisioning && (inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only) }}
+    if: ${{ !inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && (inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only) ) }}
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
@@ -1199,3 +1204,77 @@ jobs:
           path: ${{ runner.temp }}/full-git-install-evidence
           if-no-files-found: error
           retention-days: 7
+  passive-observer-125286:
+    if: ${{ inputs.run_passive_observer_125286 }}
+    name: One passive published-driver diagnostic
+    runs-on: windows-2025
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Validate exclusive one-job inputs
+        env:
+          MIXED: ${{ inputs.run_windows_ci || inputs.run_windows_git_installer_only || inputs.run_windows_launcher_integration || inputs.run_winget_acceptance || inputs.run_portable_node_recovery || inputs.run_private_node_provisioning || inputs.installed_startup_package != '' || inputs.installed_startup_cpu_diagnostic || inputs.require_wsl2 || inputs.import_ubuntu_wsl2 || inputs.enable_wsl2_features }}
+          TARGET_REF: ${{ inputs.target_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          KEEPALIVE: ${{ inputs.keepalive_minutes }}
+          RUNNER_LABEL: ${{ inputs.runner_label }}
+        run: |
+          if ($env:MIXED -eq 'true' -or $env:TARGET_REF -cne '393c80255dea6605a5665c6e0836d01fb6d18304' -or $env:GITHUB_RUN_ATTEMPT -cne '1' -or $env:WORKFLOW_SHA -cne $env:GITHUB_SHA -or $env:KEEPALIVE -cne '0' -or $env:RUNNER_LABEL -cne 'windows-2025') { throw 'Exclusive fresh exact-hook passive diagnostic required.' }
+      - name: Checkout reviewed hook
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: hook
+          persist-credentials: false
+          set-safe-directory: false
+          submodules: false
+          sparse-checkout: lifecycle
+      - name: Checkout unchanged clean candidate source (no product execution)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 393c80255dea6605a5665c6e0836d01fb6d18304
+          path: candidate
+          persist-credentials: false
+          set-safe-directory: false
+          submodules: false
+      - name: Stage fresh smoke then invoke at most one passive diagnostic
+        env:
+          PROOF_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          & ./hook/lifecycle/hook.ps1 -ExpectedWorkflowSha $env:PROOF_WORKFLOW_SHA -CandidateRoot (Join-Path $env:GITHUB_WORKSPACE 'candidate')
+      - name: Identify exact retained setup root without product execution
+        id: custody
+        if: ${{ always() }}
+        run: |
+          $namespace=Join-Path $env:RUNNER_TEMP ('observer393-product-'+$env:GITHUB_RUN_ID+'-'+$env:GITHUB_RUN_ATTEMPT)
+          $result=Join-Path $namespace 'evidence/diagnostic/result.json'
+          if(Test-Path -LiteralPath $result){
+            $r=Get-Content -LiteralPath $result -Raw | ConvertFrom-Json
+            $p=[IO.Path]::GetFullPath($r.retainedProofRoot)
+            if([IO.Path]::GetDirectoryName($p) -ine [IO.Path]::GetFullPath($env:RUNNER_TEMP) -or [IO.Path]::GetFileName($p) -cnotmatch '^openclaw-git-install-proof-[0-9a-f]{32}$' -or $r.runId -cne $env:GITHUB_RUN_ID -or $r.runAttempt -cne $env:GITHUB_RUN_ATTEMPT -or $r.workflowSha -cne $env:GITHUB_SHA){throw 'Unbound retained root.'}
+            "proof_root=$p" >> $env:GITHUB_OUTPUT
+          }
+      - name: Preserve exact product root for unresolved holder and rollback investigation
+        if: ${{ always() && steps.custody.outputs.proof_root != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: passive125286-custody-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.custody.outputs.proof_root }}
+          if-no-files-found: error
+          retention-days: 7
+          include-hidden-files: true
+      - name: Remove only settled task runtime; preserve unknown product custody
+        if: ${{ always() }}
+        run: ./hook/lifecycle/cleanup.ps1
+      - name: Preserve raw evidence including all failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: passive125286-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/observer393-product-${{ github.run_id }}-${{ github.run_attempt }}/evidence
+          if-no-files-found: warn
+          retention-days: 7
+          include-hidden-files: true

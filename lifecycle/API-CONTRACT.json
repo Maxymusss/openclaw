@@ -1,0 +1,29 @@
+{
+  "scope": "Official API contract evidence for independent adjudication; not a Windows execution result",
+  "reviewFinding": "observer-qualified-review.json asserts K32GetMappedFileNameW requires PROCESS_QUERY_INFORMATION plus PROCESS_VM_READ",
+  "observations": [
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getmappedfilenamew",
+      "fetchedAt": "2026-09-21",
+      "section": "Parameters / hProcess",
+      "quote": "A handle to the process. The handle must have the PROCESS_QUERY_INFORMATION access rightF.",
+      "remarks": "Starting with Windows 7, PSAPI_VERSION=2 names this function K32GetMappedFileName and exports it from Kernel32. PSAPI_VERSION=1 GetMappedFileName is the wrapper."
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/api/psapi/nf-psapi-getmappedfilenamea",
+      "fetchedAt": "2026-09-21",
+      "section": "Parameters / hProcess",
+      "quote": "A handle to the process. The handle must have the PROCESS_QUERY_INFORMATION access right."
+    },
+    {
+      "url": "https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualqueryex",
+      "fetchedAt": "2026-09-21",
+      "section": "Parameters / hProcess",
+      "quote": "The handle must have been opened with the PROCESS_QUERY_INFORMATION access right, which enables using the handle to read information from the process object."
+    }
+  ],
+  "sourceFacts": "The observer calls VirtualQueryEx and K32GetMappedFileNameW. It does not use EnumProcessModules or ReadProcessMemory. Targets are opened with PROCESS_QUERY_INFORMATION (0x400).",
+  "question": "Adjudicate the prior access-rights P1 against these official contracts, distinguishing GetMappedFileName from EnumProcessModules. Do not claim actual native verification. If finding is sustained, identify concrete evidence for the additional required access right.",
+  "codeChanged": false,
+  "windowsExecuted": false
+}

@@ -1,0 +1,45 @@
+{
+  "release": "ec9c1a13db8938e5a3eaa51fca2e981cde2395a9",
+  "files": {
+    "src/infra/package-update-steps.ts": {
+      "blob": "c25cff35243d7cd0bdfe818d5b8709660b058bf2",
+      "sha256": "a2c19f8d8c1b34b2d5eefa8dabcba947bb840aef07b602172cf1d3d918bdcf0e",
+      "bytes": 46881,
+      "localMatch": true
+    },
+    "src/infra/package-update-swap.ts": {
+      "blob": "39a6e77c9262de027160537c693e106b52924c21",
+      "sha256": "8bb36a7d3ab207a1192a457237474a178d04b73f6b3f79a22db3abde1fb692aa",
+      "bytes": 28445,
+      "localMatch": true
+    },
+    "src/infra/package-update-filesystem.ts": {
+      "blob": "9da9a20582906b572ff6689a559a5c0e7c16e479",
+      "sha256": "fa85e891fd70c388aec794f3d5a739bbf8c897bfe82a66025149d8f92e8c7528",
+      "bytes": 8576,
+      "localMatch": true
+    },
+    "src/cli/update-cli/update-command-post-update.ts": {
+      "blob": "e8aa396b4688937b20caf2de426af8222fb5cbdd",
+      "sha256": "237d985ec11e5d8977faa27120cc8f07a01a4671f23271be015d32522e6aa317",
+      "bytes": 29796,
+      "localMatch": true
+    }
+  },
+  "newProductChanges": false,
+  "dependency": "installed2026.9.5-parent-transaction-completion-retirement-rollback-handoff",
+  "status": "UNFIXED",
+  "owner": "same125286/ec13; canonical54bd coordinates supplier source; no peer mutation",
+  "closure": {
+    "path": "src/infra/package-update-swap.ts",
+    "line": 467,
+    "symbol": "transaction.complete",
+    "directInstalledAwaitLine": 512,
+    "callee": "discardPackageUpdateBackup",
+    "candidateCallbackOrRollbackOwnershipTransfer": false
+  },
+  "required": "Evidenced compatible installed-parent safe retirement/no-loss repair preserving rollback until activation verified; candidate-only cleanup is insufficient.",
+  "native": "NEEDS WORK",
+  "historicalHolder": "UNKNOWN",
+  "observerRepairFixesDependency": false
+}

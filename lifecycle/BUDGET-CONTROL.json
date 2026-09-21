@@ -1,0 +1,24 @@
+{
+  "mode": "OFFLINE_REPLAY_NO_NATIVE_CALLS",
+  "nativeInputRun": 35596476995,
+  "nativeInputBytes": 10400088,
+  "original360SampleFailure": {
+    "reason": "output-budget",
+    "records": 177002,
+    "bytes": 67104722
+  },
+  "repairedSamples": 60,
+  "intervalSeconds": 60,
+  "deadlineUnchangedSeconds": 3600,
+  "primaryBytes": 12128401,
+  "sidecarBytes": 19022272,
+  "logicalGapBytes": 276495860,
+  "gapRecordsPreserved": 727860,
+  "positiveMappingsPreserved": 120,
+  "primaryCapBytes": 67108864,
+  "sidecarCapBytes": 67108864,
+  "elapsedSeconds": 9.778465458890423,
+  "notRuntimeQualification": true,
+  "completeSidecarVerified": true,
+  "temporaryReplayOutputRemoved": true
+}

@@ -1,0 +1,25 @@
+{
+  "payload": {
+    "bounded_observe.py": "fe796cbd0fccbcc1ceec7e894e8b7bef6bd7f1a1f960829512a652a8fa57c7e7",
+    "compose.py": "151ae8f5efc40361b3229defdfc0437edb40c40ae9766db5d4a145f344422a82",
+    "control.py": "b80ef628d7707148a8c54db2b3849f79386bb2271d917412de44ddda5ce4c6ff",
+    "diagnostic.ps1": "f3d5b5baa851003d344b9f6479eba30f80d80447e4876c5f85f59b435ab530c3",
+    "fixture.py": "63001eb1c682b03001b4fcbced540a202ad21dd1afe77996b42ccfec71aa3167",
+    "host-pin.json": "68546493e2d33a6a345d3157dc618bedea7f073dbd9b4f2c75d9d79072ecc8f6",
+    "host_contract.py": "29ba1af0fe072cc393e8773e1189a74fd8b73a40732832189ef1facfc167a102",
+    "identity.py": "2f9b3058137961cd58451a83858949a43778dc1efc9f3f9dba60e6322f73b440",
+    "lifecycle.ps1": "3f9db73a1d7905a8e3592d666366880abdd2395fb931de3ba4ecd9dcf3356836",
+    "node-pin.json": "dd10e7bf49c1f48d90ace57dcf6257ba237323b326acd95b63f8d4d05c22285e",
+    "observe.py": "2d15b778cad88e5b26b4c0b60b2ccd2c1af65120e5eee297dc5f5473a066d206",
+    "python-pin.json": "1edc9d08b2838d583e8d396c12a4460cfd73cae2fa720d7627b5b9506c8845fc",
+    "release-pin.json": "27220eb8be612666e7123f5a7b125e408435e3036557c7db80dfef96d921a6b3",
+    "release.py": "473277fbb786b1133b65a24511240f3456e312a94f6b441947970ba768a60565",
+    "run.py": "de906fb759b64cdf5aebf1732573012ebcecb0bffcbd46b118680c91065b6412",
+    "source-inputs.json": "01cb8db83a4131a09e768b24eddac3c8e50ca9d5721c5e2942c4c1d16fa78838",
+    "test_lifecycle.ps1": "7114d8a7ed6442168b81607d971977ff7afe9c76e1c674fc8aa69621101f9385",
+    "windows_api.py": "23729d36562841eb89aa20c49274335804149f94648fd1522a12c8934f036725"
+  },
+  "releaseInstalledManifestSha256": "7a96e2ff0d07ed0a04ad072f362db90edb20f41aa1b528d66d4858c6e3776fe8",
+  "schema": 1,
+  "sourceOnly": true
+}

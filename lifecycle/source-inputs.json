@@ -1,0 +1,72 @@
+{
+  "upstreamHarness": {
+    "path": "/Users/jsy/.ocm/envs/odin/.openclaw/workspace/reports/atomic-loop-fix-20260915/canonical/update-windows-node-launcher-125286/main609-integration/control/.worktrees/pr-125286/scripts/ci/prove-windows-git-install.ps1",
+    "sha256": "0cae76a93c08eddea25e4bdcee70c63b2920c2267a9954c4a869ad013641d815"
+  },
+  "observerTree": "24ab44502e61676a83f106e7b797116722150d6f",
+  "observerFiles": {
+    "DESIGN.md": {
+      "sha256": "a652a6af8192bb2d4a9fc175c9782d5e1e8e9872ab2ac15c1f088cf99405e479",
+      "bytes": 10944
+    },
+    "identity.py": {
+      "sha256": "2f9b3058137961cd58451a83858949a43778dc1efc9f3f9dba60e6322f73b440",
+      "bytes": 4074
+    },
+    "windows_api.py": {
+      "sha256": "23729d36562841eb89aa20c49274335804149f94648fd1522a12c8934f036725",
+      "bytes": 8165
+    },
+    "observe.py": {
+      "sha256": "2d15b778cad88e5b26b4c0b60b2ccd2c1af65120e5eee297dc5f5473a066d206",
+      "bytes": 11689
+    },
+    "test_observer.py": {
+      "sha256": "a3f14c6c7cbd3dfd5eb09e5af0c071222220d0e82ae7b1d834a62e05c5a6d1c0",
+      "bytes": 11508
+    }
+  },
+  "releaseSource": {
+    "release": "ec9c1a13db8938e5a3eaa51fca2e981cde2395a9",
+    "files": {
+      "src/infra/package-update-steps.ts": {
+        "blob": "c25cff35243d7cd0bdfe818d5b8709660b058bf2",
+        "sha256": "a2c19f8d8c1b34b2d5eefa8dabcba947bb840aef07b602172cf1d3d918bdcf0e",
+        "bytes": 46881,
+        "localMatch": true
+      },
+      "src/infra/package-update-swap.ts": {
+        "blob": "39a6e77c9262de027160537c693e106b52924c21",
+        "sha256": "8bb36a7d3ab207a1192a457237474a178d04b73f6b3f79a22db3abde1fb692aa",
+        "bytes": 28445,
+        "localMatch": true
+      },
+      "src/infra/package-update-filesystem.ts": {
+        "blob": "9da9a20582906b572ff6689a559a5c0e7c16e479",
+        "sha256": "fa85e891fd70c388aec794f3d5a739bbf8c897bfe82a66025149d8f92e8c7528",
+        "bytes": 8576,
+        "localMatch": true
+      },
+      "src/cli/update-cli/update-command-post-update.ts": {
+        "blob": "e8aa396b4688937b20caf2de426af8222fb5cbdd",
+        "sha256": "237d985ec11e5d8977faa27120cc8f07a01a4671f23271be015d32522e6aa317",
+        "bytes": 29796,
+        "localMatch": true
+      }
+    },
+    "newProductChanges": false
+  },
+  "target": {
+    "runner": "windows-2025",
+    "environment": "github-hosted",
+    "os": "Windows Server 2025",
+    "architecture": "AMD64 native",
+    "powershellMajor": 7,
+    "candidate": "393c80255dea6605a5665c6e0836d01fb6d18304",
+    "tree": "d4bb6a0016a6aab695c9c6fe67b40c76f3d9ee6b",
+    "workflow": "windows-testbox-probe.yml",
+    "job": "native-git-installer",
+    "dynamicImageVersion": "must be captured at future admission; label is not an immutable VM image"
+  },
+  "noExecution": true
+}
