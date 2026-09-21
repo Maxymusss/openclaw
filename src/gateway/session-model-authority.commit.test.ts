@@ -11,6 +11,7 @@ import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
+import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { markPluginRegistryActive } from "../plugins/registry-lifecycle.js";
 import { createRuntimeTestRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { disposePluginRegistryInstances } from "../plugins/runtime.js";
@@ -23,6 +24,10 @@ import { createPluginRuntime } from "../plugins/runtime/index.js";
 import type { SessionCatalogProvider } from "../plugins/session-catalog.js";
 import { createPluginRecord } from "../plugins/status.test-fixtures.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import {
+  createCoreGatewayMethodDescriptors,
+  createGatewayMethodRegistry,
+} from "./methods/registry.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { sessionCatalogHandlers } from "./server-methods/session-catalog.js";
@@ -77,7 +82,10 @@ function fixture(mode: string, scopes = ["operator.sessions.write"]) {
   cfg.agents = {
     defaults: {
       model: "fixture/hidden",
-      models: { "fixture/hidden": {}, "fixture/allowed": {} },
+      models: {
+        "fixture/hidden": { agentRuntime: { id: "selection-runtime" } },
+        "fixture/allowed": { agentRuntime: { id: "selection-runtime" } },
+      },
     },
   };
   let active = true;
@@ -124,6 +132,16 @@ function fixture(mode: string, scopes = ["operator.sessions.write"]) {
   const owner = createModelRuntimeChoiceOwnerFixture(cfg, () => true, {
     pluginRegistry: registry,
     modelCatalog: { entries, routeVariants: entries },
+    metadataSnapshot: createPluginMetadataSnapshotFixture({
+      plugins: [
+        {
+          id: "selection-runtime",
+          origin: "bundled",
+          providers: ["fixture"],
+          activation: { onAgentHarnesses: ["selection-runtime"] },
+        },
+      ],
+    }),
   });
   published.owner = owner;
   return {
@@ -294,7 +312,10 @@ describe("durable session model selection authority", () => {
             context,
             respond,
             isWebchatConnect: () => false,
-            extraHandlers: sessionCatalogHandlers,
+            methodRegistry: createGatewayMethodRegistry(
+              createCoreGatewayMethodDescriptors(sessionCatalogHandlers),
+              f.registry,
+            ),
           }),
         ),
       );
@@ -495,7 +516,10 @@ describe("durable session model selection authority", () => {
               client: f.client,
               respond,
               isWebchatConnect: () => false,
-              extraHandlers: sessionMutationHandlers,
+              methodRegistry: createGatewayMethodRegistry(
+                createCoreGatewayMethodDescriptors(sessionMutationHandlers),
+                f.registry,
+              ),
             }),
           );
           expect(catalogRead).toHaveBeenCalled();
@@ -504,7 +528,11 @@ describe("durable session model selection authority", () => {
               true,
               expect.objectContaining({
                 ok: true,
-                resolved: { modelProvider: "fixture", model: "allowed" },
+                resolved: expect.objectContaining({
+                  modelProvider: "fixture",
+                  model: "allowed",
+                  agentRuntime: { id: "selection-runtime", source: "session-key" },
+                }),
               }),
               undefined,
             );
