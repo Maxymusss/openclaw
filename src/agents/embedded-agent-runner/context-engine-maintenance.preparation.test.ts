@@ -48,9 +48,14 @@ vi.mock("../../context-engine/registry.js", () => ({
   isContextEngineAbortRejection: (error: unknown, signal?: AbortSignal) =>
     signal?.aborted === true && error === signal.reason,
 }));
-vi.mock("./context-engine-capabilities.js", () => ({
-  resolveContextEngineCapabilities: () => ({}),
-}));
+vi.mock("./context-engine-capabilities.js", async (importOriginal) => {
+  const { readContextEngineOperatorAuthority } =
+    await importOriginal<typeof import("./context-engine-capabilities.js")>();
+  return {
+    readContextEngineOperatorAuthority,
+    resolveContextEngineCapabilities: () => ({}),
+  };
+});
 vi.mock("../../config/sessions/session-accessor.js", () => ({ publishTranscriptUpdate: vi.fn() }));
 vi.mock("../sessions/index.js", () => ({ SessionManager: { open: vi.fn() } }));
 vi.mock("../sessions/session-manager-write-admission.js", () => ({

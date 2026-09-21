@@ -1,10 +1,12 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import * as sessionLifecycle from "../../sessions/session-lifecycle-admission.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
@@ -90,17 +92,32 @@ describe("caller-local session patch model presentation", () => {
           config: cfg,
           catalogComplete: true,
         };
+        const loadGatewayModelCatalogSnapshot = vi.fn(async () => catalog);
         const context = createDirectChatContext({
           getRuntimeConfig: () => cfg,
-          loadGatewayModelCatalogSnapshot: async () => {
-            if (mode === "widened" || mode === "tightened") {
-              role.models = { allow: [mode === "widened" ? "openai/gpt-5" : "openai/gpt-5-mini"] };
-            }
-            return catalog;
-          },
+          loadGatewayModelCatalogSnapshot,
         });
+        const changesPolicy = mode === "widened" || mode === "tightened";
+        const entered = createDeferred();
+        const release = createDeferred();
+        const runMutation = sessionLifecycle.runExclusiveSessionLifecycleMutation;
+        const lifecycle = changesPolicy
+          ? vi
+              .spyOn(sessionLifecycle, "runExclusiveSessionLifecycleMutation")
+              .mockImplementation((params) =>
+                runMutation({
+                  ...params,
+                  finalize: async () => {
+                    await params.finalize?.();
+                    // Hold the committed label's response until the current ceiling changes.
+                    entered.resolve();
+                    await release.promise;
+                  },
+                }),
+              )
+          : undefined;
         const respond = vi.fn<RespondFn>();
-        await handleGatewayRequest({
+        const request = handleGatewayRequest({
           req: {
             type: "req",
             id: "label-patch",
@@ -113,6 +130,29 @@ describe("caller-local session patch model presentation", () => {
           isWebchatConnect: () => false,
           extraHandlers: sessionMutationHandlers,
         });
+        try {
+          if (changesPolicy) {
+            await expect(
+              Promise.race([entered.promise.then(() => true), request.then(() => false)]),
+            ).resolves.toBe(true);
+            expect(role.models).toEqual({
+              allow: [mode === "widened" ? "openai/gpt-5-mini" : "openai/gpt-5"],
+            });
+            role.models = {
+              allow: [mode === "widened" ? "openai/gpt-5" : "openai/gpt-5-mini"],
+            };
+            expect(role.models).toEqual({
+              allow: [mode === "widened" ? "openai/gpt-5" : "openai/gpt-5-mini"],
+            });
+            release.resolve();
+          }
+          await request;
+        } finally {
+          release.resolve();
+          await request.catch(() => {});
+          lifecycle?.mockRestore();
+        }
+        expect(loadGatewayModelCatalogSnapshot).not.toHaveBeenCalled();
         expect(respond).toHaveBeenCalledOnce();
         expect(respond).toHaveBeenCalledWith(
           true,

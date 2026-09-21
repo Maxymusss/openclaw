@@ -23,6 +23,7 @@ import {
 import { ensureProfileForEmail, setDisplayName } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { bumpGatewayAccessRevision } from "../gateway-access-revision.js";
+import { authorizeCurrentOperatorRoleScopes } from "../operator-role-policy.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import {
@@ -778,12 +779,14 @@ describe("direct session model catalogs", () => {
         if (caller === "foreign admin") {
           const other = ensureProfileForEmail("other-reader@example.test");
           f.client.connect.scopes = ["operator.admin"];
+          f.config.gateway.roles.definitions.reader.scopes = ["operator.admin"];
           f.client.authenticatedUserProfile = {
             profileId: other.id,
             displayName: other.displayName,
             hasAvatar: false,
             updatedAt: other.updatedAt,
           };
+          expect(authorizeCurrentOperatorRoleScopes(f.client, f.config)).toBeUndefined();
         } else if (caller === "synthetic") {
           f.client.internal = { syntheticClient: true };
         } else if (caller === "forged locator") {
@@ -799,6 +802,7 @@ describe("direct session model catalogs", () => {
           expect.objectContaining({ code: "FORBIDDEN" }),
         );
         expect(f.readPrepared).not.toHaveBeenCalled();
+        expect(f.loadDeferred).not.toHaveBeenCalled();
       });
     },
   );

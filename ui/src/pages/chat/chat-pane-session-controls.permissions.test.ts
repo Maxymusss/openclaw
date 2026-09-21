@@ -39,7 +39,9 @@ describe("chat pane model-setting permissions", () => {
       sessionKey: row.key,
       sessionsResult: result(),
       hello,
-      chatModelCatalog: [{ id: "approved", provider: "fixture", available: true }],
+      chatModelCatalog: [
+        { id: "approved", name: "Approved model", provider: "fixture", available: true },
+      ],
       chatModelSwitchPromises: {},
       requestHandlers: {
         "sessions.patch": () => {

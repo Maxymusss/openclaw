@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProjectsListResult } from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.ts";
-import { loadModelCatalog } from "../../lib/model-catalog-store.ts";
 import { CHAT_ROUTE_READY_EVENT } from "../chat/chat-history-events.ts";
 import { createDraftFixture } from "./draft-submission-flow.test-support.ts";
 import { renderControl } from "./model-control.test-support.ts";
@@ -97,16 +96,22 @@ describe("DraftSubmissionFlow submit gates", () => {
       methods: ["models.list", "sessions.create"],
       scopes: ["operator.sessions.read", "operator.sessions.write"],
       modelCatalog: async () => ({
-        models: [{ id: "allowed", provider: "fixture", available: true }],
+        models: [{ id: "allowed", name: "Approved model", provider: "fixture", available: true }],
       }),
     });
     context.gateway.snapshot.hello!.auth!.modelRestricted = true;
-    await loadModelCatalog(context.gateway.snapshot.client!, { agentId: "main" });
     place.modelControl.load(context, "main", true, { agent: place.selectedAgent() });
     flow.setMessage("Use the approved model");
     try {
       expect(flow.submitBlock()?.gate).toBe("model-setup");
       expect(flow.canSubmit()).toBe(false);
+      await vi.waitFor(() =>
+        expect(
+          renderControl(place.modelControl, context, "main", place.selectedAgent()).querySelector(
+            '[data-chat-model-option="fixture/allowed"]',
+          ),
+        ).not.toBeNull(),
+      );
       const view = renderControl(place.modelControl, context, "main", place.selectedAgent());
       const choice = view.querySelector<HTMLButtonElement>(
         '[data-chat-model-option="fixture/allowed"]',

@@ -21,9 +21,14 @@ import {
   waitForDeferredTurnMaintenanceForSession,
 } from "./context-engine-maintenance.js";
 
-vi.mock("./context-engine-capabilities.js", () => ({
-  resolveContextEngineCapabilities: () => ({}),
-}));
+vi.mock("./context-engine-capabilities.js", async (importOriginal) => {
+  const { readContextEngineOperatorAuthority } =
+    await importOriginal<typeof import("./context-engine-capabilities.js")>();
+  return {
+    readContextEngineOperatorAuthority,
+    resolveContextEngineCapabilities: () => ({}),
+  };
+});
 
 const modes = [undefined, "background"] as const;
 const replacement = { role: "user" as const, content: "rewritten memory", timestamp: 1 };

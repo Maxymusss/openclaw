@@ -22,6 +22,7 @@ import {
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../chat-abort.js";
+import { authorizeCurrentOperatorRoleScopes } from "../operator-role-policy.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
 import { createHistoryReadContext } from "./chat-history.test-helpers.js";
@@ -835,9 +836,10 @@ describe("chat metadata ownership", () => {
     "rejects a personal draft preview from %s before projecting credentials",
     async (caller) => {
       await withOpenClawTestState({ layout: "state-only" }, async () => {
-        const { owner, client, authProfileId, readChatMetadata, request } =
+        const { owner, client, config, authProfileId, readChatMetadata, request } =
           createPersonalMetadataFixture();
         client.connect.scopes = ["operator.admin"];
+        config.gateway.roles.definitions.reader.scopes = ["operator.admin"];
         let requestedProfile = authProfileId;
         if (caller === "foreign admin") {
           const other = ensureProfileForEmail("metadata-other@example.test");
@@ -853,6 +855,9 @@ describe("chat metadata ownership", () => {
           client.internal = { syntheticClient: true };
         } else if (caller === "forged locator") {
           requestedProfile = `personal:${owner.id}:${randomUUID()}`;
+        }
+        if (caller !== "unidentified admin" && caller !== "anonymous") {
+          expect(authorizeCurrentOperatorRoleScopes(client, config)).toBeUndefined();
         }
 
         const respond = await request(

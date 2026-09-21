@@ -30,6 +30,7 @@ describe("requiresChatModelSetup", () => {
                 {
                   provider: "fixture",
                   id: "approved",
+                  name: "Approved model",
                   available: mode === "allowed",
                   ...(mode === "unavailable"
                     ? { unavailableReason: "unsupported-runtime" as const }

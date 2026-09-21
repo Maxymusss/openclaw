@@ -128,9 +128,14 @@ function expectSystemEventContaining(sessionKey: string, text: string) {
   expect(peekSystemEvents(sessionKey).join("\n")).toContain(text);
 }
 
-vi.mock("./context-engine-capabilities.js", () => ({
-  resolveContextEngineCapabilities: () => ({ llm: undefined }),
-}));
+vi.mock("./context-engine-capabilities.js", async (importOriginal) => {
+  const { readContextEngineOperatorAuthority } =
+    await importOriginal<typeof import("./context-engine-capabilities.js")>();
+  return {
+    readContextEngineOperatorAuthority,
+    resolveContextEngineCapabilities: () => ({ llm: undefined }),
+  };
+});
 
 vi.mock("./transcript-rewrite.js", () => ({
   rewriteTranscriptEntriesInSessionManager: (params: unknown) =>
