@@ -19,6 +19,16 @@ from bounded_observe import verify_sidecar, smoke_capacity, POLICY
 HERE = Path(__file__).resolve().parent
 FINALIZATION_SECONDS = 60
 
+def sampling_coverage(rows):
+    started=[r.get('sample') for r in rows if r.get('kind')=='sample']
+    completed=[r.get('sample') for r in rows if r.get('kind')=='sample-end']
+    full=started==list(range(60)) and completed==list(range(60))
+    return {'sampleLimit':60,'intervalSeconds':60,'started':started,'completed':completed,
+            'sampleLimitReached':full,'fullSampleCountGate':'PASS' if full else 'NOT_REACHED',
+            'terminalReason':rows[-1].get('reason'),'exhaustiveCensus':False,
+            'settlementIsNotFullCoverage':True}
+
+
 def validation_capacity(seconds):
     projected=seconds*60 #60 samples /2 smoke samples, with2x throughput margin
     if not math.isfinite(seconds) or seconds<0 or projected>40:
@@ -290,6 +300,7 @@ def complete_diagnostic(session, rows, update, ident):
     session.result['observationWindow']=window
     if not window['within']:
         raise ValueError('update outside observation window; unobserved tail or invalid timing')
+    session.result['samplingCoverage']=sampling_coverage(rows)
     session.result.update(status='OBSERVATION_SETTLED', updateExitCode=update.returncode,
                           joinedMappingCount=len(joins(rows,ident)))
 

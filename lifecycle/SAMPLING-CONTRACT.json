@@ -1,0 +1,14 @@
+{
+  "immutableSourceBundle": "455a4678866519babf4af3f1dfec48024c49686119566f5f913d5a8875f43098",
+  "readmeSha256": "f142aa8b282902788faad145daea370bf28e6e7349fa4b35a4d7c78011d851c6",
+  "sourceLines143to147": [
+    "The final budget-admission P2 control requires sample starts AND ends0/1 plus",
+    "terminal reason sample-limit. A wall-budget stop during either smoke scan cannot",
+    "supply a full-scan volume estimate, even with both positive leaf observations.",
+    "Product observation may still end at wall-budget under the inherited deadline;",
+    "that is distinct from eligibility of the prerequisite budget smoke."
+  ],
+  "observerSourceSha256": "2d15b778cad88e5b26b4c0b60b2ccd2c1af65120e5eee297dc5f5473a066d206",
+  "existingFiniteBounds": "observe.py validate_binding names samples and interval invalid finite bound; original observe returns0 for armed wall-budget or sample-limit; no change made to that original observer.",
+  "interpretation": "60/60s remain finite configured maxima, not a guarantee of60 complete samples under a wall deadline. Complete two-sample smoke remains strict. No new product acceptance waiver: partial count explicitly NOT_REACHED in result; settlement claims only contained update/process exit, never complete sampling or native acceptance."
+}

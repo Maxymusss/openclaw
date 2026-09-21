@@ -34,3 +34,15 @@ class Finalization(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError,'validation deadline'):verify_sidecar(output,rows,b,deadline=99)
                 verify_sidecar(output,rows,b,deadline=101)
             self.assertEqual(f.read_bytes(),side.getvalue())
+
+class SamplingCoverage(unittest.TestCase):
+    def test_partial_wall_budget_is_not_complete_sampling(self):
+        r=run.sampling_coverage([{'kind':'sample','sample':0},{'kind':'sample-end','sample':0},{'kind':'sample','sample':1},{'kind':'settled','reason':'wall-budget'}])
+        self.assertFalse(r['sampleLimitReached']);self.assertEqual(r['fullSampleCountGate'],'NOT_REACHED')
+        self.assertEqual(r['completed'],[0]);self.assertFalse(r['exhaustiveCensus'])
+    def test_full_sample_count_requires_every_end_in_order(self):
+        rows=[]
+        for n in range(60):rows.extend([{'kind':'sample','sample':n},{'kind':'sample-end','sample':n}])
+        rows.append({'kind':'settled','reason':'sample-limit'})
+        self.assertTrue(run.sampling_coverage(rows)['sampleLimitReached'])
+        rows.pop(-2);self.assertFalse(run.sampling_coverage(rows)['sampleLimitReached'])
