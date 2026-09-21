@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Selectable } from "kysely";
+import type { AcpSessionMetaEntryRead } from "../acp/runtime/session-meta-readonly.kernel.js";
 import type {
   SandboxBrowserRegistryEntry,
   SandboxRegistryEntry,
@@ -9,6 +10,8 @@ import type {
   ExecutionIdentityInspectionQuery,
   ExecutionIdentityInspectionOutcome,
 } from "../audit/execution-identity-inspection.types.js";
+import type { SessionAcpMeta } from "../config/sessions/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
 import type { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
@@ -43,6 +46,7 @@ export type OpenClawStateReadAuthority = {
 };
 
 export type OpenClawStateReadCommand =
+  | { type: "acpSessionMeta.entries"; entries: AcpSessionMetaEntryRead[]; cfg?: OpenClawConfig }
   | PluginBlobReadCommand
   | { type: "exec-approvals.read" }
   | { type: "agentDatabaseRegistry.read" }
@@ -69,6 +73,12 @@ export type OpenClawStateReadRequest = {
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply = (
+  | {
+      ok: true;
+      type: "acpSessionMeta.entries";
+      sourceAdmitted: true;
+      metadata: Array<SessionAcpMeta | undefined>;
+    }
   | PluginBlobReadReply
   | {
       ok: true;

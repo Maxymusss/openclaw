@@ -1,67 +1,69 @@
-import { safeParseJsonRecord } from "@openclaw/normalization-core";
-import type {
-  AcpSessionRuntimeOptions,
-  SessionAcpIdentity,
-  SessionAcpMeta,
-} from "../../config/sessions/types.js";
+import type { SessionAcpMeta } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { withExistingOpenClawStateDatabaseReadOnly } from "../../state/openclaw-state-db-readonly.js";
 import {
-  type AcpSessionEntryBinding,
-  type AcpSessionRow,
-  resolveReadableAcpSessionRow,
-  selectAcpSessionRowForStoreEntry,
-} from "./session-meta-keys.js";
+  executeExistingOpenClawStateRead,
+  withExistingOpenClawStateDatabaseReadOnly,
+} from "../../state/openclaw-state-db-readonly.js";
+import type { AcpSessionEntryBinding } from "./session-meta-keys.js";
+import {
+  readAcpSessionMetaForEntryInDatabase,
+  type AcpSessionMetaEntryRead,
+} from "./session-meta-readonly.kernel.js";
+export { rowToAcpSessionMeta } from "./session-meta-readonly.kernel.js";
 
-export function rowToAcpSessionMeta(row: AcpSessionRow): SessionAcpMeta {
-  // SAFETY: These JSON columns are written from the typed ACP metadata by its storage owner.
-  const identity = safeParseJsonRecord(row.identity_json ?? "") as SessionAcpIdentity | undefined;
-  // SAFETY: Runtime options share the same typed persisted metadata contract.
-  const runtimeOptions = safeParseJsonRecord(row.runtime_options_json ?? "") as
-    | AcpSessionRuntimeOptions
-    | undefined;
-  return {
-    backend: row.backend,
-    agent: row.agent,
-    runtimeSessionName: row.runtime_session_name,
-    ...(identity ? { identity } : {}),
-    mode: row.mode === "oneshot" ? "oneshot" : "persistent",
-    ...(runtimeOptions ? { runtimeOptions } : {}),
-    ...(row.cwd != null ? { cwd: row.cwd } : {}),
-    state: row.state === "running" || row.state === "error" ? row.state : "idle",
-    lastActivityAt: row.last_activity_at,
-    ...(row.last_error != null ? { lastError: row.last_error } : {}),
-  };
-}
-
-export function readAcpSessionMetaForEntry(params: {
-  sessionKey: string;
-  agentId?: string;
-  cfg?: OpenClawConfig;
-  entry: AcpSessionEntryBinding | undefined;
-  env?: NodeJS.ProcessEnv;
-  databasePath?: string;
-}): SessionAcpMeta | undefined {
-  const sessionKey = params.sessionKey.trim();
-  if (!sessionKey) {
+export function readAcpSessionMetaForEntry(
+  params: AcpSessionMetaEntryRead & {
+    cfg?: OpenClawConfig;
+    env?: NodeJS.ProcessEnv;
+    databasePath?: string;
+  },
+): SessionAcpMeta | undefined {
+  if (!params.sessionKey.trim()) {
     return undefined;
   }
-  const row = withExistingOpenClawStateDatabaseReadOnly(
-    ({ db }) =>
-      resolveReadableAcpSessionRow({
-        row: selectAcpSessionRowForStoreEntry(
-          db,
-          sessionKey,
-          params.agentId,
-          params.cfg,
-          params.entry,
-        ),
-        entry: params.entry,
-      }),
+  return withExistingOpenClawStateDatabaseReadOnly(
+    ({ db }) => readAcpSessionMetaForEntryInDatabase(db, params),
     { env: params.env, path: params.databasePath },
   );
-  if (!row) {
-    return undefined;
+}
+
+/** Prepared metadata belongs to these exact entry lifecycles, never a later row at the same key. */
+export async function readAcpSessionMetaForEntriesInWorker(params: {
+  entries: readonly (Omit<AcpSessionMetaEntryRead, "entry"> & {
+    entry: AcpSessionEntryBinding & { acp?: SessionAcpMeta };
+  })[];
+  cfg?: OpenClawConfig;
+  env?: NodeJS.ProcessEnv;
+  databasePath?: string;
+}): Promise<Array<SessionAcpMeta | undefined>> {
+  const pending: AcpSessionMetaEntryRead[] = [];
+  const result = params.entries.map(({ sessionKey, agentId, entry }) => {
+    if (!entry.acp) {
+      pending.push({
+        sessionKey,
+        agentId,
+        entry: {
+          sessionId: entry.sessionId,
+          lifecycleRevision: entry.lifecycleRevision,
+          sessionStartedAt: entry.sessionStartedAt,
+        },
+      });
+    }
+    return entry.acp;
+  });
+  if (!pending.length) {
+    return result;
   }
-  return rowToAcpSessionMeta(row);
+  const reply = await executeExistingOpenClawStateRead(
+    { env: params.env, path: params.databasePath },
+    { type: "acpSessionMeta.entries", entries: pending, cfg: params.cfg },
+  );
+  if (!reply) {
+    return result;
+  }
+  if (!reply.ok || reply.type !== "acpSessionMeta.entries") {
+    throw new Error("Unexpected ACP session metadata read result");
+  }
+  let index = 0;
+  return result.map((meta) => meta ?? reply.metadata[index++]);
 }

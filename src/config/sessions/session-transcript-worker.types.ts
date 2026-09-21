@@ -27,6 +27,8 @@ import type {
 import type {
   SessionAccessScope,
   SessionEntryListScope,
+  SessionEntryReadScope,
+  SessionEntryReadSource,
   SessionEntrySummary,
   SessionTranscriptReadScope,
   SessionTranscriptRuntimeTarget,
@@ -144,6 +146,28 @@ export type SessionEntryListWorkerResult = {
   entries: SessionEntrySummary[];
 };
 
+export type SessionExactEntriesWorkerInput = {
+  kind: "session-exact-entries";
+  database: { agentId: string; path: string };
+  scope: {
+    sessionKeys: readonly string[];
+    projection?: SessionEntryReadScope["projection"];
+    includeProjectionFacts?: boolean;
+  };
+};
+
+export type SessionExactEntriesWorkerResult = {
+  kind: "session-exact-entries";
+  entries: SessionEntrySummary[];
+  readSource?: SessionEntryReadSource;
+  databaseIdentity?: { identity: string; filename: string };
+  boardSessionKeys?: string[];
+  transcriptWatermarks?: Array<{
+    sessionKey: string;
+    watermark: import("./session-accessor.sqlite-transcript-watermark-read.js").SessionTranscriptWatermark;
+  }>;
+};
+
 export type SessionTargetInventoryWorkerInput = {
   kind: "session-target-inventory";
   request: SessionStoreTargetInventoryRequest;
@@ -176,6 +200,7 @@ export type SessionTranscriptWorkerValues = {
   "session-row-presence": boolean;
   "session-members": SessionMember[];
   "session-entry-list": SessionEntryListWorkerResult;
+  "session-exact-entries": SessionExactEntriesWorkerResult;
   "session-target-inventory": SessionStoreTargetInventoryResult;
   "session-identity-evidence": SessionIdentityEvidenceWorkerResult;
   "usage-cache": SessionCostUsageCacheReadResult;

@@ -1,5 +1,6 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { readAcpSessionMetaForEntryInDatabase } from "../acp/runtime/session-meta-readonly.kernel.js";
 import {
   readSandboxBrowserRegistryInDatabase,
   readSandboxRegistryEntryInDatabase,
@@ -60,6 +61,7 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     typeof coordinatorRuntime.keepAlive === "boolean" &&
     (isPluginBlobReadCommand(input.command) ||
       input.command.type === "admit" ||
+      (input.command.type === "acpSessionMeta.entries" && Array.isArray(input.command.entries)) ||
       input.command.type === "exec-approvals.read" ||
       input.command.type === "agentDatabaseRegistry.read" ||
       (input.command.type === "userProfiles.avatar.reconcile" &&
@@ -150,6 +152,18 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "acpSessionMeta.entries") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    metadata: runSqliteDeferredTransactionSync(db, () =>
+                      command.entries.map((entry) =>
+                        readAcpSessionMetaForEntryInDatabase(db, { ...entry, cfg: command.cfg }),
+                      ),
+                    ),
+                  };
+                }
                 if (command.type === "pluginBlob.lookup") {
                   return {
                     ok: true,

@@ -54,6 +54,8 @@ import type {
   SessionMembersWorkerInput,
   SessionEntryListWorkerInput,
   SessionEntryListWorkerResult,
+  SessionExactEntriesWorkerInput,
+  SessionExactEntriesWorkerResult,
   SessionIdentityEvidenceWorkerInput,
   SessionIdentityEvidenceWorkerResult,
   SessionUsageCacheWorkerInput,
@@ -84,6 +86,9 @@ export type SessionHistoryWorkerDatabase = {
   readEntries: (
     scope: SessionEntryListWorkerInput["scope"],
   ) => Promise<SessionEntryListWorkerResult["entries"]>;
+  readExactEntries: (
+    scope: SessionExactEntriesWorkerInput["scope"],
+  ) => Promise<Omit<SessionExactEntriesWorkerResult, "kind">>;
   readMembers: (
     input: Omit<SessionMembersWorkerInput, "kind" | "database">,
   ) => Promise<SessionMember[]>;
@@ -186,6 +191,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
         | Omit<SessionRowPresenceWorkerInput, "database">
         | Omit<SessionMembersWorkerInput, "database">
         | Omit<SessionEntryListWorkerInput, "database">
+        | Omit<SessionExactEntriesWorkerInput, "database">
         | Omit<SessionIdentityEvidenceWorkerInput, "database">
         | Omit<SessionTranscriptSearchWorkerInput, "database">
         | Omit<SessionUsageCacheWorkerInput, "database">,
@@ -198,6 +204,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
           | boolean
           | SessionMember[]
           | SessionEntryListWorkerResult
+          | SessionExactEntriesWorkerResult
           | SessionStoreTargetInventoryResult
           | SessionIdentityEvidenceWorkerResult
           | SessionTranscriptSearchWorkerResult
@@ -226,6 +233,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             | "session-row-presence"
             | "session-members"
             | "session-entry-list"
+            | "session-exact-entries"
             | "session-target-inventory"
             | "session-identity-evidence"
             | "usage-cache"
@@ -275,6 +283,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             value.kind === "session-preview" ||
             value.kind === "session-title-fields" ||
             value.kind === "session-entry-list" ||
+            value.kind === "session-exact-entries" ||
             value.kind === "session-target-inventory" ||
             value.kind === "session-target-registry-required" ||
             value.kind === "session-identity-evidence" ||
@@ -373,6 +382,29 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
               throw new Error("Session history worker returned another result instead of entries");
             }
             return value.entries;
+          },
+        ),
+      readExactEntries: async (scope) =>
+        await runRequest(
+          () => ({ kind: "session-exact-entries", scope }),
+          JSON.stringify(scope).length * 2,
+          (value) => {
+            if (
+              typeof value === "boolean" ||
+              Array.isArray(value) ||
+              value.kind !== "session-exact-entries"
+            ) {
+              throw new Error(
+                "Session history worker returned another result instead of exact entries",
+              );
+            }
+            return {
+              entries: value.entries,
+              readSource: value.readSource,
+              databaseIdentity: value.databaseIdentity,
+              boardSessionKeys: value.boardSessionKeys,
+              transcriptWatermarks: value.transcriptWatermarks,
+            };
           },
         ),
       readIdentityEvidence: async (input) =>

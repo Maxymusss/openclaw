@@ -17,6 +17,8 @@ import type {
   SessionBranchSummaryWorkerInput,
   SessionEntryWorkerInput,
   SessionEntryListWorkerInput,
+  SessionExactEntriesWorkerInput,
+  SessionExactEntriesWorkerResult,
   SessionTargetInventoryWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
@@ -92,6 +94,7 @@ serveWorkerTasks(
       | SessionModelContextWorkerInput
       | SessionEntryWorkerInput
       | SessionEntryListWorkerInput
+      | SessionExactEntriesWorkerInput
       | SessionTargetInventoryWorkerInput
       | SessionIdentityEvidenceWorkerInput
       | SessionTranscriptHistoryWorkerInput
@@ -177,6 +180,71 @@ serveWorkerTasks(
                     : { status: "unknown", reason: result.reason },
                 );
             return { kind: "session-identity-evidence" as const, evidence };
+          })),
+        };
+      }
+      if (request.kind === "session-exact-entries") {
+        const { loadExactSessionEntryCandidates } =
+          await import("./session-accessor.sqlite-exact-read.js");
+        const { withOpenClawAgentDatabaseReadOnly } =
+          await import("../../state/openclaw-agent-db-readonly.js");
+        const { readOpenClawAgentDatabaseIdentity } =
+          await import("../../state/openclaw-agent-db-identity.js");
+        const { readBoardSessionKeys } = await import("../../boards/sqlite-board-store.kernel.js");
+        const { readSessionActivitySummary } = await import("./activity-summary.js");
+        const { readSessionTranscriptWatermark } =
+          await import("./session-accessor.sqlite-transcript-watermark.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => {
+            const result: SessionExactEntriesWorkerResult = {
+              kind: "session-exact-entries",
+              entries: [],
+            };
+            const identity = withOpenClawAgentDatabaseReadOnly(
+              readOpenClawAgentDatabaseIdentity,
+              request.database,
+            );
+            if (identity.found && typeof identity.value.identity === "string") {
+              result.databaseIdentity = {
+                identity: identity.value.identity,
+                filename: identity.value.filename,
+              };
+            }
+            result.entries = loadExactSessionEntryCandidates({
+              ...request.scope,
+              readSource: request.database,
+              readOnly: true,
+              onReadSource: (source) => {
+                result.readSource = source;
+              },
+            });
+            if (request.scope.includeProjectionFacts) {
+              const boards = withOpenClawAgentDatabaseReadOnly(
+                (database) =>
+                  request.scope.sessionKeys.filter(
+                    (key) => readBoardSessionKeys(database, key).length > 0,
+                  ),
+                request.database,
+              );
+              result.boardSessionKeys = boards.found ? boards.value : [];
+              result.transcriptWatermarks = result.entries.flatMap(({ sessionKey, entry }) =>
+                readSessionActivitySummary(entry)
+                  ? [
+                      {
+                        sessionKey,
+                        watermark: readSessionTranscriptWatermark({
+                          agentId: request.database.agentId,
+                          storePath: request.database.path,
+                          sessionKey,
+                          sessionId: entry.sessionId,
+                        }),
+                      },
+                    ]
+                  : [],
+              );
+            }
+            return result;
           })),
         };
       }
