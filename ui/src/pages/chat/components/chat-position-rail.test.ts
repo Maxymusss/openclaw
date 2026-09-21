@@ -7,7 +7,10 @@ import { renderChatPositionRail } from "./chat-position-rail.ts";
 import { getTranscriptState } from "./chat-thread-interactions.ts";
 import { renderChatThread } from "./chat-thread.ts";
 import { ChatTranscriptController } from "./chat-transcript-controller.ts";
-import { publishTranscriptScroll } from "./chat-transcript-scroll-events.ts";
+import {
+  captureTranscriptViewport,
+  publishTranscriptScroll,
+} from "./chat-transcript-scroll-events.ts";
 import {
   installTranscriptDomMocks,
   mountTestTranscript,
@@ -161,6 +164,8 @@ describe("conversation position rail", () => {
     "boot-resize",
     "resize",
     "resize-jump",
+    "coalesced-maintenance",
+    "navigation-before-maintenance",
     "end",
     "focus",
     "focus-resize",
@@ -282,6 +287,34 @@ describe("conversation position rail", () => {
           expect(Number.parseFloat(marker(79).style.top) + 12).toBeLessThanOrEqual(
             marks.scrollTop + marks.clientHeight,
           );
+        } else if (
+          scenario === "coalesced-maintenance" ||
+          scenario === "navigation-before-maintenance"
+        ) {
+          if (scenario === "navigation-before-maintenance") {
+            root.scrollTop = 0;
+            activeMessage.mockReturnValue("message-0");
+          }
+          const before = captureTranscriptViewport(root);
+          height = 668;
+          marksHeight = 354;
+          root.scrollTop = scenario === "coalesced-maintenance" ? 8244 : 0;
+          publishTranscriptScroll(root, {
+            type: "maintenance",
+            before,
+            after: captureTranscriptViewport(root),
+          });
+          // The goal strip arrives before observers see the textarea's larger viewport.
+          height = 647;
+          marksHeight = 333;
+          await flush();
+          const expectedOffset = scenario === "coalesced-maintenance" ? 677 : 0;
+          expect(marks.scrollTop).toBe(expectedOffset);
+          if (scenario === "coalesced-maintenance") {
+            root.scrollTop = 8265;
+            await flush();
+            expect(marks.scrollTop).toBe(expectedOffset);
+          }
         } else if (scenario === "resize") {
           height = 554;
           marksHeight = 240;

@@ -314,10 +314,17 @@ suite.define(() => {
           if (count === 80 && direction === "ltr") {
             const textarea = page.locator(".agent-chat__composer-combobox textarea");
             const goalSamples = sampleAnchor();
-            await textarea.fill("/goal");
-            await textarea.press("Enter");
+            await textarea.evaluate((element) => {
+              const input = element as HTMLTextAreaElement;
+              input.value = "/goal";
+              input.dispatchEvent(new Event("input", { bubbles: true }));
+              input.dispatchEvent(
+                new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }),
+              );
+            });
             await page.locator(".agent-chat__goal-mode").waitFor();
             await assertAnchor(goalSamples);
+            await captureUiProof(suite, page, "rail-coalesced-resize", "goal-mode.png");
             const cancelSamples = sampleAnchor();
             await textarea.press("Escape");
             await page.locator(".agent-chat__goal-mode").waitFor({ state: "hidden" });

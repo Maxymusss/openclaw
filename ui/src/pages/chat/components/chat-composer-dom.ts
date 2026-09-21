@@ -1,4 +1,7 @@
-import { captureChatSessionScrollPosition } from "../scroll.ts";
+import {
+  captureTranscriptViewport,
+  publishTranscriptScroll,
+} from "./chat-transcript-scroll-events.ts";
 
 const COMPOSER_CHROME_INTERACTIVE_SELECTOR = [
   "a[href]",
@@ -151,9 +154,7 @@ export function adjustTextareaHeight(el: HTMLTextAreaElement) {
     return;
   }
   const thread = el.closest(".chat")?.querySelector<HTMLElement>(".chat-thread") ?? null;
-  const preserveBottomAnchor = thread
-    ? captureChatSessionScrollPosition(thread).anchorToEnd
-    : false;
+  const before = thread ? captureTranscriptViewport(thread) : null;
   // Hide the browser's scrollbar while measuring; restore it only when the
   // final CSS-constrained height actually clips the draft.
   el.style.overflowY = "hidden";
@@ -171,8 +172,18 @@ export function adjustTextareaHeight(el: HTMLTextAreaElement) {
   updateTextareaOverflow(el);
   // Once capped, the textarea can perturb the sibling transcript without
   // resizing its viewport, so ResizeObserver has no correction to apply.
-  if (thread && preserveBottomAnchor) {
+  if (thread && before?.anchorToEnd) {
     thread.scrollTop = thread.scrollHeight;
+  }
+  if (thread && before) {
+    const after = captureTranscriptViewport(thread);
+    if (
+      before.height !== after.height ||
+      before.scrollHeight !== after.scrollHeight ||
+      before.scrollTop !== after.scrollTop
+    ) {
+      publishTranscriptScroll(thread, { type: "maintenance", before, after });
+    }
   }
 }
 
