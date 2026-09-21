@@ -15,7 +15,6 @@ export function createSessionRowProjectionArchive(params: {
   enqueue: (id: string, change: SessionRowChange) => void;
   put: (row: records.Row) => void;
   release: (id: string) => void;
-  prepare: (row: records.Row) => records.Row | undefined;
 }) {
   const materialized = new Set<string>();
   let limit = DEFAULT_ARCHIVED_MATERIALIZED_ROWS;
@@ -76,7 +75,7 @@ export function createSessionRowProjectionArchive(params: {
       if (initial?.entry?.archivedAt === undefined) {
         return initial;
       }
-      const row = initial.materialized ? initial : params.prepare(initial);
+      const row = initial;
       if (records.ready(row) && row.entry.archivedAt !== undefined) {
         const id = records.identity(row);
         materialized.delete(id);

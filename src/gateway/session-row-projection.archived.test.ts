@@ -1,11 +1,11 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import * as workerReads from "../config/sessions/session-transcript-worker-runtime.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { retainSessionListForegroundWork } from "./session-projection-work.js";
-import * as materialization from "./session-row-projection-materialize.js";
 import { ready } from "./session-row-projection-record.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import * as transcriptBackfill from "./session-row-transcript-backfill.js";
@@ -35,15 +35,33 @@ it("keeps archived rows cold at hydration and across broad refreshes", async () 
       expect(projection.materializedCount).toBe(live);
       expect(projection.selectEntries().filter(ready)).toHaveLength(live);
       expect(projection.selectEntries()).toHaveLength(live + archived);
-      const reads = vi.spyOn(materialization, "readSessionRowEntry");
+      const reads: string[][] = [];
+      const archivedKeys = new Set(
+        Array.from({ length: archived }, (_, index) => `agent:main:row-${live + index}`),
+      );
+      const retain = workerReads.withSessionHistoryWorkerDatabases;
+      vi.spyOn(workerReads, "withSessionHistoryWorkerDatabases").mockImplementation(
+        (targets, read) =>
+          retain(targets, (owners) =>
+            read(
+              owners.map((owner) => ({
+                ...owner,
+                readExactEntries(scope) {
+                  reads.push([...scope.sessionKeys]);
+                  return owner.readExactEntries(scope);
+                },
+              })),
+            ),
+          ),
+      );
       for (const scope of ["catalog", "config", "stores", { agentId: "main" }] as const) {
         const before = projection.materializedCount;
         sessionChanges.emit({ all: true, scope });
         expect(projection.dirtyRowCount).toBe(live);
         await projection.ensureMaterialized();
         expect(projection.materializedCount - before).toBe(live);
-        expect(reads.mock.calls.some(([row]) => row.entry?.archivedAt !== undefined)).toBe(false);
-        reads.mockClear();
+        expect(reads.flat().some((key) => archivedKeys.has(key))).toBe(false);
+        reads.length = 0;
       }
     } finally {
       projection.dispose();
@@ -65,6 +83,7 @@ it("promotes unarchived rows, demotes archived rows, and refreshes only requeste
       sessionChanges.emit(target);
       await projection.ensureMaterialized();
       expect(projection.materializedCount).toBe(0);
+      await projection.prepareExactRows([{ agentId: "main", key }]);
       expect(projection.snapshot({ agentId: "main", key }).row).toMatchObject({
         key,
         archivedAt: 1,
@@ -73,6 +92,7 @@ it("promotes unarchived rows, demotes archived rows, and refreshes only requeste
       replaceSessionEntrySync(target, { ...entry, archivedAt: 1, label: "Updated archive" });
       await projection.ensureMaterialized();
       expect(projection.materializedCount).toBe(2);
+      await projection.prepareExactRows([{ agentId: "main", key }]);
       expect(projection.snapshot({ agentId: "main", key }).row?.label).toBe("Updated archive");
 
       sessionChanges.emit({ all: true, scope: "catalog" });
@@ -92,6 +112,7 @@ it("promotes unarchived rows, demotes archived rows, and refreshes only requeste
       expect(projection.selectEntries().filter(ready)).toHaveLength(0);
       await projection.ensureMaterialized();
       expect(projection.materializedCount).toBe(3);
+      await projection.prepareExactRows([{ agentId: "main", key }]);
       expect(projection.snapshot({ agentId: "main", key }).row?.archivedAt).toBe(2);
       expect(projection.materializedCount).toBe(4);
     } finally {
@@ -130,6 +151,7 @@ it("bounds archived residency across pages and evicts the least recently read ro
       expect(projection.selectEntries().filter(ready)).toHaveLength(100);
       const query = { agentId: "main", key: "agent:main:archive-127" };
       expect(projection.capture(query)?.materialized).toBeUndefined();
+      await projection.prepareExactRows([query]);
       expect(projection.snapshot(query).row?.sessionId).toBe("archive-127");
       expect(projection.materializedCount).toBe(129);
       expect(projection.selectEntries().filter(ready)).toHaveLength(100);
@@ -172,6 +194,7 @@ it("backfills only requested archives and discards enrichment after demotion", a
       expect(backfill.mock.calls[0]?.[0].sessionKey).toBe("agent:main:live");
       const query = { agentId: "main", key: "agent:main:archived" };
       expect(projection.capture(query)?.materialized).toBeUndefined();
+      await projection.prepareExactRows([query]);
       expect(projection.snapshot(query).row?.sessionId).toBe("archived");
       await vi.waitFor(() => expect(backfill).toHaveBeenCalledTimes(2));
       sessionChanges.emit({ all: true, scope: "catalog" });
@@ -255,6 +278,7 @@ it("expires archives read while a newer catalog is still loading", async () => {
     try {
       refresh = true;
       sessionChanges.emit({ all: true, scope: "catalog" });
+      await projection.prepareExactRows([{ agentId: "main", key }]);
       expect(projection.snapshot({ agentId: "main", key }).row?.contextTokens).toBe(8192);
       expect(projection.materializedCount).toBe(1);
       loading.resolve([{ ...catalog[0]!, contextWindow: 16384, contextTokens: 16384 }]);
@@ -264,6 +288,7 @@ it("expires archives read while a newer catalog is still loading", async () => {
       expect(projection.selectEntries().filter(ready)).toHaveLength(0);
       await projection.ensureMaterialized();
       expect(projection.materializedCount).toBe(1);
+      await projection.prepareExactRows([{ agentId: "main", key }]);
       expect(projection.snapshot({ agentId: "main", key }).row?.contextTokens).toBe(16384);
       expect(projection.materializedCount).toBe(2);
     } finally {

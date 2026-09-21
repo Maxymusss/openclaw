@@ -78,7 +78,10 @@ import {
   isRestartRecoveryLifecycleEvent,
   persistGatewaySessionLifecycleEvent,
 } from "./session-lifecycle-state.js";
-import { tryResolveSessionCompatibilityOwnerAgentId } from "./session-request-agent.js";
+import {
+  resolveSessionEventAgentScope,
+  tryResolveSessionCompatibilityOwnerAgentId,
+} from "./session-request-agent.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import { resolveSessionSubscriptionKeys } from "./session-subscription-keys.js";
 import { projectGatewaySessionRunState } from "./session-utils-display.js";
@@ -829,9 +832,19 @@ export function createAgentEventHandler({
           .then(
             async () => {
               if (projection) {
+                const scope = resolveSessionEventAgentScope(
+                  getRuntimeConfig(),
+                  sessionKey,
+                  sessionAgentId,
+                );
+                const queries = scope?.[1] ? [{ key: sessionKey, agentId: scope[1] }] : [];
                 do {
                   await projection.ensureMaterialized();
-                } while (projection.needsMaterialization);
+                  await projection.prepareExactRows(queries);
+                } while (
+                  projection.needsMaterialization ||
+                  projection.needsExactRowsPreparation(queries)
+                );
               }
               broadcastSessionChange();
             },
@@ -840,9 +853,19 @@ export function createAgentEventHandler({
                 `gateway: terminal session persistence failed session=${formatForLog(sessionKey)} run=${formatForLog(evt.runId)} error=${formatForLog(err)}`,
               );
               if (projection) {
+                const scope = resolveSessionEventAgentScope(
+                  getRuntimeConfig(),
+                  sessionKey,
+                  sessionAgentId,
+                );
+                const queries = scope?.[1] ? [{ key: sessionKey, agentId: scope[1] }] : [];
                 do {
                   await projection.ensureMaterialized();
-                } while (projection.needsMaterialization);
+                  await projection.prepareExactRows(queries);
+                } while (
+                  projection.needsMaterialization ||
+                  projection.needsExactRowsPreparation(queries)
+                );
               }
               broadcastSessionChange(evt);
             },
@@ -1892,9 +1915,19 @@ export function createAgentEventHandler({
         const projection = getSessionRowProjection?.();
         if (projection) {
           void (async () => {
+            const scope = resolveSessionEventAgentScope(
+              getRuntimeConfig(),
+              sessionKey,
+              sessionAgentId,
+            );
+            const queries = scope?.[1] ? [{ key: sessionKey, agentId: scope[1] }] : [];
             do {
               await projection.ensureMaterialized();
-            } while (projection.needsMaterialization);
+              await projection.prepareExactRows(queries);
+            } while (
+              projection.needsMaterialization ||
+              projection.needsExactRowsPreparation(queries)
+            );
             publish();
           })().catch((error: unknown) =>
             logError(`gateway: session snapshot publication failed: ${formatErrorMessage(error)}`),

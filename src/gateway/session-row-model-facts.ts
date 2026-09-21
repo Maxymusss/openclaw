@@ -2,6 +2,7 @@ import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../agents/defaults.js";
 import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import type { SessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
 import type {
@@ -25,50 +26,60 @@ export function readSessionRowModelFacts(params: {
   rowContext: SessionListRowContext;
   modelCatalog?: SessionListModelCatalog | ModelCatalogEntry[];
   lightweightListRow?: boolean;
+  preparedAcpMeta?: SessionEntry["acp"] | null;
 }) {
   const { cfg, key, agentId, source, rowContext } = params;
   const lightweight = params.lightweightListRow === true;
   const preparedCatalog =
     params.modelCatalog instanceof Map ? params.modelCatalog.get(agentId) : undefined;
   const metadataSnapshot = readPreparedGatewayModelCatalogMetadata(preparedCatalog);
-  const selectedModel = resolveSessionSelectedModelRef({
-    cfg,
-    sessionKey: key,
-    source,
-    agentId,
-    rowContext,
-    allowPluginNormalization: !lightweight,
-    manifestPlugins: metadataSnapshot,
-  });
-  const { provider, model } = selectedModel;
-  const rowModelIdentity = resolveSessionDisplayModelIdentityRefCached({
-    cfg,
-    provider,
-    model,
-    rowContext,
-  });
-  // Entries and provider policy stay bound to the same prepared agent owner.
-  const rowModelCatalog =
-    params.modelCatalog instanceof Map ? preparedCatalog?.entries : params.modelCatalog;
-  // Lightweight projections must not rediscover plugin-backed configured catalog metadata.
-  const thinkingProjection = resolveGatewaySessionThinkingProjectionInternal({
-    cfg,
-    agentId,
-    provider: provider ?? DEFAULT_PROVIDER,
-    model: model ?? DEFAULT_MODEL,
-    sessionKey: resolveStoredSessionKeyForAgentStore({ cfg, agentId, sessionKey: key }),
-    entry: params.entry,
-    modelCatalog: rowModelCatalog ?? (lightweight ? [] : undefined),
-    modelCatalogRouteVariants: preparedCatalog?.routeVariants,
-    metadataSnapshot,
-    rowContext,
-    providerPolicySource: preparedCatalog?.pluginRegistry ?? (lightweight ? "active" : undefined),
-  });
-  return {
-    selectedModel,
-    rowModelIdentity,
-    thinkingProjection,
-    catalogEntry:
-      rowModelCatalog && provider && model ? thinkingProjection.catalogEntry : undefined,
+  const read = () => {
+    const selectedModel = resolveSessionSelectedModelRef({
+      cfg,
+      sessionKey: key,
+      source,
+      agentId,
+      rowContext,
+      allowPluginNormalization: !lightweight,
+      manifestPlugins: metadataSnapshot,
+    });
+    const { provider, model } = selectedModel;
+    const rowModelIdentity = resolveSessionDisplayModelIdentityRefCached({
+      cfg,
+      provider,
+      model,
+      rowContext,
+    });
+    // Entries and provider policy stay bound to the same prepared agent owner.
+    const rowModelCatalog =
+      params.modelCatalog instanceof Map ? preparedCatalog?.entries : params.modelCatalog;
+    // Lightweight projections must not rediscover plugin-backed configured catalog metadata.
+    const thinkingProjection = resolveGatewaySessionThinkingProjectionInternal({
+      cfg,
+      agentId,
+      provider: provider ?? DEFAULT_PROVIDER,
+      model: model ?? DEFAULT_MODEL,
+      sessionKey: resolveStoredSessionKeyForAgentStore({ cfg, agentId, sessionKey: key }),
+      entry: params.entry,
+      preparedAcpMeta: params.preparedAcpMeta,
+      modelCatalog: rowModelCatalog ?? (lightweight ? [] : undefined),
+      modelCatalogRouteVariants: preparedCatalog?.routeVariants,
+      metadataSnapshot,
+      rowContext,
+      providerPolicySource: preparedCatalog?.pluginRegistry ?? (lightweight ? "active" : undefined),
+    });
+    return {
+      selectedModel,
+      rowModelIdentity,
+      thinkingProjection,
+      catalogEntry:
+        rowModelCatalog && provider && model ? thinkingProjection.catalogEntry : undefined,
+    };
   };
+  return metadataSnapshot
+    ? withPluginRuntimeGenerationScope(
+        { metadataSnapshot, pluginRegistry: preparedCatalog?.pluginRegistry },
+        read,
+      )
+    : read();
 }

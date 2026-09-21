@@ -339,7 +339,7 @@ export function prepareProjectedSessionList(params: {
   return { prepared, presentation, filters };
 }
 
-/** One readiness await, then one synchronous selection/authorization/presentation boundary. */
+/** Prepare the selected page, then select/authorize/present with no intervening yield. */
 export async function listProjectedSessions(params: {
   projection: SessionRowProjection;
   opts: SessionsListParams;
@@ -355,34 +355,62 @@ export async function listProjectedSessions(params: {
   diagnostics?.mark("materialize");
   const waitStarted = performance.now();
   let yieldCount = 0;
-  do {
+  let selectionSyncMs = 0;
+  const preparePage = () => {
+    const started = performance.now();
+    const cpu = diagnostics?.startSyncCpu();
+    try {
+      diagnostics?.mark("storeLoad");
+      const now = Date.now();
+      const projected = prepareProjectedSessionList({
+        projection,
+        opts,
+        key: exactKey,
+        context,
+        client,
+        now,
+      });
+      const selection = withAgentRosterFactsBatch(projected.prepared.cfg, () =>
+        runSynchronousWork(selectSessionEntries({ ...projected.filters, defaultLimit: 100 })),
+      );
+      return { now, projected, selection };
+    } finally {
+      selectionSyncMs += performance.now() - started;
+      diagnostics?.finishSyncCpu("prepareThreadCpuMs", cpu);
+    }
+  };
+  let page: ReturnType<typeof preparePage>;
+  while (true) {
     yieldCount++;
     await projection.ensureMaterialized();
-  } while (projection.needsMaterialization);
+    if (projection.needsMaterialization) {
+      continue;
+    }
+    page = preparePage();
+    projection.setArchivePageSize(page.selection.entries.length);
+    const queries = page.selection.entries.flatMap(([key]) => {
+      const target = page.projected.prepared.getTarget(key);
+      return target ? [{ ...target, storePath: target.storeTarget.storePath }] : [];
+    });
+    if (!projection.needsExactRowsPreparation(queries)) {
+      break;
+    }
+    diagnostics?.mark("materialize");
+    await projection.prepareExactRows(queries);
+    // Refresh selection, caller visibility and clock after the worker yield.
+  }
   const resumed = performance.now();
-  const now = Date.now();
+  const {
+    now,
+    selection,
+    projected: { presentation, prepared },
+  } = page;
   let cpuPhase: "prepareThreadCpuMs" | "rowThreadCpuMs" = "prepareThreadCpuMs";
   let syncCpu = diagnostics?.startSyncCpu();
   try {
     diagnostics?.mark("storeLoad");
-    const { presentation, prepared, filters } = prepareProjectedSessionList({
-      projection,
-      opts,
-      key: exactKey,
-      context,
-      client,
-      now,
-    });
     const { cfg, getTarget } = prepared;
     diagnostics?.mark("filterSetup");
-    const selection = withAgentRosterFactsBatch(cfg, () =>
-      runSynchronousWork(
-        selectSessionEntries({
-          ...filters,
-          defaultLimit: 100,
-        }),
-      ),
-    );
     diagnostics?.mark("sharing");
     diagnostics?.mark("rows");
     const rowsStarted = performance.now();
@@ -433,9 +461,9 @@ export async function listProjectedSessions(params: {
     diagnostics?.mark("visibilityRepair");
     if (diagnostics) {
       Object.assign(diagnostics.projection, {
-        prepareSyncMs: rowsStarted - resumed,
+        prepareSyncMs: selectionSyncMs + rowsStarted - resumed,
         rowSyncMs: performance.now() - rowsStarted,
-        yieldWaitMs: resumed - waitStarted,
+        yieldWaitMs: Math.max(0, resumed - waitStarted - selectionSyncMs),
         yieldCount,
         selectedRowCount: sessions.length,
         dirtyRowCount,

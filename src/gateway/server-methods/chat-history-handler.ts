@@ -458,6 +458,22 @@ export async function handleChatHistoryRequest({
     );
     return;
   }
+  const rowQuery = {
+    key: canonicalKey,
+    agentId: sessionAgentId,
+    storePath: selectedSession.readSource?.path ?? storePath,
+  };
+  do {
+    await rowProjection.prepareExactRows([rowQuery]);
+    if (getSessionRowProjection(context) !== rowProjection) {
+      respondChatHistoryUnavailable(
+        method,
+        respond,
+        "session rows changed while reading history; reload the conversation",
+      );
+      return;
+    }
+  } while (rowProjection.needsExactRowsPreparation([rowQuery]));
   const currentSharing = readCurrentSharing();
   if (!currentSharing) {
     return;
@@ -465,11 +481,7 @@ export async function handleChatHistoryRequest({
   const sessionInfo = measureDiagnosticsTimelineSpanSync(
     `gateway.${method}.session_info`,
     () =>
-      prepareProjectedSessionPresentation(rowProjection, client).snapshot({
-        key: canonicalKey,
-        agentId: sessionAgentId,
-        storePath: selectedSession.readSource?.path ?? storePath,
-      }).row ??
+      prepareProjectedSessionPresentation(rowProjection, client).snapshot(rowQuery).row ??
       (entry
         ? undefined
         : buildGatewaySessionRow({

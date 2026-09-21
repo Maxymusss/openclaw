@@ -603,16 +603,16 @@ export class EmbeddedTuiBackend implements TuiBackend {
 
     const defaults = getSessionDefaults(cfg, undefined, { allowPluginNormalization: false });
     const projection = await this.sessionProjection;
-    if (projection) {
-      do {
-        await projection.ensureMaterialized();
-      } while (projection.needsMaterialization);
-    }
     const target = {
       key: canonicalKey,
       agentId: sessionAgentId,
       storePath: readSource?.path ?? storePath,
     };
+    if (projection) {
+      do {
+        await projection.prepareExactRows([target]);
+      } while (projection.needsExactRowsPreparation([target]));
+    }
     const current = projection?.describe(target);
     const sessionInfo =
       entry && (entry.incognito || isIncognitoSessionKey(canonicalKey))

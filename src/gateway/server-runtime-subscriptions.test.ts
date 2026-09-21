@@ -278,6 +278,8 @@ describe("startGatewayEventSubscriptions", () => {
     const projection = {
       capture: () => current,
       ensureMaterialized: () => prepared.promise,
+      prepareExactRows: async () => {},
+      needsExactRowsPreparation: () => false,
       isCurrent: (record: typeof original) => record === current,
       snapshot: () => ({ row: current ? { key: "agent:main:queued", ...current } : null }),
     } as unknown as SessionRowProjection;
@@ -323,6 +325,8 @@ describe("startGatewayEventSubscriptions", () => {
       const projection = {
         capture: () => current,
         ensureMaterialized: () => prepared.promise,
+        prepareExactRows: async () => {},
+        needsExactRowsPreparation: () => false,
         isCurrent: (record: typeof original) => record === current,
         snapshot: () => ({ row: { key: target.key, ...current } }),
       } as unknown as SessionRowProjection;

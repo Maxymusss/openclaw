@@ -39,7 +39,10 @@ import { listSessionEntriesCore, listSessionEntriesReadOnly } from "./session-ac
 import type { SessionEntryListScope, SessionEntrySummary } from "./session-accessor.types.js";
 import { canonicalSessionKeyMigrationRequiredError } from "./session-canonical-key.js";
 import { resolvePersistedSessionStoreOwner } from "./session-store-owner.js";
-import { withSessionHistoryWorkerDatabases } from "./session-transcript-worker-runtime.js";
+import {
+  withSessionHistoryWorkerDatabases,
+  type SessionHistoryWorkerDatabase,
+} from "./session-transcript-worker-runtime.js";
 import {
   dedupeSessionStoreTargetsBySqliteTarget,
   listConfiguredSessionStoreAgentIds,
@@ -697,9 +700,15 @@ export function loadCombinedSessionStoreForGatewayCore(
 /** Descriptive listings retain federation policy while durable rows are read by its worker. */
 export async function loadCombinedSessionStoreForGatewayCoreAsync(
   cfg: OpenClawConfig,
-  opts: Omit<GatewaySessionStoreOptions, "loadEntries" | "onStoreLoaded"> = {},
+  opts: Omit<GatewaySessionStoreOptions, "loadEntries"> & {
+    loadEntries?: (
+      target: SessionStoreTarget,
+      projection: GatewaySessionEntryProjection,
+      owner: SessionHistoryWorkerDatabase,
+    ) => Promise<SessionEntrySummary[]>;
+  } = {},
 ): Promise<GatewayCombinedSessionStore> {
-  const options = { ...opts };
+  const { loadEntries, ...options } = opts;
   const env = cloneEnvWithPlatformSemantics(process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
   const prepared = prepareCombinedSessionStore(cfg, options);
@@ -718,12 +727,14 @@ export async function loadCombinedSessionStoreForGatewayCoreAsync(
       const entries = new Map<string, SessionEntrySummary[]>();
       for (const [index, { storeTarget }] of prepared.reads.entries()) {
         const owner = expectDefined(owners[index], "retained session store");
-        const rows = await owner.readEntries({
-          ...storeTarget,
-          env: transferEnv,
-          projection: prepared.projection,
-          clone: false,
-        });
+        const rows = loadEntries
+          ? await loadEntries(storeTarget, prepared.projection, owner)
+          : await owner.readEntries({
+              ...storeTarget,
+              env: transferEnv,
+              projection: prepared.projection,
+              clone: false,
+            });
         entries.set(storeTargetKey(storeTarget), rows);
       }
       for (const owner of owners) {

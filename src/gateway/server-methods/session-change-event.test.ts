@@ -62,6 +62,8 @@ function createContext(
     },
     capture: () => undefined,
     ensureMaterialized: async () => {},
+    prepareExactRows: async () => {},
+    needsExactRowsPreparation: () => false,
     snapshot: ({ key }: { key: string }) => ({ row: mocks.loadRow(key) }),
   };
   return {

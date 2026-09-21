@@ -1,14 +1,17 @@
 import { resolveUtilityModelRefForAgent } from "../agents/utility-model.js";
+import { readSessionActivitySummary } from "../config/sessions/activity-summary.js";
 import { projectGatewaySessionEntry } from "../config/sessions/combined-store-gateway.js";
 import { readCommittedSessionEntryCache } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
 import { readExactSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-read.js";
 import { listSessionMembers } from "../config/sessions/session-sharing-store.js";
+import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../state/openclaw-agent-db-readonly.js";
 import { listOpenIncognitoAgentDatabases } from "../state/openclaw-agent-db.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
+import { readPreparedGatewayModelCatalogMetadata } from "./server-model-catalog-view.js";
 import { readSessionListSelectionFacts } from "./session-list-target.js";
 import * as records from "./session-row-projection-record.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
@@ -42,6 +45,22 @@ export function readResidentSessionRow(
   },
   activitySummaryEnabledByAgent?: Map<string, boolean>,
 ) {
+  const catalog =
+    params.modelCatalog instanceof Map ? params.modelCatalog.get(params.row.agentId) : undefined;
+  const metadataSnapshot = readPreparedGatewayModelCatalogMetadata(catalog);
+  const read = () => readResidentSessionRowCore(params, activitySummaryEnabledByAgent);
+  return metadataSnapshot
+    ? withPluginRuntimeGenerationScope(
+        { metadataSnapshot, pluginRegistry: catalog?.pluginRegistry },
+        read,
+      )
+    : read();
+}
+
+function readResidentSessionRowCore(
+  params: Parameters<typeof readResidentSessionRow>[0],
+  activitySummaryEnabledByAgent?: Map<string, boolean>,
+) {
   const { row, cfg, context } = params;
   const source = isIncognitoSessionKey(row.key)
     ? resolveGatewaySessionStoreTargetWithStore({
@@ -64,6 +83,7 @@ export function readResidentSessionRow(
     active: source ? undefined : false,
     activeModel: source ? undefined : (row.fallbackModel ?? null),
     modelCatalog: params.modelCatalog,
+    preparedAcpMeta: source ? undefined : row.preparedAcpMeta,
     modelSource: {
       entry: row.storedEntry,
       readSourceEntry: source
@@ -95,6 +115,14 @@ export function readResidentSessionRow(
       activitySummaryEnabledByAgent.set(row.agentId, activitySummaryEnabled);
     }
   }
+  if (
+    !source &&
+    (row.hasBoard === undefined ||
+      row.preparedAcpMeta === undefined ||
+      (readSessionActivitySummary(row.entry) && row.transcriptWatermark === undefined))
+  ) {
+    throw new Error("Session row storage facts were not prepared");
+  }
   const facts = readSessionRowFacts({
     cfg,
     target: row,
@@ -103,17 +131,21 @@ export function readResidentSessionRow(
     placementFactsReader: params.placementFactsReader,
     placementRevision: params.placementRevision,
     activitySummaryEnabled,
+    hasBoard: source ? undefined : row.hasBoard,
+    watermark: source ? undefined : row.transcriptWatermark,
   });
   return {
     materialized,
     fallbackModel: presentation.activeModel,
     facts,
     hasBoard: facts.hasBoard,
-    membership: new Set(
-      listSessionMembers({ ...row.storeTarget, sessionKey: row.key }).map(
-        (member) => member.identityId,
-      ),
-    ),
+    membership: source
+      ? new Set(
+          listSessionMembers({ ...row.storeTarget, sessionKey: row.key }).map(
+            (member) => member.identityId,
+          ),
+        )
+      : row.membership,
   };
 }
 

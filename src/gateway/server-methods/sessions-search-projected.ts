@@ -75,6 +75,34 @@ export async function searchProjectedSessionTranscripts(params: {
         ),
       })),
     );
+    const hits = pages
+      .flatMap(({ path, page }) =>
+        page.hits.flatMap((hit) => {
+          const row = selected.stores.get(path)?.rows.get(hit.sessionKey);
+          return row ? [{ hit, row }] : [];
+        }),
+      )
+      .toSorted(
+        (left, right) =>
+          right.hit.score - left.hit.score ||
+          right.hit.timestamp - left.hit.timestamp ||
+          left.hit.messageId.localeCompare(right.hit.messageId),
+      );
+    const matches = hits.slice(0, limit);
+    const rows = new Set(matches.map((match) => match.row));
+    projection.setArchivePageSize(rows.size);
+    const lookups = [...rows].map((row) => ({
+      ...row,
+      storePath: row.storeTarget.storePath,
+    }));
+    do {
+      await projection.prepareExactRows(lookups);
+      // Transcript reads can publish row-local facts for unselected sessions.
+      // Finish that refresh before comparing the whole authorized search scope.
+      if (projection.needsMaterialization) {
+        await projection.ensureMaterialized();
+      }
+    } while (projection.needsMaterialization || projection.needsExactRowsPreparation(lookups));
     if (getSessionRowProjection(params.context) !== projection) {
       throw new Error("Session search owner changed while reading; retry the request");
     }
@@ -98,22 +126,6 @@ export async function searchProjectedSessionTranscripts(params: {
     ) {
       continue;
     }
-    const hits = pages
-      .flatMap(({ path, page }) =>
-        page.hits.flatMap((hit) => {
-          const row = current.stores.get(path)?.rows.get(hit.sessionKey);
-          return row ? [{ hit, row }] : [];
-        }),
-      )
-      .toSorted(
-        (left, right) =>
-          right.hit.score - left.hit.score ||
-          right.hit.timestamp - left.hit.timestamp ||
-          left.hit.messageId.localeCompare(right.hit.messageId),
-      );
-    const matches = hits.slice(0, limit);
-    const rows = new Set(matches.map((match) => match.row));
-    projection.setArchivePageSize(rows.size);
     const sessions = [...rows].flatMap((target) => {
       const record = projection.describe({ ...target, storePath: target.storeTarget.storePath });
       const row = record && current.presentation.present(record);

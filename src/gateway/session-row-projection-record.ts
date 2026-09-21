@@ -5,10 +5,7 @@ import type { SessionStoreTarget } from "../config/sessions/targets.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import { resolveProjectedAgentRunModel } from "../infra/agent-run-registry.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
-import {
-  readSessionRowHasBoard,
-  type readSessionRowFacts,
-} from "./server-methods/session-placement-read-projection.js";
+import type { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
 import { compareSessionEntryPairs } from "./session-list-order.js";
 import { readSessionListSelectionFacts } from "./session-list-target.js";
 import { resolveStoredSessionKeyForAgentStore } from "./session-store-key.js";
@@ -32,6 +29,8 @@ export type Row = {
   >["presentation"]["activeModel"];
   facts?: ReturnType<typeof readSessionRowFacts>;
   hasBoard?: boolean;
+  preparedAcpMeta?: SessionEntry["acp"] | null;
+  transcriptWatermark?: import("../config/sessions/session-accessor.sqlite-transcript-watermark-read.js").SessionTranscriptWatermark;
   membership: ReadonlySet<string>;
   parents: Set<string>;
   generation: string | symbol;
@@ -275,7 +274,6 @@ export function dematerialize(row: Row): Row {
     materialized: undefined,
     materializedSequence: undefined,
     facts: undefined,
-    membership: new Set<string>(),
     lastMessagePreview: undefined,
     fallbackModel: undefined,
   };
@@ -355,8 +353,6 @@ export function acquireSessionRowEntry(params: {
     selection: readSessionListSelectionFacts(row.key, entry),
     parents,
     generation,
-    hasBoard:
-      entry.archivedAt !== undefined ? (row.hasBoard ?? readSessionRowHasBoard(row)) : row.hasBoard,
     fallbackModel: sameFallbackModelFacts(row.storedEntry, storedEntry)
       ? row.fallbackModel
       : undefined,

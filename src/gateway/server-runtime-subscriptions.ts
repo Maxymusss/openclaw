@@ -140,9 +140,14 @@ export function startGatewayEventSubscriptions(params: {
         const projection = params.getSessionRowProjection?.();
         const captured = projection?.capture({ key: target.key, agentId: target.agentId });
         if (projection) {
+          const queries = [{ key: target.key, agentId: target.agentId }];
           do {
             await projection.ensureMaterialized();
-          } while (projection.needsMaterialization);
+            await projection.prepareExactRows(queries);
+          } while (
+            projection.needsMaterialization ||
+            projection.needsExactRowsPreparation(queries)
+          );
         }
         if (projection && (!captured || !projection.isCurrent(captured))) {
           return;

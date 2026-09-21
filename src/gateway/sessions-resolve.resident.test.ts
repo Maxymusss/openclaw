@@ -19,7 +19,10 @@ import {
   listProjectedSessions,
   prepareSessionRowSelection,
 } from "./session-utils-list.js";
-import { resolveSessionKeyFromResolveParams } from "./sessions-resolve.js";
+import {
+  resolveSessionKeyFromResolveParams,
+  withPreparedSessionResolve,
+} from "./sessions-resolve.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -169,11 +172,14 @@ it.each(["exact", "broad"] as const)(
       replaceSessionEntrySync(scope, entry);
       const projection = await createSessionRowProjection({ cfg });
       const resolve = (sessionId: string) =>
-        resolveSessionKeyFromResolveParams({
-          client: null,
-          projection,
-          p: { sessionId, allowMissing: true },
-        });
+        withPreparedSessionResolve(
+          {
+            client: null,
+            projection,
+            p: { sessionId, allowMissing: true },
+          },
+          (resolved) => resolved,
+        );
       try {
         await projection.ensureMaterialized();
         const emit = sessionChanges.emit.bind(sessionChanges);
@@ -203,9 +209,9 @@ it.each(["exact", "broad"] as const)(
         } finally {
           publicationSpy?.mockRestore();
         }
-        expect(resolve("replacement-id")).toEqual({ ok: true, key, agentId: "main" });
-        expect(resolve(entry.sessionId)).toEqual({ ok: true, missing: true });
-        expect(resolve(key)).toEqual({ ok: true, key, agentId: "main" });
+        expect(await resolve("replacement-id")).toEqual({ ok: true, key, agentId: "main" });
+        expect(await resolve(entry.sessionId)).toEqual({ ok: true, missing: true });
+        expect(await resolve(key)).toEqual({ ok: true, key, agentId: "main" });
       } finally {
         projection.dispose();
       }
@@ -236,11 +242,14 @@ it.each(["global", "unknown"] as const)(
       const client = sharingPolicyClient({ user: "viewer" });
       const opts = { includeGlobal: true, includeUnknown: true };
       const resolve = (sessionId: string) =>
-        resolveSessionKeyFromResolveParams({
-          client,
-          projection,
-          p: { ...opts, sessionId, allowMissing: true },
-        });
+        withPreparedSessionResolve(
+          {
+            client,
+            projection,
+            p: { ...opts, sessionId, allowMissing: true },
+          },
+          (resolved) => resolved,
+        );
       try {
         const listed = await listProjectedSessions({ projection, client, opts });
         expect(listed.sessions).toMatchObject([
@@ -253,21 +262,22 @@ it.each(["global", "unknown"] as const)(
           projection.describe({ agentId: "main", key: sentinel, storePath: defaultPath })?.entry
             .sessionId,
         ).toBe(shadow.sessionId);
-        expect(resolve(winner.sessionId)).toEqual({
+        expect(await resolve(winner.sessionId)).toEqual({
           ok: true,
           key: sentinel,
           agentId: "main",
         });
-        expect(resolve(shadow.sessionId)).toEqual({ ok: true, missing: true });
+        expect(await resolve(shadow.sessionId)).toEqual({ ok: true, missing: true });
 
         for (const change of [{ archivedAt: 2 }, { visibility: "draft" as const }]) {
           replaceSessionEntrySync(
             { agentId: "main", storePath: configuredPath, sessionKey: sentinel },
             { ...winner, ...change },
           );
-          expect(resolve(winner.sessionId)).toEqual({ ok: true, missing: true });
-          expect(resolve(shadow.sessionId)).toEqual({ ok: true, missing: true });
+          expect(await resolve(winner.sessionId)).toEqual({ ok: true, missing: true });
+          expect(await resolve(shadow.sessionId)).toEqual({ ok: true, missing: true });
           expect((await listProjectedSessions({ projection, client, opts })).sessions).toEqual([]);
+          await projection.prepareExactRows([{ agentId: "main", key: sentinel }]);
           expect(projection.describe({ agentId: "main", key: sentinel })?.entry.sessionId).toBe(
             winner.sessionId,
           );
@@ -284,7 +294,7 @@ it("resolves all selectors from one resident projection and sees committed label
     replaceSessionEntrySync(scope, entry);
     const projection = await createSessionRowProjection({ cfg });
     const resolve = (p: SessionsResolveParams) =>
-      resolveSessionKeyFromResolveParams({ client: null, projection, p });
+      withPreparedSessionResolve({ client: null, projection, p }, (resolved) => resolved);
     try {
       await projection.ensureMaterialized();
       const reads = (["all", "get", "iterate"] as const).map((method) =>
@@ -298,7 +308,7 @@ it("resolves all selectors from one resident projection and sees committed label
           { shortId: "12345678" },
           { reference: { key } },
         ]) {
-          expect(resolve(p)).toMatchObject({ ok: true, key, agentId: "main" });
+          expect(await resolve(p)).toMatchObject({ ok: true, key, agentId: "main" });
         }
         for (const read of reads) {
           expect(read).not.toHaveBeenCalled();
@@ -309,8 +319,8 @@ it("resolves all selectors from one resident projection and sees committed label
         }
       }
       replaceSessionEntrySync(scope, { ...entry, label: "Updated label" });
-      expect(resolve({ label: "Updated label" })).toEqual({ ok: true, key, agentId: "main" });
-      expect(resolve({ label: entry.label, allowMissing: true })).toEqual({
+      expect(await resolve({ label: "Updated label" })).toEqual({ ok: true, key, agentId: "main" });
+      expect(await resolve({ label: entry.label, allowMissing: true })).toEqual({
         ok: true,
         missing: true,
       });
@@ -366,7 +376,7 @@ it("resolves authorized exact incognito keys without admitting them to discovery
     const resolve = (p: SessionsResolveParams) =>
       resolveSessionKeyFromResolveParams({ client, projection, p });
     try {
-      expect(resolve({ key: incognitoKey })).toEqual({
+      expect(await resolve({ key: incognitoKey })).toEqual({
         ok: true,
         key: incognitoKey,
         agentId: "main",
@@ -376,7 +386,7 @@ it("resolves authorized exact incognito keys without admitting them to discovery
         { label: "Private" },
         { reference: { key: incognitoKey } },
       ]) {
-        expect(resolve({ ...selector, allowMissing: true })).toEqual({
+        expect(await resolve({ ...selector, allowMissing: true })).toEqual({
           ok: true,
           missing: true,
         });
@@ -389,6 +399,43 @@ it("resolves authorized exact incognito keys without admitting them to discovery
         }),
       ).toEqual({ ok: true, missing: true });
       expect(projection.selectEntries().length).toBe(0);
+    } finally {
+      projection.dispose();
+    }
+  });
+});
+
+it("prepares a cold exact resolution and refuses consumption after its projection owner changes", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const key = "agent:main:archived-resolve";
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey: key },
+      {
+        sessionId: "archived-resolve",
+        updatedAt: 1,
+        archivedAt: 1,
+      },
+    );
+    const projection = await createSessionRowProjection({ cfg: {} });
+    const consume = vi.fn((result) => result);
+    try {
+      expect(projection.describe({ agentId: "main", key })).toBeUndefined();
+      expect(
+        await withPreparedSessionResolve({ projection, client: null, p: { key } }, consume),
+      ).toMatchObject({ ok: true, key, agentId: "main" });
+      consume.mockClear();
+      await expect(
+        withPreparedSessionResolve(
+          {
+            projection,
+            client: null,
+            p: { key },
+            isCurrent: () => false,
+          },
+          consume,
+        ),
+      ).rejects.toThrow("Session projection changed");
+      expect(consume).not.toHaveBeenCalled();
     } finally {
       projection.dispose();
     }

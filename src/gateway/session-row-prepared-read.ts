@@ -8,6 +8,7 @@ import type { SessionListRowContext } from "./session-utils-contracts.js";
 
 export type SessionRowReadView = {
   describe(query: records.Lookup, captured?: records.Row): records.MaterializedRow | undefined;
+  readMembership(query: records.Lookup): ReadonlySet<string> | undefined;
   present(
     record: records.MaterializedRow,
     options?: records.SnapshotOptions,
@@ -17,7 +18,11 @@ export type SessionRowReadView = {
 };
 
 export async function withPreparedSessionRows<T>(
-  owner: SessionRowReadView & { isCurrent(row: records.Row): boolean },
+  owner: SessionRowReadView & {
+    isCurrent(row: records.Row): boolean;
+    prepareExactRows?: (queries: readonly records.Lookup[]) => Promise<void>;
+    needsExactRowsPreparation?: (queries: readonly records.Lookup[]) => boolean;
+  },
   isActive: () => boolean,
   queries: (config: OpenClawConfig) => readonly records.Lookup[],
   consume: (read: SessionRowReadView) => T,
@@ -25,6 +30,10 @@ export async function withPreparedSessionRows<T>(
   if (!isActive()) {
     throw new Error("Session row read view is no longer active");
   }
+  do {
+    await owner.prepareExactRows?.(queries(owner.state.cfg));
+    if (!isActive()) throw new Error("Session row read view is no longer active");
+  } while (owner.needsExactRowsPreparation?.(queries(owner.state.cfg)));
   return withCanonicalSessionValidationDeferral(() => {
     const state = owner.state;
     return consumePreparedSessionRows(owner, isActive, queries(state.cfg), consume, state);
@@ -90,6 +99,16 @@ function consumePreparedSessionRows<T>(
       }
       const row = privateRows.get(key);
       return captured && !records.isCurrentGeneration(captured, row) ? undefined : row;
+    },
+    readMembership(query) {
+      assertActive();
+      const key = privateKey(query);
+      if (key) {
+        if (!privateRows.has(key))
+          throw new Error("Incognito session description was not prepared");
+        return privateRows.get(key)?.membership;
+      }
+      return owner.readMembership(query);
     },
     present(record, options) {
       assertActive();

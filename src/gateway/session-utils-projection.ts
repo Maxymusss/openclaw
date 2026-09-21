@@ -199,6 +199,7 @@ export function resolveGatewaySessionRuntimeProjection(params: {
   agentId: string;
   sessionKey: string;
   entry?: SessionEntry;
+  preparedAcpMeta?: SessionEntry["acp"] | null;
   rowContext?: SessionListRowContext;
   metadataSnapshot?: PluginMetadataSnapshot;
 }) {
@@ -206,10 +207,12 @@ export function resolveGatewaySessionRuntimeProjection(params: {
   // Keep metadata bound to the projected row; rereading its key can adopt a
   // replacement lifecycle while projecting the original entry.
   const acpMeta =
-    entry?.acp ??
-    (entry
-      ? readAcpSessionMetaForEntry({ cfg, sessionKey, agentId, entry })
-      : readAcpSessionMeta({ sessionKey, agentId }));
+    params.preparedAcpMeta !== undefined
+      ? (params.preparedAcpMeta ?? undefined)
+      : (entry?.acp ??
+        (entry
+          ? readAcpSessionMetaForEntry({ cfg, sessionKey, agentId, entry })
+          : readAcpSessionMeta({ sessionKey, agentId })));
   const agentRuntime = resolveCurrentSessionAgentRuntimeMetadata({
     cfg: params.cfg,
     agentScope: { kind: "prepared", agentId: params.agentId },

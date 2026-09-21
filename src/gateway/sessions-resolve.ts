@@ -98,6 +98,40 @@ function sessionResolveCandidate(
   };
 }
 
+/** Prepare durable facts, then resolve and consume against current caller state without a yield. */
+export async function withPreparedSessionResolve<T>(
+  params: Parameters<typeof resolveSessionKeyFromResolveParams>[0] & { isCurrent?: () => boolean },
+  consume: (result: SessionsResolveResult) => T,
+): Promise<T> {
+  const { projection, p } = params;
+  const queries = () => {
+    const key = normalizeOptionalString(p.key);
+    if (!key) {
+      return [];
+    }
+    const agent = resolveRequestedSessionAgentId(projection.state.cfg, key, p.agentId);
+    return agent.ok ? [{ key, agentId: agent.agentId }] : [];
+  };
+  while (true) {
+    if (normalizeOptionalString(p.key)) {
+      await projection.prepareExactRows(queries());
+    } else {
+      await projection.ensureMaterialized();
+    }
+    if (params.isCurrent?.() === false) {
+      throw new Error("Session projection changed while resolving the session; retry the request");
+    }
+    if (
+      normalizeOptionalString(p.key)
+        ? projection.needsExactRowsPreparation(queries())
+        : projection.needsMaterialization
+    ) {
+      continue;
+    }
+    return consume(resolveSessionKeyFromResolveParams(params));
+  }
+}
+
 export function resolveSessionKeyFromResolveParams(params: {
   client: GatewayClient | null;
   projection: SessionRowProjection;

@@ -104,6 +104,7 @@ export function readSessionRowInputs(params: {
   agentId: string;
   skipTranscriptUsageFallback?: boolean;
   lightweightListRow?: boolean;
+  preparedAcpMeta?: SessionEntry["acp"] | null;
   includeSwarmChildren?: boolean;
 }) {
   const { cfg, storePath, store, key, entry, agentId } = params;
@@ -123,6 +124,7 @@ export function readSessionRowInputs(params: {
       rowContext,
       modelCatalog: params.modelCatalog,
       lightweightListRow: lightweight,
+      preparedAcpMeta: params.preparedAcpMeta,
     });
   const freshSessionTotalTokens = asNonNegativeFiniteNumber(resolveFreshSessionTotalTokens(entry));
   const usageByFallbackModel =

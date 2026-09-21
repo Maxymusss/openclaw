@@ -1,10 +1,23 @@
 import { describe, expect, it, onTestFinished, vi } from "vitest";
 import { WebSocket } from "ws";
+import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
+import {
+  emitSessionsChanged,
+  flushPendingSessionsChangedEvents,
+} from "./server-methods/session-change-event.js";
+import {
+  createLifecycleEventBroadcastHandler,
+  createTranscriptUpdateBroadcastHandler,
+} from "./server-session-events.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { retainSessionListForegroundWork } from "./session-projection-work.js";
+import { bindSessionRowProjection } from "./session-row-projection-access.js";
+import { createSessionRowProjection } from "./session-row-projection.js";
 
 type ConnectionIdReads = { count: number };
 
@@ -166,3 +179,78 @@ describe("gateway connection state", () => {
     expect(sendOrder).toEqual(["first", "last"]);
   });
 });
+
+it.each(["mutation", "lifecycle", "transcript"] as const)(
+  "delivers an archived row through the real broadcaster after %s publication",
+  async (publisher) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const cfg: OpenClawConfig = { agents: { list: [{ id: "main", default: true }] } };
+      const key = "agent:main:archived-publication";
+      await upsertSessionEntryCore(
+        { agentId: "main", sessionKey: key },
+        {
+          sessionId: "archived-publication",
+          updatedAt: 1,
+          archivedAt: 1,
+          visibility: "shared",
+        },
+      );
+      const release = retainSessionListForegroundWork();
+      const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+      const connection = createGatewayConnectionState({ bootId: "archived-events", cfg });
+      const peer = makeClient("archive-reader", { count: 0 });
+      peer.client.connect.scopes = ["operator.admin"];
+      connection.clients.add(peer.client);
+      connection.attachSessionRowProjection(projection);
+      const connIds = new Set([peer.client.connId]);
+      try {
+        await projection.ensureMaterialized();
+        expect(projection.snapshot({ key, agentId: "main" }).row).toBeNull();
+        if (publisher === "mutation") {
+          const context = bindSessionRowProjection(
+            {
+              broadcastToConnIds: connection.broadcastToConnIds,
+              chatAbortControllers: connection.chatAbortControllers,
+              getRuntimeConfig: () => cfg,
+              getSessionEventSubscriberConnIds: () => connIds,
+            },
+            () => projection,
+          );
+          emitSessionsChanged(context, { sessionKey: key, agentId: "main", reason: "patch" });
+          await flushPendingSessionsChangedEvents(context);
+        } else {
+          const params = {
+            broadcastToConnIds: connection.broadcastToConnIds,
+            chatAbortControllers: connection.chatAbortControllers,
+            sessionEventSubscribers: { getAll: () => connIds },
+            getSessionRowProjection: () => projection,
+          };
+          if (publisher === "lifecycle") {
+            await createLifecycleEventBroadcastHandler(params)({
+              sessionKey: key,
+              agentId: "main",
+              reason: "updated",
+            });
+          } else {
+            await createTranscriptUpdateBroadcastHandler({
+              ...params,
+              sessionMessageSubscribers: { get: () => connIds },
+            })({ sessionKey: key, agentId: "main" });
+          }
+        }
+        expect(peer.send).toHaveBeenCalledTimes(1);
+        expect(JSON.parse(peer.send.mock.calls[0]![0])).toMatchObject({
+          event: "sessions.changed",
+          payload: { sessionKey: key, session: { key, archivedAt: 1 } },
+        });
+        sessionChanges.emit({ all: true, scope: "catalog" });
+        await projection.ensureMaterialized();
+        expect(projection.snapshot({ key, agentId: "main" }).row).toBeNull();
+      } finally {
+        connection.mentionInbox.dispose();
+        projection.dispose();
+        release();
+      }
+    });
+  },
+);

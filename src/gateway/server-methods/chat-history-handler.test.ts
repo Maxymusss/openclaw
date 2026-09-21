@@ -185,13 +185,19 @@ describe("chat history model selection defaults", () => {
 });
 
 describe("chat history sharing projection", () => {
-  it.each(["chat.history", "chat.startup"] as const)(
-    "%s carries current caller sharing controls on sessionInfo",
-    async (method) => {
+  it.each([
+    ["chat.history", false],
+    ["chat.startup", false],
+    ["chat.history", true],
+    ["chat.startup", true],
+  ] as const)(
+    "%s carries current caller sharing controls on sessionInfo (archived: %s)",
+    async (method, archived) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const scope = { agentId: "main", sessionKey: "agent:main:sharing-history" };
         await upsertSessionEntryCore(scope, {
           sessionId: "sharing-history",
+          ...(archived ? { archivedAt: 1 } : {}),
           updatedAt: Date.now(),
           visibility: "read-only",
           createdActor: { type: "human", source: "profile", id: "owner" },

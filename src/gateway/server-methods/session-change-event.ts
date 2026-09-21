@@ -156,7 +156,8 @@ function publish(pending: PendingSessionChange): Promise<void> {
       if (query && projection) {
         do {
           await projection.ensureMaterialized();
-        } while (projection.needsMaterialization);
+          await projection.prepareExactRows([query]);
+        } while (projection.needsMaterialization || projection.needsExactRowsPreparation([query]));
       }
       if (!captured || projection?.isCurrent(captured)) {
         broadcastSessionsChanged(context, payload, scope);

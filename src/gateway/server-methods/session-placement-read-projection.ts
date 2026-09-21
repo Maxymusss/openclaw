@@ -30,6 +30,8 @@ export function readSessionRowFacts(params: {
   placementFactsReader?: Pick<WorkerSessionPlacementStore, "getProjectionFacts">;
   placementRevision?: () => number;
   activitySummaryEnabled?: boolean;
+  hasBoard?: boolean;
+  watermark?: Parameters<typeof projectSessionActivitySummary>[0]["watermark"];
 }) {
   const { cfg, entry, placementFactsReader, placementRevision: readPlacementRevision } = params;
   // The board callback shares a closure context with present; never capture a resident row.
@@ -74,9 +76,10 @@ export function readSessionRowFacts(params: {
     cfg,
     entry,
     enabled: params.activitySummaryEnabled,
+    watermark: params.watermark,
   });
   return {
-    hasBoard: readSessionRowHasBoard({ key, storeTarget }),
+    hasBoard: params.hasBoard ?? readSessionRowHasBoard({ key, storeTarget }),
     present: () => {
       const revision = readPlacementRevision?.();
       if (revision !== placementRevision) {

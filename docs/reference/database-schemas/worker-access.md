@@ -97,10 +97,17 @@ subsequent read. No validation cache or new restoration owner is introduced.
 The asynchronous transcript-search facade similarly moves durable FTS reads for
 all four Gateway/tool callers through the existing worker lifecycle. Each caller
 rechecks current scope and authorization after awaiting. Warm `sessions.list`
-already selects resident projection rows without host Kysely reads; its remaining
-database work is hydration, dirty/archived-row refresh, and membership. Preserve
-that projection and its identity/revision invalidation instead of replacing it
-with another per-request store scan. See the
+selects resident projection rows without host Kysely reads. Durable row hydration,
+exact dirty/archive reads, membership, board presence and activity-summary watermarks
+use the existing session history worker. ACP model metadata uses the shared-state
+read worker. The projection retains physical owners through preparation and rejects
+results after a publication, generation change or disposal. Cold archives retain
+sharing metadata while their rendered rows remain bounded by the selected page.
+Callers await exact-row preparation, recheck readiness after the yield, then select,
+authorize and present synchronously. Background enrichment loses commit authority
+as soon as its row becomes dirty. Topology discovery, unrelated shared metadata,
+and process-held incognito reads retain their existing owners; this is not a claim
+that every Gateway database operation has migrated. See the
 [inventory baseline](/reference/database-schemas/worker-access-inventory#profile-priority-and-current-cutover-status)
 for measurements and the next owners to migrate.
 

@@ -314,9 +314,13 @@ async function handleTranscriptUpdateBroadcast(
       : undefined;
   }
   if (projection) {
+    const queries = routingAgentId
+      ? [{ key: sessionKey, agentId: routingAgentId, storePath: targetStorePath }]
+      : [];
     do {
       await projection.ensureMaterialized();
-    } while (projection.needsMaterialization);
+      await projection.prepareExactRows(queries);
+    } while (projection.needsMaterialization || projection.needsExactRowsPreparation(queries));
   }
   if (lifecycleRevision) {
     // A reset can retain sessionId, so validate the captured owner after every
@@ -481,7 +485,8 @@ export function createLifecycleEventBroadcastHandler(params: {
     if (projection) {
       do {
         await projection.ensureMaterialized();
-      } while (projection.needsMaterialization);
+        await projection.prepareExactRows([query]);
+      } while (projection.needsMaterialization || projection.needsExactRowsPreparation([query]));
     }
     if (projection && (!captured || !projection.isCurrent(captured))) {
       return;
