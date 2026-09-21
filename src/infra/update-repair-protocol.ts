@@ -63,7 +63,7 @@ const turnResult = z.discriminatedUnion("status", [
   }),
   z.object({ status: z.enum(["unavailable", "aborted"]), reason: text }),
 ]);
-export const updateRepairWorkerMessageSchema = z.discriminatedUnion("type", [
+const updateRepairWorkerMessageSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("ready"),
     candidateRehearsal: z.literal(true).optional(),
