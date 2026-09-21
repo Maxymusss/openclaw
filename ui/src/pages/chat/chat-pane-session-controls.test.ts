@@ -16,6 +16,7 @@ import {
 } from "../../test-helpers/gateway-client.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { renderChatPaneComposerControls } from "./chat-pane-session-controls.ts";
+import { createSessionCapabilityFixture } from "./chat-pane.test-support.ts";
 import { getPendingChatPickerPatch } from "./chat-settings-patches.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { renderChatModelAccountControl } from "./components/chat-model-account-control.ts";
@@ -296,7 +297,11 @@ describe("chat pane composer controls", () => {
           ? [{ id: "cached-model", name: "Cached Model", provider: "openai", available: false }]
           : [],
         chatModelCatalogError: error,
-        sessions: { state: { modelOverrides: {} }, think: () => undefined, patch: vi.fn() },
+        sessions: createSessionCapabilityFixture({
+          state: { modelOverrides: {} },
+          think: () => undefined,
+          patch: vi.fn(),
+        }),
         chatModelSwitchPromises: {},
         sessionKey: "main",
         chatModelsLoading: false,
@@ -440,7 +445,11 @@ describe("chat pane composer controls", () => {
       client: {},
       chatLoading: false,
       chatModelCatalog: [],
-      sessions: { state: { modelOverrides: {} }, think: () => undefined, patch },
+      sessions: createSessionCapabilityFixture({
+        state: { modelOverrides: {} },
+        think: () => undefined,
+        patch,
+      }),
       chatModelSwitchPromises: {},
       sessionKey: "agent:main:permission-test",
       chatModelsLoading: false,
@@ -527,7 +536,11 @@ describe("chat pane composer controls", () => {
       connected: true,
       connectionEpoch: 1,
       client: {},
-      sessions: { state: { modelOverrides: {} }, think: () => undefined, patch },
+      sessions: createSessionCapabilityFixture({
+        state: { modelOverrides: {} },
+        think: () => undefined,
+        patch,
+      }),
       sessionKey: key,
       sessionsResult: { defaults: {}, sessions: [selectedSession] },
       chatModelCatalog: [],
@@ -630,11 +643,11 @@ describe("chat pane composer controls", () => {
       client: {},
       chatLoading: false,
       chatModelCatalog: [],
-      sessions: {
+      sessions: createSessionCapabilityFixture({
         state: { modelOverrides: {} },
         think: () => undefined,
         patch: vi.fn(() => pending.promise),
-      },
+      }),
       chatModelSwitchPromises: {},
       sessionKey,
       chatModelsLoading: false,
