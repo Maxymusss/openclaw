@@ -30,9 +30,12 @@ import {
 } from "./methods/registry.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "./server-methods.js";
+import { buildModelsListResult } from "./server-methods/models-list-result.js";
 import { sessionCatalogHandlers } from "./server-methods/session-catalog.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
 import type { RespondFn } from "./server-methods/types.js";
+import { registerGatewayModelCatalogPrivateAccess } from "./server-model-catalog-auth.js";
+import { readPreparedGatewayModelCatalogOwnerSnapshot } from "./server-model-catalog.js";
 import { createGatewaySession } from "./session-create-service.js";
 import type { PreparedGatewaySessionLifecycle } from "./session-lifecycle-preparation.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
@@ -293,10 +296,29 @@ describe("durable session model selection authority", () => {
         }),
         () => projection,
       );
+      const readPrepared = () =>
+        readPreparedGatewayModelCatalogOwnerSnapshot({ agentId: "main", getConfig: () => f.cfg });
+      const loadDeferred = vi.fn(async () =>
+        expectDefined(await readPrepared(), "published catalog owner"),
+      );
+      registerGatewayModelCatalogPrivateAccess(context.loadGatewayModelCatalogSnapshot, {
+        readPrepared,
+        loadDeferred,
+      });
       const respond = vi.fn<RespondFn>();
       const request = withPluginRuntimeGenerationScope(f.owner, () =>
-        withPluginRuntimeRegistryScope(f.registry, () =>
-          handleGatewayRequest({
+        withPluginRuntimeRegistryScope(f.registry, async () => {
+          if (route === "copy" && mode === "explicit-denied") {
+            const catalog = await buildModelsListResult({
+              source: { kind: "gateway", context },
+              agentId: "main",
+              params: { view: "all" },
+            });
+            expect(catalog.models).toContainEqual(
+              expect.objectContaining({ provider: "fixture", id: "hidden", available: true }),
+            );
+          }
+          await handleGatewayRequest({
             req: {
               type: "req",
               id: "model-catalog",
@@ -316,8 +338,8 @@ describe("durable session model selection authority", () => {
               createCoreGatewayMethodDescriptors(sessionCatalogHandlers),
               f.registry,
             ),
-          }),
-        ),
+          });
+        }),
       );
       try {
         if (mode === "revoked" || mode === "widened") {
@@ -333,6 +355,7 @@ describe("durable session model selection authority", () => {
           release.resolve();
         }
         await request;
+        expect(loadDeferred).not.toHaveBeenCalled();
         expect(respond).toHaveBeenCalledOnce();
         const rows = listSessionEntriesCore({ agentId: "main" });
         if (mode === "allowed" || mode === "unrestricted") {
@@ -351,9 +374,13 @@ describe("durable session model selection authority", () => {
         } else {
           expect(respond.mock.calls[0]?.[0]).toBe(false);
           expect(respond.mock.calls[0]?.[1]).toBeUndefined();
-          expect(respond.mock.calls[0]?.[2]?.message).toContain(
-            mode === "revoked" ? "no longer active" : "does not allow this model",
-          );
+          if (mode === "revoked") {
+            expect(respond.mock.calls[0]?.[2]?.message).toBe(
+              "original model selection authority revoked",
+            );
+          } else {
+            expect(respond.mock.calls[0]?.[2]?.message).toContain("does not allow this model");
+          }
           expect(rows).toEqual([]);
           expect(provider.read).not.toHaveBeenCalled();
         }
