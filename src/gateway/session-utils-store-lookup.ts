@@ -1,3 +1,4 @@
+import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { listAgentIds } from "../agents/agent-scope.js";
@@ -12,12 +13,18 @@ import {
   type SessionStoreTarget,
 } from "../config/sessions.js";
 import { listSessionChildEntriesReadOnly } from "../config/sessions/session-accessor.js";
+import {
+  resolveSqliteScope,
+  toDatabaseOptions,
+} from "../config/sessions/session-accessor.sqlite-scope.js";
 import type {
   SessionEntryListScope,
   SessionEntryReadSource,
 } from "../config/sessions/session-accessor.types.js";
 import { canonicalSessionKeyMigrationRequiredError } from "../config/sessions/session-canonical-key.js";
+import { withSessionHistoryWorkerDatabases } from "../config/sessions/session-transcript-worker-runtime.js";
 import type { ExistingAgentSessionStoreTargetResolver } from "../config/sessions/targets.js";
+import { resolveStateDir } from "../config/state-dir.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   DEFAULT_AGENT_ID,
@@ -420,6 +427,85 @@ export function resolveGatewaySessionStoreTargetWithStore(
     params.cfg,
     params.env,
   );
+}
+
+/** Retain exact durable readers before yielding; logical alias selection stays with its owner. */
+export async function withGatewaySessionStoreTarget<T>(
+  params: Pick<GatewaySessionStoreLookupParams, "cfg" | "key" | "agentId" | "env" | "projection">,
+  consume: (target: GatewaySessionStoreTargetWithStore) => T,
+): Promise<T> {
+  const consumeSync = (target: GatewaySessionStoreTargetWithStore): T => {
+    const value = consume(target);
+    if (isPromiseLike(value)) throw new Error("Session entry consumers must remain synchronous");
+    return value;
+  };
+  const env = { ...(params.env ?? process.env) };
+  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  const normalized = {
+    ...params,
+    env,
+    key: normalizeOptionalString(params.key) ?? "",
+    exactRead: true,
+    readOnly: true,
+    clone: false,
+  };
+  const identity = resolveSessionStoreIdentity({
+    cfg: params.cfg,
+    sessionKey: normalized.key,
+    agentId: params.agentId,
+  });
+  if (isIncognitoSessionKey(identity.canonicalKey)) {
+    // Process-held incognito databases retain their existing native owner; they cannot be
+    // reopened by a durable worker. This is migration debt, never a failed-worker fallback.
+    return consumeSync(resolveGatewaySessionStoreTargetWithStore(normalized));
+  }
+  const legacy = prepareExplicitDeletedLegacyMainStoreTarget(normalized);
+  // Preserve legacy-first error ordering while capturing every possible physical target now.
+  let normal: GatewaySessionStorePlan<GatewaySessionStoreTargetWithStore> | undefined;
+  let normalError: unknown;
+  try {
+    normal = prepareGatewaySessionStoreTarget(normalized);
+  } catch (error) {
+    normalError = error;
+  }
+  const reads = [...(legacy?.reads ?? []), ...(normal?.reads ?? [])];
+  const targets = reads.map((read) =>
+    toDatabaseOptions(
+      resolveSqliteScope({
+        agentId: read.agentId,
+        storePath: read.storePath,
+        sessionKey: read.options.exactKeys?.[0] ?? "",
+        env,
+      }),
+    ),
+  );
+  return await withSessionHistoryWorkerDatabases(targets, async (owners) => {
+    const finish = (target: GatewaySessionStoreTargetWithStore) => {
+      for (const owner of owners) owner.assertCurrent();
+      return consumeSync(target);
+    };
+    const load = async (plan: GatewaySessionStorePlan<unknown>) => {
+      for (const read of plan.reads) {
+        const owner = owners[reads.indexOf(read)]!;
+        const result = await owner.readExactEntries({
+          sessionKeys: read.options.exactKeys!,
+          projection: read.options.projection,
+        });
+        read.result = ok(
+          Object.fromEntries(result.entries.map(({ sessionKey, entry }) => [sessionKey, entry])),
+        );
+        read.readSource = result.readSource;
+      }
+    };
+    if (legacy) {
+      await load(legacy);
+      const selected = legacy.resolve();
+      if (selected) return finish(selected);
+    }
+    if (!normal) throw normalError;
+    await load(normal);
+    return finish(normal.resolve());
+  });
 }
 
 /** Exact row owners supply missing parent facts without expanding their selected store. */

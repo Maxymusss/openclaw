@@ -50,6 +50,7 @@ import {
   type GatewaySessionStoreDiscoveryCache,
   resolveGatewaySessionStoreTarget,
   resolveGatewaySessionStoreTargetWithStore,
+  withGatewaySessionStoreTarget,
 } from "./session-utils-store-lookup.js";
 import type { GatewayAgentRow, SessionListModelCatalog } from "./session-utils.types.js";
 import { projectWorkerPlacementAgentRuntime } from "./worker-environments/placement-session-runtime.js";
@@ -200,6 +201,30 @@ export function loadGatewaySessionEntryReadOnly(
   } & Pick<SessionEntryListScope, "agentId" | "clone" | "projection" | "env">,
 ) {
   return loadSessionEntryWithMode(sessionKey, opts, true);
+}
+
+/** Consume exact row facts synchronously while their physical worker owners remain retained. */
+export async function withGatewaySessionEntry<T>(
+  sessionKey: string,
+  opts: Pick<SessionEntryListScope, "agentId" | "projection" | "env"> | undefined,
+  consume: (session: ReturnType<typeof loadGatewaySessionEntry>) => T,
+): Promise<T> {
+  const cfg = getRuntimeConfig();
+  return await withGatewaySessionStoreTarget({ cfg, key: sessionKey, ...opts }, (target) => {
+    for (const key of target.storeKeys) {
+      if (isInternalSessionEffectsKey(key)) delete target.store[key];
+    }
+    const canonicalMatch = resolveCanonicalSessionStoreMatchFromStoreKeys(
+      target.store,
+      target.storeKeys,
+    );
+    return consume({
+      cfg,
+      ...target,
+      entry: canonicalMatch?.entry,
+      legacyKey: canonicalMatch?.key !== target.canonicalKey ? canonicalMatch?.key : undefined,
+    });
+  });
 }
 
 /** Returns the one canonical entry and the exact persisted key that owns it. */
