@@ -46,3 +46,27 @@ class SamplingCoverage(unittest.TestCase):
         rows.append({'kind':'settled','reason':'sample-limit'})
         self.assertTrue(run.sampling_coverage(rows)['sampleLimitReached'])
         rows.pop(-2);self.assertFalse(run.sampling_coverage(rows)['sampleLimitReached'])
+
+class AbsoluteObserverBudget(unittest.TestCase):
+    def test_product_binding_accounts_for_launch_and_ten_second_settlement(self):
+        s=SimpleNamespace(deadline=3600)
+        with patch.object(run.time,'monotonic',return_value=100),patch.object(run,'validate_binding',side_effect=lambda x:x):
+            b=run.make_binding(s,'parent',{'pid':1,'created100ns':'2','executable':'shell'},'unit')
+        self.assertEqual(b['observationStartMonotonic'],100)
+        self.assertLessEqual(b['observationStartMonotonic']+b['seconds'],3530)
+    def test_startup_delay_does_not_move_absolute_cutoff(self):
+        b={'seconds':100,'maxBytes':67108864,'run':'unit','observationStartMonotonic':10}
+        clock=Mock(return_value=45)
+        w=GapWriter(io.StringIO(),io.BytesIO(),b,clock=clock)
+        self.assertEqual(w.start,10)
+        clock.return_value=109;w.check()
+        clock.return_value=110
+        with self.assertRaisesRegex(Exception,'wall-budget'):w.check()
+    def test_expired_startup_never_receives_a_fresh_relative_budget(self):
+        b={'seconds':100,'maxBytes':67108864,'run':'unit','observationStartMonotonic':10}
+        w=GapWriter(io.StringIO(),io.BytesIO(),b,clock=lambda:111)
+        with self.assertRaisesRegex(Exception,'wall-budget'):w.check()
+    def test_invalid_absolute_origins_are_rejected(self):
+        for start in (float('nan'),float('inf'),-1,101,True):
+            with self.assertRaises(ValueError):
+                GapWriter(io.StringIO(),io.BytesIO(),{'seconds':100,'run':'unit','observationStartMonotonic':start},clock=lambda:100)

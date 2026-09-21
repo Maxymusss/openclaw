@@ -5,7 +5,7 @@
   "freshNamespace": "observer393-product-<fresh GITHUB_RUN_ID>-1",
   "runtime": "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime",
   "pathResolution": "RUNNER_TEMP from newly admitted github-hosted windows-2025 runner, not a filesystem glob",
-  "bundleSha256": "8eb5241ec3bd3ba0da545ccbb7d91c81145c846209afceaf896649d1833e8c11",
+  "bundleSha256": "66fbd8ddb42289fecf3a8699d8e5bb8f3ffcc969d7cb2a799b9ba04cab543069",
   "pythonArchive": {
     "url": "https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip",
     "version": "3.13.7",
@@ -74,7 +74,7 @@
     "--manifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "--manifest-sha",
-    "8eb5241ec3bd3ba0da545ccbb7d91c81145c846209afceaf896649d1833e8c11",
+    "66fbd8ddb42289fecf3a8699d8e5bb8f3ffcc969d7cb2a799b9ba04cab543069",
     "--evidence",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke",
     "--run",
@@ -99,7 +99,7 @@
     "-ObserverManifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "-ObserverManifestSha256",
-    "8eb5241ec3bd3ba0da545ccbb7d91c81145c846209afceaf896649d1833e8c11",
+    "66fbd8ddb42289fecf3a8699d8e5bb8f3ffcc969d7cb2a799b9ba04cab543069",
     "-ObserverSmokeResult",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke\\result.json",
     "-ObserverSmokeSha256",
@@ -133,7 +133,7 @@
     "evidenceRun": 35596476995,
     "nativeProductQualified": false
   },
-  "stageSha256": "c8c72b8b3c2334b255e12af4cc1448c9d46b70ec5003135b188861793518591b",
+  "stageSha256": "45d72c16295fff92d3c67fad8d7e9eae544f790f0f7ed499e829ad372fef0b92",
   "stagingBehavior": "Stages hashed payload, release manifest and exact official Python archive; parses diagnostic parameters without body execution; performs own25s smoke and raw preflight; removes inert fixture only; returns same-job runtime tuple with NO product fall-through. Terminal caller owns runtime cleanup after custody/settlement.",
   "futureWorkflowContract": {
     "runner": "windows-2025",
@@ -188,6 +188,7 @@
       "hashSource": "https://nodejs.org/dist/v24.20.0/SHASUMS256.txt",
       "abi": "137"
     },
-    "descendants": "Accounting-only unnamed Windows job assigned to original CreateProcess handle before ResumeThread; no kill-on-close. Total1/active1 before action, total1/active0 after. Lost accounting or any descendant-ever blocks arming; failed launch retains suspended process."
+    "descendants": "Accounting-only unnamed Windows job assigned to original CreateProcess handle before ResumeThread; no kill-on-close. Total1/active1 before action, total1/active0 after. Lost accounting or any descendant-ever blocks arming; failed launch retains suspended process.",
+    "observerAbsoluteCutoff": "Prelaunch monotonic origin shared by pinned Python3.13/QPC;10s terminal/settlement allowance before work_deadline plus60s finalization within unchanged3600. Late startup does not shift cutoff; unknown settlement retained."
   }
 }

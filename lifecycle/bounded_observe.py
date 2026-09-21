@@ -3,6 +3,7 @@ import argparse
 import gzip
 import hashlib
 import json
+import math
 import os
 import time
 import zlib
@@ -17,6 +18,13 @@ LOGICAL_LIMIT=512*1024*1024
 class GapWriter(Writer):
     def __init__(self, stream, sidecar, binding, clock=time.monotonic):
         super().__init__(stream,binding,clock)
+        if 'observationStartMonotonic' in binding:
+            origin=binding['observationStartMonotonic']
+            if type(origin) not in (int,float) or not math.isfinite(origin) or not 0<=origin<=self.start:
+                raise ValueError('invalid absolute observer clock origin')
+            # Pinned Python3.13 Windows monotonic uses the same QPC clock for all processes.
+            # Binding I/O, process launch and startup count against observation, not finalization.
+            self.start=origin
         self.sidecar=sidecar
         self.compressor=zlib.compressobj(wbits=31)
         self.gap_count=self.logical=self.compressed=0

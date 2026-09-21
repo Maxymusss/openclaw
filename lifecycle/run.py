@@ -19,6 +19,7 @@ from bounded_observe import verify_sidecar, smoke_capacity, POLICY
 
 HERE = Path(__file__).resolve().parent
 FINALIZATION_SECONDS = 60
+OBSERVER_SETTLEMENT_SECONDS = 10
 
 def sampling_coverage(rows):
     started=[r.get('sample') for r in rows if r.get('kind')=='sample']
@@ -186,14 +187,17 @@ class Session:
 
 
 def make_binding(session, package_parent, harness, run_id, smoke=False):
-    seconds = min(10 if smoke else 3600-FINALIZATION_SECONDS-1,
-                  math.floor(session.deadline-time.monotonic())-(1 if smoke else FINALIZATION_SECONDS+1))
+    origin = time.monotonic()
+    reserve = 1 if smoke else FINALIZATION_SECONDS+OBSERVER_SETTLEMENT_SECONDS
+    seconds = min(10 if smoke else 3600-reserve, math.floor(session.deadline-origin)-reserve)
     binding = dict(schema=1, run=run_id, candidateHead=HEAD, releasedDriver=DRIVER,
                    driverVersion='2026.9.5', packageParent=str(package_parent),
                    harnessPid=harness['pid'], harnessCreated100ns=harness['created100ns'],
                    harnessExecutable=harness['executable'], unchangedHarnessBudgetSeconds=3600,
                    seconds=seconds, interval=1 if smoke else 60,
                    samples=2 if smoke else 60, maxBytes=67108864, outputPolicy=POLICY)
+    if not smoke:
+        binding['observationStartMonotonic'] = origin
     return validate_binding(binding)
 
 
