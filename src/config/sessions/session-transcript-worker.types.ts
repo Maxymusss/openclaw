@@ -196,6 +196,13 @@ export type SessionRowPresenceWorkerInput = {
   scope: SessionAccessScope & { databaseAgentId: string };
 };
 
+type SessionProjectionStatusWorkerInput = {
+  kind: "projection-status";
+  database: { agentId: string; path: string };
+  env: NodeJS.ProcessEnv;
+  sessionId?: string;
+};
+
 type SessionMembersWorkerInput = {
   kind: "session-members";
   database: { agentId: string; path: string };
@@ -321,6 +328,7 @@ export type SessionHistoryWorkerInput =
   | SessionPreviewWorkerInput
   | SessionTitleFieldsWorkerInput
   | SessionRowPresenceWorkerInput
+  | SessionProjectionStatusWorkerInput
   | SessionMembersWorkerInput
   | SessionMembershipFactsWorkerInput
   | SessionProgressCardWorkerInput
@@ -356,6 +364,7 @@ export type SessionTranscriptWorkerValues = {
   "session-preview": SessionPreviewWorkerResult;
   "session-title-fields": SessionTitleFieldsWorkerResult;
   "session-row-presence": boolean;
+  "projection-status": boolean;
   "session-members": SessionMember[];
   "session-membership-facts": SessionMembershipFacts;
   "session-progress-card": { kind: "session-progress-card"; card: ProgressCard | null };
@@ -405,6 +414,10 @@ export type SessionHistoryWorkerDatabase = {
     input: Omit<SessionTitleFieldsWorkerInput, "kind" | "database">,
   ) => Promise<SessionTitleFieldsWorkerResult["fields"]>;
   readEntryPresence: (scope: SessionRowPresenceWorkerInput["scope"]) => Promise<boolean>;
+  readProjectionStatus: (
+    input: Omit<SessionProjectionStatusWorkerInput, "kind" | "database">,
+    signal?: AbortSignal,
+  ) => Promise<boolean>;
   readIdentityEvidence: (
     input: Omit<SessionIdentityEvidenceWorkerInput, "kind" | "database">,
   ) => Promise<SessionIdentityEvidenceResult[]>;

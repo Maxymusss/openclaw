@@ -2277,6 +2277,7 @@ function partitionRuntimeTestFiles(configs: string[], files: string[]) {
 function createAgenticGatewayCoreSplitShards(): NodeTestSplitShard[] {
   const unitFastFiles = new Set(getUnitFastTestFiles());
   const excludedGatewayFiles = new Set([
+    ...databaseWorkerCoreTestFiles,
     ...gatewayDatabaseWorkerTestFiles,
     ...gatewayServerExcludedTestFiles,
     ...gatewayServerIsolatedTestFiles,
