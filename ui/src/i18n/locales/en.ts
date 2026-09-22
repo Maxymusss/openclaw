@@ -2556,6 +2556,15 @@ export const en: TranslationMap & {
     restartRequired: "Gateway restart required.",
     saveErrorTitle: "Could not update feature",
     saveFailed: "The feature setting could not be saved.",
+    decisionAssistance: {
+      title: "Decision assistance",
+      description:
+        "Save a global opt-in for future automatic Decision experiments. Each participating agent also needs an effective Decision model; an empty agent override disables eligibility. No automatic consumers are connected yet. The explicit decision_evaluate tool is independent of this switch.",
+      optedIn: "Opted in; a Decision model is still required for each participating agent.",
+      loading: "Loading saved preference…",
+      unavailable: "Saved preference is unknown. Reconnect or refresh configuration to try again.",
+      refresh: "Refresh configuration",
+    },
     codeMode: {
       title: "Code Mode",
       description:

@@ -33,6 +33,10 @@ Decision models have a separate **Decision** picker in the Control UI. Selecting
 one makes it available to supported consumers; it does not start background work,
 replace the chat model, or enable an agent tool. Consumers retain control over
 when to evaluate evidence and what to do with the result.
+Automatic experimental consumers additionally require explicit
+[Decision assistance opt-in](/concepts/experimental-features#decision-assistance).
+That Labs entry currently provides the gate foundation only, with no automatic
+consumers connected; explicit `decision_evaluate` remains independent of Labs.
 
 ## Choose a provider and model
 
