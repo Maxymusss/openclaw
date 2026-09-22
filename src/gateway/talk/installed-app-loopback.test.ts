@@ -8,7 +8,7 @@ vi.mock("../../node-host/invoke.js", () => ({ handleInvoke: vi.fn() }));
 
 it("forwards the registry's cancellation to the exact node invocation before draining", async () => {
   const started = createDeferred<AbortSignal | undefined>();
-  const release = createDeferred<void>();
+  const release = createDeferred();
   vi.mocked(handleInvoke).mockImplementation(async (_frame, _client, _bins, _context, runtime) => {
     started.resolve(runtime?.signal);
     await release.promise;

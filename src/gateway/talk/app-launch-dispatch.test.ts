@@ -23,8 +23,9 @@ import {
   captureGatewayDeviceRevocation,
   invalidateGatewayDeviceRevocation,
 } from "../device-revocation.js";
+import { NodeRegistry } from "../node-registry.js";
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
-import { prepareTalkAppLaunchDispatch } from "./app-launch-dispatch.js";
+import { prepareTalkAppLaunchInvocation } from "./app-launch-dispatch.js";
 import { captureTalkVoiceOrigin } from "./client-voice-origin.js";
 
 const app = { appId: "linux-desktop:fixture.desktop", appRevision: "a".repeat(64) };
@@ -47,7 +48,10 @@ afterEach(() => {
 
 async function scope(
   run: (fixture: {
-    make: () => ReturnType<typeof prepareTalkAppLaunchDispatch>;
+    make: (
+      nodeId?: string,
+      rawParams?: unknown,
+    ) => ReturnType<typeof prepareTalkAppLaunchInvocation>;
     context: object;
     voiceSessionId: string;
   }) => Promise<void>,
@@ -55,7 +59,7 @@ async function scope(
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const config = cfg();
     setRuntimeConfigSnapshot(config, config);
-    const context = {};
+    const context = { nodeRegistry: new NodeRegistry() };
     const ingress = captureGatewayDeviceRevocation(
       context,
       { deviceId: "widget", role: "operator" },
@@ -106,7 +110,18 @@ async function scope(
             voiceRun: resolveClientVoiceRunBinding("launch-run"),
           },
           () =>
-            run({ make: () => prepareTalkAppLaunchDispatch("node", app), context, voiceSessionId }),
+            run({
+              make: (nodeId = "node", rawParams: unknown = app) =>
+                prepareTalkAppLaunchInvocation({
+                  nodeId,
+                  rawParams,
+                  connId: "node-connection",
+                  context,
+                  client: null,
+                }),
+              context,
+              voiceSessionId,
+            }),
         ),
     );
   });
@@ -200,7 +215,7 @@ describe("Talk installed-app final Gateway authority", () => {
   });
 
   it("binds fresh authenticated ingress when resuming a persisted call after runtime reset", async () => {
-    await scope(async ({ voiceSessionId, context }) => {
+    await scope(async ({ make, voiceSessionId, context }) => {
       clientVoiceSessionTesting.reset();
       const fresh = captureGatewayDeviceRevocation(
         context,
@@ -244,7 +259,7 @@ describe("Talk installed-app final Gateway authority", () => {
               voiceRun,
             },
             async () => {
-              expect(prepareTalkAppLaunchDispatch("node", app).isCurrent()).toBe(false);
+              expect(make().isCurrent()).toBe(false);
             },
           ),
       );
@@ -268,12 +283,10 @@ describe("Talk installed-app final Gateway authority", () => {
   });
 
   it("does not inherit a match after canonical target or descriptor substitution", async () => {
-    await scope(async () => {
-      expect(() => prepareTalkAppLaunchDispatch("other-node", app)).toThrow("effect binding");
-      expect(() =>
-        prepareTalkAppLaunchDispatch("node", { ...app, appRevision: "b".repeat(64) }),
-      ).toThrow("effect binding");
-      expect(() => prepareTalkAppLaunchDispatch("node", { ...app, command: "shell" })).toThrow();
+    await scope(async ({ make }) => {
+      expect(() => make("other-node", app)).toThrow("effect binding");
+      expect(() => make("node", { ...app, appRevision: "b".repeat(64) })).toThrow("effect binding");
+      expect(() => make("node", { ...app, command: "shell" })).toThrow();
     });
   });
   it("does not create origin authority from token-only or fabricated current callbacks", () => {

@@ -39,8 +39,9 @@ import {
   captureGatewayDeviceRevocation,
   invalidateGatewayDeviceRevocation,
 } from "../device-revocation.js";
+import { NodeRegistry } from "../node-registry.js";
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
-import { prepareTalkAppLaunchDispatch } from "./app-launch-dispatch.js";
+import { prepareTalkAppLaunchInvocation } from "./app-launch-dispatch.js";
 import { captureTalkVoiceOrigin } from "./client-voice-origin.js";
 
 const mocks = vi.hoisted(() => ({
@@ -122,7 +123,7 @@ describe("native Talk spoken confirmation handoff", () => {
       appId: "linux-desktop:fixture.desktop",
       appRevision: "a".repeat(64),
     };
-    const ingressContext = {};
+    const ingressContext = { nodeRegistry: new NodeRegistry() };
     const ingress = captureGatewayDeviceRevocation(
       ingressContext,
       { deviceId: "voice-widget", role: "operator" },
@@ -235,9 +236,12 @@ describe("native Talk spoken confirmation handoff", () => {
                             voiceRun: resolveClientVoiceRunBinding(params.runId),
                           },
                           async () => {
-                            const dispatch = prepareTalkAppLaunchDispatch(launch.node, {
-                              appId: launch.appId,
-                              appRevision: launch.appRevision,
+                            const dispatch = prepareTalkAppLaunchInvocation({
+                              nodeId: launch.node,
+                              rawParams: { appId: launch.appId, appRevision: launch.appRevision },
+                              connId: "confirmation-client",
+                              context: ingressContext,
+                              client: null,
                             });
                             if (!dispatch.isCurrent(true)) {
                               throw new Error(dispatch.reason());

@@ -9,14 +9,14 @@ import { createTempHomeEnv } from "../test-utils/temp-home.js";
 import {
   parseStoredVoiceSessionRecord,
   readVoiceSessionRecordInTransaction,
-  VOICE_SESSION_RECORD_VERSION,
   writeVoiceSessionRecordInTransaction,
 } from "./client-voice-session-store.js";
 import { VOICE_TRANSCRIPT_MAX_UNRESOLVED } from "./voice-transcript.js";
 
+// Persisted v1 fixtures must not silently follow a future writer-version bump.
 function storedRecord(transcriptFailureKeys: unknown): string {
   return JSON.stringify({
-    version: VOICE_SESSION_RECORD_VERSION,
+    version: 1,
     voiceSessionId: "voice-1",
     agentId: "main",
     sessionKey: "agent:main:main",
@@ -84,7 +84,7 @@ describe("client voice session store", () => {
     expect(
       parseStoredVoiceSessionRecord(
         JSON.stringify({
-          version: VOICE_SESSION_RECORD_VERSION,
+          version: 1,
           voiceSessionId: "voice-1",
           agentId: "main",
           sessionKey: "agent:main:main",

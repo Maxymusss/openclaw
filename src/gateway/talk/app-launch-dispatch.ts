@@ -17,7 +17,7 @@ import { resolveNodeInvokeRuntimeAuthorityError } from "../server-methods/nodes.
 import type { GatewayClient, GatewayRequestContext } from "../server-methods/types.js";
 
 /** Compose with normal node authorization at the final dispatch and each readiness retry. */
-export function prepareTalkAppLaunchDispatch(nodeId: string, rawParams: unknown) {
+function prepareTalkAppLaunchDispatch(nodeId: string, rawParams: unknown) {
   const action = InstalledAppLaunchRequestSchema.parse(rawParams);
   const caller = getGatewayToolCallerIdentity();
   const execution = getClientVoiceAppLaunchExecution();
@@ -108,7 +108,10 @@ export function prepareTalkAppLaunchInvocation(params: {
   nodeId: string;
   rawParams: unknown;
   connId: string;
-  context: GatewayRequestContext;
+  context: Pick<
+    GatewayRequestContext,
+    "nodeRegistry" | "execApprovalManager" | "validateAgentRuntimeApprovalAuthority"
+  >;
   client: GatewayClient | null;
   approvalAuthority?: Parameters<
     typeof resolveNodeInvokeRuntimeAuthorityError

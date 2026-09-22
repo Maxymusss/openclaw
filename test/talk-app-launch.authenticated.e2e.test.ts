@@ -237,6 +237,7 @@ it.runIf(process.platform === "linux")(
             ),
           ).toMatchObject({ status: "approved" });
           gateway = await start();
+          const gatewayPort = gateway.port;
           const admin = gateway.client;
           const loadedAtStartup = await readConfigFileSnapshot();
           expect(loadedAtStartup.valid).toBe(true);
@@ -245,7 +246,7 @@ it.runIf(process.platform === "linux")(
             mode: "realtime",
             appLaunchPolicies: [],
           });
-          const url = "ws://127.0.0.1:" + gateway.port;
+          const url = "ws://127.0.0.1:" + gatewayPort;
           const identity = loadOrCreateDeviceIdentity({ path: state.path("voice-device.sqlite") });
           let hello: HelloOk | undefined;
           report.stage = "pair-voice-device";
@@ -366,7 +367,7 @@ it.runIf(process.platform === "linux")(
                 "--host",
                 "127.0.0.1",
                 "--port",
-                String(gateway.port),
+                String(gatewayPort),
                 "--display-name",
                 "Isolated app proof node",
                 "--share-installed-apps",
