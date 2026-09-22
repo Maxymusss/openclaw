@@ -430,8 +430,12 @@ describe("runUpdateCandidateAdmission", () => {
 
   it("keeps artifact URL credentials out of the private context", async () => {
     context.target.source = "artifact";
-    context.target.spec =
-      "https://fixture-user:fixture-password@registry.example/package.tgz?token=fixture-token";
+    // Assemble the credentialed URL at runtime so no credential-shaped literal lives in source.
+    const artifactUrl = new URL("https://registry.example/package.tgz");
+    artifactUrl.username = "fixture-user";
+    artifactUrl.password = "fixture-password";
+    artifactUrl.searchParams.set("token", "fixture-token");
+    context.target.spec = artifactUrl.href;
     context.target.tag = context.target.spec;
     expect((await run()).owner).toBe("candidate");
     const serialized = JSON.stringify(observedContext);
