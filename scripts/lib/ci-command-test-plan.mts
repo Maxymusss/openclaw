@@ -31,6 +31,16 @@ export function isParallelCommandsGroup(group: CommandGroup): boolean {
   return group.configs.length === 1 && group.configs[0] === "test/vitest/vitest.commands.config.ts";
 }
 
+export function commandWorkerTimingFamily(
+  group: CommandGroup,
+  timingOwner: string,
+): string | undefined {
+  // This suffix records the command worker allocation, not a new timing epoch.
+  return isParallelCommandsGroup(group)
+    ? /^(.*)#file-parallel-[1-9]\d*$/u.exec(timingOwner)?.[1]
+    : undefined;
+}
+
 export function commandFileSecondsFloor(
   files: readonly string[],
   runnerBackend: string | undefined,

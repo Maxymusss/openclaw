@@ -524,7 +524,9 @@ Worker pins and measured-worker fallback eligibility use the runtime's existing
 owner. Multiple compatible observed allowances retain the largest measured wall
 for admission. When files are added, the largest contained observation remains a
 fallback floor without summing overlapping workloads. Timing-family changes keep
-older serial observations separate from newly parallel execution. If placement
+older serial observations separate from newly parallel execution. Command worker-count
+suffixes remain compatible within parallel execution; actual observed workers govern
+conservative projection, without assuming a speedup on larger allocations. If placement
 loses a larger runner, a matching workload observation remains a fallback floor.
 Only families already using the measured-worker policy
 project that wall to fewer workers using the observed allowance ratio; serial
@@ -583,13 +585,15 @@ selection cannot become a complete parent measurement. Main and PR provenance
 remain separate in the generated source description. Each capacity class uses
 the existing two-independent-run minimum, median, outlier filter, and 15% write
 threshold; missing observations are retained across partial plans.
-Tooling measurements are collected ahead of planner activation: run `35506602947`
-exceeds the current hosted and hybrid row caps when applied. Keep activation
-separate until measured test improvements or approved capacity make every profile fit.
-The map keeps separate Blacksmith and GitHub measurements. Numbered tooling
-parents and their child timing keys change when files move, so per-file costs
-can survive repacking and serve local tooling scheduling after activation. Unmeasured files use
-the remaining cold hints or the positive two-second default.
+CI tooling packing uses the retained per-file measurements because numbered
+parents and child keys change when files move. Blacksmith and hybrid use the
+Blacksmith map; direct GitHub measurements remain unscaled, while missing
+GitHub measurements use the existing hosted fallback scale. The shared worker
+scheduler preserves the longest file and divides only aggregate file work by
+the admitted workers. Unmeasured files retain cold hints or the positive
+two-second default. Local tooling ordering retains its static weights.
+Honest prices can exceed the existing row caps; preflight refuses that plan
+until the maintainer resolves capacity, without reducing coverage.
 
 Only successful complete tooling invocations contribute. Native file summaries
 include suite hooks; older verbose-only logs supply summed case durations.

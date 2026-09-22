@@ -52,6 +52,12 @@ export function readCompactGroupTimings(
   return readTestTimings()?.compactGroupSeconds[profile] ?? emptyGroupTimings;
 }
 
+export function readToolingFileTimings(
+  profile: "blacksmith" | "github",
+): Readonly<Record<string, number>> {
+  return readTestTimings()?.toolingFileSeconds[profile] ?? emptyGroupTimings;
+}
+
 export function readCompactWorkerTimings(): readonly CompactWorkerTiming[] {
   return readTestTimings()?.compactWorkerTimings ?? emptyCompactWorkerTimings;
 }

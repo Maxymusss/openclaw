@@ -2430,7 +2430,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
 
   function checkCommittedCompactPolicies(host: PlannerHost) {
     pinPlannerHost(host);
-    const workerCosts = createCompactWorkerCostResolver(testTimings.readCompactWorkerTimings());
+    const workerTimings = testTimings.readCompactWorkerTimings();
+    const workerCosts = createCompactWorkerCostResolver(workerTimings);
     const base = createNodeTestShards({ includeReleaseOnlyPluginShards: false });
     const compact = getCommittedCompactPlan("push");
     const pullRequestCompact = getCommittedCompactPlan("pull-request");
@@ -2739,12 +2740,29 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             expect(shard.groups.every((group) => group.pretestBuildMode)).toBe(true);
           }
           if ((shard.predictedSeconds ?? 0) > budget) {
-            // A measured indivisible child retains its truthful wall and owns
+            // An oversized child retains its truthful wall and owns
             // the job alone; its cost cannot admit another packing partner.
             expect(shard.groups).toHaveLength(1);
             expect(shard.planConcurrency).toBe(1);
             const group = shard.groups[0]!;
             const files = expectDefined(group.includePatterns, "explicit CLI workload");
+            const coldFloor = files.reduce(
+              (sum, file) => sum + shardMetadata.estimateVitestTestFileSeconds(file),
+              0,
+            );
+            const buildSeconds = Math.round(
+              (shard.pretestBuildMode
+                ? shardMetadata.VITEST_PRETEST_BUILD_SECONDS[shard.pretestBuildMode]
+                : 0) *
+                (profile.name === "GitHub-hosted"
+                  ? shardMetadata.COMPACT_GITHUB_GROUP_SECONDS_SCALE
+                  : 1),
+            );
+            if (workerTimings.length === 0) {
+              expect(files).toHaveLength(1);
+              expect(shard.predictedSeconds).toBe(Math.ceil(coldFloor + buildSeconds));
+              continue;
+            }
             const execution = {
               ...shard,
               runner:
@@ -2779,18 +2797,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
               measuredSeconds = workerCosts.projectFamilyCost(parent, execution, files, 0);
             }
             expect(measuredSeconds).toBeGreaterThan(0);
-            const coldFloor = files.reduce(
-              (sum, file) => sum + shardMetadata.estimateVitestTestFileSeconds(file),
-              0,
-            );
-            const buildSeconds = Math.round(
-              (shard.pretestBuildMode
-                ? shardMetadata.VITEST_PRETEST_BUILD_SECONDS[shard.pretestBuildMode]
-                : 0) *
-                (profile.name === "GitHub-hosted"
-                  ? shardMetadata.COMPACT_GITHUB_GROUP_SECONDS_SCALE
-                  : 1),
-            );
             expect(shard.predictedSeconds).toBe(
               Math.ceil(Math.max(coldFloor, measuredSeconds) + buildSeconds),
             );
@@ -4124,7 +4130,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     files: string[];
     shards: typeof fullSuiteVitestShards;
     timings: Record<string, number>;
-    fileSeconds: (file: string) => number;
+    fileSeconds?: (file: string) => number;
+    toolingFileSeconds?: Partial<Record<"blacksmith" | "github", Record<string, number>>>;
     options: {
       compactMode: "pull-request";
       runnerBackend: string;
@@ -4150,10 +4157,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     vi.doMock("../../scripts/lib/ci-test-timings.mts", () => ({
       ...testTimings,
       readCompactGroupTimings: () => params.timings,
+      readToolingFileTimings: (profile: "blacksmith" | "github") =>
+        params.toolingFileSeconds?.[profile] ?? {},
     }));
     vi.doMock("../../scripts/lib/vitest-shard-metadata.mts", () => ({
       ...shardMetadata,
-      estimateVitestToolingFileSeconds: params.fileSeconds,
+      estimateVitestToolingFileSeconds:
+        params.fileSeconds ?? shardMetadata.estimateVitestToolingFileSeconds,
     }));
     vi.doMock("../../scripts/lib/list-test-files.mts", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../../scripts/lib/list-test-files.mts")>()),
@@ -4175,12 +4185,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   }
 
   it.each([
-    { profile: "blacksmith", expectedSeconds: 840, whaleSeconds: 200 },
-    { profile: "hybrid", expectedSeconds: 840, whaleSeconds: 200 },
-    { profile: "github", expectedSeconds: 1_344, whaleSeconds: 320 },
+    { profile: "blacksmith", measuredGithub: false, expectedSeconds: 840, whaleSeconds: 200 },
+    { profile: "hybrid", measuredGithub: false, expectedSeconds: 840, whaleSeconds: 200 },
+    { profile: "github", measuredGithub: false, expectedSeconds: 1_344, whaleSeconds: 320 },
+    { profile: "github", measuredGithub: true, expectedSeconds: 720, whaleSeconds: 400 },
   ])(
-    "prices parallel tooling files without dividing the slowest file in $profile",
-    async ({ profile, expectedSeconds, whaleSeconds }) => {
+    "prices measured tooling files in $profile (GitHub samples: $measuredGithub)",
+    async ({ profile, measuredGithub, expectedSeconds, whaleSeconds }) => {
       const whale = "test/scripts/fixture-whale.test.ts";
       const files = [
         ...Array.from({ length: 64 }, (_, index) => `test/scripts/fixture-${index}.test.ts`),
@@ -4198,7 +4209,12 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         timings: Object.fromEntries(
           Array.from({ length: 16 }, (_, index) => [`core-tooling-${index + 1}`, 20_000]),
         ),
-        fileSeconds: (file: string) => (file === whale ? 200 : 20),
+        toolingFileSeconds: {
+          blacksmith: Object.fromEntries(files.map((file) => [file, file === whale ? 200 : 20])),
+          github: measuredGithub
+            ? Object.fromEntries(files.map((file) => [file, file === whale ? 400 : 10]))
+            : {},
+        },
         options: {
           compactMode: "pull-request" as const,
           runnerBackend: profile,
@@ -4218,19 +4234,44 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             job.groups.every((group) => group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2"),
         ),
       ).toBe(true);
-      // Sixty-four 20-second files share two workers; the 200-second file stays indivisible.
+      // The sixty-four short files share two workers; the slowest file stays indivisible.
       expect(plan.reduce((seconds, job) => seconds + job.predictedSeconds!, 0)).toBe(
         expectedSeconds,
       );
-      expect(
-        plan.find((job) => job.groups.some((group) => group.includePatterns?.includes(whale)))
-          ?.predictedSeconds,
-      ).toBe(whaleSeconds);
+      const whaleJob = expectDefined(
+        plan.find((job) => job.groups.some((group) => group.includePatterns?.includes(whale))),
+        "indivisible tooling file",
+      );
+      expect(whaleJob.predictedSeconds).toBe(whaleSeconds);
       for (const group of plan.flatMap((job) => job.groups)) {
         if (group.timing_key) {
           params.timings[group.timing_key] = 20_000;
         }
       }
+      expect(await createToolingFixturePlan(params)).toEqual(plan);
+      const whaleGroup = expectDefined(
+        whaleJob.groups.find((group) => group.includePatterns?.includes(whale)),
+        "indivisible tooling group",
+      );
+      vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue(
+        (profile === "github"
+          ? ["ubuntu-24.04"]
+          : [DEFAULT_NODE_TEST_RUNNER, EXTRA_LARGE_NODE_TEST_RUNNER]
+        ).map((runner) => ({
+          timingOwner: compactWorkerTimingOwner(whaleGroup),
+          runner,
+          cpuCount: runner === EXTRA_LARGE_NODE_TEST_RUNNER ? 8 : 2,
+          totalMemoryBytes: (runner === EXTRA_LARGE_NODE_TEST_RUNNER ? 32 : 8) * 1024 ** 3,
+          jobWorkers: runner === EXTRA_LARGE_NODE_TEST_RUNNER ? 8 : 2,
+          workers: 2,
+          planConcurrency: 1,
+          configs: whaleGroup.configs,
+          env: {},
+          includePatterns: whaleGroup.includePatterns!,
+          seconds: 1,
+        })),
+      );
+      // A faster exact child sample cannot divide or erase its measured longest file.
       expect(await createToolingFixturePlan(params)).toEqual(plan);
     },
   );

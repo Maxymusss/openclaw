@@ -39,6 +39,126 @@ const smallHost = observation({
 });
 
 describe("compact worker costs", () => {
+  it("matches job environments without reusing another environment's cached costs", () => {
+    const cost = createCompactWorkerCostResolver([
+      observation({ seconds: 1 }),
+      observation({ env: { MODE: "fast", JOB_ONLY: "kept" }, seconds: 100 }),
+      observation({ env: { MODE: "slow", JOB_ONLY: "kept" }, seconds: 400 }),
+      observation({ env: { MODE: "group", JOB_ONLY: "kept" }, workers: 2, seconds: 600 }),
+    ]);
+    const capacity = { runner: large, planConcurrency: 1 };
+    const fast = { ...capacity, env: { MODE: "fast", JOB_ONLY: "kept" } };
+    const slow = { ...capacity, env: { MODE: "slow", JOB_ONLY: "kept" } };
+    expect(cost.exactSeconds(group, fast)).toBe(100);
+    expect(cost.exactSeconds(group, slow)).toBe(400);
+    expect(cost.familyCost(group, fast)?.seconds).toBe(100);
+    expect(cost.childSeconds(group, slow)).toBe(400);
+
+    const overridden = { ...group, env: { ...group.env, MODE: "group" } };
+    const pinned = { ...slow, env: { ...slow.env, OPENCLAW_VITEST_MAX_WORKERS: "2" } };
+    expect(cost.exactSeconds(overridden, pinned)).toBe(600);
+  });
+
+  it.each([
+    { observedWorkers: 8, targetWorkers: 2, expected: 480 },
+    { observedWorkers: 2, targetWorkers: 8, expected: 120 },
+  ])(
+    "projects command worker variants $observedWorkers → $targetWorkers without assuming speedups",
+    ({ observedWorkers, targetWorkers, expected }) => {
+      const files = ["src/commands/cost-a.test.ts", "src/commands/cost-b.test.ts"];
+      const command = {
+        ...group,
+        configs: ["test/vitest/vitest.commands.config.ts"],
+        includePatterns: files,
+        env: undefined,
+        minTotalMemoryBytes: undefined,
+        timing_key: `commands#file-parallel-${targetWorkers}`,
+      };
+      const capacity = { runner: targetWorkers === 8 ? large : small, planConcurrency: 1 };
+      const cost = createCompactWorkerCostResolver([
+        observation({
+          timingOwner: `commands#file-parallel-${observedWorkers}`,
+          runner: observedWorkers === 8 ? large : small,
+          cpuCount: observedWorkers,
+          totalMemoryBytes: (observedWorkers === 8 ? 32 : 8) * 1024 ** 3,
+          jobWorkers: observedWorkers,
+          workers: observedWorkers,
+          configs: command.configs,
+          includePatterns: files,
+          seconds: 120,
+        }),
+        observation({
+          timingOwner: "other-command-capacity",
+          runner: capacity.runner,
+          cpuCount: targetWorkers,
+          totalMemoryBytes: (targetWorkers === 8 ? 32 : 8) * 1024 ** 3,
+          jobWorkers: targetWorkers,
+          workers: targetWorkers,
+        }),
+      ]);
+      expect(cost.childSeconds(command, capacity)).toBe(expected);
+      expect(cost.familyCost(command, capacity)).toEqual({ seconds: expected, files });
+      expect(cost.projectFamilyCost(command, capacity, [files[0]!], 1)).toBe(expected / 2);
+      expect(cost.exactSeconds(command, capacity)).toBeUndefined();
+    },
+  );
+
+  it.each([
+    { config: "commands", target: "commands#file-parallel-2", source: "commands" },
+    { config: "commands", target: "commands", source: "commands#file-parallel-8" },
+    { config: "commands", target: "commands#file-parallel-2", source: "other#file-parallel-8" },
+    {
+      config: "commands",
+      target: "commands#epoch-a#file-parallel-2",
+      source: "commands#epoch-b#file-parallel-8",
+    },
+    {
+      config: "gateway-server-isolated",
+      target: "commands#file-parallel-2",
+      source: "commands#file-parallel-8",
+    },
+  ])(
+    "keeps unrelated timing owners distinct: $config $source → $target",
+    ({ config, target, source }) => {
+      const targetGroup = {
+        ...group,
+        configs: [`test/vitest/vitest.${config}.config.ts`],
+        timing_key: target,
+      };
+      const cost = createCompactWorkerCostResolver([
+        observation({ timingOwner: source, configs: targetGroup.configs }),
+      ]);
+      const capacity = { runner: large, planConcurrency: 1 };
+      expect(cost.childSeconds(targetGroup, capacity)).toBeUndefined();
+      expect(cost.familyCost(targetGroup, capacity)).toBeUndefined();
+    },
+  );
+
+  it("does not treat a different command worker variant as direct target-class evidence", () => {
+    const command = {
+      ...group,
+      configs: ["test/vitest/vitest.commands.config.ts"],
+      timing_key: "commands#file-parallel-8",
+    };
+    const cost = createCompactWorkerCostResolver([
+      observation({
+        configs: command.configs,
+        timingOwner: "commands#file-parallel-2",
+        workers: 2,
+        seconds: 400,
+      }),
+      observation({
+        configs: command.configs,
+        timingOwner: "commands#file-parallel-8",
+        workers: 8,
+        seconds: 100,
+      }),
+    ]);
+    const capacity = { runner: large, planConcurrency: 1 };
+    expect(cost.childSeconds(command, capacity)).toBe(100);
+    expect(cost.exactSeconds(command, capacity)).toBe(100);
+  });
+
   it("keeps measured work when losing a packing partner lowers the worker class", () => {
     const cost = createCompactWorkerCostResolver([observation(), smallHost]);
     expect(cost.childSeconds(group, { runner: large, planConcurrency: 1 })).toBe(375);

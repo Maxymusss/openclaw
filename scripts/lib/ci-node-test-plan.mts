@@ -47,6 +47,7 @@ import {
 import {
   COMMANDS_PARALLEL_TIMING_SUFFIX,
   COMMANDS_RUNTIME_GROUP,
+  commandWorkerTimingFamily,
   estimateSerialCommandSeconds,
   estimateLegacyCommandStripeSeconds,
   commandFileSecondsFloor,
@@ -66,6 +67,7 @@ import {
   readCompleteSplitGenerationSeconds,
   readCompactWorkerTimings,
   readRuntimePlacementTimings,
+  readToolingFileTimings,
   resolveRuntimePlacementSeconds,
 } from "./ci-test-timings.mts";
 import { isStripeEligibleTestFile, listTrackedTestFiles } from "./list-test-files.mts";
@@ -1078,15 +1080,19 @@ function estimateParallelToolingSeconds(
         PINNED_COMPACT_GROUP_ENV.OPENCLAW_VITEST_MAX_WORKERS,
     ),
   );
-  const weights = files.map(toolingFileWeight);
+  const fileTimings = readToolingFileTimings("blacksmith");
+  const hostedFileTimings =
+    runnerBackend === "github" ? readToolingFileTimings("github") : undefined;
+  const scale = runnerBackend === "github" ? COMPACT_GITHUB_GROUP_SECONDS_SCALE : 1;
+  const weights = files.map(
+    (file) => hostedFileTimings?.[file] ?? toolingFileWeight(file, fileTimings) * scale,
+  );
   // File observations retain their elapsed cost under parallel execution. Old
   // numbered parent/child spans describe serial files and cannot price this lane.
-  return (
-    Math.max(
-      0,
-      ...weights,
-      weights.reduce((sum, seconds) => sum + seconds, 0) / Math.max(1, workers),
-    ) * (runnerBackend === "github" ? COMPACT_GITHUB_GROUP_SECONDS_SCALE : 1)
+  return Math.max(
+    0,
+    ...weights,
+    weights.reduce((sum, seconds) => sum + seconds, 0) / Math.max(1, workers),
   );
 }
 
@@ -3149,7 +3155,7 @@ function splitOversizedCompactGroup(
     ? new Set(agentsCoreWorkFiles(group))
     : undefined;
   const weightForFile = isTooling
-    ? toolingFileWeight
+    ? (file: string) => estimateParallelToolingSeconds(group, [file], runnerBackend)
     : (file: string) =>
         !agentsCoreFiles || agentsCoreFiles.has(file) ? stripeFileWeight(file) : 0;
   const totalWeight =
@@ -3772,6 +3778,20 @@ function createCompactNodeTestShardBundles(
   const workerTimings = readCompactWorkerTimings();
   const measuredCosts = createCompactWorkerCostResolver(workerTimings);
   const measuredFamilies = new Set(workerTimings.map((observation) => observation.timingOwner));
+  const measuredCommandFamilies = new Set(
+    workerTimings.flatMap((observation) => {
+      const family = commandWorkerTimingFamily(observation, observation.timingOwner);
+      return family === undefined ? [] : [family];
+    }),
+  );
+  const hasMeasuredFamily = (group: NodeTestShardGroup) => {
+    const owner = compactWorkerTimingOwner(group);
+    const commandFamily = commandWorkerTimingFamily(group, owner);
+    return (
+      measuredFamilies.has(owner) ||
+      (commandFamily !== undefined && measuredCommandFamilies.has(commandFamily))
+    );
+  };
   type Capacity = Pick<CompactNodeTestShard, "runner" | "planConcurrency" | "env"> & {
     requestedConcurrency?: number;
   };
@@ -3876,17 +3896,7 @@ function createCompactNodeTestShardBundles(
     const serialFamily = serialCommandFamily(group);
     const familySource =
       !isParallelToolingGroup(group) &&
-      (measuredFamilies.has(compactWorkerTimingOwner(measuredFamilyGroup)) ||
-        (serialFamily && measuredFamilies.has(compactWorkerTimingOwner(serialFamily))) ||
-        (isParallelCommandsGroup(group) &&
-          measuredFamilies.has(
-            compactWorkerTimingOwner(
-              timingGroupAtCapacity(group, {
-                runner: EXTRA_LARGE_NODE_TEST_RUNNER,
-                planConcurrency: 1,
-              }),
-            ),
-          )))
+      (hasMeasuredFamily(measuredFamilyGroup) || (serialFamily && hasMeasuredFamily(serialFamily)))
         ? {
             ...group,
             includePatterns: group.includePatterns ?? listWholeConfigSplitFiles(group.shard_name),
@@ -4027,7 +4037,14 @@ function createCompactNodeTestShardBundles(
             )
           : isParallelCommandsGroup(group)
             ? commandFileSecondsFloor(group.includePatterns ?? [], options.runnerBackend)
-            : 0,
+            : isParallelToolingGroup(group)
+              ? Math.max(
+                  0,
+                  ...(group.includePatterns ?? []).map((file) =>
+                    estimateParallelToolingSeconds(group, [file], options.runnerBackend),
+                  ),
+                )
+              : 0,
         family: compactStripeFamily(group),
       };
       stripeFacts.set(group, facts);
@@ -4041,7 +4058,11 @@ function createCompactNodeTestShardBundles(
     capacity: Capacity = capacityForGroups([group]),
   ) => {
     const execution = measurementCapacity(group, capacity);
-    const capacityKey = `${execution.runner}/${execution.planConcurrency}/${execution.env?.OPENCLAW_VITEST_MAX_WORKERS ?? ""}`;
+    const capacityKey = JSON.stringify([
+      execution.runner,
+      execution.planConcurrency,
+      Object.entries(execution.env ?? {}).toSorted(([a], [b]) => a.localeCompare(b)),
+    ]);
     const costs = stripeCosts.get(group) ?? new Map<string, number>();
     const cached = costs.get(capacityKey);
     if (cached !== undefined) {

@@ -1,3 +1,4 @@
+import { commandWorkerTimingFamily } from "./ci-command-test-plan.mts";
 import type { NodeTestShardGroup } from "./ci-node-test-plan.mts";
 import { usesMeasuredCiNodeTestWorkers } from "./ci-node-test-workers.mts";
 import {
@@ -75,14 +76,21 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
     }
     const runner = capacity.runner;
     const jobPin = capacity.env?.OPENCLAW_VITEST_MAX_WORKERS;
-    const capacityKey = `${runner}/${capacity.planConcurrency}/${jobPin ?? ""}`;
+    const capacityKey = JSON.stringify([
+      runner,
+      capacity.planConcurrency,
+      Object.entries(capacity.env ?? {}).toSorted(([a], [b]) => a.localeCompare(b)),
+    ]);
     const cached = measuredCosts.get(group);
     if (cached?.has(capacityKey)) {
       return cached.get(capacityKey);
     }
     const files = new Set(group.includePatterns);
     const timingOwner = compactWorkerTimingOwner(group);
-    const { OPENCLAW_VITEST_MAX_WORKERS: pin, ...env } = group.env ?? {};
+    const commandFamily = commandWorkerTimingFamily(group, timingOwner);
+    const pin = group.env?.OPENCLAW_VITEST_MAX_WORKERS;
+    const env = { ...capacity.env, ...group.env };
+    delete env.OPENCLAW_VITEST_MAX_WORKERS;
     const targetClasses = workerTimings.filter(
       (observation) =>
         observation.runner === runner && observation.planConcurrency === capacity.planConcurrency,
@@ -119,7 +127,9 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
     const workloads = new Map<string, MeasuredWorkload>();
     for (const observation of workerTimings) {
       if (
-        observation.timingOwner !== timingOwner ||
+        (observation.timingOwner !== timingOwner &&
+          (commandFamily === undefined ||
+            commandWorkerTimingFamily(group, observation.timingOwner) !== commandFamily)) ||
         observation.runner.startsWith("blacksmith-") !== runner.startsWith("blacksmith-") ||
         observation.configs.length !== group.configs.length ||
         !observation.configs.every((config, index) => config === group.configs[index]) ||
@@ -132,7 +142,9 @@ export function createCompactWorkerCostResolver(workerTimings: readonly CompactW
       const isDirectClass =
         observation.runner === runner &&
         observation.planConcurrency === capacity.planConcurrency &&
-        observation.workers <= targetWorkers;
+        (observation.timingOwner === timingOwner
+          ? observation.workers <= targetWorkers
+          : observation.workers === targetWorkers);
       const isExactClass = isDirectClass && observation.workers === targetWorkers;
       if (observation.includePatterns.length === files.size && isDirectClass) {
         direct = Math.max(direct ?? 0, observation.seconds);

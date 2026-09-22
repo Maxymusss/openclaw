@@ -77,7 +77,7 @@ describe("command CI ownership and parallel timing", () => {
     },
   );
 
-  it("scales command work by usable forks while preserving file and direct-sample floors", () => {
+  it("retains command walls until direct worker samples replace them, preserving file floors", () => {
     const group = {
       configs: ["test/vitest/vitest.commands.config.ts"],
       includePatterns: Array.from(
@@ -89,7 +89,7 @@ describe("command CI ownership and parallel timing", () => {
     const observations = vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
     expect(estimateCommandWorkerSeconds(group, 120, 8, "blacksmith")).toEqual({
       timingKey: "fixture#file-parallel-8",
-      seconds: 30,
+      seconds: 120,
     });
     expect(
       estimateCommandWorkerSeconds(
@@ -98,7 +98,7 @@ describe("command CI ownership and parallel timing", () => {
         8,
         "blacksmith",
       ).seconds,
-    ).toBe(80);
+    ).toBe(120);
     expect(
       estimateCommandWorkerSeconds(
         {
@@ -114,7 +114,7 @@ describe("command CI ownership and parallel timing", () => {
     expect(estimateCommandWorkerSeconds(group, 120, 8, "blacksmith").seconds).toBe(45);
   });
 
-  it("projects serial timings once, retaining complete history and indivisible files", async () => {
+  it("retains serial walls, observed child history, and indivisible files", async () => {
     const config = "test/vitest/vitest.commands.config.ts";
     const owner = "agentic-commands-agent-channel";
     const memoryOwner = "agentic-commands-doctor-sessions-cron-memory";
@@ -141,6 +141,7 @@ describe("command CI ownership and parallel timing", () => {
     vi.doMock("../../scripts/lib/ci-test-timings.mts", async (importOriginal) => ({
       ...(await importOriginal<typeof import("../../scripts/lib/ci-test-timings.mts")>()),
       readCompactGroupTimings: () => observations,
+      readCompactWorkerTimings: () => [],
       readRuntimePlacementTimings: () => [],
     }));
     vi.doMock("../../scripts/lib/vitest-build-prerequisites.mts", async (importOriginal) => ({
@@ -161,19 +162,23 @@ describe("command CI ownership and parallel timing", () => {
       const totalSeconds = (jobs: ReturnType<typeof create>) =>
         jobs.reduce((sum, job) => sum + job.predictedSeconds!, 0);
       const projected = create();
-      const projectedGroup = projected
+      const projectedGroups = projected
         .flatMap((job) => job.groups)
-        .find((group) => group.shard_name === owner)!;
-      expect(projectedGroup.timing_key).toBe(timingKey);
-      expect(projectedGroup.env?.OPENCLAW_VITEST_MAX_WORKERS).toBeUndefined();
-      expect(projectedGroup.fallbackMaxWorkers).toBe(2);
+        .filter((group) => group.shard_name.startsWith(`${owner}-hosted-`));
+      expect(projectedGroups).toHaveLength(2);
+      expect(projectedGroups.flatMap((group) => group.includePatterns!).toSorted()).toEqual(files);
+      for (const group of projectedGroups) {
+        expect(parseCompactSplitTimingKey(group.timing_key!)?.parentShardName).toBe(timingKey);
+        expect(group.env?.OPENCLAW_VITEST_MAX_WORKERS).toBeUndefined();
+        expect(group.fallbackMaxWorkers).toBe(2);
+      }
       const memoryJob = projected.find((job) =>
         job.groups.some((group) => group.shard_name === memoryOwner),
       )!;
       expect(memoryJob.groups).toHaveLength(1);
       expect(memoryJob.predictedSeconds).toBe(1000);
       expect(memoryJob.groups[0]!.includePatterns).toEqual([memoryFile]);
-      expect(totalSeconds(projected)).toBe(1100);
+      expect(totalSeconds(projected)).toBe(1200);
 
       observations = { ...legacy, [timingKey]: 200 };
       expect(totalSeconds(create())).toBe(1200);
@@ -183,7 +188,8 @@ describe("command CI ownership and parallel timing", () => {
         stripes: files.map((file) => [file]),
       });
       observations = { ...legacy, [generation.timingKeys[0]!]: 500 };
-      expect(totalSeconds(create())).toBe(1100);
+      // An observed child retains its full wall even before its sibling is measured.
+      expect(totalSeconds(create())).toBe(1600);
       observations = { ...observations, [generation.timingKeys[1]!]: 500 };
       const retained = create();
       expect(totalSeconds(retained)).toBe(2000);
@@ -287,15 +293,25 @@ describe("command CI ownership and parallel timing", () => {
         runnerBackend: "blacksmith",
         includeReleaseOnlyPluginShards: false,
       });
-      const jobs = ownerNames.map((name) =>
-        plan.findIndex((shard) => shard.groups.some((group) => group.shard_name === name)),
+      const placements = plan.flatMap((job, jobIndex) =>
+        job.groups
+          .filter((group) => ownerNames.includes(group.shard_name.replace(/-hosted-\d+$/u, "")))
+          .map((group) => ({ group, jobIndex })),
       );
-      expect(jobs.every((job) => job >= 0)).toBe(true);
-      expect(new Set(jobs).size).toBe(jobs.length);
+      for (const name of ownerNames) {
+        const children = placements.filter(
+          ({ group }) => group.shard_name.replace(/-hosted-\d+$/u, "") === name,
+        );
+        expect(children.length, name).toBeGreaterThan(0);
+        expect(children.flatMap(({ group }) => group.includePatterns!).toSorted(), name).toEqual(
+          owners.get(name)?.toSorted(),
+        );
+      }
+      expect(new Set(placements.map(({ jobIndex }) => jobIndex)).size).toBe(placements.length);
       expect(
         plan
           .flatMap((shard) => shard.groups)
-          .filter((group) => ownerNames.includes(group.shard_name))
+          .filter((group) => ownerNames.includes(group.shard_name.replace(/-hosted-\d+$/u, "")))
           .every((group) => group.runner === DEFAULT_NODE_TEST_RUNNER),
       ).toBe(true);
     }
@@ -315,6 +331,8 @@ describe("command CI ownership and parallel timing", () => {
       .filter((shard) => shard.projects.length > 0);
     fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...fixtureShards);
     try {
+      vi.spyOn(testTimings, "readCompactWorkerTimings").mockReturnValue([]);
+      vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
       // Affordable descendants must also stay apart from their unsplit ancestors'
       // siblings: an immediate-selector-only rule loses the Doctor/giant boundary.
       const fixtureTimings = Object.fromEntries(
@@ -346,7 +364,7 @@ describe("command CI ownership and parallel timing", () => {
         );
         expect(
           placements.filter(({ group }) => group.shard_name.startsWith(`${family[0]}-hosted-`)),
-        ).toHaveLength(family[0]!.startsWith("agentic-commands-") ? 2 : 3);
+        ).toHaveLength(3);
         expect(new Set(placements.map(({ jobIndex }) => jobIndex)).size, family[0]).toBe(
           placements.length,
         );

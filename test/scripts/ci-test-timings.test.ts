@@ -1804,6 +1804,8 @@ describe("committed CI timing loader", () => {
       expect(loader.readRepoE2eFileTimings()).toEqual({});
       expect(loader.readCompactGroupTimings("blacksmith")).toEqual({});
       expect(loader.readCompactGroupTimings("github")).toEqual({});
+      expect(loader.readToolingFileTimings("blacksmith")).toEqual({});
+      expect(loader.readToolingFileTimings("github")).toEqual({});
       expect(loader.readCompactWorkerTimings()).toEqual([]);
     },
   );
@@ -1817,6 +1819,7 @@ describe("committed CI timing loader", () => {
         ),
       ).timings.compactWorkerTimings,
       compactGroupSeconds: { blacksmith: { group: 110 }, github: { group: 181 } },
+      toolingFileSeconds: { blacksmith: { [toolingFile]: 35 }, github: { [toolingFile]: 60 } },
       repoE2eFileSeconds: { "test/example.e2e.test.ts": 90 },
     };
     const { loader, read, timingPath } = await readTimings(JSON.stringify(data));
@@ -1824,12 +1827,16 @@ describe("committed CI timing loader", () => {
     expect(loader.readRepoE2eFileTimings()).toEqual(data.repoE2eFileSeconds);
     expect(loader.readCompactGroupTimings("blacksmith")).toEqual({ group: 110 });
     expect(loader.readCompactGroupTimings("github")).toEqual({ group: 181 });
+    expect(loader.readToolingFileTimings("blacksmith")).toEqual({ [toolingFile]: 35 });
+    expect(loader.readToolingFileTimings("github")).toEqual({ [toolingFile]: 60 });
     expect(loader.readCompactWorkerTimings()).toEqual(data.compactWorkerTimings);
     vi.stubEnv("OPENCLAW_CI_TEST_TIMINGS", "0");
     expect(loader.readUiE2eFileTimings()).toEqual({ fileSeconds: {}, perFileOverheadSeconds: 0 });
     expect(loader.readRepoE2eFileTimings()).toEqual({});
     expect(loader.readCompactGroupTimings("blacksmith")).toEqual({});
     expect(loader.readCompactGroupTimings("github")).toEqual({});
+    expect(loader.readToolingFileTimings("blacksmith")).toEqual({});
+    expect(loader.readToolingFileTimings("github")).toEqual({});
     expect(loader.readCompactWorkerTimings()).toEqual([]);
     vi.stubEnv("OPENCLAW_CI_TEST_TIMINGS", undefined);
     expect(loader.readCompactGroupTimings("github")).toEqual({ group: 181 });
