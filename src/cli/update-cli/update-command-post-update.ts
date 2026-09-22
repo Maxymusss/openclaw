@@ -16,6 +16,7 @@ import { convergeUpdatePlugins } from "./update-command-convergence.js";
 import { verifyUpdateFailureRecovery } from "./update-command-failure-recovery.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
 import { parkForegroundUpdateForActivation } from "./update-command-handoff.js";
+import { updateCommandLedgerOptions } from "./update-command-ledger.js";
 import { appendPluginUpdateWarnings } from "./update-command-plugins-internals.js";
 import {
   completePostUpdateMaintenance,
@@ -217,7 +218,7 @@ export async function finishUpdate(
           detail:
             "No retained previous package transaction is available; automatic package restoration was not attempted.",
         },
-        { env: params.opts.run.env },
+        updateCommandLedgerOptions(params.opts.run),
       );
     }
     if (isUpdateGatewayReadinessPending(result)) {

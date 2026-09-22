@@ -52,6 +52,7 @@ import { printResult } from "./progress.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 import type { UpdateConfigSnapshot } from "./update-command-config-snapshot.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
+import { updateCommandLedgerOptions } from "./update-command-ledger.js";
 import type { OwnedManagedUpdateContext } from "./update-command-managed-context.js";
 import type {
   OriginalManagedServiceRuntime,
@@ -71,7 +72,7 @@ export function failUpdateCommandRun(
     );
     return undefined;
   }
-  const options = { env: run.env };
+  const options = updateCommandLedgerOptions(run);
   // Recovery owns failure/outcome publication; outer unwind must not rewrite a
   // database whose exact contents may still be needed to reconcile restoration.
   if (loadUpdateRecovery(run.runId, options)) {
@@ -163,7 +164,11 @@ export function recordServiceReconciliationWarnings(
   if (run) {
     try {
       for (const row of updateRunStepsFromResultStep(step)) {
-        recordUpdateRunStep(run.runId, { ...row, endedAtMs: Date.now() }, { env: run.env });
+        recordUpdateRunStep(
+          run.runId,
+          { ...row, endedAtMs: Date.now() },
+          updateCommandLedgerOptions(run),
+        );
       }
     } catch {
       assertCurrent();
@@ -617,7 +622,12 @@ export function recordUpdateResultNextAction(
     env: run?.env ?? params.ownedManagedUpdateEnv ?? process.env,
   });
   if (run && active?.status === "running" && active.origin.nextAction !== nextAction) {
-    recordUpdateRunPhase(run.runId, active.phase, { origin: { nextAction } }, { env: run.env });
+    recordUpdateRunPhase(
+      run.runId,
+      active.phase,
+      { origin: { nextAction } },
+      updateCommandLedgerOptions(run),
+    );
   }
   return nextAction;
 }

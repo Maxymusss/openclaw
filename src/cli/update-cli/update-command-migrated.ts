@@ -225,6 +225,7 @@ export async function continueMigratedUpdateInFreshProcess(
       requesterAuthority,
       executorFence,
       freebsdWriteAdmission: _admission,
+      ledgerAdmission: _ledger,
       ...runIdentity
     } = run;
     const input: MigratedUpdateFinalizationInput = {

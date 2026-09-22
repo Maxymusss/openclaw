@@ -73,6 +73,7 @@ async function assertOwnedSignal(
     `
     import fs from 'node:fs';
     import assert from 'node:assert/strict';
+    import { DatabaseSync } from 'node:sqlite';
     import { createHash } from 'node:crypto';
     import { once } from 'node:events';
     import { createUpdateRun, finishUpdateRun, getUpdateRun, recordUpdateRunPhase } from ${JSON.stringify(resolveRuntimeWorkerUrl(triageTestRuntimeEntrypoints.updateRunLedger).href)};
@@ -161,6 +162,15 @@ async function assertOwnedSignal(
           const hash = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
           const selectedBefore = hash(pathname);
           const originalBefore = hash(displaced);
+          // Read logical rows through WAL too; main-file hashes alone miss SQLite writes.
+          const rows = (file) => {
+            const db = new DatabaseSync(file, {readOnly:true});
+            try { return db.prepare('SELECT * FROM update_runs ORDER BY run_id').all(); }
+            finally { db.close(); }
+          };
+          const originalRows = rows(displaced);
+          const selectedRows = rows(pathname);
+          assert.deepEqual(originalRows, selectedRows);
           const marker = root + '/state/.openclaw-restore-signal-fixture';
           if (mode === 'preview-refusal-drain') fs.mkdirSync(marker);
           if (mode === 'heartbeat-first-refusal') {
@@ -178,6 +188,8 @@ async function assertOwnedSignal(
             assert.equal(admission.canWrite, false);
             assert.equal(hash(pathname), selectedBefore);
             assert.equal(hash(displaced), originalBefore);
+            assert.deepEqual(rows(pathname), selectedRows);
+            assert.deepEqual(rows(displaced), originalRows);
           }
           registerSignalExitBarrier(async () => {
             // Mutable signal entry follows its synchronous guard even when latching regresses.
@@ -209,6 +221,8 @@ async function assertOwnedSignal(
             assert.equal(admission.canWrite,false);
             assert.equal(hash(pathname),originalBefore);
             assert.equal(hash(replacement),selectedBefore);
+            assert.deepEqual(rows(pathname),originalRows);
+            assert.deepEqual(rows(replacement),selectedRows);
             process.send({kind:'refusal-drain',message:first.message,canWrite:admission.canWrite,firstStable:admission.failure===first,originalUnchanged:true,selectedUnchanged:true,published});
             } finally { await release; }
           });

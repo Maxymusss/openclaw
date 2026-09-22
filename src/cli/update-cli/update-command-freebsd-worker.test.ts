@@ -12,6 +12,7 @@ import * as childCommands from "../../process/exec.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
+import { admitUpdateCommandLedger } from "./update-command-ledger.js";
 import { continueMigratedUpdateInFreshProcess } from "./update-command-migrated.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -70,6 +71,7 @@ it.skipIf(!nativeFreeBsd).each(["api origin", "campaign origin"])(
             expect(JSON.parse(options.input).params.opts.run).not.toHaveProperty(
               "freebsdWriteAdmission",
             );
+            expect(JSON.parse(options.input).params.opts.run).not.toHaveProperty("ledgerAdmission");
             receipts.push(child);
           }
           return child;
@@ -77,6 +79,8 @@ it.skipIf(!nativeFreeBsd).each(["api origin", "campaign origin"])(
       );
       await withUpdateCommandExecutor(created.runId, async (executor) => {
         const executorFence = await executor.enter(root);
+        const run = { runId: created.runId, env, executorFence, freebsdWriteAdmission: admission };
+        admitUpdateCommandLedger(run);
         await expect(
           continueMigratedUpdateInFreshProcess(
             {
@@ -100,7 +104,7 @@ it.skipIf(!nativeFreeBsd).each(["api origin", "campaign origin"])(
               opts: {
                 json: true,
                 restart: true,
-                run: { runId: created.runId, env, executorFence, freebsdWriteAdmission: admission },
+                run,
               },
               ownedManagedUpdateEnv: env,
               controlPlaneUpdateSentinelMeta: null,
@@ -171,6 +175,7 @@ it.skipIf(!nativeFreeBsd).each([
             expect(JSON.parse(options.input).params.opts.run).not.toHaveProperty(
               "freebsdWriteAdmission",
             );
+            expect(JSON.parse(options.input).params.opts.run).not.toHaveProperty("ledgerAdmission");
             receipts.push(child);
           }
           return child;
@@ -185,6 +190,8 @@ it.skipIf(!nativeFreeBsd).each([
       };
       await withUpdateCommandExecutor(created.runId, async (executor) => {
         const executorFence = await executor.enter(root);
+        const run = { runId: created.runId, env, executorFence, freebsdWriteAdmission: admission };
+        admitUpdateCommandLedger(run);
         // A successful helper return requires the actual candidate worker's
         // terminal run identity, delegated authority, and settled child receipt.
         const completed = await continueMigratedUpdateInFreshProcess(
@@ -203,7 +210,7 @@ it.skipIf(!nativeFreeBsd).each([
               json: true,
               restart,
               timeout,
-              run: { runId: created.runId, env, executorFence, freebsdWriteAdmission: admission },
+              run,
             },
             ownedManagedUpdateEnv: env,
             controlPlaneUpdateSentinelMeta: null,

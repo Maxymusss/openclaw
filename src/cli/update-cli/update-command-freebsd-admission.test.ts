@@ -12,6 +12,7 @@ import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { createUpdateCommandAuthority } from "./update-command-authority.js";
 import { createUpdateCommandExecutionGuards } from "./update-command-execution-guards.js";
+import { admitUpdateCommandLedger } from "./update-command-ledger.js";
 import {
   failUpdateCommandRun,
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
@@ -67,6 +68,7 @@ it.each([
         isCurrent: () => requesterCurrent,
       },
     };
+    admitUpdateCommandLedger(run);
     const opts: UpdateCommandOptions = { run };
     const finalizer = createUpdateCommandAuthority({ opts });
     const guards =

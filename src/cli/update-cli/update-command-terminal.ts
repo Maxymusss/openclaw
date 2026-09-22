@@ -20,6 +20,7 @@ import { printResult } from "./progress.js";
 import { parseUpdateTimeoutMs, type UpdateCommandOptions } from "./shared.js";
 import { UpdateActivationTimeoutError } from "./update-command-activation.js";
 import type { FinishUpdateParams } from "./update-command-finish-types.js";
+import { updateCommandLedgerOptions } from "./update-command-ledger.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 import {
   recordUpdateResultNextAction,
@@ -436,7 +437,7 @@ async function publishPreMutationUpdateOutcome(
         origin: { nextAction: params.message },
         ...(params.installKind !== "unknown" ? { target: { kind: params.installKind } } : {}),
       },
-      { env: run.env },
+      updateCommandLedgerOptions(run),
     );
   }
   const outcome = await prepareOutcome();

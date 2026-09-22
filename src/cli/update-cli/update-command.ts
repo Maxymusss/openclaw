@@ -22,6 +22,7 @@ import {
   withUpdateCommandExecutor,
 } from "./update-command-executor.js";
 import type { InitializedUpdate } from "./update-command-initialization.js";
+import { updateCommandLedgerOptions } from "./update-command-ledger.js";
 import { admitUpdateRequesterContinuation } from "./update-command-managed-context.js";
 import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
 import { UpdateCommandFailure, withUpdateAdmissionReporting } from "./update-command-result.js";
@@ -290,7 +291,7 @@ async function updateCommandInternal(
       },
       before: { version: currentVersion ?? VERSION },
     },
-    { env: run.env },
+    updateCommandLedgerOptions(run),
   );
   const schemaPreflight = await preflightUpdateCommandSchemas({
     ...target,
@@ -306,7 +307,11 @@ async function updateCommandInternal(
   }
 
   if (opts.dryRun) {
-    finishUpdateRun(run.runId, { status: "skipped", reason: "dry-run" }, { env: run.env });
+    finishUpdateRun(
+      run.runId,
+      { status: "skipped", reason: "dry-run" },
+      updateCommandLedgerOptions(run),
+    );
     return await previewUpdateCommand({
       target,
       prepared,
