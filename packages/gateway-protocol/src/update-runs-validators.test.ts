@@ -78,7 +78,12 @@ describe("update run wire contract", () => {
               verdict: "admit",
               reasons: [],
               warnings: [{ code: "missing-load-path", message: "Missing custom path." }],
-              facts: { candidateVersion: "2026.9.5", installedVersion: "2026.9.4", checks },
+              facts: {
+                candidateVersion: "2026.9.5",
+                installedVersion: "2026.9.4",
+                nodeEngines: ">=24.16.0",
+                checks,
+              },
             }
           : undefined;
       const record = LedgerRecordSchema.parse({
@@ -96,6 +101,31 @@ describe("update run wire contract", () => {
       ).toBe(true);
     },
   );
+
+  it("rejects non-string candidate Node engine facts", () => {
+    const record = {
+      ...run,
+      origin: {
+        ...run.origin,
+        candidateAdmission: {
+          protocol: 1,
+          verdict: "admit",
+          reasons: [],
+          warnings: [],
+          facts: {
+            candidateVersion: "2026.9.5",
+            installedVersion: "2026.9.4",
+            nodeEngines: 24,
+            checks: [],
+          },
+        },
+      },
+    };
+    expect(validateUpdateRunRecord(record)).toBe(false);
+    expect(
+      validateUpdateStatusResult({ sentinel: null, updateAvailable: null, lastRun: record }),
+    ).toBe(false);
+  });
 
   it("carries a bounded failing check through history responses", () => {
     const fact = {

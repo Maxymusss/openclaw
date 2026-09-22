@@ -56,6 +56,7 @@ const candidateAdmission = closedObject({
   facts: closedObject({
     candidateVersion: text,
     installedVersion: Type.Union([text, Type.Null()]),
+    nodeEngines: Type.Optional(text),
     checks: admissionChecks,
   }),
 });
