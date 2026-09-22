@@ -55,7 +55,9 @@ function prepareProviderReader(
     resolveRuntimeAuthProfileLoadOptions: (loadOptions) =>
       options.unbound ? loadOptions : { ...loadOptions, inheritedAuthDir: inheritedDir },
     loadAuthProfileStoreForAgent: (_dir, _options, _env, rows) => {
-      if (!rows) throw new Error("selection metadata requires prepared rows");
+      if (!rows) {
+        throw new Error("selection metadata requires prepared rows");
+      }
       return storeView(
         sqliteRead.loadPersistedAuthProfileStoreFromRows(rows, "fixture-owner") ?? {
           version: 1,
@@ -272,14 +274,20 @@ it.each(["selected", "inherited", "invalidated", "cleanup"] as const)(
   async (failure) => {
     const { agentDir, runtime } = prepareProviderReader({ inherited: true });
     const error = new Error(`fixture ${failure} refusal`);
-    if (failure === "selected") reader.read.mockRejectedValueOnce(error);
-    if (failure === "inherited")
+    if (failure === "selected") {
+      reader.read.mockRejectedValueOnce(error);
+    }
+    if (failure === "inherited") {
       reader.read.mockResolvedValueOnce(providerRows(undefined)).mockRejectedValueOnce(error);
-    if (failure === "invalidated")
+    }
+    if (failure === "invalidated") {
       reader.assertCurrent.mockImplementation(() => {
         throw error;
       });
-    if (failure === "cleanup") reader.dispose.mockRejectedValueOnce(error);
+    }
+    if (failure === "cleanup") {
+      reader.dispose.mockRejectedValueOnce(error);
+    }
     await expect(
       runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }),
     ).rejects.toBe(error);
@@ -291,7 +299,7 @@ it("keeps cached credentials and selection state separate from mutable runtime v
   const root = tempDirs.make("openclaw-auth-cached-mutation-");
   const localDir = path.join(root, "agents/worker/agent");
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
-  const persisted: AuthProfileStore = {
+  const persistedStore: AuthProfileStore = {
     version: 1,
     profiles: {
       "custom:key": {
@@ -327,12 +335,12 @@ it("keeps cached credentials and selection state separate from mutable runtime v
   };
   reader.assertCurrent.mockReset();
   reader.read.mockReset().mockResolvedValue({
-    store: { status: "readable", raw: persisted },
+    store: { status: "readable", raw: persistedStore },
     state: { status: "readable", raw: state },
     cacheable: true,
   });
   const overlay = vi.fn((store: AuthProfileStore) => {
-    expect(store.profiles).toEqual(persisted.profiles);
+    expect(store.profiles).toEqual(persistedStore.profiles);
     const key = store.profiles["custom:key"];
     const token = store.profiles["custom:token"];
     const oauth = store.profiles["custom:oauth"];

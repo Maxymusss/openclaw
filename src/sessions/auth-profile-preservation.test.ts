@@ -130,15 +130,27 @@ describe("shouldPreserveSessionAuthProfileOverride", () => {
             throw new Error("provider preparation completed before its read barrier");
           }),
         ]);
-        if (change === "pin") selected.authProfileOverride = "openai:new";
-        if (change === "source") selected.authProfileOverrideSource = "auto";
-        if (change === "compaction") selected.authProfileOverrideCompactionCount = 2;
-        if (change === "session") selected.sessionId = "replacement-session";
-        if (change === "row")
+        if (change === "pin") {
+          selected.authProfileOverride = "openai:new";
+        }
+        if (change === "source") {
+          selected.authProfileOverrideSource = "auto";
+        }
+        if (change === "compaction") {
+          selected.authProfileOverrideCompactionCount = 2;
+        }
+        if (change === "session") {
+          selected.sessionId = "replacement-session";
+        }
+        if (change === "row") {
           sessionStore.selected = { ...selected, authProfileOverride: "openai:new" };
-        if (change === "distinct-row-pin") sessionStore.selected.authProfileOverride = "openai:new";
-        if (change === "distinct-row-source")
+        }
+        if (change === "distinct-row-pin") {
+          sessionStore.selected.authProfileOverride = "openai:new";
+        }
+        if (change === "distinct-row-source") {
           sessionStore.selected.authProfileOverrideSource = "auto";
+        }
         const before = { entry: { ...selected }, row: { ...sessionStore.selected } };
         read.resolve({ profileId: entry.authProfileOverride, provider: "openai" });
         await expect(preparing).rejects.toThrow("Session auth profile changed");

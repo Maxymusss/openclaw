@@ -537,7 +537,7 @@ export function createAuthProfileStoreRuntimeReader({
         readStore: () => loadPersistedAuthProfileStoreFromRows(rows, databasePath),
       });
     };
-    const readPreparedProfile = (databasePath: string, profileId: string) => {
+    const readPreparedProfile = (databasePath: string, requestedProfileId: string) => {
       const prepared = stores.get(databasePath);
       const owner = readOwners.get(databasePath);
       if (!prepared) {
@@ -549,7 +549,7 @@ export function createAuthProfileStoreRuntimeReader({
       if (!owner) {
         throw new Error("Auth profile selection changed its prepared database owner");
       }
-      return { store: prepared.value, credential: owner.readStore()?.profiles[profileId] };
+      return { store: prepared.value, credential: owner.readStore()?.profiles[requestedProfileId] };
     };
     const assertReadOwnersCurrent = (paths: readonly string[]) => {
       for (const databasePath of paths) {
