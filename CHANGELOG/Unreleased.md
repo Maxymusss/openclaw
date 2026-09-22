@@ -2,7 +2,6 @@
 
 ### Fixes
 
-- Plugins: avoid repeated package-owner scans when resolving captured modules while preserving package boundaries, captured source bytes, and generation disposal.
 - Codex: restore background memory narratives and isolated text completions on agent-scoped local runtimes with administrator-managed hooks, preserving managed hooks and existing native-account/proxy routing while keeping ordinary hooks and model tools isolated. (#151658)
 - Sandboxes: honor each registered runtime owner's pruning policy so a stricter agent cannot evict another agent's containers or browser bridges.
 
