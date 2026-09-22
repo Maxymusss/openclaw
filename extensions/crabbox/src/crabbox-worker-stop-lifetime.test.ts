@@ -29,6 +29,22 @@ const HELD_STOP = `
 `;
 
 describe("Crabbox stop lifetime", () => {
+  it("accepts provider-confirmed absence for the exact stopped lease", async () => {
+    const runCommand = vi.fn(async () =>
+      commandResult({ code: 4, stderr: `lease/server not found: ${LEASE_ID}` }),
+    );
+
+    await expect(
+      stopCrabboxLease({
+        binary: "crabbox",
+        id: LEASE_ID,
+        provider: "azure",
+        runCommand,
+      }),
+    ).resolves.toBeUndefined();
+    expect(runCommand).toHaveBeenCalledOnce();
+  });
+
   it.each(["destroy", "dispose", "inspection loss"] as const)(
     "retains heartbeat custody through %s and later disposal",
     async (entrance) => {

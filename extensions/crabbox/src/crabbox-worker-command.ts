@@ -89,5 +89,11 @@ export async function stopCrabboxLease(params: {
   if (result.termination === "exit" && result.code === 0) {
     return;
   }
+  // The stop owner has already resolved one exact lease. A provider-confirmed
+  // absence is the terminal cleanup result needed after an interrupted creator
+  // loses its local claim but the remote resource is deleted independently.
+  if (result.termination === "exit" && isUnrecognizedLease(result, params.id)) {
+    return;
+  }
   throw crabboxCommandError("stop", result);
 }
