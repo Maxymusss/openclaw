@@ -12,7 +12,6 @@ import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.type
 import { replyRunRegistry } from "../auto-reply/reply/reply-run-registry.js";
 import { loadSessionEntry, updateSessionEntry } from "../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
-import * as sessionSharingWrites from "../config/sessions/session-sharing-store.async.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import {
   claimAgentRunContext,
@@ -33,6 +32,7 @@ import {
 } from "../sessions/session-lifecycle-admission.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
+import { waitForFast } from "./client.test-support.js";
 import * as sessionLifecycleState from "./session-lifecycle-state.js";
 import { removeChatTestDirectory as removeTempDir } from "./session-test-directories.test-support.js";
 import {
@@ -51,6 +51,7 @@ import {
 } from "./test-helpers.js";
 import { agentCommandMock } from "./test-helpers.runtime-state.js";
 import { installConnectedControlUiServerSuite } from "./test-with-server.js";
+import { withNextSessionParticipantWrite } from "./test/server-sessions-resources.test-helpers.js";
 
 function createGatewayHistoryText(role: "user" | "assistant", text: unknown, timestamp: number) {
   return { role, content: [{ type: "text", text }], timestamp };
@@ -92,13 +93,6 @@ function hasGatewayHistoryMessageToolMirror(message: unknown) {
 
 installGatewayTestHooks({ scope: "suite" });
 const CHAT_RESPONSE_TIMEOUT_MS = 10_000;
-
-function waitForFast<T>(
-  callback: () => T | Promise<T>,
-  options: { timeout?: number; interval?: number } = {},
-) {
-  return vi.waitFor(callback, { interval: 1, ...options });
-}
 
 let ws: WebSocket;
 let port: number;
@@ -1195,25 +1189,7 @@ describe("gateway server chat", () => {
       });
 
       vi.mocked(agentCommandMock).mockClear();
-      const participantSettled = createDeferred();
-      const recordParticipant = sessionSharingWrites.recordSessionParticipantInWorker;
-      let participantWrite: ReturnType<typeof recordParticipant> | undefined;
-      const participantSpy = vi
-        .spyOn(sessionSharingWrites, "recordSessionParticipantInWorker")
-        .mockImplementationOnce((...args) => {
-          try {
-            participantWrite = recordParticipant(...args);
-            void participantWrite.then(
-              () => participantSettled.resolve(),
-              () => participantSettled.resolve(),
-            );
-            return participantWrite;
-          } catch (error) {
-            participantSettled.resolve();
-            throw error;
-          }
-        });
-      try {
+      await withNextSessionParticipantWrite(async () => {
         const agentAllowedRes = await rpcReq(ws, "agent", {
           sessionKey: "cron:job-1",
           message: "hi",
@@ -1223,13 +1199,8 @@ describe("gateway server chat", () => {
         expect(agentAllowedRes.payload?.status).toBe("accepted");
         expect(agentAllowedRes.payload?.runId).toBe("idem-2");
         await waitForFast(() => expect(agentCommandMock).toHaveBeenCalled());
-        // Acceptance leaves participant persistence owned by the request root.
-        await participantSettled.promise;
-        await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
-      } finally {
-        await Promise.allSettled(participantWrite ? [participantWrite] : []);
-        participantSpy.mockRestore();
-      }
+      });
+      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
 
       testState.sessionStorePath = undefined;
       testState.sessionConfig = undefined;

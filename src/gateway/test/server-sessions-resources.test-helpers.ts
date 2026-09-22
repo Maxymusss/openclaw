@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, vi } from "vitest";
-import { withTestTimeout } from "../../../test/helpers/promise.js";
+import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
 import { createTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { getRuntimeConfig } from "../../config/config.js";
@@ -92,6 +92,36 @@ export async function releaseGatewaySessionStoreFixture(dir: string) {
       SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
       `Timed out closing shared-state fixture database ${JSON.stringify(databasePath)} after ${SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS}ms; retaining fixture directory ${JSON.stringify(dir)}`,
     );
+  }
+}
+
+/** Join the real participant write left behind by an accepted fixture request. */
+export async function withNextSessionParticipantWrite(run: () => Promise<void>): Promise<void> {
+  const sessionSharingWrites = await import("../../config/sessions/session-sharing-store.async.js");
+  const settled = createDeferred();
+  const recordParticipant = sessionSharingWrites.recordSessionParticipantInWorker;
+  let participantWrite: ReturnType<typeof recordParticipant> | undefined;
+  const spy = vi
+    .spyOn(sessionSharingWrites, "recordSessionParticipantInWorker")
+    .mockImplementationOnce((...args) => {
+      try {
+        participantWrite = recordParticipant(...args);
+        void participantWrite.then(
+          () => settled.resolve(),
+          () => settled.resolve(),
+        );
+        return participantWrite;
+      } catch (error) {
+        settled.resolve();
+        throw error;
+      }
+    });
+  try {
+    await run();
+    await settled.promise;
+  } finally {
+    await Promise.allSettled(participantWrite ? [participantWrite] : []);
+    spy.mockRestore();
   }
 }
 
