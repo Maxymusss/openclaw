@@ -265,8 +265,8 @@ struct NativeActionRouterTests {
         defer { router.unregisterPresentation(currentRoot) }
         var presentation: RootTabs.SidebarPagesPresentation?
         let storage = Binding(get: { presentation }, set: { presentation = $0 })
-        let admit = { router.userNavigationDidChange(presentationID: root) }
-        let isCurrentRoot = { router.capturePresentationAuthority(root) != nil }
+        let admit: @MainActor @Sendable () -> Bool = { router.userNavigationDidChange(presentationID: root) }
+        let isCurrentRoot: @MainActor @Sendable () -> Bool = { router.capturePresentationAuthority(root) != nil }
         let beforeOpening = try #require(router.capturePresentationAuthority(root))
         let receipt = RootTabs.SidebarPagesPresentation()
         RootTabs.matchedModalBinding(storage, admit: admit).wrappedValue = receipt
@@ -1964,13 +1964,15 @@ struct NativeActionRouterTests {
             #expect(host.binding == nil)
             var parentSession = OpenClawChatSessionEntry.placeholder(key: "global")
             parentSession.agentId = "main"
-            let captured = try #require(PreparedChatNavigation.capture(
+            // Capture before #require so its macro preserves the actor-isolated callback types.
+            let navigation = PreparedChatNavigation.capture(
                 appModel: host.model, router: host.router, presentationID: root,
                 session: parentSession, isCurrentContext: { true },
                 currentNativeBinding: { host.binding }, open: { target in
                     host.model.focusChatSession(target)
                     host.model.openChat(sessionKey: target.sessionKey)
-                }))
+                })
+            let captured = try #require(navigation)
             let entered = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
             let release = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
             let forkReturned = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
