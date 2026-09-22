@@ -323,7 +323,7 @@ describe("diagnostic Gateway readiness", () => {
         readRuntime.mockRejectedValueOnce(error);
       } else {
         isAbsent.mockResolvedValue(true);
-        readActiveGatewayLockIdentity.mockResolvedValueOnce(undefined).mockRejectedValue(error);
+        readActiveGatewayLockIdentity.mockResolvedValueOnce(undefined).mockRejectedValueOnce(error);
       }
 
       await expect(
