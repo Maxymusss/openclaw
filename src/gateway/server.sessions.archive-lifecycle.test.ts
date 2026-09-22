@@ -108,14 +108,13 @@ function activeRunContext(params: {
       },
     );
   });
-  const chatRunState = createChatRunState();
   return {
     context: {
       agentRunSeq: new Map([[params.runId, 0]]),
       broadcast: vi.fn(),
       cancelRunBoundApprovals: vi.fn(),
       chatAbortControllers,
-      chatRunState,
+      chatRunState: createChatRunState(),
       logGateway: { warn: vi.fn() },
       nodeSendToSession: vi.fn(),
       removeChatRun: vi.fn(() => ({
@@ -164,6 +163,7 @@ function workerPlacement(params: {
     sessionKey: params.sessionKey,
     agentId: "main",
     state: params.state,
+    executionMode: "worker-turn",
     generation: 2,
     turnClaim: null,
     createdAtMs: 1,
@@ -177,6 +177,8 @@ function workerPlacement(params: {
     lastTranscriptAckCursor: null,
     lastLiveEventAckCursor: null,
     recoveryError: null,
+    terminalReason: null,
+    terminalAtMs: null,
   };
 }
 
@@ -239,12 +241,11 @@ async function invokeArchiveHandler(params: {
   sessionKey: string;
   expectedSessionId: string;
 }): Promise<LifecycleHandlerResponse> {
-  const handlers = await getSessionsHandlers();
   let response: LifecycleHandlerResponse | undefined;
   const respond: RespondFn = (ok, payload, error) => {
     response = { ok, payload, error };
   };
-  await handlers["sessions.patch"]?.({
+  await (await getSessionsHandlers())["sessions.patch"]?.({
     req: {} as never,
     params: archivePatch(params.sessionKey, params.expectedSessionId),
     client: params.client,
@@ -265,12 +266,11 @@ async function invokeVisibilityHandler(params: {
   sessionKey: string;
   visibility: "draft" | "shared";
 }): Promise<LifecycleHandlerResponse> {
-  const handlers = await getSessionsHandlers();
   let response: LifecycleHandlerResponse | undefined;
   const respond: RespondFn = (ok, payload, error) => {
     response = { ok, payload, error };
   };
-  await handlers["session.visibility.set"]?.({
+  await (await getSessionsHandlers())["session.visibility.set"]?.({
     params: { sessionKey: params.sessionKey, visibility: params.visibility },
     client: params.client,
     context: params.context,
