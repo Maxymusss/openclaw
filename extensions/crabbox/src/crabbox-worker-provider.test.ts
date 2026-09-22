@@ -517,6 +517,11 @@ describe("Crabbox worker provider", () => {
         expect(warmup).not.toContain("--target");
         expect(warmup).not.toContain("--windows-mode");
       }
+      if (resolved === undefined || resolved === "linux") {
+        expect(warmup).toContain("--code");
+      } else {
+        expect(warmup).not.toContain("--code");
+      }
     },
   );
 

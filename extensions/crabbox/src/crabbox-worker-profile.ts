@@ -394,6 +394,9 @@ export function buildCrabboxAllocationArgs(
     "--network",
     "public",
     "--tailscale=false",
+    // OpenClaw enrolls a Node host after allocation. Crabbox's Linux code
+    // bootstrap owns the pinned Node toolchain and its idempotent installer.
+    ...(profile.target === "linux" ? ["--code"] : []),
     ...(profile.class ? ["--class", profile.class] : []),
     ...(profile.target === "windows/wsl2" ? ["--target", "windows", "--windows-mode", "wsl2"] : []),
     ...(profile.target === "windows/normal"
