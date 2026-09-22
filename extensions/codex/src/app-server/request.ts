@@ -13,10 +13,11 @@ import type {
   CodexGetAccountResponse,
   JsonValue,
 } from "./protocol.js";
-import type {
-  CodexControlRequestFailureCategory,
-  CodexControlRequestObservation,
-  CodexControlRequestPhase,
+import {
+  observeCodexClientStartup,
+  type CodexControlRequestFailureCategory,
+  type CodexControlRequestObservation,
+  type CodexControlRequestPhase,
 } from "./request-observation.js";
 import { CodexAppServerRpcError } from "./rpc-error.js";
 import type { CodexAppServerClientOptions } from "./shared-client.js";
@@ -368,6 +369,17 @@ export async function withCodexAppServerJsonClient<T>(
             config: params.config,
             abandonSignal: timeoutController.signal,
             assertCurrent: params.assertCurrent,
+            ...(params.controlObservation?.startup
+              ? {
+                  startupObservation: params.controlObservation.startup,
+                  onStartedClient: (client: CodexAppServerClient) =>
+                    observeCodexClientStartup(
+                      params.controlObservation?.startup,
+                      "registered-client-observed",
+                      client,
+                    ),
+                }
+              : {}),
           };
           activePhase = "acquire-client";
           observeControlPhase(params.controlObservation, activePhase);

@@ -138,6 +138,7 @@ export function createCodexAppServerModelCatalog(runtime: string) {
       let observedRecords = 0;
       let clientInstanceId: string | null = null;
       let transportPid: number | null = null;
+      let acquisitionOrdinal = 0;
       let requestOrdinal = 0;
       let activeMethod: string | null = null;
       const record = (event: string, fields: Record<string, string | number | null> = {}) => {
@@ -151,6 +152,7 @@ export function createCodexAppServerModelCatalog(runtime: string) {
             event,
             clientInstanceId,
             transportPid,
+            acquisitionOrdinal,
             requestOrdinal,
             activeMethod,
             ...fields,
@@ -166,6 +168,7 @@ export function createCodexAppServerModelCatalog(runtime: string) {
         ? {
             phase(phase) {
               if (phase === "acquire-client") {
+                acquisitionOrdinal += 1;
                 clientInstanceId = null;
                 transportPid = null;
               }
@@ -173,6 +176,13 @@ export function createCodexAppServerModelCatalog(runtime: string) {
             },
             failed({ phase, category }) {
               record("failure", { phase, category });
+            },
+            startup(event) {
+              if (event.boundary === "registered-client-observed") {
+                clientInstanceId = event.clientInstanceId;
+                transportPid = event.transportPid;
+              }
+              record("startup", { boundary: event.boundary });
             },
           }
         : undefined;

@@ -399,7 +399,7 @@ describe("Codex auth product proof", () => {
       instance = await createOpenClawTestInstance({
         name: "qa-codex-missing-auth-profile",
         env: {
-          OPENCLAW_DIAGNOSTICS: "codex.model-catalog",
+          OPENCLAW_DIAGNOSTICS: "codex.model-catalog,model.runtime-choice",
           OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
           OPENCLAW_QA_CODEX_APP_SERVER_VERSION: CODEX_APP_SERVER_VERSION,
           OPENCLAW_SKIP_PROVIDERS: undefined,

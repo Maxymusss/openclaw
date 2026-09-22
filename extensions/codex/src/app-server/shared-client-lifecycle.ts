@@ -1,5 +1,6 @@
 /** Client ownership and synchronous retirement, independent of startup/auth execution. */
 import { defineCodexBuildState } from "../build-state.js";
+import { CodexAppServerStartupError } from "./attempt-timeouts.js";
 import type { CodexAppServerClient } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import type { CodexDesktopGeneration } from "./desktop-generation-owner.js";
@@ -176,4 +177,25 @@ export function closeRetiredSharedClientEntry(entry: SharedCodexAppServerClientE
   entry.client = undefined;
   client.close();
   return true;
+}
+
+export function ownCodexStartup<T>(
+  lifetime: CodexAppServerStartupLifetime,
+  operation: Promise<T>,
+): Promise<T> {
+  lifetime.pending.add(operation);
+  const release = () => lifetime.pending.delete(operation);
+  void operation.then(release, release);
+  return operation;
+}
+
+export function resolveRemainingAcquireTimeout(timeoutMs: number, startedAt: number): number {
+  if (!(timeoutMs > 0)) {
+    return timeoutMs;
+  }
+  const remaining = timeoutMs - (performance.now() - startedAt);
+  if (remaining <= 0) {
+    throw new CodexAppServerStartupError("timed_out", "codex app-server initialize timed out");
+  }
+  return remaining;
 }

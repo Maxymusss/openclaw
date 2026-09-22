@@ -40,6 +40,14 @@ import { isPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalo
 import { resolveProviderIdForAuth } from "./provider-auth-aliases.js";
 import { resolveDefaultAgentWorkspaceDir } from "./workspace.js";
 
+export type ModelRuntimeChoiceObservation = {
+  stage: string;
+  runtimeId?: string;
+  host?: ModelAuthAvailabilityEvaluation;
+  evaluation?: ModelAuthAvailabilityEvaluation;
+  current?: boolean;
+};
+
 function listEnabledSyntheticAuthProviderRefs(
   metadataSnapshot: PluginMetadataSnapshot,
   config: OpenClawConfig,
@@ -356,8 +364,17 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
     async runtimeChoices(
       entry: ModelCatalogEntry,
       variants: readonly ModelCatalogEntry[] = [entry],
+      observer?: (event: ModelRuntimeChoiceObservation) => void,
     ): Promise<string[] | undefined> {
+      const observe = (event: ModelRuntimeChoiceObservation) => {
+        try {
+          observer?.(event);
+        } catch {
+          // A diagnostic observer must not change selection or its original failure.
+        }
+      };
       const initial = await evaluateEntry(entry, variants);
+      observe({ stage: "initial-host", host: initial });
       const selected = resolveCatalogDecisionRuntime({
         cfg: params.cfg,
         agentId: params.agentId,
@@ -386,10 +403,12 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
       for (const runtimeId of candidates) {
         const host = await evaluateEntry(entry, variants, runtimeId);
         const evaluation = evaluateNative(entry, host, runtimeId);
+        observe({ stage: "candidate-auth", runtimeId, host, evaluation });
         if (evaluation.availability === undefined) {
           unknown = true;
         }
         if (evaluation.availability !== true) {
+          observe({ stage: "candidate-auth-unavailable", runtimeId });
           continue;
         }
         const route = evaluation.selectedRoute;
@@ -403,13 +422,16 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
           requestTransportOverrides: route?.requestTransportOverrides,
         });
         if (policy.forcedByEnvironment && policy.runtime !== runtimeId) {
+          observe({ stage: "candidate-forced-runtime", runtimeId });
           continue;
         }
         const compatible = evaluation.selectedRoute?.runtimePolicy?.compatibleIds;
         if (compatible && !compatible.includes(runtimeId)) {
+          observe({ stage: "candidate-route-incompatible", runtimeId });
           continue;
         }
         if (evaluation.runtimeAuth && evaluation.runtimeAuth.id !== runtimeId) {
+          observe({ stage: "candidate-native-runtime-mismatch", runtimeId });
           continue;
         }
         if (
@@ -424,6 +446,7 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
             (registration) => registration.harness.id === runtimeId,
           )?.harness;
           if (!harness) {
+            observe({ stage: "candidate-harness-unobserved", runtimeId });
             unknown ||= params.pluginRegistry === undefined;
             continue;
           }
@@ -451,12 +474,16 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
             }),
           );
           if (!supported.supported) {
+            observe({ stage: "candidate-harness-unsupported", runtimeId });
             continue;
           }
         }
         choices.push(runtimeId);
+        observe({ stage: "candidate-included", runtimeId });
       }
-      if (!isCurrent()) {
+      const current = isCurrent();
+      observe({ stage: "choices-currentness", current });
+      if (!current) {
         throw new PreparedModelRuntimePublicationSupersededError(
           "Model catalog changed while selecting runtimes",
         );

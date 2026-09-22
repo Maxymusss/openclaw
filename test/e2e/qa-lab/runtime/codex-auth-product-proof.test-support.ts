@@ -433,6 +433,8 @@ export async function captureCodexAuthFailure(params: {
                     "event",
                     "clientInstanceId",
                     "transportPid",
+                    "acquisitionOrdinal",
+                    "boundary",
                     "requestOrdinal",
                     "activeMethod",
                     "phase",
@@ -445,6 +447,76 @@ export async function captureCodexAuthFailure(params: {
         coverage: "failed catalog operations in the existing bounded Gateway log buffer",
         rpcIds: "unobserved by scoped request API",
         foregroundJoin: "unobserved",
+      };
+    });
+    const runtimeChoice = observe(() => {
+      if (logs.status !== "observed") {
+        return { status: "unobserved" as const };
+      }
+      const marker = "[model-runtime-choice-trace] ";
+      const lines = logs.value.split("\n").filter((line) => line.includes(marker));
+      return {
+        status: "observed" as const,
+        observedTraceCount: lines.length,
+        omittedTraces: Math.max(0, lines.length - 4),
+        traces: lines.slice(-4).map((line) =>
+          observe(() => {
+            const json = line.slice(line.indexOf(marker) + marker.length);
+            const trace: unknown = JSON.parse(json.slice(0, json.lastIndexOf("}") + 1));
+            const records = isRecord(trace) && Array.isArray(trace.records) ? trace.records : [];
+            return {
+              ...pick(trace, ["traceId", "observedRecords", "omittedRecords"]),
+              captureOmittedRecords: Math.max(0, records.length - 64),
+              records: records.slice(-64).map((record) => {
+                const choices: unknown = isRecord(record) ? record.choices : undefined;
+                const validChoices =
+                  Array.isArray(choices) &&
+                  choices.every((choice): choice is string => typeof choice === "string");
+                return {
+                  ...pick(record, [
+                    "sequence",
+                    "at",
+                    "stage",
+                    "runtimeId",
+                    "current",
+                    "hostObserved",
+                    "hostAvailable",
+                    "hostReason",
+                    "hostMode",
+                    "hostRuntime",
+                    "hostRequestedProfileMatches",
+                    "nativeObserved",
+                    "nativeAvailable",
+                    "nativeReason",
+                    "nativeMode",
+                    "nativeRuntime",
+                    "nativeRequestedProfileMatches",
+                    "published",
+                    "requestedProfileObserved",
+                    "requestedUserPin",
+                    "requestedRuntime",
+                    "preferredRuntime",
+                    "present",
+                    "omittedChoices",
+                    "selectedRuntime",
+                  ]),
+                  choices: validChoices ? choices.slice(0, 32) : null,
+                  choicesObservation:
+                    choices === undefined
+                      ? "absent"
+                      : choices === null
+                        ? "unobserved"
+                        : validChoices
+                          ? "observed"
+                          : "invalid",
+                  captureOmittedChoices: validChoices ? Math.max(0, choices.length - 32) : null,
+                };
+              }),
+            };
+          }),
+        ),
+        coverage:
+          "actual unavailable returns and existing evaluations only; unexecuted fields are unobserved",
       };
     });
     const primaryError = observe(() =>
@@ -493,6 +565,7 @@ export async function captureCodexAuthFailure(params: {
       requestCursor,
       fixtureRpc,
       catalogRpc,
+      runtimeChoice,
     });
     if (captured.chronology.status === "observed") {
       const value = captured.chronology.value;
