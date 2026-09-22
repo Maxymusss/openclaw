@@ -8,6 +8,7 @@ import type { GatewayNodePairingConfig } from "../config/types.gateway.js";
 import * as pairingApprovals from "../infra/device-pairing-approval.js";
 import { withDevicePairingLock } from "../infra/device-pairing-lock.js";
 import * as devicePairing from "../infra/device-pairing.js";
+import * as workAdmission from "../process/gateway-work-admission.js";
 import * as sshVerification from "./node-pairing-ssh-verify.js";
 import type {
   NodeIdentityProbeParams,
@@ -45,15 +46,31 @@ function observePairingWork() {
       return result;
     });
   const verification = vi.spyOn(sshVerification, "startNodePairingSshVerify");
+  const rootWork = vi.spyOn(workAdmission, "runWithGatewayIndependentRootWorkAdmission");
   const settle = async () => {
-    await Promise.all(
+    const outcomes: PromiseSettledResult<unknown>[] = await Promise.allSettled(
       verification.mock.results.flatMap((result) =>
         result.type === "return" && result.value ? [result.value.done] : [],
       ),
     );
-    await Promise.all(
-      approval.mock.results.flatMap((result) => (result.type === "return" ? [result.value] : [])),
+    outcomes.push(
+      ...(await Promise.allSettled(
+        approval.mock.results.flatMap((result) => (result.type === "return" ? [result.value] : [])),
+      )),
+      ...(await Promise.allSettled(
+        rootWork.mock.results.flatMap((result, index) =>
+          result.type === "return" && rootWork.mock.calls[index]?.[1] === "ws:preauth"
+            ? [result.value]
+            : [],
+        ),
+      )),
     );
+    const errors = outcomes.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (errors.length > 0) {
+      throw new AggregateError(errors, "SSH pairing work failed");
+    }
   };
   return {
     approval,
@@ -64,6 +81,7 @@ function observePairingWork() {
       try {
         await settle();
       } finally {
+        rootWork.mockRestore();
         verification.mockRestore();
         approval.mockRestore();
       }
@@ -212,6 +230,7 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
                   return pendingSnapshot;
                 })
               : undefined;
+          let bodyFailure: { error: unknown } | undefined;
           try {
             const first = await connectNode();
             expect(probeMock).toHaveBeenCalledOnce();
@@ -221,6 +240,14 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
               expect(details?.recommendedNextStep).toBe("wait_then_retry");
               expect(details?.pauseReconnect).toBe(false);
               expect(await devicePairing.getPairedDevice(loaded.identity.deviceId)).toBeNull();
+              expect((await devicePairing.listDevicePairing()).pending).toEqual(
+                expect.arrayContaining([
+                  expect.objectContaining({
+                    deviceId: loaded.identity.deviceId,
+                    publicKey: loaded.publicKey,
+                  }),
+                ]),
+              );
               probe.resolve(matched);
             } else {
               expect(reread).toHaveBeenCalledOnce();
@@ -240,10 +267,27 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
             const record = await devicePairing.getPairedDevice(loaded.identity.deviceId);
             expect(record?.nodeSurface).toBeDefined();
             expect(record?.pendingNodeSurface).toBeUndefined();
-          } finally {
-            probe.resolve({ status: "timeout" });
-            reread?.mockRestore();
+          } catch (error) {
+            bodyFailure = { error };
+          }
+          // Release a failed assertion's probe and join the real approval tail
+          // before the next case resets configuration or pairing state.
+          probe.resolve({ status: "timeout" });
+          reread?.mockRestore();
+          try {
             await work.close();
+          } catch (cleanupError) {
+            if (bodyFailure) {
+              throw new AggregateError(
+                [bodyFailure.error, cleanupError],
+                "SSH pairing fixture and cleanup failed",
+                { cause: cleanupError },
+              );
+            }
+            throw cleanupError;
+          }
+          if (bodyFailure) {
+            throw bodyFailure.error;
           }
         },
       });
