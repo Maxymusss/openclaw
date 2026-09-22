@@ -28,7 +28,7 @@ import {
   resolveUiSelectedSessionAgentId,
   resolveUiConversationIdentity,
 } from "../../lib/sessions/session-key.ts";
-import { matchesCompactionOperation } from "./chat-progress.ts";
+import { isQueuedSendInlineState, matchesCompactionOperation } from "./chat-progress.ts";
 import type { CompactionStatus, ProviderPolicyNotice } from "./tool-stream-contract.ts";
 
 const chatSessionProjections = new WeakMap<
@@ -425,7 +425,9 @@ export function selectChatInputDisplay(
   );
   return {
     queue: displayQueue,
-    threadQueue: displayQueue.filter((item) => !isMovableChatQueueItem(item)),
+    threadQueue: displayQueue.filter(
+      (item) => !isMovableChatQueueItem(item) || isQueuedSendInlineState(item),
+    ),
     pendingInputs: inputs.filter((input) => !userIds.has(input.id)),
   };
 }
