@@ -263,7 +263,7 @@ describe("Code Mode live VM", () => {
     const workers = pool();
     const entered = Promise.withResolvers<void>();
     const yielded = vi.fn();
-    const start = performance.now();
+    const quickInput = await payload("return 2;");
     const waiting = workers.run(await payload(`${sleep} return 1;`), {
       timeoutMs: 15_000,
       onRequest: async (_value, { yieldSignal }) => {
@@ -278,11 +278,18 @@ describe("Code Mode live VM", () => {
       },
     });
     await entered.promise;
-    const quick = workers.run(await payload("return 2;"), { timeoutMs: 2000 });
+    expect(yielded).not.toHaveBeenCalled();
+    // Measure contention through completion, excluding preparation and later assertions.
+    const start = performance.now();
+    const quick = workers.run(quickInput, { timeoutMs: 2000 }).then((result) => ({
+      result,
+      elapsedMs: performance.now() - start,
+    }));
     expect(await waiting).toMatchObject({ status: "waiting" });
-    expect(await quick).toMatchObject({ status: "completed", value: { json: "2" } });
+    const { result, elapsedMs } = await quick;
+    expect(result).toMatchObject({ status: "completed", value: { json: "2" } });
     expect(yielded).toHaveBeenCalledTimes(1);
-    expect(performance.now() - start).toBeLessThan(2000);
+    expect(elapsedMs).toBeLessThan(2000);
   });
 
   it("bounds concurrent live heaps to admitted worker capacity and keeps each cell isolated", async () => {
