@@ -10,6 +10,7 @@ import type { CodexNativeSubagentHistoryOwner } from "./native-subagent-history-
 import type { CodexNativeSubagentCompletion } from "./native-subagent-notification.js";
 import type {
   CodexNativeSubagentSubmission,
+  CodexNativeSubagentSubmissionAcknowledgement,
   CodexNativeSubagentSubmissionStore,
 } from "./native-subagent-submission.js";
 import type { NativeSubagentAssignment } from "./native-subagent-task-ids.js";
@@ -31,6 +32,26 @@ export type ParentOwner = {
   rejectPendingDirectChild?: (threadId: string, reason: string) => void;
   onDirectChildAccepted?: () => void;
 };
+
+export type NativeSubagentParentHandle = {
+  bindTurn: (turnId: string) => void;
+  observeSubmissionAcknowledgement: (
+    receipt: CodexNativeSubagentSubmissionAcknowledgement,
+    assertCurrent: () => void,
+  ) => Promise<void>;
+  unregister: () => Promise<void>;
+};
+
+export type NativeSubagentParentRegistration = Pick<
+  ParentState,
+  | "parentThreadId"
+  | "requesterSessionKey"
+  | "taskRuntimeScope"
+  | "historyOwner"
+  | "agentId"
+  | "submissionStore"
+> &
+  Omit<ParentOwner, "turnId"> & { nativeSessionId?: string };
 
 export type DirectSpawnEvidence = {
   parentThreadId: string;

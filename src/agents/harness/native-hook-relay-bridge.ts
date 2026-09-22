@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { hasErrnoCode } from "../../infra/errno.js";
 import { createHttpRequestAbortSignal } from "../../infra/http-request-lifecycle.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { runInDetachedAsyncContext } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { isPidDefinitelyDead } from "../../shared/pid-alive.js";
 import {
@@ -314,9 +315,9 @@ async function handleNativeHookRelayBridgeRequest(
       });
       return;
     }
-    const result = await auth.invokeRelay(
-      { ...payload, requireGeneration: true },
-      requestAbort.signal,
+    // A fresh authenticated request must not inherit its listener's startup lease.
+    const result = await runInDetachedAsyncContext(() =>
+      auth.invokeRelay({ ...payload, requireGeneration: true }, requestAbort.signal),
     );
     writeNativeHookRelayBridgeJson(res, 200, { ok: true, result });
   } catch (error) {

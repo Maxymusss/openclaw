@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import fs from "node:fs/promises";
-import { request as httpRequest, Server } from "node:http";
+import { Server } from "node:http";
 import { Socket } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -37,6 +38,8 @@ import {
 import { createAdmittedHostCapabilityTestFixture } from "./host-capability.test-support.js";
 import * as nativeHookRelayBridge from "./native-hook-relay-bridge.js";
 import { invokeNativeHookRelayBridge } from "./native-hook-relay-client.js";
+import { openDeferredNativeHookRelayBridgeRequest } from "./native-hook-relay-http.test-support.js";
+import { nativeHookRelayState } from "./native-hook-relay-state.js";
 import * as nativeHookRelayStore from "./native-hook-relay-store.js";
 import type { NativeHookRelayBridgeRecord } from "./native-hook-relay-store.js";
 import {
@@ -155,74 +158,6 @@ function uniqueNativeHookRelayIdForTests(prefix: string): string {
 
 function nativeHookRelayStateDbArgForTests(): string {
   return `--state-db ${resolveOpenClawStateSqlitePath()}`;
-}
-
-function openDeferredNativeHookRelayBridgeRequest(
-  record: Pick<NativeHookRelayBridgeRecord, "hostname" | "port" | "token">,
-  payload: Record<string, unknown>,
-): {
-  connected: Promise<void>;
-  response: Promise<Record<string, unknown>>;
-  sendBody: () => void;
-} {
-  const body = JSON.stringify(payload);
-  let settled = false;
-  let resolveResponse!: (value: Record<string, unknown>) => void;
-  let rejectResponse!: (error: unknown) => void;
-  const response = new Promise<Record<string, unknown>>((resolve, reject) => {
-    resolveResponse = resolve;
-    rejectResponse = reject;
-  });
-  const req = httpRequest(
-    {
-      hostname: record.hostname,
-      method: "POST",
-      path: "/invoke",
-      port: record.port,
-      headers: {
-        authorization: `Bearer ${record.token}`,
-        "content-type": "application/json",
-        "content-length": Buffer.byteLength(body),
-      },
-    },
-    (res) => {
-      let responseText = "";
-      res.setEncoding("utf8");
-      res.on("data", (chunk) => {
-        responseText += typeof chunk === "string" ? chunk : String(chunk);
-      });
-      res.on("error", rejectResponse);
-      res.on("end", () => {
-        if (settled) {
-          return;
-        }
-        settled = true;
-        resolveResponse(requireRecord(JSON.parse(responseText), "bridge response"));
-      });
-    },
-  );
-  const connected = new Promise<void>((resolve, reject) => {
-    req.on("socket", (socket) => {
-      socket.on("error", reject);
-      if (socket.connecting) {
-        socket.once("connect", resolve);
-        return;
-      }
-      resolve();
-    });
-  });
-  req.on("error", (error) => {
-    if (!settled) {
-      settled = true;
-      rejectResponse(error);
-    }
-  });
-  req.flushHeaders();
-  return {
-    connected,
-    response,
-    sendBody: () => req.end(body),
-  };
 }
 
 type NativeHookRelaySharedStateForTests = {
@@ -1698,14 +1633,25 @@ describe("native hook relay registry", () => {
   });
 
   it("rejects stale direct bridge requests after stable relay id replacement", async () => {
-    const first = registerNativeHookRelay({
-      provider: "codex",
-      relayId: "codex-stale-bridge-request",
-      sessionId: "session-1",
-      runId: "run-1",
-      allowedEvents: ["pre_tool_use"],
+    const registerRelay = (runId: string) =>
+      registerOwnedNativeHookRelay({
+        provider: "codex",
+        relayId: "codex-stale-bridge-request",
+        sessionId: "session-1",
+        runId,
+        allowedEvents: ["pre_tool_use"],
+      });
+    const first = registerRelay("run-1");
+    await first.ready;
+    const firstRecord = await nativeHookRelayStore.readNativeHookRelayBridgeRecord({
+      relayId: first.relayId,
     });
-    const firstRecord = await waitForNativeHookRelayBridgeRecord(first.relayId);
+    const firstBridge = nativeHookRelayState.relayBridges.get(first.relayId);
+    if (!firstRecord || !firstBridge) {
+      throw new Error("Expected the published native hook bridge");
+    }
+    expect(firstRecord.relayId).toBe(first.relayId);
+    const requestStarted = once(firstBridge.server, "request");
     const staleRequest = openDeferredNativeHookRelayBridgeRequest(firstRecord, {
       provider: "codex",
       relayId: first.relayId,
@@ -1718,17 +1664,9 @@ describe("native hook relay registry", () => {
       },
     });
     await staleRequest.connected;
-    await new Promise((resolve) => {
-      setTimeout(resolve, 25);
-    });
+    await requestStarted;
 
-    const second = registerNativeHookRelay({
-      provider: "codex",
-      relayId: first.relayId,
-      sessionId: "session-1",
-      runId: "run-2",
-      allowedEvents: ["pre_tool_use"],
-    });
+    const second = registerRelay("run-2");
     staleRequest.sendBody();
 
     await expect(staleRequest.response).resolves.toMatchObject({
@@ -1737,6 +1675,7 @@ describe("native hook relay registry", () => {
     });
     expect(testing.getNativeHookRelayInvocationsForTests()).toStrictEqual([]);
 
+    await second.ready;
     await expect(
       invokeNativeHookRelayBridge({
         provider: "codex",
