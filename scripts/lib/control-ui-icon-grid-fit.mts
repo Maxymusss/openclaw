@@ -546,13 +546,10 @@ export function scanIconGridFit(
   return { findings, checked, unresolved };
 }
 
-type SourceCache = Map<string, { source: string; fixtures: IconFixture[] }>;
-
-export function loadIconFixtures(rootDir: string, cache: SourceCache = new Map()): IconFixture[] {
+export function loadIconFixtures(rootDir: string): IconFixture[] {
   const sourceRoot = path.join(rootDir, "ui/src");
   const dom = new JSDOM();
   const fixtures: IconFixture[] = [];
-  const seen = new Set<string>();
   try {
     for (const relative of fs.readdirSync(sourceRoot, { recursive: true }).map(String).toSorted()) {
       const sourcePath = path.join("ui/src", relative).split(path.sep).join("/");
@@ -571,24 +568,10 @@ export function loadIconFixtures(rootDir: string, cache: SourceCache = new Map()
       if (!source.includes("<button") && !source.includes("<a")) {
         continue;
       }
-      seen.add(file);
-      let entry = cache.get(file);
-      if (entry?.source !== source) {
-        entry = {
-          source,
-          fixtures: collectIconFixtures(source, sourcePath, dom.window.document),
-        };
-        cache.set(file, entry);
-      }
-      fixtures.push(...entry.fixtures);
+      fixtures.push(...collectIconFixtures(source, sourcePath, dom.window.document));
     }
   } finally {
     dom.window.close();
-    for (const file of cache.keys()) {
-      if (!seen.has(file)) {
-        cache.delete(file);
-      }
-    }
   }
   return fixtures;
 }
@@ -655,19 +638,5 @@ export function createIconStyleContext(rootDir: string) {
       trailingCss: file === baseFile ? components : "",
       otherClasses,
     };
-  };
-}
-
-/** Byte-keyed caches retain parsing, not stale source snapshots, across Stylelint API runs. */
-export function createIconGridAuditor(rootDir: string) {
-  const cache: SourceCache = new Map();
-  const context = createIconStyleContext(rootDir);
-  return (css: string, file: string) => {
-    if (!/display:\s*(?:inline-)?grid/u.test(css)) {
-      return { findings: [], checked: 0, unresolved: 0 };
-    }
-    const fixtures = selectIconFixtures(css, loadIconFixtures(rootDir, cache));
-    const styles = context(file);
-    return scanIconGridFit(css, fixtures, styles.baseCss, styles);
   };
 }

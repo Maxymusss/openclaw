@@ -1,14 +1,13 @@
 import fs from "node:fs";
 import path from "node:path";
 import { JSDOM } from "jsdom";
-import stylelint from "stylelint";
 import { afterEach, describe, expect, it } from "vitest";
+import { auditIconButtons } from "../../scripts/audit-control-ui-icon-buttons.mts";
 import {
   collectIconFixtures,
   scanIconGridFit,
   type IconFixture,
 } from "../../scripts/lib/control-ui-icon-grid-fit.mts";
-import plugin from "../../scripts/lib/stylelint-icon-grid-fit.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -176,7 +175,7 @@ describe("fixed icon-grid fit", () => {
     }
   });
 
-  it("reports through Stylelint and rereads changed source in the same process", async () => {
+  it("audits current source and shared styles on each manual invocation", () => {
     const root = tempDirs.make("openclaw-icon-grid-");
     const styles = path.join(root, "ui/src/styles");
     fs.mkdirSync(styles, { recursive: true });
@@ -187,40 +186,35 @@ describe("fixed icon-grid fit", () => {
       source,
       'html`<header class="toolbar"><button class="icon">${icons.refresh}</button></header>`',
     );
-    const lint = () =>
-      stylelint.lint({
-        code: original,
-        codeFilename: path.join(styles, "control.css"),
-        config: { plugins: [plugin], rules: { "openclaw/icon-grid-fit": true } },
-      });
-    const first = await lint();
-    expect(first.errored).toBe(true);
-    expect(first.results[0]?.warnings).toHaveLength(2);
-    expect(first.results[0]?.warnings[0]?.text).toContain("12px content space");
+    fs.writeFileSync(path.join(styles, "control.css"), original);
+    const audit = () => auditIconButtons(root, ["ui/src/styles/control.css"]);
+    const first = audit();
+    expect(first.findings).toHaveLength(2);
+    expect(first.findings[0]?.available).toBe(12);
     fs.writeFileSync(source, 'html`<button class="icon">${icons.refresh}</button>`');
-    expect((await lint()).errored).toBe(false);
+    expect(audit().findings).toHaveLength(0);
     const added = path.join(root, "ui/src/added.ts");
     const cramped =
       'html`<header class="toolbar"><button class="icon">${icons.refresh}</button></header>`';
     fs.writeFileSync(added, cramped);
-    expect((await lint()).errored).toBe(true);
+    expect(audit().findings).toHaveLength(2);
     fs.unlinkSync(added);
-    expect((await lint()).errored).toBe(false);
+    expect(audit().findings).toHaveLength(0);
     fs.writeFileSync(source, cramped);
-    expect((await lint()).errored).toBe(true);
+    expect(audit().findings).toHaveLength(2);
     const sibling = path.join(styles, "other.css");
     fs.writeFileSync(sibling, ".shell .icon {padding:0}");
-    expect((await lint()).errored).toBe(false);
+    expect(audit().findings).toHaveLength(0);
     fs.unlinkSync(sibling);
-    expect((await lint()).errored).toBe(true);
+    expect(audit().findings).toHaveLength(2);
     fs.writeFileSync(
       path.join(styles, "base.css"),
       base + ".icon {min-width:32px;min-height:32px}",
     );
-    expect((await lint()).errored).toBe(false);
+    expect(audit().findings).toHaveLength(0);
   });
 
-  it("does not append the base sheet again after component overrides", async () => {
+  it("does not append the base sheet again after component overrides", () => {
     const root = tempDirs.make("openclaw-icon-grid-order-");
     const styles = path.join(root, "ui/src/styles");
     fs.mkdirSync(styles, { recursive: true });
@@ -233,11 +227,8 @@ describe("fixed icon-grid fit", () => {
       path.join(root, "ui/src/control.ts"),
       'html`<header class="toolbar"><button class="icon">${icons.refresh}</button></header>`',
     );
-    const result = await stylelint.lint({
-      code: base + original,
-      codeFilename: path.join(styles, "base.css"),
-      config: { plugins: [plugin], rules: { "openclaw/icon-grid-fit": true } },
-    });
-    expect(result.errored).toBe(false);
+    const result = auditIconButtons(root, ["ui/src/styles/base.css"]);
+    expect(result.findings).toHaveLength(0);
+    expect(result.checkedAxes).toBe(2);
   });
 });
