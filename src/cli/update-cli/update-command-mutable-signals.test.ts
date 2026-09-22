@@ -41,6 +41,7 @@ it.skipIf(process.platform === "win32").each([
   { signal: "SIGINT", mode: "no-owner" },
   { signal: "SIGINT", mode: "state-refusal-drain" },
   { signal: "SIGINT", mode: "preview-refusal-drain" },
+  { signal: "SIGINT", mode: "heartbeat-first-refusal" },
 ] as const)(
   "settles only the local pre-activation diagnostic under its real executor: $signal/$mode",
   ({ signal, mode }) =>
@@ -85,20 +86,20 @@ async function assertOwnedSignal(
     import { withUpdateCommandTerminalResult, deferUpdateCommandTerminalResult } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.commandTerminal).href)};
     const root = ${JSON.stringify(root)};
     const mode = ${JSON.stringify(mode)};
-    const controlled = mode === 'state-refusal-drain' || mode === 'preview-refusal-drain';
+    const controlled = mode === 'state-refusal-drain' || mode === 'preview-refusal-drain' || mode === 'heartbeat-first-refusal';
     const opts = { restart: false, dryRun: mode === 'preview-refusal-drain' };
     if (mode === 'inherited') process.env.OPENCLAW_UPDATE_RUN_ID = createUpdateRun({trigger:'cli'}).runId;
-    const run = await admitUpdateCommandRun({opts, root});
-    if (controlled && !run.freebsdWriteAdmission) {
+    let freebsdWriteAdmission;
+    if (controlled && process.platform !== 'freebsd') {
       // Exercise only the optional diagnostic latch on this host. Native lease
       // and filesystem owners keep their actual platform implementations.
       const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
       try {
         Object.defineProperty(process, 'platform', {value:'freebsd'});
-        run.freebsdWriteAdmission = createFreeBsdUpdateWriteAdmission();
+        freebsdWriteAdmission = createFreeBsdUpdateWriteAdmission();
       } finally { Object.defineProperty(process, 'platform', descriptor); }
-      await run.freebsdWriteAdmission.revalidate(() => {});
     }
+    const run = await admitUpdateCommandRun({opts, root, freebsdWriteAdmission});
 
     await withUpdatePreviewSignals({...opts, run}, async () => {
       const sibling = createUpdateRun({trigger:'cli'});
@@ -162,6 +163,22 @@ async function assertOwnedSignal(
           const originalBefore = hash(displaced);
           const marker = root + '/state/.openclaw-restore-signal-fixture';
           if (mode === 'preview-refusal-drain') fs.mkdirSync(marker);
+          if (mode === 'heartbeat-first-refusal') {
+            // The callback itself must refuse; no signal or execution guard has observed replacement.
+            assert.equal(expected.origin.driver?.pid, process.pid);
+            let failure;
+            try { progress.onHeartbeat(); } catch (error) { failure = error; }
+            process.stderr.write('[callback-first] ' + JSON.stringify({
+              refused: failure instanceof Error,
+              selectedUnchanged: hash(pathname) === selectedBefore,
+              originalUnchanged: hash(displaced) === originalBefore,
+            }) + '\\n');
+            assert(failure instanceof Error, 'first heartbeat must refuse the replacement database');
+            assert.equal(admission.failure, failure);
+            assert.equal(admission.canWrite, false);
+            assert.equal(hash(pathname), selectedBefore);
+            assert.equal(hash(displaced), originalBefore);
+          }
           registerSignalExitBarrier(async () => {
             // Mutable signal entry follows its synchronous guard even when latching regresses.
             const first = mode === 'preview-refusal-drain' ? await refused.promise : admission.failure;
@@ -249,7 +266,10 @@ async function assertOwnedSignal(
         throw new Error(`Update process exited before ready: ${stderr}`);
       }),
     ]);
-    const controlled = mode === "state-refusal-drain" || mode === "preview-refusal-drain";
+    const controlled =
+      mode === "state-refusal-drain" ||
+      mode === "preview-refusal-drain" ||
+      mode === "heartbeat-first-refusal";
     const proof = controlled
       ? Promise.race([
           new Promise<{ entry: unknown; receipt: Promise<unknown[]> }>((resolve) => {
@@ -282,9 +302,9 @@ async function assertOwnedSignal(
         published: false,
       });
       expect(receipt.message).toContain(
-        mode === "state-refusal-drain"
-          ? "canonical state generation changed"
-          : "Interrupted shared-database publication",
+        mode === "preview-refusal-drain"
+          ? "Interrupted shared-database publication"
+          : "canonical state generation changed",
       );
       expect(child.exitCode).toBeNull();
       expect(child.connected).toBe(true);
