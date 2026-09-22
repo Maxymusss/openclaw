@@ -3,6 +3,7 @@ import { clearAllCliSessions } from "../../agents/cli-session.js";
 import { resetRegisteredAgentHarnessSessions } from "../../agents/harness/registry.js";
 // Handles session reset requests produced during agent runner execution.
 import { transitionMainSessionRecovery } from "../../agents/main-session-recovery/main-session-recovery-state.js";
+import { isOperatorForegroundWork } from "../../agents/operator-foreground-work.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import {
   loadSessionEntry,
@@ -68,6 +69,13 @@ export async function resetReplyRunSession(params: {
   if (!prevEntry) {
     return false;
   }
+  if (isOperatorForegroundWork({ operatorAuthority: params.followupRun.operatorAuthority })) {
+    // Preserve the accepted turn's exact generation for terminal settlement.
+    // Automatic transcript repair cannot transfer its negative recovery marker.
+    throw new Error(
+      "Automatic session repair is unavailable for this foreground-only turn. Start a new thread or use an explicitly supported reset action.",
+    );
+  }
   if (isModelSelectionLocked(prevEntry)) {
     throw new ModelSelectionLockedError(MODEL_SELECTION_LOCKED_RESET_MESSAGE);
   }
@@ -84,6 +92,7 @@ export async function resetReplyRunSession(params: {
     systemSent: false,
     abortedLastRun: false,
     lifecycleRunId: undefined,
+    foregroundRun: undefined,
     lastRunId: undefined,
     modelProvider: undefined,
     model: undefined,

@@ -2,9 +2,10 @@ import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   prepareSystemAgentRunAdmission,
+  createAdmittedRunOperatorAuthority,
   resolveAdmittedRunActiveAssertion,
 } from "../../agents/admitted-run-context.js";
 import { waitForSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
@@ -27,6 +28,8 @@ import { clearMemoryPluginState } from "../../plugins/memory-state.js";
 import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { SILENT_REPLY_TOKEN } from "../tokens.js";
+import * as memory from "./agent-runner-memory.js";
 import { runReplyAgent } from "./agent-runner.js";
 import {
   createTestFollowupRun,
@@ -42,8 +45,8 @@ type ModelRequest = {
 const providerText = (content: unknown) =>
   extractTextFromChatContent(content, { joinWith: "\n", normalizeText: (text) => text }) ?? "";
 
-describe("required maintenance with restart-safe admitted input", () => {
-  it.each(["one archive", "two archives"] as const)(
+describe("required maintenance with admitted input", () => {
+  it.each(["one archive", "two archives", "foreground-only", "foreground cancelled"] as const)(
     "keeps the approved user current through preflight maintenance (%s)",
     async (history) => {
       await withOpenClawTestState({ label: "required-maintenance-pending" }, async (state) => {
@@ -172,6 +175,20 @@ describe("required maintenance with restart-safe admitted input", () => {
         const sessionKey = "agent:main:main";
         const sessionId = "required-maintenance-session";
         const runId = "approved-foreground";
+        const source = new AbortController();
+        // The real builtin proves foreground lifetime here. It does not advertise
+        // exact finite-model support; model-policy qualification stays separate.
+        const operatorAuthority = history.startsWith("foreground")
+          ? createAdmittedRunOperatorAuthority({
+              profileId: "foreground-compaction",
+              scopes: ["operator.write"],
+              executionPolicy: "foreground-only",
+              foregroundRunId: runId,
+              foregroundDeadlineAt: Date.now() + 60_000,
+              signal: source.signal,
+              assertCurrent: () => source.signal.throwIfAborted(),
+            })
+          : undefined;
         const storePath = path.join(state.sessionsDir(), "sessions.json");
         const scope = { agentId: "main", sessionKey, sessionId, storePath };
         const cfg: OpenClawConfig = {
@@ -213,6 +230,18 @@ describe("required maintenance with restart-safe admitted input", () => {
           "pending-regression",
         );
         let recorder: ReturnType<typeof createUserTurnTranscriptRecorder> | undefined;
+        const originalFlush = memory.runMemoryFlushIfNeeded;
+        const flush = vi.spyOn(memory, "runMemoryFlushIfNeeded");
+        const compact = vi.spyOn(memory, "runSessionCompactionIfNeeded");
+        const cancellation = new Error("original foreground source ended after checkpoint skip");
+        if (history === "foreground cancelled") {
+          flush.mockImplementationOnce(async (params) => {
+            const result = await originalFlush(params);
+            expect(result).toEqual({ sessionEntry: params.sessionEntry, outcome: "skipped" });
+            source.abort(cancellation);
+            return result;
+          });
+        }
         try {
           await state.writeConfig(cfg);
           setRuntimeConfigSnapshot(cfg);
@@ -270,20 +299,26 @@ describe("required maintenance with restart-safe admitted input", () => {
             senderIsOwner: true,
             cfg,
           });
-          const restartSafeAdmission = resolveRestartSafeChatAdmission({
-            agentId: "main",
-            cfg,
-            clientRunId: runId,
-            context: { chatAbortControllers: new Map(), chatQueuedTurns: new Map() },
-            entry,
-            initialSessionEntry: entry,
-            now: Date.now(),
-            request,
-            sessionId,
-            sessionKey,
-            storePath,
-          });
-          expect(restartSafeAdmission).toBeDefined();
+          const restartSafeAdmission = operatorAuthority
+            ? undefined
+            : resolveRestartSafeChatAdmission({
+                agentId: "main",
+                cfg,
+                clientRunId: runId,
+                context: { chatAbortControllers: new Map(), chatQueuedTurns: new Map() },
+                entry,
+                initialSessionEntry: entry,
+                now: Date.now(),
+                request,
+                sessionId,
+                sessionKey,
+                storePath,
+              });
+          if (operatorAuthority) {
+            expect(restartSafeAdmission).toBeUndefined();
+          } else {
+            expect(restartSafeAdmission).toBeDefined();
+          }
           recorder = createUserTurnTranscriptRecorder({
             target: {
               ...scope,
@@ -292,11 +327,13 @@ describe("required maintenance with restart-safe admitted input", () => {
               config: cfg,
             },
             input: { text: approved, timestamp: Date.now(), idempotencyKey: `${runId}:user` },
-            ...buildRestartSafeChatTranscriptState({
-              admission: restartSafeAdmission!,
-              clientRunId: runId,
-              startedAt: Date.now(),
-            }),
+            ...(restartSafeAdmission
+              ? buildRestartSafeChatTranscriptState({
+                  admission: restartSafeAdmission,
+                  clientRunId: runId,
+                  startedAt: Date.now(),
+                })
+              : {}),
           });
           // Idle Control UI admission intentionally persists the approved user before ACK.
           expect(await recorder.stageApproved?.({ runId, assertCurrent })).toBe(true);
@@ -320,6 +357,7 @@ describe("required maintenance with restart-safe admitted input", () => {
             conversationToolPolicy: { deny: ["read"] },
           });
           followupRun.prompt = approved;
+          followupRun.operatorAuthority = operatorAuthority;
           followupRun.userTurnTranscriptRecorder = recorder;
           entry = loadSessionEntry(scope)!;
           const sessionStore = { [sessionKey]: entry };
@@ -341,7 +379,7 @@ describe("required maintenance with restart-safe admitted input", () => {
                 ),
             );
           };
-          const result = await runReplyAgent({
+          const pending = runReplyAgent({
             commandBody: approved,
             transcriptCommandBody: approved,
             followupRun,
@@ -365,18 +403,54 @@ describe("required maintenance with restart-safe admitted input", () => {
             shouldInjectGroupIntro: false,
             typingMode: "never",
           });
-          expect(advertisedWrite).toBe(true);
-          expect(checkpointRequests).toHaveLength(2);
+          if (history === "foreground cancelled") {
+            await expect(pending).resolves.toEqual({ text: SILENT_REPLY_TOKEN });
+            expect(flush).toHaveBeenCalledOnce();
+            expect(compact).toHaveBeenCalledOnce();
+            await expect(compact.mock.results[0]?.value).rejects.toBe(cancellation);
+            expect(compact.mock.calls[0]?.[0].abortSignal?.reason).toBe(cancellation);
+            const replyOperation = flush.mock.calls[0]?.[0].replyOperation;
+            expect(replyOperation?.result).toEqual({ kind: "aborted", code: "aborted_by_user" });
+            expect(replyOperation?.abortSignal.reason).toBe(cancellation);
+            expect(flush.mock.calls[0]?.[0].followupRun.operatorAuthority).toBe(operatorAuthority);
+            expect(compact.mock.calls[0]?.[0].followupRun.operatorAuthority).toBe(
+              operatorAuthority,
+            );
+            expect(requests).toHaveLength(0);
+            expect(advertisedWrite).toBe(false);
+            expect(loadSessionEntry(scope)?.memoryFlush).toBeUndefined();
+            await expect(
+              readFile(path.join(state.workspaceDir, "memory/checkpoint.md"), "utf8"),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+            return;
+          }
+          const result = await pending;
+          expect(advertisedWrite).toBe(!operatorAuthority);
+          expect(checkpointRequests).toHaveLength(operatorAuthority ? 0 : 2);
           expect(
             checkpointRequests.flatMap(
               (checkpointRequest) =>
                 checkpointRequest.tools?.map((tool) => tool.function?.name) ?? [],
             ),
           ).not.toContain("read");
-          expect(
-            await readFile(path.join(state.workspaceDir, "memory/checkpoint.md"), "utf8"),
-          ).toBe(checkpointText);
-          expect(loadSessionEntry(scope)?.memoryFlush?.kind).toBe("succeeded");
+          if (operatorAuthority) {
+            await expect(
+              readFile(path.join(state.workspaceDir, "memory/checkpoint.md"), "utf8"),
+            ).rejects.toMatchObject({ code: "ENOENT" });
+            expect(loadSessionEntry(scope)?.memoryFlush).toBeUndefined();
+            expect(flush).toHaveBeenCalled();
+            expect(compact).toHaveBeenCalled();
+            for (const [params] of [...flush.mock.calls, ...compact.mock.calls]) {
+              expect(params.followupRun.operatorAuthority).toBe(operatorAuthority);
+            }
+            expect(operatorAuthority.foregroundRunId).toBe(runId);
+            expect(source.signal.aborted).toBe(false);
+          } else {
+            expect(
+              await readFile(path.join(state.workspaceDir, "memory/checkpoint.md"), "utf8"),
+            ).toBe(checkpointText);
+            expect(loadSessionEntry(scope)?.memoryFlush?.kind).toBe("succeeded");
+          }
           const expectedCompactions = history === "one archive" ? 0 : 1;
           expect(loadSessionEntry(scope)?.compactionCount ?? 0).toBe(expectedCompactions);
           const events = (await loadTranscriptEvents(scope)).map(asOptionalRecord);
@@ -415,6 +489,8 @@ describe("required maintenance with restart-safe admitted input", () => {
           });
         } finally {
           await waitForSessionMaintenance(sessionKey);
+          compact.mockRestore();
+          flush.mockRestore();
           recorder?.finishPendingInput?.("interrupted");
           admissionOwner.close();
           clearMemoryPluginState();

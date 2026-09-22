@@ -5,6 +5,7 @@ import {
   timestampMsToIsoString,
 } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { assertOperatorBackgroundWorkAllowed } from "../agents/operator-foreground-work.js";
 import type { CronServiceContract } from "../cron/service-contract.js";
 import {
   readCanonicalCronListPage,
@@ -241,6 +242,7 @@ export async function schedulePluginSessionTurn(params: {
   cron?: CronServiceContract;
   ownerRegistry?: PluginRegistry;
 }): Promise<PluginSessionSchedulerJobHandle | undefined> {
+  assertOperatorBackgroundWorkAllowed();
   if (params.origin !== "bundled") {
     return undefined;
   }

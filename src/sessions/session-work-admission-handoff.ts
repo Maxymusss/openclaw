@@ -8,8 +8,34 @@ export type SessionWorkAdmissionLease = {
   isActive: () => boolean;
   release: () => void;
   released: Promise<void>;
+  refuseNewWork: (reason: Error) => {
+    committed: true;
+    interruptionErrors: readonly unknown[];
+  };
   run: <T>(run: () => Promise<T>) => Promise<T>;
 };
+
+/** Commit negative custody before notifications; release must never certify failed cleanup. */
+export function createSessionWorkAdmissionRefusal(params: {
+  isActive: () => boolean;
+  install: (reason: Error) => void;
+  interruptPending: (reason: Error, onError: (error: unknown) => void) => void;
+}): SessionWorkAdmissionLease["refuseNewWork"] {
+  let refusal: ReturnType<SessionWorkAdmissionLease["refuseNewWork"]> | undefined;
+  return (reason) => {
+    if (!params.isActive()) {
+      throw new Error("cannot refuse work from a released session work admission");
+    }
+    if (refusal) {
+      return refusal;
+    }
+    const interruptionErrors: unknown[] = [];
+    params.install(reason);
+    refusal = { committed: true, interruptionErrors };
+    params.interruptPending(reason, (error) => interruptionErrors.push(error));
+    return refusal;
+  };
+}
 
 export type HandoffSessionWorkAdmission = {
   handoffIds: Set<string>;

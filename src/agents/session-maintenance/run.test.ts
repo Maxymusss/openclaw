@@ -7,13 +7,76 @@ import type { SessionEntry } from "../../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
+import * as gatewayWork from "../../process/gateway-work-admission.js";
 import { getAsyncWorkSignal, trackAsyncWork } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createAdmittedRunOperatorAuthority } from "../admitted-run-context.js";
 import * as maintenanceBudget from "../command/maintenance-budget.js";
 import * as runtimeLoaders from "../command/runtime-loaders.js";
 import { waitForSessionMaintenance } from "./coordinator.js";
+import * as maintenanceCoordinator from "./coordinator.js";
 import { createSessionMaintenanceFollowup, scheduleSessionMaintenance } from "./run.js";
+
+it.each(["foreground", "expired", "revoked"] as const)(
+  "skips optional maintenance before acquiring work for a %s source",
+  async (state) => {
+    const followupRun = createTestFollowupRun();
+    const source = new AbortController();
+    const retain = vi.fn(() => () => {});
+    followupRun.operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "restricted-maintenance",
+      scopes: ["operator.write"],
+      permissions: { models: { allow: ["test-provider/test-model"] } },
+      executionPolicy: "foreground-only",
+      foregroundRunId: "original-turn",
+      foregroundDeadlineAt: Date.now() + (state === "expired" ? -1 : 60_000),
+      signal: source.signal,
+      assertCurrent: () => source.signal.throwIfAborted(),
+      retain,
+    });
+    if (state === "revoked") {
+      source.abort(new Error("original source revoked"));
+    }
+    const budget = vi.spyOn(maintenanceBudget, "createCommandBudget");
+    const owner = vi.spyOn(maintenanceCoordinator, "createSessionMaintenanceOwner");
+    const root = vi.spyOn(gatewayWork, "runWithGatewayIndependentRootWorkAdmission");
+    const store = vi.spyOn(runtimeLoaders, "loadSessionStoreRuntime");
+    const memory = vi.spyOn(runtimeLoaders, "loadAgentRunnerMemoryRuntime");
+    const sessionKey = "agent:main:restricted-maintenance";
+    try {
+      expect(() =>
+        withPluginRuntimeRegistryScope(createEmptyPluginRegistry(), () =>
+          scheduleSessionMaintenance({
+            prepared: {
+              cfg: followupRun.run.config,
+              sessionKey,
+              storePath: "/synthetic/maintenance.sqlite",
+              timeoutMs: 1_000,
+            },
+            followupRun,
+            sessionId: followupRun.run.sessionId,
+            lifecycleRevision: undefined,
+            lifecycleGeneration: getAgentEventLifecycleGeneration(),
+            startedAt: Date.now(),
+          }),
+        ),
+      ).not.toThrow();
+      expect(budget).not.toHaveBeenCalled();
+      expect(owner).not.toHaveBeenCalled();
+      expect(root).not.toHaveBeenCalled();
+      expect(retain).not.toHaveBeenCalled();
+      expect(store).not.toHaveBeenCalled();
+      expect(memory).not.toHaveBeenCalled();
+    } finally {
+      await waitForSessionMaintenance(sessionKey);
+      memory.mockRestore();
+      store.mockRestore();
+      root.mockRestore();
+      owner.mockRestore();
+      budget.mockRestore();
+    }
+  },
+);
 
 it("preserves original model authority without foreground tool or writer custody", async () => {
   const original = createAdmittedRunOperatorAuthority({

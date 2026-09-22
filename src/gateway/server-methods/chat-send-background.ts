@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
+import { assertOperatorBackgroundWorkAllowed } from "../../agents/operator-foreground-work.js";
 import {
   assertOperatorModelAuthorityCurrent,
   runWithOperatorModelAuthority,
@@ -96,6 +97,16 @@ function scheduleDashboardSessionTitle(
   params: DashboardSessionTitleRequest,
   admissionScope: "session" | "gateway",
 ): void {
+  // Optional title inference is detached work too; retain the existing title
+  // instead of creating a second, independently owned guest operation.
+  try {
+    assertOperatorBackgroundWorkAllowed({ operatorAuthority: params.operatorAuthority });
+  } catch (error) {
+    params.context.logGateway.debug(
+      `dashboard session title generation skipped: ${formatForLog(error)}`,
+    );
+    return;
+  }
   const titleSource = buildDashboardSessionTitleSource({
     message: params.request.rawMessage,
     attachments: params.request.normalizedAttachments,

@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type { OperatorExecutionPolicy } from "../shared/operator-execution-policy.js";
 
 export type GatewayAccessGrantRef = Readonly<{ pluginId: string; grantId: string }>;
 
@@ -6,12 +7,16 @@ export type GatewayAccessGrantRef = Readonly<{ pluginId: string; grantId: string
 export type PluginGatewayAccessAuthority = Readonly<{
   /** Stable UUID for one uninterrupted grant, if the policy supports durable requests. */
   grantId?: string;
+  /** Restricts work accepted under this grant, including inherited requests. */
+  executionPolicy?: OperatorExecutionPolicy;
   assertCurrent: () => void;
   signal: AbortSignal;
 }>;
 
 type GatewayAccessPolicyContext = {
   config: OpenClawConfig;
+  /** A policy must refuse restricted access unless this host acknowledges enforcement. */
+  supportedExecutionPolicies?: readonly OperatorExecutionPolicy[];
   /** The person's effective operator role explicitly names this policy's plugin. */
   requiredByRole: boolean;
   profile: { profileId: string; emails: readonly string[]; assignedRole: string | null };

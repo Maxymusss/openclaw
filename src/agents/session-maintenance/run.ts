@@ -23,6 +23,7 @@ import {
   loadAgentRunnerMemoryRuntime,
   loadSessionStoreRuntime,
 } from "../command/runtime-loaders.js";
+import { assertOperatorBackgroundWorkAllowed } from "../operator-foreground-work.js";
 import { assertOperatorModelAuthorityCurrent } from "../operator-model-policy.js";
 import type { CompactionRequestBudget } from "../sessions/compaction/request-budget.js";
 import { createSessionMaintenanceOwner } from "./coordinator.js";
@@ -123,6 +124,13 @@ export function scheduleSessionMaintenance(
   afterOwnerSettles?: Promise<boolean>,
 ): void {
   const { prepared, followupRun } = request;
+  // Optional work must not turn an already completed reply into a source-lifetime error.
+  try {
+    assertOperatorBackgroundWorkAllowed({ operatorAuthority: followupRun.operatorAuthority });
+  } catch (error) {
+    log.debug(`Optional session maintenance skipped: ${formatErrorMessage(error)}`);
+    return;
+  }
   const sessionKey = prepared.sessionKey;
   if (!sessionKey) {
     return;

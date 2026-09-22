@@ -636,6 +636,8 @@ export type InternalSessionEntryCore = SessionEntryCore & {
   /** Private per-generation ownership for the pre-runtime checkout baseline capture. */
   sessionDiffBaselineCapture?: import("./session-diff-baseline-capture.js").SessionDiffBaselineCapture;
   mainRestartRecovery?: MainRestartRecoveryState;
+  /** Accepted-turn recovery prohibition; never caller identity or permission to resume. */
+  foregroundRun?: import("./session-foreground-run.js").SessionForegroundRun;
 };
 
 export interface InternalSessionEntry extends InternalSessionEntryCore {}

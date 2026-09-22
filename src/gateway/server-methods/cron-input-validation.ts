@@ -6,6 +6,7 @@ import {
 import { resolveFailureAlert } from "../../cron/service/failure-alerts.js";
 import { applyJobPatch } from "../../cron/service/jobs.js";
 import { resolveCronSessionTargetSessionKey } from "../../cron/session-target.js";
+import { cronJobUsesToolRuntime } from "../../cron/tools-allow.js";
 import type { CronJob, CronJobPatch } from "../../cron/types.js";
 import { resolveTargetPrefixedChannel } from "../../infra/outbound/channel-target-prefix.js";
 import {
@@ -14,6 +15,43 @@ import {
   isAgentHarnessSessionKey,
 } from "../../sessions/agent-harness-session-key.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
+import type { CronCallerScope } from "./cron-caller-scope.js";
+
+export function requiresExplicitAgentRuntimeToolsAllow(params: {
+  job: Pick<CronJob, "payload" | "trigger">;
+  callerScope: CronCallerScope | undefined;
+}): boolean {
+  return (
+    params.callerScope !== undefined &&
+    !params.callerScope.manageAll &&
+    cronJobUsesToolRuntime(params.job) &&
+    params.job.payload.toolsAllow === undefined
+  );
+}
+
+export function cronPatchTouchesToolRuntime(patch: CronJobPatch): boolean {
+  return patch.payload !== undefined || Object.hasOwn(patch, "trigger");
+}
+
+export function isLegacyCreatorPromptUpdate(
+  job: CronJob,
+  patch: CronJobPatch,
+  callerScope: CronCallerScope | undefined,
+): boolean {
+  // A prompt edit keeps the legacy execution policy; it cannot establish new
+  // authority or transfer management to another session/account.
+  return (
+    callerScope?.sessionKey !== undefined &&
+    job.owner?.sessionKey === callerScope.sessionKey &&
+    job.owner?.accountId === callerScope.accountId &&
+    job.scheduledToolPolicy === undefined &&
+    job.payload.kind === "agentTurn" &&
+    patch.payload !== undefined &&
+    (patch.payload.kind === undefined || patch.payload.kind === "agentTurn") &&
+    Object.keys(patch).every((key) => key === "payload") &&
+    Object.keys(patch.payload).every((key) => key === "kind" || key === "message")
+  );
+}
 
 export async function assertValidCronUpdatePatch(params: {
   cfg: OpenClawConfig;

@@ -1,12 +1,15 @@
+import { readFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import path from "node:path";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { makeUserMessage } from "../../../test/helpers/user-message.js";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
 import {
   getSessionMcpRuntimeManagerForTesting,
   peekSessionMcpRuntime,
 } from "../../agents/agent-bundle-mcp-manager-api.js";
+import * as embeddedEntry from "../../agents/embedded-agent-runner/run-entry.js";
 import { waitForSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
 import { createSessionMaintenanceFollowup } from "../../agents/session-maintenance/run.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
@@ -39,11 +42,147 @@ import {
   installAgentRunnerMemoryFixture,
   isModelRuntimeContextCarrier,
 } from "./agent-runner.test-fixtures.js";
+import * as privateFlush from "./memory-flush-session.js";
 import { createTypingController } from "./typing.js";
 
 type ModelRequest = { messages: Array<{ role: string; content: unknown }> };
 const text = (content: unknown) =>
   extractTextFromChatContent(content, { joinWith: "\n", normalizeText: (value) => value }) ?? "";
+
+it.each(["current", "expired", "revoked", "staff"] as const)(
+  "checks the %s source before eligible private flush effects",
+  async (status) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const scope = {
+        agentId: "main",
+        sessionId: "foreground-memory",
+        sessionKey: "agent:main:foreground-memory",
+        storePath: path.join(state.sessionsDir(), "sessions.json"),
+      };
+      await replaceSessionEntry(scope, {
+        sessionId: scope.sessionId,
+        updatedAt: 1,
+        totalTokens: 120_000,
+        totalTokensFresh: true,
+        totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+        memoryFlush: { kind: "failed", failureCount: 2 },
+      });
+      const transcript = SessionManager.open(scope, state.workspaceDir);
+      transcript.appendMessage(makeUserMessage("Keep the current project receipt.", 1));
+      transcript.appendMessage(
+        makeAssistantMessageFixture({
+          provider: "anthropic",
+          model: "claude",
+          content: [{ type: "text", text: "Project receipt saved." }],
+          stopReason: "stop",
+          usage: {
+            input: 120_000,
+            output: 2,
+            totalTokens: 120_002,
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+          },
+        }),
+      );
+      const entry = loadSessionEntry(scope)!;
+      const followupRun = createTestFollowupRun({
+        ...scope,
+        sessionFile: scope.sessionKey,
+        agentDir: state.agentDir(),
+        workspaceDir: state.workspaceDir,
+        senderIsOwner: true,
+        thinkingCatalog: [
+          {
+            provider: "anthropic",
+            id: "claude",
+            input: ["text"],
+            contextWindow: 128_000,
+            contextTokens: 128_000,
+          },
+        ],
+      });
+      installAgentRunnerMemoryFixture(() => ({
+        softThresholdTokens: 4_000,
+        reserveTokensFloor: 8_192,
+        forceFlushTranscriptBytes: 2 * 1024 * 1024,
+        prompt: "Checkpoint durable notes. Reply NO_REPLY.",
+        systemPrompt: "Write durable notes only.",
+        relativePath: "memory/checkpoint.md",
+      }));
+      const source = new AbortController();
+      followupRun.operatorAuthority = createAdmittedRunOperatorAuthority({
+        profileId: "foreground-memory",
+        scopes: ["operator.write"],
+        ...(status === "staff"
+          ? {}
+          : ({
+              permissions: { models: { allow: ["anthropic/claude"] } },
+              executionPolicy: "foreground-only",
+              foregroundRunId: "original-turn",
+              foregroundDeadlineAt: Date.now() + (status === "expired" ? -1 : 60_000),
+            } as const)),
+        signal: source.signal,
+        assertCurrent: () => source.signal.throwIfAborted(),
+      });
+      if (status === "revoked") {
+        source.abort(new Error("original memory source revoked"));
+      }
+      const prepare = vi.spyOn(privateFlush, "prepareMemoryFlushSession");
+      const file = vi.spyOn(privateFlush, "ensureMemoryFlushTargetFile");
+      const inference = vi.spyOn(embeddedEntry, "runEmbeddedAgentEntry");
+      // The staff control reaches the real preparation/file owners, then stops
+      // at inference entry; this fixture does not qualify a provider or runtime.
+      inference.mockRejectedValue(createAbortError("fixture inference boundary reached"));
+      const sessionStore = { [scope.sessionKey]: entry };
+      try {
+        const flush = runMemoryFlushIfNeeded({
+          cfg: followupRun.run.config,
+          followupRun,
+          defaultModel: followupRun.run.model,
+          promptForEstimate: "",
+          resolvedVerboseLevel: "off",
+          sessionEntry: entry,
+          sessionStore,
+          sessionKey: scope.sessionKey,
+          storePath: scope.storePath,
+          isHeartbeat: false,
+        });
+        if (status === "current") {
+          expect(await flush).toEqual({ sessionEntry: entry, outcome: "skipped" });
+        } else if (status === "staff") {
+          expect(await flush).toEqual({ sessionEntry: entry, outcome: "failed" });
+        } else {
+          await expect(flush).rejects.toThrow(
+            status === "expired" ? "deadline has expired" : "original memory source revoked",
+          );
+        }
+        if (status === "staff") {
+          expect(prepare).toHaveBeenCalledOnce();
+          expect(file).toHaveBeenCalledOnce();
+          expect(inference).toHaveBeenCalledOnce();
+          expect(
+            await readFile(path.join(state.workspaceDir, "memory/checkpoint.md"), "utf8"),
+          ).toBe("");
+        } else {
+          expect(prepare).not.toHaveBeenCalled();
+          expect(file).not.toHaveBeenCalled();
+          expect(inference).not.toHaveBeenCalled();
+          await expect(
+            readFile(path.join(state.workspaceDir, "memory/checkpoint.md"), "utf8"),
+          ).rejects.toMatchObject({ code: "ENOENT" });
+        }
+        expect(sessionStore[scope.sessionKey]).toBe(entry);
+        expect(loadSessionEntry(scope)).toEqual(entry);
+      } finally {
+        inference.mockRestore();
+        file.mockRestore();
+        prepare.mockRestore();
+        clearMemoryPluginState();
+      }
+    });
+  },
+);
 
 it.each(["completed", "interrupted"] as const)(
   "keeps %s optional memory inference out of the next human turn",

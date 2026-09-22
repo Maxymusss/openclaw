@@ -44,6 +44,7 @@ import {
 import { finalizeChatSendSourceReplies } from "./chat-send-source-finalization.js";
 import { createChatSendTurnAdoptionLifecycle } from "./chat-send-turn-adoption.js";
 import { applyChatSendManagedMedia } from "./chat-send-user-turn.js";
+import { runWithForegroundChatCleanup } from "./chat-send-work-admission.js";
 import {
   emitOperatorChatSendServerTiming,
   roundedChatSendTimingMs,
@@ -234,11 +235,27 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
   };
   const dispatchAdmission = {
     run: <T>(operation: () => Promise<T>) =>
-      gatewayWorkAdmission.run(() =>
-        userTurnRecorder.withPendingInput
-          ? userTurnRecorder.withPendingInput(operation)
-          : operation(),
-      ),
+      gatewayWorkAdmission.run(() => {
+        const run = () =>
+          userTurnRecorder.withPendingInput
+            ? userTurnRecorder.withPendingInput(operation)
+            : operation();
+        if (admission.operatorAuthority?.executionPolicy !== "foreground-only") {
+          return run();
+        }
+        return runWithForegroundChatCleanup({
+          admission: gatewayWorkAdmission,
+          retain: retainGatewayWorkAdmission,
+          logGateway: context.logGateway,
+          publishReleased: () =>
+            emitSessionsChanged(
+              context,
+              { sessionKey, agentId, reason: "agent.input.settled" },
+              { accessChanged: false },
+            ),
+          run,
+        });
+      }),
   };
   const dashboardReadAdmission = assertDashboardReadCurrent
     ? {

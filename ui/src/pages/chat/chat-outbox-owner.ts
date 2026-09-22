@@ -506,11 +506,11 @@ class ChatOutboxGatewayOwner {
       this.readLive(storedChatOutboxScopeKey(scope), item.id, item)?.submissionIsCurrent,
     );
   }
-  /** Inbox reads delivery state, not the reload-safe aliases stored during live work. */
-  needsReview(scope: Scope, item: ChatQueueItem): boolean {
+  /** Model-setting tails retain custody even though their durable alias is failed. */
+  hasPendingDelivery(scope: Scope, item: ChatQueueItem): boolean {
     const key = storedChatOutboxScopeKey(scope);
     if (this.readLive(key, item.id, item)) {
-      return false;
+      return true;
     }
     for (const state of this.hosts.values()) {
       if (
@@ -518,10 +518,15 @@ class ChatOutboxGatewayOwner {
           .get(key)
           ?.queue.some((local) => local.id === item.id && local.sendState === "waiting-model")
       ) {
-        return false;
+        return true;
       }
     }
+    return false;
+  }
+  /** Inbox reads delivery state, not the reload-safe aliases stored during live work. */
+  needsReview(scope: Scope, item: ChatQueueItem): boolean {
     return (
+      !this.hasPendingDelivery(scope, item) &&
       !item.pendingRunId &&
       (item.sendState === "failed" || item.sendState === "unconfirmed" || item.sendState === "held")
     );

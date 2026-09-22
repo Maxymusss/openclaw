@@ -8,6 +8,19 @@ import type {
   GatewayRequestContext,
   RespondFn,
 } from "../server-methods/shared-types.js";
+import type { AgentRequestPreflight } from "./agent-request-preflight.js";
+import type { RequesterSettleWakeReplay } from "./internal-facade.types.js";
+
+export type AgentTurnStartRequest = {
+  privateCompletion?: true;
+  settleWakeReplay?: RequesterSettleWakeReplay;
+  assertAdmissionCurrent?: () => void;
+  hasCurrentClientAuthority?: () => boolean;
+  preflight: AgentRequestPreflight;
+  principal: AgentTurnPrincipal | null;
+  io: AgentTurnIo;
+  onRunObserved?: (runId: string) => void;
+};
 
 export type AgentTurnFrame = readonly [
   ok: Parameters<RespondFn>[0],

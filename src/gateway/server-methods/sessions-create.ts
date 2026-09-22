@@ -25,6 +25,7 @@ import { assertPreparedSkillLibrarySelection } from "../../skills/library/select
 import { buildDashboardSessionTitleSource } from "../dashboard-session-title.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
+import { authorizeOperatorBackgroundWork } from "../operator-foreground-work.js";
 import { projectOperatorSessionPatch } from "../operator-model-projection.js";
 import { resolveOperatorPermissionCeiling } from "../operator-role-policy.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
@@ -194,6 +195,11 @@ async function handleSessionCreate(
     return;
   }
   const { attachments, hasInitialTurn, message } = initialTurn;
+  const foregroundError = hasInitialTurn ? authorizeOperatorBackgroundWork(client) : undefined;
+  if (foregroundError) {
+    respond(false, undefined, foregroundError);
+    return;
+  }
   const repositoryCreation = resolveSessionRepositoryCreation(p, hasInitialTurn);
   if (!repositoryCreation.ok) {
     respond(false, undefined, repositoryCreation.error);

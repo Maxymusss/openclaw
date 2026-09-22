@@ -30,6 +30,7 @@ import {
   type PreparedAgentRunAdmission,
 } from "./admitted-run-context.js";
 import { wrapRunWithTestPreparedAdmission } from "./admitted-run-context.test-support.js";
+import { assertOperatorModelAllowed } from "./operator-model-policy.js";
 
 const enabledConfig = { logging: { audit: { enabled: true, executionIdentity: true } } };
 const facts = {
@@ -397,6 +398,81 @@ describe("prepared run admission", () => {
     expect(() => assertActive?.()).toThrow("no longer active");
     prepared.close();
     expect(() => assertActive?.()).toThrow("no longer active");
+  });
+
+  it("shares one issued model ceiling and foreground clock across admission", async () => {
+    const now = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const models = ["provider/allowed"];
+    const authority = createAdmittedRunOperatorAuthority({
+      profileId: "combined-operator",
+      scopes: ["operator.write"],
+      permissions: { models: { allow: models } },
+      executionPolicy: "foreground-only",
+      foregroundRunId: "combined-turn",
+      foregroundDeadlineAt: 2_000,
+      signal: new AbortController().signal,
+      assertCurrent: () => {},
+    });
+    expect(() =>
+      prepareAgentRunAdmission({
+        cfg: {},
+        facts: { ...facts, runId: "different-turn" },
+        operationalRunInstance: createOperationalRunInstanceRef("different-turn"),
+        operatorAuthority: authority,
+      }),
+    ).toThrow("Foreground execution requires its original admitted turn");
+    for (const retryOnly of [false, true]) {
+      expect(() =>
+        prepareAgentRunAdmission({
+          cfg: {},
+          facts: { ...facts, runId: "combined-turn" },
+          operationalRunInstance: createOperationalRunInstanceRef("combined-turn"),
+          operatorAuthority: authority,
+          recovery: createExecutionIdentityRecoveryAdmission({ retryOnly }),
+        }),
+      ).toThrow("Foreground execution requires its original admitted turn");
+    }
+    const prepared = prepareAgentRunAdmission({
+      cfg: {},
+      facts: { ...facts, runId: "combined-turn" },
+      operationalRunInstance: createOperationalRunInstanceRef("combined-turn"),
+      operatorAuthority: authority,
+    });
+    try {
+      models.push("provider/forbidden");
+      expect(authority.permissions?.models?.allow).toEqual(["provider/allowed"]);
+      expect(Object.isFrozen(authority.permissions?.models?.allow)).toBe(true);
+      expect(readPreparedRunOperatorAuthority(prepared)).toBe(authority);
+      for (const runtime of ["plugin-harness", "worker"] as const) {
+        await expect(prepared.admit(runtime)).rejects.toThrow(
+          "has not qualified foreground-only execution",
+        );
+      }
+      const admitted = await prepared.admit("embedded");
+      expect(readAdmittedRunOperatorAuthority(admitted)).toBe(authority);
+      for (const runtimeKind of ["plugin-harness", "worker"] as const) {
+        await expect(
+          resolvePreparedRunAdmission({
+            runId: "combined-turn",
+            runtimeKind,
+            admittedRunContext: admitted,
+          }),
+        ).rejects.toThrow("Foreground execution cannot transfer to another run or runtime");
+      }
+      expect(retainAdmittedRunBeforeToolCallRecovery(admitted)).toBeUndefined();
+      expect(() => assertOperatorModelAllowed(authority, "provider", "allowed")).not.toThrow();
+      expect(() => assertOperatorModelAllowed(authority, "provider", "forbidden")).toThrow(
+        "does not allow this model",
+      );
+      now.mockReturnValue(2_000);
+      expect(() => assertOperatorModelAllowed(authority, "provider", "allowed")).toThrow(
+        "deadline has expired",
+      );
+      now.mockReturnValue(1_000);
+      expect(() => prepared.assertSourceCurrent()).toThrow("no longer active");
+    } finally {
+      prepared.close();
+    }
   });
 
   it("closes generic authority while keeping a recovery-only lease active", async () => {

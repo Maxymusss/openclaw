@@ -51,20 +51,35 @@ type PendingPermissionChange = {
 const pendingPermissionChanges = new WeakMap<ChatPageHost, Map<string, PendingPermissionChange>>();
 const permissionOutcomeOwners = new WeakMap<ChatPageHost, Map<string, symbol>>();
 
-export function createChatPaneQueuedEditProps(
+export function createChatPaneQueueProps(
   state: ChatPageHost,
   sessionParticipationBlocked: boolean,
-): NonNullable<ChatProps["queuedEdit"]> {
+  providerPaused: boolean,
+  foregroundOnly: boolean,
+): Pick<
+  ChatProps,
+  "onQueueRemove" | "onQueueRetry" | "onQueueSteer" | "onQueueMove" | "queuedEdit"
+> {
   const edit = activeQueuedMessageEdit(state);
   return {
-    editingId: edit?.id ?? null,
-    editingText: edit?.draftText,
-    editingMentions: edit?.mentions,
-    source: edit?.source,
-    onEdit: sessionParticipationBlocked ? undefined : state.editQueuedChatMessage,
-    onEditChange: sessionParticipationBlocked ? undefined : state.updateQueuedChatMessageEdit,
-    onEditSubmit: sessionParticipationBlocked ? undefined : state.submitQueuedChatMessageEdit,
-    onCancel: state.cancelQueuedChatMessageEdit,
+    onQueueRemove: state.removeQueuedMessage,
+    onQueueRetry:
+      providerPaused || foregroundOnly ? undefined : (id) => void state.retryQueuedChatMessage(id),
+    onQueueSteer:
+      sessionParticipationBlocked || providerPaused || foregroundOnly
+        ? undefined
+        : (id) => void state.steerQueuedChatMessage(id),
+    onQueueMove: sessionParticipationBlocked ? undefined : state.moveQueuedChatMessage,
+    queuedEdit: {
+      editingId: edit?.id ?? null,
+      editingText: edit?.draftText,
+      editingMentions: edit?.mentions,
+      source: edit?.source,
+      onEdit: sessionParticipationBlocked ? undefined : state.editQueuedChatMessage,
+      onEditChange: sessionParticipationBlocked ? undefined : state.updateQueuedChatMessageEdit,
+      onEditSubmit: sessionParticipationBlocked ? undefined : state.submitQueuedChatMessageEdit,
+      onCancel: state.cancelQueuedChatMessageEdit,
+    },
   };
 }
 

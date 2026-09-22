@@ -13,6 +13,7 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { isSessionTranscriptProjectionUnavailableError } from "../../config/sessions/session-transcript-projection-error.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
+import { SessionWorkCleanupUnconfirmedError } from "../../sessions/session-work-admission-interruption.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -60,6 +61,10 @@ export function respondChatSendAdmissionError(
   error: unknown,
   respond: GatewayRequestHandlerOptions["respond"],
 ): void {
+  if (error instanceof SessionWorkCleanupUnconfirmedError) {
+    respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, error.message));
+    return;
+  }
   if (error instanceof Error && error.message === "goal-session-busy") {
     respond(
       false,

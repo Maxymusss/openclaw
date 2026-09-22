@@ -11,6 +11,7 @@ import {
   SessionGoalOperationError,
   type SessionGoalOperation,
 } from "../../config/sessions/goals-operations.js";
+import { authorizeOperatorBackgroundWork } from "../operator-foreground-work.js";
 import { resolvePluginSessionOwnershipError } from "../session-plugin-ownership.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import {
@@ -30,6 +31,14 @@ async function handleSessionGoalMutation(
 ): Promise<void> {
   const { client, context, respond } = options;
   const method = request.action === "clear" ? "sessions.goal.clear" : "sessions.goal.update";
+  const foregroundError =
+    request.action === "edit" || request.action === "resume"
+      ? authorizeOperatorBackgroundWork(client)
+      : undefined;
+  if (foregroundError) {
+    respond(false, undefined, foregroundError);
+    return;
+  }
   try {
     const authorization = options.sessionMutationAuthorization
       ? { authorization: options.sessionMutationAuthorization, error: null }

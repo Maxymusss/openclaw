@@ -1,4 +1,5 @@
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { assertOperatorBackgroundWorkAllowed } from "../../agents/operator-foreground-work.js";
 import { getRuntimeConfig } from "../../config/io.js";
 import { canonicalizeMainSessionAlias } from "../../config/sessions/main-session.js";
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
@@ -26,20 +27,24 @@ function resolveSystemEventSessionKey(sessionKey: string, agentId?: string): str
 export const enqueueSystemEventFromSdk = (
   text: string,
   { agentId, ...options }: Parameters<typeof events.enqueueSystemEvent>[1] & { agentId?: string },
-) =>
-  events.enqueueSystemEvent(text, {
+) => {
+  assertOperatorBackgroundWorkAllowed();
+  return events.enqueueSystemEvent(text, {
     ...options,
     sessionKey: resolveSystemEventSessionKey(options.sessionKey, agentId),
   });
+};
 
 export const enqueueSystemEventEntryFromSdk: typeof events.enqueueSystemEventEntry = (
   text,
   options,
-) =>
-  events.enqueueSystemEventEntry(text, {
+) => {
+  assertOperatorBackgroundWorkAllowed();
+  return events.enqueueSystemEventEntry(text, {
     ...options,
     sessionKey: resolveSystemEventSessionKey(options.sessionKey),
   });
+};
 
 export function enqueueRoutedSystemEvent(
   text: string,

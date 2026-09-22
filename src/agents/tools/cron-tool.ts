@@ -8,6 +8,7 @@ import { parseDurationMs } from "../../cli/parse-duration.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { resolveCronCreationDelivery } from "../../cron/delivery-context.js";
 import { assertCronDeliveryInputNonBlankFields } from "../../cron/delivery-target-validation.js";
+import { isCronDisableOnlyPatch } from "../../cron/disable-only-patch.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
 import type { CronDelivery } from "../../cron/types.js";
 import { normalizeHttpWebhookUrl } from "../../cron/webhook-url.js";
@@ -21,6 +22,7 @@ import {
   bindCronManagementGrant,
   bindCronRequesterGrant,
 } from "../cron-creator-authority-context.js";
+import { assertOperatorBackgroundWorkAllowed } from "../operator-foreground-work.js";
 import { CRON_TOOL_DISPLAY_SUMMARY } from "../tool-description-presets.js";
 import { setToolTerminalPresentation } from "../tool-terminal-presentation.js";
 import { AUTOMATIONS_TOOL_NAME } from "./automations-tool-name.js";
@@ -273,6 +275,9 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
       };
       const params = args as Record<string, unknown>;
       const action = readToolStringParam(params, "action", { required: true });
+      if (action === "add" || action === "run" || action === "next_check" || action === "wake") {
+        assertOperatorBackgroundWorkAllowed();
+      }
       if (
         managementAuthority?.managementOnly &&
         !CRON_MANAGEMENT_METHODS.some((method) => method === `cron.${action}`)
@@ -603,6 +608,9 @@ export function createCronTool(opts?: CronToolOptions, deps?: CronToolDeps): Any
               throw new Error("displayName must be a non-empty string or null");
             }
             const patch = normalizeCronJobPatch(canonicalPatch) ?? canonicalPatch;
+            if (!isCronDisableOnlyPatch(patch)) {
+              assertOperatorBackgroundWorkAllowed();
+            }
             if (recoveredFlatPatch && isEmptyRecoveredCronPatch(patch)) {
               throw new Error("job required");
             }

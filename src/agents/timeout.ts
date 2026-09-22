@@ -49,3 +49,26 @@ export function resolveAgentTimeoutMs(opts: {
   }
   return defaultMs;
 }
+
+/** Foreground work must not inherit the ordinary unlimited/default timeout. */
+export function resolveForegroundRunDeadline(opts: {
+  cfg: OpenClawConfig;
+  nowMs: number;
+  overrideMs?: number | null;
+  inheritedDeadlineAt?: number;
+}): number {
+  const seconds = opts.cfg.agents?.defaults?.timeoutSeconds;
+  if (typeof seconds !== "number" || !Number.isSafeInteger(seconds) || seconds <= 0) {
+    throw new Error(
+      "Foreground-only access requires an explicitly configured positive agent timeout. Ask a Gateway administrator to configure it before starting work.",
+    );
+  }
+  const configuredMs = resolveAgentTimeoutMs({ cfg: opts.cfg });
+  const requestedMs = resolveAgentTimeoutMs({ cfg: opts.cfg, overrideMs: opts.overrideMs });
+  // An inherited absolute deadline covers preparation, waits, retries and fallback;
+  // neither a new timeout override nor a nested capture can restart its clock.
+  return Math.min(
+    opts.nowMs + Math.min(configuredMs, requestedMs),
+    opts.inheritedDeadlineAt ?? Number.POSITIVE_INFINITY,
+  );
+}

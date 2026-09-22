@@ -1,4 +1,5 @@
 import { types } from "node:util";
+import { readOperatorExecutionPolicy } from "../shared/operator-execution-policy.js";
 import type {
   PluginGatewayAccessAuthority,
   PluginGatewayAccessPolicy,
@@ -71,6 +72,7 @@ function bindAccessAuthority(
   }
   return {
     grantId,
+    executionPolicy: readOperatorExecutionPolicy(authority.executionPolicy),
     signal: bindAccessSignal(authority.signal, instance),
     assertCurrent: () =>
       instance.run(() => {

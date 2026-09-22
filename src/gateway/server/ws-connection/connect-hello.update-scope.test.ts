@@ -8,6 +8,7 @@ import {
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { resolveGatewayAuth } from "../../auth-resolve.js";
+import type { GatewayClient } from "../../server-methods/types.js";
 import { startGatewayTailscaleExposure } from "../../server-tailscale.js";
 import { prepareTailscalePublishedOrigin } from "../../tailscale-published-origin.js";
 
@@ -70,6 +71,7 @@ vi.mock("../health-state.js", () => ({
 
 vi.mock("../../../state/user-profiles.js", () => ({
   hasMultipleSessionSharingIdentities: vi.fn(() => false),
+  getUserProfileRole: vi.fn(() => null),
 }));
 
 vi.mock("../../control-ui-plugin-tabs.js", () => ({
@@ -96,12 +98,16 @@ vi.mock("../../../infra/tailscale.js", () => ({
 
 import { sendGatewayHello } from "./connect-hello.js";
 
-function makeContext(role: "operator" | "node", scopes: string[]) {
+function makeContext(
+  role: "operator" | "node",
+  scopes: string[],
+  client: GatewayClient | null = null,
+) {
   return {
     handler: {
       socket: new EventEmitter(),
       isClosed: vi.fn(() => false),
-      getClient: () => null,
+      getClient: () => client,
       connId: `conn-${role}`,
       bootId: "gateway-boot-a",
       gatewayMethods: [],
@@ -175,6 +181,51 @@ describe("sendGatewayHello update detail scope", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
+
+  it.each([undefined, "foreground-only"] as const)(
+    "projects the composed execution restriction: %s",
+    async (executionPolicy) => {
+      const client: GatewayClient = {
+        connId: "foreground-hello",
+        connect: {
+          minProtocol: 1,
+          maxProtocol: 1,
+          role: "operator",
+          scopes: ["operator.read"],
+          client: { id: "openclaw-control-ui", version: "test", platform: "web", mode: "webchat" },
+        },
+        internal: {
+          operatorAccessAuthority: {
+            executionPolicy,
+            signal: new AbortController().signal,
+            assertCurrent: () => undefined,
+          },
+        },
+      };
+      const context = makeContext("operator", ["operator.read"], client);
+      context.configSnapshot = {
+        gateway: {
+          roles: {
+            default: "guest",
+            definitions: {
+              guest: { models: { allow: ["test-provider/test-model"] } },
+            },
+          },
+        },
+      };
+      await sendGatewayHello(
+        context as never,
+        makeState("operator", ["operator.read"]) as never,
+        {},
+        "foreground-profile",
+      );
+      expect(helloPayload(context)?.auth.executionPolicy).toBe(executionPolicy);
+      expect(helloPayload(context)?.auth.modelRestricted).toBe(true);
+      expect(Object.hasOwn(helloPayload(context)?.auth ?? {}, "executionPolicy")).toBe(
+        executionPolicy !== undefined,
+      );
+    },
+  );
 
   it.each([
     { mode: "trusted-proxy", tailscale: "off", expected: true },

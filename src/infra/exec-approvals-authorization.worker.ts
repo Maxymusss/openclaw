@@ -21,6 +21,7 @@ import {
   writeExecApprovalsConfigRow,
 } from "./exec-approvals-sqlite.js";
 import { snapshotFromExecApprovalsDatabase } from "./exec-approvals-store.js";
+import { requestSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
 
 function applyAuthorizationBatch(
   db: DatabaseSync,
@@ -69,6 +70,7 @@ export function commitExecAuthorizationsInWorker(
   }
   return runOpenClawStateWriteTransaction(
     ({ db }) => {
+      requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
       // Policy may change while admission waits; only this authoritative pass commits.
       const current = read();
       const committed = applyAuthorizationBatch(db, current, input.items);
@@ -79,6 +81,9 @@ export function commitExecAuthorizationsInWorker(
           raw: committed.snapshot.raw ?? undefined,
         });
       }
+      // A refused commit grant rolls the write back; a granted one linearizes
+      // against later source revocation, which the exec launch checks separately.
+      requestSqliteWorkerOperationAdmission({ stage: "commit", facts: undefined });
       return committed.outcomes;
     },
     { ...options, database },

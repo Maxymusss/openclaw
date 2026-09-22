@@ -22,6 +22,10 @@ import {
 } from "./session-lifecycle-identity.js";
 import { createSessionIdentityLockRunner } from "./session-lifecycle-locks.js";
 import {
+  createSessionWorkAdmissionClosureOwner,
+  type SessionWorkAdmissionClosure,
+} from "./session-work-admission-closures.js";
+import {
   clearSessionWorkAdmissionHandoffs,
   createSessionWorkAdmissionHandoff,
   type HandoffSessionWorkAdmission,
@@ -53,8 +57,6 @@ type SessionWorkAdmission = HandoffSessionWorkAdmission & {
 type SessionLifecycleMutationOwner = {
   identities: readonly string[];
 };
-
-type SessionWorkAdmissionClosure = SessionLifecycleMutationOwner & { reason: Error };
 
 type SessionLifecycleAdmissionState = {
   lifecycleQueues: Map<string, StoreWriterQueue>;
@@ -107,6 +109,17 @@ const {
   currentAdmissions: CURRENT_SESSION_WORK_ADMISSIONS,
   admissionClosures: SESSION_WORK_ADMISSION_CLOSURES,
 } = SESSION_LIFECYCLE_ADMISSION_STATE;
+const admissionClosures = createSessionWorkAdmissionClosureOwner(
+  SESSION_WORK_ADMISSION_CLOSURES,
+  (identities, reason, onInterruptError) => {
+    startNormalizedSessionWorkAdmissionInterruption({
+      identities,
+      reason,
+      pendingOnly: true,
+      onInterruptError,
+    });
+  },
+);
 // Older runtime chunks can create the shared state without this newer index.
 const ACTIVE_SESSION_LIFECYCLE_MUTATION_RUNS =
   (SESSION_LIFECYCLE_ADMISSION_STATE.activeMutationRuns ??= new Set());
@@ -268,7 +281,7 @@ export async function runExclusiveSessionLifecycleMutation<T>(
             // Removing this owner below reopens admission for an explicit later request.
             closeWorkAdmissions: (reason) => {
               releaseWorkAdmissions?.();
-              releaseWorkAdmissions = closeNormalizedSessionWorkAdmissions(identities, reason);
+              releaseWorkAdmissions = admissionClosures.close(identities, reason);
             },
           });
           diagnostic?.mark("run-admission");
@@ -597,6 +610,7 @@ export async function beginSessionWorkAdmission(params: {
   };
   const lease: SessionWorkAdmissionLease = {
     isActive: () => !released,
+    refuseNewWork: admissionClosures.createRefusal(identities, () => !released),
     createHandoff: () => {
       if (released) {
         throw new Error("cannot hand off a released session work admission");
@@ -615,12 +629,7 @@ export async function beginSessionWorkAdmission(params: {
   };
   let removeAbortListener = () => {};
   try {
-    const closedOwner = [...SESSION_WORK_ADMISSION_CLOSURES].find((owner) =>
-      owner.identities.some((identity) => admission.identities.has(identity)),
-    );
-    if (closedOwner) {
-      admission.interrupt?.(closedOwner.reason);
-    }
+    admissionClosures.interruptIfClosed(admission.identities, admission.interrupt);
     const queuedAbort = new Promise<never>((_, reject) => {
       const onAbort = () => {
         if (!writerBarrierStarted) {
@@ -655,6 +664,7 @@ export async function beginSessionWorkAdmission(params: {
           async () => {
             writerBarrierStarted = true;
             signal.throwIfAborted();
+            admissionClosures.assertNotRefused(admission.identities);
             await lease.run(async () => await (params.revalidateAllowed ?? params.assertAllowed)());
           },
           { reentrant: true },
@@ -664,7 +674,11 @@ export async function beginSessionWorkAdmission(params: {
     });
     // Queued acquisition may sit behind the mutation's locks. Abort releases only
     // that reservation; a started writer remains owned until its real completion.
-    return await Promise.race([acquired, queuedAbort]);
+    const admitted = await Promise.race([acquired, queuedAbort]);
+    // This synchronous check issues the lease. A writer reservation is not yet
+    // issued work; sticky cleanup refusal must also cover its awaited validation.
+    admissionClosures.assertNotRefused(admission.identities);
+    return admitted;
   } catch (error) {
     release();
     throw error;
@@ -673,28 +687,13 @@ export async function beginSessionWorkAdmission(params: {
   }
 }
 
-function closeNormalizedSessionWorkAdmissions(identities: readonly string[], reason: Error) {
-  const owner = { identities, reason };
-  SESSION_WORK_ADMISSION_CLOSURES.add(owner);
-  // Retire queued ingress immediately; acquired runs keep their canonical cancellation owner.
-  try {
-    startNormalizedSessionWorkAdmissionInterruption({ identities, reason, pendingOnly: true });
-  } catch (error) {
-    SESSION_WORK_ADMISSION_CLOSURES.delete(owner);
-    throw error;
-  }
-  return () => {
-    SESSION_WORK_ADMISSION_CLOSURES.delete(owner);
-  };
-}
-
 /** Fence ingress while awaiting cleanup that must run outside lifecycle/placement locks. */
 export function closeSessionWorkAdmissions(params: {
   scope: string;
   identities: Iterable<string | undefined>;
   reason: Error;
 }): () => void {
-  return closeNormalizedSessionWorkAdmissions(
+  return admissionClosures.close(
     normalizeSessionIdentities(params.scope, params.identities),
     params.reason,
   );
@@ -704,6 +703,7 @@ function startNormalizedSessionWorkAdmissionInterruption(params: {
   reason?: Error;
   identities: readonly string[];
   pendingOnly?: boolean;
+  onInterruptError?: (error: unknown) => void;
 }): { released: Promise<void>; interruptedRunIds: ReadonlySet<string> } {
   const admissions = new Set<SessionWorkAdmission>();
   const interruptedRunIds = new Set<string>();
@@ -723,9 +723,16 @@ function startNormalizedSessionWorkAdmissionInterruption(params: {
   }
   for (const admission of admissions) {
     admission.interrupted ??= params.reason ?? new Error("Session work admission interrupted");
-    const receipt = admission.interrupt?.(admission.interrupted);
-    if (receipt) {
-      interruptedRunIds.add(receipt.runId);
+    try {
+      const receipt = admission.interrupt?.(admission.interrupted);
+      if (receipt) {
+        interruptedRunIds.add(receipt.runId);
+      }
+    } catch (error) {
+      if (!params.onInterruptError) {
+        throw error;
+      }
+      params.onInterruptError(error);
     }
   }
   return {

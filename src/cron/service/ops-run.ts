@@ -1,3 +1,4 @@
+import { assertOperatorBackgroundWorkAllowed } from "../../agents/operator-foreground-work.js";
 import { retainGatewayDeviceRevocation } from "../../gateway/device-revocation.js";
 import { createAbortError, isAbortError } from "../../infra/abort-signal.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
@@ -363,6 +364,7 @@ export async function run(
   mode?: CronRunMode,
   opts?: ManualRunOptions,
 ) {
+  assertOperatorBackgroundWorkAllowed();
   const execute = async () => {
     const prepared = await prepareManualRun(state, id, mode, opts);
     if (!prepared.ok || !prepared.ran) {
@@ -377,6 +379,7 @@ export async function run(
 
 /** Consumes an observed exit only when its payload owns the durable reservation. */
 export async function runOnExit(state: CronServiceState, id: string, opts: OnExitRunOptions) {
+  assertOperatorBackgroundWorkAllowed();
   const generation = state.lifecycleGeneration;
   const execute = async () => {
     const commitGuard = () => {
@@ -466,6 +469,7 @@ export async function enqueueRun(
   mode?: CronRunMode,
   opts?: { commitGuard?: () => void },
 ) {
+  assertOperatorBackgroundWorkAllowed();
   const disposition = await inspectManualRunDisposition(state, id, mode, opts);
   if (!disposition.ok || !("runnable" in disposition && disposition.runnable)) {
     return disposition;

@@ -183,6 +183,7 @@ export function retainAdmittedRunBeforeToolCallRecovery(
   if (
     !lease ||
     lease.foregroundClosed ||
+    lease.operatorAuthority?.executionPolicy === "foreground-only" ||
     activeNativeHookRecoveryLeases.has(runId) ||
     !validateAgentRunDelegatedAuthority(lease.authority)
   ) {
@@ -302,6 +303,16 @@ export function prepareAgentRunAdmission(params: {
   const operatorAuthority = params.operatorAuthority;
   if (operatorAuthority !== undefined) {
     assertAdmittedRunOperatorAuthority(operatorAuthority);
+    if (
+      operatorAuthority.executionPolicy === "foreground-only" &&
+      (operatorAuthority.foregroundRunId !== params.facts.runId ||
+        operatorAuthority.foregroundDeadlineAt === undefined ||
+        params.recovery)
+    ) {
+      throw new Error(
+        "Foreground execution requires its original admitted turn; background or recovered work is unavailable",
+      );
+    }
   }
   const assertOperatorCurrent = operatorAuthority?.assertCurrent;
   const releaseOperatorAuthority = operatorAuthority?.retain?.();
@@ -352,6 +363,11 @@ export function prepareAgentRunAdmission(params: {
     admit: (runtimeKind, runtimeInstanceId) => {
       if (closed) {
         return Promise.reject(new Error("prepared execution context is already closed"));
+      }
+      if (operatorAuthority?.executionPolicy === "foreground-only" && runtimeKind !== "embedded") {
+        return Promise.reject(
+          new Error("This runtime has not qualified foreground-only execution"),
+        );
       }
       // The first runtime that actually executes fixes the captured runtime fact.
       // Later fallback paths reuse this exact admission instead of recapturing identity.
@@ -408,6 +424,15 @@ export async function resolvePreparedRunAdmission(params: {
     throw new Error("prepared execution context is unavailable or disagrees with the run");
   }
   const lease = delegatedAuthorityLeases.get(admitted);
+  if (lease?.operatorAuthority?.executionPolicy === "foreground-only") {
+    lease.operatorAuthority.assertCurrent();
+    if (
+      params.runtimeKind !== "embedded" ||
+      lease.operatorAuthority.foregroundRunId !== params.runId
+    ) {
+      throw new Error("Foreground execution cannot transfer to another run or runtime");
+    }
+  }
   if (lease && !getAdmittedRunDelegatedAuthority(admitted)) {
     throw new Error("prepared execution authority is no longer active");
   }

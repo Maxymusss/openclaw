@@ -11,6 +11,7 @@ import { managedWorktrees } from "../../agents/worktrees/service.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
+import { authorizeOperatorBackgroundWork } from "../operator-foreground-work.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import { SessionMutationAuthorizationChangedError } from "../session-sharing.js";
 import { resolveDevicePlacementEligibility } from "../worker-environments/device-placement-eligibility.js";
@@ -246,6 +247,11 @@ export const sessionDispatchHandlers: GatewayRequestHandlers = {
       return;
     }
     if (!assertValidParams(params, validateSessionsDispatchParams, "sessions.dispatch", respond)) {
+      return;
+    }
+    const foregroundError = authorizeOperatorBackgroundWork(client);
+    if (foregroundError) {
+      respond(false, undefined, foregroundError);
       return;
     }
     const key = requireSessionKey(params.key, respond);

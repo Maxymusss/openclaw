@@ -38,14 +38,13 @@ import {
   prepareGatewaySkillAuthoring,
   invalidateSkillAuthoringForOtherRequester,
 } from "../skill-library-authoring.js";
-import {
-  terminalizeRestartSafeChatAdmission,
-  type RestartSafeChatTerminalState,
-} from "./chat-restart-recovery.js";
 import { startChatDispatch } from "./chat-send-agent-dispatch.js";
 import { prepareChatSendAttachments } from "./chat-send-attachments.js";
-import { handleChatSendSetupError } from "./chat-send-dispatch-errors.js";
 import type { ChatSendExternalAuthorityAdmission } from "./chat-send-external-authority-contract.js";
+import {
+  createChatSendAdmissionLifecycle,
+  withForegroundChatAuthority,
+} from "./chat-send-foreground.js";
 import {
   createChatSendMessageInjectionStarter,
   settleChatSendPreAckMessageInjection,
@@ -80,6 +79,17 @@ const mediaDocumentContextLoader = createLazyImportLoader(
 );
 
 async function handleChatSendWithOptions(
+  options: GatewayRequestHandlerOptions,
+  onAdmissionOwned?: () => Promise<boolean>,
+  externalAuthorityAdmission?: ChatSendExternalAuthorityAdmission,
+  internalOptions?: ChatSendInternalOptions,
+): Promise<void> {
+  await withForegroundChatAuthority(options, (bound) =>
+    handleCapturedChatSend(bound, onAdmissionOwned, externalAuthorityAdmission, internalOptions),
+  );
+}
+
+async function handleCapturedChatSend(
   {
     req,
     params,
@@ -216,17 +226,14 @@ async function handleChatSendWithOptions(
     : undefined;
 
   const admissionStartedAt = Date.now();
-  const terminalizeRestartSafeAdmission = async (
-    terminalState: RestartSafeChatTerminalState,
-  ): Promise<boolean> =>
-    await terminalizeRestartSafeChatAdmission({
-      admittedSessionId,
-      clientRunId,
-      sessionKey,
-      startedAt: admissionStartedAt,
-      storePath,
-      ...terminalState,
-    });
+  const admissionLifecycle = createChatSendAdmissionLifecycle({
+    session: preparedSession.value,
+    foregroundAdmission: admitted.value.foregroundAdmission,
+    admittedSessionId,
+    startedAt: admissionStartedAt,
+    warn: (message) => context.logGateway.warn(message),
+  });
+  const terminalizeRestartSafeAdmission = admissionLifecycle.terminalize;
   let pendingStageAttempted = false;
   try {
     const assertInputAdmissionCurrent = () => {
@@ -302,6 +309,13 @@ async function handleChatSendWithOptions(
       userTurn,
     });
     const { ctx, isInternalTextSlashCommandTurn } = preparedUserTurn;
+    if (admitted.value.foregroundAdmission) {
+      await admissionLifecycle.admitForeground(() => {
+        admitted.value.assertWorkAdmissionCurrent();
+        sessionMutationCommitGuard?.();
+        sessionMutationAuthorization?.assertCurrent();
+      });
+    }
     admitted.value.setPendingInputCleanup(() => {
       try {
         userTurnRecorder.finishPendingInput?.(
@@ -381,7 +395,7 @@ async function handleChatSendWithOptions(
       );
     }
     let goalResult: SessionGoalOperationResult | undefined;
-    if (restartSafeAdmission) {
+    if (restartSafeAdmission || admitted.value.foregroundAdmission) {
       const persistedUserTurn = await persistGatewayUserTurnTranscript();
       const goalOperation = normalizedRequest.value.goalOperation;
       if (goalOperation) {
@@ -427,7 +441,10 @@ async function handleChatSendWithOptions(
       if (
         !persistedUserTurn ||
         persistedUserTurn.sessionEntry?.status !== "running" ||
-        persistedUserTurn.sessionEntry.restartRecoveryDeliveryRunId !== clientRunId
+        (restartSafeAdmission &&
+          persistedUserTurn.sessionEntry.restartRecoveryDeliveryRunId !== clientRunId) ||
+        (admitted.value.foregroundAdmission &&
+          persistedUserTurn.sessionEntry.foregroundRun?.runId !== clientRunId)
       ) {
         throw new Error("chat turn was not durably admitted");
       }
@@ -634,16 +651,18 @@ async function handleChatSendWithOptions(
       userTurn,
     });
   } catch (err) {
-    await handleChatSendSetupError({
+    await admissionLifecycle.handleSetupError({
       // Uncommitted Goal admissions may retry with their original identity. Committed
       // outcomes replay from the durable receipt instead of this transient error cache.
       cacheResult: normalizedRequest.value.goalOperation === undefined && !pendingStageAttempted,
-      admission: admitted.value,
+      admission: {
+        ...admitted.value,
+        restartSafeAdmission,
+      },
       context,
       error: err,
       respond,
       session: preparedSession.value,
-      terminalizeRestartSafeAdmission,
     });
   }
 }

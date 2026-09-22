@@ -23,6 +23,13 @@ function privateGenerationEntry(): InternalSessionEntry {
     activeWriterRunId: "writer-run",
     lifecycleRevision: "generation-1",
     lifecycleRunId: "lifecycle-run",
+    foregroundRun: {
+      runId: "lifecycle-run",
+      sessionId: "session-1",
+      lifecycleRevision: "generation-1",
+      gatewayLifecycleGeneration: "gateway-1",
+      deadlineAt: 1000,
+    },
     sessionDiffBaselineCapture: {
       version: 1,
       captureId: "capture-1",
@@ -41,6 +48,7 @@ function privateGenerationEntry(): InternalSessionEntry {
 function expectGenerationPrivateFieldsCleared(entry: InternalSessionEntry | undefined): void {
   expect(entry?.activeWriterRunId).toBeUndefined();
   expect(entry?.lifecycleRunId).toBeUndefined();
+  expect(entry?.foregroundRun).toBeUndefined();
   expect(entry?.sessionDiffBaselineCapture).toBeUndefined();
   expect(entry?.transcriptByteCompactionLatch).toBeUndefined();
 }
@@ -69,6 +77,19 @@ const sessionFallbackKeepsThinkingSelectionPrivate: "prevThinkingLevelSelection"
 void sessionFallbackKeepsThinkingSelectionPrivate;
 
 describe("plugin session writer claim projection", () => {
+  it.each([null, false, {}, "unknown"])(
+    "preserves malformed negative custody %j through a public roundtrip",
+    (value) => {
+      const original = privateGenerationEntry();
+      Object.defineProperty(original, "foregroundRun", { value, enumerable: true });
+      const internalStore = { source: original };
+      const publicStore = projectPluginSessionStore(internalStore);
+      expect(publicStore.source).not.toHaveProperty("foregroundRun");
+      reconcilePluginSessionStore({ internalStore, publicStore });
+      expect(Object.hasOwn(internalStore.source, "foregroundRun")).toBe(true);
+      expect(internalStore.source.foregroundRun).toEqual(value);
+    },
+  );
   it.each(["patch", "upsert", "whole-store"] as const)(
     "preserves server publication through %s lifecycle changes while rejecting forged grants",
     async (method) => {
@@ -209,6 +230,11 @@ describe("plugin session writer claim projection", () => {
       activeWriterRunId: "writer-run",
       lifecycleRevision: "generation-1",
       lifecycleRunId: "lifecycle-run",
+      foregroundRun: {
+        runId: "lifecycle-run",
+        sessionId: "session-1",
+        lifecycleRevision: "generation-1",
+      },
       model: "gpt-5.6",
       sessionDiffBaselineCapture: { captureId: "capture-1", status: "pending" },
       transcriptByteCompactionLatch: {
@@ -227,6 +253,11 @@ describe("plugin session writer claim projection", () => {
       activeWriterRunId: "writer-run",
       lifecycleRevision: "generation-1",
       lifecycleRunId: "lifecycle-run",
+      foregroundRun: {
+        runId: "lifecycle-run",
+        sessionId: "session-1",
+        lifecycleRevision: "generation-1",
+      },
       sessionDiffBaselineCapture: { captureId: "capture-1", status: "pending" },
       transcriptByteCompactionLatch: {
         activeBytes: 60_000,

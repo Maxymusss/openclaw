@@ -1,5 +1,9 @@
 import type { GatewayAccessGrantRef } from "../plugins/gateway-access-policy.types.js";
 import {
+  readOperatorExecutionPolicy,
+  type OperatorExecutionPolicy,
+} from "../shared/operator-execution-policy.js";
+import {
   freezeOperatorPermissionCeiling,
   type OperatorPermissionCeiling,
 } from "../shared/operator-permissions.js";
@@ -10,6 +14,10 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   permissions?: OperatorPermissionCeiling;
   /** Original access dependency; null is proven independent, undefined is unclassified. */
   gatewayAccessGrant?: GatewayAccessGrantRef | null;
+  executionPolicy?: OperatorExecutionPolicy;
+  /** Host-captured absolute bound; inherited work cannot restart this clock. */
+  foregroundDeadlineAt?: number;
+  foregroundRunId?: string;
   assertCurrent: () => void;
   signal?: AbortSignal;
   /** Opaque original source identity used only to compare compatible queued input. */
@@ -26,6 +34,20 @@ export function createAdmittedRunOperatorAuthority(
 ): AdmittedRunOperatorAuthority {
   const check = source.assertCurrent;
   const signal = source.signal;
+  const executionPolicy = readOperatorExecutionPolicy(source.executionPolicy);
+  const foregroundDeadlineAt = source.foregroundDeadlineAt;
+  const foregroundRunId = source.foregroundRunId;
+  if (
+    (foregroundDeadlineAt !== undefined || foregroundRunId !== undefined) &&
+    (executionPolicy !== "foreground-only" ||
+      foregroundDeadlineAt === undefined ||
+      !Number.isFinite(foregroundDeadlineAt) ||
+      foregroundDeadlineAt <= 0 ||
+      typeof foregroundRunId !== "string" ||
+      !foregroundRunId.trim())
+  ) {
+    throw new TypeError("A foreground deadline requires a finite foreground-only authority");
+  }
   let revoked = false;
   const authority = Object.freeze({
     profileId: source.profileId,
@@ -34,6 +56,9 @@ export function createAdmittedRunOperatorAuthority(
     gatewayAccessGrant: source.gatewayAccessGrant
       ? Object.freeze({ ...source.gatewayAccessGrant })
       : source.gatewayAccessGrant,
+    executionPolicy,
+    foregroundDeadlineAt,
+    foregroundRunId,
     source: source.source ?? Object.freeze({}),
     signal,
     retain: source.retain,
@@ -43,6 +68,9 @@ export function createAdmittedRunOperatorAuthority(
       }
       try {
         signal?.throwIfAborted();
+        if (foregroundDeadlineAt !== undefined && Date.now() >= foregroundDeadlineAt) {
+          throw new Error("The foreground turn deadline has expired. Start a new request.");
+        }
         check();
       } catch (error) {
         revoked = true;

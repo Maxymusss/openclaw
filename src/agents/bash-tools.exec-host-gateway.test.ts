@@ -514,6 +514,13 @@ function captureProcessUnhandledRejections() {
   return { reasons, restore: () => processEmit.mockRestore() };
 }
 
+function expectUnrestrictedExecAuthorization(expected: Record<string, unknown>) {
+  expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
+    expect.objectContaining(expected),
+    undefined,
+  );
+}
+
 function captureSecurityEvents(): {
   events: DiagnosticSecurityEvent[];
   stop: () => void;
@@ -1163,11 +1170,9 @@ describe("processGatewayAllowlist", () => {
       expect(result.allowWithoutEnforcedCommand).toBeUndefined();
       await expect(result.revalidateBeforeExecution?.()).resolves.toBeUndefined();
       expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
-      expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-        expect.objectContaining({
-          authorization: expect.objectContaining({ source: "auto-review" }),
-        }),
-      );
+      expectUnrestrictedExecAuthorization({
+        authorization: expect.objectContaining({ source: "auto-review" }),
+      });
       expect(warnings).toContain("Exec auto-review allowed once (risk=medium): project inspection");
     },
   );
@@ -1820,15 +1825,13 @@ Command: ${command}`;
       assertCurrent: expect.any(Function),
       revalidateBeforeExecution: expect.any(Function),
     });
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "current-policy",
-          security: "allowlist",
-          ask: "off",
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "current-policy",
+        security: "allowlist",
+        ask: "off",
       }),
-    );
+    });
   });
 
   it("does not bind current policy to redundant exact-command trust", async () => {
@@ -1881,15 +1884,13 @@ Command: ${command}`;
       assertCurrent: expect.any(Function),
       revalidateBeforeExecution: expect.any(Function),
     });
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "current-policy",
-          requireExactCommandApproval: false,
-          requireDurableAllowlistApproval: false,
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "current-policy",
+        requireExactCommandApproval: false,
+        requireDurableAllowlistApproval: false,
       }),
-    );
+    });
   });
 
   it("reviews glob arguments before executing the pinned command", async () => {
@@ -1932,14 +1933,12 @@ Command: ${command}`;
         ask: "off",
       }),
     ).rejects.toThrow("approval revoked");
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "current-policy",
-          security: "full",
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "current-policy",
+        security: "full",
       }),
-    );
+    });
     expect(runExecProcessMock).not.toHaveBeenCalled();
   });
 
@@ -1955,21 +1954,19 @@ Command: ${command}`;
         autoReview: true,
       }),
     ).rejects.toThrow("approval changed");
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "auto-review",
-          ask: "on-miss",
-          policySnapshot: {
-            security: "full",
-            ask: "off",
-            askFallback: "deny",
-            autoAllowSkills: false,
-            allowlistRules: [],
-          },
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "auto-review",
+        ask: "on-miss",
+        policySnapshot: {
+          security: "full",
+          ask: "off",
+          askFallback: "deny",
+          autoAllowSkills: false,
+          allowlistRules: [],
+        },
       }),
-    );
+    });
     expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
   });
 
@@ -2072,14 +2069,12 @@ Command: ${command}`;
       assertCurrent: expect.any(Function),
       revalidateBeforeExecution: expect.any(Function),
     });
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "current-policy",
-          requireExactCommandApproval: true,
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "current-policy",
+        requireExactCommandApproval: true,
       }),
-    );
+    });
   });
 
   it("binds mixed allowlist authorization to exact trust when it bypasses an unavailable plan", async () => {
@@ -2133,15 +2128,13 @@ Command: ${command}`;
     ).rejects.toThrow("exact-command approval revoked");
 
     expect(createAndRegisterDefaultExecApprovalRequestMock).not.toHaveBeenCalled();
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "current-policy",
-          requireExactCommandApproval: true,
-          requireDurableAllowlistApproval: false,
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "current-policy",
+        requireExactCommandApproval: true,
+        requireDurableAllowlistApproval: false,
       }),
-    );
+    });
   });
 
   it("offers allow-always for shell-wrapper misses with reusable executable patterns", async () => {
@@ -2211,16 +2204,14 @@ Command: ${command}`;
     expect(runExecProcessMock).toHaveBeenCalledWith(
       expect.objectContaining({ env, secretEgressBindings }),
     );
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({ source: "explicit-approval" }),
-        allowAlwaysDecision: {
-          kind: "patterns",
-          commandText: "sh -c 'git status'",
-          patterns: [{ pattern: "/usr/bin/git", argPattern: expectedGitArgPattern }],
-        },
-      }),
-    );
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({ source: "explicit-approval" }),
+      allowAlwaysDecision: {
+        kind: "patterns",
+        commandText: "sh -c 'git status'",
+        patterns: [{ pattern: "/usr/bin/git", argPattern: expectedGitArgPattern }],
+      },
+    });
   });
 
   it("requests human approval when auto-review asks on an approval miss", async () => {
@@ -2720,14 +2711,12 @@ EOF`,
       assertCurrent: expect.any(Function),
       revalidateBeforeExecution: expect.any(Function),
     });
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "current-policy",
-          requireExactCommandApproval: true,
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "current-policy",
+        requireExactCommandApproval: true,
       }),
-    );
+    });
   });
 
   it("keeps denying allowlist misses when durable trust does not match", async () => {
@@ -3058,12 +3047,10 @@ EOF`,
     expect(requireSentFollowupText(0)).toContain("approval-state-write-failed");
     expect(runExecProcessMock).not.toHaveBeenCalled();
     expect(commitExecAuthorizationMock).toHaveBeenCalledTimes(1);
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({ source: "explicit-approval" }),
-        allowAlwaysDecision: expect.any(Object),
-      }),
-    );
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({ source: "explicit-approval" }),
+      allowAlwaysDecision: expect.any(Object),
+    });
     expect(captured.events.at(-1)).toMatchObject({
       action: "exec.approval.denied",
       outcome: "error",
@@ -3696,14 +3683,12 @@ EOF`,
       turnSourceChannel: "webchat",
     });
 
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "explicit-approval",
-          policySnapshot: expect.any(Object),
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "explicit-approval",
+        policySnapshot: expect.any(Object),
       }),
-    );
+    });
   });
 
   it("rejects explicit foreground allow-once when the locked policy snapshot changed", async () => {
@@ -3722,14 +3707,12 @@ EOF`,
       }),
     ).rejects.toThrow("approval changed");
 
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "explicit-approval",
-          policySnapshot: expect.any(Object),
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "explicit-approval",
+        policySnapshot: expect.any(Object),
       }),
-    );
+    });
     expect(runExecProcessMock).not.toHaveBeenCalled();
   });
 
@@ -3773,27 +3756,25 @@ EOF`,
       }),
     ).rejects.toThrow("approval revoked");
     expect(commitExecAuthorizationMock).toHaveBeenCalledTimes(1);
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: {
-          source: "explicit-approval",
-          security: "allowlist",
-          ask: "on-miss",
-          allowlistSatisfied: false,
-          policySnapshot: {
-            security: "full",
-            ask: "off",
-            askFallback: "deny",
-            autoAllowSkills: false,
-            allowlistRules: [],
-          },
-          requireAutoAllowSkills: false,
-          requireExactCommandApproval: false,
-          requireDurableAllowlistApproval: false,
+    expectUnrestrictedExecAuthorization({
+      authorization: {
+        source: "explicit-approval",
+        security: "allowlist",
+        ask: "on-miss",
+        allowlistSatisfied: false,
+        policySnapshot: {
+          security: "full",
+          ask: "off",
+          askFallback: "deny",
+          autoAllowSkills: false,
+          allowlistRules: [],
         },
-        allowAlwaysDecision: expect.objectContaining({ kind: "patterns" }),
-      }),
-    );
+        requireAutoAllowSkills: false,
+        requireExactCommandApproval: false,
+        requireDurableAllowlistApproval: false,
+      },
+      allowAlwaysDecision: expect.objectContaining({ kind: "patterns" }),
+    });
     expect(runExecProcessMock).not.toHaveBeenCalled();
   });
 
@@ -3833,14 +3814,12 @@ EOF`,
         turnSourceChannel: "webchat",
       }),
     ).rejects.toThrow("approval revoked");
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "ask-fallback",
-          allowlistSatisfied: true,
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "ask-fallback",
+        allowlistSatisfied: true,
       }),
-    );
+    });
     expect(runExecProcessMock).not.toHaveBeenCalled();
   });
 
@@ -3883,15 +3862,13 @@ EOF`,
     });
 
     expect(result.execCommandOverride).toBe(enforcedCommand);
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "ask-fallback",
-          security: "allowlist",
-          allowlistSatisfied: true,
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "ask-fallback",
+        security: "allowlist",
+        allowlistSatisfied: true,
       }),
-    );
+    });
   });
 
   it("commits a headless allowlist timeout fallback before returning its bound plan", async () => {
@@ -3930,15 +3907,13 @@ EOF`,
     });
 
     expect(result.execCommandOverride).toBe(enforcedCommand);
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "ask-fallback",
-          security: "allowlist",
-          allowlistSatisfied: true,
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "ask-fallback",
+        security: "allowlist",
+        allowlistSatisfied: true,
       }),
-    );
+    });
   });
 
   it("denies allowlist timeout fallback without an enforceable plan", async () => {
@@ -4010,15 +3985,13 @@ EOF`,
       turnSourceChannel: "webchat",
     });
 
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({
-          source: "ask-fallback",
-          ask: "always",
-          allowlistSatisfied: false,
-        }),
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({
+        source: "ask-fallback",
+        ask: "always",
+        allowlistSatisfied: false,
       }),
-    );
+    });
   });
 
   it("revalidates an unavailable inline timeout fallback", async () => {
@@ -4043,11 +4016,9 @@ EOF`,
       trigger: "cron",
     });
 
-    expect(commitExecAuthorizationMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        authorization: expect.objectContaining({ source: "ask-fallback" }),
-      }),
-    );
+    expectUnrestrictedExecAuthorization({
+      authorization: expect.objectContaining({ source: "ask-fallback" }),
+    });
   });
 
   it("denies timed-out inline-eval requests instead of auto-running them", async () => {

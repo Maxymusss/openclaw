@@ -50,6 +50,60 @@ from revocation. A policy must preserve independent staff access; it must not
 infer the requesting person's authority from a session's creator, display name,
 or sandbox state. Shared-secret system authority remains outside person policies.
 
+### Foreground execution restriction (draft)
+
+The access-authority contract reserves `executionPolicy: "foreground-only"`.
+A policy must require that value in the host's `supportedExecutionPolicies`
+before returning restricted access. An absent acknowledgement does not mean
+support. This build does not acknowledge the restriction yet: ordinary tool
+cleanup and compatible-client behavior still need qualification. Do not enable
+a visitor preset on the basis of the new field alone.
+
+The Gateway retains session admission through tracked cleanup, but the Control
+UI's draining indication still needs qualification. Detached plugin callbacks
+and external runtimes also need proof that they retain the original caller and
+stop their work. An absent request context is not evidence of system authority.
+
+The local POSIX builtin exec draft gives each restricted tool generation its own
+process scope. Stop, deadline expiry and permission changes retain that scope
+through descendant and backend cleanup. Staff background processes keep their
+separate scope. Restricted commands cannot request background execution, yield
+to a later turn, detach approval, or fall back from required sandbox isolation.
+Node, Windows and external sandbox execution remain unqualified.
+
+If cleanup cannot confirm extinction, the Gateway refuses new work for that
+exact thread with `UNAVAILABLE`, including after promotion to a staff role.
+The original turn keeps its terminal outcome. The operator must reconcile the
+remaining processes, then replace the Gateway process before continuing. An
+in-process Gateway restart does not clear this refusal, and process replacement
+alone does not prove that the remaining processes stopped. No durable
+grant, database change, global setting or support acknowledgement is added.
+
+The draft lifecycle accepts one fresh Control UI turn in an existing local
+thread, with an absolute deadline from an explicitly configured positive
+`agents.defaults.timeoutSeconds`. It does not change that setting or staff
+defaults. Children, deferred work, scheduled work, cross-thread continuation,
+automatic repair and unsupported ingress are refused before admission. An
+automatic repair failure asks the person to start a new thread or use a
+supported explicit reset action.
+
+Model permissions and foreground execution restrictions apply together to the
+same original authority. Optional title generation, post-reply maintenance and
+private memory checkpoint inference are skipped for foreground-only turns. Required
+in-turn compaction still runs with the original model ceiling, deadline and
+cancellation signal. Skipping optional work does not extend or replace that
+authority.
+
+Accepted restricted turns keep conversation history, but do not resume after
+interruption. The existing session store records the negative recovery decision
+and commits a stopped notice with terminal state and cancellation of resumable
+input. It does not store a reusable execution grant. The Control UI preserves
+the original restriction on saved input, observes delivery receipts after
+reconnect, and requires a new explicit request to continue. Missing or unreadable
+receipts never authorize automatic replay; explicit deletion of retained history
+does not provide indefinite duplicate detection. No new SQLite schema version
+or sidecar store is involved.
+
 ### Durable person access grants
 
 A policy that supports deferred shared publication returns a stable UUID as

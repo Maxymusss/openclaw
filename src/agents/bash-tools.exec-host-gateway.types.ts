@@ -2,6 +2,7 @@ import type { ExecAsk, ExecSecurity } from "../infra/exec-approvals.js";
 import type { ExecAutoReviewer } from "../infra/exec-auto-review.js";
 import type { SafeBinProfile } from "../infra/exec-safe-bin-policy.js";
 import type { SecretEgressSentinelBinding } from "../secrets/egress-proxy/proxy-server.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import type {
   ExecElevatedDefaults,
   ExecApprovalFollowupFactory,
@@ -12,6 +13,7 @@ import type { AgentToolResult } from "./runtime/index.js";
 
 /** Full input bundle for gateway-host allowlist and approval processing. */
 export type ProcessGatewayAllowlistParams = {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   command: string;
   workdir: string;
   env: Record<string, string>;

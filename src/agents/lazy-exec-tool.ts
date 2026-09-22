@@ -8,8 +8,10 @@ import {
 } from "../infra/installation-target-context.js";
 import { mergeGatewayAgentCliPath } from "../infra/openclaw-cli-shim.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import { resolveAgentConfig } from "./agent-scope.js";
 import { describeExecTool } from "./bash-tools.descriptions.js";
+import { captureForegroundExecPolicy } from "./bash-tools.exec-foreground.js";
 import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
 import { execCompletionSchema, execSchema } from "./bash-tools.schemas.js";
 import { createExecToolExecutionTimeoutResolver } from "./exec-tool-timeout.js";
@@ -31,9 +33,11 @@ type LazyExecToolPresentation = Partial<
 export function createLazyExecTool(
   defaults?: ExecToolDefaults,
   presentation?: LazyExecToolPresentation,
+  operatorAuthority?: AdmittedRunOperatorAuthority,
 ): AnyAgentTool {
   // Native tool callbacks can arrive outside the scope that constructed this lazy tool.
   const installationTarget = getInstallationTarget();
+  const foregroundPolicy = captureForegroundExecPolicy(operatorAuthority);
   let loadedTool: LoadedExecTool | undefined;
   let loadingTool: Promise<LoadedExecTool> | undefined;
   const loadTool = () => {
@@ -41,7 +45,9 @@ export function createLazyExecTool(
       return Promise.resolve(loadedTool);
     }
     loadingTool ??= bashToolsModuleLoader.load().then(({ createExecTool }) => {
-      loadedTool = withInstallationTarget(installationTarget, () => createExecTool(defaults));
+      loadedTool = withInstallationTarget(installationTarget, () =>
+        createExecTool(defaults, operatorAuthority),
+      );
       return loadedTool;
     });
     return loadingTool;
@@ -57,7 +63,7 @@ export function createLazyExecTool(
         presentation?.description ??
         describeExecTool({
           hasCronTool: defaults?.hasCronTool === true,
-          hasProcessTool: defaults?.processToolAvailabilityRef?.value,
+          hasProcessTool: foregroundPolicy ? false : defaults?.processToolAvailabilityRef?.value,
           autoReview: defaults?.mode === "auto",
         })
       );
@@ -65,7 +71,9 @@ export function createLazyExecTool(
     get parameters() {
       return (
         presentation?.parameters ??
-        (defaults?.processToolAvailabilityRef?.value === false ? execCompletionSchema : execSchema)
+        (foregroundPolicy || defaults?.processToolAvailabilityRef?.value === false
+          ? execCompletionSchema
+          : execSchema)
       );
     },
     prepareBeforeToolCallParams: async (...args) =>

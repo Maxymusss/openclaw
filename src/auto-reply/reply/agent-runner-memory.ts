@@ -20,6 +20,7 @@ import { findModelInCatalog } from "../../agents/model-catalog-lookup.js";
 import { isCliRuntimeAliasForProvider } from "../../agents/model-runtime-aliases.js";
 import { isCliProvider } from "../../agents/model-selection.js";
 import { resolveContextConfigProviderForRuntime } from "../../agents/openai-routing.js";
+import { isOperatorForegroundWork } from "../../agents/operator-foreground-work.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import { resolveSandboxConfigForAgent, resolveSandboxRuntimeStatus } from "../../agents/sandbox.js";
 import { createSessionMaintenanceFollowup } from "../../agents/session-maintenance/run.js";
@@ -1154,6 +1155,14 @@ export async function runMemoryFlushIfNeeded(params: {
   abortSignal?: AbortSignal;
   onVisibleErrorPayloads?: (payloads: ReplyPayload[]) => void;
 }): Promise<MemoryFlushResult> {
+  let entry =
+    params.sessionEntry ??
+    (params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined);
+  // Private flush inference is a new run. Required compaction keeps the original run below.
+  if (isOperatorForegroundWork({ operatorAuthority: params.followupRun.operatorAuthority })) {
+    logVerbose("memory flush skipped: foreground-only execution owns no private follow-up run");
+    return { sessionEntry: entry, outcome: "skipped" };
+  }
   const abortSignal = resolveFollowupAbortSignal({
     abortSignal: params.replyOperation?.abortSignal ?? params.abortSignal,
     operatorAuthority: params.followupRun.operatorAuthority,
@@ -1174,9 +1183,6 @@ export async function runMemoryFlushIfNeeded(params: {
     return !runtime.sandboxed || workspaceAccess === "rw";
   })();
 
-  let entry =
-    params.sessionEntry ??
-    (params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined);
   if (entry?.incognito === true || isIncognitoSessionKey(params.sessionKey)) {
     return { sessionEntry: entry, outcome: "skipped" };
   }

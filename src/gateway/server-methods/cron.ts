@@ -29,6 +29,7 @@ import {
   resolveCronDeliveryPreviews,
 } from "../../cron/delivery-preview.js";
 import { assertCronDeliveryInputNonBlankFields } from "../../cron/delivery-target-validation.js";
+import { isCronDisableOnlyPatch } from "../../cron/disable-only-patch.js";
 import { cronJobReadView } from "../../cron/job-read-view.js";
 import { resolveCronJobBoundSessionKeys } from "../../cron/job-session-bindings.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
@@ -66,6 +67,7 @@ import {
   getCronManagementAuthority,
   withCronManagementGrant,
 } from "../cron-creator-authority-grant.js";
+import { authorizeOperatorBackgroundWork } from "../operator-foreground-work.js";
 import { authorizeGatewaySessionCreation, operatorSessionCap } from "../operator-role-policy.js";
 import { getGatewayProcessInstanceId } from "../process-instance.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
@@ -83,12 +85,14 @@ import {
   resolveCronMutationCommitGuard,
   resolveCronRequesterProvenanceForJob,
   resolveCronScheduledToolPolicyForCaller,
-  type CronCallerScope,
 } from "./cron-caller-scope.js";
 import { isCronInvalidRequestError } from "./cron-error-classification.js";
 import {
   assertValidCronUpdatePatch,
   assertCronDoesNotTargetAgentHarness,
+  requiresExplicitAgentRuntimeToolsAllow,
+  cronPatchTouchesToolRuntime,
+  isLegacyCreatorPromptUpdate,
 } from "./cron-input-validation.js";
 import { startCronListDiagnostics } from "./cron-list-diagnostics.js";
 import { compactCronListJob } from "./cron-list-projection.js";
@@ -140,42 +144,6 @@ function cronAddPayloadWithDeliveryPreview(params: {
     ...cronJobReadView(job),
     deliveryPreview: params.deliveryPreview,
   };
-}
-
-function requiresExplicitAgentRuntimeToolsAllow(params: {
-  job: Pick<CronJob, "payload" | "trigger">;
-  callerScope: CronCallerScope | undefined;
-}): boolean {
-  return (
-    params.callerScope !== undefined &&
-    !params.callerScope.manageAll &&
-    cronJobUsesToolRuntime(params.job) &&
-    params.job.payload.toolsAllow === undefined
-  );
-}
-
-function cronPatchTouchesToolRuntime(patch: CronJobPatch): boolean {
-  return patch.payload !== undefined || Object.hasOwn(patch, "trigger");
-}
-
-function isLegacyCreatorPromptUpdate(
-  job: CronJob,
-  patch: CronJobPatch,
-  callerScope: CronCallerScope | undefined,
-): boolean {
-  // A prompt edit keeps the legacy execution policy; it cannot establish new
-  // authority or transfer management to another session/account.
-  return (
-    callerScope?.sessionKey !== undefined &&
-    job.owner?.sessionKey === callerScope.sessionKey &&
-    job.owner?.accountId === callerScope.accountId &&
-    job.scheduledToolPolicy === undefined &&
-    job.payload.kind === "agentTurn" &&
-    patch.payload !== undefined &&
-    (patch.payload.kind === undefined || patch.payload.kind === "agentTurn") &&
-    Object.keys(patch).every((key) => key === "payload") &&
-    Object.keys(patch.payload).every((key) => key === "kind" || key === "message")
-  );
 }
 
 function resolveCronJobId(params: CronJobIdParams): string | undefined {
@@ -274,6 +242,11 @@ function cronJobIsVisible(
 /** Gateway request handlers for cron jobs and cron run-log access. */
 export const cronHandlers: GatewayRequestHandlers = {
   wake: async ({ params, respond, context, client }) => {
+    const foregroundError = authorizeOperatorBackgroundWork(client);
+    if (foregroundError) {
+      respond(false, undefined, foregroundError);
+      return;
+    }
     if (!assertValidParams(params, validateWakeParams, "wake", respond)) {
       return;
     }
@@ -615,6 +588,11 @@ export const cronHandlers: GatewayRequestHandlers = {
     sessionMutationCommitGuard,
     hasCurrentClientAuthority,
   }) => {
+    const foregroundError = authorizeOperatorBackgroundWork(client);
+    if (foregroundError) {
+      respond(false, undefined, foregroundError);
+      return;
+    }
     const rawParams = params as {
       declarationKey?: unknown;
       displayName?: unknown;
@@ -846,6 +824,13 @@ export const cronHandlers: GatewayRequestHandlers = {
     }
     if (!normalizedPatch) {
       respondInvalidCronParams(respond, "cron.update", "patch did not normalize");
+      return;
+    }
+    const foregroundError = isCronDisableOnlyPatch(normalizedPatch)
+      ? undefined
+      : authorizeOperatorBackgroundWork(client);
+    if (foregroundError) {
+      respond(false, undefined, foregroundError);
       return;
     }
     const p = candidate as {
@@ -1109,6 +1094,11 @@ export const cronHandlers: GatewayRequestHandlers = {
     sessionMutationCommitGuard,
     hasCurrentClientAuthority,
   }) => {
+    const foregroundError = authorizeOperatorBackgroundWork(client);
+    if (foregroundError) {
+      respond(false, undefined, foregroundError);
+      return;
+    }
     if (!assertValidParams(params, validateCronRunParams, "cron.run", respond)) {
       return;
     }

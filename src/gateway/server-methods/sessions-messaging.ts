@@ -10,6 +10,7 @@ import {
 import { terminateAcceptedCollectorRun } from "../../agents/subagents/spawn/subagent-spawn-cleanup.js";
 import { resolveSessionWorkStartError, type SessionEntry } from "../../config/sessions.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { authorizeOperatorBackgroundWork } from "../operator-foreground-work.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
 import { reactivateCompletedSubagentSession } from "../session-subagent-reactivation.js";
 import {
@@ -106,6 +107,11 @@ async function handleSessionSend(
 ) {
   const queueMode = method === "sessions.steer" ? "interrupt" : undefined;
   if (!assertValidParams(options.params, validateSessionsSendParams, method, options.respond)) {
+    return;
+  }
+  const foregroundError = authorizeOperatorBackgroundWork(options.client);
+  if (foregroundError) {
+    options.respond(false, undefined, foregroundError);
     return;
   }
   const p = options.params;

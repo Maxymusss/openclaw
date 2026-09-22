@@ -9,6 +9,7 @@ import type {
   SessionTranscriptTurnMutation,
   SessionTranscriptTurnMutationResult,
 } from "../config/sessions/goals-operations.types.js";
+import type { SessionTranscriptTurnPersistResult } from "../config/sessions/session-accessor.types.js";
 import type {
   SessionTranscriptTurnExpectedState,
   SessionTranscriptTurnLifecyclePatch,
@@ -149,7 +150,7 @@ export type UserTurnTranscriptPersistResult = {
   /** True only when this call inserted the transcript message. */
   appended?: boolean;
   sessionFile: string;
-  sessionEntry: UserTurnSessionEntry | undefined;
+  sessionEntry: SessionTranscriptTurnPersistResult["sessionEntry"];
   messageId: string;
   message: PersistedUserTurnMessage;
   admission: UserTurnTranscriptAdmissionReceipt;

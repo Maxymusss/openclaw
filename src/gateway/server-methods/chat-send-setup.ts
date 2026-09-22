@@ -2,6 +2,10 @@ import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/i
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
 import type { ProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
 import { admitChatSend } from "./chat-send-admission.js";
+import {
+  prepareForegroundChatAdmission,
+  rejectStoppedForegroundRetry,
+} from "./chat-send-foreground.js";
 import { runChatSendPreAdmission } from "./chat-send-pre-admission.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
 import {
@@ -78,6 +82,28 @@ export async function prepareAndAdmitChatSend(
         ? errorShape(ErrorCodes.INVALID_REQUEST, preparedSession.error)
         : preparedSession.error,
     );
+    return undefined;
+  }
+  try {
+    if (
+      await rejectStoppedForegroundRetry({
+        client,
+        request: normalizedRequest.value,
+        session: preparedSession.value,
+        respond,
+        assertCurrent,
+      })
+    ) {
+      return undefined;
+    }
+    prepareForegroundChatAdmission({
+      client,
+      context,
+      request: normalizedRequest.value,
+      session: preparedSession.value,
+    });
+  } catch (error) {
+    respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, String(error)));
     return undefined;
   }
   if (normalizedRequest.value.mentions) {

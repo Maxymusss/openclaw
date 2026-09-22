@@ -1,4 +1,5 @@
 /** Manual cron wake helper for queueing system events into sessions. */
+import { assertOperatorBackgroundWorkAllowed } from "../../agents/operator-foreground-work.js";
 import {
   isSubagentSessionKey,
   normalizeOptionalAgentId,
@@ -66,6 +67,7 @@ export function wake(
     agentId?: string;
   },
 ) {
+  assertOperatorBackgroundWorkAllowed();
   const text = opts.text.trim();
   if (!text) {
     return { ok: false } as const;

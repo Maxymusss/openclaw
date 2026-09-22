@@ -34,6 +34,7 @@ import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js
 import { listAgentIds, resolveAgentConfig, resolveSessionAgentId } from "../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../child-admission.js";
 import { resolveAgentIdentity } from "../identity.js";
+import { assertOperatorBackgroundWorkAllowed } from "../operator-foreground-work.js";
 import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
 import { resolveSpawnedWorkspaceInheritance, type SpawnedToolContext } from "../spawned-context.js";
 import {
@@ -189,6 +190,7 @@ export async function maybeSpawnVisibleSession(params: {
     }
     return undefined;
   }
+  assertOperatorBackgroundWorkAllowed();
   const modelOverride = normalizeToolModelOverride(readToolStringParam(params.raw, "model"));
   const requestedCwd = readToolStringParam(params.raw, "cwd");
   const spawnedCwd = requestedCwd ? resolveUserPath(requestedCwd) : undefined;

@@ -1,4 +1,5 @@
 // Session goal state tracks objective progress and token budgets in the session store.
+import { assertOperatorBackgroundWorkAllowed } from "../../agents/operator-foreground-work.js";
 import {
   recordSessionGoalChanged,
   type SessionStateActorType,
@@ -145,6 +146,7 @@ export async function getSessionGoal(
 }
 
 export async function createSessionGoal(options: CreateSessionGoalOptions): Promise<SessionGoal> {
+  assertOperatorBackgroundWorkAllowed();
   const objective = options.objective.trim();
   if (!objective) {
     throw new Error("objective required");
@@ -173,6 +175,9 @@ export async function createSessionGoal(options: CreateSessionGoalOptions): Prom
 export async function updateSessionGoalStatus(
   options: UpdateSessionGoalStatusOptions,
 ): Promise<SessionGoal> {
+  if (options.status === "active") {
+    assertOperatorBackgroundWorkAllowed();
+  }
   const now = nowMs(options.now);
   let updated: SessionGoal | undefined;
   let foundSession = false;
@@ -194,6 +199,7 @@ export async function updateSessionGoalStatus(
 export async function updateSessionGoalObjective(
   options: SessionGoalStoreOptions & { objective: string },
 ): Promise<SessionGoal> {
+  assertOperatorBackgroundWorkAllowed();
   const objective = options.objective.trim();
   if (!objective) {
     throw new Error("objective required");

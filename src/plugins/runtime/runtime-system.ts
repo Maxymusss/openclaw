@@ -1,3 +1,4 @@
+import { assertOperatorBackgroundWorkAllowed } from "../../agents/operator-foreground-work.js";
 // Runtime system helpers expose host system operations to activated plugin runtimes.
 import { requestHeartbeat } from "../../infra/heartbeat-wake.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
@@ -17,8 +18,9 @@ const runHeartbeatOnceInternal = createLazyRuntimeMethod(
 
 /** Creates the plugin runtime system facade with heartbeat/event/process helpers. */
 export function createRuntimeSystem(): PluginRuntime["system"] {
-  const requestHeartbeatNow: PluginRuntime["system"]["requestHeartbeatNow"] = (opts) =>
-    requestHeartbeat({
+  const requestHeartbeatNow: PluginRuntime["system"]["requestHeartbeatNow"] = (opts) => {
+    assertOperatorBackgroundWorkAllowed();
+    return requestHeartbeat({
       source: opts?.source ?? "other",
       intent: opts?.intent ?? "immediate",
       reason: opts?.reason,
@@ -27,12 +29,17 @@ export function createRuntimeSystem(): PluginRuntime["system"] {
       sessionKey: opts?.sessionKey,
       heartbeat: opts?.heartbeat,
     });
+  };
 
   return {
     enqueueSystemEvent: enqueueSystemEventFromSdk,
-    requestHeartbeat,
+    requestHeartbeat: (...args) => {
+      assertOperatorBackgroundWorkAllowed();
+      return requestHeartbeat(...args);
+    },
     requestHeartbeatNow,
     runHeartbeatOnce: (opts?: RunHeartbeatOnceOptions) => {
+      assertOperatorBackgroundWorkAllowed();
       // Destructure to forward only the plugin-safe subset; prevent cfg/deps injection at runtime.
       const { reason, agentId, sessionKey, heartbeat } = opts ?? {};
       return runHeartbeatOnceInternal({
@@ -42,7 +49,10 @@ export function createRuntimeSystem(): PluginRuntime["system"] {
         heartbeat: heartbeat ? { target: heartbeat.target } : undefined,
       });
     },
-    runCommandWithTimeout,
+    runCommandWithTimeout: (...args) => {
+      assertOperatorBackgroundWorkAllowed();
+      return runCommandWithTimeout(...args);
+    },
     formatNativeDependencyHint,
   };
 }

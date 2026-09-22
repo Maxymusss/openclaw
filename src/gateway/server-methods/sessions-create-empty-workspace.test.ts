@@ -2,15 +2,18 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
 import { managedWorktrees } from "../../agents/worktrees/service.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { controlUiClient } from "../server.sessions.create.projects.test-support.js";
 import { testState } from "../test-helpers.js";
 import {
   directSessionReq,
   setupGatewaySessionsHandlerTestHarness,
 } from "../test/server-sessions.test-helpers.js";
+import { identifiedClient } from "./sessions-sharing.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const { createSessionStoreDir } = setupGatewaySessionsHandlerTestHarness();
@@ -64,6 +67,60 @@ test("sessions.create starts an owned empty workspace without reading the agent 
       });
     }
   }
+});
+
+test("sessions.create refuses a combined-policy initial turn before creating a workspace or session", async () => {
+  const workspace = tempDirs.make("openclaw-foreground-create-");
+  await fs.writeFile(path.join(workspace, "original.txt"), "Keep the original workspace.");
+  testState.agentConfig = { workspace };
+  const { storePath } = await createSessionStoreDir();
+  const key = "agent:main:dashboard:foreground-create";
+  const profile = ensureProfileForEmail("foreground-create@example.test");
+  const client = identifiedClient(profile.id);
+  const release = vi.fn();
+  const retain = vi.fn(() => release);
+  const source = new AbortController();
+  client.internal = {
+    operatorRunAuthority: createAdmittedRunOperatorAuthority({
+      profileId: profile.id,
+      scopes: ["operator.read", "operator.write"],
+      permissions: { models: { allow: ["test-provider/test-model"] } },
+      executionPolicy: "foreground-only",
+      foregroundRunId: "original-create-turn",
+      foregroundDeadlineAt: Date.now() + 60_000,
+      signal: source.signal,
+      assertCurrent: () => source.signal.throwIfAborted(),
+      retain,
+    }),
+  };
+  const service = await import("../session-create-service.js");
+  const root = await import("./session-create-root.js");
+  const worktree = await import("../session-worktree-preparation.js");
+  const create = vi.spyOn(service, "createGatewaySession");
+  const filesystem = vi.spyOn(root, "prepareSessionCreateFilesystemRoot");
+  const prepareWorktree = vi.spyOn(worktree, "prepareSessionWorktreeCreation");
+
+  const result = await directSessionReq(
+    "sessions.create",
+    { key, agentId: "main", message: "Start a new task", worktree: true, worktreeSource: "empty" },
+    { client, isWebchatConnect: () => true },
+  );
+
+  expect(result).toMatchObject({
+    ok: false,
+    error: { code: "FORBIDDEN", message: expect.stringContaining("one foreground turn only") },
+  });
+  expect(create).not.toHaveBeenCalled();
+  expect(filesystem).not.toHaveBeenCalled();
+  expect(prepareWorktree).not.toHaveBeenCalled();
+  expect(loadSessionEntry({ agentId: "main", sessionKey: key, storePath })).toBeUndefined();
+  expect(managedWorktrees.findLiveByOwner("session", key)).toBeUndefined();
+  expect(await fs.readdir(workspace)).toEqual(["original.txt"]);
+  expect(await fs.readFile(path.join(workspace, "original.txt"), "utf8")).toBe(
+    "Keep the original workspace.",
+  );
+  expect(retain).toHaveBeenCalledOnce();
+  expect(release).toHaveBeenCalledOnce();
 });
 
 test.each([

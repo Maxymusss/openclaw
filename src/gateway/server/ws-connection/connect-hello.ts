@@ -117,6 +117,8 @@ export async function sendGatewayHello(
       ? sha256Base64Url(JSON.stringify(recoveryScopeMaterial))
       : undefined;
   const canMigrateRecovery = role === "operator" && !authenticatedPrincipal && Boolean(deviceToken);
+  const executionPolicy =
+    context.handler.getClient()?.internal?.operatorAccessAuthority?.executionPolicy;
   const snapshot = buildGatewaySnapshot({
     client: context.handler.getClient(),
     includeSensitive: scopes.includes(ADMIN_SCOPE),
@@ -200,6 +202,7 @@ export async function sendGatewayHello(
         ?.models
         ? { modelRestricted: true as const }
         : {}),
+      ...(executionPolicy ? { executionPolicy } : {}),
       ...(recoveryScope ? { recoveryScope } : {}),
       ...(canMigrateRecovery ? { recoveryMigrationAllowed: true as const } : {}),
       ...(deviceToken

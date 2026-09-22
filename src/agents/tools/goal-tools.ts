@@ -9,6 +9,7 @@ import {
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { assertOperatorBackgroundWorkAllowed } from "../operator-foreground-work.js";
 import { stringEnum } from "../schema/typebox.js";
 import {
   type AnyAgentTool,
@@ -96,6 +97,7 @@ export function createCreateGoalTool(options: GoalToolOptions): AnyAgentTool {
       "Create a goal only when explicitly requested by the user or system instructions. Set a positive token_budget only when a budget is explicitly requested; otherwise omit it or pass null. Fails if a goal already exists; the user must clear it before starting another.",
     parameters: CreateGoalToolSchema,
     execute: async (_toolCallId, args) => {
+      assertOperatorBackgroundWorkAllowed();
       const params = args as Record<string, unknown>;
       const objective = readToolStringParam(params, "objective", { required: true });
       const tokenBudget = readPositiveIntegerParam(params, "token_budget", {
