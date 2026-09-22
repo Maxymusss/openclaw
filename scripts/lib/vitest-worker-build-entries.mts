@@ -6,6 +6,7 @@ import { qaGatewayCleanupRuntimeEntrypoint } from "../../extensions/qa-lab/src/g
 import { teamReportsSqliteBackendEntrypoint } from "../../extensions/team-reports/src/sqlite-backend-entrypoint.test-support.ts";
 import { workboardSqliteBackendEntrypoint } from "../../extensions/workboard/src/sqlite-backend-entrypoint.test-support.ts";
 import { authProfileScopeCwdEntrypoint } from "../../src/agents/auth-profiles/store-scope-cwd-runtime.test-support.ts";
+import { processPollLivenessEntrypoint } from "../../src/agents/bash-tools.process-liveness-runtime.test-support.ts";
 import {
   codeModeDescriptionRetentionEntrypoint,
   codeModeRetentionEntrypoint,
@@ -24,6 +25,7 @@ import { doctorConfigRuntimeEntrypoints } from "../../src/commands/doctor-config
 import { cronOwnerHardeningEntrypoints } from "../../src/cron/owner-hardening-runtime.test-support.ts";
 import { sessionChildCacheRetentionEntrypoint } from "../../src/gateway/session-child-cache-retention-entrypoint.test-support.ts";
 import { sessionTitleRetentionEntrypoints } from "../../src/gateway/session-title-retention.test-support.ts";
+import { sqliteReadOnlyCompileCacheParentEntrypoint } from "../../src/infra/sqlite-readonly-worker.compile-cache-runtime.test-support.ts";
 import {
   triageTestRuntimeEntrypoints,
   triageMaintenanceRuntimeEntrypoints,
@@ -31,6 +33,7 @@ import {
 import { nodeHostConfigRuntimeEntrypoint } from "../../src/node-host/config-runtime.test-support.ts";
 import {
   mcpProviderCatalogEntrypoint,
+  mcpPluginToolsServeEntrypoint,
   publishedSdkBridgeEntrypoints,
 } from "../../src/plugins/loader-sdk-bridge-artifacts.test-support.ts";
 import { pluginRuntimeRetentionEntrypoint } from "../../src/plugins/runtime-retention-entrypoint.test-support.ts";
@@ -45,16 +48,29 @@ import {
   stateLeaseRetentionRuntimeEntrypoint,
 } from "../../src/state/openclaw-state-lease-runtime.test-support.ts";
 import { groqSetupSdkEntrypoints } from "../../src/system-agent/setup-inference-groq-sdk.test-support.ts";
+import { transcriptLibraryTimezoneEntrypoint } from "../../src/transcripts/library-timezone-runtime.test-support.ts";
 import { tuiPtyRuntimeEntrypoints } from "../../src/tui/tui-pty-runtime-test-support.ts";
+import { workerBackgroundExecEntrypoints } from "../../src/worker/worker-runtime-background-exec-entrypoints.test-support.ts";
 import { channelIngressGatewayRestartEntrypoint } from "../../test/fixtures/channel-ingress-gateway-restart-entrypoint.ts";
+import { benchSessionHistoryEntrypoint } from "../bench-session-history-runtime.test-support.ts";
 import { runtimeProcessBuildEntrypoints } from "./runtime-process-build-entries.mts";
 import { createRuntimeProcessBuildEntries } from "./runtime-process-core-build-entries.mts";
 import { nativeSchtasksIntegrationEnabled } from "./vitest-worker-declarations.mts";
 
 // These fixture hooks require physical module boundaries and complete namespaces.
-export const legacyFinalizerBuildSources = [
+export const preservedModuleBuildSources = [
+  "src/cli/mcp-cli.ts",
+  "src/agents/agent-bundle-mcp-materialize.ts",
+  "src/plugins/tool-metadata.ts",
+  "src/plugins/tools.ts",
+  "src/plugins/loader.ts",
+  "src/mcp/channel-server.ts",
   "src/cli/update-finalization-output.test-support.ts",
+  "src/cli/program/register.maintenance.ts",
+  "src/cli/one-shot-exit.ts",
   "src/commands/doctor.ts",
+  "src/commands/doctor-lint.ts",
+  "src/commands/doctor-post-upgrade.ts",
   "src/config/config.ts",
   "src/config/paths.ts",
   "src/plugins/installed-plugin-index-records.ts",
@@ -70,6 +86,7 @@ export const legacyFinalizerBuildSources = [
   "src/cli/daemon-cli/restart-health.ts",
   "src/commands/doctor/shared/legacy-config-binding-repair.runtime.ts",
   "src/cli/update-cli/update-command-legacy-finalize.test-support.ts",
+  "src/cli/update-cli/update-command-migrated-fixture.test-support.ts",
   "src/infra/update-migrated-finalize.worker.ts",
   "src/infra/runtime-process-entrypoints.ts",
   "src/cli/update-cli/update-command-service-plan.ts",
@@ -88,19 +105,23 @@ export const vitestWorkerBuildEntries = {
     "src/commands/doctor/shared/legacy-config-binding-repair.runtime.ts",
   ...createRuntimeProcessBuildEntries([
     ...runtimeProcessBuildEntrypoints,
+    benchSessionHistoryEntrypoint,
     ...Object.values(discordAudioTestEntrypoints),
     codexCatalogPageWorkerEntrypoint,
     agentWorkerStoreFixtureEntrypoint,
     memoryPublicationFaultEntrypoint,
+    sqliteReadOnlyCompileCacheParentEntrypoint,
     ...Object.values(triageTestRuntimeEntrypoints),
     ...Object.values(triageMaintenanceRuntimeEntrypoints),
     authProfileScopeCwdEntrypoint,
+    processPollLivenessEntrypoint,
     codeModeRetentionEntrypoint,
     codeModeDescriptionRetentionEntrypoint,
     ...cliCompactionBackendEntrypoints,
     ...Object.values(bashOutputSpillEntrypoints),
     ...publishedSdkBridgeEntrypoints,
     mcpProviderCatalogEntrypoint,
+    mcpPluginToolsServeEntrypoint,
     pluginRuntimeRetentionEntrypoint,
     ...groqSetupSdkEntrypoints,
     ...Object.values(cliRecoveryEntrypoints),
@@ -121,6 +142,7 @@ export const vitestWorkerBuildEntries = {
     ...Object.values(sessionTitleRetentionEntrypoints),
     sessionChildCacheRetentionEntrypoint,
     nodeHostConfigRuntimeEntrypoint,
+    ...Object.values(workerBackgroundExecEntrypoints),
     channelIngressGatewayRestartEntrypoint,
     persistenceRuntimeEntrypoint,
     gitBackupCommandRuntimeEntrypoint,
@@ -133,9 +155,8 @@ export const vitestWorkerBuildEntries = {
     stateLeaseRetentionRuntimeEntrypoint,
     agentDatabaseHeldRuntimeEntrypoint,
     databaseVerifyHostRuntimeEntrypoint,
+    transcriptLibraryTimezoneEntrypoint,
   ]),
-  // The retention fixture executes the real nested QuickJS worker.
-  "agents/code-mode.worker": "src/agents/code-mode.worker.ts",
   // The real ulimit fixture must import its parent before imposing a file-size limit.
   "infra/sqlite-snapshot-source": "src/infra/sqlite-snapshot-source.ts",
   // Keep provider preparation in the same compiled graph as payload rendering;
@@ -143,9 +164,8 @@ export const vitestWorkerBuildEntries = {
   "plugins/provider-hook-runtime": "src/plugins/provider-hook-runtime.ts",
   // Real provider preparation uses packaged JavaScript, avoiding per-child source transforms.
   "extensions/anthropic/index": "extensions/anthropic/index.ts",
-  // Candidate finalization runs the real mandatory post-plugin readiness surface.
-  "extensions/memory-core/doctor-health-api": "extensions/memory-core/doctor-health-api.ts",
   "test-support/anthropic-preparation": "test/scripts/anthropic-preparation-probe.ts",
+  "test-support/provider-hook-scope": "test/scripts/provider-hook-scope.test-support.ts",
   // Exercise native writes through the existing plugin facade in the private graph.
   "plugin-sdk/file-access-runtime": "src/plugin-sdk/file-access-runtime.ts",
 };

@@ -82,6 +82,16 @@ describe("Agent Plugins bundle mock response", () => {
     expect(resolveAgentPluginBundleResponse(body)).toMatchObject({ tool: { name: "tool_search" } });
   });
 
+  it("keeps the current turn's receipts when runtime context follows them", () => {
+    const body = request();
+    body.input.push({
+      role: "user",
+      content:
+        "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nCurrent fixture context\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
+    });
+    expect(resolveAgentPluginBundleResponse(body)).toEqual({ text: "AGENT_BUNDLE_MCP_OK" });
+  });
+
   it.each<[string, (value: Round[]) => void]>([
     [
       "wrong search call",
@@ -105,6 +115,18 @@ describe("Agent Plugins bundle mock response", () => {
       "ambiguous candidates",
       (value) => {
         value[0]!.value = [target, { ...target, id: "other" }];
+      },
+    ],
+    [
+      "extraneous candidate",
+      (value) => {
+        value[0]!.value = [target, { ...target, id: "other", name: "other" }];
+      },
+    ],
+    [
+      "malformed extra candidate",
+      (value) => {
+        value[0]!.value = [target, null];
       },
     ],
     [

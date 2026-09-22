@@ -1,4 +1,5 @@
 import { isRecord } from "../../lib/record-shared.mjs";
+import { readMockUserText } from "./mock-inference-facts.ts";
 
 const targetName = "weather-probe__weather_probe";
 const controls = ["tool_search", "tool_describe", "tool_call"];
@@ -47,7 +48,7 @@ export function resolveAgentPluginBundleResponse(body) {
     return failure("tool-not-declared");
   }
   const input = Array.isArray(body?.input) ? body.input : [];
-  const turn = input.slice(input.findLastIndex((item) => item?.role === "user") + 1);
+  const turn = input.slice(input.findLastIndex((item) => readMockUserText(item) !== undefined) + 1);
   const events = turn.filter(
     (item) => item?.type === "function_call" || item?.type === "function_call_output",
   );
@@ -81,11 +82,12 @@ export function resolveAgentPluginBundleResponse(body) {
     return { tool: { name: "tool_search", args: { query: targetName, limit: 1 } } };
   }
   const search = rounds[0];
-  const candidates = Array.isArray(search.value) ? search.value.filter(isTarget) : [];
+  const candidates = Array.isArray(search.value) ? search.value : [];
   if (
     search.name !== "tool_search" ||
     search.args?.query !== targetName ||
-    candidates.length !== 1
+    candidates.length !== 1 ||
+    !isTarget(candidates[0])
   ) {
     return failure("unexpected-tool-output");
   }

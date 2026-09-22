@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { escapeRegExp } from "../lib/regexp.mjs";
 import { resolveAgentPluginBundleResponse } from "./lib/agent-plugin-bundle-response.mjs";
 import { readPositiveIntEnv, readTcpPortEnv } from "./lib/env-limits.mjs";
-import { summarizeMockInferenceRequest } from "./lib/mock-inference-facts.ts";
+import { readMockUserText, summarizeMockInferenceRequest } from "./lib/mock-inference-facts.ts";
 import {
   boundedRequestLogBody,
   isRequestBodyTooLargeError,
@@ -844,8 +844,9 @@ function mcpAppConformanceEvents(body, bodyText) {
 }
 
 function agentPluginBundleEvents(body) {
-  const allText = collectText(body).join("\n");
-  if (!/agent plugin bundle qa check/i.test(allText)) {
+  const input = Array.isArray(body?.input) ? body.input : [];
+  const userText = input.map(readMockUserText).findLast((text) => text !== undefined) ?? "";
+  if (!/agent plugin bundle qa check/i.test(userText)) {
     return null;
   }
   const response = resolveAgentPluginBundleResponse(body);
