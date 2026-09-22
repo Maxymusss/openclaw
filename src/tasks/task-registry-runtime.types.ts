@@ -15,7 +15,6 @@ import type {
   TaskLiveFlowSyncOutcome,
   TaskRegistryMutationScope,
   TaskRegistryStoreSnapshot,
-  TaskRegistryObserverEvent,
 } from "./task-registry.store.types.js";
 import type { TaskDeliveryState, TaskRecord } from "./task-registry.types.js";
 
@@ -63,7 +62,4 @@ export type TaskRegistryStore = TaskExecutionRestoreStore & {
   close?: () => void;
 };
 
-export type TaskRegistryObservers = {
-  // Observers are incremental/best-effort only. Persistence belongs to TaskRegistryStore.
-  onEvent?: (event: TaskRegistryObserverEvent) => void;
-};
+export type { TaskRegistryObservers } from "./task-registry.store.types.js";
