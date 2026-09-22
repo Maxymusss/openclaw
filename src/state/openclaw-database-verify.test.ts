@@ -636,7 +636,7 @@ describe("OpenClaw database integrity verifier", () => {
     const stateDir = tempDirs.make("openclaw-database-verify-clean-");
     const env = { OPENCLAW_STATE_DIR: stateDir };
     const state = openOpenClawStateDatabase({ env });
-    expect(readOpenClawDatabaseQuarantineFailure("state", state.path, { env })).toBeUndefined();
+    expect(readPersistedQuarantineRow(state.path, { env })).toBeUndefined();
     expect(fs.existsSync(quarantineStorePath(stateDir))).toBe(false);
 
     const agent = openOpenClawAgentDatabase({ agentId: "worker-1", env });
@@ -644,7 +644,7 @@ describe("OpenClaw database integrity verifier", () => {
       path: agent.path,
       clean_close: 0,
     });
-    expect(readOpenClawDatabaseQuarantineFailure("agent", agent.path, { env })).toBeUndefined();
+    expect(readPersistedQuarantineRow(agent.path, { env })).toBeUndefined();
     const raw = new (requireNodeSqlite().DatabaseSync)(quarantineStorePath(stateDir), {
       readOnly: true,
     });

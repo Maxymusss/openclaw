@@ -5500,6 +5500,7 @@ jobs:
     timeout-minutes: 150
     env:
       HISTORICAL_TARGET: ${{ needs.preflight.outputs.compatibility_target }}
+      IOS_CI_PHASE: ${{ matrix.phase }}
     steps:
       - *platform_checkout_step
 
@@ -5599,9 +5600,29 @@ jobs:
             echo "Swift lint wrappers are absent; skipping iOS lint for this frozen target."
           fi
 
+      - name: Prepare iOS simulator
+        if: (matrix.phase == 'smoke' || matrix.phase == 'tests') && needs.preflight.outputs.compatibility_target != 'true'
+        run: |
+          set -euo pipefail
+          source .ci-harness/scripts/lib/swift-toolchain.sh
+          simulator_id="$(prepare_ios_test_simulator)"
+          echo "IOS_SIMULATOR_ID=$simulator_id" >> "$GITHUB_ENV"
+          if [[ "$IOS_CI_PHASE" == "smoke" ]]; then
+            # Apply to the embedded Watch build and the later XCTest build too.
+            smoke_settings="$RUNNER_TEMP/openclaw-ios-smoke.xcconfig"
+            printf 'ARCHS = %s\nCOMPILER_INDEX_STORE_ENABLE = NO\n' "$(uname -m)" > "$smoke_settings"
+            echo "XCODE_XCCONFIG_FILE=$smoke_settings" >> "$GITHUB_ENV"
+          fi
+
       - name: Build iOS app
         if: matrix.phase == 'smoke' || matrix.phase == 'tests'
-        run: pnpm ios:build
+        run: |
+          set -euo pipefail
+          if [[ "$IOS_CI_PHASE" == "smoke" && "$HISTORICAL_TARGET" != "true" ]]; then
+            # Full manual validation retains the universal simulator build.
+            export IOS_DEST="platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}"
+          fi
+          pnpm ios:build
 
       # Debug's incremental compilation can miss actor-isolation diagnostics
       # that Swift's optimized whole-module Release build enforces.
@@ -5621,36 +5642,42 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      # Full pairing/share UI proof stays in full-manual validation; fast regressions join smoke below.
+      - name: Prove native managed document download and export
+        id: ios_attachment_tests
+        if: matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true'
+        env:
+          BASELINE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: /bin/bash scripts/test-ios-chat-attachments.sh "$BASELINE_SHA"
+
       - name: Run focused iOS voice cleanup simulator tests
         id: ios_voice_cleanup_tests
         if: (matrix.phase == 'smoke' || matrix.phase == 'tests') && needs.preflight.outputs.compatibility_target != 'true'
         run: |
           set -euo pipefail
           source .ci-harness/scripts/lib/swift-toolchain.sh
-          simulator_id="$(
-            xcrun simctl list devices available --json | node --input-type=module -e '
-              const chunks = [];
-              for await (const chunk of process.stdin) chunks.push(chunk);
-              const runtimes = JSON.parse(Buffer.concat(chunks).toString("utf8")).devices;
-              const simulator = Object.values(runtimes)
-                .flat()
-                .find((device) => device.isAvailable && device.name.startsWith("iPhone"));
-              if (!simulator) throw new Error("No available iPhone simulator for voice cleanup tests");
-              process.stdout.write(simulator.udid);
-            '
-          )"
           mkdir -p apps/ios/build/LifecycleTestResults
+          diagnostic_collection=on-failure
+          if [[ "$IOS_CI_PHASE" == "smoke" ]]; then
+            # Xcode 27's verbose simulator diagnostics can stall for 600s after passing tests.
+            # Keep xcresult/log evidence here and verbose diagnostics in full manual validation.
+            diagnostic_collection=never
+          fi
           run_apple_command_logged apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.log xcodebuild \
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClaw \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=${simulator_id}" \
+            -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
             -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawVoiceCleanupTests.xcresult \
             -parallel-testing-enabled NO \
+            -collect-test-diagnostics "$diagnostic_collection" \
             -only-testing:OpenClawTests/TalkRealtimeVoiceSessionCleanupTests \
             -only-testing:OpenClawTests/TalkRealtimeConsultCancellationTests \
             -only-testing:OpenClawTests/TalkRealtimeTranscriptWriteQueueTests \
             -only-testing:OpenClawTests/TalkModeManagerTests \
+            -only-testing:OpenClawTests/ManagedDocumentEnvelopeTests \
+            -only-testing:OpenClawTests/IOSMediaArtifactLoaderTests \
+            -only-testing:OpenClawTests/OpenClawTypographyTests \
             test
 
       # App compilation and screenshots do not execute approval or notification
@@ -5661,28 +5688,13 @@ jobs:
         run: |
           set -euo pipefail
           source .ci-harness/scripts/lib/swift-toolchain.sh
-          simulator_id="$(
-            xcrun simctl list devices available --json | node --input-type=module -e '
-              const chunks = [];
-              for await (const chunk of process.stdin) chunks.push(chunk);
-              const runtimes = JSON.parse(Buffer.concat(chunks).toString("utf8")).devices;
-              const simulator = Object.values(runtimes)
-                .flat()
-                .find((device) => device.isAvailable && device.name.startsWith("iPhone"));
-              if (!simulator) {
-                console.error("No available iPhone simulator for iOS lifecycle tests");
-                process.exit(1);
-              }
-              process.stdout.write(simulator.udid);
-            '
-          )"
           result_bundle="apps/ios/build/LifecycleTestResults/OpenClawLifecycleTests.xcresult"
           mkdir -p "apps/ios/build/LifecycleTestResults"
           run_apple_command_logged "${result_bundle%.xcresult}.log" xcodebuild \
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClaw \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=${simulator_id}" \
+            -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
             -resultBundlePath "$result_bundle" \
             -parallel-testing-enabled NO \
             -only-testing:OpenClawLogicTests/WatchVoiceTurnTrackerTests \
@@ -5703,7 +5715,7 @@ jobs:
             -project apps/ios/OpenClaw.xcodeproj \
             -scheme OpenClawUITests \
             -configuration Debug \
-            -destination "platform=iOS Simulator,id=${simulator_id}" \
+            -destination "platform=iOS Simulator,id=${IOS_SIMULATOR_ID:?}" \
             -resultBundlePath apps/ios/build/LifecycleTestResults/OpenClawWatchDeliveryUITests.xcresult \
             -parallel-testing-enabled NO \
             -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testWatchMessageDeliveryIsReachableFromSettings \
@@ -5772,13 +5784,15 @@ jobs:
             test-without-building
 
       - name: Upload iOS lifecycle simulator evidence
-        if: ${{ always() && ((steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped') || (steps.ios_voice_cleanup_tests.outcome != '' && steps.ios_voice_cleanup_tests.outcome != 'skipped')) }}
+        if: ${{ always() && ((steps.ios_lifecycle_tests.outcome != '' && steps.ios_lifecycle_tests.outcome != 'skipped') || (steps.ios_voice_cleanup_tests.outcome != '' && steps.ios_voice_cleanup_tests.outcome != 'skipped') || (steps.ios_attachment_tests.outcome != '' && steps.ios_attachment_tests.outcome != 'skipped')) }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-lifecycle-tests-${{ needs.preflight.outputs.checkout_revision }}
           path: |
             apps/ios/build/LifecycleTestResults/*.xcresult
             apps/ios/build/LifecycleTestResults/*.log
+            apps/ios/build/LifecycleTestResults/Attachment-*
+            apps/ios/build/LifecycleTestResults/attachments-*
           if-no-files-found: warn
           retention-days: 14
 
