@@ -5,7 +5,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/config/sessions/session-accessor.sqlite-message-cut.test.ts",
   "src/gateway/server-methods/chat-send-projection-cancellation.test.ts",
   "src/gateway/session-activity-summaries.test.ts",
-  "src/gateway/session-history-worker.integration.test.ts",
   "src/gateway/session-row-projection.recovery.test.ts",
   "src/gateway/session-transcript-readers.test.ts",
   "src/gateway/session-transcript-title-reader.test.ts",
