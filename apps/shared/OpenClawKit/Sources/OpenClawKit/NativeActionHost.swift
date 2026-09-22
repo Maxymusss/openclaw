@@ -110,8 +110,15 @@ public protocol OpenClawNativeActionCatalog {
 public protocol OpenClawNativeActionHost: OpenClawNativeActionCatalog, OpenClawNativeActionOpenRouter {
     func prepareSend(
         to session: OpenClawNativeSessionRef,
-        message: String) async throws -> OpenClawNativePreparedSend
-    func inspect(_ run: OpenClawNativeRunRef) async throws -> OpenClawNativeRunInspection
+        message: String) async throws -> (send: OpenClawNativePreparedSend, presentationContinuationID: UUID)
+    func inspect(_ run: OpenClawNativeRunRef) async throws
+        -> (inspection: OpenClawNativeRunInspection, presentationContinuationID: UUID)
+    func openRun(_ run: OpenClawNativeRunRef, continuing id: UUID) async throws -> OpenClawNativeRunOpenOutcome
+}
+
+public enum OpenClawNativeRunOpenOutcome: Equatable, Sendable {
+    case opened
+    case skipped
 }
 
 @MainActor

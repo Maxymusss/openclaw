@@ -1518,7 +1518,7 @@ struct SwiftUIRenderSmokeTests {
                     #expect(sentParams.isEmpty)
                 } else if action == "new-chat" || isUnbound || retiresDuringCreate {
                     let prepared: OpenClawNativePreparedSend? = if retiresDuringCreate {
-                        try await router.prepareSend(to: session, message: "retired confirmation")
+                        try await router.prepareSend(to: session, message: "retired confirmation").send
                     } else {
                         nil
                     }
@@ -1630,6 +1630,7 @@ struct SwiftUIRenderSmokeTests {
                     if action == "reopen" || action == "profile-reopen" {
                         let oldBinding = try #require(presentation.binding)
                         let oldConfirmation = try await router.prepareSend(to: session, message: "old confirmation")
+                            .send
                         if action == "profile-reopen" {
                             let reused = try #require(presentation.binding)
                             #expect(reused !== oldBinding && oldBinding.canReuse(reused))
@@ -1679,7 +1680,7 @@ struct SwiftUIRenderSmokeTests {
                         await #expect(throws: Error.self) { try await oldConfirmation.submit() }
                         #expect(sentParams.isEmpty)
                     }
-                    let prepared = try await router.prepareSend(to: session, message: "native submission")
+                    let prepared = try await router.prepareSend(to: session, message: "native submission").send
                     let run = try await prepared.submit()
                     #expect(run.session == session)
                     #expect(run.runID == "native-run")

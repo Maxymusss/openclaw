@@ -185,7 +185,7 @@ struct NativeActionRouterTests {
                 publicationAttempted = true
             }
             let inspection = Task { try await host.router.inspect(
-                .init(session: host.session(), runID: "run-a")) }
+                .init(session: host.session(), runID: "run-a")).inspection }
             do {
                 let receipt = try await host.waitForReceipt()
                 let authority = try #require(host.router.capturePresentationAuthority(rootID))
@@ -723,7 +723,7 @@ struct NativeActionRouterTests {
         }
 
         func prepare(_ agent: String = "main") async throws -> OpenClawNativePreparedSend {
-            try await self.router.prepareSend(to: self.session(agent), message: "one intentional message")
+            try await self.router.prepareSend(to: self.session(agent), message: "one intentional message").send
         }
 
         func openOrdinaryChat() async throws -> OpenClawChatViewModel {
@@ -752,12 +752,30 @@ struct NativeActionRouterTests {
             self.chatRegistrationID = nil
         }
 
-        func waitForReceipt() async throws -> NativeActionRouter.RunPresentation {
+        func waitForReceipt(after previous: UUID? = nil) async throws -> NativeActionRouter.RunPresentation {
             let deadline = ContinuousClock.now + .seconds(2)
-            while self.receipt == nil, ContinuousClock.now < deadline {
+            while self.receipt == nil || self.receipt?.id == previous, ContinuousClock.now < deadline {
                 try await Task.sleep(for: .milliseconds(10))
             }
-            return try #require(self.receipt)
+            let receipt = try #require(self.receipt)
+            try #require(receipt.id != previous)
+            return receipt
+        }
+
+        func acknowledgingInspection<T: Sendable>(
+            _ operation: @escaping @MainActor () async throws -> T) async throws -> T
+        {
+            let previous = self.receipt?.id
+            let task = Task { try await operation() }
+            do {
+                let receipt = try await self.waitForReceipt(after: previous)
+                self.router.acknowledgeInspection(receipt, presentationID: self.presentationID)
+                return try await task.value
+            } catch {
+                task.cancel()
+                _ = try? await task.value
+                throw error
+            }
         }
 
         func close() async {
@@ -1803,6 +1821,7 @@ struct NativeActionRouterTests {
             let choice = try #require(choices.first)
             #expect(choice.session == selected)
             let prepared = try await host.router.prepareSend(to: choice.session, message: "one older-session action")
+                .send
             let chat = try #require(host.chat)
             #expect(chat.hasCurrentSessionMetadata)
             #expect(chat.sessions.count == 50)
@@ -1832,7 +1851,7 @@ struct NativeActionRouterTests {
         try await self.withHost { host in
             let message = " \tFirst e\u{301} 🦊\n" +
                 (long ? String(repeating: "A longer captured line e\u{301}\n", count: 300) : "Second line\n")
-            let prepared = try await host.router.prepareSend(to: host.session(), message: message)
+            let prepared = try await host.router.prepareSend(to: host.session(), message: message).send
             #expect(prepared.message.utf8.elementsEqual(message.utf8))
             #expect(host.sent.isEmpty)
             let chat = try #require(host.chat)
@@ -1998,7 +2017,7 @@ struct NativeActionRouterTests {
                     await host.model.operatorSession.disconnect()
                 } else if mode != "afterRefresh" {
                     let run = OpenClawNativeRunRef(session: host.session(), runID: "newer-inspection")
-                    let task = Task { try await host.router.inspect(run) }
+                    let task = Task { try await host.router.inspect(run).inspection }
                     inspecting = task
                     let receipt = try await host.waitForReceipt()
                     host.router.acknowledgeInspection(receipt, presentationID: root)
@@ -2058,7 +2077,7 @@ struct NativeActionRouterTests {
         try await self.withHost { host in
             host.registerPresentedChat = false
             let run = OpenClawNativeRunRef(session: host.session(), runID: "run-a")
-            let inspection = Task { try await host.router.inspect(run) }
+            let inspection = Task { try await host.router.inspect(run).inspection }
             do {
                 let receipt = try await host.waitForReceipt()
                 let binding = try #require(host.binding)
@@ -2107,7 +2126,7 @@ struct NativeActionRouterTests {
                 chat.switchSession(to: "global", agentID: "main")
             }
             await #expect(throws: CancellationError.self) {
-                _ = try await host.router.inspect(.init(session: host.session(), runID: "run-a"))
+                _ = try await host.router.inspect(.init(session: host.session(), runID: "run-a")).inspection
             }
             #expect(host.receipt == nil)
             #expect(host.sent.isEmpty)
@@ -2118,7 +2137,7 @@ struct NativeActionRouterTests {
         try await self.withHost { host in
             _ = try await host.prepare()
             let run = OpenClawNativeRunRef(session: host.session(), runID: "run-a")
-            let first = Task { try await host.router.inspect(run) }
+            let first = Task { try await host.router.inspect(run).inspection }
             do {
                 let oldReceipt = try await host.waitForReceipt()
                 let chat = try #require(host.chat)
@@ -2128,7 +2147,7 @@ struct NativeActionRouterTests {
                 host.router.acknowledgeInspection(oldReceipt, presentationID: host.presentationID)
                 #expect(!host.router.isInspectionPresented(oldReceipt))
                 await #expect(throws: CancellationError.self) { _ = try await first.value }
-                let second = Task { try await host.router.inspect(run) }
+                let second = Task { try await host.router.inspect(run).inspection }
                 do {
                     let current = try await host.waitForReceipt()
                     #expect(current.id != oldReceipt.id)
@@ -2209,6 +2228,174 @@ struct NativeActionRouterTests {
                     "Reconnect to the selected account to check this operation. Do not send it again.")
             }
             #expect(host.sent.count == 1)
+        }
+    }
+
+    @Test(arguments: ["idle-b", "same-target-aba"])
+    func `automatic opening preserves newer navigation after an accepted send`(departure: String) async throws {
+        try await self.withHost { host in
+            let prepared = try await host.router.prepareSend(to: host.session(), message: "one accepted message")
+            let entered = AsyncStream<Void>.makeStream()
+            let release = AsyncStream<Void>.makeStream()
+            host.deferredSendReply = {
+                entered.continuation.yield(())
+                for await _ in release.stream {
+                    break
+                }
+            }
+            let submit = Task {
+                defer { entered.continuation.finish() }
+                return try await prepared.send.submit()
+            }
+            do {
+                var iterator = entered.stream.makeAsyncIterator()
+                _ = try #require(await iterator.next())
+                try #require(host.sent.count == 1)
+                host.model.setSelectedAgentId("research")
+                if departure == "same-target-aba" { host.model.setSelectedAgentId("main") }
+                release.continuation.finish()
+                let run = try await submit.value
+                #expect(run == .init(session: host.session(), runID: "run-1"))
+
+                let destination = host.session(departure == "idle-b" ? "research" : "main")
+                try #require(await host.router.open(.session(destination)) == .opened)
+                let chat = try #require(host.chat)
+                try #require(chat.input.isEmpty && !chat.hasDraftToSend && chat.pendingRunCount == 0)
+                let presentations = host.presentations
+                let reads = host.nativeReads
+                let owner = host.model.chatViewModelOwnerID
+                let attachments = chat.attachments.map(\.id)
+                #expect(try await host.router.openRun(run, continuing: prepared.presentationContinuationID) == .skipped)
+                #expect(host.chat === chat)
+                #expect(host.model.chatViewModelOwnerID == owner)
+                #expect(host.model.chatDeliveryAgentId == destination.agentID)
+                #expect(host.model.chatSessionKey == destination.sessionKey)
+                #expect(chat.input.isEmpty && chat.replyTarget == nil && chat.attachments.map(\.id) == attachments)
+                #expect(host.receipt == nil)
+                #expect(host.presentations == presentations && host.nativeReads == reads)
+                do {
+                    _ = try await prepared.send.submit()
+                    Issue.record("Retired replay must preserve the accepted send and refuse redispatch")
+                } catch let error as OpenClawNativeActionError {
+                    #expect(error.message ==
+                        "Reconnect to the selected account to check this operation. Do not send it again.")
+                }
+                #expect(host.sent.count == 1)
+                // A subsequent deliberate Open Run has fresh presentation authority.
+                #expect(try await host.acknowledgingInspection { await host.router.open(.inspect(run)) } == .opened)
+                #expect(host.binding?.session == run.session)
+                #expect(host.sent.count == 1)
+            } catch {
+                release.continuation.finish()
+                submit.cancel()
+                _ = try? await submit.value
+                entered.continuation.finish()
+                throw error
+            }
+        }
+    }
+
+    @Test func `automatic send and inspection reuse only their current origin`() async throws {
+        try await self.withHost { host in
+            let first = try await host.router.prepareSend(to: host.session(), message: "accepted once")
+            let sameOrigin = try await host.router.prepareSend(to: host.session(), message: "not submitted")
+            #expect(first.presentationContinuationID == sameOrigin.presentationContinuationID)
+            let run = try await first.send.submit()
+            #expect(try await first.send.submit() == run)
+            #expect(host.sent.count == 1)
+            #expect(try await host.acknowledgingInspection {
+                try await host.router.openRun(run, continuing: first.presentationContinuationID)
+            } == .opened)
+            let inspected = try await host.acknowledgingInspection { try await host.router.inspect(run) }
+            #expect(inspected.inspection.run == run)
+            #expect(inspected.presentationContinuationID == first.presentationContinuationID)
+            #expect(try await host.acknowledgingInspection {
+                try await host.router.openRun(run, continuing: inspected.presentationContinuationID)
+            } == .opened)
+
+            let newer = try await host.router.prepareSend(to: host.session("research"), message: "new origin")
+            #expect(newer.presentationContinuationID != first.presentationContinuationID)
+            #expect(try await host.router.openRun(run, continuing: inspected.presentationContinuationID) == .skipped)
+            let newerRun = OpenClawNativeRunRef(session: host.session("research"), runID: "newer-run")
+            #expect(try await host.acknowledgingInspection {
+                try await host.router.openRun(newerRun, continuing: newer.presentationContinuationID)
+            } == .opened)
+            #expect(host.sent.count == 1)
+        }
+    }
+
+    @Test(arguments: ["root-removed", "root-replaced", "account-aba", "config-aba", "route", "unknown-id"])
+    func `automatic opening cannot renew a retired origin`(retirement: String) async throws {
+        try await self.withHost { host in
+            let prepared = try await host.router.prepareSend(to: host.session(), message: "not sent")
+            let binding = try #require(host.binding)
+            switch retirement {
+            case "root-removed", "root-replaced":
+                try host.router.unregisterPresentation(#require(host.presentationID))
+                if retirement == "root-replaced" { host.registerPresentation() }
+            case "account-aba":
+                binding.observe(.verified(profileID: "other-fixture-profile"))
+                binding.observe(.verified(profileID: binding.expectedProfileId))
+            case "config-aba":
+                let original = try #require(host.model.activeGatewayConnectConfig)
+                host.model.activeGatewayConnectConfig = GatewayConnectConfig(
+                    url: original.url, stableID: original.stableID, tls: original.tls,
+                    token: "replacement-fixture-account", bootstrapToken: original.bootstrapToken,
+                    password: original.password, nodeOptions: original.nodeOptions)
+                host.model.activeGatewayConnectConfig = original
+            case "route": await host.model.operatorSession.disconnect()
+            default: break
+            }
+            let presentations = host.presentations
+            let reads = host.nativeReads
+            let id = retirement == "unknown-id" ? UUID() : prepared.presentationContinuationID
+            #expect(try await host.router
+                .openRun(.init(session: host.session(), runID: "run-a"), continuing: id) == .skipped)
+            #expect(host.presentations == presentations && host.nativeReads == reads)
+            #expect(host.sent.isEmpty)
+        }
+    }
+
+    @Test(arguments: ["chat.history", "agents.list"])
+    func `automatic opening revalidates its origin after history and binding reads`(method: String) async throws {
+        try await self.withHost { host in
+            let prepared = try await host.router.prepareSend(to: host.session(), message: "not sent")
+            let presentations = host.presentations
+            host.beforeResponse = { received in
+                guard received == method else { return }
+                host.beforeResponse = nil
+                // The awaited real fixture response has not been sent yet.
+                host.model.setSelectedAgentId("research")
+                host.model.setSelectedAgentId("main")
+            }
+            let opening = Task {
+                try await host.router.openRun(
+                    .init(session: host.session(), runID: "run-a"), continuing: prepared.presentationContinuationID)
+            }
+            do {
+                #expect(try await opening.value == .skipped)
+                #expect(host.beforeResponse == nil)
+                #expect(host.presentations == presentations && host.receipt == nil)
+                #expect(host.model.chatDeliveryAgentId == "main")
+                #expect(host.sent.isEmpty)
+            } catch {
+                opening.cancel()
+                _ = try? await opening.value
+                throw error
+            }
+        }
+    }
+
+    @Test func `automatic opening preserves actual account read errors`() async throws {
+        try await self.withHost { host in
+            let prepared = try await host.router.prepareSend(to: host.session(), message: "not sent")
+            host.rejectMethod = "chat.history"
+            await #expect(throws: GatewayResponseError.self) {
+                _ = try await host.router.openRun(
+                    .init(session: host.session(), runID: "run-a"), continuing: prepared.presentationContinuationID)
+            }
+            #expect(host.rejectMethod == nil)
+            #expect(host.sent.isEmpty && host.receipt == nil)
         }
     }
 

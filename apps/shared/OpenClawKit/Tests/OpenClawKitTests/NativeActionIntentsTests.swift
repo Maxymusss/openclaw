@@ -1,6 +1,7 @@
 #if os(iOS) || os(macOS)
-import OpenClawKit
+import Foundation
 import Testing
+@testable import OpenClawKit
 
 struct NativeActionIntentsTests {
     #if os(macOS)
@@ -9,6 +10,66 @@ struct NativeActionIntentsTests {
         await #expect(processExitsWith: .success) {
             try await NativeActionIntentsTests.checkSessionOperations()
         }
+    }
+
+    @Test func `automatic run opening never falls back to a fresh explicit action`() async {
+        await #expect(processExitsWith: .success) {
+            try await NativeActionIntentsTests.checkRunContinuationParameters()
+        }
+    }
+
+    @MainActor
+    private static func checkRunContinuationParameters() async throws {
+        let run = OpenClawNativeRunRef(
+            session: .init(
+                owner: .init(gatewayID: "gateway-a", profileID: "alice"),
+                agentID: "main",
+                sessionKey: "global"), runID: "accepted-run")
+        let target = try OpenClawRunEntity(run: run)
+        let host = ObservingNativeActionHost()
+        OpenClawNativeActionServices.install(host: host)
+        let explicit = OpenRunIntent(target: target)
+        try #require(!explicit.automatic && explicit.presentationID == nil)
+        _ = try await explicit.perform()
+        try #require(host.requests == [.inspect(run)])
+
+        let id = UUID()
+        let automatic = OpenRunIntent(target: target, continuing: id)
+        try #require(automatic.automatic && automatic.presentationID == id.uuidString)
+        // Reconstruct only real parameters, as a fresh framework consumer would.
+        // Actual Shortcuts serialization and hidden editor fields need installed proof.
+        var reconstructed = OpenRunIntent()
+        reconstructed.target = target
+        reconstructed.automatic = automatic.automatic
+        reconstructed.presentationID = automatic.presentationID
+        _ = try await reconstructed.perform()
+        try #require(host.continuations.count == 1)
+        try #require(host.continuations[0].0 == run && host.continuations[0].1 == id)
+        host.continuationOutcome = .skipped
+        _ = try await reconstructed.perform()
+        try #require(host.continuations.count == 2)
+
+        let malformedIDs: [String?] = [nil, "", "not-a-uuid"]
+        for value in malformedIDs {
+            reconstructed.presentationID = value
+            _ = try await reconstructed.perform()
+        }
+        try #require(host.continuations.count == 2)
+        reconstructed.automatic = false
+        for value in ["", "not-a-uuid", id.uuidString] {
+            reconstructed.presentationID = value
+            await #expect(throws: OpenClawNativeActionError.self) { _ = try await reconstructed.perform() }
+        }
+        try #require(host.requests == [.inspect(run)])
+
+        host.failContinuation = true
+        await #expect(throws: OpenClawNativeActionError.self) { _ = try await automatic.perform() }
+        let cancelled = Task { try await automatic.perform() }
+        cancelled.cancel()
+        await #expect(throws: CancellationError.self) { _ = try await cancelled.value }
+        try #require(host.continuations.count == 3)
+        let resolved = try await OpenClawRunQuery().entities(for: [target.id])
+        try #require(resolved.map(\.run) == [run])
     }
 
     @MainActor
@@ -82,6 +143,15 @@ struct NativeActionIntentsTests {
 @MainActor
 private final class ObservingNativeActionHost: OpenClawNativeActionHost {
     var requests: [OpenClawNativeOpenRequest] = []
+    var continuations: [(OpenClawNativeRunRef, UUID)] = []
+    var continuationOutcome = OpenClawNativeRunOpenOutcome.opened
+    var failContinuation = false
+
+    func openRun(_ run: OpenClawNativeRunRef, continuing id: UUID) async throws -> OpenClawNativeRunOpenOutcome {
+        self.continuations.append((run, id))
+        if self.failContinuation { throw OpenClawNativeActionError("The selected Gateway refused this read.") }
+        return self.continuationOutcome
+    }
 
     func open(_ request: OpenClawNativeOpenRequest) async -> OpenClawNativeOpenOutcome {
         self.requests.append(request)
@@ -98,12 +168,14 @@ private final class ObservingNativeActionHost: OpenClawNativeActionHost {
 
     func prepareSend(
         to session: OpenClawNativeSessionRef,
-        message: String) async throws -> OpenClawNativePreparedSend
+        message: String) async throws -> (send: OpenClawNativePreparedSend, presentationContinuationID: UUID)
     {
         throw OpenClawNativeActionError("Opening or composing must not submit a message.")
     }
 
-    func inspect(_ run: OpenClawNativeRunRef) async throws -> OpenClawNativeRunInspection {
+    func inspect(_ run: OpenClawNativeRunRef) async throws
+        -> (inspection: OpenClawNativeRunInspection, presentationContinuationID: UUID)
+    {
         throw OpenClawNativeActionError("Opening or composing must not inspect a run.")
     }
 }

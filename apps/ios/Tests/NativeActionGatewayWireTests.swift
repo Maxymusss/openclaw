@@ -183,7 +183,7 @@ struct NativeActionGatewayWireTests {
                 agentID: "qa",
                 sessionKey: spec.sessionKey)
             do {
-                return try await self.router.prepareSend(to: session, message: spec.message)
+                return try await self.router.prepareSend(to: session, message: spec.message).send
             } catch {
                 // Read public state before cleanup, without suspending or exposing identities.
                 // Missing owners leave their readiness and identity checks unknown.

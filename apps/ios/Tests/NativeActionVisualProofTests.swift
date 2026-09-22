@@ -797,7 +797,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                     let route = await model.operatorSession.currentRoute(ifGatewayID: gatewayID)
                     let prepared: OpenClawNativePreparedSend?
                     if scenario == .pagesPrepared || scenario == .pagesRemoval {
-                        prepared = try await router.prepareSend(to: session, message: "fresh after Pages")
+                        prepared = try await router.prepareSend(to: session, message: "fresh after Pages").send
                         // Split layout keeps Edit Pages reachable without another
                         // navigation action retiring the confirmation before the sheet.
                         XCTAssertEqual(RootTabs.sidebarLayoutMode(containerSize: ownedWindow.bounds.size), .split)
@@ -814,7 +814,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                         holdAnyNativeHistory = !heldInspect
                         if heldPrepare {
                             preparingModal = Task {
-                                try await router.prepareSend(to: session, message: "held Pages preparation")
+                                try await router.prepareSend(to: session, message: "held Pages preparation").send
                             }
                         } else {
                             opening = Task { await router.open(heldInspect ? .inspect(run) : .session(session)) }
@@ -883,7 +883,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 assertPagesState()
                             }
                             do {
-                                _ = try await router.prepareSend(to: destination, message: "Refused behind Pages")
+                                _ = try await router.prepareSend(to: destination, message: "Refused behind Pages").send
                                 XCTFail("Pages admitted a native confirmation")
                             } catch {
                                 XCTAssertEqual(
@@ -994,7 +994,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                         }
                         XCTAssertEqual(sends, 0)
                         permitsModalSend = true
-                        let fresh = try await router.prepareSend(to: session, message: "fresh after Pages")
+                        let fresh = try await router.prepareSend(to: session, message: "fresh after Pages").send
                         let receipt = try await fresh.submit()
                         XCTAssertEqual(receipt.session, session)
                         XCTAssertEqual(sends, 1)
@@ -1037,7 +1037,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                         .chatModalPreparedShared ||
                         scenario == .chatModalRemovalApp || scenario == .chatModalRemovalShared
                     {
-                        try await router.prepareSend(to: session, message: "fresh after dismissal")
+                        try await router.prepareSend(to: session, message: "fresh after dismissal").send
                     } else {
                         nil
                     }
@@ -1054,7 +1054,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                         holdAnyNativeHistory = !heldInspect
                         if heldPrepare {
                             preparingModal = Task {
-                                try await router.prepareSend(to: session, message: "held modal preparation")
+                                try await router.prepareSend(to: session, message: "held modal preparation").send
                             }
                         } else {
                             opening = Task { await router.open(heldInspect ? .inspect(run) : .session(session)) }
@@ -1209,7 +1209,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                             }
                             XCTAssertEqual(sends, 0)
                             permitsModalSend = true
-                            let fresh = try await router.prepareSend(to: session, message: "fresh after dismissal")
+                            let fresh = try await router.prepareSend(to: session, message: "fresh after dismissal").send
                             let receipt = try await fresh.submit()
                             XCTAssertEqual(receipt.session, session)
                             XCTAssertEqual(sends, 1)
@@ -1243,6 +1243,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                     let prepared: OpenClawNativePreparedSend?
                     if scenario == .nativePreparedSendAccountABA {
                         prepared = try await router.prepareSend(to: session, message: "retired account confirmation")
+                            .send
                         XCTAssertTrue(chat.hasCurrentSessionMetadata)
                         XCTAssertTrue(chat.healthOK)
                         XCTAssertFalse(chat.hasBlockingRunActivity)
@@ -1297,7 +1298,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                     let originalConfig = try XCTUnwrap(model.activeGatewayConnectConfig)
                     let originalRoute = await model.operatorSession.currentRoute(ifGatewayID: gatewayID)
                     let originalGeneration = model.operatorAuthorityGeneration
-                    let prepared = try await router.prepareSend(to: session, message: "old parent confirmation")
+                    let prepared = try await router.prepareSend(to: session, message: "old parent confirmation").send
                     let parentAuthority = chat.captureSessionTransitionAuthority()
                     chat.input = "parent draft"
                     let message = OpenClawChatMessage(
@@ -1447,7 +1448,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                     let prepared: OpenClawNativePreparedSend? = if ordinary {
                         nil
                     } else {
-                        try await router.prepareSend(to: session, message: "retired before New Chat")
+                        try await router.prepareSend(to: session, message: "retired before New Chat").send
                     }
                     let chat = try XCTUnwrap(model.chatPresentation.viewModel)
                     creatingChat = chat
@@ -1536,7 +1537,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                 if scenario == .inspectionDone || scenario == .inspectionEscape || scenario == .inspectionReplacement {
                     // The first real Run sheet has acknowledged appearance before the
                     // second same-run read begins, so opening cannot pre-cancel the read.
-                    let inspected = try await router.inspect(run)
+                    let inspected = try await router.inspect(run).inspection
                     XCTAssertEqual(inspected.run, run)
                     try await self.waitUntil {
                         guard hosting.presentedViewController?.view.window === ownedWindow else { return false }
@@ -1580,7 +1581,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                         XCTAssertTrue(routeIsCurrent)
                         try await self.waitForComposer(in: ownedWindow)
                         // A later explicit action may open a fresh, acknowledged receipt.
-                        let reopened = try await router.inspect(run)
+                        let reopened = try await router.inspect(run).inspection
                         XCTAssertEqual(reopened.run, run)
                         try await self.waitUntil { hosting.presentedViewController?.view.window === ownedWindow }
                         XCTAssertEqual(inspectedRuns, [[run.runID], [run.runID], [run.runID]])
@@ -1915,7 +1916,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                         let reopened = await router.open(.session(session))
                         XCTAssertEqual(reopened, .opened)
                         try await self.waitForComposer(in: ownedWindow)
-                        let inspected = try await router.inspect(run)
+                        let inspected = try await router.inspect(run).inspection
                         XCTAssertEqual(inspected.run, run)
                         XCTAssertEqual(sends, 0)
                         XCTAssertEqual(creates, 0)
@@ -2044,7 +2045,7 @@ final class NativeActionVisualProofTests: XCTestCase {
 
                 // This awaited call only returns after the actual Run sheet acknowledges
                 // its exact presentation identity through onAppear.
-                let inspection = try await router.inspect(run)
+                let inspection = try await router.inspect(run).inspection
                 XCTAssertEqual(inspection.run, run)
                 XCTAssertEqual(inspection.summary, "Active.")
                 try await self.waitUntil { hosting.presentedViewController?.view.window === ownedWindow }

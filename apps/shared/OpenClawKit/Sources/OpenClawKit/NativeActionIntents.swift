@@ -1,6 +1,7 @@
 #if os(iOS) || os(macOS)
 import AppIntents
 import Foundation
+import OSLog
 
 public struct OpenClawNativeAppIntents: AppIntentsPackage {}
 
@@ -203,6 +204,8 @@ struct OpenRunIntent: OpenIntent {
     static let title: LocalizedStringResource = "Open Run"
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     @Parameter(title: "Run") var target: OpenClawRunEntity
+    @Parameter(title: "Automatic", default: false) var automatic: Bool
+    @Parameter(title: "Presentation") var presentationID: String?
     static var parameterSummary: some ParameterSummary {
         Summary("Open \(\.$target)")
     }
@@ -212,9 +215,35 @@ struct OpenRunIntent: OpenIntent {
         self.target = target
     }
 
+    init(target: OpenClawRunEntity, continuing id: UUID) {
+        self.target = target
+        self.automatic = true
+        self.presentationID = id.uuidString
+    }
+
     @MainActor
     func perform() async throws -> some IntentResult {
-        try await OpenClawNativeActionServices.open(.inspect(self.target.run))
+        try Task.checkCancellation()
+        if self.automatic {
+            let outcome: OpenClawNativeRunOpenOutcome = if let presentationID,
+                                                           let id = UUID(uuidString: presentationID)
+            {
+                try await OpenClawNativeActionServices.host().openRun(self.target.run, continuing: id)
+            } else {
+                .skipped
+            }
+            if outcome == .skipped {
+                // A delayed follow-up must not turn an accepted send into a failed
+                // Shortcut or invite a resend when its original screen has retired.
+                Logger(subsystem: "ai.openclaw", category: "native-actions")
+                    .info("Automatic run opening skipped: the original presentation is no longer available.")
+            }
+        } else {
+            guard self.presentationID == nil else {
+                throw OpenClawNativeActionError("This action cannot open the run. Open it from OpenClaw instead.")
+            }
+            try await OpenClawNativeActionServices.open(.inspect(self.target.run))
+        }
         return .result()
     }
 }
@@ -236,7 +265,7 @@ public struct SendMessageIntent: AppIntent {
     OpensIntent {
         // perform has no OS invocation identifier. Each intentional execution
         // prepares one object; static intent identifiers must never deduplicate sends.
-        let prepared = try await OpenClawNativeActionServices.host().prepareSend(
+        let (prepared, presentationID) = try await OpenClawNativeActionServices.host().prepareSend(
             to: self.session.session, message: self.message)
         try await self.requestConfirmation(
             actionName: .send,
@@ -249,7 +278,7 @@ public struct SendMessageIntent: AppIntent {
         let run = try await prepared.submit()
         return try .result(
             value: OpenClawRunEntity(run: run),
-            opensIntent: OpenRunIntent(target: OpenClawRunEntity(run: run)),
+            opensIntent: OpenRunIntent(target: OpenClawRunEntity(run: run), continuing: presentationID),
             dialog: "Accepted. Open the selected chat to follow the run.")
     }
 }
@@ -267,10 +296,10 @@ public struct InspectRunIntent: AppIntent {
 
     @MainActor
     public func perform() async throws -> some IntentResult & ReturnsValue<String> & ProvidesDialog & OpensIntent {
-        let inspection = try await OpenClawNativeActionServices.host().inspect(self.run.run)
+        let (inspection, presentationID) = try await OpenClawNativeActionServices.host().inspect(self.run.run)
         return try .result(
             value: inspection.summary,
-            opensIntent: OpenRunIntent(target: OpenClawRunEntity(run: inspection.run)),
+            opensIntent: OpenRunIntent(target: OpenClawRunEntity(run: inspection.run), continuing: presentationID),
             dialog: "\(inspection.summary)")
     }
 }

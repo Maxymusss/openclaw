@@ -45,6 +45,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     @ObservationIgnored private var chatPresentationID: UUID?
     private(set) var chatRegistrationID: UUID?
     @ObservationIgnored private var preparation: Preparation?
+    @ObservationIgnored private var runContinuation: RunContinuation?
 
     var presentationRegistrationID: UUID? {
         self.presentation?.id
@@ -66,6 +67,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         _ handler: @escaping PresentationHandler) -> UUID
     {
         let id = UUID()
+        self.runContinuation = nil
         self.presentation = (id, handler, onRetire, onSessionAdopted)
         // A cold action belongs to the first Root that becomes ready, even if
         // navigation replaces that Root before its suspended preparation resumes.
@@ -213,6 +215,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         // Record departure synchronously: returning to the same target must not
         // revive a confirmation or an inspection waiting for visible appearance.
         self.selectionID = UUID()
+        self.runContinuation = nil
         self.inspectionPresentation = nil
         self.presentedInspectionID = nil
         self.presentation?.retire(disposition)
@@ -270,28 +273,88 @@ final class NativeActionRouter: OpenClawNativeActionHost {
 
     func prepareSend(
         to session: OpenClawNativeSessionRef,
-        message: String) async throws -> OpenClawNativePreparedSend
+        message: String) async throws -> (send: OpenClawNativePreparedSend, presentationContinuationID: UUID)
     {
         let presented = try await self.present(.session(session))
+        let continuationID = try self.captureRunContinuation(presented)
         let lease: OpenClawChatTransportRouteLease
         switch await presented.transport.acquireOutboxRouteLease(ifCurrentRoute: presented.binding.route) {
         case let .available(value): lease = value
         case let .unavailable(reason, _):
             throw OpenClawNativeActionError(reason ?? "The selected Gateway is disconnected. Nothing was queued.")
         }
-        return try await presented.gateway.prepareSubmission(
+        let send = try await presented.gateway.prepareSubmission(
             viewModel: presented.chat,
             session: session,
             message: message,
             lease: lease,
             presentationIsCurrent: { [weak self] in self?.isCurrent(presented) == true })
+        return (send, continuationID)
     }
 
-    func inspect(_ run: OpenClawNativeRunRef) async throws -> OpenClawNativeRunInspection {
+    func inspect(_ run: OpenClawNativeRunRef) async throws
+        -> (inspection: OpenClawNativeRunInspection, presentationContinuationID: UUID)
+    {
         let presented = try await self.present(.inspect(run))
         guard await presented.binding.isCurrent(), self.isCurrent(presented),
               let result = self.inspectionPresentation?.inspection, result.run == run else { throw CancellationError() }
-        return result
+        return try (result, self.captureRunContinuation(presented))
+    }
+
+    func openRun(_ run: OpenClawNativeRunRef, continuing id: UUID) async throws -> OpenClawNativeRunOpenOutcome {
+        try Task.checkCancellation()
+        guard let continuation = self.runContinuation, continuation.id == id,
+              continuation.binding.session == run.session else { return .skipped }
+        do {
+            _ = try await self.present(.inspect(run), continuing: continuation)
+            return .opened
+        } catch is RunContinuationRetired {
+            try Task.checkCancellation()
+            return .skipped
+        }
+    }
+
+    private struct RunContinuation {
+        let id = UUID()
+        let rootID: UUID
+        let navigationRevision: UInt64
+        let selectionID: UUID
+        let accountAuthority: AccountAuthority
+        let binding: IOSNativeActionBinding
+    }
+
+    private struct RunContinuationRetired: Error {}
+
+    private func captureRunContinuation(_ presented: PresentedChat) throws -> UUID {
+        try Task.checkCancellation()
+        guard self.isCurrent(presented) else { throw CancellationError() }
+        // Capture before confirmation or ACK suspension. A returned intent carries
+        // only this ephemeral origin reference; its durable run ID is not authority.
+        if let previous = self.runContinuation,
+           previous.rootID == presented.presentationID, previous.navigationRevision == self.navigationRevision,
+           previous.selectionID == presented.selectionID, previous.accountAuthority == presented.accountAuthority,
+           previous.binding.canReuse(presented.binding)
+        {
+            return previous.id
+        }
+        let continuation = RunContinuation(
+            rootID: presented.presentationID, navigationRevision: self.navigationRevision,
+            selectionID: presented.selectionID, accountAuthority: presented.accountAuthority,
+            binding: presented.binding)
+        self.runContinuation = continuation
+        return continuation.id
+    }
+
+    private func requireRunContinuation(_ continuation: RunContinuation) throws {
+        try Task.checkCancellation()
+        guard self.runContinuation?.id == continuation.id,
+              self.presentation?.id == continuation.rootID, self.navigationRevision == continuation.navigationRevision,
+              self.selectionID == continuation.selectionID,
+              self.currentAccountAuthority == continuation.accountAuthority,
+              self.chatPresentationID == continuation.rootID, let chat,
+              self.matches(chat, session: continuation.binding.session),
+              self.chatTransport?.nativeBinding?.canReuse(continuation.binding) == true
+        else { throw RunContinuationRetired() }
     }
 
     private struct CapturedGateway {
@@ -370,15 +433,22 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     }
 
     private func present(
-        _ request: OpenClawNativeOpenRequest) async throws -> PresentedChat
+        _ request: OpenClawNativeOpenRequest,
+        continuing continuation: RunContinuation? = nil) async throws -> PresentedChat
     {
         let session = request.session
+        if let continuation { try self.requireRunContinuation(continuation) }
         guard self.preparation == nil else {
             throw OpenClawNativeActionError("Another native action is opening a chat. Try again when it finishes.")
         }
-        self.preparation = self.presentation.map {
-            .registeredRoot(id: $0.id, navigationRevision: self.navigationRevision)
-        } ?? .waitingForRoot
+        if let continuation {
+            self.preparation = .registeredRoot(
+                id: continuation.rootID, navigationRevision: continuation.navigationRevision)
+        } else {
+            self.preparation = self.presentation.map {
+                .registeredRoot(id: $0.id, navigationRevision: self.navigationRevision)
+            } ?? .waitingForRoot
+        }
         defer { self.preparation = nil }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(10))
@@ -392,6 +462,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         /// Gateways. Explicit navigation and actual host departure cannot be adopted.
         func requireOrigin() throws {
             try Task.checkCancellation()
+            if let continuation { try self.requireRunContinuation(continuation) }
             guard self.presentation?.id == rootID, self.navigationRevision == navigationRevision else {
                 throw CancellationError()
             }
@@ -401,6 +472,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         if self.appModel.activeGatewayConnectConfig?.effectiveStableID.utf8
             .elementsEqual(session.owner.gatewayID.utf8) != true
         {
+            if continuation != nil { throw RunContinuationRetired() }
             let outcome = await self.gatewayController.switchToGateway(stableID: session.owner.gatewayID)
             try requireOrigin()
             switch outcome {
@@ -411,7 +483,13 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         }
         let generation = self.appModel.gatewayConnectGeneration
         var requestedRoute: GatewayNodeSessionRoute?
-        while clock.now < deadline {
+        if let continuation {
+            let current = await continuation.binding.isCurrent()
+            try requireOrigin()
+            guard current else { throw RunContinuationRetired() }
+            requestedRoute = continuation.binding.route
+        }
+        while requestedRoute == nil, clock.now < deadline {
             try requireOrigin()
             guard generation == self.appModel.gatewayConnectGeneration else { throw CancellationError() }
             if self.appModel.isOperatorGatewayConnected,
@@ -451,7 +529,10 @@ final class NativeActionRouter: OpenClawNativeActionHost {
             gateway: self.appModel.operatorSession,
             route: captured.route,
             reservation: captured.retirementReservation)
-        guard await binding.isCurrent(), generation == self.appModel.gatewayConnectGeneration,
+        try requireOrigin()
+        let bindingIsCurrent = await binding.isCurrent()
+        try requireOrigin()
+        guard bindingIsCurrent, generation == self.appModel.gatewayConnectGeneration,
               self.currentAccountAuthority == accountAuthority
         else { throw CancellationError() }
         // The old Gateway's delayed projection may retire selection during reads.
@@ -474,7 +555,10 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         let selectionID = self.selectionID
         let presentationDeadline = clock.now.advanced(by: .seconds(10))
         while clock.now < presentationDeadline {
-            guard await binding.isCurrent(), generation == self.appModel.gatewayConnectGeneration,
+            if let continuation { try self.requireRunContinuation(continuation) }
+            let bindingIsCurrent = await binding.isCurrent()
+            if let continuation { try self.requireRunContinuation(continuation) }
+            guard bindingIsCurrent, generation == self.appModel.gatewayConnectGeneration,
                   self.currentAccountAuthority == accountAuthority,
                   self.presentation?.id == presentation.id,
                   self.selectionID == selectionID else { throw CancellationError() }
