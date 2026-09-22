@@ -299,6 +299,35 @@ send_guided_health_flow() {
   send $'\r' 0.8
 }
 
+validate_guided_skip_ui_log() {
+  local log_path="$1"
+  local mock_request_log="$2"
+  log_contains "Hi — I'm OpenClaw. I keep this system running. Let's get you set up." || {
+    echo "Guided onboarding introduction was not rendered"
+    return 1
+  }
+  log_contains "OpenClaw is ready." || {
+    echo "Guided onboarding did not reach its skip-UI completion"
+    return 1
+  }
+  if log_contains "Opening the Control UI dashboard"; then
+    echo "Guided skip-UI onboarding attempted a browser handoff"
+    return 1
+  fi
+  if log_contains "Your browser is ready"; then
+    echo "Guided skip-UI onboarding completed a browser handoff"
+    return 1
+  fi
+  if log_contains "Hatching your agent now"; then
+    echo "Guided skip-UI onboarding attempted a terminal handoff"
+    return 1
+  fi
+  grep -q '"/v1/responses"' "$mock_request_log" || {
+    echo "Guided onboarding did not verify the configured model through /v1/responses"
+    return 1
+  }
+}
+
 validate_guided_health_log() {
   local log_path="$1"
   local mock_request_log="$2"
@@ -393,12 +422,43 @@ run_guided_health_case() {
 }
 
 run_case_guided_skip_ui() {
-  run_guided_health_case guided-health-success 19091 healthy
+  local mock_port="19091"
+  local mock_log="$ONBOARD_TMP_DIR/guided-skip-ui-mock-openai.log"
+  local mock_request_log="$ONBOARD_TMP_DIR/guided-skip-ui-mock-requests.jsonl"
+  set_isolated_openclaw_env guided-skip-ui
+  export OPENAI_API_KEY="sk-openclaw-guided-skip-ui-e2e"
+  node scripts/e2e/lib/onboard/write-config.mjs \
+    guided-skip-ui \
+    "$OPENCLAW_CONFIG_PATH" \
+    "$OPENCLAW_TEST_WORKSPACE_DIR" \
+    "$mock_port"
+  mock_openai_pid="$(
+    openclaw_e2e_start_tracked_process \
+      "$mock_log" \
+      env MOCK_PORT="$mock_port" MOCK_REQUEST_LOG="$mock_request_log" \
+      node scripts/e2e/mock-openai-server.mjs
+  )"
+  openclaw_e2e_wait_mock_openai "$mock_port"
+
+  run_wizard_cmd \
+    guided-skip-ui \
+    "$HOME" \
+    "node \"$OPENCLAW_ENTRY\" onboard --skip-ui" \
+    send_guided_skip_ui_flow
+
+  validate_guided_skip_ui_log "$WIZARD_LOG_PATH" "$mock_request_log"
+  echo "QA_ASSERT cli.guided-onboarding pass"
+  openclaw_e2e_stop_process "$mock_openai_pid"
+  mock_openai_pid=""
+}
+
+run_case_guided_health_success() {
+  run_guided_health_case guided-health-success 19092 healthy
   echo "QA_ASSERT cli.guided-onboarding.health-success pass"
 }
 
 run_case_guided_health_failure() {
-  run_guided_health_case guided-health-failure 19092 reachable-unhealthy
+  run_guided_health_case guided-health-failure 19093 reachable-unhealthy
   echo "QA_ASSERT cli.guided-onboarding.health-failure pass"
 }
 
@@ -564,6 +624,7 @@ run_selected_cases() {
   for case_name in "${cases[@]}"; do
     case "$case_name" in
       guided-skip-ui) run_case_guided_skip_ui ;;
+      guided-health-success) run_case_guided_health_success ;;
       guided-health-failure) run_case_guided_health_failure ;;
       local-basic) run_case_local_basic ;;
       local-auth-refs) run_case_local_auth_refs ;;
