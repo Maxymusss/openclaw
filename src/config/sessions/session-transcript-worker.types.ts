@@ -72,6 +72,20 @@ export type PreparedSessionTranscriptHydration =
   | { kind: "full"; snapshot: ReturnType<typeof loadTranscriptReadSnapshotSync> }
   | { kind: "bounded"; snapshot: SessionTranscriptBoundedActiveContext };
 
+export type SessionTranscriptHydrationWorkerResult =
+  | {
+      kind: "full";
+      version: ReturnType<typeof loadTranscriptReadSnapshotSync>["version"];
+      eventCount: number;
+    }
+  | Extract<PreparedSessionTranscriptHydration, { kind: "bounded" }>;
+
+export type SessionTranscriptHydrationChunk = {
+  kind: "transcript-hydration-chunk";
+  encoding: string;
+  frames: Array<{ data: Uint8Array; endOfEvent: boolean }>;
+};
+
 export type SessionModelContextWorkerInput = {
   kind: "model-context";
   target: SessionTranscriptRuntimeTarget;
@@ -291,7 +305,7 @@ export type SessionHistoryWorkerPreparedInput = {
 
 export type SessionTranscriptWorkerValues = {
   "transcript-search": SessionTranscriptSearchWorkerResult;
-  "transcript-hydration": PreparedSessionTranscriptHydration;
+  "transcript-hydration": SessionTranscriptHydrationWorkerResult;
   "sqlite-target": { target: ResolvedSqliteStoreTarget };
   "branch-summaries": SessionBranchSummaryReadResult;
   "history-page": SessionHistoryWorkerResult;

@@ -17,6 +17,7 @@ import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-ru
 type Request = {
   input: unknown;
   taskId: number;
+  interactive?: boolean;
   nativeSections: SharedArrayBuffer;
 };
 type Resource = { close: () => Promise<void> };
@@ -36,7 +37,7 @@ const observed = vi.hoisted(() => ({
   quarantineRead: vi.fn<() => unknown>(),
   quarantineClose: vi.fn<() => void>(),
   quarantineOpen: vi.fn<() => QuarantineDatabase>(),
-  snapshot: vi.fn<() => unknown>(),
+  hydrate: vi.fn<() => unknown>(),
   rotate: vi.fn<() => Promise<void>>(),
   unregister: vi.fn<() => void>(),
   resources: [] as Resource[],
@@ -105,8 +106,8 @@ vi.mock("../../infra/node-sqlite.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/node-sqlite.js")>()),
   openNodeSqliteDatabase: observed.quarantineOpen,
 }));
-vi.mock("./session-accessor.sqlite-read.js", () => ({
-  loadTranscriptReadSnapshotSync: observed.snapshot,
+vi.mock("./session-transcript-hydration.worker.js", () => ({
+  streamSessionTranscriptHydration: observed.hydrate,
 }));
 vi.mock("./session-accessor.sqlite-entry.js", () => ({
   loadSessionEntryReadOnlyInScope: () => observed.read(),
@@ -138,11 +139,16 @@ function invoke(request: ReturnType<typeof input>) {
 }
 
 function installWorkerTransport() {
-  observed.run.mockImplementation(async (request) => {
+  observed.run.mockImplementation(async (request, options) => {
     const posted = createDeferredCore<unknown>();
     observed.post.mockImplementation(posted.resolve);
     assert(observed.receive);
-    observed.receive({ input: request, taskId: 7, nativeSections: new SharedArrayBuffer(4) });
+    observed.receive({
+      input: request,
+      taskId: 7,
+      interactive: Boolean(options.onRequest),
+      nativeSections: new SharedArrayBuffer(4),
+    });
     const reply = await posted.promise;
     assert(reply && typeof reply === "object" && "status" in reply);
     if (reply.status === "failed") {
@@ -184,8 +190,9 @@ beforeEach(() => {
     };
     return database;
   });
-  observed.snapshot.mockReset().mockReturnValue({
-    events: [],
+  observed.hydrate.mockReset().mockReturnValue({
+    kind: "full",
+    eventCount: 0,
     version: { generation: null, rawSeq: null, updatedAt: null },
   });
 });
@@ -438,7 +445,7 @@ it("hydrates after an ordinary quarantine metadata failure whose native close su
     snapshot: { events: [] },
   });
   expect(observed.quarantineClose).toHaveBeenCalledOnce();
-  expect(observed.snapshot).toHaveBeenCalledOnce();
+  expect(observed.hydrate).toHaveBeenCalledOnce();
   expect(observed.rotate).not.toHaveBeenCalled();
 });
 
@@ -484,7 +491,7 @@ it.each([
       ).toBe("retiring");
       expect(settled).toBe(false);
       expect(observed.quarantineOpen.mock.results[0]?.value.isOpen).toBe(true);
-      expect(observed.snapshot).not.toHaveBeenCalled();
+      expect(observed.hydrate).not.toHaveBeenCalled();
       expect(observed.unregister).not.toHaveBeenCalled();
       if (retirementFails) {
         retirement.reject(stopFailure);

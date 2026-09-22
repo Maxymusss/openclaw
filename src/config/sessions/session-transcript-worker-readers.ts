@@ -1,3 +1,5 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import type { TranscriptEvent } from "./session-accessor.sqlite-contract.js";
 import {
   MAX_SESSION_ROW_FACTS_KEYS,
   type SessionHistoryWorkerDatabase,
@@ -11,6 +13,7 @@ export type SessionHistoryWorkerRequestRunner = <TResult>(
   inputBytes: number,
   receive: (value: SessionTranscriptWorkerValues[SessionHistoryWorkerInput["kind"]]) => TResult,
   signal?: AbortSignal,
+  onRequest?: (value: unknown) => void,
 ) => Promise<TResult>;
 
 /** Decode domain results; database custody remains with the enclosing history owner. */
@@ -79,8 +82,43 @@ export function createSessionHistoryWorkerReaders(
         }
         return value;
       }),
-    readTranscript: async (input, signal) =>
-      await runRequest(
+    readTranscript: async (input, signal) => {
+      const events: TranscriptEvent[] = [];
+      let parts: string[] = [];
+      let text: { encoding: string; decoder: TextDecoder } | undefined;
+      const receiveChunk = (value: unknown) => {
+        if (
+          !isRecord(value) ||
+          value.kind !== "transcript-hydration-chunk" ||
+          typeof value.encoding !== "string" ||
+          !Array.isArray(value.frames)
+        ) {
+          throw new Error("Session history worker returned an invalid transcript chunk");
+        }
+        if (!text) {
+          text = {
+            encoding: value.encoding,
+            decoder: new TextDecoder(value.encoding, { ignoreBOM: true }),
+          };
+        } else if (text.encoding !== value.encoding) {
+          throw new Error("Session history worker changed transcript encoding during transfer");
+        }
+        for (const frame of value.frames) {
+          if (
+            !isRecord(frame) ||
+            !(frame.data instanceof Uint8Array) ||
+            typeof frame.endOfEvent !== "boolean"
+          ) {
+            throw new Error("Session history worker returned an invalid transcript frame");
+          }
+          parts.push(text.decoder.decode(frame.data, { stream: !frame.endOfEvent }));
+          if (frame.endOfEvent) {
+            events.push(JSON.parse(parts.join("")));
+            parts = [];
+          }
+        }
+      };
+      return await runRequest(
         () => ({ kind: "transcript-hydration", ...input }),
         JSON.stringify(input).length * 2,
         (value) => {
@@ -93,10 +131,18 @@ export function createSessionHistoryWorkerReaders(
               "Session history worker returned another result instead of a transcript",
             );
           }
-          return value;
+          if (value.kind === "bounded") {
+            return value;
+          }
+          if (parts.length !== 0 || events.length !== value.eventCount) {
+            throw new Error("Session history worker returned an incomplete transcript");
+          }
+          return { kind: "full", snapshot: { events, version: value.version } };
         },
         signal,
-      ),
+        input.limits ? undefined : receiveChunk,
+      );
+    },
     readUsageCache: async (input) =>
       await runRequest(
         () => ({ kind: "usage-cache", ...input }),
