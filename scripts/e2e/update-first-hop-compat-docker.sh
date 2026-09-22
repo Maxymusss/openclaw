@@ -126,7 +126,10 @@ for version in "${SOURCE_VERSIONS[@]}"; do
   } >"$lane_artifact_dir/inputs.txt"
 
   echo "Running packaged updater first-hop compatibility Docker E2E (${version:-explicit source})..."
+  # The synthetic service manager detaches Gateway descendants. Reap adopted
+  # exits like systemd so zombie process groups cannot stall restart settlement.
   docker_e2e_run_with_harness \
+    --init \
     -e OPENCLAW_QA_ALLOW_UPDATE_FIRST_HOP=1 \
     -e OPENCLAW_UPDATE_FIRST_HOP_ARTIFACT_DIR=/tmp/openclaw-update-first-hop-artifacts \
     -e OPENCLAW_UPDATE_FIRST_HOP_EXPECTED_MISSING_CHUNK="$expected_missing_chunk" \

@@ -224,7 +224,7 @@ export class SqliteWorkerBroker {
           ...(options.existingOnly ? { existingIdentity: key } : {}),
           input,
           ...(options.preparation ? { preparation: options.preparation } : {}),
-          ...(/\.[cm]?ts$/.test(modulePath)
+          ...(/\.[cm]?ts$/.test(modulePath) && !slot.sourceLoaderPreloaded
             ? { sourceLoaderUrl: import.meta.resolve("tsx/esm/api") }
             : {}),
         },
@@ -421,12 +421,13 @@ export class SqliteWorkerBroker {
       ensureSqliteLibrarySelected();
     }
     const url = resolveRuntimeProcessEntrypointUrl("sqliteStore");
+    const sourceLoaderPreloaded = url.pathname.endsWith(".ts");
     assertCurrent?.();
     const worker = runOutsideCaller(() =>
       createCpuTrackedWorker(url, {
         resourceLimits: { maxOldGenerationSizeMb: 512 },
         env: resolveNodeCompileCacheEnv(),
-        execArgv: url.pathname.endsWith(".ts") ? ["--import", import.meta.resolve("tsx/esm")] : [],
+        execArgv: sourceLoaderPreloaded ? ["--import", import.meta.resolve("tsx/esm")] : [],
       }),
     );
     const exited = createDeferredCore();
@@ -447,6 +448,8 @@ export class SqliteWorkerBroker {
     };
     const slot: Slot = {
       worker,
+      // Re-registering TSX stacks transform hooks; reuse the source worker bootstrap.
+      sourceLoaderPreloaded,
       receiveReply: (reply, pumping) => receiveSqliteWorkerReply(slot, reply, replyOwner, pumping),
       actors: new Set(),
       queue: [],
