@@ -19,6 +19,7 @@ import {
   resolveOpenClawStateDirForDatabasePath,
   resolveOpenClawStateSqlitePath,
 } from "../../state/openclaw-state-db.paths.js";
+import { reclaimSessionArchivePublicationInTransaction } from "./session-accessor.sqlite-archive-transaction.js";
 import type { MaterializedSessionStateDeletePlan } from "./session-accessor.sqlite-archive-types.js";
 import type {
   DeleteSessionEntryLifecycleParams,
@@ -283,6 +284,9 @@ function reclaimSqliteRowsInTransaction(
   plan: Exclude<SqliteSessionReclamationPlan, { kind: "maintenance-pages" }>,
   callbacks: SqliteSessionReclamationCallbacks,
 ): SqliteSessionReclamationResult {
+  if (plan.kind === "archive-publish-prepare" || plan.kind === "archive-publish-record") {
+    return reclaimSessionArchivePublicationInTransaction(plan, callbacks);
+  }
   if (
     plan.kind === "maintenance-plan" ||
     plan.kind === "maintenance-finalize" ||

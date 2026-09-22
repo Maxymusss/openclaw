@@ -14,10 +14,7 @@ import {
   readSessionEntryMaintenanceNextAgeAt,
   SESSION_ENTRY_MAINTENANCE_INTERVAL_MS,
 } from "./session-accessor.sqlite-maintenance-age.js";
-import {
-  canSkipSessionEntryMaintenanceInDatabase,
-  emptySessionEntryMaintenancePlan,
-} from "./session-accessor.sqlite-maintenance-store.js";
+import { emptySessionEntryMaintenancePlan } from "./session-accessor.sqlite-maintenance-store.js";
 import { finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort } from "./session-accessor.sqlite-maintenance.js";
 import {
   createSessionMaintenancePlanningOperation,
@@ -142,16 +139,6 @@ async function runPendingMaintenance(
             ? normalizeResolvedMaintenanceConfigInput(owner.maintenanceConfig)
             : resolveMaintenanceConfig();
           const ageCapture = captureSessionEntryMaintenanceAgeFact(owner.database.db, maintenance);
-          // Cold planning stays off-thread. Only an already-owned, current fact can
-          // justify the compact count read before dispatching a no-op Worker request.
-          if (
-            ageCapture.fact &&
-            maintenance.mode === "enforce" &&
-            isOpenClawAgentDatabasePathCurrent(owner.database) &&
-            canSkipSessionEntryMaintenanceInDatabase(owner.database, { maintenance })
-          ) {
-            return { maintenance, ageCapture, operation: undefined };
-          }
           const operation = createSessionMaintenancePlanningOperation({
             databaseOptions: toDatabaseOptions(owner.scope),
             input: {
@@ -178,8 +165,7 @@ async function runPendingMaintenance(
         }
         if (
           owner.generation !== generation ||
-          (operation &&
-            operation.input.preservation !== null &&
+          (operation.input.preservation !== null &&
             !isDeepStrictEqual(
               operation.input.preservation,
               captureSessionMaintenancePreservation(operation.input.storePath),
@@ -195,20 +181,9 @@ async function runPendingMaintenance(
           planningChanged = true;
           throw new Error("SQLite automatic maintenance age fact changed before commit");
         }
-        if (!operation && !isOpenClawAgentDatabasePathCurrent(owner.database)) {
-          planningChanged = true;
-          throw new Error("SQLite automatic maintenance database path changed");
-        }
       };
-      const runPlanning = () => {
-        if (!operation) {
-          assertCurrent();
-          return Promise.resolve({
-            kind: "maintenance-plan" as const,
-            value: emptySessionEntryMaintenancePlan(),
-          });
-        }
-        return runSqliteSessionReclamation({
+      const runPlanning = () =>
+        runSqliteSessionReclamation({
           diagnostics: { kind: "maintenance-plan" },
           assertCommitAllowed: assertCurrent,
           onWorkerResult: (result) => {
@@ -219,15 +194,11 @@ async function runPendingMaintenance(
           forceInProcess: false,
           plan: operation,
         });
-      };
       let result =
         maintenance.mode === "warn"
           ? { kind: "maintenance-plan" as const, value: emptySessionEntryMaintenancePlan() }
           : await runPlanning();
-      if (!operation) {
-        assertCurrent();
-      }
-      if (operation && result.kind === "maintenance-preservation-required") {
+      if (result.kind === "maintenance-preservation-required") {
         await runExclusiveSqliteSessionWrite(
           owner.scope,
           async () => {
@@ -251,6 +222,28 @@ async function runPendingMaintenance(
         throw new Error("SQLite automatic maintenance returned another operation's result");
       }
       const plan = result.value;
+      if (
+        maintenance.mode === "enforce" &&
+        plan.archived === 0 &&
+        plan.entryRemovals.length === 0
+      ) {
+        assertInputsCurrent();
+        if (!isOpenClawAgentDatabasePathCurrent(owner.database)) {
+          planningChanged = true;
+          throw new Error(
+            "SQLite automatic maintenance database path changed after no-op planning",
+          );
+        }
+        // A synchronous writer may change pressure after the no-op settles. Compare the
+        // acknowledged fact, including in-process planning which stages its own capture.
+        if (
+          captureSessionEntryMaintenanceAgeFact(owner.database.db, maintenance).fact !==
+          result.ageFact
+        ) {
+          planningChanged = true;
+          throw new Error("SQLite automatic maintenance age fact changed after no-op planning");
+        }
+      }
       await finalizeSessionEntryMaintenancePlansAfterWriterReleaseBestEffort(owner.scope, [plan], {
         isCurrent,
       });
