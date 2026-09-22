@@ -1,3 +1,34 @@
+# Qualification continuation 2026-09-22
+
+Standing ATOMIC_CONTINUOUS_LANDING_20260921 supersedes the historical source-only budget below. This derivative qualifies only the receipt-bound verifier, exact generated setup seam, and Node-only portable recovery helper on Windows PowerShell 5.1. No OpenClaw updater/daemon is invoked. The handoff path is explicitly passed and resolved in every qualification helper; it remains unopened. This is not a product resolver override and does not establish installed-parent retirement/rollback acceptance. Historical source and failure receipts are immutable.
+
+# Installed-state verifier derivative — source only
+
+Prior authority is consumed: run35606824324 attempt1 failed; dispatched1,
+remaining0, retries0. This derivative authorizes no publication, dispatch,
+native/product run or successor trial. Same125286/ec13 retains source custody.
+
+Preinstall checks remain exact: archive size/SHA256/SHA512 and all11428 pinned
+safe member hashes, INCLUDING `.openclaw-lifecycle-pending`. After the supported
+same-setup installer returns successfully with held-handle terminal settlement,
+`release.py installed` requires that exact marker to be absent and every other
+11427 pinned member to retain its bytes. Marker presence, ambiguous absence,
+failed/unsettled installation and unsupported filesystem paths fail closed.
+
+The transition is bound to the exact released postinstall and marker module
+hashes. It neither patches released2026.9.5 nor repairs its installed-parent
+transaction-completion/retirement/rollback-handoff gap, which remains UNFIXED.
+Historical holder UNKNOWN; hosted runtime RETAINED_UNKNOWN; native NEEDS_WORK;
+no-loss/rollback/full-chain/F1/L8/c064/LAND holds persist.
+
+`python3.13 -B lifecycle/seal.py` deterministically regenerates the diagnostic and
+all dependent pins offline. The final source/review packet is for canonical's
+execution decision, not permission for an automatic run. Local synthetic tests
+and parsing confer no new native acceptance. The previous documentation below
+is historical composition context only; COMMANDS.json records the zero budget.
+
+---
+
 # Product-capable observer harness derivative — SOURCE ONLY
 
 Owner: PR125286 / ec13cd14-c294-406a-8c0c-97bdeb48b76d; canonical54bd coordinates.

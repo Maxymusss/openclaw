@@ -5,7 +5,7 @@
   "freshNamespace": "observer393-product-<fresh GITHUB_RUN_ID>-1",
   "runtime": "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime",
   "pathResolution": "RUNNER_TEMP from newly admitted github-hosted windows-2025 runner, not a filesystem glob",
-  "bundleSha256": "66fbd8ddb42289fecf3a8699d8e5bb8f3ffcc969d7cb2a799b9ba04cab543069",
+  "bundleSha256": "1df534a9cfa40ab9f98184e37913b5087e46ea85427d31f36bfe1c03438e4ca4",
   "pythonArchive": {
     "url": "https://www.python.org/ftp/python/3.13.7/python-3.13.7-embed-amd64.zip",
     "version": "3.13.7",
@@ -74,7 +74,7 @@
     "--manifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "--manifest-sha",
-    "66fbd8ddb42289fecf3a8699d8e5bb8f3ffcc969d7cb2a799b9ba04cab543069",
+    "1df534a9cfa40ab9f98184e37913b5087e46ea85427d31f36bfe1c03438e4ca4",
     "--evidence",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke",
     "--run",
@@ -99,7 +99,7 @@
     "-ObserverManifest",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\runtime\\bundle.json",
     "-ObserverManifestSha256",
-    "66fbd8ddb42289fecf3a8699d8e5bb8f3ffcc969d7cb2a799b9ba04cab543069",
+    "1df534a9cfa40ab9f98184e37913b5087e46ea85427d31f36bfe1c03438e4ca4",
     "-ObserverSmokeResult",
     "<RUNNER_TEMP>\\observer393-product-<fresh GITHUB_RUN_ID>-1\\evidence\\smoke\\result.json",
     "-ObserverSmokeSha256",
@@ -114,7 +114,7 @@
     "Live PowerShell/observer/update PID+creation/executable; both baseline NT/file IDs at arming",
     "Original installed2026.9.5 byte manifest match; native installed ownership/rollback source dependency remains unfixed"
   ],
-  "acquisition": "One reviewed fresh disposable workflow job authorized. Exact live host and own raw smoke precede setup. One published-driver diagnostic only; no rerun or pin weakening.",
+  "acquisition": "SOURCE ONLY. Prior one-job authority consumed by35606824324 attempt1. No publication/dispatch/native/product/retry authorized.",
   "stageArgv": [
     "<measured native pwsh.exe>",
     "-NoLogo",
@@ -133,7 +133,7 @@
     "evidenceRun": 35596476995,
     "nativeProductQualified": false
   },
-  "stageSha256": "45d72c16295fff92d3c67fad8d7e9eae544f790f0f7ed499e829ad372fef0b92",
+  "stageSha256": "9de10bfd6e8cc9c498e9d8f54eec36f4e8aa3a9836f77f98054b6d11e1c0e461",
   "stagingBehavior": "Stages hashed payload, release manifest and exact official Python archive; parses diagnostic parameters without body execution; performs own25s smoke and raw preflight; removes inert fixture only; returns same-job runtime tuple with NO product fall-through. Terminal caller owns runtime cleanup after custody/settlement.",
   "futureWorkflowContract": {
     "runner": "windows-2025",
@@ -141,7 +141,7 @@
     "workflowSha": "Actual GITHUB_SHA of separately admitted reviewed hook; same PROOF_WORKFLOW_SHA, captured in smoke host and diagnostic spec. Never rewritten to393.",
     "candidate": "Separate clean published393 checkout/tree, verified by diagnostic before setup.",
     "productSetupGate": "diagnostic.ps1 hashes itself/all payloads, validates exact shell, calls run.py preflight on same-host/run/runtime/bundle raw positive proof BEFORE any product setup.",
-    "wired": false,
+    "wired": true,
     "publication": false,
     "dispatch": false
   },
@@ -151,7 +151,15 @@
     "archiveEnforcedBeforeInstall": true,
     "installedManifestBeforeGateway": true,
     "nativeQualified": false,
-    "sourceSupport": "RELEASE-INSTALL-SUPPORT.json"
+    "sourceSupport": "RELEASE-INSTALL-SUPPORT.json",
+    "installedStateContract": {
+      "preinstall": "Full unchanged archive size/SHA256/SHA512 and all11428 safe members including pending marker",
+      "postinstall": "Same setup archive verification plus successful held-handle settled installer; exact marker absence and11427 other pinned members unchanged; ambiguous absence/path/read fails closed",
+      "releasedSources": {
+        "scripts/lib/package-lifecycle-marker.mjs": "32c50197ecc6f10b78f9f8ef588b868e7cdf428233e00fb912044dee5da46e1a",
+        "scripts/postinstall-bundled-plugins.mjs": "7e1f81b571636d0f0102ff7120b5de54973a12e1ece8044fe6f608efaf49f061"
+      }
+    }
   },
   "observerOutput": {
     "entry": "bounded_observe.py",
@@ -173,7 +181,7 @@
     "coverage": "Actual starts/ends and fullSampleCountGate retained; bounded wall-budget is not complete60-sample or exhaustive coverage. Strict same-run smoke still requires0/1 complete/sample-limit.",
     "primaryValidation": "Read-only streaming, <=1MiB per record, <=64MiB overall, deadline before/after bounded reads and JSON parse plus terminal gate iteration; original schema/sequence/run checks preserved; denied raw file retained."
   },
-  "hookSha256": "92f13bf73e4a1e175e7c4931e0a67327b79a265a4419949caa213cac84f52a95",
+  "hookSha256": "3149f427e5d2973df9422c8840168701fd65bf22386ae76440454fd23743bb28",
   "lifecycle": {
     "priorImmutableBundle": "455a4678866519babf4af3f1dfec48024c49686119566f5f913d5a8875f43098",
     "normalBaseline": "Held handle root-only termination before arm; owned PID/creation/exe/hash/profile plus listener/descendant custody;10s join; preserve raw action/error31/exit. Not graceful-service/update recovery proof.",
@@ -190,5 +198,14 @@
     },
     "descendants": "Accounting-only unnamed Windows job assigned to original CreateProcess handle before ResumeThread; no kill-on-close. Total1/active1 before action, total1/active0 after. Lost accounting or any descendant-ever blocks arming; failed launch retains suspended process.",
     "observerAbsoluteCutoff": "Prelaunch monotonic origin shared by pinned Python3.13/QPC;10s terminal/settlement allowance before work_deadline plus60s finalization within unchanged3600. Late startup does not shift cutoff; unknown settlement retained."
+  },
+  "workflowSha256": "4467cb0f7dd29380ddecaec6bf2abfa05295f75ea389e388a98ba4c0710210dc",
+  "executionBudget": {
+    "historicalRun": 35606824324,
+    "historicalRemaining": 0,
+    "authority": "ATOMIC_CONTINUOUS_LANDING_20260921",
+    "currentLane": "isolated PowerShell5.1 affected byte-only setup and Node-only recovery",
+    "blindRetries": false,
+    "productUpdaterBlocked": "No verified explicit resolved private handoff-store injection in retained released driver; not a budget gate"
   }
 }

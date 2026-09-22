@@ -3,6 +3,11 @@ name: Windows Testbox Probe
 on:
   workflow_dispatch:
     inputs:
+      run_installed_state_125286:
+        description: "Affected installed-state and portable helper qualification on PowerShell 5.1 only"
+        required: false
+        default: false
+        type: boolean
       run_passive_observer_125286:
         description: "One reviewed PR125286 passive diagnostic; no native acceptance"
         required: false
@@ -102,7 +107,7 @@ env:
 
 jobs:
   probe:
-    if: ${{ !inputs.run_passive_observer_125286 && (inputs.run_private_node_provisioning || (!inputs.run_windows_git_installer_only && !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery) ) }}
+    if: ${{ !inputs.run_installed_state_125286 && (!inputs.run_passive_observer_125286 && (inputs.run_private_node_provisioning || (!inputs.run_windows_git_installer_only && !inputs.run_winget_acceptance && !inputs.run_portable_node_recovery) ) ) }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -736,7 +741,7 @@ jobs:
   # Native session qualification must not depend on headless CI or WSL results.
   native-schtasks:
     name: Native Scheduled Task proof
-    if: ${{ !inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_windows_ci ) }}
+    if: ${{ !inputs.run_installed_state_125286 && (!inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_windows_ci ) ) }}
     runs-on: windows-2025
     timeout-minutes: 75
     steps:
@@ -995,7 +1000,7 @@ jobs:
 
   winget-acceptance:
     name: Native Winget acceptance (${{ matrix.scenario }})
-    if: ${{ !inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_winget_acceptance ) }}
+    if: ${{ !inputs.run_installed_state_125286 && (!inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_winget_acceptance ) ) }}
     runs-on: windows-2025
     timeout-minutes: 35
     strategy:
@@ -1083,7 +1088,7 @@ jobs:
 
   portable-node-recovery:
     name: Portable Node recovery (${{ matrix.engine }})
-    if: ${{ !inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_portable_node_recovery ) }}
+    if: ${{ !inputs.run_installed_state_125286 && (!inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && !inputs.run_windows_git_installer_only && inputs.run_portable_node_recovery ) ) }}
     runs-on: windows-2025
     timeout-minutes: 20
     strategy:
@@ -1169,7 +1174,7 @@ jobs:
 
   native-git-installer:
     name: Full Windows Git installer and published-driver proof
-    if: ${{ !inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && (inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only) ) }}
+    if: ${{ !inputs.run_installed_state_125286 && (!inputs.run_passive_observer_125286 && (!inputs.run_private_node_provisioning && (inputs.run_windows_launcher_integration || inputs.run_windows_git_installer_only) ) ) }}
     runs-on: windows-2025
     timeout-minutes: 90
     steps:
@@ -1205,7 +1210,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   passive-observer-125286:
-    if: ${{ inputs.run_passive_observer_125286 }}
+    if: ${{ !inputs.run_installed_state_125286 && (inputs.run_passive_observer_125286 ) }}
     name: One passive published-driver diagnostic
     runs-on: windows-2025
     timeout-minutes: 90
@@ -1244,6 +1249,7 @@ jobs:
           PROOF_WORKFLOW_SHA: ${{ github.workflow_sha }}
           RUNNER_ENVIRONMENT: ${{ runner.environment }}
         run: |
+          if ((Get-FileHash -LiteralPath './hook/lifecycle/hook.ps1' -Algorithm SHA256).Hash.ToLowerInvariant() -cne '3149f427e5d2973df9422c8840168701fd65bf22386ae76440454fd23743bb28') { throw 'Wrong reviewed installed-state hook.' }
           & ./hook/lifecycle/hook.ps1 -ExpectedWorkflowSha $env:PROOF_WORKFLOW_SHA -CandidateRoot (Join-Path $env:GITHUB_WORKSPACE 'candidate')
       - name: Identify exact retained setup root without product execution
         id: custody
@@ -1278,3 +1284,53 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
           include-hidden-files: true
+  installed-state-125286:
+    if: ${{ inputs.run_installed_state_125286 }}
+    name: Affected PowerShell 5.1 qualification
+    runs-on: windows-2025
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Validate exclusive changed-source inputs
+        env:
+          TARGET_REF: ${{ inputs.target_ref }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
+          MIXED: ${{ inputs.run_passive_observer_125286 || inputs.run_windows_ci || inputs.run_windows_git_installer_only || inputs.run_windows_launcher_integration || inputs.run_winget_acceptance || inputs.run_portable_node_recovery || inputs.run_private_node_provisioning || inputs.installed_startup_package != '' || inputs.installed_startup_cpu_diagnostic || inputs.require_wsl2 || inputs.import_ubuntu_wsl2 || inputs.enable_wsl2_features }}
+          KEEPALIVE: ${{ inputs.keepalive_minutes }}
+          LABEL: ${{ inputs.runner_label }}
+        run: |
+          if ($env:MIXED -eq 'true' -or $env:TARGET_REF -cne '393c80255dea6605a5665c6e0836d01fb6d18304' -or $env:WORKFLOW_SHA -cne $env:GITHUB_SHA -or $env:GITHUB_RUN_ATTEMPT -cne '1' -or $env:KEEPALIVE -cne '0' -or $env:LABEL -cne 'windows-2025') { throw 'Exclusive exact-source fresh 5.1 qualification required.' }
+      - name: Checkout reviewed qualification source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: hook
+          persist-credentials: false
+          submodules: false
+          sparse-checkout: |
+            lifecycle
+            released-context
+            .github/workflows
+      - name: Checkout unchanged candidate installer without product execution
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: 393c80255dea6605a5665c6e0836d01fb6d18304
+          path: candidate
+          persist-credentials: false
+          submodules: false
+          sparse-checkout: scripts
+      - name: Run affected byte-only controls and real Node recovery on 5.1
+        env:
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        run: |
+          & ./hook/lifecycle/qualification.ps1 -CandidateRoot (Join-Path $env:GITHUB_WORKSPACE 'candidate') -EvidenceRoot (Join-Path $env:RUNNER_TEMP 'qualification125286-evidence')
+      - name: Preserve qualification results and cleanup failures
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: qualification125286-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/qualification125286-evidence
+          if-no-files-found: error
+          retention-days: 7

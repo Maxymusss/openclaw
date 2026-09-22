@@ -375,9 +375,13 @@ def diagnostic(args, api, me, manifest):
     release_raw=(HERE/'release-installed.json').read_bytes()
     if sha(release_raw) != manifest['releaseInstalledManifestSha256']:
         raise ValueError('released payload manifest changed')
-    for relative, expected in json.loads(release_raw).items():
-        if sha((Path(spec['packageParent'])/'openclaw'/relative).read_bytes()) != expected:
-            raise ValueError('released installed source mismatch: '+relative)
+    # Revalidate the SAME installed-state contract before any observer launch.
+    # The pending marker is not a shipped-runtime member after successful setup.
+    from release import installed
+    setup_raw=Path(spec['installedSetupPath']).read_bytes()
+    if sha(setup_raw) != spec['installedSetupSha256']:
+        raise ValueError('released install setup receipt changed')
+    installed(Path(spec['packageParent'])/'openclaw',json.loads(release_raw),json.loads(setup_raw))
     bound_smoke=validate_smoke(Path(spec['smokeResult']),spec['smokeSha256'],args.manifest_sha,manifest)
     harness = process_identity(api,spec['harness']['pid'])
     if not same_process(harness,spec['harness']) or harness.get('exited100ns') != '0':

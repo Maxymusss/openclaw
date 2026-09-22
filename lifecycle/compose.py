@@ -62,8 +62,19 @@ New-Item -ItemType Directory -Path $EvidenceRoot | Out-Null''')
     if ($LASTEXITCODE -ne 0) { throw 'Pinned release archive or member integrity failed before install.' }
     $proof.releaseArchiveSha256 = (Get-FileHash $releaseArchive -Algorithm SHA256).Hash.ToLowerInvariant()
     Invoke-ProofInstaller -Name 'published-driver-install' -Options @('-InstallMethod', 'npm', '-Tag', $releaseArchive)
-    & (Join-Path $ObserverRuntime 'python.exe') '-E' '-S' '-B' (Join-Path $ObserverRuntime 'release.py') 'installed' '--target' (Join-Path $prefix 'node_modules/openclaw') '--manifest' $ObserverManifest '--manifest-sha' $ObserverManifestSha256
-    if ($LASTEXITCODE -ne 0) { throw 'Installed released bytes differ before gateway invocation.' }
+    # This gate is in the same setup, not inferred from marker absence or exit alone.
+    if ($proof.unsettled -or $proof.commands.Count -ne 1) { throw 'Single settled installer required before installed-state verification.' }
+    $installedRoot=[IO.Path]::GetFullPath((Join-Path $prefix 'node_modules/openclaw'))
+    $installSetup=Join-Path $EvidenceRoot 'release-install-setup.json'
+    if (Test-Path -LiteralPath $installSetup) { throw 'Fresh install setup receipt required.' }
+    @{ schema=1; archiveVerified=$true; archiveSha256=$proof.releaseArchiveSha256; target=$installedRoot;
+       unsettled=$proof.unsettled; command=$proof.commands[0] } | ConvertTo-Json -Depth 15 | ForEach-Object {
+        [IO.File]::WriteAllText($installSetup, $_, [Text.UTF8Encoding]::new($false))
+    }
+    $installSetupSha=(Get-FileHash -LiteralPath $installSetup -Algorithm SHA256).Hash.ToLowerInvariant()
+    & (Join-Path $ObserverRuntime 'python.exe') '-E' '-S' '-B' (Join-Path $ObserverRuntime 'release.py') 'installed' '--target' $installedRoot '--manifest' $ObserverManifest '--manifest-sha' $ObserverManifestSha256 '--setup' $installSetup '--setup-sha' $installSetupSha
+    if ($LASTEXITCODE -ne 0) { throw 'Released installed-state contract failed before gateway invocation.' }
+    $proof.installedState=@{ setup=$installSetup; setupSha256=$installSetupSha; pendingMarker='ABSENT'; unchangedPinnedMembers=11427; nativeAcceptance=$false }
 ''')
     seam="    Invoke-ProofCommand -Name 'published-driver-update' -File $node -Arguments @($driver, 'update', '--channel', 'dev', '--yes', '--json', '--no-restart', '--timeout', '1200') -Seconds 3600"
     hook='''    $observerRun = 'observer393-' + [guid]::NewGuid().ToString('N')
@@ -75,6 +86,7 @@ New-Item -ItemType Directory -Path $EvidenceRoot | Out-Null''')
         harnessSourcePath = $PSCommandPath; proofRoot = $root; packageParent = (Join-Path $prefix 'node_modules')
         node = $node; nodeSha256 = (Get-FileHash $node -Algorithm SHA256).Hash.ToLowerInvariant()
         smokeResult = $ObserverSmokeResult; smokeSha256 = $ObserverSmokeSha256
+        installedSetupPath = $installSetup; installedSetupSha256 = $installSetupSha
         harness = @{ pid = $PID; created100ns = $harnessProcess.StartTime.ToUniversalTime().ToFileTimeUtc().ToString(); executable = $harnessProcess.Path }
     }
     $spec.deadlineFiletime100ns = [DateTime]::UtcNow.AddSeconds(3600).ToFileTimeUtc().ToString()

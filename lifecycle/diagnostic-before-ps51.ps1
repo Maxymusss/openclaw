@@ -161,9 +161,7 @@ try {
     $installSetup=Join-Path $EvidenceRoot 'release-install-setup.json'
     if (Test-Path -LiteralPath $installSetup) { throw 'Fresh install setup receipt required.' }
     @{ schema=1; archiveVerified=$true; archiveSha256=$proof.releaseArchiveSha256; target=$installedRoot;
-       unsettled=$proof.unsettled; command=$proof.commands[0] } | ConvertTo-Json -Depth 15 | ForEach-Object {
-        [IO.File]::WriteAllText($installSetup, $_, [Text.UTF8Encoding]::new($false))
-    }
+       unsettled=$proof.unsettled; command=$proof.commands[0] } | ConvertTo-Json -Depth 15 | Set-Content -LiteralPath $installSetup -Encoding utf8NoBOM
     $installSetupSha=(Get-FileHash -LiteralPath $installSetup -Algorithm SHA256).Hash.ToLowerInvariant()
     & (Join-Path $ObserverRuntime 'python.exe') '-E' '-S' '-B' (Join-Path $ObserverRuntime 'release.py') 'installed' '--target' $installedRoot '--manifest' $ObserverManifest '--manifest-sha' $ObserverManifestSha256 '--setup' $installSetup '--setup-sha' $installSetupSha
     if ($LASTEXITCODE -ne 0) { throw 'Released installed-state contract failed before gateway invocation.' }

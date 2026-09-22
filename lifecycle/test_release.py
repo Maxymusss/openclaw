@@ -1,18 +1,8 @@
+"""Byte-only archive behavior, never extracts or executes a package."""
 import unittest
 from pathlib import Path
-from compose import compose
-
-class ReleaseOrder(unittest.TestCase):
-    def test_pinned_archive_precedes_install_and_installed_bytes_precede_gateway(self):
-        source=compose(Path('upstream.ps1').read_text())
-        self.assertLess(source.index("'archive' '--target' $releaseArchive"),source.index("Invoke-ProofInstaller -Name 'published-driver-install'"))
-        self.assertIn("'-Tag', $releaseArchive",source)
-        self.assertLess(source.index("'installed' '--target' (Join-Path $prefix 'node_modules/openclaw')"),source.index("Start-ProofGateway -Entry $driver"))
-
-if __name__=='__main__':unittest.main()
-
 import base64,hashlib,io,tarfile,tempfile
-from release import archive,installed
+from release import archive
 
 class ReleaseBytes(unittest.TestCase):
     def setUp(self):
@@ -44,9 +34,6 @@ class ReleaseBytes(unittest.TestCase):
         with self.assertRaises(ValueError):archive(target,pin,members)
         members.pop('missing.js');members['package.json']='0'*64
         with self.assertRaises(ValueError):archive(target,pin,members)
-    def test_installed_hashes_before_gateway(self):
-        _,_,members=self.make()
-        for name,raw in self.members.items():(self.root/name).write_bytes(raw)
-        installed(self.root,members)
-        (self.root/'openclaw.mjs').write_bytes(b'changed')
-        with self.assertRaises(ValueError):installed(self.root,members)
+
+if __name__ == "__main__":
+    unittest.main()

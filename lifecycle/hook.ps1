@@ -2,6 +2,10 @@
 param([Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedWorkflowSha,
       [Parameter(Mandatory=$true)][string]$CandidateRoot)
 $ErrorActionPreference='Stop'
+# Source-only derivative: future execution requires a separate canonical decision.
+$bundleSha = '1df534a9cfa40ab9f98184e37913b5087e46ea85427d31f36bfe1c03438e4ca4'
+$stageSha = '9de10bfd6e8cc9c498e9d8f54eec36f4e8aa3a9836f77f98054b6d11e1c0e461'
+if ((Get-FileHash -LiteralPath (Join-Path $PSScriptRoot 'stage.ps1') -Algorithm SHA256).Hash.ToLowerInvariant() -cne $stageSha) { throw 'Wrong installed-state stage source.' }
 Set-StrictMode -Version Latest
 $owned=Join-Path $env:RUNNER_TEMP ('observer393-product-'+$env:GITHUB_RUN_ID+'-'+$env:GITHUB_RUN_ATTEMPT)
 $evidence=Join-Path $owned 'evidence'
@@ -11,7 +15,7 @@ try {
     # stage throws on every failed host/payload/parse/control/same-job-smoke gate.
     & (Join-Path $PSScriptRoot 'stage.ps1') -ExpectedWorkflowSha $ExpectedWorkflowSha
     $stage=Get-Content -LiteralPath (Join-Path $evidence 'hosted-result.json') -Raw | ConvertFrom-Json
-    if ($stage.status -cne 'INERT_SMOKE_QUALIFIED' -or $stage.workflowSha -cne $ExpectedWorkflowSha) { throw 'Unqualified same-job stage.' }
+    if ($stage.status -cne 'INERT_SMOKE_QUALIFIED' -or $stage.workflowSha -cne $ExpectedWorkflowSha -or $stage.bundleSha256 -cne $bundleSha) { throw 'Unqualified same-job stage.' }
     $receipt.stage='PASSED'
     $pin=Get-Content -LiteralPath (Join-Path $stage.next.runtime 'node-pin.json') -Raw | ConvertFrom-Json
     $node=Join-Path $env:RUNNER_TOOL_CACHE $pin.relativeToolCachePath

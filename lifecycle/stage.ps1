@@ -2,7 +2,7 @@
 param([Parameter(Mandatory=$true)][ValidatePattern('^[0-9a-f]{40}$')][string]$ExpectedWorkflowSha)
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-$bundleSha = '66fbd8ddb42289fecf3a8699d8e5bb8f3ffcc969d7cb2a799b9ba04cab543069'
+$bundleSha = '1df534a9cfa40ab9f98184e37913b5087e46ea85427d31f36bfe1c03438e4ca4'
 $candidate = '393c80255dea6605a5665c6e0836d01fb6d18304'
 function Hash([string]$Path) { (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
 function Save([string]$Path, $Value) {
@@ -29,7 +29,7 @@ if ($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Window
     [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString() -cne 'X64') { throw 'Requires native-x64 hosted windows-2025 / PowerShell7.' }
 if ($env:GITHUB_RUN_ID -cnotmatch '^[1-9][0-9]*$' -or $env:GITHUB_RUN_ATTEMPT -cne '1' -or
     $env:GITHUB_SHA -cnotmatch '^[0-9a-f]{40}$' -or $env:PROOF_WORKFLOW_SHA -cne $env:GITHUB_SHA -or
-    $env:GITHUB_SHA -cne $ExpectedWorkflowSha -or $env:GITHUB_RUN_ID -in @('35529432478','35596476995')) { throw 'Requires fresh exact smoke-only workflow; no reruns.' }
+    $env:GITHUB_SHA -cne $ExpectedWorkflowSha -or $env:GITHUB_RUN_ID -in @('35529432478','35596476995','35606824324')) { throw 'Requires fresh exact smoke-only workflow; no reruns.' }
 foreach ($name in @('NODE_OPTIONS','NODE_PATH','PYTHONSTARTUP','COR_ENABLE_PROFILING','CORECLR_ENABLE_PROFILING')) {
     if ([Environment]::GetEnvironmentVariable($name, 'Process')) { throw 'Unqualified preload/profiler environment.' }
 }
