@@ -12,7 +12,9 @@ afterEach(() => vi.restoreAllMocks());
 const create = () => withMockedPlatform("freebsd", () => createFreeBsdUpdateWriteAdmission()!);
 
 it("does not create an admission on other platforms", () => {
-  withMockedPlatform("linux", () => expect(createFreeBsdUpdateWriteAdmission()).toBeUndefined());
+  withMockedPlatform("linux", () => {
+    expect(createFreeBsdUpdateWriteAdmission()).toBeUndefined();
+  });
 });
 
 it("starts unadmitted and admits only after the canonical check settles", async () => {
