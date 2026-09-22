@@ -154,6 +154,7 @@ export type SessionExactEntriesWorkerInput = {
     selection?: "logical";
     projection?: SessionEntryReadScope["projection"];
     includeProjectionFacts?: boolean;
+    includeMembership?: boolean;
   };
 };
 
@@ -163,6 +164,10 @@ export type SessionExactEntriesWorkerResult = {
   readSource?: SessionEntryReadSource;
   databaseIdentity?: { identity: string; filename: string };
   boardSessionKeys?: string[];
+  membership?: Array<{
+    sessionKey: string;
+    members: import("./session-sharing-store.kernel.js").SessionMember[];
+  }>;
   transcriptWatermarks?: Array<{
     sessionKey: string;
     watermark: import("./session-accessor.sqlite-transcript-watermark-read.js").SessionTranscriptWatermark;

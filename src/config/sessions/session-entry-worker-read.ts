@@ -75,13 +75,16 @@ type SelectedRead = {
 /** Fresh logical rows consumed together while every selected reader and writer order is retained. */
 export async function withSessionEntriesWorkerRead<T>(
   inputs: readonly SessionAccessScope[],
-  consume: (entries: readonly (InternalSessionEntry | undefined)[]) => T,
+  consume: (entries: readonly (InternalSessionEntry | undefined)[], assertCurrent: () => void) => T,
 ): Promise<T> {
   // Capture every locator before discovery of the first source can yield.
   const captured = inputs.map(captureRead);
   const selected: SelectedRead[] = [];
-  const consumeSync = (entries: readonly (InternalSessionEntry | undefined)[]): T => {
-    const result = consume(entries);
+  const consumeSync = (
+    entries: readonly (InternalSessionEntry | undefined)[],
+    assertCurrent: () => void,
+  ): T => {
+    const result = consume(entries, assertCurrent);
     if (isPromiseLike(result)) throw new Error("Session entry consumers must remain synchronous");
     return result;
   };
@@ -150,7 +153,17 @@ export async function withSessionEntriesWorkerRead<T>(
               }
               assertCurrent();
               if (changed) throw new Error("Session entry changed during read");
-              return consumeSync(entries);
+              let consuming = true;
+              const assertReadCurrent = () => {
+                if (!consuming) throw new Error("Session entry read scope is closed");
+                assertCurrent();
+                if (changed) throw new Error("Session entry changed during read");
+              };
+              try {
+                return consumeSync(entries, assertReadCurrent);
+              } finally {
+                consuming = false;
+              }
             } finally {
               unsubscribe();
             }

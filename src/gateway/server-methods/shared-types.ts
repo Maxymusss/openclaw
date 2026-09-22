@@ -463,6 +463,13 @@ export type GatewayRequestOptions = {
 
 /** Commit-time guard captured by the pre-dispatch session participation check. */
 export type SessionMutationAuthorization = {
+  /** Fresh durable facts remain retained only through this synchronous callback. */
+  withCurrent?: <T>(consume: () => T) => Promise<T>;
+  withPreparedCurrent?: <T>(
+    facts: import("../../config/sessions/session-pending-input-stage.js").SessionPendingInputAuthorityFacts,
+    consume: () => T,
+    assertSourceCurrent: () => void,
+  ) => T;
   authorizePendingInput?: (
     facts: import("../../config/sessions/session-pending-input-stage.js").SessionPendingInputAuthorityFacts,
   ) => void;

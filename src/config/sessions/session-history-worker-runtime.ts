@@ -21,6 +21,7 @@ import { prepareSessionTranscriptReadTargetCore } from "./session-accessor.trans
 import { readRestoredSessionTranscript } from "./session-cold-storage-read.js";
 import type {
   ChatHistoryPage,
+  ReadSessionMessageByIdResult,
   SessionHistorySnapshot,
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
@@ -98,11 +99,19 @@ export function readSessionHistoryPageInWorker(
   request: Extract<SessionHistoryWorkerRequest, { kind: "message-lookup" }>,
   signal?: AbortSignal,
 ): Promise<unknown[]>;
+export function readSessionHistoryPageInWorker(
+  request: Extract<SessionHistoryWorkerRequest, { kind: "message-by-id" }>,
+  signal?: AbortSignal,
+): Promise<ReadSessionMessageByIdResult>;
 export async function readSessionHistoryPageInWorker(
   request: SessionHistoryWorkerRequest,
   signal?: AbortSignal,
 ): Promise<
-  ChatHistoryPage | SessionHistorySnapshot | SessionTranscriptDisplayDeltaResult | unknown[]
+  | ChatHistoryPage
+  | SessionHistorySnapshot
+  | SessionTranscriptDisplayDeltaResult
+  | ReadSessionMessageByIdResult
+  | unknown[]
 > {
   signal?.throwIfAborted();
   const scope: SessionTranscriptReadScope =
@@ -192,7 +201,7 @@ export async function readSessionHistoryPageInWorker(
           assertStateCurrent();
           return readQueuedPage(input, `${owner.generation}:${key}`, owner, signal);
         },
-        { assertCurrent: owner.assertCurrent },
+        { assertCurrent: owner.assertCurrent, restoreBeforeRead: false },
       ),
     );
     assertStateCurrent();
@@ -205,7 +214,9 @@ export async function readSessionHistoryPageInWorker(
         ? result.snapshot
         : result.kind === "delta"
           ? result.delta
-          : result.messages;
+          : result.kind === "message-by-id"
+            ? result.message
+            : result.messages;
   } catch (error) {
     if (isSessionTranscriptProjectionUnavailableError(error)) {
       startSessionTranscriptIndexReconcile({

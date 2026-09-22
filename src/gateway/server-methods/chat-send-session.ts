@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { isDeepStrictEqual } from "node:util";
 import {
   ErrorCodes,
   errorShape,
@@ -19,7 +20,7 @@ import {
 import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { measureDiagnosticsTimelineSpanSync } from "../../infra/diagnostics-timeline.js";
+import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { resolveMissingAgentHarnessSessionError } from "../../sessions/agent-harness-session-key.js";
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
@@ -27,6 +28,7 @@ import { isBrowserOperatorUiClient } from "../../utils/message-channel.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
+import { withGatewaySessionEntry } from "../session-utils-store.js";
 import {
   loadSessionEntry,
   resolveDeletedAgentIdFromSessionKey,
@@ -87,7 +89,7 @@ export function prepareChatSendSessionEntry(params: {
   };
 }
 
-function loadChatSendSessionContext(params: {
+async function loadChatSendSessionContext(params: {
   request: NormalizedChatSendRequest;
   context: GatewayRequestHandlerOptions["context"];
 }) {
@@ -116,9 +118,9 @@ function loadChatSendSessionContext(params: {
       : rawSessionKey;
   const sessionLoadOptions = { agentId: requestedAgentId };
   const sessionLoadStartedAtMs = performance.now();
-  const sessionLoadResult = measureDiagnosticsTimelineSpanSync(
+  const sessionLoadResult = await measureDiagnosticsTimelineSpan(
     "gateway.chat_send.load_session",
-    () => loadSessionEntry(sessionLoadKey, sessionLoadOptions),
+    () => withGatewaySessionEntry(sessionLoadKey, sessionLoadOptions, (entry) => entry),
     {
       phase: "agent-turn",
       attributes: {
@@ -128,6 +130,8 @@ function loadChatSendSessionContext(params: {
       },
     },
   );
+  if (!isDeepStrictEqual(runtimeConfig, context.getRuntimeConfig()))
+    throw new Error("Session routing changed during preparation");
   const sessionLoadMs = roundedChatSendTimingMs(performance.now() - sessionLoadStartedAtMs);
   const { cfg, storePath, entry, canonicalKey: sessionKey, legacyKey } = sessionLoadResult;
   const expectedSessionRoutingContract = normalizeOptionalChatText(
@@ -162,12 +166,12 @@ function loadChatSendSessionContext(params: {
 }
 
 /** Load and validate the session/model facts shared by later admission and dispatch phases. */
-export function prepareChatSendSession(params: {
+export async function prepareChatSendSession(params: {
   request: NormalizedChatSendRequest;
   context: GatewayRequestHandlerOptions["context"];
   client: GatewayRequestHandlerOptions["client"];
 }) {
-  const loaded = loadChatSendSessionContext(params);
+  const loaded = await loadChatSendSessionContext(params);
   if (!loaded.ok) {
     return loaded;
   }
@@ -270,7 +274,7 @@ export function prepareChatSendSession(params: {
 }
 
 export type PreparedChatSendSession = Extract<
-  ReturnType<typeof prepareChatSendSession>,
+  Awaited<ReturnType<typeof prepareChatSendSession>>,
   { ok: true }
 >["value"];
 
@@ -281,6 +285,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
   client: GatewayRequestHandlerOptions["client"];
   context: GatewayRequestHandlerOptions["context"];
   assertCurrent?: () => void;
+  assertCurrentAsync?: () => Promise<void>;
 }): Promise<ErrorShape | undefined> {
   const { request, session, client, context } = params;
   const { entry, cfg, agentId, sessionKey, resolvedSessionModel } = session;
@@ -349,7 +354,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
     import("../../config/sessions/session-accessor.reset.js"),
     import("../../sessions/session-created.js"),
   ]);
-  params.assertCurrent?.();
+  await (params.assertCurrentAsync ? params.assertCurrentAsync() : params.assertCurrent?.());
   const scope = { agentId, sessionKey, storePath: session.storePath };
   const snapshot = loadReplySessionInitializationSnapshot(scope);
   if (snapshot.currentEntry) {

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
@@ -22,6 +23,8 @@ import type {
   SessionEntryReadSource,
 } from "../config/sessions/session-accessor.types.js";
 import { canonicalSessionKeyMigrationRequiredError } from "../config/sessions/session-canonical-key.js";
+import { listSessionMembers } from "../config/sessions/session-sharing-store.js";
+import type { SessionMember } from "../config/sessions/session-sharing-store.kernel.js";
 import { withSessionHistoryWorkerDatabases } from "../config/sessions/session-transcript-worker-runtime.js";
 import type { ExistingAgentSessionStoreTargetResolver } from "../config/sessions/targets.js";
 import { resolveStateDir } from "../config/state-dir.js";
@@ -32,6 +35,8 @@ import {
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../routing/session-key.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
+import { getOpenClawAgentDatabaseIfOpen } from "../state/openclaw-agent-db.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.js";
 import {
   resolveSessionStoreIdentity,
@@ -431,13 +436,34 @@ export function resolveGatewaySessionStoreTargetWithStore(
 
 /** Retain exact durable readers before yielding; logical alias selection stays with its owner. */
 export async function withGatewaySessionStoreTarget<T>(
-  params: Pick<GatewaySessionStoreLookupParams, "cfg" | "key" | "agentId" | "env" | "projection">,
-  consume: (target: GatewaySessionStoreTargetWithStore) => T,
+  params: Pick<
+    GatewaySessionStoreLookupParams,
+    "cfg" | "key" | "agentId" | "env" | "projection"
+  > & { includeMembership?: boolean },
+  consume: (
+    target: GatewaySessionStoreTargetWithStore,
+    membership: ReadonlyMap<string, readonly SessionMember[]>,
+    assertSourceCurrent: () => void,
+  ) => T,
 ): Promise<T> {
-  const consumeSync = (target: GatewaySessionStoreTargetWithStore): T => {
-    const value = consume(target);
-    if (isPromiseLike(value)) throw new Error("Session entry consumers must remain synchronous");
-    return value;
+  const consumeSync = (
+    target: GatewaySessionStoreTargetWithStore,
+    membership: ReadonlyMap<string, readonly SessionMember[]> | undefined,
+    assertSourceCurrent: () => void,
+  ): T => {
+    let active = true;
+    const assertCurrent = () => {
+      if (!active) throw new Error("Session entry consuming scope is closed");
+      assertSourceCurrent();
+    };
+    try {
+      assertCurrent();
+      const value = consume(target, membership ?? new Map(), assertCurrent);
+      if (isPromiseLike(value)) throw new Error("Session entry consumers must remain synchronous");
+      return value;
+    } finally {
+      active = false;
+    }
   };
   const env = { ...(params.env ?? process.env) };
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
@@ -457,7 +483,51 @@ export async function withGatewaySessionStoreTarget<T>(
   if (isIncognitoSessionKey(identity.canonicalKey)) {
     // Process-held incognito databases retain their existing native owner; they cannot be
     // reopened by a durable worker. This is migration debt, never a failed-worker fallback.
-    return consumeSync(resolveGatewaySessionStoreTargetWithStore(normalized));
+    const target = resolveGatewaySessionStoreTargetWithStore(normalized);
+    const nativeOptions = toDatabaseOptions(
+      resolveSqliteScope({
+        agentId: target.agentId,
+        sessionKey: target.canonicalKey,
+        storePath: target.storePath,
+        env,
+      }),
+    );
+    const nativeOwner = getOpenClawAgentDatabaseIfOpen(nativeOptions);
+    let changed = false;
+    const stop = sessionChanges.subscribe((change) => {
+      if ("all" in change || target.storeKeys.includes(change.sessionKey)) changed = true;
+    });
+    try {
+      return consumeSync(
+        target,
+        new Map(
+          params.includeMembership
+            ? target.storeKeys.map(
+                (sessionKey) =>
+                  [
+                    sessionKey,
+                    listSessionMembers({
+                      agentId: target.agentId,
+                      storePath: target.storePath,
+                      sessionKey,
+                    }),
+                  ] as const,
+              )
+            : [],
+        ),
+        () => {
+          if (
+            changed ||
+            getOpenClawAgentDatabaseIfOpen(nativeOptions) !== nativeOwner ||
+            (nativeOwner && !nativeOwner.db.isOpen) ||
+            !isDeepStrictEqual(resolveGatewaySessionStoreTargetWithStore(normalized), target)
+          )
+            throw new Error("Incognito session source changed during consumption");
+        },
+      );
+    } finally {
+      stop();
+    }
   }
   const legacy = prepareExplicitDeletedLegacyMainStoreTarget(normalized);
   // Preserve legacy-first error ordering while capturing every possible physical target now.
@@ -479,33 +549,59 @@ export async function withGatewaySessionStoreTarget<T>(
       }),
     ),
   );
-  return await withSessionHistoryWorkerDatabases(targets, async (owners) => {
-    const finish = (target: GatewaySessionStoreTargetWithStore) => {
-      for (const owner of owners) owner.assertCurrent();
-      return consumeSync(target);
-    };
-    const load = async (plan: GatewaySessionStorePlan<unknown>) => {
-      for (const read of plan.reads) {
-        const owner = owners[reads.indexOf(read)]!;
-        const result = await owner.readExactEntries({
-          sessionKeys: read.options.exactKeys!,
-          projection: read.options.projection,
-        });
-        read.result = ok(
-          Object.fromEntries(result.entries.map(({ sessionKey, entry }) => [sessionKey, entry])),
-        );
-        read.readSource = result.readSource;
-      }
-    };
-    if (legacy) {
-      await load(legacy);
-      const selected = legacy.resolve();
-      if (selected) return finish(selected);
-    }
-    if (!normal) throw normalError;
-    await load(normal);
-    return finish(normal.resolve());
+  const memberships = new Map<string, ReadonlyMap<string, readonly SessionMember[]>>();
+  let changed = false;
+  const unsubscribe = sessionChanges.subscribe((change) => {
+    if (
+      "all" in change ||
+      reads.some((read) => read.options.exactKeys?.includes(change.sessionKey))
+    )
+      changed = true;
   });
+  try {
+    return await withSessionHistoryWorkerDatabases(targets, async (owners) => {
+      const finish = (target: GatewaySessionStoreTargetWithStore) => {
+        const assertCurrent = () => {
+          for (const owner of owners) owner.assertCurrent();
+          if (changed) throw new Error("Session sharing facts changed during read");
+        };
+        return consumeSync(
+          target,
+          target.readSource ? memberships.get(target.readSource.path) : undefined,
+          assertCurrent,
+        );
+      };
+      const load = async (plan: GatewaySessionStorePlan<unknown>) => {
+        for (const read of plan.reads) {
+          const owner = owners[reads.indexOf(read)]!;
+          const result = await owner.readExactEntries({
+            sessionKeys: read.options.exactKeys!,
+            projection: read.options.projection,
+            ...(params.includeMembership ? { includeMembership: true } : {}),
+          });
+          if (result.readSource && result.membership)
+            memberships.set(
+              result.readSource.path,
+              new Map(result.membership.map(({ sessionKey, members }) => [sessionKey, members])),
+            );
+          read.result = ok(
+            Object.fromEntries(result.entries.map(({ sessionKey, entry }) => [sessionKey, entry])),
+          );
+          read.readSource = result.readSource;
+        }
+      };
+      if (legacy) {
+        await load(legacy);
+        const selected = legacy.resolve();
+        if (selected) return finish(selected);
+      }
+      if (!normal) throw normalError;
+      await load(normal);
+      return finish(normal.resolve());
+    });
+  } finally {
+    unsubscribe();
+  }
 }
 
 /** Exact row owners supply missing parent facts without expanding their selected store. */

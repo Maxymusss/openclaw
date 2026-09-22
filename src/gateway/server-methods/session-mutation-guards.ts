@@ -173,6 +173,34 @@ export function withSessionMutationCommitGuard(
   };
   return {
     ...authorization,
+    ...(authorization?.withPreparedCurrent
+      ? {
+          withPreparedCurrent: <T>(
+            facts: Parameters<NonNullable<SessionMutationAuthorization["withPreparedCurrent"]>>[0],
+            consume: () => T,
+            assertSourceCurrent: () => void,
+          ) =>
+            authorization.withPreparedCurrent!(
+              facts,
+              () => {
+                assertExpectedProfile?.();
+                assertCommitAllowed?.();
+                return consume();
+              },
+              assertSourceCurrent,
+            ),
+        }
+      : {}),
+    ...(authorization?.withCurrent
+      ? {
+          withCurrent: <T>(consume: () => T) =>
+            authorization.withCurrent!(() => {
+              assertExpectedProfile?.();
+              assertCommitAllowed?.();
+              return consume();
+            }),
+        }
+      : {}),
     ...(authorization?.authorizePendingInput
       ? {
           authorizePendingInput: (

@@ -1,5 +1,8 @@
 import type { AgentHistoryActivity } from "../../infra/agent-activity-events.js";
-import type { SessionTranscriptDisplayDeltaResult } from "./session-accessor.sqlite-history-query.js";
+import type {
+  SessionTranscriptDisplayDeltaResult,
+  SessionTranscriptMessageByIdOptions,
+} from "./session-accessor.sqlite-history-query.js";
 import type {
   SessionTranscriptRawDeltaLimits,
   SessionTranscriptReadScope,
@@ -79,9 +82,25 @@ export type SessionHistoryReadParams = {
   cursor?: string;
 };
 
+export type ReadSessionMessageByIdResult = {
+  message?: unknown;
+  seq?: number;
+  oversized: boolean;
+  found: boolean;
+  serializedBytes?: number;
+};
+
 export type SessionHistoryWorkerRequest =
   | { kind: "rpc"; params: ChatHistoryPageParams & { sessionId: string; storePath: string } }
   | { kind: "message-lookup"; params: { target: SessionTranscriptReadScope; messageId: string } }
+  | {
+      kind: "message-by-id";
+      params: {
+        target: SessionTranscriptReadScope;
+        messageId: string;
+        options?: SessionTranscriptMessageByIdOptions & { allowResetArchiveFallback?: boolean };
+      };
+    }
   | {
       kind: "delta";
       params: { target: SessionTranscriptReadScope; limits: SessionTranscriptRawDeltaLimits };
@@ -91,5 +110,6 @@ export type SessionHistoryWorkerRequest =
 export type SessionHistoryWorkerResult =
   | { kind: "rpc"; page: ChatHistoryPage }
   | { kind: "message-lookup"; messages: unknown[] }
+  | { kind: "message-by-id"; message: ReadSessionMessageByIdResult }
   | { kind: "delta"; delta: SessionTranscriptDisplayDeltaResult }
   | { kind: "http"; snapshot: SessionHistorySnapshot };

@@ -112,6 +112,8 @@ export function respondChatSendAdmissionError(
 }
 
 type ChatSendPreAdmissionParams = {
+  assertCurrentAsync?: () => Promise<void>;
+  withCurrent?: <T>(consume: () => T) => Promise<T>;
   request: NormalizedChatSendRequest;
   session: PreparedChatSendSession;
   respond: GatewayRequestHandlerOptions["respond"];
@@ -373,7 +375,7 @@ export function inspectGoalChatSendRetry({
 export async function runChatSendPreAdmission(
   params: ChatSendPreAdmissionParams,
 ): Promise<boolean> {
-  params.assertCurrent?.();
+  await (params.assertCurrentAsync ? params.assertCurrentAsync() : params.assertCurrent?.());
   const { request, session, respond, context, client } = params;
   const { stopCommand } = request;
   const {
@@ -425,7 +427,7 @@ export async function runChatSendPreAdmission(
         recoveryRuntime: context.recoveryRuntime,
         warn: (message) => context.logGateway.warn(message),
       });
-      params.assertCurrent?.();
+      await (params.assertCurrentAsync ? params.assertCurrentAsync() : params.assertCurrent?.());
       if (claim.kind === "pending" || claim.kind === "rejected") {
         respond(
           false,
@@ -535,7 +537,11 @@ export async function runChatSendPreAdmission(
     return false;
   }
 
-  if (respondChatSendRetry(params)) {
+  if (
+    params.withCurrent
+      ? await params.withCurrent(() => respondChatSendRetry(params))
+      : respondChatSendRetry(params)
+  ) {
     return false;
   }
 
@@ -603,7 +609,7 @@ export async function runChatSendPreAdmission(
       respondChatSendAdmissionError(error, respond);
       return false;
     }
-    params.assertCurrent?.();
+    await (params.assertCurrentAsync ? params.assertCurrentAsync() : params.assertCurrent?.());
   }
 
   const durableClaim = await resolveDurableChatClaim({
@@ -618,7 +624,7 @@ export async function runChatSendPreAdmission(
     warn: (message) =>
       context.logGateway.warn(`failed to retry durable chat recovery ${clientRunId}: ${message}`),
   });
-  params.assertCurrent?.();
+  await (params.assertCurrentAsync ? params.assertCurrentAsync() : params.assertCurrent?.());
   const retrySession = {
     ...session,
     entry:
@@ -626,7 +632,11 @@ export async function runChatSendPreAdmission(
         ? durableClaim.entry
         : loadSessionEntry(sessionLoadKey, sessionLoadOptions).entry,
   };
-  if (respondChatSendRetry({ ...params, session: retrySession })) {
+  if (
+    params.withCurrent
+      ? await params.withCurrent(() => respondChatSendRetry({ ...params, session: retrySession }))
+      : respondChatSendRetry({ ...params, session: retrySession })
+  ) {
     return false;
   }
   if (durableClaim.kind === "pending" || durableClaim.kind === "rejected") {

@@ -80,6 +80,7 @@ import {
 import {
   isGatewayAdmin,
   resolveSessionMutationAuthorization,
+  resolveSessionMutationAuthorizationAsync,
   SessionMutationAuthorizationChangedError,
 } from "./session-sharing.js";
 import { classifyGatewayStaleInstall } from "./stale-install.js";
@@ -353,7 +354,17 @@ export async function authorizeGatewayRequestPreDispatch(params: {
             }),
           authorizeSession,
         )
-      : withCanonicalSessionValidationDeferral(() => authorizeSession());
+      : params.method === "chat.send"
+        ? {
+            kind: "complete" as const,
+            value: await resolveSessionMutationAuthorizationAsync({
+              client: params.client ?? null,
+              method: params.method,
+              requestParams: params.requestParams,
+              context: params.context,
+            }),
+          }
+        : withCanonicalSessionValidationDeferral(() => authorizeSession());
     if (preparedSessionMutation.kind === "pending") {
       const { certifySessionCanonicalValidationPending } =
         await import("../config/sessions/session-canonical-validation-readiness.js");

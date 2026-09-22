@@ -8,6 +8,7 @@ import {
   createDispatchTestHarness,
   createOperatorWsClient,
 } from "../server/ws-connection/authenticated-request-dispatch.test-support.js";
+import * as sharingPolicy from "../session-sharing-policy.js";
 import { installGatewayTestHooks } from "../test-helpers.js";
 import { handleChatSend } from "./chat-send-handler.js";
 import { useBrowserFollowupFixture } from "./chat-send-pending-inputs.test-support.js";
@@ -29,6 +30,11 @@ it("the authenticated chat route stages approved input off-thread before ACK", a
     buildRequestContext: () => fixture.context,
     extraHandlers: { "chat.send": handleChatSend },
   });
+  const legacySharing = vi
+    .spyOn(sharingPolicy, "resolveSessionSharingTarget")
+    .mockImplementation(() => {
+      throw new Error("Native sharing resolution reached the asynchronous chat route");
+    });
   const original = custody.withPendingInputStageStorage;
   let staged = false;
   const spy = vi
@@ -51,8 +57,8 @@ it("the authenticated chat route stages approved input off-thread before ACK", a
       client,
     );
     const response = await harness.awaitResponseFrame("worker-custody");
-    expect(spy.mock.calls.length, "actual route reached pending input storage").toBe(1);
     expect(response.ok, response.error?.message).toBe(true);
+    expect(spy.mock.calls.length, "actual route reached pending input storage").toBe(1);
     expect(staged).toBe(true);
     expect(fixture.beforeApprove).toHaveBeenCalledTimes(1);
     expect(listSessionPendingInputs(fixture.scope).items).toMatchObject([
@@ -60,6 +66,7 @@ it("the authenticated chat route stages approved input off-thread before ACK", a
     ]);
   } finally {
     spy.mockRestore();
+    legacySharing.mockRestore();
     await fixture.cleanup();
   }
 });

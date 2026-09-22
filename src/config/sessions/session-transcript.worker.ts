@@ -2,12 +2,14 @@ import type {
   UsageCostWorkerInput,
   UsageCostWorkerReply,
 } from "../../infra/session-cost-usage-worker.types.js";
+import { runSqliteDeferredTransactionSync } from "../../infra/sqlite-transaction.js";
 import { serveWorkerTasks } from "../../infra/worker-task-server.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
 import { SessionTranscriptColdError } from "./session-cold-storage-state.js";
 import type { SessionHistoryWorkerResult } from "./session-history-types.js";
 import { sessionHistoryCleanupError } from "./session-history-worker-errors.js";
+import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
 import { SessionTranscriptProjectionUnavailableError } from "./session-transcript-projection-error.js";
 import {
   runWithSessionTranscriptReadFence,
@@ -211,14 +213,30 @@ serveWorkerTasks(
                 filename: identity.value.filename,
               };
             }
-            result.entries = loadExactSessionEntryCandidates({
-              ...request.scope,
-              readSource: request.database,
-              readOnly: true,
-              onReadSource: (source) => {
-                result.readSource = source;
-              },
-            });
+            const readEntries = () =>
+              loadExactSessionEntryCandidates({
+                ...request.scope,
+                readSource: request.database,
+                readOnly: true,
+                onReadSource: (source) => {
+                  result.readSource = source;
+                },
+              });
+            if (request.scope.includeMembership) {
+              // Entry and membership describe one committed snapshot. Native
+              // authorization stays in the host's retained consuming frame.
+              withOpenClawAgentDatabaseReadOnly(
+                (database) =>
+                  runSqliteDeferredTransactionSync(database.db, () => {
+                    result.entries = readEntries();
+                    result.membership = result.entries.map(({ sessionKey }) => ({
+                      sessionKey,
+                      members: listSessionMembersInDatabase(database, sessionKey),
+                    }));
+                  }),
+                request.database,
+              );
+            } else result.entries = readEntries();
             if (request.scope.includeProjectionFacts) {
               const boards = withOpenClawAgentDatabaseReadOnly(
                 (database) =>
@@ -376,6 +394,16 @@ serveWorkerTasks(
                       ),
                     };
                   }
+                  if (request.request.kind === "message-by-id") {
+                    return {
+                      kind: "message-by-id",
+                      message: await options.readers.readSessionMessageByIdAsync(
+                        request.request.params.target,
+                        request.request.params.messageId,
+                        request.request.params.options,
+                      ),
+                    };
+                  }
                   if (request.request.kind === "delta") {
                     return {
                       kind: "delta",
@@ -428,7 +456,7 @@ serveWorkerTasks(
       if (
         error instanceof SyntaxError &&
         request.kind === "history-page" &&
-        request.request.kind === "message-lookup"
+        (request.request.kind === "message-lookup" || request.request.kind === "message-by-id")
       ) {
         return { ok: false, error: { kind: "syntax", message: error.message } };
       }

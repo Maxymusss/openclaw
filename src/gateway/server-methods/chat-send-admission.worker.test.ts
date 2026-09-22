@@ -24,7 +24,7 @@ it.each(["current", "caller-revoked", "source-closed"] as const)(
     const fixture = await createFixture();
     const request = normalizeChatSendRequest({ params: fixture.params, client: fixture.client });
     if (!request.ok) throw new Error(request.error);
-    const session = prepareChatSendSession({
+    const session = await prepareChatSendSession({
       request: request.value,
       client: fixture.client,
       context: fixture.context,

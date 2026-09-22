@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -206,25 +207,47 @@ export function loadGatewaySessionEntryReadOnly(
 /** Consume exact row facts synchronously while their physical worker owners remain retained. */
 export async function withGatewaySessionEntry<T>(
   sessionKey: string,
-  opts: Pick<SessionEntryListScope, "agentId" | "projection" | "env"> | undefined,
-  consume: (session: ReturnType<typeof loadGatewaySessionEntry>) => T,
+  opts:
+    | (Pick<SessionEntryListScope, "agentId" | "projection" | "env"> & {
+        includeMembership?: boolean;
+      })
+    | undefined,
+  consume: (
+    session: ReturnType<typeof loadGatewaySessionEntry>,
+    membership: ReadonlyMap<
+      string,
+      readonly import("../config/sessions/session-sharing-store.kernel.js").SessionMember[]
+    >,
+    assertSourceCurrent: () => void,
+  ) => T,
 ): Promise<T> {
   const cfg = getRuntimeConfig();
-  return await withGatewaySessionStoreTarget({ cfg, key: sessionKey, ...opts }, (target) => {
-    for (const key of target.storeKeys) {
-      if (isInternalSessionEffectsKey(key)) delete target.store[key];
-    }
-    const canonicalMatch = resolveCanonicalSessionStoreMatchFromStoreKeys(
-      target.store,
-      target.storeKeys,
-    );
-    return consume({
-      cfg,
-      ...target,
-      entry: canonicalMatch?.entry,
-      legacyKey: canonicalMatch?.key !== target.canonicalKey ? canonicalMatch?.key : undefined,
-    });
-  });
+  return await withGatewaySessionStoreTarget(
+    { cfg, key: sessionKey, ...opts },
+    (target, membership, assertSourceCurrent) => {
+      for (const key of target.storeKeys) {
+        if (isInternalSessionEffectsKey(key)) delete target.store[key];
+      }
+      const canonicalMatch = resolveCanonicalSessionStoreMatchFromStoreKeys(
+        target.store,
+        target.storeKeys,
+      );
+      return consume(
+        {
+          cfg,
+          ...target,
+          entry: canonicalMatch?.entry,
+          legacyKey: canonicalMatch?.key !== target.canonicalKey ? canonicalMatch?.key : undefined,
+        },
+        membership,
+        () => {
+          assertSourceCurrent();
+          if (!isDeepStrictEqual(cfg, getRuntimeConfig()))
+            throw new Error("Session routing changed during consumption");
+        },
+      );
+    },
+  );
 }
 
 /** Returns the one canonical entry and the exact persisted key that owns it. */

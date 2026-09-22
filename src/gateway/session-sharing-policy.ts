@@ -27,6 +27,7 @@ import {
   prepareGatewaySessionStoreTargetsReadOnly,
   resolveGatewaySessionStoreTargetsReadOnly,
   resolveGatewaySessionStoreTargetWithStore,
+  withGatewaySessionStoreTarget,
   type GatewaySessionStoreCache,
   type GatewaySessionStoreDiscoveryCache,
 } from "./session-utils-store-lookup.js";
@@ -110,6 +111,34 @@ export function resolveSessionSharingTarget(params: {
     ...(params.targetDiscoveryCache ? { targetDiscoveryCache: params.targetDiscoveryCache } : {}),
   });
   return toSessionSharingTarget(target);
+}
+
+/** Fresh entry and membership consumed under the existing physical reader owner. */
+export async function withSessionSharingTarget<T>(
+  params: { cfg: OpenClawConfig; sessionKey: string; agentId?: string },
+  consume: (facts: {
+    target: SessionSharingTarget | null;
+    members: readonly import("../config/sessions/session-sharing-store.kernel.js").SessionMember[];
+    assertCurrent: () => void;
+  }) => T,
+): Promise<T> {
+  return withGatewaySessionStoreTarget(
+    {
+      cfg: params.cfg,
+      key: params.sessionKey,
+      agentId: params.agentId,
+      projection: "list",
+      includeMembership: true,
+    },
+    (selected, membership, assertCurrent) => {
+      const target = toSessionSharingTarget(selected);
+      return consume({
+        target,
+        members: target ? (membership.get(target.storeKey) ?? []) : [],
+        assertCurrent,
+      });
+    },
+  );
 }
 
 /** Fresh metadata for one synchronous batch; no authorization decisions are retained. */
@@ -337,25 +366,32 @@ export function authorizeResolvedSessionMutation(params: {
   return authorizeSessionSharingTarget({ cfg: params.cfg, client: params.client, target });
 }
 
-export function authorizeSessionAgentRun(params: {
-  cfg: OpenClawConfig;
-  client: GatewayClient | null;
-  target: Pick<SessionSharingTarget, "agentId" | "canonicalKey"> & {
-    entry?: Pick<SessionEntry, "sandbox">;
-  };
-}): ErrorShape | null {
-  const agentError = authorizeGatewaySessionCreation({
-    cfg: params.cfg,
-    client: params.client,
-    agentId: params.target.agentId,
-  });
+export function authorizeSessionAgentRun(
+  params: {
+    cfg: OpenClawConfig;
+    client: GatewayClient | null;
+    target: Pick<SessionSharingTarget, "agentId" | "canonicalKey"> & {
+      entry?: Pick<SessionEntry, "sandbox">;
+    };
+  },
+  prepared?: Parameters<typeof authorizeGatewaySessionCreation>[1],
+): ErrorShape | null {
+  const agentError = authorizeGatewaySessionCreation(
+    {
+      cfg: params.cfg,
+      client: params.client,
+      agentId: params.target.agentId,
+    },
+    prepared,
+  );
   if (agentError) {
     return agentError;
   }
   if (
     params.cfg.gateway?.roles &&
     params.target.entry?.sandbox !== "required" &&
-    resolveOperatorRolePolicy(params.client, params.cfg)?.sandbox === "required"
+    (prepared ? prepared.role : resolveOperatorRolePolicy(params.client, params.cfg))?.sandbox ===
+      "required"
   ) {
     return errorShape(
       ErrorCodes.FORBIDDEN,

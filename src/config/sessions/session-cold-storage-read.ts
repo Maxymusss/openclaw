@@ -36,7 +36,7 @@ export function readHotSessionTranscriptSnapshot<T>(
 export async function readRestoredSessionTranscript<T>(
   scope: SessionTranscriptReadScope,
   read: () => T | Promise<T>,
-  options?: { readOnly?: boolean; assertCurrent?: () => void },
+  options?: { readOnly?: boolean; assertCurrent?: () => void; restoreBeforeRead?: boolean },
 ): Promise<T> {
   options?.assertCurrent?.();
   // Read workers report cold storage to their host; only the host restores it.
@@ -44,7 +44,11 @@ export async function readRestoredSessionTranscript<T>(
     return read();
   }
   const { restoreSessionColdTranscript } = await import("./session-cold-storage.js");
-  await restoreSessionColdTranscript(scope, options?.assertCurrent);
+  // Admitted workers detect cold storage in their read snapshot. Let hot reads
+  // finish there without a redundant synchronous cold-marker read on the host.
+  if (options?.restoreBeforeRead !== false) {
+    await restoreSessionColdTranscript(scope, options?.assertCurrent);
+  }
   try {
     return await read();
   } catch (error) {

@@ -401,6 +401,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             return {
               entries: value.entries,
               readSource: value.readSource,
+              membership: value.membership,
               databaseIdentity: value.databaseIdentity,
               boardSessionKeys: value.boardSessionKeys,
               transcriptWatermarks: value.transcriptWatermarks,

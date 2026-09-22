@@ -3,6 +3,7 @@ import {
   resolveOpenAIResponsesPayloadPolicy,
 } from "@openclaw/ai/transports";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../../../test/helpers/sqlite-statement-execution-counter.js";
 import { createReplyOperation } from "../../../auto-reply/reply/reply-run-registry.js";
 import { prepareReplyToolAuthority } from "../../../auto-reply/reply/reply-tool-authority.js";
 import { persistSessionUsageUpdate } from "../../../auto-reply/reply/session-usage.js";
@@ -11,6 +12,7 @@ import {
   loadSessionEntryReadOnly,
   patchSessionEntryCore,
   replaceSessionEntry,
+  replaceSessionEntrySync,
 } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
@@ -582,6 +584,80 @@ describe("model chat and native model ownership", () => {
         operation.complete();
       }
     });
+  });
+
+  it("rechecks native ownership and predecessor without main-thread SQL", async () => {
+    const predecessors: Array<string | undefined> = [];
+    const fixture = await createFixture({}, ({ assertCurrent, readPreviousSessionId }) => {
+      for (let i = 0; i < 3; i++) {
+        assertCurrent();
+        predecessors.push(readPreviousSessionId?.());
+      }
+      return { model: "native", auth: "native" };
+    });
+    await patchSessionEntryCore(fixture.target, () => ({
+      previousSessionId: "initial-predecessor",
+    }));
+    const setup = await fixture.resolve();
+    predecessors.length = 0;
+    const hostSql = observeHostDataSql();
+    try {
+      await setup.nativeSessionRuntime!.assertCurrent();
+      await setup.nativeSessionRuntime!.assertCurrent();
+      expect(predecessors).toEqual(Array(6).fill("initial-predecessor"));
+      expect(hostSql.calls.flatMap((call) => call.mock.calls)).toEqual([]);
+    } finally {
+      hostSql.restore();
+    }
+    await patchSessionEntryCore(fixture.target, () => ({ previousSessionId: "new-predecessor" }));
+    predecessors.length = 0;
+    await setup.nativeSessionRuntime!.assertCurrent();
+    expect(predecessors).toEqual(Array(3).fill("new-predecessor"));
+  });
+
+  it.each([
+    "sessionId",
+    "lifecycleRevision",
+    "activeWriterRunId",
+    "agentHarnessId",
+    "previousSessionId",
+  ] as const)(
+    "rejects a same-frame %s publication during the synchronous native hook",
+    async (field) => {
+      const fixture = await createFixture({}, ({ assertCurrent }) => {
+        replaceSessionEntrySync(fixture.target, { ...fixture.entry, [field]: "changed" });
+        assertCurrent();
+        return { model: "native", auth: "native" };
+      });
+      await expect(fixture.resolve()).rejects.toMatchObject({ name: "AgentHarnessPreflightError" });
+      expect(fixture.generation.resolveDynamicModel).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rechecks the admitted writer pin on each worker-prepared ownership read", async () => {
+    const fixture = await createFixture({}, () => ({ model: "native", auth: "native" }));
+    fixture.runParams.sessionTarget = {
+      ...fixture.target,
+      sessionId: fixture.entry.sessionId,
+      expectedWriterRunId: "admitted-writer",
+    };
+    await patchSessionEntryCore(fixture.target, () => ({ activeWriterRunId: "admitted-writer" }));
+    const setup = await fixture.resolve();
+    await patchSessionEntryCore(fixture.target, () => ({
+      activeWriterRunId: "replacement-writer",
+    }));
+    await expect(setup.nativeSessionRuntime!.assertCurrent()).rejects.toThrow("ownership changed");
+  });
+
+  it("rejects cancellation inside the synchronous ownership hook before publishing its result", async () => {
+    const controller = new AbortController();
+    const reason = new Error("native preparation canceled");
+    const fixture = await createFixture({}, () => {
+      controller.abort(reason);
+      return { model: "native", auth: "native" };
+    });
+    fixture.runParams.abortSignal = controller.signal;
+    await expect(fixture.resolve()).rejects.toBe(reason);
   });
 
   it("reads latest native lineage from the admitted store after a session rollover", async () => {

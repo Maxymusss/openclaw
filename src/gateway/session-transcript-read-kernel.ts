@@ -16,6 +16,7 @@ import type {
   CurrentTranscriptProjection,
   SessionTranscriptMessageEvent,
 } from "../config/sessions/session-accessor.sqlite-projection-read.js";
+import type { ReadSessionMessageByIdResult } from "../config/sessions/session-history-types.js";
 import type {
   TranscriptRecentReadLimits,
   TranscriptAnchorPageOptions,
@@ -65,14 +66,6 @@ type ReadSessionMessagesResult = {
 type SessionTranscriptReadOptions = {
   allowResetArchiveFallback?: boolean;
   readOnly?: boolean;
-};
-
-type ReadSessionMessageByIdResult = {
-  message?: unknown;
-  seq?: number;
-  oversized: boolean;
-  found: boolean;
-  serializedBytes?: number;
 };
 
 function archivedTranscriptReader(target: ResolvedTranscriptReadTarget): ArchivedTranscriptReader {

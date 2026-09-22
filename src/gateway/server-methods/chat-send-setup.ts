@@ -42,6 +42,9 @@ export async function prepareAndAdmitChatSend(
           }
         }
       : undefined;
+  const withCurrent = sessionMutationAuthorization?.withCurrent;
+  const assertCurrentAsync = async () =>
+    withCurrent ? withCurrent(() => assertCurrent?.()) : assertCurrent?.();
   const normalizedRequest = normalizeChatSendRequest({
     params,
     client,
@@ -60,7 +63,7 @@ export async function prepareAndAdmitChatSend(
     );
     return undefined;
   }
-  const preparedSession = prepareChatSendSession({
+  const preparedSession = await prepareChatSendSession({
     request: normalizedRequest.value,
     context,
     client,
@@ -103,6 +106,8 @@ export async function prepareAndAdmitChatSend(
     context,
     client,
     assertCurrent,
+    assertCurrentAsync,
+    withCurrent,
   });
   if (!shouldAdmit) {
     return undefined;
@@ -113,6 +118,7 @@ export async function prepareAndAdmitChatSend(
     client,
     context,
     assertCurrent,
+    assertCurrentAsync,
   });
   if (nativeRestriction) {
     respond(false, undefined, nativeRestriction);
@@ -127,6 +133,9 @@ export async function prepareAndAdmitChatSend(
     onAdmissionOwned,
     hasCurrentClientAuthority,
     assertCurrent,
+    assertCurrentAsync,
+    withCurrent,
+    withPreparedCurrent: sessionMutationAuthorization?.withPreparedCurrent,
   });
   if (!admitted.ok) {
     return undefined;
