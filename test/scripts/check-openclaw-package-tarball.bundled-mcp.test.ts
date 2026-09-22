@@ -6,6 +6,7 @@ import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveNpmRunner } from "../../scripts/npm-runner.mts";
 import { resolvePnpmRunner } from "../../scripts/pnpm-runner.mts";
+import { captureNpmFailureEvidence } from "./npm-failure-evidence.js";
 import { listFilesRecursively, withTarball } from "./package-tarball-fixture.js";
 
 const require = createRequire(import.meta.url);
@@ -118,6 +119,8 @@ describe("bundled browser MCP package", () => {
               tarball,
             ],
           });
+          const installWallStartedAt = Date.now();
+          const installStartedAt = performance.now();
           const installed = spawnSync(npm.command, npm.args, {
             cwd: consumer,
             encoding: "utf8",
@@ -126,7 +129,39 @@ describe("bundled browser MCP package", () => {
             windowsVerbatimArguments: npm.windowsVerbatimArguments,
             timeout: 30_000,
           });
-          expect(installed.status, installed.stderr).toBe(0);
+          const installElapsedMs = performance.now() - installStartedAt;
+          expect(
+            installed.status,
+            JSON.stringify({
+              command: npm.command,
+              args: npm.args,
+              cwd: consumer,
+              node: { execPath: process.execPath, version: process.version },
+              elapsedMs: installElapsedMs,
+              timeoutMs: 30_000,
+              pid: installed.pid,
+              status: installed.status,
+              signal: installed.signal,
+              error: installed.error && {
+                name: installed.error.name,
+                code: "code" in installed.error ? installed.error.code : undefined,
+                message: installed.error.message,
+              },
+              npmEvidence:
+                installed.status === 0
+                  ? undefined
+                  : captureNpmFailureEvidence({
+                      cwd: consumer,
+                      tarball,
+                      env: npm.env ?? process.env,
+                      stderr: installed.stderr,
+                      startedAt: installWallStartedAt,
+                      finishedAt: Date.now(),
+                    }),
+              stdoutTail: installed.stdout?.slice(-4096),
+              stderrTail: installed.stderr?.slice(-4096),
+            }),
+          ).toBe(0);
           const consumerRequire = createRequire(
             join(consumer, "node_modules/openclaw/package.json"),
           );
