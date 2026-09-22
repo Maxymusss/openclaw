@@ -115,6 +115,7 @@ function reserveForegroundReplyLease(
     isActiveRunSafeCommandTurn({
       commandTurn: resolveCommandTurnContext(finalized),
       cfg,
+      hasMedia: Boolean(finalized.media?.length),
       provider: finalized.Provider ?? finalized.Surface,
     })
   ) {

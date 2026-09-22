@@ -216,6 +216,7 @@ export function findCommandByNativeName(
 export function isActiveRunSafeCommandTurn(params: {
   commandTurn: CommandTurnContext;
   cfg: OpenClawConfig;
+  hasMedia?: boolean;
   provider?: string;
 }): boolean {
   const { commandTurn } = params;
@@ -238,9 +239,13 @@ export function isActiveRunSafeCommandTurn(params: {
             ? resolveTextCommand(`/${commandTurn.commandName}`, params.cfg)
             : null)
         )?.command;
+  const standaloneModelCommand = isStandaloneModelCommand(commandTurn.body ?? "", params.cfg);
+  if (params.hasMedia && standaloneModelCommand) {
+    return false;
+  }
   return (
     ((command?.key === "model" || (commandTurn.kind === "text-slash" && !command)) &&
-      isStandaloneModelCommand(commandTurn.body ?? "", params.cfg)) ||
+      standaloneModelCommand) ||
     command?.activeRunSafe === true ||
     (command?.key === "login" && /^\/login\s+cancel$/iu.test(commandTurn.body?.trim() ?? ""))
   );

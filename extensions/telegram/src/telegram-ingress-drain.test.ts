@@ -295,6 +295,16 @@ describe("createTelegramIngressMonitor", () => {
       laneKey: "telegram:-1234:topic:42",
       modelAlias: true,
     },
+    {
+      name: "configured model alias removed before restart",
+      updateKind: "message",
+      chat: { id: -1234, type: "supergroup", is_forum: true },
+      topic: { message_thread_id: 42, is_topic_message: true },
+      laneKey: "telegram:-1234:model",
+      expectedLaneKey: "telegram:-1234:topic:42",
+      modelAlias: true,
+      aliasRemoved: true,
+    },
   ])("replays promoted controls after restart: $name", async (testCase) => {
     await withTempState(async (stateDir) => {
       const queueOptions = { channelId: "telegram", accountId: "default", stateDir };
@@ -324,17 +334,24 @@ describe("createTelegramIngressMonitor", () => {
       closeOpenClawStateDatabaseForTest();
 
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>(queueOptions);
-      const controlLaneKey = `telegram:${testCase.chat.id}:${"modelAlias" in testCase ? "model" : "control"}`;
+      const controlLaneKey =
+        "expectedLaneKey" in testCase
+          ? testCase.expectedLaneKey
+          : `telegram:${testCase.chat.id}:${"modelAlias" in testCase ? "model" : "control"}`;
       const dispatch = vi.fn(async () => {
         expect(await queue.listClaims()).toMatchObject([{ laneKey: controlLaneKey }]);
         return { kind: "completed" as const };
       });
+      const monitorCfg: OpenClawConfig =
+        "modelAlias" in testCase && !("aliasRemoved" in testCase)
+          ? {
+              ...cfg,
+              agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },
+            }
+          : cfg;
       const monitor = createTelegramIngressMonitor({
         queue,
-        getConfig: () => ({
-          ...cfg,
-          agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },
-        }),
+        getConfig: () => monitorCfg,
         accountId: "default",
         botInfo: {
           ...telegramBotInfoForTest,

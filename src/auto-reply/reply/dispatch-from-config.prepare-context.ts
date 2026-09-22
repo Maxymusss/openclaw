@@ -372,6 +372,7 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
     isActiveRunSafeCommandTurn({
       commandTurn,
       cfg,
+      hasMedia: Boolean(ctx.media?.length),
       provider: ctx.Provider ?? ctx.Surface,
     });
   if (

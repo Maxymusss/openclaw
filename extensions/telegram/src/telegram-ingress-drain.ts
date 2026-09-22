@@ -50,6 +50,12 @@ const TELEGRAM_SPOOLED_DRAIN_START_LIMIT = 100;
 const TELEGRAM_SPOOLED_DRAIN_SCAN_LIMIT = TELEGRAM_SPOOLED_DRAIN_START_LIMIT * 10;
 const TELEGRAM_SPOOLED_DRAIN_POLL_INTERVAL_MS = 500;
 
+type TelegramIngressLaneResolver = (
+  update: unknown,
+  botInfo: TelegramBotInfo | undefined,
+  cfg: OpenClawConfig,
+) => string;
+
 export function resolveTelegramAdoptionStallTimeoutMs(params: {
   configured?: number;
   env?: NodeJS.ProcessEnv;
@@ -71,7 +77,11 @@ function telegramSpooledLaneKey(
   update: unknown,
   botInfo?: TelegramBotInfo,
   cfg?: OpenClawConfig,
+  resolveLaneKey?: TelegramIngressLaneResolver,
 ): string {
+  if (resolveLaneKey && cfg) {
+    return resolveLaneKey(update, botInfo, cfg);
+  }
   return getTelegramSequentialKey(
     {
       update: update as Parameters<typeof getTelegramSequentialKey>[0]["update"],
@@ -86,17 +96,18 @@ function inspectTelegramSpooledUpdate(
   botInfo?: TelegramBotInfo,
   claimedLaneKey?: string,
   cfg?: OpenClawConfig,
+  resolveLaneKey?: TelegramIngressLaneResolver,
 ) {
   const updateId = resolveTelegramUpdateId(update);
   if (updateId === null) {
     throw new TelegramIngressPayloadError("Telegram spooled update is missing numeric update_id.");
   }
-  const derivedLaneKey = telegramSpooledLaneKey(update, botInfo, cfg);
+  const derivedLaneKey = telegramSpooledLaneKey(update, botInfo, cfg, resolveLaneKey);
   const preservePreIdentityControlLane =
     botInfo !== undefined &&
     claimedLaneKey?.endsWith(":control") === true &&
     claimedLaneKey !== derivedLaneKey &&
-    claimedLaneKey === telegramSpooledLaneKey(update, undefined, cfg);
+    claimedLaneKey === telegramSpooledLaneKey(update, undefined, cfg, resolveLaneKey);
   return {
     eventId: telegramQueueEventId(updateId),
     // Admission can precede getMe(). Preserve only the exact control lane that
@@ -120,6 +131,7 @@ function canReconcileTelegramLegacyLane(params: {
   accountId: string;
   botInfo?: TelegramBotInfo;
   cfg?: OpenClawConfig;
+  resolveLaneKey?: TelegramIngressLaneResolver;
 }): boolean {
   if (
     params.record.channelId !== "telegram" ||
@@ -233,11 +245,17 @@ function canReconcileTelegramLegacyLane(params: {
     return false;
   }
   const baseLaneKey = `telegram:${chatId}`;
+  const promotedLane =
+    params.derivedLaneKey === `${baseLaneKey}:control` ||
+    params.derivedLaneKey === `${baseLaneKey}:model`;
+  const demotedModelLane =
+    params.storedLaneKey === `${baseLaneKey}:model` &&
+    params.derivedLaneKey !== params.storedLaneKey;
   if (
     callback === undefined &&
-    (params.derivedLaneKey === `${baseLaneKey}:control` ||
-      params.derivedLaneKey === `${baseLaneKey}:model`) &&
-    telegramSpooledLaneKey(update, params.botInfo, params.cfg) === params.derivedLaneKey
+    (promotedLane || demotedModelLane) &&
+    telegramSpooledLaneKey(update, params.botInfo, params.cfg, params.resolveLaneKey) ===
+      params.derivedLaneKey
   ) {
     if (
       (!isPrivateChat && !isGroupChat && !(chatType === "channel" && chatId < 0)) ||
@@ -250,6 +268,9 @@ function canReconcileTelegramLegacyLane(params: {
     // SAFETY: The resolver reads the validated chat/thread fields and parses direct-message IDs itself.
     const thread = resolveTelegramMessageThreadSpec(message as Message, forumFlag);
     const topicLaneKey = thread.id === undefined ? undefined : `${baseLaneKey}:topic:${thread.id}`;
+    if (demotedModelLane) {
+      return params.derivedLaneKey === baseLaneKey || params.derivedLaneKey === topicLaneKey;
+    }
     return params.storedLaneKey === baseLaneKey || params.storedLaneKey === topicLaneKey;
   }
   if (
@@ -284,7 +305,8 @@ function canReconcileTelegramLegacyLane(params: {
         !hasTelegramQuestionCallbackPrefix(callbackData) &&
         params.storedLaneKey === previousLaneKey) &&
     params.derivedLaneKey === canonicalLaneKey &&
-    telegramSpooledLaneKey(update, params.botInfo, params.cfg) === canonicalLaneKey
+    telegramSpooledLaneKey(update, params.botInfo, params.cfg, params.resolveLaneKey) ===
+      canonicalLaneKey
   );
 }
 
@@ -307,6 +329,7 @@ type CreateTelegramIngressMonitorParams = {
   getConfig: () => OpenClawConfig;
   accountId: string;
   botInfo?: TelegramBotInfo;
+  resolveLaneKey?: TelegramIngressLaneResolver;
   adoptionStallTimeoutMs?: number;
   pollIntervalMs?: number;
   dispatch: TelegramIngressDrainDispatch;
@@ -344,6 +367,7 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         params.botInfo,
         context.phase === "claim" ? context.claimedLaneKey : undefined,
         params.getConfig(),
+        params.resolveLaneKey,
       );
     },
     inspectAsync: async (update, context) => {
@@ -360,6 +384,7 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         params.botInfo,
         context.phase === "claim" ? context.claimedLaneKey : undefined,
         params.getConfig(),
+        params.resolveLaneKey,
       );
     },
     payload: {
@@ -512,13 +537,19 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         ...(params.botInfo?.username ? { botUsername: params.botInfo.username } : {}),
       }),
       deriveLaneKey: (record) =>
-        telegramSpooledLaneKey(record.payload.update, params.botInfo, params.getConfig()),
+        telegramSpooledLaneKey(
+          record.payload.update,
+          params.botInfo,
+          params.getConfig(),
+          params.resolveLaneKey,
+        ),
       reconcileStoredLaneKey: (record, storedLaneKey, derivedLaneKey) =>
         canReconcileTelegramLegacyLane({
           record,
           storedLaneKey,
           derivedLaneKey,
           cfg: params.getConfig(),
+          resolveLaneKey: params.resolveLaneKey,
           accountId: params.accountId,
           botInfo: params.botInfo,
         }),

@@ -79,6 +79,7 @@ type TelegramTextFragmentInput = {
   promptContextAmbientWatermark?: TelegramAmbientTranscriptWatermark;
   dispatchDedupeClaims: TelegramMessageDispatchReplayClaim[];
   channelIngressResolver: TelegramChannelIngressResolver;
+  preserveCommandOrdering: boolean;
 };
 
 interface TelegramInboundBuffers {
@@ -448,6 +449,19 @@ export function createTelegramInboundBuffers({
     );
     const senderId = params.msg.from?.id != null ? String(params.msg.from.id) : "unknown";
     const key = `text:${params.chatId}:${params.threadSpec.scope}:${params.threadSpec.id ?? "main"}:${senderId}`;
+    if (params.preserveCommandOrdering) {
+      const conversationPrefix = `text:${params.chatId}:${params.threadSpec.scope}:${params.threadSpec.id ?? "main"}:`;
+      const pendingFragments: TextFragmentEntry[] = [];
+      for (const [pendingKey, entries] of pendingTextFragments) {
+        if (pendingKey.startsWith(conversationPrefix)) {
+          pendingFragments.push(...entries);
+        }
+      }
+      for (const pendingFragment of pendingFragments) {
+        releaseTextFragments(pendingFragment);
+      }
+      await Promise.all(pendingFragments.map((pendingFragment) => pendingFragment.completion));
+    }
     if (text && !isCommand && !params.isAbortControlMessage) {
       const nowMs = Date.now();
       const existing = textBuffer.get(key);

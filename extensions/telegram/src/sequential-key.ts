@@ -17,6 +17,7 @@ import {
   resolveTelegramBotHasTopicsEnabled,
   resolveTelegramMessageForumFlagHint,
   resolveTelegramMessageThreadSpec,
+  resolveTelegramPrimaryMedia,
   shouldUseTelegramDmThreadSession,
 } from "./bot/helpers.js";
 import { getPreparedTelegramPollAnswer } from "./poll-answer-context.js";
@@ -42,6 +43,7 @@ const TELEGRAM_READ_ONLY_COMMAND_KEYS = new Set([
 // writes must stay ordered behind their own topic's pending input. `/approve` belongs
 // here because the run that requested the approval is holding its own lane.
 const TELEGRAM_ACTIVE_RUN_CONTROL_COMMAND_KEYS = new Set(["approve", "queue", "steer"]);
+const ordinaryModelAliasContexts = new WeakSet<object>();
 
 type TelegramSequentialKeyContext = {
   chat?: { id?: number };
@@ -63,6 +65,26 @@ type TelegramSequentialKeyContext = {
     poll_answer?: { poll_id?: string };
   };
 };
+
+type TelegramSequentialKeyOptions = {
+  modelAliasOrdinary?: boolean;
+};
+
+export function resolveTelegramSequentialMessage(
+  ctx: TelegramSequentialKeyContext,
+): Message | undefined {
+  return (
+    ctx.message ??
+    ctx.channelPost ??
+    ctx.editedMessage ??
+    ctx.editedChannelPost ??
+    ctx.update?.message ??
+    ctx.update?.edited_message ??
+    ctx.update?.channel_post ??
+    ctx.update?.edited_channel_post ??
+    ctx.update?.callback_query?.message
+  );
+}
 
 function getTelegramMessageReactionSequentialKey(
   ctx: TelegramSequentialKeyContext,
@@ -150,6 +172,36 @@ function isTelegramModelSelectionText(params: {
   );
 }
 
+export function resolveTelegramConfiguredModelAlias(params: {
+  rawText?: string;
+  botUsername?: string;
+  cfg?: OpenClawConfig;
+}): { commandBody: string; commandName: string } | undefined {
+  if (!params.cfg) {
+    return undefined;
+  }
+  const commandBody = normalizeCommandBody(params.rawText ?? "", {
+    botUsername: params.botUsername,
+    preserveArguments: true,
+  });
+  if (
+    !isStandaloneModelCommand(commandBody, params.cfg) ||
+    resolveTelegramCommandKeyForControlLane({ rawText: commandBody }) !== undefined
+  ) {
+    return undefined;
+  }
+  const commandName = commandBody.match(/^\/([^\s:]+)/u)?.[1]?.toLowerCase();
+  return commandName ? { commandBody, commandName } : undefined;
+}
+
+export function markTelegramModelAliasOrdinary(ctx: object): void {
+  ordinaryModelAliasContexts.add(ctx);
+}
+
+export function isTelegramModelAliasOrdinary(ctx: object): boolean {
+  return ordinaryModelAliasContexts.has(ctx);
+}
+
 export function isTelegramControlLaneText(params: {
   cfg?: OpenClawConfig;
   rawText?: string;
@@ -175,6 +227,7 @@ export function isTelegramControlLaneText(params: {
 export function getTelegramSequentialKey(
   ctx: TelegramSequentialKeyContext,
   cfg?: OpenClawConfig,
+  options?: TelegramSequentialKeyOptions,
 ): string {
   const reaction = ctx.update?.message_reaction;
   if (reaction?.chat?.id) {
@@ -192,25 +245,22 @@ export function getTelegramSequentialKey(
     // for the same unknown poll together while the handler records the miss.
     return `telegram:poll:${pollId}`;
   }
-  const msg =
-    ctx.message ??
-    ctx.channelPost ??
-    ctx.editedMessage ??
-    ctx.editedChannelPost ??
-    ctx.update?.message ??
-    ctx.update?.edited_message ??
-    ctx.update?.channel_post ??
-    ctx.update?.edited_channel_post ??
-    ctx.update?.callback_query?.message;
+  const msg = resolveTelegramSequentialMessage(ctx);
   const chatId = msg?.chat?.id ?? ctx.chat?.id;
   const rawText = msg?.text ?? msg?.caption;
   const botUsername = ctx.me?.username;
+  const modelAliasOrdinary =
+    options?.modelAliasOrdinary === true || isTelegramModelAliasOrdinary(ctx);
+  const modelSelectionWithMedia =
+    resolveTelegramPrimaryMedia(msg) !== undefined &&
+    isTelegramModelSelectionText({ rawText, botUsername, cfg });
+  const modelSelectionOrdinary = modelAliasOrdinary || modelSelectionWithMedia;
   // Alias resolution can discover an executable skill and wait for ordinary
   // admission. Keep that wait out of the inspection/interrupt lane.
-  if (isTelegramModelSelectionText({ rawText, botUsername, cfg })) {
+  if (!modelSelectionOrdinary && isTelegramModelSelectionText({ rawText, botUsername, cfg })) {
     return typeof chatId === "number" ? `telegram:${chatId}:model` : "telegram:model";
   }
-  if (isTelegramControlLaneText({ rawText, botUsername, cfg })) {
+  if (!modelSelectionOrdinary && isTelegramControlLaneText({ rawText, botUsername, cfg })) {
     if (typeof chatId === "number") {
       return `telegram:${chatId}:control`;
     }
@@ -290,8 +340,9 @@ function getTelegramPollAnswerSequentialKey(entry: TelegramPollRegistryEntry): s
 export function getTelegramSequentialConstraints(
   ctx: TelegramSequentialKeyContext,
   cfg?: OpenClawConfig,
+  options?: TelegramSequentialKeyOptions,
 ): string | string[] {
-  const key = getTelegramSequentialKey(ctx, cfg);
+  const key = getTelegramSequentialKey(ctx, cfg, options);
   const messageKey = getTelegramMessageReactionSequentialKey(ctx);
   if (ctx.update?.message_reaction && messageKey) {
     return messageKey;

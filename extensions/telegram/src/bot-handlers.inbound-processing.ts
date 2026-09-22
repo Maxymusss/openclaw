@@ -49,7 +49,7 @@ import {
 import type { TelegramContext } from "./bot/types.js";
 import { resolveTelegramCommandIngressAuthorization } from "./ingress.js";
 import type { TelegramMessageDispatchReplayClaim } from "./message-dispatch-dedupe.js";
-import { isTelegramControlLaneText } from "./sequential-key.js";
+import { isTelegramControlLaneText, isTelegramModelAliasOrdinary } from "./sequential-key.js";
 
 export interface TelegramInboundProcessing {
   processInboundMessage: (params: TelegramInboundMessage) => Promise<TelegramInboundDisposition>;
@@ -157,15 +157,15 @@ export function createTelegramInboundProcessing({
     const messageText = getTelegramTextParts(msg).text;
     const botUsername = ctx.me?.username;
     const isAbortControlMessage = isAbortRequestText(messageText, { botUsername });
-    const bypassTextBuffer =
+    let bypassTextBuffer =
       isTelegramControlLaneText({ rawText: messageText, botUsername, cfg: authorizationCfg }) ||
       isBtwRequestText(messageText, { botUsername });
-    let abortControlAuthorized: Promise<boolean> | undefined;
-    const isAuthorizedAbortControlMessage = () => {
-      if (!isAbortControlMessage || !senderId) {
+    let controlAuthorized: Promise<boolean> | undefined;
+    const isAuthorizedControlMessage = () => {
+      if (!senderId) {
         return Promise.resolve(false);
       }
-      abortControlAuthorized ??= resolveTelegramCommandIngressAuthorization({
+      controlAuthorized ??= resolveTelegramCommandIngressAuthorization({
         accountId,
         cfg: authorizationCfg,
         dmPolicy,
@@ -181,10 +181,15 @@ export function createTelegramInboundProcessing({
         modeWhenAccessGroupsOff: "allow",
         includeDmAllowForGroupCommands: false,
       }).then((gate) => gate.authorized);
-      return abortControlAuthorized;
+      return controlAuthorized;
     };
+    const preserveCommandOrdering =
+      isTelegramModelAliasOrdinary(ctx) && (await isAuthorizedControlMessage());
+    if (preserveCommandOrdering) {
+      bypassTextBuffer = false;
+    }
 
-    if (await isAuthorizedAbortControlMessage()) {
+    if (isAbortControlMessage && (await isAuthorizedControlMessage())) {
       cancelPending({ chatId, threadSpec, senderId });
     }
 
@@ -201,6 +206,7 @@ export function createTelegramInboundProcessing({
         promptContextAmbientWatermark,
         dispatchDedupeClaims,
         channelIngressResolver,
+        preserveCommandOrdering,
       }))
     ) {
       return { kind: "buffered", buffer: "text-fragment" };

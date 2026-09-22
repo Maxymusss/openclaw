@@ -15,6 +15,8 @@ import {
   resolveNativeCommandsEnabled,
   resolveNativeSkillsEnabled,
 } from "openclaw/plugin-sdk/native-command-config-runtime";
+import { matchPluginCommand } from "openclaw/plugin-sdk/plugin-runtime";
+import { createRuntimeConfigReader } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import {
   danger,
   logVerbose,
@@ -30,6 +32,7 @@ import { getOrCreateAccountThrottler } from "./account-throttler.js";
 import { resolveTelegramAccount } from "./accounts.js";
 import { normalizeTelegramApiRoot } from "./api-root.js";
 import type { TelegramBotDeps } from "./bot-deps.js";
+import { createTelegramMessageSessionRuntime } from "./bot-handlers.message-context.js";
 import { createTelegramHandlers } from "./bot-handlers.runtime.js";
 import { createTelegramMessageProcessor } from "./bot-message.js";
 import { defaultTelegramNativeCommandDeps } from "./bot-native-command-deps.runtime.js";
@@ -46,6 +49,7 @@ import { createTelegramUpdateTracker } from "./bot-update-tracker.js";
 import type { TelegramUpdateKeyContext } from "./bot-updates.js";
 import { apiThrottler, Bot, sequentialize, type ApiClientOptions } from "./bot.runtime.js";
 import type { TelegramBotOptions } from "./bot.types.js";
+import { resolveTelegramMessageThreadSpec } from "./bot/helpers.js";
 import {
   setTelegramCallbackQueryAnswerPromise,
   startTelegramCallbackQueryAnswer,
@@ -66,7 +70,13 @@ import {
 } from "./poll-answer-context.js";
 import { formatTelegramRawUpdateForLog } from "./raw-update-log.js";
 import type { TelegramSendChatActionHandler } from "./sendchataction-401-backoff.js";
-import { getTelegramSequentialConstraints } from "./sequential-key.js";
+import {
+  getTelegramSequentialKey,
+  getTelegramSequentialConstraints,
+  markTelegramModelAliasOrdinary,
+  resolveTelegramConfiguredModelAlias,
+  resolveTelegramSequentialMessage,
+} from "./sequential-key.js";
 import { createTelegramThreadBindingManager } from "./thread-bindings.js";
 
 type TelegramBotRuntime = {
@@ -74,7 +84,13 @@ type TelegramBotRuntime = {
   sequentialize: typeof sequentialize;
   apiThrottler: typeof apiThrottler;
 };
-type TelegramBotInstance = InstanceType<TelegramBotRuntime["Bot"]>;
+type TelegramBotInstance = InstanceType<TelegramBotRuntime["Bot"]> & {
+  resolveIngressLaneKey?: (
+    update: unknown,
+    botInfo?: TelegramBotOptions["botInfo"],
+    turnCfg?: OpenClawConfig,
+  ) => string;
+};
 
 const DEFAULT_TELEGRAM_BOT_RUNTIME: TelegramBotRuntime = {
   Bot,
@@ -88,6 +104,7 @@ export function createTelegramBotCore(
   const runtime: RuntimeEnv = opts.runtime ?? createNonExitingRuntime();
   const telegramDeps = opts.telegramDeps;
   const cfg = opts.config ?? telegramDeps.getRuntimeConfig();
+  const readConfig = createRuntimeConfigReader(cfg);
   const account = resolveTelegramAccount({
     cfg,
     accountId: opts.accountId,
@@ -119,6 +136,17 @@ export function createTelegramBotCore(
       })
     : null;
   const telegramCfg = account.config;
+  const resolveTelegramGroupConfig = (
+    chatId: string | number,
+    messageThreadId: number | undefined,
+    turnCfg: OpenClawConfig,
+  ) => {
+    const turnTelegramCfg = resolveTelegramAccount({
+      cfg: turnCfg,
+      accountId: account.accountId,
+    }).config;
+    return resolveTelegramScopedGroupConfig(turnTelegramCfg, chatId, messageThreadId);
+  };
 
   const telegramTransport =
     opts.telegramTransport ??
@@ -153,7 +181,7 @@ export function createTelegramBotCore(
     client || opts.botInfo
       ? { ...(client ? { client } : {}), ...(opts.botInfo ? { botInfo: opts.botInfo } : {}) }
       : undefined;
-  const bot = new botRuntime.Bot(opts.token, botConfig);
+  const bot: TelegramBotInstance = new botRuntime.Bot(opts.token, botConfig);
   const accountThrottler = getOrCreateAccountThrottler(opts.token, botRuntime.apiThrottler);
   bot.api.config.use(accountThrottler.transformer);
   const sendChatActionHandler: TelegramSendChatActionHandler = {
@@ -267,7 +295,66 @@ export function createTelegramBotCore(
     await next();
   });
 
-  bot.use(botRuntime.sequentialize((ctx) => getTelegramSequentialConstraints(ctx, cfg)));
+  const aliasSessionRuntime = createTelegramMessageSessionRuntime({
+    accountId: account.accountId,
+    resolveTelegramGroupConfig,
+    telegramDeps,
+  });
+  const modelAliasUsesOrdinaryLane = (
+    ctx: Parameters<typeof getTelegramSequentialKey>[0],
+    turnCfg: OpenClawConfig,
+  ): boolean => {
+    const msg = resolveTelegramSequentialMessage(ctx);
+    const modelAlias = resolveTelegramConfiguredModelAlias({
+      rawText: msg?.text ?? msg?.caption,
+      botUsername: ctx.me?.username,
+      cfg: turnCfg,
+    });
+    if (!modelAlias || !msg) {
+      return false;
+    }
+    const isGroup =
+      msg.chat.type === "group" || msg.chat.type === "supergroup" || msg.chat.type === "channel";
+    const sessionState = aliasSessionRuntime.resolveTelegramSessionState({
+      chatId: msg.chat.id,
+      isGroup,
+      threadSpec: resolveTelegramMessageThreadSpec(msg),
+      botHasTopicsEnabled: ctx.me?.has_topics_enabled,
+      senderId: msg.from?.id,
+      runtimeCfg: turnCfg,
+    });
+    const skillCommands = telegramDeps.listSkillCommandsForAgents({
+      cfg: turnCfg,
+      agentIds: [sessionState.agentId],
+      sessionEntry: sessionState.sessionEntry,
+      sessionKey: sessionState.sessionKey,
+    });
+    return (
+      matchPluginCommand(modelAlias.commandBody, { channel: "telegram" }) !== null ||
+      skillCommands.some((command) => command.name.toLowerCase() === modelAlias.commandName)
+    );
+  };
+  const resolveSequentialConstraints = (
+    ctx: Parameters<typeof getTelegramSequentialKey>[0],
+  ): string | string[] => {
+    const turnCfg = readConfig();
+    const modelAliasOrdinary = modelAliasUsesOrdinaryLane(ctx, turnCfg);
+    if (modelAliasOrdinary) {
+      markTelegramModelAliasOrdinary(ctx);
+    }
+    return getTelegramSequentialConstraints(ctx, turnCfg, { modelAliasOrdinary });
+  };
+  bot.use(botRuntime.sequentialize(resolveSequentialConstraints));
+  bot.resolveIngressLaneKey = (update, botInfo, turnCfg = readConfig()) => {
+    const ctx = {
+      // SAFETY: Telegram transports pass raw Bot API updates; lane resolution reads only bounded message fields.
+      update: update as Parameters<typeof getTelegramSequentialKey>[0]["update"],
+      ...(botInfo ? { me: botInfo } : {}),
+    };
+    return getTelegramSequentialKey(ctx, turnCfg, {
+      modelAliasOrdinary: modelAliasUsesOrdinaryLane(ctx, turnCfg),
+    });
+  };
 
   // A fast vote can know its route before outbound verification finishes. Hold
   // only that route's sequential lane until registration succeeds or declines it.
@@ -346,18 +433,6 @@ export function createTelegramBotCore(
       requireMentionOverride: opts.requireMention,
       overrideOrder: "after-config",
     });
-  const resolveTelegramGroupConfig = (
-    chatId: string | number,
-    messageThreadId: number | undefined,
-    turnCfg: OpenClawConfig,
-  ) => {
-    const turnTelegramCfg = resolveTelegramAccount({
-      cfg: turnCfg,
-      accountId: account.accountId,
-    }).config;
-    return resolveTelegramScopedGroupConfig(turnTelegramCfg, chatId, messageThreadId);
-  };
-
   const { nativeCommandNames, nativeCommandCallbackDispatcher } = registerTelegramNativeCommands({
     bot,
     cfg,

@@ -12,6 +12,11 @@ import { openTelegramIngressQueue } from "./telegram-ingress-spool.js";
 
 type TelegramSpooledBot = {
   handleUpdate: (update: never) => Promise<void>;
+  resolveIngressLaneKey?: (
+    update: unknown,
+    botInfo: TelegramBotInfo | undefined,
+    cfg: ReturnType<typeof getRuntimeConfig>,
+  ) => string;
   api: {
     answerCallbackQuery: (callbackQueryId: string) => Promise<unknown>;
   };
@@ -46,6 +51,7 @@ export function createTelegramTransportIngressMonitor(
     getConfig: getRuntimeConfig,
     accountId: params.accountId,
     botInfo: params.botInfo,
+    resolveLaneKey: params.bot.resolveIngressLaneKey,
     adoptionStallTimeoutMs,
     ...(params.pollIntervalMs === undefined ? {} : { pollIntervalMs: params.pollIntervalMs }),
     ...(params.onLog ? { onLog: params.onLog } : {}),

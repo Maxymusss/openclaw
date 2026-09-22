@@ -110,6 +110,13 @@ describe("dispatch active command admission", () => {
   );
 
   it.each([
+    {
+      source: "text",
+      body: "/model fixture/next",
+      commandName: "model",
+      authorized: true,
+      media: true,
+    },
     { source: "text", body: "/quick", commandName: "quick", authorized: true },
     { source: "text", body: "/bash echo unsafe", commandName: "bash", authorized: true },
     { source: "native", body: "/compact", commandName: "compact", authorized: true },
@@ -119,7 +126,8 @@ describe("dispatch active command admission", () => {
     { source: "native", body: "/help", commandName: "help", authorized: false },
   ] as const)(
     "keeps $source $body (authorized=$authorized) behind active-session admission",
-    async ({ source, body, commandName, authorized }) => {
+    async (testCase) => {
+      const { source, body, commandName, authorized } = testCase;
       if (commandName === "quick") {
         vi.mocked(skillCommands.prepareSkillCommandsForWorkspace).mockResolvedValue([
           {
@@ -159,6 +167,9 @@ describe("dispatch active command admission", () => {
           RawBody: body,
           CommandBody: body,
           BodyForAgent: body,
+          ...("media" in testCase && testCase.media
+            ? { media: [{ path: "/tmp/model-selection.jpg", kind: "image" as const }] }
+            : {}),
         }),
         cfg: {
           agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },

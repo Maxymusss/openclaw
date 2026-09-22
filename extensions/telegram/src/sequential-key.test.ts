@@ -17,6 +17,24 @@ const mockMessage = (message: Pick<Message, "chat"> & Partial<Message>): Message
   }) as Message;
 
 describe("getTelegramSequentialKey", () => {
+  it("keeps executable model-alias collisions on the ordinary chat lane", () => {
+    const ctx = {
+      me: { username: "our_bot" } as never,
+      message: mockMessage({ chat: mockChat({ id: 123 }), text: "/quick" }),
+    };
+    const cfg = { agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } } };
+    expect(getTelegramSequentialKey(ctx, cfg, { modelAliasOrdinary: true })).toBe("telegram:123");
+  });
+
+  it("keeps model directives attached to media on the ordinary chat lane", () => {
+    const message = mockMessage({
+      chat: mockChat({ id: 123 }),
+      caption: "/model fixture/next",
+      photo: [{ file_id: "photo", file_unique_id: "photo-1", width: 1, height: 1 }],
+    });
+    expect(getTelegramSequentialKey({ message })).toBe("telegram:123");
+  });
+
   it.each([
     ["/model fixture/next", true],
     ["/quick", true],

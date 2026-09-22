@@ -300,6 +300,20 @@ describe("commands registry", () => {
     }
   });
 
+  it("keeps media-bearing model selections behind active-session admission", () => {
+    expect(
+      isActiveRunSafeCommandTurn({
+        commandTurn: createCommandTurnContext("text", {
+          authorized: true,
+          commandName: "model",
+          body: "/model fixture/next",
+        }),
+        cfg: {},
+        hasMedia: true,
+      }),
+    ).toBe(false);
+  });
+
   it("exposes /side as a BTW text and native alias", () => {
     const btw = requireChatCommand("btw");
     expect(btw.nativeName).toBe("btw");

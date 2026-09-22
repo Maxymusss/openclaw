@@ -10,15 +10,19 @@ import {
 
 const DEBOUNCE_MS = 4321;
 
-function createDebouncedBot(native: boolean, commandSender = String(from.id)) {
+function createDebouncedBot(
+  native: boolean,
+  commandSenders = [String(from.id)],
+  groupSenders = commandSenders,
+) {
   return createBot(native, true, {
     agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },
-    commands: { native, text: true, allowFrom: { telegram: [commandSender] } },
+    commands: { native, text: true, allowFrom: { telegram: commandSenders } },
     messages: { inbound: { byChannel: { telegram: DEBOUNCE_MS } } },
     channels: {
       telegram: {
         groupPolicy: "open",
-        groupAllowFrom: [String(from.id)],
+        groupAllowFrom: [...new Set([String(from.id), ...groupSenders])],
         groups: { "*": { requireMention: false } },
         streaming: { mode: "off" },
       },
@@ -30,9 +34,9 @@ function ordinaryMessage(text: string, threadId: number) {
   return { ...groupCommand(text, threadId), entities: [] };
 }
 
-function takeDebounceFlush(): () => void {
+function takeDebounceFlush(delayMs = DEBOUNCE_MS): () => void {
   const timer = vi.mocked(globalThis.setTimeout);
-  const index = timer.mock.calls.findLastIndex((call) => call[1] === DEBOUNCE_MS);
+  const index = timer.mock.calls.findLastIndex((call) => call[1] === delayMs);
   expect(index).toBeGreaterThanOrEqual(0);
   // SAFETY: This handle is the recorded return value of the real setTimeout spy.
   clearTimeout(timer.mock.results[index]?.value as ReturnType<typeof setTimeout>);
@@ -183,6 +187,149 @@ describe("Telegram commands during buffered message processing", () => {
     },
   );
 
+  it("keeps a model alias owned by a skill behind pending text fragments", async (context) => {
+    const collisionChecked = createDeferred<void>();
+    const aliasEntered = createDeferred<void>();
+    harness.listSkillCommandsForAgents.mockImplementation(() => {
+      collisionChecked.resolve();
+      return [
+        {
+          name: "quick",
+          skillName: "quick",
+          description: "Tool command",
+          dispatch: { kind: "tool", toolName: "exec", argMode: "raw" },
+        },
+      ];
+    });
+    harness.replySpy.mockImplementation(async (ctx) => {
+      if (ctx.RawBody === "/quick") {
+        aliasEntered.resolve();
+      }
+      return undefined;
+    });
+    const guest = { ...from, id: from.id + 1, first_name: "Grace" } as never;
+    const bot = createDebouncedBot(false, [String(from.id), String(from.id + 1)]);
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    const work: Promise<unknown>[] = [];
+    const flushes: Array<() => void> = [];
+    const lifetime = createTestLifetime(context, async () => {
+      for (const flush of flushes) {
+        flush();
+      }
+      await Promise.allSettled(work);
+      timer.mockRestore();
+    });
+    let updateId = 7000;
+    const dispatch = async (message: ReturnType<typeof groupCommand>) => {
+      const update = { update_id: ++updateId, message };
+      const pending = runWithTelegramSpooledReplayUpdate(update, () => bot.handleUpdate(update));
+      work.push(pending);
+      const result = await lifetime.wait(pending);
+      if (!result.deferredWork) {
+        throw new Error("Expected buffered Telegram input to retain a durable participant");
+      }
+      work.push(result.deferredWork.task);
+      return result.deferredWork;
+    };
+
+    try {
+      const fragment = await dispatch(ordinaryMessage("x".repeat(4000), 99));
+      const flush = takeDebounceFlush(1500);
+      flushes.push(flush);
+      const aliasPending = dispatch({
+        ...groupCommand("/quick", 99),
+        from: guest,
+      });
+      await expect(
+        lifetime.wait(
+          Promise.race([
+            collisionChecked.promise.then(() => "checked" as const),
+            aliasEntered.promise.then(() => "overtook" as const),
+          ]),
+        ),
+      ).resolves.toBe("checked");
+
+      flush();
+      const alias = await aliasPending;
+      await expect(lifetime.wait(fragment.task)).resolves.toEqual({ kind: "completed" });
+      await expect(lifetime.wait(alias.task)).resolves.toEqual({ kind: "completed" });
+      expect(harness.replySpy.mock.calls.map(([ctx]) => ctx.RawBody)).toEqual([
+        "x".repeat(4000),
+        "/quick",
+      ]);
+      expect(
+        bot.resolveIngressLaneKey?.({
+          update_id: 8000,
+          message: { ...groupCommand("/quick", 99), from: guest },
+        }),
+      ).toBe("telegram:-10042001:topic:99");
+    } finally {
+      await lifetime.close();
+    }
+  });
+
+  it("does not let an unauthorized colliding alias flush another sender's fragment", async (context) => {
+    harness.listSkillCommandsForAgents.mockReturnValue([
+      {
+        name: "quick",
+        skillName: "quick",
+        description: "Tool command",
+        dispatch: { kind: "tool", toolName: "exec", argMode: "raw" },
+      },
+    ]);
+    const guest = { ...from, id: from.id + 1, first_name: "Grace" } as never;
+    const bot = createDebouncedBot(false, [String(from.id)], [String(from.id + 1)]);
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    const work: Promise<unknown>[] = [];
+    const flushes: Array<() => void> = [];
+    const lifetime = createTestLifetime(context, async () => {
+      for (const flush of flushes) {
+        flush();
+      }
+      await Promise.allSettled(work);
+      timer.mockRestore();
+    });
+
+    try {
+      const fragmentUpdate = {
+        update_id: 9001,
+        message: ordinaryMessage("x".repeat(4000), 99),
+      };
+      const fragmentPending = runWithTelegramSpooledReplayUpdate(fragmentUpdate, () =>
+        bot.handleUpdate(fragmentUpdate),
+      );
+      work.push(fragmentPending);
+      const fragment = (await lifetime.wait(fragmentPending)).deferredWork;
+      if (!fragment) {
+        throw new Error("Expected a durable participant for the pending fragment");
+      }
+      work.push(fragment.task);
+      const flush = takeDebounceFlush(1500);
+      flushes.push(flush);
+
+      const aliasUpdate = {
+        update_id: 9002,
+        message: { ...groupCommand("/quick", 99), from: guest },
+      };
+      await lifetime.wait(
+        runWithTelegramSpooledReplayUpdate(aliasUpdate, () => bot.handleUpdate(aliasUpdate)),
+      );
+      expect(fragment.isSettled()).toBe(false);
+
+      flush();
+      await expect(lifetime.wait(fragment.task)).resolves.toEqual({ kind: "completed" });
+    } finally {
+      await lifetime.close();
+    }
+  });
+
+  it("uses the current config for durable configured-alias lanes", () => {
+    const bot = createDebouncedBot(false);
+    const update = { update_id: 9100, message: groupCommand("/quick", 99) };
+    expect(bot.resolveIngressLaneKey?.(update)).toBe("telegram:-10042001:model");
+    expect(bot.resolveIngressLaneKey?.(update, undefined, {})).toBe("telegram:-10042001:topic:99");
+  });
+
   it("rejects unauthorized text controls without blocking an authorized stop in another topic", async (context) => {
     const guest = { ...from, id: from.id + 1, first_name: "Guest" };
     const started = createDeferred<void>();
@@ -268,7 +415,7 @@ describe("Telegram commands during buffered message processing", () => {
   });
 
   it("does not let an unauthorized native stop cancel buffered input", async () => {
-    const bot = createDebouncedBot(true, "99999");
+    const bot = createDebouncedBot(true, ["99999"]);
     const timer = vi.spyOn(globalThis, "setTimeout");
     let flush: (() => void) | undefined;
     let sourceWork: Promise<unknown> | undefined;

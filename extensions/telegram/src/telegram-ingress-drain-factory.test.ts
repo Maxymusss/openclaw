@@ -33,11 +33,28 @@ const { createTelegramTransportIngressMonitor } =
 type CapturedMonitor = {
   onDurableAdmission: (update: unknown, context: { isNew: boolean }) => void | Promise<void>;
   dispatch: (update: unknown) => Promise<TelegramMessageProcessingResult | void>;
+  resolveLaneKey?: (update: unknown) => string;
 };
 
 describe("Telegram transport ingress outcome handoff", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("forwards the bot's ownership-aware durable lane resolver", () => {
+    const resolveIngressLaneKey = vi.fn(() => "telegram:7");
+    createTelegramTransportIngressMonitor({
+      spoolDir: "/tmp/telegram-ingress-proof",
+      bot: {
+        handleUpdate: vi.fn(async () => {}),
+        api: { answerCallbackQuery: vi.fn(async () => true) },
+        resolveIngressLaneKey,
+      },
+      accountId: "default",
+    });
+
+    const monitor = mocks.createTelegramIngressMonitor.mock.calls[0]?.[0] as CapturedMonitor;
+    expect(monitor.resolveLaneKey).toBe(resolveIngressLaneKey);
   });
 
   it.each([
