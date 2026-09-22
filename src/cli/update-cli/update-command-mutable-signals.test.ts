@@ -318,7 +318,9 @@ async function assertOwnedSignal(
       expect(receipt.message).toContain(
         mode === "preview-refusal-drain"
           ? "Interrupted shared-database publication"
-          : "canonical state generation changed",
+          : mode === "heartbeat-first-refusal"
+            ? "SQLite database file identity changed before existing-only open"
+            : "canonical state generation changed",
       );
       expect(child.exitCode).toBeNull();
       expect(child.connected).toBe(true);
