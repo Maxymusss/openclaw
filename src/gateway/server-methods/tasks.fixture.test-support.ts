@@ -8,7 +8,10 @@ import {
   setHeartbeatWakeHandler,
 } from "../../infra/heartbeat-wake.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
-import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawAgentDatabasesForTest,
+} from "../../state/openclaw-agent-db.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -51,6 +54,7 @@ export function useTaskGatewayFixture() {
         disposeHeartbeatWakeHandler = undefined;
         resetSystemEventsForTest();
         resetTaskRegistryForTests();
+        await closeOpenClawAgentDatabasesAsync();
         stateDirEnvSnapshot.restore();
         closeOpenClawAgentDatabasesForTest();
         await closeOpenClawStateDatabaseAsync();

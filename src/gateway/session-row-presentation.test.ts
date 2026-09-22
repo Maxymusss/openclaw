@@ -241,7 +241,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
         parentSessionKey: query.key,
       },
     );
-    addSessionMember(scope, { identityId: member.id, addedBy: owner.id });
+    await addSessionMember(scope, { identityId: member.id, addedBy: owner.id });
     const projection = await createSessionRowProjection({ cfg });
     const connection = createGatewayConnectionState({ bootId: "presentation", cfg });
     const detach = connection.attachSessionRowProjection(projection);
@@ -370,7 +370,7 @@ it("presents current recipient roles without SQLite while rejecting source overr
       expect(exec).not.toHaveBeenCalled();
       prepares.mockRestore();
       exec.mockRestore();
-      removeSessionMember(scope, member.id);
+      await removeSessionMember(scope, member.id);
       await projection.ensureMaterialized();
       expect(
         prepareProjectedSessionPresentation(projection, clients[1]!).snapshot(query).row

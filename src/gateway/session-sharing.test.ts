@@ -81,7 +81,7 @@ describe("session sharing policy", () => {
       if (!row) {
         throw new Error("expected persisted fixture session");
       }
-      addSessionMember(
+      await addSessionMember(
         { ...scope, storePath: row.storePath },
         { identityId: memberId, addedBy: ownerId, expectedSessionId: "narrow-owned" },
       );
@@ -290,7 +290,7 @@ describe("session sharing policy", () => {
           ).toBeNull();
         }
 
-        addSessionMember(
+        await addSessionMember(
           { agentId: "main", sessionKey },
           {
             identityId: viewer.authenticatedUserProfile!.profileId,
@@ -417,7 +417,7 @@ describe("session sharing policy", () => {
           createdActor: { type: "human", source: "profile", id: restrictedId },
         },
       );
-      addSessionMember(
+      await addSessionMember(
         { agentId: "main", sessionKey: foreignKey },
         { identityId: restrictedId, addedBy: creatorId, expectedSessionId: foreignEntry.sessionId },
       );
@@ -865,7 +865,7 @@ describe("session sharing policy", () => {
           visibility: "suggest",
         },
       );
-      addSessionMember(
+      await addSessionMember(
         { agentId: "main", sessionKey },
         {
           identityId: "member",
@@ -912,7 +912,7 @@ describe("session sharing policy", () => {
           visibility: "draft",
         },
       );
-      addSessionMember(
+      await addSessionMember(
         { agentId: "main", sessionKey },
         { identityId: "member", addedBy: "owner", expectedSessionId: "session-draft" },
       );

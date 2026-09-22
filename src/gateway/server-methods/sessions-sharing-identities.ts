@@ -1,5 +1,7 @@
 import type {
   SessionCreatedActor,
+  SessionMember,
+  SessionMemberEvidence,
   SessionSharingIdentity,
 } from "../../../packages/gateway-protocol/src/index.js";
 import type { listProfiles } from "../../state/user-profiles.js";
@@ -9,6 +11,47 @@ export type SharingActorFacts =
   | { state: "present"; actor: SessionSharingIdentity }
   | { state: "unknown" }
   | { state: "absent" };
+
+const UNKNOWN_SHARING_ACTOR_STORAGE_REF = "actor-evidence:unknown";
+const UNATTRIBUTED_SHARING_ACTOR_STORAGE_REF = "actor-evidence:unattributed";
+const LEGACY_SYNTHETIC_SHARING_ACTOR_STORAGE_REFS = new Set(["local-operator", "operator.admin"]);
+
+export function sharingActorStorageRef(facts: SharingActorFacts): string {
+  return facts.state === "present"
+    ? facts.actor.id
+    : facts.state === "unknown"
+      ? UNKNOWN_SHARING_ACTOR_STORAGE_REF
+      : UNATTRIBUTED_SHARING_ACTOR_STORAGE_REF;
+}
+
+export function projectSessionMemberEvidence(member: SessionMember): SessionMemberEvidence {
+  // Sentinel ids satisfy the existing non-null storage contract only. Project
+  // actor evidence here so persistence markers never become protocol identities.
+  const common = { identityId: member.identityId, addedAt: member.addedAt };
+  if (member.addedBy === UNKNOWN_SHARING_ACTOR_STORAGE_REF) {
+    return { ...common, addedByState: "unknown" };
+  }
+  if (
+    member.addedBy === UNATTRIBUTED_SHARING_ACTOR_STORAGE_REF ||
+    LEGACY_SYNTHETIC_SHARING_ACTOR_STORAGE_REFS.has(member.addedBy)
+  ) {
+    // Beta builds stored fabricated operator ids before actor evidence became
+    // tri-state. Discard those unshipped values instead of presenting principals.
+    return common;
+  }
+  return { ...common, addedBy: member.addedBy };
+}
+
+export function projectLegacySessionMember(member: SessionMemberEvidence): SessionMember | null {
+  if (!member.addedBy) {
+    return null;
+  }
+  return {
+    identityId: member.identityId,
+    addedBy: member.addedBy,
+    addedAt: member.addedAt,
+  };
+}
 
 export function knownSessionIdentities(params: {
   creators: readonly SessionCreatedActor[];

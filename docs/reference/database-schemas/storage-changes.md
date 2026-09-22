@@ -1103,6 +1103,14 @@ and precedes restored observers; failed replies also retain settlement and
 canonical flow reconciliation. This changes no schema, update migration, or
 synchronous plugin API.
 
+Session member additions and removals execute their row mutation and session-instance
+checks inside a synchronous transaction on the canonical agent database worker.
+Gateway callers await the durable result before publishing sharing events, and
+recheck current manager authority at both transaction and commit admission.
+Committed row invalidation stays with the original database. Native database
+preparation, manager reads, and process-local incognito storage retain their
+existing owners; this does not change membership permissions or the schema.
+
 Synchronous callers keep their existing transaction behavior. Native cancellation,
 child-task linkage, and compound task/subagent completion retain their existing
 owners until their complete persistence and lifecycle boundaries move together.

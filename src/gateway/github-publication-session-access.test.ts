@@ -98,9 +98,11 @@ describe("registered session GitHub publication access", () => {
       prepareGatewayConnectOperatorAccess(person);
       if (target === "member") {
         expect(
-          addSessionMember(
-            { agentId: "main", sessionKey: SESSION_KEY },
-            { identityId: profileId, addedBy: f.guestProfile },
+          (
+            await addSessionMember(
+              { agentId: "main", sessionKey: SESSION_KEY },
+              { identityId: profileId, addedBy: f.guestProfile },
+            )
           ).inserted,
         ).toBe(true);
       }
