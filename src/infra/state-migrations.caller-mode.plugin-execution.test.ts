@@ -3,9 +3,9 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { pluginDoctorContractRegistryLoaderState } from "../plugins/doctor-contract-registry-loader-state.js";
 import { clearPluginDoctorContractRegistryCache } from "../plugins/doctor-contract-registry.test-fixtures.js";
 import { EMPTY_LEGACY_SESSION_SURFACES } from "../plugins/legacy-session-surfaces.types.js";
+import { getDoctorContractModuleLoaderMock } from "../plugins/test-helpers/doctor-contract-module-mock.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -32,6 +32,7 @@ import {
 } from "./state-migrations.plugin-doctor.js";
 import { resetAutoMigrateLegacyStateDirForTest } from "./state-migrations.state-dir.js";
 
+const doctorContractModuleLoaderMock = getDoctorContractModuleLoaderMock();
 const tempDirs = createTrackedTempDirs();
 
 async function makeFixture() {
@@ -59,7 +60,7 @@ async function makeFixture() {
 }
 
 afterEach(async () => {
-  pluginDoctorContractRegistryLoaderState.moduleLoaderFactory = undefined;
+  doctorContractModuleLoaderMock.mockReset();
   resetAutoMigrateLegacyStateDirForTest();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
@@ -740,7 +741,7 @@ module.exports = { stateMigrations: [{
     const pluginLoader = vi.fn(() => {
       throw new Error("copied planning must not load a Doctor contract");
     });
-    pluginDoctorContractRegistryLoaderState.moduleLoaderFactory = pluginLoader;
+    doctorContractModuleLoaderMock.mockImplementation(pluginLoader);
     const plan = await planLegacyStateMigrationsReadOnly({
       mode: "doctor",
       candidate: { root: fixture.root, version: "test" },

@@ -2,12 +2,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { getDoctorContractModuleLoaderMock } from "./test-helpers/doctor-contract-module-mock.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "./test-helpers/fs-fixtures.js";
 import {
   getRegistryJitiMocks,
   resetRegistryJitiMocks,
 } from "./test-helpers/registry-jiti-mocks.js";
 
+const doctorContractModuleLoaderMock = getDoctorContractModuleLoaderMock();
 const tempDirs: string[] = [];
 const mocks = getRegistryJitiMocks();
 const doctorContractWarnMock = vi.hoisted(() => vi.fn());
@@ -28,9 +30,6 @@ let listPluginDoctorStateMigrationEntries: typeof import("./doctor-contract-regi
 let resolveLivePluginDoctorStateMigrationInventory: typeof import("./doctor-contract-registry.js").resolveLivePluginDoctorStateMigrationInventory;
 let waitForPluginCacheRetirement:
   | typeof import("./plugin-cache.js").waitForPluginCacheRetirement
-  | undefined;
-let setPluginDoctorContractRegistryModuleLoaderFactoryForTest:
-  | typeof import("./doctor-contract-registry.test-fixtures.js").setPluginDoctorContractRegistryModuleLoaderFactoryForTest
   | undefined;
 
 function makeTempDir(): string {
@@ -63,7 +62,8 @@ function writeLegacySetupEntry(
 }
 
 afterEach(async () => {
-  setPluginDoctorContractRegistryModuleLoaderFactoryForTest?.(undefined);
+  doctorContractModuleLoaderMock.mockReset();
+  clearPluginDoctorContractRegistryCache?.();
   try {
     await waitForPluginCacheRetirement?.();
   } finally {
@@ -79,23 +79,15 @@ describe("doctor-contract-registry state migrations", () => {
       listPluginDoctorStateMigrationEntries,
       resolveLivePluginDoctorStateMigrationInventory,
     } = await import("./doctor-contract-registry.js"));
-    ({
-      clearPluginDoctorContractRegistryCache,
-      setPluginDoctorContractRegistryModuleLoaderFactoryForTest,
-    } = await import("./doctor-contract-registry.test-fixtures.js"));
+    ({ clearPluginDoctorContractRegistryCache } =
+      await import("./doctor-contract-registry.test-fixtures.js"));
     ({ waitForPluginCacheRetirement } = await import("./plugin-cache.js"));
   });
 
   beforeEach(() => {
     resetRegistryJitiMocks();
     doctorContractWarnMock.mockReset();
-    // Loaded once in beforeAll; afterEach guards the same binding optionally because it
-    // can fire when that import never completed. Fail loudly here instead of silently
-    // running a case against the real module loader.
-    if (!setPluginDoctorContractRegistryModuleLoaderFactoryForTest) {
-      throw new Error("doctor contract registry test fixtures were not loaded");
-    }
-    setPluginDoctorContractRegistryModuleLoaderFactoryForTest(mocks.createJiti);
+    doctorContractModuleLoaderMock.mockImplementation(mocks.createJiti);
     clearPluginDoctorContractRegistryCache();
   });
 

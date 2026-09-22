@@ -5,8 +5,8 @@ import { DatabaseSync } from "node:sqlite";
 import { createJiti } from "jiti";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { pluginDoctorContractRegistryLoaderState } from "../plugins/doctor-contract-registry-loader-state.js";
 import { EMPTY_LEGACY_SESSION_SURFACES } from "../plugins/legacy-session-surfaces.types.js";
+import { getDoctorContractModuleLoaderMock } from "../plugins/test-helpers/doctor-contract-module-mock.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -23,6 +23,7 @@ import {
 } from "./state-migrations.doctor.js";
 import type { LegacyStateMigrationPlan } from "./state-migrations.types.js";
 
+const doctorContractModuleLoaderMock = getDoctorContractModuleLoaderMock();
 const tempDirs = createTrackedTempDirs();
 
 function sha256(value: string | Buffer): string {
@@ -134,7 +135,7 @@ async function makeFixture() {
 }
 
 afterEach(async () => {
-  pluginDoctorContractRegistryLoaderState.moduleLoaderFactory = undefined;
+  doctorContractModuleLoaderMock.mockReset();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
   await tempDirs.cleanup();
@@ -179,7 +180,7 @@ describe("legacy state migration caller mode", () => {
     const pluginLoader = vi.fn(() => {
       throw new Error("candidate planning must not load plugins");
     });
-    pluginDoctorContractRegistryLoaderState.moduleLoaderFactory = pluginLoader;
+    doctorContractModuleLoaderMock.mockImplementation(pluginLoader);
 
     const plan = await planLegacyStateMigrationsReadOnly({
       mode: "doctor",
@@ -486,7 +487,7 @@ describe("legacy state migration caller mode", () => {
       }];\n`,
     );
     const pluginLoader = vi.fn(createJiti);
-    pluginDoctorContractRegistryLoaderState.moduleLoaderFactory = pluginLoader;
+    doctorContractModuleLoaderMock.mockImplementation(pluginLoader);
     const cfg: OpenClawConfig = {
       agents: { ownership: "explicit", entries: { planner: {} } },
       plugins: { entries: { "candidate-plugin": { enabled: true } } },

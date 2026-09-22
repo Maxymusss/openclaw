@@ -4,11 +4,11 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { pluginDoctorContractRegistryLoaderState } from "../plugins/doctor-contract-registry-loader-state.js";
 import {
   EMPTY_LEGACY_SESSION_SURFACES,
   type PreparedLegacySessionSurfaces,
 } from "../plugins/legacy-session-surfaces.types.js";
+import { getDoctorContractModuleLoaderMock } from "../plugins/test-helpers/doctor-contract-module-mock.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
@@ -35,6 +35,7 @@ import {
   resolveLegacyProfileWorkspaceMigrationPaths,
 } from "./state-migrations.state-dir.js";
 
+const doctorContractModuleLoaderMock = getDoctorContractModuleLoaderMock();
 const tempDirs = createTrackedTempDirs();
 
 function writeLegacyDoctorSources(stateDir: string): { execPath: string } {
@@ -123,7 +124,7 @@ function writeAliasedSessionStore(params: {
 }
 
 afterEach(async () => {
-  pluginDoctorContractRegistryLoaderState.moduleLoaderFactory = undefined;
+  doctorContractModuleLoaderMock.mockReset();
   resetAutoMigrateLegacyStateDirForTest();
   closeOpenClawAgentDatabasesForTest();
   closeOpenClawStateDatabaseForTest();
@@ -632,7 +633,7 @@ describe("legacy state migration caller execution", () => {
     const pluginLoader = vi.fn(() => {
       throw new Error("blocked-plan closure must not load plugins");
     });
-    pluginDoctorContractRegistryLoaderState.moduleLoaderFactory = pluginLoader;
+    doctorContractModuleLoaderMock.mockImplementation(pluginLoader);
 
     const result = await autoMigrateLegacyState({
       cfg: config,

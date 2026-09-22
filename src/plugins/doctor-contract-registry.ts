@@ -26,7 +26,6 @@ import {
   type PluginDoctorContractModule,
   type PluginDoctorStateMigration,
 } from "./doctor-contract-module.js";
-import { pluginDoctorContractRegistryLoaderState } from "./doctor-contract-registry-loader-state.js";
 import {
   collectRelevantDoctorPluginIds,
   collectRelevantDoctorPluginIdsForTouchedPaths,
@@ -37,7 +36,6 @@ import { loadBundledPluginManifestRegistry } from "./manifest-registry-build.js"
 import type { PluginManifestRegistry } from "./manifest-registry.types.js";
 import type { PluginManifestDoctorContract } from "./manifest-types.js";
 import { unwrapDefaultModuleExport } from "./module-export.js";
-import { getCachedPluginModuleLoader } from "./plugin-module-loader-cache.js";
 import { loadPluginManifestRegistryForPluginRegistry } from "./plugin-registry.js";
 import { getPluginSetupModuleLoader } from "./plugin-setup-module.js";
 import { loadBundledPluginPublicArtifactModuleFromCandidatesSync } from "./public-surface-loader.js";
@@ -106,16 +104,6 @@ function isTrustedForDurableStores(record: PluginManifestRegistryRecord): boolea
 
 type PluginManifestRegistryRecord = PluginManifestRegistry["plugins"][number];
 
-function loadPluginDoctorContractModule(modulePath: string): PluginDoctorContractModule {
-  return getCachedPluginModuleLoader({
-    modulePath,
-    importerUrl: import.meta.url,
-    ...(pluginDoctorContractRegistryLoaderState.moduleLoaderFactory
-      ? { createLoader: pluginDoctorContractRegistryLoaderState.moduleLoaderFactory }
-      : {}),
-  })(modulePath) as PluginDoctorContractModule;
-}
-
 function hasScopedProviderAuthAlias(
   record: PluginManifestRegistryRecord,
   scopedProviderIds: ReadonlySet<string>,
@@ -181,20 +169,26 @@ function loadPluginDoctorContractEntry(
   if (!contractArtifact) {
     return null;
   }
-  let mod: PluginDoctorContractModule;
   try {
-    mod = loadPluginDoctorContractModule(contractArtifact.modulePath);
+    const moduleLoader = getPluginSetupModuleLoader(
+      record,
+      contractArtifact.modulePath,
+      contractArtifact.boundaryRoot,
+    );
+    return moduleLoader.initialize(() => {
+      const mod = moduleLoader(contractArtifact.modulePath) as PluginDoctorContractModule;
+      const { summary, ...contract } = coercePluginDoctorContractModule(mod);
+      if (!Object.values(summary).some(Boolean) && surface !== "stateMigrations") {
+        return null;
+      }
+      return { pluginId: record.id, ...contract };
+    });
   } catch (error) {
     log.warn(
       `failed to load doctor contract for ${record.id} from ${contractArtifact.modulePath}: ${formatErrorMessage(error)}`,
     );
     return null;
   }
-  const { summary, ...contract } = coercePluginDoctorContractModule(mod);
-  if (!Object.values(summary).some(Boolean) && surface !== "stateMigrations") {
-    return null;
-  }
-  return { pluginId: record.id, ...contract };
 }
 
 function resolvePluginDoctorManifestRecords(params: {
