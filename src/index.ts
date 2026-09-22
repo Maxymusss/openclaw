@@ -4,9 +4,12 @@ import { existsSync } from "node:fs";
 // Package executable entrypoint that forwards to the CLI bootstrap.
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { resolveCliArgvInvocation } from "./cli/argv-invocation.js";
+import { isUpdateAdmissionInvocation } from "./cli/run-main-update-admission.js";
 
 const packageRootUrl = new URL("../", import.meta.url);
 if (
+  !isUpdateAdmissionInvocation(resolveCliArgvInvocation(process.argv)) &&
   !existsSync(new URL("entry.ts", import.meta.url)) &&
   (existsSync(new URL(".openclaw-lifecycle-pending", packageRootUrl)) ||
     existsSync(new URL("dist/openclaw-install-guard", packageRootUrl)))

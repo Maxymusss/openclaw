@@ -59,6 +59,8 @@ import {
 import { getSubCliEntriesCore } from "./program/subcli-descriptors.js";
 import { withCliPluginInvocation } from "./run-main-plugin-cache.js";
 import {
+  isAgentExecInvocation,
+  isRemoteAgentDispatchInvocation,
   resolveMissingPluginCommandMessage,
   rewriteUpdateFlagArgv,
   shouldHandleBareRoot,
@@ -67,6 +69,7 @@ import {
   shouldUseRootHelpFastPath,
   shouldUseSetupOnboardConfigureHelpFastPath,
 } from "./run-main-policy.js";
+import { tryRunUpdateAdmissionBeforeStartup } from "./run-main-update-admission.js";
 import type { CliHarnessCleanup } from "./runtime-cleanup-scope.js";
 import { closeCliResources, runCliDisposer } from "./runtime-cleanup.js";
 import { registerSignalExitBarrier, waitForSignalExitBarriers } from "./signal-exit-barrier.js";
@@ -103,10 +106,6 @@ const loadManifestCommandAliasesRuntimeModule = async () =>
   await import("../plugins/manifest-command-aliases.runtime.js");
 const loadProxyLifecycleModule = async () => await import("../infra/net/proxy/proxy-lifecycle.js");
 const loadProgressModule = async () => await import("./progress.js");
-
-function isRemoteAgentDispatchInvocation(argv: string[], primary: string | null): boolean {
-  return primary === "agent" && !argv.includes("--local");
-}
 
 export function isGatewayRunFastPathArgv(argv: string[]): boolean {
   const invocation = resolveCliArgvInvocation(argv);
@@ -636,10 +635,6 @@ function shouldLoadCliDotEnv(
   return loadGlobalEnv && existsSync(path.join(resolveStateDir(env), ".env"));
 }
 
-function isAgentExecInvocation(commandPath: string[]): boolean {
-  return commandPath[0] === "agent" && commandPath[1] === "exec";
-}
-
 function isCommanderParseExit(error: unknown): error is { exitCode: number } {
   if (!error || typeof error !== "object") {
     return false;
@@ -1038,6 +1033,9 @@ async function runCliWithPreparedOutputMode(
     applyCliProfileEnv({ profile: earlyProfile.profile });
   }
   const originalInvocation = resolveCliArgvInvocation(originalArgv);
+  if (await tryRunUpdateAdmissionBeforeStartup(originalInvocation)) {
+    return;
+  }
   let consoleCaptureInstalled = false;
   const installConsoleCapture = async () => {
     if (consoleCaptureInstalled) {

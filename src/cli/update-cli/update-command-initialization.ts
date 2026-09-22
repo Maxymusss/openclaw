@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { hasNodeErrorCode } from "../../infra/path-guards.js";
 import { SQLITE_SIDECAR_SUFFIXES } from "../../infra/sqlite-files.js";
 import { acquireGatewayLifecycleCoordinator } from "../../infra/state-database-coordinator.js";
+import type { UpdateCandidateAdmissionResult } from "../../infra/update-candidate-admission.js";
 import { compareSemverStrings } from "../../infra/update-check.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
@@ -27,6 +28,7 @@ export type InitializedUpdate = {
   databasePath: string;
   configPath: string;
   stagedPackage?: StagedPackageInstallUpdate;
+  candidateAdmission?: UpdateCandidateAdmissionResult;
   downgradeConfirmed?: boolean;
 };
 
@@ -146,10 +148,10 @@ export async function initializeUpdateStateFromTarget(
   params: Parameters<typeof runPackageUpdateDoctor>[0] & {
     env: NodeJS.ProcessEnv;
     assertCurrent: () => void;
-    checkSchemas: () => Promise<void>;
+    checkSchemas: (phase?: "before" | "after") => Promise<void>;
   },
 ): Promise<void> {
-  await params.checkSchemas();
+  await params.checkSchemas("before");
   params.assertCurrent();
   // npm lifecycle hooks may already have created the database. The selected
   // Doctor must still validate and migrate authored config before activation.
@@ -157,7 +159,7 @@ export async function initializeUpdateStateFromTarget(
   params.assertCurrent();
   const result = await runPackageUpdateDoctor({ ...params, managedServiceEnv: params.env });
   params.assertCurrent();
-  await params.checkSchemas();
+  await params.checkSchemas("after");
   if (!result || (result.exitCode !== 0 && !result.advisory)) {
     throw new UpdatePreMutationError(
       "target-state-initialization",

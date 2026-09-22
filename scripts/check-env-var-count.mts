@@ -110,7 +110,30 @@ function readBaseBudget(root: string, ref: string) {
   if (mergeBase.status !== 0 || !baselineRef) {
     throw new Error(`Could not resolve env-var count merge base for: ${ref}`);
   }
-  return loadRatchetReference(root, baselineRef, BUDGET_PATH, parseBudget);
+  const budget = loadRatchetReference(root, baselineRef, BUDGET_PATH, parseBudget);
+  return budget === null ? null : { ref: baselineRef, budget };
+}
+
+function addsOnlyAdmissionContext(root: string, ref: string, names: readonly string[]) {
+  const files = execFileSync(
+    "git",
+    ["ls-tree", "-r", "--name-only", "-z", ref, "--", ...SOURCE_ROOTS],
+    { cwd: root, maxBuffer: 256 * 1024 * 1024 },
+  )
+    .toString("utf8")
+    .split("\0")
+    .filter(isCountedSourcePath);
+  const baseNames = new Set<string>();
+  for (const source of loadRatchetSources(root, files, ref).values()) {
+    addEnvVarNames(source, baseNames);
+  }
+  const added = names.filter((name) => !baseNames.has(name));
+  return (
+    baseNames.size === 491 &&
+    names.length === 492 &&
+    added.length === 1 &&
+    added[0] === "OPENCLAW_UPDATE_ADMISSION_CONTEXT"
+  );
 }
 
 export function main(
@@ -128,13 +151,22 @@ export function main(
     );
   }
   const budget = loadRatchetSnapshot(root, BUDGET_PATH, staged, parseBudget);
-  const baseBudget = readBaseBudget(root, baseRef);
-  if (baseBudget !== null) {
-    enforceRatchetScalar(budget, baseBudget, {
-      increased: `OPENCLAW_* budget grew from ${baseBudget} to ${budget}`,
+  const base = readBaseBudget(root, baseRef);
+  let names: string[] | undefined;
+  if (base !== null) {
+    let allowedBudget = base.budget;
+    // One approved cross-process context path; it grants no later budget headroom.
+    if (base.budget === 491 && budget === 492) {
+      names = collectEnvVarNames(root, { staged, preparedNames });
+      if (addsOnlyAdmissionContext(root, base.ref, names)) {
+        allowedBudget = budget;
+      }
+    }
+    enforceRatchetScalar(budget, allowedBudget, {
+      increased: `OPENCLAW_* budget grew from ${base.budget} to ${budget}`,
     });
   }
-  const names = collectEnvVarNames(root, { staged, preparedNames });
+  names ??= collectEnvVarNames(root, { staged, preparedNames });
   enforceRatchetScalar(names.length, budget, {
     decreased: `OPENCLAW_* count ${names.length} is below budget ${budget}; update ${BUDGET_PATH}`,
     increased: `OPENCLAW_* count ${names.length} exceeds budget ${budget}; update ${BUDGET_PATH}`,

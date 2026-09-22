@@ -55,11 +55,18 @@ vi.mock("./entry.respawn.js", () => ({
 vi.mock("./entry.version-fast-path.js", () => ({
   tryHandleRootVersionFastPath: () => boundary.mode === "none",
 }));
+vi.mock("./cli/update-cli/update-command-admit.js", () => ({
+  updateAdmitCommand: async () => {
+    boundary.events.push("admission");
+    process.exitCode = 2;
+  },
+}));
 
 const originalArgv = process.argv;
 const originalTitle = process.title;
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.resetModules();
   boundary.events = [];
   boundary.runtimeSupported = true;
@@ -131,4 +138,21 @@ it("names the final executing CLI after startup respawn decisions", async () => 
 
   expect(boundary.spawnTitle).toBeUndefined();
   expect(process.title).toBe("openclaw");
+});
+
+it("runs internal admission before runtime recovery, cache activation, or respawn", async () => {
+  const previousExitCode = process.exitCode;
+  boundary.mode = "compile-cache";
+  boundary.trace = true;
+  boundary.runtimeSupported = false;
+  process.argv = [process.execPath, "/fixture/openclaw/dist/entry.js", "update", "admit"];
+  try {
+    await import("./entry.js");
+    expect(boundary.events).toEqual(["admission"]);
+    expect(process.exitCode).toBe(2);
+    const compileCache = await import("./entry.compile-cache.js");
+    expect(compileCache.enableOpenClawCompileCache).not.toHaveBeenCalled();
+  } finally {
+    process.exitCode = previousExitCode;
+  }
 });

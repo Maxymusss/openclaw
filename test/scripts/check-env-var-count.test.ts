@@ -197,7 +197,74 @@ describe("check-env-var-count", () => {
 
   describe.each([false, true])("budget enforcement with staged=%s", (staged) => {
     it.each([
+      {
+        name: "approved context only",
+        added: ["OPENCLAW_UPDATE_ADMISSION_CONTEXT"],
+        allowed: true,
+      },
+      { name: "unrelated name", added: ["OPENCLAW_UNRELATED"], allowed: false },
+      {
+        name: "context plus unrelated growth",
+        added: ["OPENCLAW_UPDATE_ADMISSION_CONTEXT", "OPENCLAW_UNRELATED"],
+        allowed: false,
+      },
+      {
+        name: "context plus unrelated replacement",
+        added: ["OPENCLAW_UPDATE_ADMISSION_CONTEXT", "OPENCLAW_UNRELATED"],
+        removed: 1,
+        allowed: false,
+      },
+      {
+        name: "context already in the baseline",
+        existingContext: true,
+        added: ["OPENCLAW_UNRELATED"],
+        allowed: false,
+      },
+      {
+        name: "growth after the approved context landed",
+        baseBudget: 492,
+        existingContext: true,
+        added: ["OPENCLAW_UNRELATED"],
+        allowed: false,
+      },
+    ])("limits the admission exception: $name", (testCase) => {
+      const baseBudget = testCase.baseBudget ?? 491;
+      const baseNames = Array.from({ length: baseBudget }, (_, index) => `OPENCLAW_BASE_${index}`);
+      if (testCase.existingContext) {
+        baseNames[0] = "OPENCLAW_UPDATE_ADMISSION_CONTEXT";
+      }
+      const { root, git, write } = createRepo({
+        "config/env-var-count-budget.txt": `${baseBudget}\n`,
+        "src/runtime.ts": baseNames.join("\n"),
+      });
+      git("add", ".");
+      git("commit", "-m", "base");
+      const names = [...baseNames.slice(testCase.removed ?? 0), ...testCase.added];
+      write("config/env-var-count-budget.txt", `${names.length}\n`);
+      write("src/runtime.ts", names.join("\n"));
+      if (staged) {
+        git("add", ".");
+        // An opposite worktree result cannot authorize or reject the staged snapshot.
+        write("config/env-var-count-budget.txt", "492\n");
+        write(
+          "src/runtime.ts",
+          [
+            ...baseNames,
+            testCase.allowed ? "OPENCLAW_UNRELATED" : "OPENCLAW_UPDATE_ADMISSION_CONTEXT",
+          ].join("\n"),
+        );
+      }
+      const run = () => main([...(staged ? ["--staged"] : []), "--base", "HEAD"], root);
+      if (testCase.allowed) {
+        expect(run()).toBe(492);
+      } else {
+        expect(run).toThrow(/budget grew/u);
+      }
+    });
+
+    it.each([
       { name: "exact count", base: 2, budget: 2, count: 2, error: undefined },
+      { name: "lowered budget", base: 2, budget: 1, count: 1, error: undefined },
       { name: "count growth", base: 2, budget: 2, count: 3, error: /exceeds budget/u },
       { name: "stale headroom", base: 2, budget: 2, count: 1, error: /is below budget/u },
       {

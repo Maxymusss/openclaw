@@ -42,6 +42,7 @@ describe("legacy package executable entrypoint", () => {
   afterEach(() => {
     process.argv = originalArgv;
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
 
   it("handles root --version before CLI startup", async () => {
@@ -87,5 +88,37 @@ describe("legacy package executable entrypoint", () => {
       "package lifecycle is incomplete",
     );
     expect(tryHandleRootVersionFastPath).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "relative/context.json", "/private/fixture/admission.json"])(
+    "leaves pending lifecycle untouched before internal context validation (%s)",
+    async (contextPath) => {
+      process.argv = ["node", "dist/index.js", "update", "admit"];
+      vi.stubEnv("OPENCLAW_UPDATE_ADMISSION_CONTEXT", contextPath);
+      vi.stubEnv("OPENCLAW_UPDATE_RUN_ID", "inherited-authority");
+      vi.mocked(existsSync).mockImplementation((value) =>
+        String(value).endsWith(".openclaw-lifecycle-pending"),
+      );
+      vi.mocked(completePendingPackageLifecycle).mockRejectedValue(new Error("lifecycle sentinel"));
+
+      await import("./index.js?admission-before-lifecycle" as "./index.js");
+
+      expect(completePendingPackageLifecycle).not.toHaveBeenCalled();
+      const exitFinalization = await import("./cli/one-shot-exit.js");
+      expect(exitFinalization.runCliWithExitFinalization).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([
+    ["update", "admit", "--help"],
+    ["update", "admit", "extra"],
+    ["update", "status"],
+  ])("retains lifecycle completion for ordinary argv %j", async (...args) => {
+    process.argv = ["node", "dist/index.js", ...args];
+    vi.mocked(existsSync).mockImplementation((value) =>
+      String(value).endsWith(".openclaw-lifecycle-pending"),
+    );
+    await import("./index.js?ordinary-lifecycle" as "./index.js");
+    expect(completePendingPackageLifecycle).toHaveBeenCalledOnce();
   });
 });

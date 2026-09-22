@@ -42,6 +42,7 @@ function inheritedUpdateTimeout(
 
 type CommanderUpdateOptions = Record<string, unknown> & {
   acceptCapabilities?: boolean;
+  admission?: string;
   channel?: string;
   dryRun?: boolean;
   json?: boolean;
@@ -197,6 +198,13 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/update", "docs.openclaw.ai/cli/up
     })
     .action(async (opts: CommanderUpdateOptions) => {
       try {
+        if (
+          opts.admission !== undefined &&
+          opts.admission !== "auto" &&
+          opts.admission !== "installed"
+        ) {
+          throw new Error('--admission must be "auto" or "installed".');
+        }
         const { updateCommand } = await import("./update-cli/update-command.js");
         await updateCommand({
           runtimeRecoveryEnv: getProgramContext(program)?.runtimeRecoveryEnv,
@@ -209,10 +217,19 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/update", "docs.openclaw.ai/cli/up
           timeout: opts.timeout,
           yes: Boolean(opts.yes),
           acceptCapabilities: Boolean(opts.acceptCapabilities),
+          admission: opts.admission,
         });
       } catch (err) {
         handleUpdateCommandError(err);
       }
+    });
+
+  update
+    .command("admit", { hidden: true })
+    .description("Internal read-only candidate admission protocol")
+    .action(async () => {
+      const { updateAdmitCommand } = await import("./update-cli/update-command-admit.js");
+      await updateAdmitCommand();
     });
 
   update

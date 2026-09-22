@@ -33,18 +33,22 @@ export type UpdateRunLedgerOptions = OpenClawStateDatabaseOptions & {
   redactPaths?: readonly string[];
 };
 
-function mapJsonText(value: unknown, transform: (text: string) => string): unknown {
+function mapJsonText(
+  value: unknown,
+  transform: (text: string, key?: string) => string,
+  key?: string,
+): unknown {
   if (typeof value === "string") {
-    return transform(value);
+    return transform(value, key);
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => mapJsonText(entry, transform));
+    return value.map((entry) => mapJsonText(entry, transform, key));
   }
   if (isRecord(value)) {
     return Object.fromEntries(
       Object.keys(value)
         .toSorted()
-        .map((key) => [key, mapJsonText(value[key], transform)]),
+        .map((field) => [field, mapJsonText(value[field], transform, field)]),
     );
   }
   return value;
@@ -59,7 +63,11 @@ export function isRetainedStep(item: unknown): boolean {
 }
 
 /** Phase history, notice custody, and restoration proof survive diagnostic eviction. */
-function boundedJson(input: unknown, maxBytes = JSON_BYTES): string {
+function boundedJson(
+  input: unknown,
+  maxBytes = JSON_BYTES,
+  preservedTextFields?: ReadonlySet<string>,
+): string {
   let value = input;
   let json = JSON.stringify(value);
   while (Buffer.byteLength(json) > maxBytes) {
@@ -83,27 +91,74 @@ function boundedJson(input: unknown, maxBytes = JSON_BYTES): string {
       }
     } else if (isRecord(value)) {
       const object = value;
-      const key = Object.keys(object)
+      const arrayField = Object.keys(object)
         .toSorted()
         .find((field) => Array.isArray(object[field]) && object[field].length > 0);
-      const array = key ? object[key] : undefined;
-      if (key && Array.isArray(array)) {
-        value = { ...object, [key]: array.slice(1) };
+      const array = arrayField ? object[arrayField] : undefined;
+      if (arrayField && Array.isArray(array)) {
+        value = { ...object, [arrayField]: array.slice(1) };
       } else {
-        value = mapJsonText(value, (text) => truncateUtf16Safe(text, Math.floor(text.length / 2)));
+        value = mapJsonText(value, (text, key) =>
+          key && preservedTextFields?.has(key)
+            ? text
+            : truncateUtf16Safe(text, Math.floor(text.length / 2)),
+        );
       }
     } else {
       throw new Error("Update run metadata exceeds its bounded schema");
     }
-    json = JSON.stringify(value);
+    const nextJson = JSON.stringify(value);
+    if (nextJson === json) {
+      throw new Error("Update run retained metadata exceeds its byte limit");
+    }
+    json = nextJson;
   }
   return json;
 }
 
 function boundedOriginJson(origin: UpdateRunRecord["origin"]): string {
-  const { driver, previousDrivers, ...diagnostics } = origin;
-  const identities = JSON.stringify({ driver, previousDrivers });
-  const boundedDiagnostics = boundedJson(diagnostics, JSON_BYTES - Buffer.byteLength(identities));
+  const {
+    driver,
+    previousDrivers,
+    requester,
+    sessionKey,
+    deliveryContext,
+    campaignId,
+    ...admissionDiagnostics
+  } = origin;
+  const routing = { requester, sessionKey, deliveryContext, campaignId };
+  const hasAdmission = origin.admission !== undefined || origin.candidateAdmission !== undefined;
+  // Candidate diagnostics cannot shorten the continuation's requester or destination.
+  // Keep the legacy codec behavior for records without an admission receipt.
+  const identities = JSON.stringify({
+    driver,
+    previousDrivers,
+    ...(hasAdmission ? routing : {}),
+  });
+  const diagnostics = hasAdmission ? admissionDiagnostics : { ...admissionDiagnostics, ...routing };
+  const diagnosticBudget = JSON_BYTES - Buffer.byteLength(identities);
+  // Warning receipts are disposable diagnostics; refusal and check identities are not.
+  if (
+    diagnostics.candidateAdmission?.warnings.length &&
+    Buffer.byteLength(JSON.stringify(diagnostics)) > diagnosticBudget
+  ) {
+    diagnostics.candidateAdmission = { ...diagnostics.candidateAdmission, warnings: [] };
+  }
+  const boundedDiagnostics = boundedJson(
+    diagnostics,
+    diagnosticBudget,
+    // Preserve decision identity while shortening only its explanatory prose.
+    new Set([
+      "owner",
+      "verdict",
+      "status",
+      "code",
+      "name",
+      "candidateVersion",
+      "installedVersion",
+      "fallbackReason",
+    ]),
+  );
   return `{${[identities.slice(1, -1), boundedDiagnostics.slice(1, -1)].filter(Boolean).join(",")}}`;
 }
 

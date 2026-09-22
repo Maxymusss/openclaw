@@ -1,4 +1,5 @@
 import { theme } from "../../../packages/terminal-core/src/theme.js";
+import { formatConfigIssueLines } from "../../config/issue-format.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
@@ -8,8 +9,10 @@ import { createUpdateProgress } from "./progress.js";
 import {
   confirmUpdateDowngrade,
   tryResolveInvocationCwd,
+  UpdatePreMutationError,
   type UpdateCommandOptions,
 } from "./shared.js";
+import { withUpdateCandidateAdmission } from "./update-command-candidate-admission.js";
 import {
   captureUpdateCommandExecutorAuthority,
   type UpdateCommandExecutor,
@@ -18,6 +21,7 @@ import {
 import type { InitializedUpdate } from "./update-command-initialization.js";
 import { admitUpdateRequesterContinuation } from "./update-command-managed-context.js";
 import { preparePackageUpdateRuntime } from "./update-command-node-runtime.js";
+import type { StagedPackageInstallUpdate } from "./update-command-package.js";
 import { UpdateCommandFailure, withUpdateAdmissionReporting } from "./update-command-result.js";
 import {
   admitUpdateCommandRun,
@@ -183,15 +187,7 @@ async function updateCommandInternal(
   executor: UpdateCommandExecutor,
   initialization?: InitializedUpdate,
 ): Promise<void> {
-  const {
-    startedAt,
-    timeoutMs,
-    shouldRestart,
-    requestedChannel,
-    controlPlaneUpdateSentinelMeta,
-    discoveredRoot,
-    installKind,
-  } = prepared;
+  const { timeoutMs } = prepared;
   const run = opts.run!;
   const updateStepTimeoutMs =
     timeoutMs ?? run.defaultStepTimeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS;
@@ -209,6 +205,73 @@ async function updateCommandInternal(
   if (!target) {
     return;
   }
+  try {
+    return await withUpdateCandidateAdmission(
+      {
+        target,
+        prepared,
+        opts,
+        timeoutMs: updateStepTimeoutMs,
+        invocationCwd,
+        presentation,
+        stagedPackage: initialization?.stagedPackage,
+        candidateAdmission: initialization?.candidateAdmission,
+      },
+      (stagedPackage) =>
+        runResolvedUpdate(
+          opts,
+          recoveryState,
+          invocationCwd,
+          prepared,
+          presentation,
+          executor,
+          target,
+          stagedPackage,
+          initialization,
+        ),
+    );
+  } catch (error) {
+    if (!(error instanceof UpdatePreMutationError)) {
+      throw error;
+    }
+    return await reportPreMutationUpdateResult({
+      root: target.root,
+      mode: target.mode,
+      installKind: target.updateInstallKind,
+      opts,
+      controlPlaneUpdateSentinelMeta: prepared.controlPlaneUpdateSentinelMeta,
+      reason: error.reason,
+      message: error.message,
+      nextAction: error.nextAction,
+      failureFacts: error.failureFacts,
+      recoverySteps: error.recoverySteps,
+    });
+  }
+}
+
+async function runResolvedUpdate(
+  opts: UpdateCommandOptions,
+  recoveryState: UpdateCommandRecoveryState,
+  invocationCwd: string | undefined,
+  prepared: PreparedUpdate,
+  presentation: ReturnType<typeof createUpdateProgress>,
+  executor: UpdateCommandExecutor,
+  target: NonNullable<Awaited<ReturnType<typeof resolveUpdateCommandTarget>>>,
+  stagedPackage?: StagedPackageInstallUpdate,
+  initialization?: InitializedUpdate,
+): Promise<void> {
+  const {
+    startedAt,
+    timeoutMs,
+    shouldRestart,
+    requestedChannel,
+    controlPlaneUpdateSentinelMeta,
+    discoveredRoot,
+    installKind,
+  } = prepared;
+  const run = opts.run!;
+  const updateStepTimeoutMs =
+    timeoutMs ?? run.defaultStepTimeoutMs ?? DEFAULT_UPDATE_STEP_TIMEOUT_MS;
   const {
     root,
     mode,
@@ -232,8 +295,14 @@ async function updateCommandInternal(
     managedServiceNodeRunner,
   } = target;
   let { packageUpdateNodeRunner } = target;
-  const refuseUpdate: typeof target.refuseUpdate = (reason, message, failureFacts, recoverySteps) =>
-    reportPreMutationUpdateResult({
+  const refuseUpdate: typeof target.refuseUpdate = async (
+    reason,
+    message,
+    failureFacts,
+    recoverySteps,
+  ) => {
+    await stagedPackage?.close();
+    return await reportPreMutationUpdateResult({
       root,
       mode,
       installKind: updateInstallKind,
@@ -244,6 +313,7 @@ async function updateCommandInternal(
       failureFacts,
       recoverySteps,
     });
+  };
 
   recordUpdateRunPhase(
     run.runId,
@@ -259,6 +329,20 @@ async function updateCommandInternal(
     },
     { env: run.env },
   );
+  if (
+    opts.channel &&
+    !configSnapshot.valid &&
+    !legacyConfigPlan &&
+    !run.candidateAdmissionChecks?.includes("config")
+  ) {
+    return await refuseUpdate(
+      "invalid-config",
+      [
+        "Config is invalid; cannot set update channel.",
+        ...formatConfigIssueLines(configSnapshot.issues, "-"),
+      ].join("\n"),
+    );
+  }
   const schemaPreflight = await preflightUpdateCommandSchemas({
     ...target,
     shouldRestart,
@@ -355,7 +439,7 @@ async function updateCommandInternal(
     );
   }
 
-  if (updateInstallKind === "package") {
+  if (updateInstallKind === "package" && !run.candidateAdmissionChecks?.includes("node-runtime")) {
     const runtimePreflight = await preparePackageUpdateRuntime({
       ...target,
       managedService: schemaPreflight.service,
@@ -423,7 +507,7 @@ async function updateCommandInternal(
     stop: presentation.stop,
     opts,
     shouldRestart,
-    stagedPackage: initialization?.stagedPackage,
+    stagedPackage,
     packageTargetVersion: targetVersion ?? undefined,
     packageUpdateNodeRunner,
     managedServiceNodeRunner,

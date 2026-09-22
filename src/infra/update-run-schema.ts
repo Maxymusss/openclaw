@@ -7,6 +7,10 @@ import {
   UPDATE_RUN_TRIGGERS,
 } from "../../packages/gateway-protocol/src/update-run-vocabulary.js";
 import {
+  UpdateAdmissionCheckSchema,
+  UpdateAdmissionVerdictSchema,
+} from "./update-admission-contract.js";
+import {
   UpdateDoctorConfigChangeSchema,
   UpdateDoctorConfigWriteRefusalSchema,
 } from "./update-doctor-config-schema.js";
@@ -32,6 +36,33 @@ const UpdateRollbackOutcomeSchema = z.object({
 export type UpdateRollbackOutcome = z.infer<typeof UpdateRollbackOutcomeSchema>;
 
 const text = z.string().max(UPDATE_RUN_TEXT_LIMIT);
+const admissionCheck = z.object({
+  name: text,
+  status: UpdateAdmissionCheckSchema.shape.status,
+  detail: text.optional(),
+});
+const admissionChecks = z.array(admissionCheck).max(UPDATE_RUN_DIAGNOSTIC_LIMIT);
+const admission = z.object({
+  owner: z.enum(["candidate", "installed"]),
+  protocol: UpdateAdmissionVerdictSchema.shape.protocol.optional(),
+  candidateVersion: text.optional(),
+  checks: admissionChecks.optional(),
+  fallbackReason: text.optional(),
+});
+// The ledger bounds diagnostic text independently of the command's wire verdict.
+const candidateAdmission = z.object({
+  protocol: UpdateAdmissionVerdictSchema.shape.protocol,
+  verdict: UpdateAdmissionVerdictSchema.shape.verdict,
+  reasons: z
+    .array(z.object({ code: text, message: text, nextAction: text.optional() }))
+    .max(UPDATE_RUN_DIAGNOSTIC_LIMIT),
+  warnings: z.array(z.object({ code: text, message: text })).max(UPDATE_RUN_DIAGNOSTIC_LIMIT),
+  facts: z.object({
+    candidateVersion: text,
+    installedVersion: text.nullable(),
+    checks: admissionChecks,
+  }),
+});
 const timestamp = z.number().int().nonnegative();
 const version = z.object({
   version: text.nullable().optional(),
@@ -88,7 +119,10 @@ export const UpdateRunRecordSchema = z.object({
   phase: z.enum(UPDATE_RUN_PHASES),
   status: z.enum(UPDATE_RUN_STATUSES),
   reason: text.nullable(),
+  admission: admission.optional(),
   origin: z.object({
+    admission: admission.optional(),
+    candidateAdmission: candidateAdmission.optional(),
     driver: driver.optional(),
     previousDrivers: z
       .array(driver)
