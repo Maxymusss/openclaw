@@ -61,6 +61,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/codex/src/app-server/native-subagent-monitor.history-owner.test.ts",
   "extensions/codex/src/app-server/native-subagent-monitor.rotated-parent.test.ts",
   "extensions/codex/src/app-server/native-subagent-monitor.test.ts",
+  "extensions/codex/src/app-server/native-subagent-submission-store.test.ts",
   "extensions/copilot/harness.test.ts",
   "extensions/codex/src/app-server/auth-profile-runtime-contract.test.ts",
   "extensions/codex/src/app-server/attempt-startup.test.ts",

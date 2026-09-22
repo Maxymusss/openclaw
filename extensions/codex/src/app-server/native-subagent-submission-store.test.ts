@@ -1,9 +1,16 @@
+import assert from "node:assert/strict";
+import { AsyncResource } from "node:async_hooks";
+import { request } from "node:http";
+import path from "node:path";
+import { nativeHookRelayTesting } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { registerNativeHookRelayForBundledRuntime } from "openclaw/plugin-sdk/native-hook-relay-runtime";
 import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { closeOpenClawStateDatabaseByPathAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createCodexNativeSubagentHistoryOwner,
   type CodexNativeSubagentHistoryOwner,
@@ -78,6 +85,108 @@ async function fixture(initialReceipt?: CodexNativeSubagentSubmission) {
 }
 
 describe("native subagent submission receipts in the binding store", () => {
+  it("persists an authenticated HTTP receipt after its startup binding lease closes", async () => {
+    const { root, store, owner } = await fixture();
+    vi.stubEnv("OPENCLAW_STATE_DIR", root);
+    let applied: boolean | undefined;
+    const { relay, staleWrite } = await store.withLease(identity, async () => {
+      const registration = registerNativeHookRelayForBundledRuntime({
+        provider: "codex",
+        sessionId: identity.sessionId,
+        runId: "http-receipt",
+        allowedEvents: ["post_tool_use"],
+        postToolUse: {
+          toolNames: ["receipt_tool"],
+          observe: async (_invocation, assertCurrent) => {
+            applied = await store.mutate(
+              identity,
+              { kind: "record-native-subagent-submission", owner, receipt },
+              assertCurrent,
+            );
+          },
+        },
+      });
+      try {
+        await registration.ready;
+      } catch (error) {
+        registration.unregister();
+        await Promise.allSettled([registration.drain()]);
+        await closeOpenClawStateDatabaseByPathAsync(path.join(root, "state", "openclaw.sqlite"));
+        throw error;
+      }
+      return {
+        relay: registration,
+        staleWrite: AsyncResource.bind(() =>
+          store.mutate(identity, {
+            kind: "patch",
+            threadId: binding.threadId,
+            patch: { model: "stale-writer" },
+          }),
+        ),
+      };
+    });
+    let outgoing: ReturnType<typeof request> | undefined;
+    try {
+      await expect(staleWrite()).rejects.toThrow("Lost Codex binding lease");
+      expect(store.read(identity)).toEqual(binding);
+      const bridge = await nativeHookRelayTesting.getNativeHookRelayBridgeRecordForTests(
+        relay.relayId,
+      );
+      const hostname = bridge?.hostname;
+      const port = bridge?.port;
+      const token = bridge?.token;
+      assert(hostname === "127.0.0.1" && typeof port === "number" && typeof token === "string");
+      const httpStatus = await new Promise<number>((resolve, reject) => {
+        outgoing = request(
+          {
+            hostname,
+            port,
+            method: "POST",
+            path: "/invoke",
+            agent: false,
+            signal: AbortSignal.timeout(5_000),
+            headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          },
+          (response) => {
+            response.once("error", reject);
+            response.once("end", () => resolve(response.statusCode ?? 0));
+            response.resume();
+          },
+        );
+        outgoing.once("error", reject);
+        outgoing.end(
+          JSON.stringify({
+            provider: "codex",
+            relayId: relay.relayId,
+            generation: relay.generation,
+            event: "post_tool_use",
+            rawPayload: {
+              hook_event_name: "PostToolUse",
+              tool_name: "receipt_tool",
+              tool_use_id: receipt.callId,
+              tool_input: {},
+              tool_response: {},
+            },
+          }),
+        );
+      });
+      expect(httpStatus).toBe(200);
+      expect(applied).toBe(true);
+      expect(store.readNativeSubagentSubmissions(identity, owner)).toEqual([receipt]);
+    } finally {
+      outgoing?.destroy();
+      relay.unregister();
+      try {
+        await relay.drain();
+      } finally {
+        await closeOpenClawStateDatabaseByPathAsync(path.join(root, "state", "openclaw.sqlite"));
+      }
+    }
+    resetPluginStateStoreForTests();
+    const reopened = createCodexAppServerBindingStore(openState(root));
+    expect(reopened.readNativeSubagentSubmissions(identity, owner)).toEqual([receipt]);
+  });
+
   it("persists concurrent receipts across reopen and consumes only the exact submission", async () => {
     const { root, state, store, owner } = await fixture();
     const logicalIdentity = { ...identity, sessionId: "logical-parent-session" };

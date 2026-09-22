@@ -440,7 +440,8 @@ an end event before deciding whether later work resumes that task or starts a ne
 Older tasks without enough native turn information remain unresolved instead of
 borrowing another turn's result.
 
-For Codex V1 follow-ups, OpenClaw retains a successful submission receipt with
+For Codex V1 follow-ups, including submissions through Codex Code Mode,
+OpenClaw retains a successful submission receipt with
 the parent binding until it records the matching native turn as a task. This
 allows recovery when the parent yields or the Gateway restarts before observing
 the child turn. A receipt alone does not keep an idle native connection alive.
