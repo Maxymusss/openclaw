@@ -18,6 +18,9 @@ struct RootTabs: View {
     @Environment(VoiceWakeManager.self) private var voiceWake
     @Environment(GatewayConnectionController.self) private var gatewayController
     @Environment(NativeActionRouter.self) private var nativeActions: NativeActionRouter?
+    #if DEBUG && OPENCLAW_INSTALLED_NATIVE_ACTION_PROOF
+    @Environment(InstalledNativeActionProofHost.self) private var installedNativeProof: InstalledNativeActionProofHost?
+    #endif
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.displayScale) private var displayScale
     @Environment(\.scenePhase) private var scenePhase
@@ -193,6 +196,20 @@ struct RootTabs: View {
             }
             .overlay(alignment: .topLeading) {
                 self.uiTestReadinessMarker
+                #if DEBUG && OPENCLAW_INSTALLED_NATIVE_ACTION_PROOF
+                if let installedNativeProof {
+                    Color.clear.frame(width: 1, height: 1)
+                        .allowsHitTesting(false)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityIdentifier("RootTabs.InstalledNativeProof")
+                        .accessibilityLabel(Text(verbatim: "Installed native action observation"))
+                        .accessibilityValue(installedNativeProof.accessibilityValue(
+                            idleUnprotectedComposer: self.appModel.chatPresentation
+                                .isCurrent(appModel: self.appModel) &&
+                                self.appModel.chatPresentation.viewModel?.canPreserveIdleTextDraft == true &&
+                                !self.appModel.chatPresentation.hasProtectedComposer(appModel: self.appModel)))
+                }
+                #endif
             }
             .task(id: self.appModel.chatPresentation.taskIdentity(
                 appModel: self.appModel, nativeBinding: self.nativeChatBinding,
@@ -974,7 +991,7 @@ struct RootTabs: View {
                             .presentationDragIndicator(.visible)
                         }
                     case let .transcriptShare(fileURL, receipt):
-                        self.chatModalContent(receipt) { ChatTranscriptShareSheet(fileURL: fileURL) }
+                        self.chatModalContent(receipt) { OpenClawChatFileShareSheet(fileURL: fileURL) }
                     }
                 }
                 .environment(\.userNavigationAction, sheetAction)

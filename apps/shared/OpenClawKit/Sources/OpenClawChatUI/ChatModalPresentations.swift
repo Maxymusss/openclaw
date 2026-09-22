@@ -155,6 +155,8 @@ public final class OpenClawChatModalPresentations {
     var mermaid: Request<MermaidPreview>?
     var widgetImage: Request<OpenClawPlatformImage>?
     var widgetError: Request<String>?
+    var fileExport: Request<ChatDownloadedFile>?
+    var fileError: Request<Void>?
     var signIn: Request<SignIn>?
     #if canImport(UIKit)
     var photoPicker: Request<ChatModalAttachmentCapture>?
@@ -175,7 +177,7 @@ public final class OpenClawChatModalPresentations {
         var values = [
             self.fullMessage?.receipt, self.selectText?.receipt, self.image?.receipt,
             self.source?.receipt, self.mermaid?.receipt, self.widgetImage?.receipt,
-            self.widgetError?.receipt, self.signIn?.receipt,
+            self.widgetError?.receipt, self.fileExport?.receipt, self.fileError?.receipt, self.signIn?.receipt,
         ].compactMap(\.self)
         #if canImport(UIKit)
         values += [self.photoPicker?.receipt, self.fileImporter?.receipt, self.cameraPicker?.receipt]
@@ -261,6 +263,8 @@ public final class OpenClawChatModalPresentations {
         if let value = self.mermaid, matches(value.receipt) { self.mermaid = nil }
         if let value = self.widgetImage, matches(value.receipt) { self.widgetImage = nil }
         if let value = self.widgetError, matches(value.receipt) { self.widgetError = nil }
+        if let value = self.fileExport, matches(value.receipt) { self.fileExport = nil }
+        if let value = self.fileError, matches(value.receipt) { self.fileError = nil }
         if let value = self.signIn, matches(value.receipt) { self.signIn = nil }
         #if canImport(UIKit)
         if let value = self.photoPicker, matches(value.receipt) { self.photoPicker = nil }
@@ -477,6 +481,7 @@ private struct ChatModalHost: ViewModifier {
     func body(content: Content) -> some View {
         let error = self.owner.binding(\.widgetError, context: self.context)
         let errorReceipt = error.wrappedValue?.receipt
+        let fileErrorReceipt = self.owner.binding(\.fileError, context: self.context).wrappedValue?.receipt
         return content
             .environment(\.chatModalContext, self.context)
             .onChange(of: self.context.origin, initial: true) { _, origin in
@@ -509,8 +514,19 @@ private struct ChatModalHost: ViewModifier {
                     Text(value.value).font(OpenClawChatTypography.body)
                 }
             }
-            #if os(iOS)
-            .sheet(item: self.owner.binding(\.selectText, context: self.context)) { request in
+            .alert("Unable to Download File", isPresented: self.isPresented(\.fileError)) {
+                    Button(role: .cancel) {
+                        if let fileErrorReceipt { self.owner.dismiss(fileErrorReceipt) }
+                    } label: {
+                        Text("OK").font(OpenClawChatTypography.body)
+                    }
+                } message: {
+                    Text(
+                        "Reconnect and try again. If the file has expired or was removed, ask the assistant to send it again.")
+                        .font(OpenClawChatTypography.body)
+                }
+                #if os(iOS)
+                .sheet(item: self.owner.binding(\.selectText, context: self.context)) { request in
                     self.nested(request.receipt, content: ChatSelectableTextSheet(
                         text: ChatMessageVisibleText.copyText(in: request.value),
                         onClose: { self.owner.dismiss(request.receipt) }))
@@ -527,32 +543,40 @@ private struct ChatModalHost: ViewModifier {
                 .sheet(item: self.owner.binding(\.widgetImage, context: self.context)) { request in
                     self.nested(request.receipt, content: ChatInlineWidgetShareSheet(image: request.value))
                 }
-            #endif
-            #if canImport(WebKit) && os(macOS)
+                .sheet(item: self.owner.binding(\.fileExport, context: self.context)) { request in
+                    // Retain the temporary file through the system activity callback,
+                    // even if the originating chat removes its presentation first.
+                    self.nested(request.receipt, content: OpenClawChatFileShareSheet(
+                        fileURL: request.value.url, onCompletion: { [file = request.value] in
+                            withExtendedLifetime(file) {}
+                        }))
+                }
+                #endif
+                #if canImport(WebKit) && os(macOS)
                 .sheet(item: self.owner.binding(\.mermaid, context: self.context)) { request in
                     self.diagram(request)
-            }
-            #elseif canImport(WebKit) && os(iOS)
-            .fullScreenCover(item: self.owner.binding(\.mermaid, context: self.context)) { request in
-                self.diagram(request)
-            }
-            #endif
-            #if canImport(UIKit)
-            .background {
-                if let request = self.owner.fileResult, self.belongs(request.receipt) {
-                    ChatModalAttachmentHost(owner: self.owner, request: request, kind: .file)
-                        .id(request.id)
                 }
-                if let request = self.owner.photoResult, self.belongs(request.receipt) {
-                    ChatModalAttachmentHost(owner: self.owner, request: request, kind: .photo)
-                        .id(request.id)
+                #elseif canImport(WebKit) && os(iOS)
+                .fullScreenCover(item: self.owner.binding(\.mermaid, context: self.context)) { request in
+                    self.diagram(request)
                 }
-                if let request = self.owner.cameraResult, self.belongs(request.receipt) {
-                    ChatModalAttachmentHost(owner: self.owner, request: request, kind: .camera)
-                        .id(request.id)
+                #endif
+                #if canImport(UIKit)
+                .background {
+                    if let request = self.owner.fileResult, self.belongs(request.receipt) {
+                        ChatModalAttachmentHost(owner: self.owner, request: request, kind: .file)
+                            .id(request.id)
+                    }
+                    if let request = self.owner.photoResult, self.belongs(request.receipt) {
+                        ChatModalAttachmentHost(owner: self.owner, request: request, kind: .photo)
+                            .id(request.id)
+                    }
+                    if let request = self.owner.cameraResult, self.belongs(request.receipt) {
+                        ChatModalAttachmentHost(owner: self.owner, request: request, kind: .camera)
+                            .id(request.id)
+                    }
                 }
-            }
-            #endif
+                #endif
     }
 
     private func belongs(_ receipt: OpenClawChatModalPresentations.Receipt) -> Bool {

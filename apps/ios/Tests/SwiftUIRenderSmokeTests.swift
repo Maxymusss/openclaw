@@ -50,6 +50,11 @@ struct SwiftUIRenderSmokeTests {
             owner.present(UIImage(), at: \.widgetImage, capture: capture)?.receipt
         case "widget-error":
             owner.present("Captured export error", at: \.widgetError, capture: capture)?.receipt
+        case "file-export":
+            (try? ChatDownloadedFile(data: Data("Captured file".utf8), fileName: "capture.txt"))
+                .flatMap { owner.present($0, at: \.fileExport, capture: capture)?.receipt }
+        case "file-error":
+            owner.present((), at: \.fileError, capture: capture)?.receipt
         case "sign-in":
             owner.present(.init(
                 context: .init(
@@ -65,7 +70,7 @@ struct SwiftUIRenderSmokeTests {
 
     @Test(arguments: [
         "full", "text", "image", "source", "diagram", "widget-share", "widget-error", "sign-in",
-        "photo", "file", "camera",
+        "photo", "file", "camera", "file-export", "file-error",
     ])
     @MainActor func `chat modal slots own admission and exact dismissal`(kind: String) throws {
         let model = Self.modalModel()
@@ -116,7 +121,7 @@ struct SwiftUIRenderSmokeTests {
         #expect(!owner.hasActivePresentation)
     }
 
-    @Test(arguments: ["image", "source", "diagram"])
+    @Test(arguments: ["image", "source", "diagram", "file-export", "file-error"])
     @MainActor func `nested chat reader keeps parent and rejects stale descendants`(kind: String) throws {
         let model = Self.modalModel()
         let owner = OpenClawChatModalPresentations()
@@ -194,7 +199,7 @@ struct SwiftUIRenderSmokeTests {
         #expect(otherWindow.isPresented(independent))
     }
 
-    @Test(arguments: ["text", "file"])
+    @Test(arguments: ["text", "file", "file-export", "file-error"])
     @MainActor func `modal capture cannot publish into another owner`(kind: String) throws {
         let model = Self.modalModel()
         let first = OpenClawChatModalPresentations()
@@ -339,7 +344,7 @@ struct SwiftUIRenderSmokeTests {
         #expect(model.attachments.map(\.id) == attachmentIDs)
     }
 
-    @Test(arguments: ["sign-in", "widget-share", "widget-error"])
+    @Test(arguments: ["sign-in", "widget-share", "widget-error", "file-export", "file-error"])
     @MainActor func `delayed modal publication cannot survive open close ABA`(kind: String) async throws {
         let model = Self.modalModel()
         let appModel = NodeAppModel(audioAdmissionInitiallyAllowed: false)

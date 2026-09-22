@@ -39,6 +39,7 @@ export async function runProfileWireProof<P extends ProfileWireProvider>(
     provider: P;
     config: OpenClawConfig;
   }) => Promise<void>,
+  borrowersJoined: () => boolean = () => true,
 ) {
   const instance = await createSkillLibraryWireInstance();
   let provider: P | undefined;
@@ -184,12 +185,16 @@ export async function runProfileWireProof<P extends ProfileWireProvider>(
       });
     },
     () => provider?.release?.(),
+    // Installed test commands can outlive a failed process-tree join. Their
+    // sockets and state remain borrowed until the caller proves custody closed.
     () =>
+      borrowersJoined() &&
       runQaGatewayFixture(
         async () => {},
         ...clients.toReversed().map((client) => () => client.close()),
       ),
-    () => instance.cleanup(),
-    () => provider?.stop(),
+    () => borrowersJoined() && instance.cleanup(),
+    () => borrowersJoined() && provider?.stop(),
+    () => assert(borrowersJoined(), "Profile proof retained state for unjoined borrowers"),
   );
 }

@@ -50,6 +50,8 @@ const READINESS_ERROR_CODES = new Set([
  *   port?: number,
  *   upstreamHeaders?: import("ws").ClientOptions["headers"],
  *   observedMethods?: readonly string[],
+ *   observeMobileHandoff?: boolean,
+ *   observeNativeActions?: boolean,
  *   captureReadiness?: boolean,
  *   mediaPaths?: ReadonlySet<string>
  * }} options
@@ -62,10 +64,26 @@ export async function startQaGatewayRpcProxy({
   port = 0,
   upstreamHeaders,
   observedMethods = [],
+  observeMobileHandoff = false,
+  observeNativeActions = false,
   captureReadiness = false,
   mediaPaths = new Set(),
 }) {
   const { WebSocket, WebSocketServer } = createRequire(path.join(repoRoot, "package.json"))("ws");
+  // Installed proof retains bounded selector facts, never prompt or auth payloads.
+  const nativeMethods = new Set([
+    "users.self",
+    "chat.send",
+    "chat.abort",
+    "agent.wait",
+    "chat.history",
+  ]);
+  const observes = (method) =>
+    observedMethods.includes(method) || (observeNativeActions && nativeMethods.has(method));
+  const selector = (value) =>
+    typeof value === "string" && value.length <= 512 ? value : undefined;
+  // Only equality leaves this bounded in-memory handoff map; no bearer is recorded.
+  const operatorHandoffTokens = new Map();
   const peers = new Set();
   const httpRequests = new Set();
   const media = { requests: 0, matched: 0, completed: 0, succeeded: 0 };
@@ -570,6 +588,7 @@ export async function startQaGatewayRpcProxy({
       );
     };
     const pending = [];
+    let nativeDeviceId;
     front.on("message", (raw) => {
       const frame = JSON.parse(raw.toString());
       let trace;
@@ -598,22 +617,54 @@ export async function startQaGatewayRpcProxy({
             diagnostic.truncated = readinessTruncated = true;
           }
         }
-        if (observedMethods.includes(frame.method)) {
+        if (observes(frame.method)) {
           record("rpc-request", {
             connection: id,
             requestId: frame.id,
             method: frame.method,
+            ...(observeNativeActions && nativeMethods.has(frame.method)
+              ? {
+                  expectedProfileId: selector(frame.expectedProfileId),
+                  sessionKey: selector(frame.params?.sessionKey),
+                  agentId: selector(frame.params?.agentId),
+                  runId: selector(frame.params?.runId),
+                  ...(frame.method === "chat.history"
+                    ? {
+                        inputRunIds: Array.isArray(frame.params?.inputRunIds)
+                          ? frame.params.inputRunIds.slice(0, 16).map(selector).filter(Boolean)
+                          : [],
+                        inputRunIdsTruncated:
+                          Array.isArray(frame.params?.inputRunIds) &&
+                          frame.params.inputRunIds.length > 16,
+                      }
+                    : {}),
+                }
+              : {}),
             ...(frame.method === "plugin.surface.refresh"
               ? { expectedProfileId: frame.expectedProfileId, surface: frame.params?.surface }
               : {}),
           });
         }
         if (frame.method === "connect") {
+          nativeDeviceId = frame.params?.device?.id;
           recordFirstConnection(id, "connect-received");
           record("connect-request", {
             connection: id,
             clientId: frame.params?.client?.id,
             deviceId: frame.params?.device?.id,
+            ...(observeMobileHandoff
+              ? {
+                  role: ["node", "operator"].includes(frame.params?.role)
+                    ? frame.params.role
+                    : "other",
+                  usesBootstrapToken: typeof frame.params?.auth?.bootstrapToken === "string",
+                  operatorHandoffMatched:
+                    frame.params?.role === "operator" &&
+                    operatorHandoffTokens.has(nativeDeviceId) &&
+                    operatorHandoffTokens.get(nativeDeviceId) ===
+                      (frame.params?.auth?.deviceToken ?? frame.params?.auth?.token),
+                }
+              : {}),
           });
         }
         if (frame.method === "sessions.create") {
@@ -662,18 +713,40 @@ export async function startQaGatewayRpcProxy({
                   : "other",
           };
         }
-        if (observedMethods.includes(method)) {
+        if (observes(method)) {
           record("rpc-response", {
             connection: id,
             requestId: frame.id,
             method,
             ok: frame.ok,
+            ...(observeNativeActions && method === "agent.wait"
+              ? {
+                  status: ["ok", "error", "timeout"].includes(frame.payload?.status)
+                    ? frame.payload.status
+                    : "other",
+                }
+              : {}),
             ...(method === "plugin.surface.refresh"
               ? { reason: frame.error?.details?.reason }
               : {}),
           });
         }
         if (method === "connect" && frame.ok) {
+          const auth = frame.payload?.auth;
+          const handoff =
+            observeMobileHandoff && auth?.method === "bootstrap-token"
+              ? [auth, ...(Array.isArray(auth.deviceTokens) ? auth.deviceTokens.slice(0, 2) : [])]
+              : [];
+          const operatorToken = handoff.find((entry) => entry?.role === "operator")?.deviceToken;
+          if (
+            typeof nativeDeviceId === "string" &&
+            nativeDeviceId.length <= 128 &&
+            typeof operatorToken === "string" &&
+            operatorToken.length <= 1024 &&
+            operatorHandoffTokens.size < 8
+          ) {
+            operatorHandoffTokens.set(nativeDeviceId, operatorToken);
+          }
           const canvas = frame.payload?.pluginSurfaceUrls?.canvas;
           // Keep only the advertised HTTP authority, never the capability token.
           const canvasURL = typeof canvas === "string" ? URL.parse(canvas) : null;
@@ -685,11 +758,35 @@ export async function startQaGatewayRpcProxy({
             connection: id,
             scopes: frame.payload?.auth?.scopes,
             canvasOrigin,
+            ...(observeMobileHandoff
+              ? {
+                  authMethod: ["bootstrap-token", "trusted-proxy", "device-token"].includes(
+                    auth?.method,
+                  )
+                    ? auth.method
+                    : "other",
+                  role: ["node", "operator"].includes(auth?.role) ? auth.role : "other",
+                  handoffRoles: handoff
+                    .map((entry) => entry?.role)
+                    .filter((role) => role === "node" || role === "operator")
+                    .sort(),
+                }
+              : {}),
+          });
+        }
+        if ((observeMobileHandoff || observeNativeActions) && method === "users.self" && frame.ok) {
+          const profileId = frame.payload?.profile?.id;
+          record("native-profile", {
+            connection: id,
+            requestId: frame.id,
+            profileId:
+              typeof profileId === "string" && profileId.length <= 128 ? profileId : undefined,
           });
         }
         if (method === "chat.send") {
           record("send-response", {
             connection: id,
+            ...(observeNativeActions ? { requestId: frame.id } : {}),
             ok: frame.ok,
             runId: frame.payload?.runId,
             status: frame.payload?.status,
@@ -829,6 +926,7 @@ export async function startQaGatewayRpcProxy({
   let stopping;
   const stop = () =>
     (stopping ??= (async () => {
+      operatorHandoffTokens.clear();
       // Close admission before draining media: an aborted body iterator can
       // settle later, after an already accepted upgrade reaches this server.
       const websocketClosed = new Promise((resolve, reject) => {

@@ -59,6 +59,8 @@ async function withProxy(
   captureReadiness = false,
   rejectUpgrade = false,
   mediaPaths: ReadonlySet<string> = new Set(),
+  observeMobileHandoff = false,
+  observeNativeActions = false,
 ) {
   const server = createServer();
   const sockets = new Set<Duplex>();
@@ -102,6 +104,8 @@ async function withProxy(
         repoRoot: fileURLToPath(new URL("../", import.meta.url)),
         upstreamHeaders: { "x-qa-private": "private-header-marker" },
         captureReadiness,
+        observeMobileHandoff,
+        observeNativeActions,
         mediaPaths,
         token: "proxy-control-fixture",
       });
@@ -260,6 +264,195 @@ async function closeBackendServer(server: Server) {
 }
 
 describe("QA Gateway proxy first-connection diagnostics", () => {
+  it.each([false, true])(
+    "keeps mobile handoff bearers private with observation=%s",
+    async (observe) => {
+      await withProxy(
+        false,
+        async ({ proxy, front, upstream }) => {
+          const back = await upstream;
+          const send = async (socket: WebSocket, receiver: WebSocket, frame: object) => {
+            const received = once(receiver, "message");
+            const bytes = JSON.stringify(frame);
+            socket.send(bytes);
+            expect(String((await received)[0])).toBe(bytes);
+          };
+          await send(front, back, {
+            type: "req",
+            id: "node",
+            method: "connect",
+            params: {
+              client: { id: "openclaw-ios" },
+              device: { id: "fixture-device" },
+              role: "node",
+              auth: { bootstrapToken: "private-bootstrap-marker" },
+            },
+          });
+          await send(back, front, {
+            type: "res",
+            id: "node",
+            ok: true,
+            payload: {
+              auth: {
+                method: "bootstrap-token",
+                role: "node",
+                scopes: [],
+                deviceToken: "private-node-marker",
+                deviceTokens: [
+                  {
+                    role: "operator",
+                    deviceToken: "private-operator-marker",
+                    scopes: ["operator.read", "operator.write"],
+                  },
+                ],
+              },
+            },
+          });
+          await send(front, back, {
+            type: "req",
+            id: "operator",
+            method: "connect",
+            params: {
+              device: { id: "fixture-device" },
+              role: "operator",
+              auth: { token: "private-operator-marker" },
+            },
+          });
+          await send(front, back, { type: "req", id: "profile", method: "users.self", params: {} });
+          await send(back, front, {
+            type: "res",
+            id: "profile",
+            ok: true,
+            payload: {
+              profile: { id: "fixture-profile", email: "private-email-marker" },
+            },
+          });
+          const events = proxy.snapshot().events;
+          expect(JSON.stringify(events)).not.toContain("private-");
+          if (observe) {
+            expect(events).toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  kind: "connect-request",
+                  role: "node",
+                  usesBootstrapToken: true,
+                }),
+                expect.objectContaining({
+                  kind: "connect-success",
+                  authMethod: "bootstrap-token",
+                  handoffRoles: ["node", "operator"],
+                }),
+                expect.objectContaining({
+                  kind: "connect-request",
+                  role: "operator",
+                  operatorHandoffMatched: true,
+                }),
+                expect.objectContaining({
+                  kind: "native-profile",
+                  requestId: "profile",
+                  profileId: "fixture-profile",
+                }),
+              ]),
+            );
+          } else {
+            expect(
+              events.some(
+                (event) => "operatorHandoffMatched" in event || event.kind === "native-profile",
+              ),
+            ).toBe(false);
+          }
+        },
+        false,
+        false,
+        new Set(),
+        observe,
+      );
+    },
+  );
+
+  it.each([false, true])(
+    "bounds installed-action selector evidence with observation=%s",
+    async (observe) => {
+      await withProxy(
+        false,
+        async ({ proxy, front, upstream }) => {
+          const back = await upstream;
+          for (const frame of [
+            {
+              type: "req",
+              id: "send",
+              method: "chat.send",
+              expectedProfileId: "fixture-profile",
+              params: {
+                sessionKey: "fixture-session",
+                message: "private-question",
+                token: "private-token",
+              },
+            },
+            {
+              type: "req",
+              id: "history",
+              method: "chat.history",
+              params: {
+                inputRunIds: Array.from({ length: 17 }, (_, i) => `run-${i}`),
+                sessionKey: "x".repeat(513),
+              },
+            },
+            { type: "req", id: "wait", method: "agent.wait", params: { runId: "run-0" } },
+          ]) {
+            const received = once(back, "message");
+            const bytes = JSON.stringify(frame);
+            front.send(bytes);
+            expect(String((await received)[0])).toBe(bytes);
+          }
+          const returned = once(front, "message");
+          back.send(
+            JSON.stringify({
+              type: "res",
+              id: "wait",
+              ok: true,
+              payload: { status: "timeout", terminalReply: { text: "private-answer" } },
+            }),
+          );
+          await returned;
+          const events = proxy.snapshot().events.filter((event) => event.kind.startsWith("rpc-"));
+          expect(JSON.stringify(events)).not.toContain("private-");
+          if (!observe) {
+            expect(events).toEqual([]);
+            return;
+          }
+          expect(events).toEqual([
+            expect.objectContaining({
+              kind: "rpc-request",
+              requestId: "send",
+              sessionKey: "fixture-session",
+              expectedProfileId: "fixture-profile",
+            }),
+            expect.objectContaining({
+              kind: "rpc-request",
+              requestId: "history",
+              sessionKey: undefined,
+              inputRunIds: Array.from({ length: 16 }, (_, i) => `run-${i}`),
+              inputRunIdsTruncated: true,
+            }),
+            expect.objectContaining({ kind: "rpc-request", requestId: "wait", runId: "run-0" }),
+            expect.objectContaining({
+              kind: "rpc-response",
+              requestId: "wait",
+              status: "timeout",
+              ok: true,
+            }),
+          ]);
+        },
+        false,
+        false,
+        new Set(),
+        false,
+        observe,
+      );
+    },
+  );
+
   it("joins an ordinary outbound HTTP close after the listener has closed", async () => {
     const path = "/ordinary-stop-without-headers";
     const received = createDeferred<ServerResponse>();
