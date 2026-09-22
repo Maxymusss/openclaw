@@ -17,6 +17,7 @@ import {
 } from "./bot-processing-outcome.js";
 import { telegramBotInfoForTest } from "./bot.create-telegram-bot.test-support.js";
 import { resolveTelegramForumFlag } from "./bot/helpers.js";
+import { markTelegramPreparedModelAliasOwnership } from "./sequential-key.js";
 import { createTelegramIngressMonitor } from "./telegram-ingress-drain.js";
 import { resolveTelegramIngressNonRetryableFailure } from "./telegram-ingress-non-retryable.js";
 import {
@@ -113,6 +114,60 @@ function deferred<T = void>() {
 }
 
 describe("createTelegramIngressMonitor", () => {
+  it("preserves a freshly admitted owner-free alias on the model lane through claim", async () => {
+    await withTempState(async (stateDir) => {
+      const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({
+        channelId: "telegram",
+        accountId: "default",
+        stateDir,
+      });
+      const update = {
+        update_id: 2,
+        message: {
+          message_id: 2,
+          date: 1_736_380_802,
+          text: "/quick",
+          from: { id: 111, is_bot: false, first_name: "Ada" },
+          chat: { id: 111, type: "private" as const, first_name: "Ada" },
+        },
+      };
+      const aliasCfg: OpenClawConfig = {
+        ...cfg,
+        agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },
+      };
+      const prepareModelAliasOwnership = vi.fn(async (candidate: unknown) => {
+        if (typeof candidate === "object" && candidate !== null) {
+          markTelegramPreparedModelAliasOwnership(candidate, false);
+        }
+        return false;
+      });
+      const dispatch = vi.fn(async () => {
+        expect(await queue.listClaims()).toMatchObject([{ laneKey: "telegram:111:model" }]);
+        return { kind: "completed" as const };
+      });
+      const monitor = createTelegramIngressMonitor({
+        queue,
+        getConfig: () => aliasCfg,
+        accountId: "default",
+        botInfo: telegramBotInfoForTest,
+        prepareModelAliasOwnership,
+        dispatch,
+      });
+
+      monitor.start();
+      await monitor.admit(update);
+      await monitor.waitForIdle();
+
+      expect(prepareModelAliasOwnership).toHaveBeenCalledExactlyOnceWith(
+        update,
+        telegramBotInfoForTest,
+        aliasCfg,
+      );
+      expect(dispatch).toHaveBeenCalledExactlyOnceWith(update, expect.any(Object));
+      await monitor.stop();
+    });
+  });
+
   it("dead-letters a real blocked-recipient Telegram API error without retrying it", async () => {
     await withTempState(async (stateDir) => {
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>({

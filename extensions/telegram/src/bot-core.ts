@@ -344,14 +344,18 @@ export function createTelegramBotCore(
       senderId: msg.from?.id,
       runtimeCfg: turnCfg,
     });
-    const prepareSessionEntry = getOptionalTelegramRuntime()?.channel.session.prepareSessionEntry;
-    const sessionEntry = prepareSessionEntry
-      ? await prepareSessionEntry({
-          agentId: sessionScope.agentId,
-          storePath: sessionScope.storePath,
-          sessionKey: sessionScope.sessionKey,
-        })
-      : undefined;
+    const prepareSessionEntry = getOptionalTelegramRuntime()?.channel.session?.prepareSessionEntry;
+    if (!prepareSessionEntry) {
+      if (ctx.update) {
+        markTelegramPreparedModelAliasOwnership(ctx.update, true);
+      }
+      return true;
+    }
+    const sessionEntry = await prepareSessionEntry({
+      agentId: sessionScope.agentId,
+      storePath: sessionScope.storePath,
+      sessionKey: sessionScope.sessionKey,
+    });
     const skillCommands = telegramDeps.listSkillCommandsForAgents({
       cfg: turnCfg,
       agentIds: [sessionScope.agentId],

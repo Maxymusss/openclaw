@@ -16,6 +16,10 @@ import {
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import type { MsgContext } from "openclaw/plugin-sdk/reply-runtime";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "openclaw/plugin-sdk/runtime-config-snapshot";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -105,6 +109,15 @@ const messageDispatchDedupe = await import("./message-dispatch-dedupe.js");
 const processingOutcome = await import("./bot-processing-outcome.js");
 
 const cfg = {
+  agents: {
+    defaults: {
+      model: { primary: "fixture/current" },
+      models: {
+        "fixture/current": {},
+        "fixture/next": { alias: "quick" },
+      },
+    },
+  },
   channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } },
 } as OpenClawConfig;
 
@@ -141,11 +154,14 @@ function createTelegramDeps(stateDir: string): TelegramBotDeps {
       counts: { block: 0, final: 0, tool: 0 },
     }),
     buildModelsProviderData: async () => ({
-      byProvider: new Map<string, Set<string>>(),
-      providers: [],
-      resolvedDefault: { provider: "openai", model: "gpt-test" },
+      byProvider: new Map([["fixture", new Set(["current", "next"])]]),
+      providers: ["fixture"],
+      resolvedDefault: { provider: "fixture", model: "current" },
       modelNames: new Map<string, string>(),
-      modelCatalog: [],
+      modelCatalog: [
+        { provider: "fixture", id: "current", name: "current", reasoning: false },
+        { provider: "fixture", id: "next", name: "next", reasoning: false },
+      ],
     }),
     listSkillCommandsForAgents: () => [],
     wasSentByBot: () => false,
@@ -212,6 +228,7 @@ describe("Telegram durable ingress coalescing", () => {
     resetInboundDedupe();
     resetPluginStateStoreForTests({ closeDatabase: false });
     resetTelegramAccountThrottlersForTest();
+    setRuntimeConfigSnapshot(cfg, cfg);
     setTelegramRuntime({
       state: {
         openChannelIngressQueue: (
@@ -241,6 +258,7 @@ describe("Telegram durable ingress coalescing", () => {
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     resetPluginStateStoreForTests({ closeDatabase: false });
+    clearRuntimeConfigSnapshot();
     if (originalStateDir === undefined) {
       delete process.env.OPENCLAW_STATE_DIR;
     } else {
@@ -323,6 +341,48 @@ describe("Telegram durable ingress coalescing", () => {
       await telegramTransport.close();
     }
   });
+
+  it("dispatches a freshly admitted owner-free alias while ordinary work is held", async () => {
+    const ordinaryStarted = createDeferred<void>();
+    const releaseOrdinary = createDeferred<void>();
+    const aliasEntered = createDeferred<void>();
+    downstreamTurns.mockImplementation(async (ctx) => {
+      if (ctx.RawBody === "ordinary run") {
+        ordinaryStarted.resolve();
+        await releaseOrdinary.promise;
+      } else if (ctx.RawBody === "/quick") {
+        aliasEntered.resolve();
+      }
+      return { queuedFinal: false, counts: { block: 0, final: 0, tool: 0 } };
+    });
+    const { monitor, telegramTransport } = await createMonitor();
+    const ordinary = textUpdate({ updateId: 151, messageId: 51, text: "ordinary run" });
+    const aliasBase = textUpdate({ updateId: 152, messageId: 52, text: "/quick" });
+    const alias = {
+      ...aliasBase,
+      message: {
+        ...aliasBase.message,
+        entities: [{ type: "bot_command" as const, offset: 0, length: 6 }],
+      },
+    };
+    monitor.start();
+
+    try {
+      await monitor.admit(ordinary);
+      await ordinaryStarted.promise;
+      await monitor.admit(alias);
+      await aliasEntered.promise;
+      expect(downstreamTurns).toHaveBeenCalledTimes(2);
+
+      releaseOrdinary.resolve();
+      await monitor.waitForIdle();
+      await assertSpoolTombstoned({ spoolDir, updateIds: [151, 152] });
+    } finally {
+      releaseOrdinary.resolve();
+      await monitor.stop();
+      await telegramTransport.close();
+    }
+  }, 10_000);
 
   it("coalesces an album replayed from a durable restart backlog", async () => {
     const first = photoUpdate({ updateId: 201, messageId: 1, caption: "Two photo album" });

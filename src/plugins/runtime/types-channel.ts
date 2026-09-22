@@ -115,6 +115,10 @@ export type PluginRuntimeChannel = {
     /** @deprecated Prefer channel turn helpers that record inbound sessions as part of dispatch. */
     resolveStorePath: typeof import("../../config/sessions/paths.js").resolveSessionStorePathCore;
     readSessionUpdatedAt: ReadSessionUpdatedAt;
+    /**
+     * Optional worker-backed point read for pre-dispatch policy. Callers must
+     * choose a conservative path when a host does not provide this capability.
+     */
     prepareSessionEntry?: (params: {
       agentId: string;
       storePath: string;

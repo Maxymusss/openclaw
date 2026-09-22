@@ -425,6 +425,23 @@ describe("Telegram commands during buffered message processing", () => {
     await expect(bot.prepareIngressModelAliasOwnership?.(update)).resolves.toBe(true);
   });
 
+  it("keeps aliases ordinary when the host lacks worker-backed session reads", async () => {
+    const sessionRuntime = getTelegramRuntime().channel.session;
+    const prepareSessionEntry = sessionRuntime.prepareSessionEntry;
+    delete sessionRuntime.prepareSessionEntry;
+    try {
+      const bot = createDebouncedBot(false);
+      await expect(
+        bot.prepareIngressModelAliasOwnership?.({
+          update_id: 9175,
+          message: groupCommand("/quick", 99),
+        }),
+      ).resolves.toBe(true);
+    } finally {
+      sessionRuntime.prepareSessionEntry = prepareSessionEntry;
+    }
+  });
+
   it("prepares cached General-topic alias ownership through the session read worker", async () => {
     await resolveTelegramForumFlag({
       chatId: -10042001,

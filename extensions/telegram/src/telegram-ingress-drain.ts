@@ -343,6 +343,7 @@ type CreateTelegramIngressMonitorParams = {
  * committed spool append into the shared pump.
  */
 export function createTelegramIngressMonitor(params: CreateTelegramIngressMonitorParams) {
+  const freshModelAliasOwnershipByEventId = new Map<string, boolean>();
   return createChannelIngressMonitor<
     unknown,
     TelegramSpooledUpdatePayload,
@@ -367,25 +368,35 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
     },
     inspectAsync: async (update, context) => {
       if (context.phase === "claim" && typeof update === "object" && update !== null) {
-        // Command ownership can change while a row is queued. Replay aliases
-        // conservatively on the ordinary lane instead of trusting an old false fact.
-        markTelegramPreparedModelAliasOwnership(update, true);
+        const admittedOwnership = freshModelAliasOwnershipByEventId.get(context.claimedId);
+        markTelegramPreparedModelAliasOwnership(update, admittedOwnership ?? true);
       }
-      await params.prepareModelAliasOwnership?.(update, params.botInfo, params.getConfig());
-      if (
-        context.phase === "admission" &&
-        typeof update === "object" &&
-        update !== null &&
-        isEligibleTelegramPollAnswerUpdate(update)
-      ) {
-        await prepareTelegramPollAnswerContextAsync({ update, accountId: params.accountId });
+      try {
+        if (
+          context.phase === "admission" ||
+          !freshModelAliasOwnershipByEventId.has(context.claimedId)
+        ) {
+          await params.prepareModelAliasOwnership?.(update, params.botInfo, params.getConfig());
+        }
+        if (
+          context.phase === "admission" &&
+          typeof update === "object" &&
+          update !== null &&
+          isEligibleTelegramPollAnswerUpdate(update)
+        ) {
+          await prepareTelegramPollAnswerContextAsync({ update, accountId: params.accountId });
+        }
+        return inspectTelegramSpooledUpdate(
+          update,
+          params.botInfo,
+          context.phase === "claim" ? context.claimedLaneKey : undefined,
+          params.getConfig(),
+        );
+      } finally {
+        if (context.phase === "claim") {
+          freshModelAliasOwnershipByEventId.delete(context.claimedId);
+        }
       }
-      return inspectTelegramSpooledUpdate(
-        update,
-        params.botInfo,
-        context.phase === "claim" ? context.claimedLaneKey : undefined,
-        params.getConfig(),
-      );
     },
     payload: {
       version: TELEGRAM_SPOOLED_UPDATE_PAYLOAD_VERSION,
@@ -551,7 +562,10 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
       deriveLaneKey: (record) => {
         const update = record.payload.update;
         if (typeof update === "object" && update !== null) {
-          markTelegramPreparedModelAliasOwnership(update, true);
+          markTelegramPreparedModelAliasOwnership(
+            update,
+            freshModelAliasOwnershipByEventId.get(record.id) ?? true,
+          );
         }
         return telegramSpooledLaneKey(update, params.botInfo, params.getConfig());
       },
@@ -570,7 +584,15 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
     deferredClaims: "wait-on-stop",
     admissionMode: "while-running",
     createStoppedError: () => new Error("Telegram ingress monitor is stopped."),
-    ...(params.onDurableAdmission ? { onDurableAdmission: params.onDurableAdmission } : {}),
+    onDurableAdmission: async (update, context) => {
+      if (context.isNew && typeof update === "object" && update !== null) {
+        const preparedOwnership = readTelegramPreparedModelAliasOwnership(update);
+        if (preparedOwnership !== undefined) {
+          freshModelAliasOwnershipByEventId.set(context.facts.eventId, preparedOwnership);
+        }
+      }
+      await params.onDurableAdmission?.(update, { isNew: context.isNew });
+    },
     ...(params.onError ? { onError: params.onError } : {}),
   });
 }
