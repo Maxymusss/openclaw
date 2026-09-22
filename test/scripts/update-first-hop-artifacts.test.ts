@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -99,6 +100,7 @@ describe("first-hop wrapper artifact custody", () => {
     expect(first.error).toBeUndefined();
     expect(first.status, first.stderr).toBe(0);
     const firstDir = f.runs()[0];
+    assert(firstDir, "the successful wrapper must record its artifact directory");
     const before = readFileSync(path.join(firstDir, "positive-config-before.json"), "utf8");
     const second = f.run();
     expect(second.error).toBeUndefined();
@@ -144,9 +146,9 @@ describe("first-hop wrapper artifact custody", () => {
     expect(result.error).toBeUndefined();
     expect(result.status).toBe(1);
     expect(result.stderr).toContain("skills must be seeded before the config baseline");
-    expect(f.runs()).toHaveLength(1);
+    expect(f.runs()).toEqual([f.artifacts]);
     expect(
-      JSON.parse(readFileSync(path.join(f.runs()[0], "positive-config-before.json"), "utf8")),
+      JSON.parse(readFileSync(path.join(f.artifacts, "positive-config-before.json"), "utf8")),
     ).toMatchObject({ targetVersion: "2026.9.5" });
     expect(
       readdirSync(f.root).filter((name) => name.startsWith("openclaw-update-first-hop.")),
