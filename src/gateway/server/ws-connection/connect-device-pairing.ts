@@ -376,8 +376,8 @@ export async function authorizeGatewayConnectDevice(
       } else if (pairing.created) {
         requestContext.broadcast("device.pair.requested", pairing.request, { dropIfSlow: true });
       }
-      // SSH verification runs detached: this connection still closes with
-      // pairing-required, and the node retry loop picks up the approval.
+      // SSH verification runs detached and may finish before the authority read
+      // below; otherwise the node retry loop picks up the approval.
       const sshVerifyStarted = startGatewayNodePairingSshApproval({
         context,
         state: { ...state, scopes, handoffBootstrapProfile },
