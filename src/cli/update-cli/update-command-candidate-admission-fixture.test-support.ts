@@ -106,7 +106,7 @@ export function createCandidateAdmissionFixtures(f: CandidateAdmissionFixture) {
         events.push("doctor");
       }
       if (argv[0] !== "npm" || argv[1] !== "i") {
-        return;
+        return undefined;
       }
       await writeNpmPackageInstall(argv, pkgRoot);
       const prefix = expectDefined(argv[argv.indexOf("--prefix") + 1], "stage prefix");
