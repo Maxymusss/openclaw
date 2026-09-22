@@ -31,6 +31,7 @@ import type {
 } from "./session-store-target-inventory.js";
 import type {
   SessionEntryListWorkerInput,
+  SessionPendingSourceWorkerInput,
   SessionTargetInventoryWorkerInput,
   SessionIdentityEvidenceWorkerInput,
   SessionMembersWorkerInput,
@@ -42,6 +43,7 @@ import type {
 
 const workerUrl = resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.sessionTranscript);
 export const historyPages = new WorkerTaskPool<
+  | SessionPendingSourceWorkerInput
   | SessionTranscriptHistoryWorkerInput
   | SessionRowPresenceWorkerInput
   | SessionMembersWorkerInput
@@ -50,6 +52,7 @@ export const historyPages = new WorkerTaskPool<
   | SessionIdentityEvidenceWorkerInput
   | SessionUsageCacheWorkerInput,
   SessionTranscriptWorkerReply<
+    | "pending-source"
     | "history-page"
     | "session-row-presence"
     | "session-members"
@@ -356,6 +359,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
             },
           );
           const result = unwrapSessionTranscriptWorkerReply<
+            | "pending-source"
             | "history-page"
             | "session-row-presence"
             | "session-members"

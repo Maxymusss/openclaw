@@ -7,10 +7,7 @@ import {
   SessionGoalOperationError,
 } from "../../config/sessions/goals-operations.js";
 import { SESSION_ROUTING_CHANGED_ERROR_REASON } from "../../config/sessions/main-session.js";
-import {
-  loadExactSessionEntryCandidates,
-  readSessionSubmittedInput,
-} from "../../config/sessions/session-accessor.js";
+import { loadExactSessionEntryCandidates } from "../../config/sessions/session-accessor.js";
 import { isSessionTranscriptProjectionUnavailableError } from "../../config/sessions/session-transcript-projection-error.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { extractTextFromChatContent } from "../../shared/chat-content.js";
@@ -39,12 +36,19 @@ import {
 } from "./chat-send-active-leaf.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import {
+  prepareChatSendRequestConflict,
+  readPreparedChatSendRetrySource,
+  type ChatSendRetryParams,
+} from "./chat-send-retry-source.js";
+import {
   captureAdmittedChatSendSessionSettings,
   SESSION_SETTINGS_CHANGED_ERROR_REASON,
 } from "./chat-send-session-settings.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
 import { resolveChatSendStopOwnerScope } from "./chat-send-stop-owner-scope.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
+
+export { prepareChatSendRequestConflict } from "./chat-send-retry-source.js";
 
 export function respondChatSessionRoutingChanged(respond: GatewayRequestHandlerOptions["respond"]) {
   respond(
@@ -120,29 +124,6 @@ type ChatSendPreAdmissionParams = {
   assertCurrent?: () => void;
 };
 
-type ChatSendRetryParams = {
-  assertCurrent?: () => void;
-  request: Pick<
-    NormalizedChatSendRequest,
-    "goalOperation" | "requestIdentity" | "rawMessage" | "mentions" | "workContext"
-  >;
-  session: Pick<
-    PreparedChatSendSession,
-    | "clientRunId"
-    | "pendingChatSendKey"
-    | "entry"
-    | "restartSafeRequest"
-    | "agentId"
-    | "sessionKey"
-    | "storePath"
-  >;
-  context: Pick<
-    GatewayRequestHandlerOptions["context"],
-    "dedupe" | "chatRunState" | "chatAbortControllers" | "chatQueuedTurns"
-  >;
-  respond: GatewayRequestHandlerOptions["respond"];
-};
-
 /** A retained request identity is not an ACK; only response-bearing rows may replay. */
 export function readChatSendDedupeResponse(
   dedupe: Map<string, DedupeEntry>,
@@ -215,17 +196,13 @@ export function resolveChatSendRequestConflict({
   }
   // Terminal tombstones outlive the RAM fingerprint. Read the exact submitted source,
   // including collected inputs, never infer mention identity from aggregate history.
-  const submitted = session.entry?.sessionId
-    ? readSessionSubmittedInput(
-        {
-          agentId: session.agentId,
-          sessionId: session.entry.sessionId,
-          sessionKey: session.sessionKey,
-          storePath: session.storePath,
-        },
-        `${session.clientRunId}:user`,
-      )
-    : undefined;
+  const prepared = readPreparedChatSendRetrySource(request);
+  const submitted =
+    prepared?.sessionId === session.entry?.sessionId &&
+    prepared?.target ===
+      JSON.stringify([session.agentId, session.storePath, session.sessionKey, session.clientRunId])
+      ? prepared?.message
+      : undefined;
   if (!submitted) {
     return request.mentions?.length || request.workContext ? conflict(true) : undefined;
   }
@@ -535,6 +512,7 @@ export async function runChatSendPreAdmission(
     return false;
   }
 
+  await prepareChatSendRequestConflict(params);
   if (respondChatSendRetry(params)) {
     return false;
   }
@@ -626,6 +604,7 @@ export async function runChatSendPreAdmission(
         ? durableClaim.entry
         : loadSessionEntry(sessionLoadKey, sessionLoadOptions).entry,
   };
+  await prepareChatSendRequestConflict({ ...params, session: retrySession });
   if (respondChatSendRetry({ ...params, session: retrySession })) {
     return false;
   }

@@ -162,6 +162,7 @@ describe("createGatewayKernel", () => {
       const configReloaderStop = createDeferred();
       const recoveryStop = createDeferred();
       const updateCheckStopped = createDeferred();
+      const mentionInboxStopped = createDeferred();
       const nativePreparation = createDeferred();
       const preparationStarted = createDeferred();
       const acceptRequest = vi.fn();
@@ -186,6 +187,7 @@ describe("createGatewayKernel", () => {
         configReloaderStop.resolve();
         recoveryStop.resolve();
         updateCheckStopped.resolve();
+        mentionInboxStopped.resolve();
         nativePreparation.resolve();
       };
       signal.addEventListener("abort", release, { once: true });
@@ -255,9 +257,17 @@ describe("createGatewayKernel", () => {
             updatedAt: 1,
           },
         } satisfies GatewayClient;
-        expect(kernel.gatewayRequestContext.mentionInbox?.list(reader)).toMatchObject({
-          ok: true,
-          value: { gatewayInstanceId: bootId, items: [] },
+        const mentionInbox = kernel.gatewayRequestContext.mentionInbox!;
+        await mentionInbox.list(reader, (result) => {
+          expect(result).toMatchObject({
+            ok: true,
+            value: { gatewayInstanceId: bootId, items: [] },
+          });
+        });
+        const disposeMentionInbox = mentionInbox.dispose;
+        const inboxDispose = vi.spyOn(mentionInbox, "dispose").mockImplementation(() => {
+          const drain = disposeMentionInbox();
+          return Promise.all([drain, mentionInboxStopped.promise]).then(() => {});
         });
         const boundHost = kernel.gatewayRequestContext.hostLifecycle!;
         // Handoff consumption compares the private owner, not a copied predicate.
@@ -292,10 +302,10 @@ describe("createGatewayKernel", () => {
 
         expect(getStartup()).toMatchObject({ ok: false, status: "draining" });
         expect(getReadiness()).toMatchObject({ ready: false, failing: ["gateway-draining"] });
-        expect(kernel.gatewayRequestContext.mentionInbox?.list(reader)).toMatchObject({
-          ok: false,
-          error: { code: "UNAVAILABLE" },
+        await mentionInbox.list(reader, (result) => {
+          expect(result).toMatchObject({ ok: false, error: { code: "UNAVAILABLE" } });
         });
+        expect(inboxDispose).toHaveBeenCalledOnce();
         nativePreparation.resolve();
         await pendingStop;
         await expect(boundHost.request("start", () => {})).rejects.toThrow("closed instance");
@@ -321,6 +331,11 @@ describe("createGatewayKernel", () => {
         expect(stopUpdateCheck).toHaveBeenCalled();
         expect(closeFirstStop).not.toHaveBeenCalled();
         updateCheckStopped.resolve();
+        await updateWork;
+        expect(closeFirstStop).not.toHaveBeenCalled();
+        expect(terminalDispose).not.toHaveBeenCalled();
+        expect(gatewayStop).not.toHaveBeenCalled();
+        mentionInboxStopped.resolve();
         await closing;
         expect(closeFirstStop).toHaveBeenCalledOnce();
         expect(kernel.runtimeState.discovery).toBeNull();

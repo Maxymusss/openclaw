@@ -79,6 +79,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../boards/sqlite-board-store.worker",
     distWorkerPath: "boards/sqlite-board-store.worker.js",
   },
+  sessionInputCustody: {
+    currentModuleUrl,
+    sourceWorkerName: "../config/sessions/session-input-custody.worker",
+    distWorkerPath: "config/sessions/session-input-custody.worker.js",
+  },
   heartbeatOutcomeStore: {
     currentModuleUrl,
     sourceWorkerName: "heartbeat-outcome-store.worker",

@@ -87,6 +87,27 @@ Restarts preserve retained entries, dismissals, and their original expiry times.
 Loading stored state does not replay browser notifications or scan transcripts
 to reconstruct old mentions.
 
+Inbox snapshots and private audience cleanup inventories read through the
+shared-state read worker. Receipt retention, source consumption and fanout,
+dismissal, and expiry run through the shared-state writer broker. Consumption
+and ordinary ten-recipient source records commit together; prepared cleanup
+compares the original receipt bytes and update timestamp before changing a row.
+The Gateway publishes only committed results and joins admitted operations
+before disposing its Inbox projection.
+Current session access uses the canonical projection’s committed metadata,
+independently of deferred display enrichment; delayed push currentness checks
+perform no SQLite work. Incognito targets retain their process-local read owner
+and remain excluded from Inbox persistence.
+
+Pending-input source observations and mention involvement use the existing agent
+database workers. Required audience custody completes before pending-input
+acceptance, with current authority rechecked at worker transaction and commit
+admission. Staging keeps its FIFO preparation order without holding an agent
+SQLite writer while it awaits shared-state custody. Collected inputs reserve
+ordered postcommit completion before any source callback yields. This changes
+execution placement, not stored formats, bounds, retention, visibility, schema
+versions, or downgrade behavior.
+
 ### ACP replay accounting
 
 The shared `acp_replay_sessions` and `acp_replay_events` tables retain bridge

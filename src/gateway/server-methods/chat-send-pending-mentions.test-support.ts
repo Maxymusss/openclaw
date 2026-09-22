@@ -1,4 +1,9 @@
+import type { Result } from "@openclaw/normalization-core/result";
 import { expect, it, vi } from "vitest";
+import type {
+  ErrorShape,
+  MentionsListResult,
+} from "../../../packages/gateway-protocol/src/index.js";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { dispatchInboundMessage } from "../../auto-reply/dispatch.js";
@@ -14,9 +19,22 @@ import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { ensureProfileForEmail, setDisplayName } from "../../state/user-profiles.js";
 import { createMentionInbox } from "../mention-inbox.js";
+import type { MentionInbox } from "../mention-inbox.types.js";
+import { createSessionRowProjection } from "../session-row-projection.js";
 import { dispatchInboundMessageMock } from "../test-helpers.js";
 import type { useBrowserFollowupFixture } from "./chat-send-pending-inputs.test-support.js";
 import type { GatewayClient, RespondFn } from "./types.js";
+
+async function listMentions(inbox: MentionInbox, client: GatewayClient) {
+  let result: Result<MentionsListResult, ErrorShape> | undefined;
+  await inbox.list(client, (value) => {
+    result = value;
+  });
+  if (!result) {
+    throw new Error("Mention result was not published");
+  }
+  return result;
+}
 
 export function createPendingMentionFixture(
   createBrowserFollowupFixture: ReturnType<typeof useBrowserFollowupFixture>,
@@ -37,17 +55,22 @@ export function createPendingMentionFixture(
     fixture.client.authenticatedUserProfile = alice;
     const bobClient = { ...fixture.client, connId: "bob-one", authenticatedUserProfile: bob };
     const carolClient = { ...fixture.client, connId: "carol", authenticatedUserProfile: carol };
+    const projection = await createSessionRowProjection({
+      cfg: getRuntimeConfig(),
+      getConfig: getRuntimeConfig,
+    });
     const inbox = createMentionInbox({
       gatewayInstanceId: "chat-mention-commit-test",
       getRuntimeConfig,
+      getSessionRowProjection: () => projection,
       getClients: () => [fixture.client, bobClient, carolClient],
       broadcastToConnIds: vi.fn(),
     });
     fixture.context.mentionInbox = inbox;
     fixture.params.message = "@Bob could you review this?";
     fixture.params.mentions = [{ profileId: bob.profileId, start: 0, end: 4 }];
-    const read = (client: GatewayClient = bobClient) => {
-      const result = inbox.list(client);
+    const read = async (client: GatewayClient = bobClient) => {
+      const result = await listMentions(inbox, client);
       if (!result.ok) {
         throw new Error(result.error.message);
       }
@@ -58,10 +81,18 @@ export function createPendingMentionFixture(
       bobClient,
       carolClient,
       inbox,
+      projection,
       read,
       cleanup: async () => {
-        inbox.dispose();
-        await fixture.cleanup();
+        try {
+          await fixture.cleanup();
+        } finally {
+          try {
+            await inbox.dispose();
+          } finally {
+            projection.dispose();
+          }
+        }
       },
     };
   };
@@ -72,6 +103,52 @@ export function registerChatSendPendingMentionTests(
   createBrowserFollowupFixture: ReturnType<typeof useBrowserFollowupFixture>,
 ) {
   const createMentionFixture = createPendingMentionFixture(createBrowserFollowupFixture);
+
+  it.each([false, true])(
+    "settles everyone custody before the queued ACK (failure: %s)",
+    async (failRetention) => {
+      const fixture = await createMentionFixture();
+      fixture.params.message = "@everyone review this";
+      fixture.params.mentions = [{ kind: "everyone", start: 0, end: 9 }];
+      const retaining = createDeferred();
+      const release = createDeferred();
+      const retain = fixture.inbox.retainEveryoneAudience;
+      vi.spyOn(fixture.inbox, "retainEveryoneAudience").mockImplementation(async (...args) => {
+        retaining.resolve();
+        await release.promise;
+        if (failRetention) {
+          throw new Error("audience persistence failed");
+        }
+        await retain(...args);
+      });
+      const respond = vi.fn<RespondFn>();
+      const sending = fixture.send(respond, {
+        expectedProfileId: fixture.client.authenticatedUserProfile!.profileId,
+      });
+      try {
+        await Promise.race([
+          retaining.promise,
+          sending.then(() => {
+            throw new Error(
+              "chat.send responded before retaining its audience: " +
+                JSON.stringify(respond.mock.calls),
+            );
+          }),
+        ]);
+        expect(respond).not.toHaveBeenCalled();
+        expect(listSessionPendingInputs(fixture.scope).items).toEqual([]);
+        expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+        release.resolve();
+        await sending;
+        expect(respond.mock.calls[0]?.[0]).toBe(!failRetention);
+        expect(listSessionPendingInputs(fixture.scope).items).toHaveLength(failRetention ? 0 : 1);
+      } finally {
+        release.resolve();
+        await sending;
+        await fixture.cleanup();
+      }
+    },
+  );
 
   it.each([false, true])(
     "commits an explicit everyone snapshot once (queued: %s)",
@@ -104,26 +181,26 @@ export function registerChatSendPendingMentionTests(
           expect.anything(),
         );
         if (active) {
-          expect(fixture.read()).toEqual([]);
+          expect(await fixture.read()).toEqual([]);
         }
         const late = ensureProfileForEmail("late-broadcast@mentions.example.test");
         const recorder = await fixture.dispatchedRecorder;
         const committed = await recorder.persistApproved();
-        expect(fixture.read()).toHaveLength(1);
-        expect(fixture.read(fixture.carolClient)).toHaveLength(1);
-        expect(fixture.read(offlineClient)).toHaveLength(1);
-        expect(fixture.read(fixture.client)).toEqual([]);
+        expect(await fixture.read()).toHaveLength(1);
+        expect(await fixture.read(fixture.carolClient)).toHaveLength(1);
+        expect(await fixture.read(offlineClient)).toHaveLength(1);
+        expect(await fixture.read(fixture.client)).toEqual([]);
         const stored = JSON.stringify(committed?.message ?? recorder.getPersistedMessage?.());
         expect(stored).not.toContain(offline.id);
         expect(stored).not.toContain(late.id);
         expect(stored).not.toContain("everyoneMentionProfileIds");
-        const id = fixture.read()[0]!.id;
-        fixture.inbox.dismiss(fixture.bobClient, [id]);
+        const id = (await fixture.read())[0]!.id;
+        await fixture.inbox.dismiss(fixture.bobClient, [id], () => {});
         await fixture.send();
         await recorder.persistApproved();
-        expect(fixture.read()).toEqual([]);
+        expect(await fixture.read()).toEqual([]);
         expect(
-          fixture.read({
+          await fixture.read({
             ...offlineClient,
             authenticatedUserProfile: {
               ...offlineClient.authenticatedUserProfile,
@@ -157,9 +234,18 @@ export function registerChatSendPendingMentionTests(
               `Current everyone roster is ${roster}`,
             ),
           };
-          return roster === "unavailable"
-            ? vi.spyOn(inbox, "prepareEveryoneRecipients").mockResolvedValue(failure)
-            : vi.spyOn(inbox, "resolveEveryoneRecipients").mockReturnValue(failure);
+          const prepare = inbox.prepareRecipients;
+          const read = vi.fn(() => failure);
+          if (roster === "unavailable") {
+            // Only roster preparation is unavailable; current target authorization
+            // still runs for recovered input and must not be replaced by this fault.
+            vi.spyOn(inbox, "prepareRecipients").mockImplementation((everyone) =>
+              everyone ? Promise.resolve(read()) : prepare(false),
+            );
+          } else {
+            vi.spyOn(inbox, "resolveEveryoneRecipients").mockImplementation(read);
+          }
+          return read;
         };
         const binding = { expectedProfileId: fixture.client.authenticatedUserProfile!.profileId };
         const rosterRead = rejectFreshRoster(fixture.inbox);
@@ -207,10 +293,11 @@ export function registerChatSendPendingMentionTests(
         await patchSessionEntryCore(fixture.scope, () => ({ status: "done" }));
         const originalClock = Date.now();
         const clock = vi.spyOn(Date, "now").mockReturnValue(originalClock + 8 * 24 * 60 * 60_000);
-        fixture.inbox.dispose();
+        await fixture.inbox.dispose();
         const reopened = createMentionInbox({
           gatewayInstanceId: "restarted-private-audience",
           getRuntimeConfig,
+          getSessionRowProjection: () => fixture.projection,
           getClients: () => [fixture.client, fixture.bobClient, fixture.carolClient],
           broadcastToConnIds: vi.fn(),
         });
@@ -236,8 +323,8 @@ export function registerChatSendPendingMentionTests(
         expect(JSON.stringify(committed?.message)).not.toContain(
           fixture.bobClient.authenticatedUserProfile.profileId,
         );
-        const bob = reopened.list(fixture.bobClient);
-        const lateView = reopened.list({
+        const bob = await listMentions(reopened, fixture.bobClient);
+        const lateView = await listMentions(reopened, {
           ...fixture.bobClient,
           authenticatedUserProfile: {
             ...fixture.bobClient.authenticatedUserProfile,
@@ -246,12 +333,12 @@ export function registerChatSendPendingMentionTests(
         });
         expect(bob.ok && bob.value.items).toHaveLength(1);
         expect(lateView.ok && lateView.value.items).toEqual([]);
-        reopened.dispose();
+        await reopened.dispose();
         clock.mockRestore();
       } finally {
         vi.restoreAllMocks();
         resumedRelease.resolve();
-        fixture.context.mentionInbox?.dispose();
+        await fixture.context.mentionInbox?.dispose();
         await fixture.cleanup();
       }
     },
@@ -261,6 +348,15 @@ export function registerChatSendPendingMentionTests(
     const fixture = await createMentionFixture({ active: false });
     const release = createDeferred();
     const committed = createDeferred();
+    const retaining = createDeferred();
+    const retained = createDeferred();
+    const retain = fixture.inbox.retainEveryoneAudience;
+    vi.spyOn(fixture.inbox, "retainEveryoneAudience").mockImplementation(async (...args) => {
+      retaining.resolve();
+      await retained.promise;
+      await retain(...args);
+    });
+    const record = vi.spyOn(fixture.inbox, "recordCommittedInput");
     fixture.params.sessionKey = "agent:main:dashboard:new-everyone";
     delete fixture.params.sessionId;
     fixture.params.message = "@everyone review this";
@@ -289,15 +385,29 @@ export function registerChatSendPendingMentionTests(
       return {};
     });
     try {
-      const ack = await fixture.send(vi.fn<RespondFn>(), {
+      const sending = fixture.send(vi.fn<RespondFn>(), {
         expectedProfileId: fixture.client.authenticatedUserProfile!.profileId,
       });
+      await Promise.race([
+        retaining.promise,
+        sending.then((ack) => {
+          if (ack.mock.calls[0]?.[0] !== true) {
+            throw new Error("New-session admission failed: " + JSON.stringify(ack.mock.calls));
+          }
+          return retaining.promise;
+        }),
+      ]);
+      expect(record).not.toHaveBeenCalled();
+      retained.resolve();
+      const ack = await sending;
       expect(ack.mock.calls[0]?.[0]).toBe(true);
       await committed.promise;
-      expect(fixture.read()).toHaveLength(1);
-      expect(fixture.read()[0]?.sessionKey).toBe(fixture.params.sessionKey);
-      expect(fixture.read(fixture.carolClient)).toHaveLength(1);
+      expect(record).toHaveBeenCalledOnce();
+      expect(await fixture.read()).toHaveLength(1);
+      expect((await fixture.read())[0]?.sessionKey).toBe(fixture.params.sessionKey);
+      expect(await fixture.read(fixture.carolClient)).toHaveLength(1);
     } finally {
+      retained.resolve();
       release.resolve();
       await fixture.cleanup();
     }
@@ -310,8 +420,8 @@ export function registerChatSendPendingMentionTests(
     try {
       await fixture.send();
       await fixture.finishDispatch();
-      expect(fixture.read()).toEqual([]);
-      expect(fixture.read(fixture.carolClient)).toEqual([]);
+      expect(await fixture.read()).toEqual([]);
+      expect(await fixture.read(fixture.carolClient)).toEqual([]);
     } finally {
       await fixture.cleanup();
     }
@@ -338,8 +448,8 @@ export function registerChatSendPendingMentionTests(
       });
       const recorder = await fixture.dispatchedRecorder;
       await recorder.persistApproved();
-      expect(fixture.read()).toEqual([]);
-      expect(fixture.read(fixture.carolClient)).toEqual([]);
+      expect(await fixture.read()).toEqual([]);
+      expect(await fixture.read(fixture.carolClient)).toEqual([]);
     } finally {
       await fixture.cleanup();
     }
@@ -355,25 +465,25 @@ export function registerChatSendPendingMentionTests(
         undefined,
         expect.anything(),
       );
-      expect(fixture.read()).toEqual([]);
+      expect(await fixture.read()).toEqual([]);
       const recorder = await fixture.dispatchedRecorder;
       const committed = await recorder.persistApproved();
       expect(committed?.appended).toBe(true);
-      expect(fixture.read()).toMatchObject([
+      expect(await fixture.read()).toMatchObject([
         {
           messageId: committed?.messageId,
           senderProfileId: fixture.client.authenticatedUserProfile?.profileId,
           excerpt: fixture.params.message,
         },
       ]);
-      expect(fixture.read(fixture.client)).toEqual([]);
-      expect(fixture.read(fixture.carolClient)).toEqual([]);
-      const id = fixture.read()[0]?.id;
+      expect(await fixture.read(fixture.client)).toEqual([]);
+      expect(await fixture.read(fixture.carolClient)).toEqual([]);
+      const id = (await fixture.read())[0]?.id;
       expect(id).toBeDefined();
-      fixture.inbox.dismiss(fixture.bobClient, id ? [id] : []);
+      await fixture.inbox.dismiss(fixture.bobClient, id ? [id] : [], () => {});
       await recorder.persistApproved();
       await fixture.send();
-      expect(fixture.read()).toEqual([]);
+      expect(await fixture.read()).toEqual([]);
     } finally {
       await fixture.cleanup();
     }
@@ -381,12 +491,18 @@ export function registerChatSendPendingMentionTests(
 
   it("includes an idle first commit in the Inbox before ACK without waiting for the agent", async () => {
     const fixture = await createMentionFixture({ active: false });
-    let atAck = 0;
+    let committed = false;
+    let atAck = false;
+    const record = fixture.inbox.recordCommittedInput;
+    vi.spyOn(fixture.inbox, "recordCommittedInput").mockImplementation(async (input) => {
+      await record(input);
+      committed = true;
+    });
     try {
       const ack = await fixture.send(
         vi.fn((ok) => {
           if (ok) {
-            atAck = fixture.read().length;
+            atAck = committed;
           }
         }),
       );
@@ -396,9 +512,9 @@ export function registerChatSendPendingMentionTests(
         undefined,
         expect.anything(),
       );
-      expect(atAck).toBe(1);
+      expect(atAck).toBe(true);
       await fixture.finishDispatch();
-      expect(fixture.read()).toHaveLength(1);
+      expect(await fixture.read()).toHaveLength(1);
     } finally {
       await fixture.cleanup();
     }
@@ -419,7 +535,7 @@ export function registerChatSendPendingMentionTests(
         expect(committed?.message.content).toBe(fixture.approvedContent);
         expect(committed?.message["__openclaw"]?.humanMentions).toBeUndefined();
         expect(committed?.message["__openclaw"]?.everyoneMentionProfileIds).toBeUndefined();
-        expect(fixture.read()).toEqual([]);
+        expect(await fixture.read()).toEqual([]);
       } finally {
         await fixture.cleanup();
       }
@@ -441,8 +557,8 @@ export function registerChatSendPendingMentionTests(
       );
       const recorder = await fixture.dispatchedRecorder;
       await recorder.persistApproved();
-      expect(fixture.read()).toHaveLength(1);
-      expect(fixture.read(fixture.carolClient)).toEqual([]);
+      expect(await fixture.read()).toHaveLength(1);
+      expect(await fixture.read(fixture.carolClient)).toEqual([]);
     } finally {
       await fixture.cleanup();
     }

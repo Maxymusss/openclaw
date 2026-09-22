@@ -22,10 +22,13 @@ import {
   MENTION_RETENTION_MS,
   readMentionStoreSnapshot,
   writeMentionStoreChanges,
-  type MentionStoreSource,
 } from "./mention-inbox-store.js";
+import type { MentionStoreSource } from "./mention-inbox-store.types.js";
 import { createMentionInbox } from "./mention-inbox.js";
 import {
+  observeMentionInboxWork,
+  listMentionInbox,
+  dismissMentionInbox,
   SESSION_KEY,
   SESSION_ID,
   withMentionInbox as withInbox,
@@ -109,7 +112,7 @@ describe("temporary human mention Inbox", () => {
       const extra = Array.from({ length: 105 }, (_, index) =>
         ensureProfileForEmail("broadcast-" + index + "@mentions.example.test"),
       );
-      await f.inbox.prepareEveryoneRecipients();
+      await f.inbox.prepareRecipients(true);
       const recipients = f.inbox.resolveEveryoneRecipients(f.aliceClient, {
         sessionKey: SESSION_KEY,
       });
@@ -117,7 +120,7 @@ describe("temporary human mention Inbox", () => {
         throw new Error(recipients.error.message);
       }
       expect(recipients.value).toHaveLength(107);
-      f.post("everyone", {
+      await f.post("everyone", {
         recipientProfileIds: [...recipients.value, f.bob.id],
         excerpt: "@everyone @Bob",
       });
@@ -133,21 +136,29 @@ describe("temporary human mention Inbox", () => {
       expect(legacy.sources.map((source) => source.sequence)).toEqual(
         Array.from({ length: 11 }, (_, index) => index),
       );
-      expect(read(f.inbox, f.bobClient).items).toHaveLength(1);
+      expect((await read(f.inbox, f.bobClient)).items).toHaveLength(1);
       const last = identifiedClient(extra.at(-1)!.id, "Last offline person");
-      const retained = read(f.inbox, last).items;
+      const retained = (await read(f.inbox, last)).items;
       expect(retained).toHaveLength(1);
-      f.inbox.dismiss(f.bobClient, [read(f.inbox, f.bobClient).items[0]!.id]);
-      f.inbox.dispose();
+      await dismissMentionInbox(f.inbox, f.bobClient, [
+        (await read(f.inbox, f.bobClient)).items[0]!.id,
+      ]);
+      await f.inbox.dispose();
       f.push.mockClear();
       const restarted = f.openInbox();
-      expect(read(restarted, last).items).toEqual(retained);
-      expect(read(restarted, f.bobClient).items).toEqual([]);
+      expect((await read(restarted, last)).items).toEqual(retained);
+      expect((await read(restarted, f.bobClient)).items).toEqual([]);
       const joined = ensureProfileForEmail("joined-after-broadcast@mentions.example.test");
-      f.post("everyone", { recipientProfileIds: [...recipients.value, joined.id] }, restarted);
+      await f.post(
+        "everyone",
+        { recipientProfileIds: [...recipients.value, joined.id] },
+        restarted,
+      );
       expect(f.push).not.toHaveBeenCalled();
-      expect(read(restarted, identifiedClient(joined.id, "Joined later")).items).toEqual([]);
-      expect(read(restarted, f.bobClient).items).toEqual([]);
+      expect((await read(restarted, identifiedClient(joined.id, "Joined later"))).items).toEqual(
+        [],
+      );
+      expect((await read(restarted, f.bobClient)).items).toEqual([]);
       const entry = loadSessionEntry({ agentId: "main", sessionKey: SESSION_KEY });
       expect(entry?.profileInvolvement?.profiles[joined.id]).toBeUndefined();
       expect(
@@ -171,19 +182,25 @@ describe("temporary human mention Inbox", () => {
           (_, index) => ensureProfileForEmail(`chunk-filler-${index}@mentions.example.test`).id,
         );
         const recipientProfileIds = [f.bob.id, ...fillers, alias.id];
-        f.post("chunk-merge", { recipientProfileIds });
-        const original = read(f.inbox, f.bobClient).items;
+        await f.post("chunk-merge", { recipientProfileIds });
+        const original = (await read(f.inbox, f.bobClient)).items;
         expect(readWithLegacySourceContract().sources).toHaveLength(2);
         if (dismissal !== "none") {
           const client = dismissal === "first chunk" ? f.bobClient : aliasClient;
-          expect(f.inbox.dismiss(client, [read(f.inbox, client).items[0]!.id]).ok).toBe(true);
+          expect(
+            (
+              await dismissMentionInbox(f.inbox, client, [
+                (await read(f.inbox, client)).items[0]!.id,
+              ])
+            ).ok,
+          ).toBe(true);
         }
-        f.inbox.dispose();
+        await f.inbox.dispose();
         linkEmail("chunk-alias@mentions.example.test", f.bob.id);
         const restarted = f.openInbox();
         const expected = dismissal === "none" ? original : [];
-        expect(read(restarted, f.bobClient).items).toEqual(expected);
-        expect(read(restarted, aliasClient).items).toEqual(expected);
+        expect((await read(restarted, f.bobClient)).items).toEqual(expected);
+        expect((await read(restarted, aliasClient)).items).toEqual(expected);
         const legacy = readWithLegacySourceContract();
         expect(legacy.sources).toHaveLength(2);
         expect(legacy.sources[1]!.recipients).toEqual([]);
@@ -192,10 +209,15 @@ describe("temporary human mention Inbox", () => {
           legacy.sources.flatMap((source) => source.recipients).filter(([id]) => id === f.bob.id),
         ).toHaveLength(1);
         f.push.mockClear();
-        f.post("chunk-merge", { recipientProfileIds: recipientProfileIds.toReversed() }, restarted);
+        await f.post(
+          "chunk-merge",
+          { recipientProfileIds: recipientProfileIds.toReversed() },
+          restarted,
+        );
         expect(f.push).not.toHaveBeenCalled();
-        expect(read(restarted, f.bobClient).items).toEqual(expected);
+        expect((await read(restarted, f.bobClient)).items).toEqual(expected);
         await vi.advanceTimersByTimeAsync(MENTION_RETENTION_MS);
+        await restarted.dispose();
         expect(readWithLegacySourceContract().sources).toEqual([]);
       });
     },
@@ -215,23 +237,25 @@ describe("temporary human mention Inbox", () => {
       const childKey = createHash("sha256")
         .update(JSON.stringify([rootKey, 1]))
         .digest("hex");
+      // Admit the real reader and writer before the synthetic trigger changes the schema.
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
       const { db } = openOpenClawStateDatabase();
-      db.exec(`CREATE TEMP TRIGGER reject_broadcast_child BEFORE INSERT ON config_machine_state
+      db.exec(`CREATE TRIGGER reject_broadcast_child BEFORE INSERT ON config_machine_state
         WHEN NEW.state_key = 'notifications.mentions.source.${childKey}'
         BEGIN SELECT RAISE(ABORT, 'synthetic child failure'); END`);
       try {
-        f.post("chunk-rollback", { recipientProfileIds });
+        await f.post("chunk-rollback", { recipientProfileIds });
         expect(readWithLegacySourceContract()).toEqual({
           head: { revision: 0, nextSequence: 0 },
           sources: [],
         });
-        expect(read(f.inbox, f.bobClient).items).toEqual([]);
+        expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
         expect(f.push).not.toHaveBeenCalled();
       } finally {
         db.exec("DROP TRIGGER reject_broadcast_child");
       }
       const restarted = f.openInbox();
-      f.post("chunk-rollback", { recipientProfileIds }, restarted);
+      await f.post("chunk-rollback", { recipientProfileIds }, restarted);
       const stored = readWithLegacySourceContract();
       expect(stored.sources.map((source) => source.key)).toEqual([rootKey, childKey]);
       expect(stored.sources.map((source) => source.sequence)).toEqual([0, 1]);
@@ -252,9 +276,9 @@ describe("temporary human mention Inbox", () => {
           );
       });
       const afterDowngrade = f.openInbox();
-      expect(read(afterDowngrade, identifiedClient(extras.at(-1)!)).items).toEqual([]);
-      expect(read(afterDowngrade, f.bobClient).items).toHaveLength(1);
-      f.post("chunk-rollback", { recipientProfileIds }, afterDowngrade);
+      expect((await read(afterDowngrade, identifiedClient(extras.at(-1)!))).items).toEqual([]);
+      expect((await read(afterDowngrade, f.bobClient)).items).toHaveLength(1);
+      await f.post("chunk-rollback", { recipientProfileIds }, afterDowngrade);
       expect(f.push).toHaveBeenCalledTimes(11);
     });
   });
@@ -285,16 +309,16 @@ describe("temporary human mention Inbox", () => {
           sources,
         ),
       );
-      f.post("over-source-budget", { recipientProfileIds: recipients });
+      await f.post("over-source-budget", { recipientProfileIds: recipients });
       expect(readMentionStoreSnapshot(-1)!.sources).toHaveLength(MAX_MENTION_SOURCES - 1);
       expect(f.push).not.toHaveBeenCalled();
-      f.post("last-source-slot");
+      await f.post("last-source-slot");
       expect(readMentionStoreSnapshot(-1)!.sources).toHaveLength(MAX_MENTION_SOURCES);
-      expect(read(f.inbox, f.bobClient).items).toHaveLength(1);
-      f.inbox.dispose();
+      expect((await read(f.inbox, f.bobClient)).items).toHaveLength(1);
+      await f.inbox.dispose();
       const restarted = f.openInbox();
-      expect(read(restarted, f.bobClient).items).toHaveLength(1);
-      f.post("over-source-budget", { recipientProfileIds: recipients }, restarted);
+      expect((await read(restarted, f.bobClient)).items).toHaveLength(1);
+      await f.post("over-source-budget", { recipientProfileIds: recipients }, restarted);
       expect(readMentionStoreSnapshot(-1)!.sources).toHaveLength(MAX_MENTION_SOURCES);
     });
   });
@@ -302,75 +326,84 @@ describe("temporary human mention Inbox", () => {
   it("retains original ids, order, and expiry across Gateway restart without replaying push", async () => {
     await withInbox(async (f) => {
       vi.useFakeTimers();
-      f.post("first");
+      await f.post("first");
       await vi.advanceTimersByTimeAsync(1_000);
-      f.post("second");
-      const retained = read(f.inbox, f.bobClient).items;
+      await f.post("second");
+      const retained = (await read(f.inbox, f.bobClient)).items;
       expect(retained.map((item) => item.messageId)).toEqual(["message-second", "message-first"]);
-      f.inbox.dispose();
+      await f.inbox.dispose();
       f.push.mockClear();
       await vi.advanceTimersByTimeAsync(6 * 24 * 60 * 60_000);
       const restarted = f.openInbox("restarted-gateway");
 
-      expect(read(restarted, f.bobClient)).toMatchObject({
+      expect(await read(restarted, f.bobClient)).toMatchObject({
         gatewayInstanceId: "restarted-gateway",
         items: retained,
       });
-      f.post("first", {}, restarted);
-      f.post("second", {}, restarted);
+      await f.post("first", {}, restarted);
+      await f.post("second", {}, restarted);
       expect(f.push).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(24 * 60 * 60_000 - 1_000);
-      expect(read(restarted, f.bobClient).items).toEqual([retained[0]]);
+      expect((await read(restarted, f.bobClient)).items).toEqual([retained[0]]);
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(read(restarted, f.bobClient).items).toEqual([]);
+      expect((await read(restarted, f.bobClient)).items).toEqual([]);
     });
   });
 
   it.each(["normal", "transient failure", "dispose after failure"] as const)(
     "restarts expiry cleanup without a connected client or an Inbox read (%s)",
     async (scenario) => {
-      await withInbox(async (f) => {
-        vi.useFakeTimers();
-        f.clients.length = 0;
-        const { db } = openOpenClawStateDatabase();
-        const storedSources = () =>
-          db
-            .prepare(
-              "SELECT state_key FROM config_machine_state WHERE state_key GLOB 'notifications.mentions.source.*'",
-            )
-            .all();
-        f.post("original-deadline");
-        expect(storedSources()).toHaveLength(1);
-        f.inbox.dispose();
-        await vi.advanceTimersByTimeAsync(6 * 24 * 60 * 60_000);
-        const restarted = f.openInbox("restarted-gateway");
-        expect(storedSources()).toHaveLength(1);
-        if (scenario !== "normal") {
-          db.exec(`CREATE TEMP TRIGGER reject_mention_expiry BEFORE DELETE ON config_machine_state
+      const work = observeMentionInboxWork();
+      try {
+        await withInbox(async (f) => {
+          vi.useFakeTimers();
+          f.clients.length = 0;
+          const { db } = openOpenClawStateDatabase();
+          const storedSources = () =>
+            db
+              .prepare(
+                "SELECT state_key FROM config_machine_state WHERE state_key GLOB 'notifications.mentions.source.*'",
+              )
+              .all();
+          await f.post("original-deadline");
+          expect(storedSources()).toHaveLength(1);
+          await f.inbox.dispose();
+          await vi.advanceTimersByTimeAsync(6 * 24 * 60 * 60_000);
+          const restarted = f.openInbox("restarted-gateway");
+          await work.settle();
+          expect(storedSources()).toHaveLength(1);
+          if (scenario !== "normal") {
+            db.exec(`CREATE TRIGGER reject_mention_expiry BEFORE DELETE ON config_machine_state
             WHEN OLD.state_key GLOB 'notifications.mentions.source.*'
             BEGIN SELECT RAISE(ABORT, 'synthetic mention expiry failure'); END`);
-        }
-        try {
-          await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
-          expect(storedSources()).toHaveLength(scenario === "normal" ? 0 : 1);
-        } finally {
+          }
+          try {
+            await vi.advanceTimersByTimeAsync(24 * 60 * 60_000);
+            await work.settle();
+            expect(storedSources()).toHaveLength(scenario === "normal" ? 0 : 1);
+          } finally {
+            if (scenario !== "normal") {
+              db.exec("DROP TRIGGER reject_mention_expiry");
+            }
+          }
           if (scenario !== "normal") {
-            db.exec("DROP TRIGGER reject_mention_expiry");
+            if (scenario === "dispose after failure") {
+              await restarted.dispose();
+            }
+            await vi.advanceTimersByTimeAsync(60_000);
+            await work.settle();
+            expect(storedSources()).toHaveLength(scenario === "dispose after failure" ? 1 : 0);
+            if (scenario === "dispose after failure") {
+              f.openInbox("next-gateway");
+              await work.settle();
+              expect(storedSources()).toEqual([]);
+            }
           }
-        }
-        if (scenario !== "normal") {
-          if (scenario === "dispose after failure") {
-            restarted.dispose();
-          }
-          await vi.advanceTimersByTimeAsync(60_000);
-          expect(storedSources()).toHaveLength(scenario === "dispose after failure" ? 1 : 0);
-          if (scenario === "dispose after failure") {
-            f.openInbox("next-gateway");
-            expect(storedSources()).toEqual([]);
-          }
-        }
-        expect(f.push).toHaveBeenCalledTimes(1);
-      });
+          expect(f.push).toHaveBeenCalledTimes(1);
+        });
+      } finally {
+        work.restore();
+      }
     },
   );
 
@@ -379,7 +412,7 @@ describe("temporary human mention Inbox", () => {
       vi.useFakeTimers();
       f.clients.length = 0;
       for (let index = 0; index < 32; index++) {
-        f.post(`expiry-cohort-${index}`);
+        await f.post(`expiry-cohort-${index}`);
       }
       const { db } = openOpenClawStateDatabase();
       const state = () => db.prepare("SELECT * FROM config_machine_state ORDER BY state_key").all();
@@ -388,12 +421,12 @@ describe("temporary human mention Inbox", () => {
         String(row.state_key).startsWith("notifications.mentions.source."),
       );
       expect(sources).toHaveLength(32);
-      db.exec(`CREATE TEMP TRIGGER reject_cohort_expiry BEFORE DELETE ON config_machine_state
+      db.exec(`CREATE TRIGGER reject_cohort_expiry BEFORE DELETE ON config_machine_state
         WHEN OLD.state_key = '${String(sources[16]!.state_key)}'
         BEGIN SELECT RAISE(ABORT, 'synthetic cohort expiry failure'); END`);
       vi.setSystemTime(Date.now() + 7 * 24 * 60 * 60_000);
       try {
-        expect(f.inbox.list(f.bobClient)).toMatchObject({
+        expect(await listMentionInbox(f.inbox, f.bobClient)).toMatchObject({
           ok: false,
           error: { code: "UNAVAILABLE" },
         });
@@ -414,17 +447,33 @@ describe("temporary human mention Inbox", () => {
         }
         return originalRun.apply(this, values);
       });
+      const rollback = new Error("rollback the batch-shape probe");
       try {
-        expect(read(f.inbox, f.bobClient).items).toEqual([]);
+        // The real worker is isolated from this spy. Exercise its unchanged synchronous writer
+        // inside a rolled-back transaction to retain the no-per-source-delete assertion.
+        expect(() =>
+          runOpenClawStateWriteTransaction(({ db: database }) => {
+            const stored = readMentionStoreSnapshot(-1, database)!;
+            writeMentionStoreChanges(
+              database,
+              stored.head,
+              new Map(stored.sources.map((source) => [source.key, undefined])),
+            );
+            throw rollback;
+          }),
+        ).toThrow(rollback);
       } finally {
         runSpy.mockRestore();
       }
+      expect(deletes).toBeGreaterThan(0);
       expect(deletes).toBeLessThanOrEqual(2);
+      expect(state()).toEqual(before);
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
       expect(
         state().filter((row) => String(row.state_key).startsWith("notifications.mentions.source.")),
       ).toEqual([]);
       const restarted = f.openInbox("after-cohort-expiry");
-      expect(read(restarted, f.bobClient).items).toEqual([]);
+      expect((await read(restarted, f.bobClient)).items).toEqual([]);
     });
   });
 
@@ -432,22 +481,22 @@ describe("temporary human mention Inbox", () => {
     await withInbox(async (f) => {
       f.clients.length = 0;
       for (let index = 0; index < 101; index++) {
-        f.post(`retained-${index}`);
+        await f.post(`retained-${index}`);
       }
-      const retained = read(f.inbox, f.bobClient).items;
+      const retained = (await read(f.inbox, f.bobClient)).items;
       expect(retained).toHaveLength(100);
       expect(retained.at(-1)?.messageId).toBe("message-retained-1");
-      expect(f.inbox.dismiss(f.bobClient, [retained[0]!.id]).ok).toBe(true);
+      expect((await dismissMentionInbox(f.inbox, f.bobClient, [retained[0]!.id])).ok).toBe(true);
       const expected = retained.slice(1);
-      f.inbox.dispose();
+      await f.inbox.dispose();
       f.push.mockClear();
       const restarted = f.openInbox("restarted-gateway");
 
-      expect(read(restarted, f.bobClient).items).toEqual(expected);
+      expect((await read(restarted, f.bobClient)).items).toEqual(expected);
       for (const source of ["retained-0", "retained-100", "retained-50"]) {
-        f.post(source, {}, restarted);
+        await f.post(source, {}, restarted);
       }
-      expect(read(restarted, f.bobClient).items).toEqual(expected);
+      expect((await read(restarted, f.bobClient)).items).toEqual(expected);
       expect(f.push).not.toHaveBeenCalled();
     });
   });
@@ -455,32 +504,32 @@ describe("temporary human mention Inbox", () => {
   it("merges alternating owners' writes without resurrecting dismissals or losing new input", async () => {
     await withInbox(async (f) => {
       vi.useFakeTimers();
-      f.post("first");
-      const first = read(f.inbox, f.bobClient).items[0]!;
+      await f.post("first");
+      const first = (await read(f.inbox, f.bobClient)).items[0]!;
       const peer = f.openInbox("peer-gateway");
-      expect(read(peer, f.bobClient).items).toEqual([first]);
-      expect(f.inbox.dismiss(f.bobClient, [first.id]).ok).toBe(true);
+      expect((await read(peer, f.bobClient)).items).toEqual([first]);
+      expect((await dismissMentionInbox(f.inbox, f.bobClient, [first.id])).ok).toBe(true);
       await vi.advanceTimersByTimeAsync(1);
-      f.post("second", {}, peer);
-      const second = read(peer, f.bobClient).items[0]!;
-      expect(read(f.inbox, f.bobClient).items).toEqual([second]);
+      await f.post("second", {}, peer);
+      const second = (await read(peer, f.bobClient)).items[0]!;
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([second]);
       await vi.advanceTimersByTimeAsync(1);
-      f.post("third");
-      const both = read(f.inbox, f.bobClient).items;
+      await f.post("third");
+      const both = (await read(f.inbox, f.bobClient)).items;
       expect(both.map((item) => item.messageId)).toEqual(["message-third", "message-second"]);
-      expect(read(peer, f.bobClient).items).toEqual(both);
-      expect(peer.dismiss(f.bobClient, [second.id]).ok).toBe(true);
-      expect(read(f.inbox, f.bobClient).items).toEqual([both[0]]);
+      expect((await read(peer, f.bobClient)).items).toEqual(both);
+      expect((await dismissMentionInbox(peer, f.bobClient, [second.id])).ok).toBe(true);
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([both[0]]);
       expect(f.push.mock.calls[0]?.[0].isCurrent()).toBe(false);
       expect(f.push.mock.calls[1]?.[0].isCurrent()).toBe(false);
-      f.inbox.dispose();
-      peer.dispose();
+      await f.inbox.dispose();
+      await peer.dispose();
       f.push.mockClear();
       const restarted = f.openInbox("restarted-gateway");
 
-      f.post("first", {}, restarted);
-      f.post("second", {}, restarted);
-      expect(read(restarted, f.bobClient).items).toEqual([both[0]]);
+      await f.post("first", {}, restarted);
+      await f.post("second", {}, restarted);
+      expect((await read(restarted, f.bobClient)).items).toEqual([both[0]]);
       expect(f.push).not.toHaveBeenCalled();
     });
   });
@@ -496,13 +545,13 @@ describe("temporary human mention Inbox", () => {
     let before: ReturnType<typeof schema> | undefined;
     await withInbox(
       async (f) => {
-        f.post("dismissed");
-        f.post("retained");
-        const original = read(f.inbox, f.bobClient).items;
-        expect(f.inbox.dismiss(f.bobClient, [original[1]!.id]).ok).toBe(true);
-        f.inbox.dispose();
+        await f.post("dismissed");
+        await f.post("retained");
+        const original = (await read(f.inbox, f.bobClient)).items;
+        expect((await dismissMentionInbox(f.inbox, f.bobClient, [original[1]!.id])).ok).toBe(true);
+        await f.inbox.dispose();
         const restarted = f.openInbox("restarted-gateway");
-        expect(read(restarted, f.bobClient).items).toEqual([original[0]]);
+        expect((await read(restarted, f.bobClient)).items).toEqual([original[0]]);
         expect(schema()).toEqual(before);
       },
       {},
@@ -514,11 +563,11 @@ describe("temporary human mention Inbox", () => {
     "retains committed state and withholds push when storage rejects %s",
     async (operation) => {
       await withInbox(async (f) => {
-        f.post("original");
-        const retained = read(f.inbox, f.bobClient).items;
+        await f.post("original");
+        const retained = (await read(f.inbox, f.bobClient)).items;
         const { db } = openOpenClawStateDatabase();
         for (const action of ["INSERT", "UPDATE", "DELETE"]) {
-          db.exec(`CREATE TEMP TRIGGER reject_mention_${action} BEFORE ${action} ON config_machine_state
+          db.exec(`CREATE TRIGGER reject_mention_${action} BEFORE ${action} ON config_machine_state
             WHEN ${action === "DELETE" ? "OLD" : "NEW"}.state_key LIKE 'notifications.mentions.%'
             BEGIN SELECT RAISE(ABORT, 'synthetic mention write failure'); END`);
         }
@@ -526,14 +575,16 @@ describe("temporary human mention Inbox", () => {
         f.broadcast.mockClear();
         try {
           if (operation === "dismissal") {
-            expect(f.inbox.dismiss(f.bobClient, [retained[0]!.id])).toMatchObject({
+            expect(
+              await dismissMentionInbox(f.inbox, f.bobClient, [retained[0]!.id]),
+            ).toMatchObject({
               ok: false,
               error: { code: "UNAVAILABLE" },
             });
           } else {
-            expect(() => f.post("retryable-source")).not.toThrow();
+            await expect(f.post("retryable-source")).resolves.toBeUndefined();
           }
-          expect(read(f.inbox, f.bobClient).items).toEqual(retained);
+          expect((await read(f.inbox, f.bobClient)).items).toEqual(retained);
           expect(f.push).not.toHaveBeenCalled();
           expect(f.broadcast).not.toHaveBeenCalled();
         } finally {
@@ -541,15 +592,17 @@ describe("temporary human mention Inbox", () => {
             db.exec(`DROP TRIGGER reject_mention_${action}`);
           }
         }
-        f.inbox.dispose();
+        await f.inbox.dispose();
         const restarted = f.openInbox("restarted-gateway");
-        expect(read(restarted, f.bobClient).items).toEqual(retained);
+        expect((await read(restarted, f.bobClient)).items).toEqual(retained);
         if (operation === "dismissal") {
-          expect(restarted.dismiss(f.bobClient, [retained[0]!.id]).ok).toBe(true);
-          expect(read(restarted, f.bobClient).items).toEqual([]);
+          expect((await dismissMentionInbox(restarted, f.bobClient, [retained[0]!.id])).ok).toBe(
+            true,
+          );
+          expect((await read(restarted, f.bobClient)).items).toEqual([]);
         } else {
-          f.post("retryable-source", {}, restarted);
-          expect(read(restarted, f.bobClient).items).toHaveLength(2);
+          await f.post("retryable-source", {}, restarted);
+          expect((await read(restarted, f.bobClient)).items).toHaveLength(2);
           expect(f.push).toHaveBeenCalledTimes(1);
         }
       });
@@ -559,20 +612,20 @@ describe("temporary human mention Inbox", () => {
   it("targets only the named person, synchronizes dismissal, and does not replay consumed input", async () => {
     await withInbox(async (f) => {
       for (const client of f.clients) {
-        read(f.inbox, client);
+        await read(f.inbox, client);
       }
-      f.post();
+      await f.post();
       const result = await f.call("mentions.list", {});
       expect(result.ok && validateMentionsListResult(result.payload)).toBe(true);
-      const first = read(f.inbox, f.bobClient).items[0];
+      const first = (await read(f.inbox, f.bobClient)).items[0];
       expect(first).toMatchObject({
         senderProfileId: f.alice.id,
         senderLabel: "Alice",
         sessionTitle: "Design review",
         excerpt: "@Bob review this change",
       });
-      expect(read(f.inbox, f.aliceClient).items).toEqual([]);
-      expect(read(f.inbox, f.carolClient).items).toEqual([]);
+      expect((await read(f.inbox, f.aliceClient)).items).toEqual([]);
+      expect((await read(f.inbox, f.carolClient)).items).toEqual([]);
       expect(f.broadcast.mock.calls.map((call) => [...call[2]])).toEqual([
         ["bob-one"],
         ["bob-two"],
@@ -584,37 +637,42 @@ describe("temporary human mention Inbox", () => {
       }
 
       await f.call("mentions.dismiss", { ids: [first.id, "unknown-mention"] }, f.aliceClient);
-      expect(read(f.inbox, f.bobClient).items).toHaveLength(1);
+      expect((await read(f.inbox, f.bobClient)).items).toHaveLength(1);
       await f.call("mentions.dismiss", { ids: [first.id] });
-      expect(read(f.inbox, f.bobSecond).items).toEqual([]);
+      expect((await read(f.inbox, f.bobSecond)).items).toEqual([]);
       expect(f.push.mock.calls[0]?.[0].isCurrent()).toBe(false);
-      f.post();
-      expect(read(f.inbox, f.bobClient).items).toEqual([]);
+      await f.post();
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
       expect(f.push).toHaveBeenCalledTimes(1);
-      f.post("source-two");
-      expect(read(f.inbox, f.bobClient).items).toHaveLength(1);
+      await f.post("source-two");
+      expect((await read(f.inbox, f.bobClient)).items).toHaveLength(1);
       expect(f.push).toHaveBeenCalledTimes(2);
     });
   });
 
   it("never exposes a recipient selector, a raw identity, or a fabricated successful empty Inbox", async () => {
     await withInbox(async (f) => {
-      f.post();
+      await f.post();
       expect(
         (await f.call("mentions.list", { profileId: f.bob.id }, f.aliceClient)).error?.code,
       ).toBe("INVALID_REQUEST");
       const raw = { ...soloClient(), connId: "raw", authenticatedUserId: f.bob.id };
-      expect(f.inbox.list(raw)).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
-      expect(f.inbox.list({ ...f.bobClient, invalidated: true })).toMatchObject({
+      expect(await listMentionInbox(f.inbox, raw)).toMatchObject({
         ok: false,
         error: { code: "FORBIDDEN" },
       });
-      expect(f.inbox.list({ ...raw, authenticatedGitHubIdentitySync: vi.fn() })).toMatchObject({
+      expect(await listMentionInbox(f.inbox, { ...f.bobClient, invalidated: true })).toMatchObject({
+        ok: false,
+        error: { code: "FORBIDDEN" },
+      });
+      expect(
+        await listMentionInbox(f.inbox, { ...raw, authenticatedGitHubIdentitySync: vi.fn() }),
+      ).toMatchObject({
         ok: false,
         error: { code: "UNAVAILABLE", retryable: true },
       });
-      f.inbox.dispose();
-      expect(f.inbox.list(f.bobClient)).toMatchObject({
+      await f.inbox.dispose();
+      expect(await listMentionInbox(f.inbox, f.bobClient)).toMatchObject({
         ok: false,
         error: { code: "UNAVAILABLE" },
       });
@@ -635,20 +693,20 @@ describe("temporary human mention Inbox", () => {
 
   it("keeps view revisions private and retracts a now-hidden session", async () => {
     await withInbox(async (f) => {
-      const initial = read(f.inbox, f.bobClient);
-      f.post("carol-source", { recipientProfileIds: [f.carol.id] });
-      expect(read(f.inbox, f.bobClient).revision).toBe(initial.revision);
+      const initial = await read(f.inbox, f.bobClient);
+      await f.post("carol-source", { recipientProfileIds: [f.carol.id] });
+      expect((await read(f.inbox, f.bobClient)).revision).toBe(initial.revision);
       expect(f.broadcast.mock.calls.some((call) => call[2].has("bob-one"))).toBe(false);
-      f.post();
-      const visible = read(f.inbox, f.bobClient);
+      await f.post();
+      const visible = await read(f.inbox, f.bobClient);
       await f.setSession({ visibility: "draft" });
       f.inbox.invalidate();
-      const hidden = read(f.inbox, f.bobClient);
+      const hidden = await read(f.inbox, f.bobClient);
       expect(hidden.items).toEqual([]);
       expect(hidden.revision).toBeGreaterThan(visible.revision);
       f.broadcast.mockClear();
-      f.post("hidden-source");
-      expect(read(f.inbox, f.bobClient).revision).toBe(hidden.revision);
+      await f.post("hidden-source");
+      expect((await read(f.inbox, f.bobClient)).revision).toBe(hidden.revision);
       expect(f.broadcast).not.toHaveBeenCalled();
       expect(f.push.mock.calls[1]?.[0].isCurrent()).toBe(false);
     });
@@ -662,33 +720,33 @@ describe("temporary human mention Inbox", () => {
         const oldClient = { ...identifiedClient(old.id, "Bob"), connId: "old-bob" };
         const recipientProfileIds = dismissedFirst ? [old.id, f.bob.id] : [f.bob.id, old.id];
         f.clients.push(oldClient);
-        f.post("two-profiles", { recipientProfileIds });
-        const item = read(f.inbox, oldClient).items[0];
+        await f.post("two-profiles", { recipientProfileIds });
+        const item = (await read(f.inbox, oldClient)).items[0];
         if (!item) {
           throw new Error("Old profile did not receive the mention");
         }
-        f.inbox.dismiss(oldClient, [item.id]);
+        await dismissMentionInbox(f.inbox, oldClient, [item.id]);
         linkEmail("bob-old@mentions.example.test", f.bob.id);
         await Promise.resolve();
-        expect(read(f.inbox, f.bobClient).items).toEqual([]);
-        expect(read(f.inbox, oldClient).items).toEqual([]);
-        f.post("two-profiles", { recipientProfileIds });
+        expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
+        expect((await read(f.inbox, oldClient)).items).toEqual([]);
+        await f.post("two-profiles", { recipientProfileIds });
         expect(f.push).toHaveBeenCalledTimes(2);
-        f.post("after-merge", { recipientProfileIds });
-        expect(read(f.inbox, oldClient).items).toHaveLength(1);
+        await f.post("after-merge", { recipientProfileIds });
+        expect((await read(f.inbox, oldClient)).items).toHaveLength(1);
         setDisplayName(f.alice.id, "Alice Updated");
         await Promise.resolve();
-        const retained = read(f.inbox, f.bobClient).items;
+        const retained = (await read(f.inbox, f.bobClient)).items;
         expect(retained[0]?.senderLabel).toBe("Alice Updated");
-        f.inbox.dispose();
+        await f.inbox.dispose();
         f.push.mockClear();
         const restarted = f.openInbox("restarted-gateway");
 
-        expect(read(restarted, f.bobClient).items).toEqual(retained);
-        expect(read(restarted, oldClient).items).toEqual(retained);
-        f.post("two-profiles", { recipientProfileIds }, restarted);
-        f.post("after-merge", { recipientProfileIds }, restarted);
-        expect(read(restarted, f.bobClient).items).toEqual(retained);
+        expect((await read(restarted, f.bobClient)).items).toEqual(retained);
+        expect((await read(restarted, oldClient)).items).toEqual(retained);
+        await f.post("two-profiles", { recipientProfileIds }, restarted);
+        await f.post("after-merge", { recipientProfileIds }, restarted);
+        expect((await read(restarted, f.bobClient)).items).toEqual(retained);
         expect(f.push).not.toHaveBeenCalled();
       });
     },
@@ -696,20 +754,20 @@ describe("temporary human mention Inbox", () => {
 
   it("keeps recipients independent when they share a committed message", async () => {
     await withInbox(async (f) => {
-      f.post("shared-source", { recipientProfileIds: [f.bob.id, f.carol.id] });
-      const bob = read(f.inbox, f.bobClient).items[0]!;
-      const carol = read(f.inbox, f.carolClient).items[0]!;
+      await f.post("shared-source", { recipientProfileIds: [f.bob.id, f.carol.id] });
+      const bob = (await read(f.inbox, f.bobClient)).items[0]!;
+      const carol = (await read(f.inbox, f.carolClient)).items[0]!;
       expect(bob.id).not.toBe(carol.id);
       bob.excerpt = "Changed by a caller";
-      expect(read(f.inbox, f.carolClient).items).toEqual([carol]);
-      f.inbox.dismiss(f.bobClient, [bob.id]);
-      expect(read(f.inbox, f.bobClient).items).toEqual([]);
-      expect(read(f.inbox, f.carolClient).items).toEqual([carol]);
+      expect((await read(f.inbox, f.carolClient)).items).toEqual([carol]);
+      await dismissMentionInbox(f.inbox, f.bobClient, [bob.id]);
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
+      expect((await read(f.inbox, f.carolClient)).items).toEqual([carol]);
       expect(f.push.mock.calls.map(([notification]) => notification.isCurrent())).toEqual([
         false,
         true,
       ]);
-      f.post("shared-source", { recipientProfileIds: [f.bob.id, f.carol.id] });
+      await f.post("shared-source", { recipientProfileIds: [f.bob.id, f.carol.id] });
       expect(f.push).toHaveBeenCalledTimes(2);
     });
   });
@@ -719,25 +777,26 @@ describe("temporary human mention Inbox", () => {
       f.clients.length = 0;
       const old = ensureProfileForEmail("bob-merged@mentions.example.test");
       for (let index = 0; index < 150; index++) {
-        f.post(`merged-${index}`, { recipientProfileIds: [index % 2 ? f.bob.id : old.id] });
+        await f.post(`merged-${index}`, { recipientProfileIds: [index % 2 ? f.bob.id : old.id] });
       }
       linkEmail("bob-merged@mentions.example.test", f.bob.id);
       await Promise.resolve();
-      const retained = read(f.inbox, f.bobClient).items;
+      const retained = (await read(f.inbox, f.bobClient)).items;
       expect(retained.map((item) => item.messageId)).toEqual(
         Array.from({ length: 100 }, (_, index) => `message-merged-${149 - index}`),
       );
       expect(f.push.mock.calls.filter(([notification]) => notification.isCurrent())).toHaveLength(
         100,
       );
-      f.post("merged-0", { recipientProfileIds: [old.id] });
-      expect(read(f.inbox, f.bobClient).items).toEqual(retained);
-      f.inbox.dismiss(
+      await f.post("merged-0", { recipientProfileIds: [old.id] });
+      expect((await read(f.inbox, f.bobClient)).items).toEqual(retained);
+      await dismissMentionInbox(
+        f.inbox,
         f.bobClient,
         retained.map((item) => item.id),
       );
-      f.post("merged-149");
-      expect(read(f.inbox, f.bobClient).items).toEqual([]);
+      await f.post("merged-149");
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
     });
   });
 
@@ -762,8 +821,8 @@ describe("temporary human mention Inbox", () => {
       const owner = ensureGatewayOwnerProfile("Owner");
       const client = identifiedClient(owner.id, "Owner");
       client.connect.scopes = [admin ? "operator.admin" : "operator.read"];
-      f.post("owner", { recipientProfileIds: [owner.id] });
-      expect(read(f.inbox, client).items).toHaveLength(visible ? 1 : 0);
+      await f.post("owner", { recipientProfileIds: [owner.id] });
+      expect((await read(f.inbox, client)).items).toHaveLength(visible ? 1 : 0);
       expect((await f.call("users.mentionable", { sessionKey: SESSION_KEY }, client)).ok).toBe(
         visible,
       );
@@ -783,14 +842,17 @@ describe("temporary human mention Inbox", () => {
       },
     };
     await withInbox(async (f) => {
-      f.post();
+      await f.post();
       const delayed = f.push.mock.calls[0]?.[0];
       expect(delayed?.isCurrent()).toBe(true);
       setUserProfileRole(f.bob.id, "denied");
       invalidateOperatorRolePolicy(f.bob.id);
       await Promise.resolve();
       expect(delayed?.isCurrent()).toBe(false);
-      expect(f.inbox.list(f.bobClient)).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+      expect(await listMentionInbox(f.inbox, f.bobClient)).toMatchObject({
+        ok: false,
+        error: { code: "FORBIDDEN" },
+      });
       setUserProfileRole(f.bob.id, "reader");
       invalidateOperatorRolePolicy(f.bob.id);
       await f.setSession({ sessionId: "replacement-session" });
@@ -800,9 +862,9 @@ describe("temporary human mention Inbox", () => {
         previous: { sessionId: SESSION_ID, sessionKeys: [SESSION_KEY] },
         current: { sessionId: "replacement-session", sessionKeys: [SESSION_KEY] },
       });
-      expect(read(f.inbox, f.bobClient).items).toEqual([]);
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
       expect(delayed?.isCurrent()).toBe(false);
-      f.inbox.dispose();
+      await f.inbox.dispose();
       expect(delayed?.isCurrent()).toBe(false);
     }, cfg);
   });
@@ -811,52 +873,54 @@ describe("temporary human mention Inbox", () => {
     await withInbox(async (f) => {
       f.clients.length = 0;
       for (let index = 0; index < 101; index++) {
-        f.post(`source-${index}`);
+        await f.post(`source-${index}`);
       }
-      const retained = read(f.inbox, f.bobClient).items;
+      const retained = (await read(f.inbox, f.bobClient)).items;
       expect(retained).toHaveLength(100);
       expect(retained.at(-1)?.messageId).toBe("message-source-1");
-      f.post("source-0");
-      expect(read(f.inbox, f.bobClient).items).toEqual(retained);
-      f.inbox.dismiss(
+      await f.post("source-0");
+      expect((await read(f.inbox, f.bobClient)).items).toEqual(retained);
+      await dismissMentionInbox(
+        f.inbox,
         f.bobClient,
         retained.map((item) => item.id),
       );
-      f.post("source-100");
-      expect(read(f.inbox, f.bobClient).items).toEqual([]);
+      await f.post("source-100");
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
     });
   });
 
   it("expires on the Gateway clock and does not backfill after a new Gateway lifetime", async () => {
     await withInbox(async (f) => {
       vi.useFakeTimers();
-      f.post("first");
-      expect(read(f.inbox, f.bobClient).items).toHaveLength(1);
+      await f.post("first");
+      expect((await read(f.inbox, f.bobClient)).items).toHaveLength(1);
       await vi.advanceTimersByTimeAsync(1_000);
-      f.post("second");
+      await f.post("second");
       await vi.advanceTimersByTimeAsync(7 * 24 * 60 * 60_000 - 1_000);
-      expect(read(f.inbox, f.bobClient).items.map((item) => item.messageId)).toEqual([
+      expect((await read(f.inbox, f.bobClient)).items.map((item) => item.messageId)).toEqual([
         "message-second",
       ]);
       await vi.advanceTimersByTimeAsync(1_000);
-      expect(read(f.inbox, f.bobClient).items).toEqual([]);
-      f.post("new-deadline");
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
+      await f.post("new-deadline");
       await vi.advanceTimersByTimeAsync(7 * 24 * 60 * 60_000);
-      expect(read(f.inbox, f.bobClient).items).toEqual([]);
-      f.inbox.dispose();
+      expect((await read(f.inbox, f.bobClient)).items).toEqual([]);
+      await f.inbox.dispose();
       const replacement = createMentionInbox({
         gatewayInstanceId: "replacement-gateway",
         getRuntimeConfig: () => ({}),
+        getSessionRowProjection: () => f.projection,
         getClients: () => f.clients,
         broadcastToConnIds: f.broadcast,
       });
       try {
-        expect(read(replacement, f.bobClient)).toMatchObject({
+        expect(await read(replacement, f.bobClient)).toMatchObject({
           gatewayInstanceId: "replacement-gateway",
           items: [],
         });
       } finally {
-        replacement.dispose();
+        await replacement.dispose();
       }
     });
   });
@@ -880,7 +944,7 @@ describe("temporary human mention Inbox", () => {
             excerpt: undefined,
             recipientProfileIds: recipientsFor(index),
           });
-        post(0);
+        await post(0);
         const stored = readMentionStoreSnapshot(-1)!;
         expect(stored.sources).toHaveLength(1);
         const template = stored.sources[0]!;
@@ -902,10 +966,14 @@ describe("temporary human mention Inbox", () => {
         );
         const firstRecipient = identifiedClient(profiles[0]!);
         expect(
-          read(f.inbox, firstRecipient).items.some((item) => item.messageId === "message-0"),
+          (await read(f.inbox, firstRecipient)).items.some(
+            (item) => item.messageId === "message-0",
+          ),
         ).toBe(true);
-        post(1_000);
-        const retained = profiles.map((id) => read(f.inbox, identifiedClient(id)));
+        await post(1_000);
+        const retained = await Promise.all(
+          profiles.map((id) => read(f.inbox, identifiedClient(id))),
+        );
         expect(retained.reduce((sum, snapshot) => sum + snapshot.items.length, 0)).toBe(10_000);
         expect(
           retained
@@ -913,11 +981,15 @@ describe("temporary human mention Inbox", () => {
             .some((item) => item.messageId === "message-1000"),
         ).toBe(true);
         expect(
-          read(f.inbox, firstRecipient).items.some((item) => item.messageId === "message-0"),
+          (await read(f.inbox, firstRecipient)).items.some(
+            (item) => item.messageId === "message-0",
+          ),
         ).toBe(false);
-        post(0);
+        await post(0);
         expect(
-          read(f.inbox, firstRecipient).items.some((item) => item.messageId === "message-0"),
+          (await read(f.inbox, firstRecipient)).items.some(
+            (item) => item.messageId === "message-0",
+          ),
         ).toBe(false);
       },
       {},
@@ -930,8 +1002,8 @@ describe("temporary human mention Inbox", () => {
       f.push.mockImplementation(() => {
         throw new Error("synthetic push failure");
       });
-      expect(() => f.post()).not.toThrow();
-      expect(read(f.inbox, f.bobClient).items).toHaveLength(1);
+      await expect(f.post()).resolves.toBeUndefined();
+      expect((await read(f.inbox, f.bobClient)).items).toHaveLength(1);
     });
   });
 });

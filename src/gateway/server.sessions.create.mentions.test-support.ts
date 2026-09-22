@@ -3,9 +3,11 @@ import { getRuntimeConfig } from "../config/io.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { createMentionInbox } from "./mention-inbox.js";
+import { listMentionInbox } from "./mention-inbox.test-support.js";
 import { identifiedClient } from "./server-methods/sessions-sharing.test-support.js";
 import type { GatewayClient } from "./server-methods/types.js";
 import { waitForCreatedSessionRun } from "./server.sessions.create.projects.test-support.js";
+import { createSessionRowProjection } from "./session-row-projection.js";
 import { directSessionReq } from "./test/server-sessions.test-helpers.js";
 
 /** Keep first-message mention proofs on the session-create suite's configured store and mocks. */
@@ -42,9 +44,14 @@ export function registerSessionCreateMentionTests(
           recipients.push({ ...identifiedClient(carol.id, "Carol"), connId: "carol-offline" });
         }
         const message = everyone ? "@everyone review this" : "@Bob review this";
+        const projection = await createSessionRowProjection({
+          cfg: getRuntimeConfig(),
+          getConfig: getRuntimeConfig,
+        });
         const inbox = createMentionInbox({
           gatewayInstanceId: "first-message-mentions",
           getRuntimeConfig,
+          getSessionRowProjection: () => projection,
           getClients: () => [sender, recipient],
           broadcastToConnIds: vi.fn(),
         });
@@ -80,17 +87,27 @@ export function registerSessionCreateMentionTests(
           key = created.payload?.key;
           expect(key).toMatch(new RegExp(`^agent:${agentId}:dashboard:`));
           for (const client of recipients) {
-            expect(inbox.list(client)).toMatchObject({
+            expect(await listMentionInbox(inbox, client)).toMatchObject({
               ok: true,
               value: {
                 items: [{ senderProfileId: alice.id, sessionKey: key, agentId, excerpt: message }],
               },
             });
           }
-          expect(inbox.list(sender)).toMatchObject({ ok: true, value: { items: [] } });
+          expect(await listMentionInbox(inbox, sender)).toMatchObject({
+            ok: true,
+            value: { items: [] },
+          });
         } finally {
-          await waitForCreatedSessionRun(context, storePath, key);
-          inbox.dispose();
+          try {
+            await waitForCreatedSessionRun(context, storePath, key);
+          } finally {
+            try {
+              await inbox.dispose();
+            } finally {
+              projection.dispose();
+            }
+          }
         }
       }),
   );

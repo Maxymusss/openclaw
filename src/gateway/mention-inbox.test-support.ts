@@ -1,15 +1,21 @@
+import type { Result } from "@openclaw/normalization-core/result";
 import { expect, vi } from "vitest";
 import {
   validateMentionsListResult,
   type ErrorShape,
+  type MentionsListResult,
 } from "../../packages/gateway-protocol/src/index.js";
+import { createDeferred } from "../../test/helpers/promise.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import * as storeWriter from "../shared/store-writer-queue.js";
+import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import { ensureProfileForEmail, setDisplayName } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import type { MentionCommittedInput } from "./mention-inbox-worker-contract.js";
 import { createMentionInbox } from "./mention-inbox.js";
-import type { MentionCommittedInput, MentionInbox } from "./mention-inbox.types.js";
+import type { MentionInbox } from "./mention-inbox.types.js";
 import { mentionHandlers } from "./server-methods/mentions.js";
 import { identifiedClient } from "./server-methods/sessions-sharing.test-support.js";
 import type {
@@ -18,6 +24,7 @@ import type {
   GatewayRequestHandlerOptions,
 } from "./server-methods/types.js";
 import { usersMentionableHandlers } from "./server-methods/users-mentionable.js";
+import { createSessionRowProjection } from "./session-row-projection.js";
 
 export const SESSION_KEY = "agent:main:dashboard:mention-test";
 export const SESSION_ID = "mention-test-session";
@@ -34,7 +41,7 @@ export async function withMentionInbox(
     try {
       await run(fixture);
     } finally {
-      fixture.dispose();
+      await fixture.dispose();
       vi.useRealTimers();
     }
   });
@@ -66,11 +73,13 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
       },
     );
   await setSession({ displayName: "Design review" });
+  let projection = await createSessionRowProjection({ cfg, getConfig: () => cfg });
   const inboxes = new Set<MentionInbox>();
   const openInbox = (gatewayInstanceId = "mention-gateway") => {
     const inbox = createMentionInbox({
       gatewayInstanceId,
       getRuntimeConfig: () => cfg,
+      getSessionRowProjection: () => projection,
       getClients: () => clients,
       broadcastToConnIds: broadcast,
       onMentionCreated: options.notifications === false ? undefined : push,
@@ -124,14 +133,29 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
     carolClient,
     clients,
     inbox,
+    projection,
     call,
     broadcast,
     push,
     setSession,
     openInbox,
-    dispose() {
-      for (const instance of inboxes) {
-        instance.dispose();
+    async refreshProjection() {
+      projection.dispose();
+      projection = await createSessionRowProjection({ cfg, getConfig: () => cfg });
+    },
+    async dispose() {
+      try {
+        const settled = await Promise.allSettled(
+          [...inboxes].map((instance) => instance.dispose()),
+        );
+        const failures = settled.flatMap((result) =>
+          result.status === "rejected" ? [result.reason] : [],
+        );
+        if (failures.length) {
+          throw new AggregateError(failures, "Mention Inbox fixture did not drain");
+        }
+      } finally {
+        projection.dispose();
       }
     },
     post(sourceId = "source-one", overrides: Partial<MentionCommittedInput> = {}, target = inbox) {
@@ -144,7 +168,7 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
         };
         committedSources.set(sourceId, committedSource);
       }
-      target.recordCommittedInput({
+      return target.recordCommittedInput({
         sourceId,
         committedSource,
         sessionKey: SESSION_KEY,
@@ -160,11 +184,94 @@ async function createFixture(cfg: OpenClawConfig, options: InboxFixtureOptions) 
   };
 }
 
-export function readMentionInbox(inbox: MentionInbox, client: GatewayClient) {
-  const result = inbox.list(client);
+export async function listMentionInbox(inbox: MentionInbox, client: GatewayClient) {
+  let result: Result<MentionsListResult, ErrorShape> | undefined;
+  await inbox.list(client, (value) => {
+    result = value;
+  });
+  if (!result) {
+    throw new Error("Mention result was not published");
+  }
+  return result;
+}
+
+export async function dismissMentionInbox(
+  inbox: MentionInbox,
+  client: GatewayClient,
+  ids: readonly string[],
+) {
+  let result: Result<MentionsListResult, ErrorShape> | undefined;
+  await inbox.dismiss(client, ids, (value) => {
+    result = value;
+  });
+  if (!result) {
+    throw new Error("Mention dismissal result was not published");
+  }
+  return result;
+}
+
+export async function readMentionInbox(inbox: MentionInbox, client: GatewayClient) {
+  const result = await listMentionInbox(inbox, client);
   if (!result.ok) {
     throw new Error(result.error.message);
   }
   expect(validateMentionsListResult(result.value)).toBe(true);
   return result.value;
+}
+
+/** Observe the real queue owner; timer tests join work without issuing an Inbox read. */
+export function observeMentionInboxWork() {
+  const enqueue = storeWriter.runQueuedStoreWrite;
+  const pending = new Set<Promise<unknown>>();
+  const spy = vi
+    .spyOn(storeWriter, "runQueuedStoreWrite")
+    .mockImplementation(<T>(params: Parameters<typeof enqueue<T>>[0]) => {
+      const result = enqueue(params);
+      if (params.label === "mention Inbox") {
+        const settled = result.then(
+          () => {},
+          () => {},
+        );
+        pending.add(settled);
+        void settled.then(() => pending.delete(settled));
+      }
+      return result;
+    });
+  return {
+    async settle() {
+      while (pending.size) {
+        await Promise.all(pending);
+      }
+    },
+    restore: () => spy.mockRestore(),
+  };
+}
+
+/** Hold only the next real mention worker reply; unrelated state readers retain their owner. */
+export function holdMentionInboxRead() {
+  const execute = stateReads.executeExistingOpenClawStateRead;
+  const ready = createDeferred();
+  const release = createDeferred();
+  let held = false;
+  const spy = vi
+    .spyOn(stateReads, "executeExistingOpenClawStateRead")
+    .mockImplementation(async (...args) => {
+      if (held || args[1].type !== "mentions.read") {
+        return execute(...args);
+      }
+      held = true;
+      const result = await execute(...args).then(
+        (value) => {
+          ready.resolve();
+          return value;
+        },
+        (error: unknown) => {
+          ready.reject(error);
+          throw error;
+        },
+      );
+      await release.promise;
+      return result;
+    });
+  return { ready: ready.promise, release: release.resolve, restore: () => spy.mockRestore() };
 }

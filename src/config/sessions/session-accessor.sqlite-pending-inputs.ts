@@ -15,6 +15,7 @@ import {
 import { stageSqliteTransactionState } from "../../infra/sqlite-post-commit.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
+import { runQueuedStoreWrite, type StoreWriterQueue } from "../../shared/store-writer-queue.js";
 import type { SessionPendingInputs } from "../../state/openclaw-agent-db.generated.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { hasSessionPendingInputsSchema } from "../../state/openclaw-agent-pending-inputs-schema.js";
@@ -59,6 +60,7 @@ export type SessionPendingInputOwner = {
 
 const owners = resolveGlobalSingleton(Symbol.for("openclaw.sessionPendingInputOwners"), () => ({
   live: new Map<string, SessionPendingInputOwner>(),
+  stagePreparation: new Map<string, StoreWriterQueue>(),
   current: new AsyncLocalStorage<SessionPendingInputOwner>(),
   relocation: new AsyncLocalStorage<{
     owner: SessionPendingInputOwner;
@@ -85,6 +87,19 @@ registerAgentEventLifecycleRotationHandler("session-pending-inputs", () => {
     throw new AggregateError(failures, "Failed to record interrupted pending inputs");
   }
 });
+
+/** Preserve staging FIFO without holding native agent admission across shared-store custody. */
+export function runSessionPendingInputStagePreparation<T>(
+  databasePath: string,
+  prepare: () => Promise<T>,
+): Promise<T> {
+  return runQueuedStoreWrite({
+    queues: owners.stagePreparation,
+    storePath: databasePath,
+    label: "session.pending-input.stage",
+    fn: prepare,
+  });
+}
 
 export function registerSessionPendingInputOwner(owner: SessionPendingInputOwner): void {
   if (owners.live.has(owner.inputId)) {
@@ -298,40 +313,58 @@ export function projectSessionPendingInput(row: SessionPendingInputRow): Session
   };
 }
 
-/** Only a current recovered source can supersede its previous request receipt, once. */
-export function claimCurrentSessionPendingInputDedupeRecovery(
-  database: PendingInputDatabase,
+/** Capture the private owner before async evidence; consuming remains synchronous and one-shot. */
+export function prepareCurrentSessionPendingInputDedupeRecovery(
+  databasePath: string,
   scope: Pick<ResolvedTranscriptScope, "sessionId" | "sessionKey">,
   runId: string,
-): boolean {
+) {
   const owner = owners.current.getStore();
   if (
     !owner ||
     owner.sources ||
     owner.restartRecovered !== true ||
     recoveredDedupeOwners.has(owner) ||
-    owner.databasePath !== database.path ||
+    owner.databasePath !== databasePath ||
     owner.sessionId !== scope.sessionId ||
     owner.sessionKey !== scope.sessionKey ||
     owner.idempotencyKey !== `${runId}:user`
   ) {
-    return false;
+    return undefined;
   }
   assertPendingInputOwnerCurrent(owner);
-  const row = readSessionPendingInputByKey(database, scope, owner.idempotencyKey);
-  const current = Boolean(
-    row &&
-    row.input_id === owner.inputId &&
-    row.run_id === runId &&
-    row.message_json === owner.messageJson &&
-    row.state === "queued" &&
-    row.consumed_event_id == null &&
-    readSessionPendingInputOwnerIds(database, [row]).has(owner.inputId),
+  return {
+    evidence: {
+      inputId: owner.inputId,
+      runId,
+      messageJson: owner.messageJson,
+      lifecycleGeneration: owner.lifecycleGeneration,
+    },
+    consume(current: boolean): boolean {
+      if (!current || owners.current.getStore() !== owner || recoveredDedupeOwners.has(owner)) {
+        return false;
+      }
+      assertPendingInputOwnerCurrent(owner);
+      recoveredDedupeOwners.add(owner);
+      return true;
+    },
+  };
+}
+
+/** Memory-only ownership check after the worker has established the exact current session. */
+export function hasRegisteredSessionPendingInputOwner(
+  databasePath: string,
+  row: SessionPendingInputRow,
+): boolean {
+  const owner = owners.live.get(row.input_id);
+  return Boolean(
+    owner &&
+    owner.databasePath === databasePath &&
+    owner.sessionId === row.session_id &&
+    owner.sessionKey === row.session_key &&
+    owner.lifecycleGeneration === row.lifecycle_generation &&
+    isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration),
   );
-  if (current) {
-    recoveredDedupeOwners.add(owner);
-  }
-  return current;
 }
 
 /** Query only the exact physical transcript; copied keys cannot adopt another generation. */

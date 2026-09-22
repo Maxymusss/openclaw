@@ -303,7 +303,7 @@ export async function deliverAgentHarnessTaskCompletion(params: {
     }
     const requester = loadRequesterSessionEntry(requesterSessionKey);
     if (requester.agentId && requester.storePath) {
-      const custody = reconcileHarnessCompletionDelivery({
+      const custody = await reconcileHarnessCompletionDelivery({
         agentId: requester.agentId,
         storePath: requester.storePath,
         sessionKey: requester.canonicalKey,
@@ -327,7 +327,7 @@ export async function deliverAgentHarnessTaskCompletion(params: {
         };
       }
     }
-    if (!isTaskCurrent()) {
+    if (!isTaskCurrent() || !isRequesterCurrent()) {
       return {
         delivered: false,
         path: "none",

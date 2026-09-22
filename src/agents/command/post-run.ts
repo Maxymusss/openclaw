@@ -100,7 +100,7 @@ export async function clearCommandRecoveryClaim(params: {
     ) {
       const { reconcileSessionHarnessCompletionDeliveries } =
         await import("../agent-harness-completion-delivery.js");
-      reconcileSessionHarnessCompletionDeliveries({
+      await reconcileSessionHarnessCompletionDeliveries({
         agentId: params.prepared.sessionAgentId,
         sessionKey,
         storePath,

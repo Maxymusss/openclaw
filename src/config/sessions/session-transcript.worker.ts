@@ -15,6 +15,7 @@ import {
 } from "./session-transcript-read-fence.js";
 import type {
   SessionBranchSummaryWorkerInput,
+  SessionPendingSourceWorkerInput,
   SessionEntryWorkerInput,
   SessionEntryListWorkerInput,
   SessionTargetInventoryWorkerInput,
@@ -86,6 +87,7 @@ serveWorkerTasks(
   > => {
     // SAFETY: The paired runtime constructs this request; the SQLite snapshot validates admission.
     const request = input as
+      | SessionPendingSourceWorkerInput
       | SessionModelContextWorkerInput
       | SessionEntryWorkerInput
       | SessionEntryListWorkerInput
@@ -127,6 +129,17 @@ serveWorkerTasks(
       }
     }
     try {
+      if (request.kind === "pending-source") {
+        const { readSessionPendingSourceNative } =
+          await import("./session-accessor.pending-input-sources.native.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => ({
+            kind: "pending-source" as const,
+            value: readSessionPendingSourceNative(request.scope, request.request),
+          }))),
+        };
+      }
       if (request.kind === "session-target-inventory") {
         const { readSessionStoreTargetInventory } =
           await import("./session-store-target-inventory.js");

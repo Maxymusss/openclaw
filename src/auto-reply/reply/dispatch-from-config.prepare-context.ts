@@ -15,7 +15,7 @@ import { isToolAllowedByPolicies } from "../../agents/tool-policy-match.js";
 import { mergeAlsoAllowPolicy, resolveToolProfilePolicy } from "../../agents/tool-policy.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
-import { claimSessionPendingInputDedupeRecovery } from "../../config/sessions/session-accessor.pending-inputs.js";
+import { prepareSessionPendingInputDedupeRecovery } from "../../config/sessions/session-accessor.pending-inputs.js";
 import { logVerbose } from "../../globals.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
 import { toPluginConversationBinding } from "../../plugins/conversation-binding.js";
@@ -404,16 +404,14 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
     };
   }
 
-  const inboundDedupeClaim = claimInboundDedupe(ctx, {
-    reclaimPendingInput: () => {
-      const sourceRunId = normalizeOptionalString(ctx.MessageSid);
-      return Boolean(
-        params.replyOptions?.userTurnTranscriptRecorder?.getPendingInputMessage?.() &&
-        !params.replyOptions.userTurnTranscriptRecorder.hasPersisted() &&
-        sourceRunId &&
-        sessionStoreEntry.sessionKey &&
-        sessionStoreEntry.entry?.sessionId &&
-        claimSessionPendingInputDedupeRecovery(
+  const sourceRunId = normalizeOptionalString(ctx.MessageSid);
+  const reclaimPendingInput =
+    params.replyOptions?.userTurnTranscriptRecorder?.getPendingInputMessage?.() &&
+    !params.replyOptions.userTurnTranscriptRecorder.hasPersisted() &&
+    sourceRunId &&
+    sessionStoreEntry.sessionKey &&
+    sessionStoreEntry.entry?.sessionId
+      ? await prepareSessionPendingInputDedupeRecovery(
           {
             agentId: sessionStoreEntry.agentId ?? sessionAgentId,
             storePath: sessionStoreEntry.storePath,
@@ -421,10 +419,9 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
             sessionId: sessionStoreEntry.entry.sessionId,
           },
           sourceRunId,
-        ),
-      );
-    },
-  });
+        )
+      : () => false;
+  const inboundDedupeClaim = claimInboundDedupe(ctx, { reclaimPendingInput });
   if (inboundDedupeClaim.status === "duplicate" || inboundDedupeClaim.status === "inflight") {
     recordProcessed("skipped", { reason: "duplicate" });
     return {

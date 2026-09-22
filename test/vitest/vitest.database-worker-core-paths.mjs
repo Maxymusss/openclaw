@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/sessions/user-turn-transcript.persistence.test.ts",
   "src/plugins/diffs-cleanup.lifecycle.test.ts",
   "src/skills/workshop/store.test.ts",
   "src/state/onboarding-recommendations.test.ts",
@@ -18,6 +19,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/auto-reply/reply/agent-runner-execution-cli-commentary.test.ts",
   "src/auto-reply/reply/agent-runner-memory.private-transcript.test.ts",
   "src/auto-reply/reply/agent-runner-required-maintenance.pending-input.test.ts",
+  "src/auto-reply/reply/dispatch-from-config.pending-restart.test.ts",
   "src/agents/worktrees/empty-source.test.ts",
   "src/agents/worktrees/registry-read.test.ts",
   "src/agents/worktrees/service-branches.test.ts",

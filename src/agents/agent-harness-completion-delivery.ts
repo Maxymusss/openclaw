@@ -110,12 +110,12 @@ function hasLiveCompletionOwner(claim: HarnessCompletionRecovery, runId: string)
 }
 
 /** Reconcile before any steer/direct path, including when a restored native parent has no live owner. */
-export function reconcileHarnessCompletionDelivery(
+export async function reconcileHarnessCompletionDelivery(
   params: CompletionTarget & {
     sourceRunId: string;
     taskRunId: string;
   },
-): "unowned" | "pending" | "delivered" | "blocked" {
+): Promise<"unowned" | "pending" | "delivered" | "blocked"> {
   const entry = readCurrent(params);
   if (!entry) {
     // No saved claim means this reconciler owns nothing; normal admission still
@@ -130,14 +130,22 @@ export function reconcileHarnessCompletionDelivery(
   if (!claim) {
     // Missing metadata is not fresh admission authority. An older writer or
     // bounded receipt eviction can leave the original consumed input intact.
-    return entry.restartRecoveryDeliverySourceRunId === params.sourceRunId ||
-      hasRestartRecoveryTerminalRun(entry, params.sourceRunId) ||
-      readSessionSubmittedInput(
-        { ...params, sessionId: entry.sessionId },
-        `${params.sourceRunId}:user`,
-      )
-      ? "blocked"
-      : "unowned";
+    if (
+      entry.restartRecoveryDeliverySourceRunId === params.sourceRunId ||
+      hasRestartRecoveryTerminalRun(entry, params.sourceRunId)
+    ) {
+      return "blocked";
+    }
+    const submitted = await readSessionSubmittedInput(
+      { ...params, sessionId: entry.sessionId },
+      `${params.sourceRunId}:user`,
+    );
+    // The read is evidence only; a replaced requester cannot become fresh admission.
+    const current = readCurrent(params);
+    if (!current || current.sessionId !== entry.sessionId || !isDeepStrictEqual(current, entry)) {
+      return "blocked";
+    }
+    return submitted ? "blocked" : "unowned";
   }
   if (
     claim.sourceRunId !== params.sourceRunId ||
@@ -219,7 +227,7 @@ export function reconcileHarnessCompletionDelivery(
 }
 
 /** Startup and command cleanup settle retained receipts even if no native monitor survives. No model/send. */
-export function reconcileRetainedHarnessCompletionDeliveries(): void {
+export async function reconcileRetainedHarnessCompletionDeliveries(): Promise<void> {
   const cfg = getRuntimeConfig();
   const scopes = new Map<string, CompletionTarget>();
   for (const task of listTaskRecords()) {
@@ -239,7 +247,7 @@ export function reconcileRetainedHarnessCompletionDeliveries(): void {
   }
   for (const target of scopes.values()) {
     try {
-      reconcileSessionHarnessCompletionDeliveries(target);
+      await reconcileSessionHarnessCompletionDeliveries(target);
     } catch (error) {
       // A removed or temporarily unreadable requester is not execution authority.
       // Keep its task pending without blocking unrelated Gateway startup work.
@@ -248,11 +256,13 @@ export function reconcileRetainedHarnessCompletionDeliveries(): void {
   }
 }
 
-export function reconcileSessionHarnessCompletionDeliveries(target: CompletionTarget): void {
+export async function reconcileSessionHarnessCompletionDeliveries(
+  target: CompletionTarget,
+): Promise<void> {
   const entry = readCurrent(target);
   for (const receipt of entry?.restartRecoveryTerminalDeliveryEvidence ?? []) {
     if (receipt.harnessCompletion) {
-      reconcileHarnessCompletionDelivery({
+      await reconcileHarnessCompletionDelivery({
         ...target,
         sourceRunId: receipt.runId,
         taskRunId: receipt.harnessCompletion.taskRunId,

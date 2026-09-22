@@ -21,6 +21,8 @@ import {
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import * as sqliteWorkers from "../../infra/sqlite-worker-store.js";
+import type { SqliteWorkerOperations, SqliteWorkerStore } from "../../infra/sqlite-worker-store.js";
 import { initializeGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
 import { attachSessionTranscriptRunId } from "../../sessions/transcript-events.js";
@@ -29,7 +31,6 @@ import {
   type UserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { ensureSessionPendingInputsSchema } from "../../state/openclaw-agent-pending-inputs-schema.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { dispatchInboundMessageMock, installGatewayTestHooks } from "../test-helpers.js";
 import { getTestPluginRegistry } from "../test-helpers.plugin-registry.js";
@@ -268,15 +269,55 @@ describe("ordinary chat input admission", () => {
 
   it("retries a failed custody write with the same request identity without acknowledging lost input", async () => {
     const fixture = await createBrowserFollowupFixture();
-    const database = openOpenClawAgentDatabase(
-      toDatabaseOptions(resolveSqliteScope(fixture.scope)),
-    ).db;
-    ensureSessionPendingInputsSchema(database);
-    database.exec(
-      "CREATE TRIGGER reject_browser_custody BEFORE INSERT ON session_pending_inputs BEGIN SELECT RAISE(ABORT, 'custody unavailable'); END",
-    );
+    const runOperation = sqliteWorkers.runSqliteWorkerStoreOperation;
+    let refusedAccepts = 0;
+    // Refuse only this request's accept command; a schema trigger would instead fail
+    // canonical admission of the worker connection before custody is attempted.
+    const fault = vi
+      .spyOn(sqliteWorkers, "runSqliteWorkerStoreOperation")
+      .mockImplementation(
+        <Operations extends SqliteWorkerOperations, T>(
+          store: SqliteWorkerStore<Operations>,
+          operation: (scope: Pick<SqliteWorkerStore<Operations>, "execute">) => T | Promise<T>,
+          stateContext?: Parameters<typeof runOperation>[2],
+          assertCurrent?: Parameters<typeof runOperation>[3],
+          createAdmission?: Parameters<typeof runOperation>[4],
+          requireStateLifecycle?: Parameters<typeof runOperation>[5],
+        ) =>
+          runOperation(
+            store,
+            (scope) =>
+              operation({
+                execute: (command, options) => {
+                  const input = command.input;
+                  if (
+                    refusedAccepts === 0 &&
+                    command.type === "database.domain.execute" &&
+                    isRecord(input) &&
+                    isRecord(input.command) &&
+                    input.command.type === "accept" &&
+                    isRecord(input.command.input) &&
+                    input.command.input.idempotencyKey ===
+                      `${fixture.params.idempotencyKey}:user` &&
+                    isRecord(input.command.input.scope) &&
+                    input.command.input.scope.sessionId === fixture.scope.sessionId
+                  ) {
+                    refusedAccepts++;
+                    return Promise.reject(new Error("custody unavailable"));
+                  }
+                  return scope.execute(command, options);
+                },
+              }),
+            stateContext,
+            assertCurrent,
+            createAdmission,
+            requireStateLifecycle,
+          ),
+      );
     try {
       const rejected = await fixture.send();
+      expect(refusedAccepts).toBe(1);
+      expect(rejected).toHaveBeenCalledOnce();
       expect(rejected).toHaveBeenCalledWith(
         false,
         expect.objectContaining({ status: "error" }),
@@ -292,7 +333,6 @@ describe("ordinary chat input admission", () => {
         identities: [fixture.scope.sessionKey, fixture.scope.sessionId],
       });
 
-      database.exec("DROP TRIGGER reject_browser_custody");
       const retried = await fixture.send();
       expect(retried).toHaveBeenCalledWith(
         true,
@@ -306,7 +346,7 @@ describe("ordinary chat input admission", () => {
       });
       expect(loadTranscriptEventsSync(fixture.scope)).toEqual(fixture.activeTranscript);
     } finally {
-      database.exec("DROP TRIGGER IF EXISTS reject_browser_custody");
+      fault.mockRestore();
       await fixture.cleanup();
     }
   });

@@ -34,7 +34,6 @@ import {
   createProfileSessionEntryFilter,
   isSessionVisibilityAllowed,
   prepareSessionSharing,
-  resolveSessionSharingTarget,
   resolveSessionVisibility,
 } from "./session-sharing.js";
 
@@ -68,6 +67,10 @@ export function humanMentionDisplayLabel(label: string | undefined, profileId: s
 export function createHumanMentionPolicy(params: {
   getRuntimeConfig: () => OpenClawConfig;
   getClients: () => Iterable<GatewayClient>;
+  resolveTarget: (input: {
+    sessionKey: string;
+    agentId?: string;
+  }) => import("./session-sharing-policy.js").SessionSharingTarget | null;
 }) {
   let active = true;
   let profileVersion = -1;
@@ -208,8 +211,7 @@ export function createHumanMentionPolicy(params: {
       if (!agent.ok) {
         return err(agent.error);
       }
-      const resolved = resolveSessionSharingTarget({
-        cfg,
+      const resolved = params.resolveTarget({
         sessionKey: input.sessionKey,
         agentId: agent.agentId,
       });

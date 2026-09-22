@@ -10,6 +10,11 @@ import {
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import type { ConfigMachineStateDatabase } from "../state/config-machine-state.js";
 import { withExistingOpenClawStateDatabaseReadOnly } from "../state/openclaw-state-db-readonly.js";
+import type {
+  MentionStoreHead,
+  MentionStoreSnapshot,
+  MentionStoreSource,
+} from "./mention-inbox-store.types.js";
 
 export const MENTION_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const MAX_MENTION_SOURCES = 10_000;
@@ -43,13 +48,17 @@ const sourceSchema = z.object({
   message: messageSchema.optional(),
 });
 
-export type MentionStoreHead = z.infer<typeof headSchema>;
-export type MentionStoreSource = z.infer<typeof sourceSchema>;
-export type MentionStoreMessage = z.infer<typeof messageSchema>;
-export type MentionStoreSnapshot = {
-  head: MentionStoreHead;
-  sources: MentionStoreSource[];
-};
+/** Shared source identity for replay inspection and the admitting transaction. */
+export function mentionSourceKey(input: {
+  agentId: string;
+  sessionKey: string;
+  sessionId: string;
+  sourceId: string;
+}): string {
+  return createHash("sha256")
+    .update(JSON.stringify([input.agentId, input.sessionKey, input.sessionId, input.sourceId]))
+    .digest("hex");
+}
 
 /** Chunk zero retains the original replay identity, including for older Inbox writers. */
 export function mentionSourceChunkKey(sourceKey: string, index: number): string {
@@ -150,13 +159,13 @@ export function writeMentionStoreChanges(
   database: DatabaseSync,
   head: MentionStoreHead,
   changes: ReadonlyMap<string, MentionStoreSource | undefined>,
+  updatedAtMs = Date.now(),
 ): MentionStoreHead {
   if (changes.size === 0) {
     return head;
   }
   const next = headSchema.parse({ ...head, revision: head.revision + 1 });
   const db = getNodeSqliteKysely<ConfigMachineStateDatabase>(database);
-  const updatedAtMs = Date.now();
   const deletedKeys: string[] = [];
   const flushDeletes = () => {
     if (deletedKeys.length === 0) {

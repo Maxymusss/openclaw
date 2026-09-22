@@ -316,9 +316,13 @@ export async function createSessionRowProjection(params: {
         markRelated(previous);
         const row = inOwnerContext(() => {
           const entry = readSessionRowEntry(previous);
-          return isCold(previous) || records.changesRowStructure(previous, entry)
-            ? acquireEntry({ ...previous, hasBoard: undefined }, entry)
-            : previous;
+          // Authorization consumes committed metadata independently of deferred presentation.
+          return acquireEntry(
+            records.changesRowStructure(previous, entry)
+              ? { ...previous, hasBoard: undefined }
+              : previous,
+            entry,
+          );
         });
         if (!row) {
           continue;
@@ -619,6 +623,8 @@ export async function createSessionRowProjection(params: {
   void ensureMaterialized().catch(() => {});
   backfill.start();
   const projection = {
+    readCommittedEntry: (query: records.Lookup) =>
+      records.readCommittedSessionRow(query, cfg, !disposed && !topologyDirty, lookup),
     capture(query: records.Lookup) {
       if (!disposed && topologyDirty) {
         inOwnerContext(topology);

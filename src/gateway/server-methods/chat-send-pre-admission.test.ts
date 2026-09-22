@@ -21,6 +21,7 @@ import { writePreRegisteredChatAbort } from "./chat-abort-authorization.js";
 import { resolveDurableChatClaim } from "./chat-restart-recovery.js";
 import {
   resolveChatSendRequestConflict,
+  prepareChatSendRequestConflict,
   respondChatSendRetry,
   runChatSendPreAdmission,
 } from "./chat-send-pre-admission.js";
@@ -261,7 +262,7 @@ describe("chat send retry identity", () => {
 
   it.each(["unchanged", "removed", "replaced"] as const)(
     "compares %s selections to the original source after RAM identity expires",
-    (selection) => {
+    async (selection) => {
       const params = retryFixture(`source-${selection}`);
       const original = {
         role: "user" as const,
@@ -269,7 +270,7 @@ describe("chat send retry identity", () => {
         content: params.request.rawMessage,
         __openclaw: { humanMentions: params.request.mentions },
       };
-      vi.mocked(readSessionSubmittedInput).mockReturnValue(original);
+      vi.mocked(readSessionSubmittedInput).mockResolvedValue(original);
       params.context.dedupe.set(`chat:${params.session.clientRunId}`, {
         ts: 200,
         ok: true,
@@ -281,6 +282,7 @@ describe("chat send retry identity", () => {
           : selection === "replaced"
             ? [{ profileId: "carol", start: 3, end: 7 }]
             : params.request.mentions;
+      await prepareChatSendRequestConflict(params);
       expect(respondChatSendRetry(params)).toBe(true);
       if (selection === "unchanged") {
         expect(params.respond).toHaveBeenCalledWith(
@@ -306,7 +308,7 @@ describe("chat send retry identity", () => {
 
   it.each(["missing", "redacted"] as const)(
     "does not acknowledge an unverifiable %s mention source",
-    (source) => {
+    async (source) => {
       const params = retryFixture(`unverifiable-${source}`);
       params.context.dedupe.set(`chat:${params.session.clientRunId}`, {
         ts: 200,
@@ -314,12 +316,13 @@ describe("chat send retry identity", () => {
         payload: { runId: params.session.clientRunId, status: "ok" },
       });
       if (source === "redacted") {
-        vi.mocked(readSessionSubmittedInput).mockReturnValue({
+        vi.mocked(readSessionSubmittedInput).mockResolvedValue({
           role: "user",
           timestamp: 100,
           content: "[REDACTED]",
         });
       }
+      await prepareChatSendRequestConflict(params);
       expect(respondChatSendRetry(params)).toBe(true);
       expectConflict(params.respond);
       if (source === "missing") {
@@ -334,20 +337,21 @@ describe("chat send retry identity", () => {
     },
   );
 
-  it("rejects annotation removal from a terminal tombstone after the entire RAM cache is gone", () => {
+  it("rejects annotation removal from a terminal tombstone after the entire RAM cache is gone", async () => {
     const params = retryFixture("terminal-source-without-cache");
     params.session.entry = {
       sessionId: "mention-session",
       updatedAt: 100,
       restartRecoveryTerminalRunIds: [params.session.clientRunId],
     };
-    vi.mocked(readSessionSubmittedInput).mockReturnValue({
+    vi.mocked(readSessionSubmittedInput).mockResolvedValue({
       role: "user",
       timestamp: 100,
       content: params.request.rawMessage,
       __openclaw: { humanMentions: params.request.mentions },
     });
     params.request.mentions = undefined;
+    await prepareChatSendRequestConflict(params);
     expect(resolveChatSendRequestConflict(params)).toMatchObject({
       details: { reason: "chat-request-conflict" },
     });
@@ -357,8 +361,13 @@ describe("chat send retry identity", () => {
     const { fixture, params } = preAdmissionFixture("recovery-race");
     const { session } = fixture;
     const deferred = createDeferred<Awaited<ReturnType<typeof resolveDurableChatClaim>>>();
-    vi.mocked(resolveDurableChatClaim).mockReturnValue(deferred.promise);
+    const entered = createDeferred();
+    vi.mocked(resolveDurableChatClaim).mockImplementation(() => {
+      entered.resolve();
+      return deferred.promise;
+    });
     const pending = runChatSendPreAdmission(params);
+    await entered.promise;
     expect(resolveDurableChatClaim).toHaveBeenCalledOnce();
     fixture.context.dedupe.set(`chat:${session.clientRunId}`, {
       ts: 200,

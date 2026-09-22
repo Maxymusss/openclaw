@@ -9,6 +9,7 @@ import { createUserTurnTranscriptRecorder } from "../../sessions/user-turn-trans
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
 import {
   closeOpenClawAgentDatabasesForTest,
+  closeOpenClawAgentDatabasesAsync,
   deferOpenClawAgentPostCommitPublication,
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
@@ -103,7 +104,7 @@ describe("accepted input custody", () => {
 
   it("keeps accepted input outside the active transcript and applies its hook once across replay and promotion", async () => {
     await appendTranscriptMessage(scope(), { message: message("active", "First task") });
-    expect(readSessionSubmittedInput(scope(), "active:user")).toEqual(
+    expect(await readSessionSubmittedInput(scope(), "active:user")).toEqual(
       message("active", "First task"),
     );
     const before = await loadTranscriptEvents(scope());
@@ -112,7 +113,7 @@ describe("accepted input custody", () => {
       content: typeof input.content === "string" ? `${input.content} (approved)` : input.content,
     }));
     const receipt = await stage("queued", { prepareMessageAfterIdempotencyCheck: prepare });
-    expect(readSessionSubmittedInput(scope(), "queued:user")).toEqual(receipt.message);
+    expect(await readSessionSubmittedInput(scope(), "queued:user")).toEqual(receipt.message);
     await expect(
       stage("queued", {
         message: { ...message("queued"), timestamp: 200 },
@@ -145,7 +146,7 @@ describe("accepted input custody", () => {
       message: receipt.message,
     });
     expect(listSessionPendingInputs(scope())).toEqual({ total: 0, items: [] });
-    expect(readSessionSubmittedInput(scope(), "queued:user")).toEqual(receipt.message);
+    expect(await readSessionSubmittedInput(scope(), "queued:user")).toEqual(receipt.message);
     const committedReplay = await stage("queued", { prepareMessageAfterIdempotencyCheck: prepare });
     expect(committedReplay.message).toEqual(receipt.message);
     expect(prepare).toHaveBeenCalledOnce();
@@ -175,7 +176,7 @@ describe("accepted input custody", () => {
     expect(mirrored?.messageId).not.toBe(receipt.inputId);
     expect(listSessionPendingInputs(scope())).toEqual(pending);
     expect(await loadTranscriptEvents(scope())).toEqual(sourceTranscript);
-    expect(readSessionSubmittedInput(target, "bound-mirror:user")).toEqual(receipt.message);
+    expect(await readSessionSubmittedInput(target, "bound-mirror:user")).toEqual(receipt.message);
     await expect(appendTranscriptMessage(scope(), { message: receipt.message })).rejects.toThrow(
       "outside its admitted turn",
     );
@@ -626,7 +627,7 @@ describe("accepted input custody", () => {
     async (entry) => {
       const receipt = await stage("restart");
       rotateAgentEventLifecycleGeneration();
-      closeOpenClawAgentDatabasesForTest();
+      await closeOpenClawAgentDatabasesAsync();
       const retained = readSessionPendingInput(scope(), receipt.inputId);
       expect(retained?.state).toBe("interrupted");
       expect(await loadTranscriptEvents(scope())).toEqual([]);
@@ -933,17 +934,22 @@ describe("accepted input custody", () => {
     expect(older.items.map((input) => input.id)).toEqual([first.inputId]);
     for (const idempotencyKey of ["first:user", "third:user"]) {
       expect(
-        readSessionSubmittedInput({ ...scope(), sessionId: "other-session" }, idempotencyKey),
+        await readSessionSubmittedInput({ ...scope(), sessionId: "other-session" }, idempotencyKey),
       ).toBeUndefined();
       expect(
-        readSessionSubmittedInput({ ...scope(), sessionKey: "agent:main:other" }, idempotencyKey),
+        await readSessionSubmittedInput(
+          { ...scope(), sessionKey: "agent:main:other" },
+          idempotencyKey,
+        ),
       ).toBeUndefined();
     }
   });
 
-  it("does not create missing storage for a submitted-input lookup", () => {
+  it("does not create missing storage for a submitted-input lookup", async () => {
     const storePath = path.join(fixture.sessionsDir(), "missing-agent.sqlite");
-    expect(readSessionSubmittedInput({ ...scope(), storePath }, "missing:user")).toBeUndefined();
+    expect(
+      await readSessionSubmittedInput({ ...scope(), storePath }, "missing:user"),
+    ).toBeUndefined();
     expect(fs.existsSync(storePath)).toBe(false);
   });
 
@@ -974,7 +980,7 @@ describe("accepted input custody", () => {
         }
         db.exec("PRAGMA query_only = ON");
         try {
-          expect(readSessionSubmittedInput(scope(), "invalid-source:user")).toBeUndefined();
+          expect(await readSessionSubmittedInput(scope(), "invalid-source:user")).toBeUndefined();
         } finally {
           db.exec("PRAGMA query_only = OFF");
         }
@@ -1004,7 +1010,7 @@ describe("accepted input custody", () => {
         .get(sessionId);
       db.exec("PRAGMA query_only = ON");
       try {
-        expect(readSessionSubmittedInput(scope(), "stale-source:user")).toBeUndefined();
+        expect(await readSessionSubmittedInput(scope(), "stale-source:user")).toBeUndefined();
       } finally {
         db.exec("PRAGMA query_only = OFF");
       }

@@ -1,6 +1,11 @@
 import { StatementSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
-import { SESSION_KEY, withMentionInbox, readMentionInbox } from "./mention-inbox.test-support.js";
+import {
+  observeMentionInboxWork,
+  SESSION_KEY,
+  withMentionInbox,
+  readMentionInbox,
+} from "./mention-inbox.test-support.js";
 import { emitSessionsChanged } from "./server-methods/session-change-event.js";
 
 afterEach(() => vi.restoreAllMocks());
@@ -16,10 +21,11 @@ it("refreshes 50 connected mention views without rereading unchanged session tar
           connId: `viewer-${index}`,
         })),
       );
-      f.post();
+      await f.post();
       for (const client of f.clients) {
-        expect(readMentionInbox(f.inbox, client).items).toHaveLength(1);
+        expect((await readMentionInbox(f.inbox, client)).items).toHaveLength(1);
       }
+      const work = observeMentionInboxWork();
       f.broadcast.mockClear();
       let exactRowReads = 0;
       // oxlint-disable-next-line typescript/unbound-method -- apply preserves the intercepted statement receiver.
@@ -28,7 +34,9 @@ it("refreshes 50 connected mention views without rereading unchanged session tar
         this: StatementSync,
         ...values
       ) {
-        if (/from "session_nodes"/i.test(this.sourceSQL)) {
+        // The event producer probes its unrelated missing key for projection
+        // discovery. Count only this Inbox target, not that separate owner.
+        if (/from "session_nodes"/i.test(this.sourceSQL) && values.includes(SESSION_KEY)) {
           exactRowReads++;
         }
         return originalGet.apply(this, values);
@@ -44,6 +52,7 @@ it("refreshes 50 connected mention views without rereading unchanged session tar
         emitSessionsChanged(context, { sessionKey, agentId: "main", reason: "patch" });
       const start = performance.now();
       emit();
+      await work.settle();
       const elapsed = performance.now() - start;
       const reads = exactRowReads;
       console.log(
@@ -53,20 +62,28 @@ it("refreshes 50 connected mention views without rereading unchanged session tar
       expect(reads).toBe(0);
 
       // The owner publication must invalidate even if the next fan-out names another session.
-      await f.setSession({ visibility: "draft" });
       exactRowReads = 0;
+      await f.setSession({ visibility: "draft" });
+      await f.projection.ensureMaterialized();
+      const mutationReads = exactRowReads;
       emit();
-      expect(exactRowReads).toBe(1);
+      await work.settle();
+      // The mutation and its committed projection publication own their reads;
+      // the 50-view Inbox refresh must add none.
+      expect(exactRowReads).toBe(mutationReads);
       expect(f.broadcast).toHaveBeenCalledTimes(50);
-      expect(readMentionInbox(f.inbox, f.bobClient).items).toEqual([]);
+      expect((await readMentionInbox(f.inbox, f.bobClient)).items).toEqual([]);
 
-      await f.setSession({ displayName: "Renamed conversation" });
       exactRowReads = 0;
       f.broadcast.mockClear();
+      await f.setSession({ displayName: "Renamed conversation" });
       emit(SESSION_KEY);
-      expect(exactRowReads).toBe(1);
+      await f.projection.ensureMaterialized();
+      const publicationReads = exactRowReads;
+      await work.settle();
+      expect(exactRowReads).toBe(publicationReads);
       expect(f.broadcast).toHaveBeenCalledTimes(50);
-      expect(readMentionInbox(f.inbox, f.bobClient).items[0]?.sessionTitle).toBe(
+      expect((await readMentionInbox(f.inbox, f.bobClient)).items[0]?.sessionTitle).toBe(
         "Renamed conversation",
       );
 
@@ -75,6 +92,7 @@ it("refreshes 50 connected mention views without rereading unchanged session tar
       exactRowReads = 0;
       f.broadcast.mockClear();
       emit();
+      await work.settle();
       expect(exactRowReads).toBe(0);
       expect(f.broadcast).toHaveBeenCalledTimes(1);
       expect([...f.broadcast.mock.calls[0]![2]]).toEqual(["viewer-0"]);
@@ -82,7 +100,8 @@ it("refreshes 50 connected mention views without rereading unchanged session tar
       // Keyless invalidation also covers in-place runtime configuration updates.
       exactRowReads = 0;
       f.inbox.invalidate();
-      expect(exactRowReads).toBe(1);
+      await work.settle();
+      expect(exactRowReads).toBe(0);
     },
     {},
     { notifications: false },

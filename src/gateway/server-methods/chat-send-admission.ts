@@ -57,6 +57,7 @@ import {
   inspectGoalChatSendRetry,
   readChatSendDedupeResponse,
   resolveChatSendRequestConflict,
+  prepareChatSendRequestConflict,
   respondChatSendAdmissionError,
   respondChatSendRetry,
   respondChatSessionRoutingChanged,
@@ -152,6 +153,7 @@ export async function admitChatSend(params: {
     );
     return { ok: false as const };
   }
+  await prepareChatSendRequestConflict(params);
   if (!request.goalOperation && respondChatSendRetry(params)) {
     return { ok: false as const };
   }

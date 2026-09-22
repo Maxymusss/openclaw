@@ -304,7 +304,7 @@ export async function settlePendingFinalDelivery(
     const claim = deliveredHarnessClaim;
     const { reconcileHarnessCompletionDelivery } =
       await import("../../agents/agent-harness-completion-delivery.js");
-    reconcileHarnessCompletionDelivery({
+    await reconcileHarnessCompletionDelivery({
       agentId: claim.requesterAgentId,
       sessionKey: completion.sessionKey,
       storePath: completion.storePath,

@@ -375,3 +375,25 @@ export function acquireSessionRowEntry(params: {
   }
   return next;
 }
+
+/** Read committed metadata without SQLite, presentation enrichment, or private-row acquisition. */
+export function readCommittedSessionRow(
+  query: Lookup,
+  cfg: Inputs["cfg"],
+  available: boolean,
+  lookup: (query: Lookup) => Row | undefined,
+): EntryRow | undefined {
+  if (!available || isIncognitoSessionKey(query.key)) {
+    return undefined;
+  }
+  const key = resolveStoredSessionKeyForAgentStore({
+    cfg,
+    agentId: query.agentId,
+    sessionKey: query.key,
+  });
+  if (isIncognitoSessionKey(key)) {
+    return undefined;
+  }
+  const row = lookup(query);
+  return hasEntry(row) ? row : undefined;
+}

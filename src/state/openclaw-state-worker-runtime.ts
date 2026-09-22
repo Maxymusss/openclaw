@@ -39,6 +39,7 @@ import {
   listManagedImageRecordEntriesInDatabase,
   listManagedImageOriginalMediaIdsInDatabase,
 } from "../gateway/managed-image-record-store.kernel.js";
+import { executeMentionMutation } from "../gateway/mention-inbox.worker.js";
 import { registerSessionGroupInDatabase } from "../gateway/session-group-registration.kernel.js";
 import { readDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
 import * as deliveryQueue from "../infra/delivery-queue.worker.js";
@@ -337,6 +338,9 @@ export function executeSharedStateCommand(
       path: context.databasePath,
       env: getSqliteWorkerStateContext().environment,
     });
+  }
+  if (command.type === "mentions.mutate") {
+    return executeMentionMutation(command.input, open());
   }
   if (
     command.type === "userProfiles.list" ||

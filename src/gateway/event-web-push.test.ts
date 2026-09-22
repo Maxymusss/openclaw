@@ -126,6 +126,7 @@ function humanMention(overrides: Partial<HumanMentionWebPush> = {}): HumanMentio
     agentId: "research",
     senderLabel: "Alice",
     sessionTitle: "Review",
+    prepareCurrent: async () => {},
     isCurrent: mentionCurrentMock,
     ...overrides,
   };

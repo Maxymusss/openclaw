@@ -219,8 +219,8 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       }
       const inbox = context.mentionInbox;
       const everyone = p.mentions.some((mention) => "kind" in mention);
-      if (everyone && inbox) {
-        const prepared = await inbox.prepareEveryoneRecipients();
+      if (inbox) {
+        const prepared = await inbox.prepareRecipients(everyone);
         commitGuard();
         if (!prepared.ok) {
           respond(false, undefined, prepared.error);

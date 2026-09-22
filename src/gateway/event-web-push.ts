@@ -53,6 +53,7 @@ export type HumanMentionWebPush = {
   agentId: string;
   senderLabel?: string;
   sessionTitle?: string;
+  prepareCurrent: () => Promise<void>;
   isCurrent: () => boolean;
 };
 
@@ -169,6 +170,7 @@ export function createEventWebPushDelivery(params: {
         return;
       }
       const sender = await prepareWebPushNotificationSender(params.stateDir);
+      await mention?.prepareCurrent();
       const groupedResults = await withBoundWebPushSubscriptions(
         params.stateDir,
         (subscriptions) => {

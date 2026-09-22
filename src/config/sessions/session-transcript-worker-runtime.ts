@@ -46,6 +46,8 @@ import {
 } from "./session-transcript-worker-resources.js";
 import type {
   SessionTranscriptHistoryWorkerInput,
+  SessionPendingSourceWorkerInput,
+  SessionPendingSourceWorkerResult,
   SessionRowPresenceWorkerInput,
   SessionMembersWorkerInput,
   SessionEntryListWorkerInput,
@@ -56,6 +58,9 @@ import type {
 } from "./session-transcript-worker.types.js";
 
 export type SessionHistoryWorkerDatabase = {
+  readPendingSource: (
+    input: Omit<SessionPendingSourceWorkerInput, "kind" | "database">,
+  ) => Promise<SessionPendingSourceWorkerResult["value"]>;
   generation: number;
   assertCurrent: () => void;
   run: (
@@ -165,6 +170,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
     assertCurrent();
     const runRequest = async <TResult>(
       prepare: () =>
+        | Omit<SessionPendingSourceWorkerInput, "database">
         | Omit<SessionTranscriptHistoryWorkerInput, "database">
         | Omit<SessionRowPresenceWorkerInput, "database">
         | Omit<SessionMembersWorkerInput, "database">
@@ -174,6 +180,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
       inputBytes: number,
       receive: (
         value:
+          | SessionPendingSourceWorkerResult
           | SessionHistoryWorkerResult
           | boolean
           | SessionMember[]
@@ -199,6 +206,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
         );
         const value = receive(
           unwrapSessionTranscriptWorkerReply<
+            | "pending-source"
             | "history-page"
             | "session-row-presence"
             | "session-members"
@@ -233,6 +241,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
           if (
             typeof value === "boolean" ||
             Array.isArray(value) ||
+            value.kind === "pending-source" ||
             value.kind === "session-entry-list" ||
             value.kind === "session-target-inventory" ||
             value.kind === "session-target-registry-required" ||
@@ -243,6 +252,23 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
           }
           return value;
         }),
+      readPendingSource: async (input) =>
+        await runRequest(
+          () => ({ kind: "pending-source", ...input }),
+          JSON.stringify(input).length * 2,
+          (value) => {
+            if (
+              typeof value === "boolean" ||
+              Array.isArray(value) ||
+              value.kind !== "pending-source"
+            ) {
+              throw new Error(
+                "Session history worker returned another result instead of pending source",
+              );
+            }
+            return value.value;
+          },
+        ),
       readUsageCache: async (input) =>
         await runRequest(
           () => ({ kind: "usage-cache", ...input }),

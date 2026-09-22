@@ -158,7 +158,7 @@ export function createGatewayChatUserTurnController(params: {
     }
     return audienceIdentity;
   };
-  const retainAudience = (source: { recovered: boolean }) => {
+  const retainAudience = async (source: { recovered: boolean }) => {
     const identity = bindAudience();
     if (!identity || !mentionInbox) {
       return;
@@ -166,7 +166,7 @@ export function createGatewayChatUserTurnController(params: {
     if (!source.recovered && !audienceRecipients) {
       throw new Error("Fresh mention input requires an admitted everyone audience");
     }
-    mentionInbox.retainEveryoneAudience(params.client, identity, {
+    await mentionInbox.retainEveryoneAudience(params.client, identity, {
       ...(audienceRecipients
         ? { recipients: audienceRecipients, recovered: source.recovered }
         : { recovered: true as const }),
@@ -246,11 +246,12 @@ export function createGatewayChatUserTurnController(params: {
       params.warn(`gateway user transcript persistence failed: ${formatForLog(error)}`),
     ...(selectedMentions && senderProfileId && mentionInbox
       ? {
-          onOriginalInputCommitted: ({ message, anchor }: UserTurnOriginalInputCommit) => {
+          retainOriginalInputCompletion: () => mentionInbox.reserveCommittedInput(),
+          onOriginalInputCommitted: async ({ message, anchor }: UserTurnOriginalInputCommit) => {
             // New-session input has no pending queue to survive: bind once after its
             // actual SID is committed, still under the original live admission.
             if (!session.entry && audienceRecipients) {
-              retainAudience({ recovered: false });
+              await retainAudience({ recovered: false });
             }
             const stored = message["__openclaw"]?.humanMentions;
             const text =
@@ -280,7 +281,7 @@ export function createGatewayChatUserTurnController(params: {
                 "Human mentions skipped because the committed text no longer contains the selected tokens.",
               );
             }
-            mentionInbox.recordCommittedInput({
+            await mentionInbox.recordCommittedInput({
               sourceId,
               committedSource: {
                 generation: anchor.generation,

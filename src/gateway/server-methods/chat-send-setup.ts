@@ -95,13 +95,14 @@ export async function prepareAndAdmitChatSend(
     // still verifies the request, sender and private audience before reclaiming custody.
     const submitted =
       everyone && entry?.sessionId
-        ? readSessionSubmittedInput(
+        ? await readSessionSubmittedInput(
             { agentId, sessionKey, sessionId: entry.sessionId, storePath },
             `${clientRunId}:user`,
           )
         : undefined;
-    if (everyone && inbox && !submitted) {
-      const prepared = await inbox.prepareEveryoneRecipients();
+    assertCurrent?.();
+    if (inbox) {
+      const prepared = await inbox.prepareRecipients(everyone && !submitted);
       assertCurrent?.();
       if (!prepared.ok) {
         respond(false, undefined, prepared.error);

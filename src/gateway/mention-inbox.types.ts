@@ -6,21 +6,8 @@ import type {
   UsersMentionableResult,
 } from "../../packages/gateway-protocol/src/index.js";
 import type { MentionAudienceIdentity } from "./mention-inbox-audience-schema.js";
+import type { MentionCommittedInput } from "./mention-inbox-worker-contract.js";
 import type { GatewayClient } from "./server-methods/client-types.js";
-
-export type MentionCommittedInput = {
-  sourceId: string;
-  committedSource: { generation: string; sequence: number; timestamp: number };
-  sessionKey: string;
-  agentId?: string;
-  sessionId: string;
-  messageId: string;
-  senderProfileId: string;
-  recipientProfileIds: readonly string[];
-  excerpt?: string;
-  /** Exact private source custody; only a retained everyone token permits its fanout. */
-  everyoneAudience?: { identity: MentionAudienceIdentity; retained: boolean };
-};
 
 /** Keep the Gateway context independent of its context-consuming Inbox implementation. */
 export type MentionInbox = {
@@ -34,8 +21,8 @@ export type MentionInbox = {
     input: UsersMentionableParams,
     profileIds: readonly string[],
   ) => Result<readonly string[], ErrorShape>;
-  /** Prepare the bounded roster, then resolve current access without another yield. */
-  prepareEveryoneRecipients: () => Promise<Result<undefined, ErrorShape>>;
+  /** Prepare committed target facts, and the bounded roster only for fresh everyone selection. */
+  prepareRecipients: (everyone: boolean) => Promise<Result<undefined, ErrorShape>>;
   resolveEveryoneRecipients: (
     client: GatewayClient | null,
     input: UsersMentionableParams,
@@ -47,13 +34,19 @@ export type MentionInbox = {
       | { recipients: readonly string[]; recovered: boolean }
       | { recovered: true }
     ),
-  ) => void;
-  list: (client: GatewayClient | null) => Result<MentionsListResult, ErrorShape>;
+  ) => Promise<void>;
+  list: (
+    client: GatewayClient | null,
+    publish: (result: Result<MentionsListResult, ErrorShape>) => void,
+  ) => Promise<void>;
   dismiss: (
     client: GatewayClient | null,
     ids: readonly string[],
-  ) => Result<MentionsListResult, ErrorShape>;
-  recordCommittedInput: (input: MentionCommittedInput) => void;
+    publish: (result: Result<MentionsListResult, ErrorShape>) => void,
+  ) => Promise<void>;
+  /** Reserve postcommit custody synchronously before a collected source starts yielding. */
+  reserveCommittedInput: () => (complete: () => Promise<void>) => Promise<void>;
+  recordCommittedInput: (input: MentionCommittedInput) => Promise<void>;
   invalidate: (sessionKey?: string) => void;
-  dispose: () => void;
+  dispose: () => Promise<void>;
 };

@@ -176,6 +176,7 @@ export function createGatewayConnectionState(params: {
     onBroadcast: (event, payload, opts) => eventWebPush.handleEvent(event, payload, opts),
   });
   const mentionInbox = createMentionInbox({
+    getSessionRowProjection: () => sessionRowProjection,
     gatewayInstanceId: params.bootId,
     getRuntimeConfig: loadRuntimeConfig,
     *getClients() {
@@ -208,6 +209,7 @@ export function createGatewayConnectionState(params: {
     getSessionRowProjection: () => sessionRowProjection,
     attachSessionRowProjection(this: void, projection: SessionRowProjection) {
       sessionRowProjection = projection;
+      mentionInbox.invalidate();
       return () => {
         if (sessionRowProjection === projection) {
           sessionRowProjection = undefined;

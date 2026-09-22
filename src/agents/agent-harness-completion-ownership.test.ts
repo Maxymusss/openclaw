@@ -214,7 +214,7 @@ describe("review4 exact task ownership", () => {
             release?.("abandoned");
           }
           expect(
-            reconcileHarnessCompletionDelivery({
+            await reconcileHarnessCompletionDelivery({
               ...target,
               sourceRunId: source,
               taskRunId: child,

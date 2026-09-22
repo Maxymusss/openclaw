@@ -304,7 +304,7 @@ describe("native completion final-send custody", () => {
             // be the only copy of the exact harness completion receipt.
             resetTaskRegistryForTests({ persist: false });
             expect(
-              reconcileHarnessCompletionDelivery({
+              await reconcileHarnessCompletionDelivery({
                 ...target,
                 sourceRunId: source,
                 taskRunId: child,

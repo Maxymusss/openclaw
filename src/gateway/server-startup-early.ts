@@ -65,7 +65,7 @@ export async function startGatewayEarlyRuntime(params: {
       await ensureTaskRuntimeStateReady();
       const { reconcileRetainedHarnessCompletionDeliveries } =
         await import("../agents/agent-harness-completion-delivery.js");
-      reconcileRetainedHarnessCompletionDeliveries();
+      await reconcileRetainedHarnessCompletionDeliveries();
     });
   }
   // Startup failure can occur immediately after discovery; publish its owner first.

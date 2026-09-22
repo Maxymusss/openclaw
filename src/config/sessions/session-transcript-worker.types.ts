@@ -122,7 +122,32 @@ export type SessionBranchSummaryWorkerInput = {
   request: SessionBranchSummaryReadRequest;
 };
 
+export type SessionPendingSourceWorkerInput = {
+  kind: "pending-source";
+  database: { agentId: string; path: string };
+  scope: SessionAccessScope & { agentId: string; sessionId: string };
+  request:
+    | { kind: "submitted"; idempotencyKey: string }
+    | { kind: "retained"; idempotencyKey: string; requestFingerprint: string }
+    | {
+        kind: "dedupe";
+        idempotencyKey: string;
+        inputId: string;
+        runId: string;
+        messageJson: string;
+        lifecycleGeneration: string;
+      };
+};
+export type SessionPendingSourceWorkerResult = {
+  kind: "pending-source";
+  value:
+    | boolean
+    | import("../../sessions/user-turn-transcript.types.js").PersistedUserTurnMessage
+    | undefined;
+};
+
 export type SessionTranscriptWorkerValues = {
+  "pending-source": SessionPendingSourceWorkerResult;
   "branch-summaries": SessionBranchSummaryReadResult;
   "history-page": SessionHistoryWorkerResult;
   "session-row-presence": boolean;

@@ -188,8 +188,8 @@ describe("host-owned harness completion recovery", () => {
         await replaceSessionEntry(target, terminalEntry(entry));
         resetTaskRegistryForTests({ persist: false });
         await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
-        reconcileRetainedHarnessCompletionDeliveries();
-        expect(reconcileHarnessCompletionDelivery(request)).toBe(
+        await reconcileRetainedHarnessCompletionDeliveries();
+        expect(await reconcileHarnessCompletionDelivery(request)).toBe(
           status === "succeeded" ? "delivered" : "blocked",
         );
         expect(getTaskById(task.taskId)?.deliveryStatus).toBe(
@@ -348,7 +348,7 @@ describe("host-owned harness completion recovery", () => {
           }
           resetTaskRegistryForTests({ persist: false });
           await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
-          reconcileRetainedHarnessCompletionDeliveries();
+          await reconcileRetainedHarnessCompletionDeliveries();
           expect(getTaskById(task.taskId)?.deliveryStatus).toBe(
             phase === "single" ? "delivered" : "pending",
           );
@@ -550,7 +550,7 @@ describe("host-owned harness completion recovery", () => {
             },
           },
         );
-        expect(reconcileHarnessCompletionDelivery(request)).toBe("blocked");
+        expect(await reconcileHarnessCompletionDelivery(request)).toBe("blocked");
         const joined = await deliverAgentHarnessTaskCompletion({
           scope: createAgentHarnessTaskRuntimeScope({ requesterSessionKey: sessionKey }),
           childSessionKey: runId,
@@ -581,7 +581,7 @@ describe("host-owned harness completion recovery", () => {
         },
       );
 
-      expect(reconcileHarnessCompletionDelivery(request)).toBe("pending");
+      expect(await reconcileHarnessCompletionDelivery(request)).toBe("pending");
       const joined = await deliverAgentHarnessTaskCompletion({
         scope: createAgentHarnessTaskRuntimeScope({ requesterSessionKey: sessionKey }),
         childSessionKey: runId,
@@ -603,7 +603,7 @@ describe("host-owned harness completion recovery", () => {
       await replaceSessionEntry(target, successor);
       expect(successor.restartRecoveryDeliverySourceRunId).toBe(announceId);
       expect(successor.restartRecoveryHarnessCompletion).toEqual(claim);
-      expect(reconcileHarnessCompletionDelivery(request)).toBe("pending");
+      expect(await reconcileHarnessCompletionDelivery(request)).toBe("pending");
       expect(getTaskById(task.taskId)?.deliveryStatus).toBe("pending");
     });
   });
@@ -615,10 +615,10 @@ describe("host-owned harness completion recovery", () => {
       resetTaskRegistryForTests({ persist: false });
       await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
       expect(getTaskById(task.taskId)?.deliveryStatus).toBe("pending");
-      reconcileRetainedHarnessCompletionDeliveries();
+      await reconcileRetainedHarnessCompletionDeliveries();
       expect(getTaskById(task.taskId)?.deliveryStatus).toBe("delivered");
-      expect(reconcileHarnessCompletionDelivery(request)).toBe("delivered");
-      reconcileRetainedHarnessCompletionDeliveries();
+      expect(await reconcileHarnessCompletionDelivery(request)).toBe("delivered");
+      await reconcileRetainedHarnessCompletionDeliveries();
       expect(getTaskById(task.taskId)?.deliveryStatus).toBe("delivered");
     });
   });
@@ -661,7 +661,7 @@ describe("host-owned harness completion recovery", () => {
       await replaceSessionEntry(target, terminal);
       resetTaskRegistryForTests({ persist: false });
       await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
-      reconcileRetainedHarnessCompletionDeliveries();
+      await reconcileRetainedHarnessCompletionDeliveries();
       expect(getTaskById(task.taskId)?.deliveryStatus).toBe(
         ["exact", "default-account", "casefolded-provider"].includes(kind)
           ? "delivered"
@@ -674,8 +674,8 @@ describe("host-owned harness completion recovery", () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const { entry, target, request, task } = await admit(state);
       await replaceSessionEntry(target, terminalEntry(entry, false));
-      reconcileRetainedHarnessCompletionDeliveries();
-      expect(reconcileHarnessCompletionDelivery(request)).toBe("blocked");
+      await reconcileRetainedHarnessCompletionDeliveries();
+      expect(await reconcileHarnessCompletionDelivery(request)).toBe("blocked");
       expect(getTaskById(task.taskId)?.deliveryStatus).toBe("pending");
     });
   });
@@ -695,8 +695,8 @@ describe("host-owned harness completion recovery", () => {
         }
         await replaceSessionEntry(target, terminal);
         expect(getOwedHarnessCompletionTask(claim, terminal)).toBeUndefined();
-        reconcileRetainedHarnessCompletionDeliveries();
-        expect(reconcileHarnessCompletionDelivery(request)).toBe("blocked");
+        await reconcileRetainedHarnessCompletionDeliveries();
+        expect(await reconcileHarnessCompletionDelivery(request)).toBe("blocked");
         expect(getTaskById(task.taskId)?.deliveryStatus).toBe("pending");
       });
     },
@@ -772,7 +772,7 @@ describe("host-owned harness completion recovery", () => {
         ...entry,
         restartRecoveryTerminalDeliveryEvidence: [receipt],
       });
-      expect(reconcileHarnessCompletionDelivery(request)).toBe("pending");
+      expect(await reconcileHarnessCompletionDelivery(request)).toBe("pending");
       expect(getTaskById(task.taskId)?.deliveryStatus).toBe("pending");
     });
   });
@@ -813,11 +813,11 @@ describe("host-owned harness completion recovery", () => {
           ...terminal,
           restartRecoveryTerminalDeliveryEvidence: [evidence],
         });
-        expect(reconcileHarnessCompletionDelivery(request)).toBe("blocked");
+        expect(await reconcileHarnessCompletionDelivery(request)).toBe("blocked");
         expect(getTaskById(task.taskId)?.deliveryStatus).toBe("pending");
       }
       await replaceSessionEntry(target, terminal);
-      expect(reconcileHarnessCompletionDelivery(request)).toBe("delivered");
+      expect(await reconcileHarnessCompletionDelivery(request)).toBe("delivered");
       expect(getTaskById(task.taskId)?.deliveryStatus).toBe("delivered");
     });
   });
@@ -850,7 +850,7 @@ describe("review3 custody ownership", () => {
             { message: { role: "user", content: "new human work" } },
           );
         }
-        expect(reconcileHarnessCompletionDelivery(request)).toBe(
+        expect(await reconcileHarnessCompletionDelivery(request)).toBe(
           kind === "valid-source" ? "pending" : "blocked",
         );
         expect(getTaskById(task.taskId)?.deliveryStatus).toBe("pending");
@@ -880,7 +880,7 @@ describe("review3 custody ownership", () => {
           if (kind === "released") {
             releaseAgentRunContext(announceId, owner);
           }
-          expect(reconcileHarnessCompletionDelivery(request)).toBe(
+          expect(await reconcileHarnessCompletionDelivery(request)).toBe(
             kind === "owned" ? "pending" : "blocked",
           );
           expect(getTaskById(task.taskId)?.deliveryStatus).toBe("pending");
@@ -931,7 +931,7 @@ describe("review3 Gateway admission custody", () => {
         if (kind === "released") {
           registration.cleanup();
         }
-        const result = withPluginRuntimeGatewayRequestScope(
+        const result = await withPluginRuntimeGatewayRequestScope(
           {
             context,
             resolveGatewayContext: () => {

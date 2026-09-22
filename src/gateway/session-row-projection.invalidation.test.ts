@@ -1,3 +1,4 @@
+import { DatabaseSync, StatementSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import * as agentIdentity from "../agents/identity.js";
@@ -17,6 +18,7 @@ import {
   createSessionMaintenanceFinalizationOperation,
   runSqliteSessionReclamation,
 } from "../config/sessions/session-accessor.sqlite-reclamation.js";
+import type { InternalSessionEntry } from "../config/sessions/types.js";
 import { onSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -29,6 +31,123 @@ import { createSessionRowProjection } from "./session-row-projection.js";
 import { listProjectedSessions } from "./session-utils-list.js";
 
 afterEach(() => vi.restoreAllMocks());
+
+it("reads current committed metadata without SQL while presentation and catalog refresh are pending", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    const cfg = { agents: { entries: { main: {} } } };
+    const query = { agentId: "main", key: "agent:main:committed-metadata" };
+    const scope = { agentId: query.agentId, sessionKey: query.key };
+    const entry = {
+      sessionId: "committed-metadata",
+      lifecycleRevision: "original",
+      updatedAt: 1,
+      visibility: "shared" as const,
+      displayName: "Original conversation",
+    };
+    replaceSessionEntrySync(scope, entry);
+    const releaseForeground = projectionWork.retainSessionListForegroundWork();
+    const catalog = createDeferredCore<[]>();
+    const presentation = createDeferredCore();
+    const readCatalog = vi.fn(async () => []);
+    const projection = await createSessionRowProjection({ cfg, getModelCatalog: readCatalog });
+    try {
+      await projection.ensureMaterialized();
+      const original = projection.readCommittedEntry(query);
+      expect(original?.entry).toMatchObject(entry);
+      const materializedCount = projection.materializedCount;
+      readCatalog.mockReturnValueOnce(catalog.promise);
+      const yieldWork = vi
+        .spyOn(projectionWork, "yieldSessionListWork")
+        .mockReturnValue(presentation.promise);
+      sessionChanges.emit({ all: true, scope: "catalog" });
+      expect(readCatalog).toHaveBeenCalledTimes(2);
+      const assertCommitted = (expected: Partial<InternalSessionEntry>) => {
+        const statements = [
+          vi.spyOn(DatabaseSync.prototype, "prepare"),
+          vi.spyOn(DatabaseSync.prototype, "exec"),
+          ...(["all", "get", "iterate", "run"] as const).map((method) =>
+            vi.spyOn(StatementSync.prototype, method),
+          ),
+        ];
+        try {
+          const current = projection.readCommittedEntry(query);
+          expect(current).toMatchObject({
+            key: query.key,
+            agentId: query.agentId,
+            storeTarget: original?.storeTarget,
+            entry: expected,
+          });
+          expect(
+            projection.readCommittedEntry({ ...query, key: "agent:main:missing" }),
+          ).toBeUndefined();
+          expect(
+            projection.readCommittedEntry({
+              ...query,
+              key: "agent:main:dashboard:incognito-committed",
+            }),
+          ).toBeUndefined();
+          for (const statement of statements) {
+            expect(statement).not.toHaveBeenCalled();
+          }
+          return current;
+        } finally {
+          for (const statement of statements) {
+            statement.mockRestore();
+          }
+        }
+      };
+
+      replaceSessionEntrySync(scope, {
+        ...entry,
+        visibility: "draft",
+        displayName: "Current conversation",
+      });
+      expect(projection.dirtyRowCount).toBe(1);
+      const current = assertCommitted({
+        ...entry,
+        visibility: "draft",
+        displayName: "Current conversation",
+      });
+      expect(current?.generation).toBe(original?.generation);
+      expect(current?.materialized).toBe(original?.materialized);
+      expect(projection.materializedCount).toBe(materializedCount);
+      expect(yieldWork).toHaveBeenCalled();
+
+      replaceSessionEntrySync(scope, {
+        ...entry,
+        sessionId: "replacement-metadata",
+        lifecycleRevision: "replacement",
+        visibility: "draft",
+        displayName: "Replacement conversation",
+      });
+      const replacement = assertCommitted({
+        sessionId: "replacement-metadata",
+        lifecycleRevision: "replacement",
+        displayName: "Replacement conversation",
+      });
+      // Replacement normalization belongs to the session writer, not this projection.
+      expect(replacement?.entry.visibility).toBe(loadSessionEntry(scope)?.visibility);
+      expect(replacement?.generation).not.toBe(current?.generation);
+      expect(replacement?.materialized).toBeUndefined();
+      expect(projection.dirtyRowCount).toBe(1);
+      expect(projection.materializedCount).toBe(materializedCount);
+      catalog.resolve([]);
+      presentation.resolve();
+      await projection.ensureMaterialized();
+      expect(projection.snapshot(query).row).toMatchObject({
+        sessionId: "replacement-metadata",
+        displayName: "Replacement conversation",
+      });
+      expect(projection.needsMaterialization).toBe(false);
+    } finally {
+      catalog.resolve([]);
+      presentation.resolve();
+      await projection.ensureMaterialized();
+      projection.dispose();
+      releaseForeground();
+    }
+  });
+});
 
 it.each(["maintenance-finalize", "lifecycle-artifacts"] as const)(
   "publishes %s removals before row listeners recreate the key",

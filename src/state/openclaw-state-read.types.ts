@@ -10,6 +10,10 @@ import type {
   ExecutionIdentityInspectionOutcome,
 } from "../audit/execution-identity-inspection.types.js";
 import type { FleetCellRecord } from "../fleet/registry.types.js";
+import type {
+  MentionReadInput,
+  MentionReadResult,
+} from "../gateway/mention-inbox-worker-contract.js";
 import type { readExecApprovalsConfigRow } from "../infra/exec-approvals-sqlite.js";
 import type { SqliteWorkerStateContext } from "../infra/sqlite-worker-state-context.js";
 import type {
@@ -43,6 +47,7 @@ export type OpenClawStateReadAuthority = {
 };
 
 export type OpenClawStateReadCommand =
+  | { type: "mentions.read"; input: MentionReadInput }
   | PluginBlobReadCommand
   | { type: "exec-approvals.read" }
   | { type: "agentDatabaseRegistry.read" }
@@ -69,6 +74,7 @@ export type OpenClawStateReadRequest = {
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply = (
+  | { ok: true; type: "mentions.read"; sourceAdmitted: true; result: MentionReadResult }
   | PluginBlobReadReply
   | {
       ok: true;

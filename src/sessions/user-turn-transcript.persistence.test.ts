@@ -7,6 +7,7 @@ import {
 import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { castAgentMessage } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { runAgentHarnessBeforeMessageWriteHook } from "../agents/harness/hook-helpers.js";
 import { formatChatWorkContext } from "../chat/work-context.js";
@@ -17,11 +18,13 @@ import { readSessionColdTranscript } from "../config/sessions/session-cold-stora
 import { runSessionColdStorageMaintenance } from "../config/sessions/session-cold-storage.js";
 import { stripEnvelopeFromMessage } from "../gateway/chat-sanitize.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type { DB } from "../state/openclaw-agent-db.generated.js";
 import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../state/openclaw-agent-db.js";
+import { onInternalSessionTranscriptUpdate } from "./transcript-events.js";
 import { createUserTurnTranscriptRecorder } from "./user-turn-transcript.js";
 import {
   buildChannelUserTurnSender,
@@ -424,7 +427,9 @@ describe("persistUserTurnTranscript", () => {
       createUserTurnTranscriptRecorder({
         input,
         target,
-        onOriginalInputCommitted: (commit) => commits.push(commit),
+        onOriginalInputCommitted: (commit) => {
+          commits.push(commit);
+        },
       });
     const first = createRecorder();
     await replaceSessionEntry(target, { sessionId: target.sessionId, updatedAt: 1 });
@@ -452,6 +457,165 @@ describe("persistUserTurnTranscript", () => {
     expect(await readTranscriptMessages(target)).toHaveLength(1);
   });
 
+  it.each([false, true])(
+    "joins ordered collected source completion before publication (failure: %s)",
+    async (failFirst) => {
+      const target = createSqliteTranscriptTarget({
+        dir: tempDirs.make("collected-input-settlement-"),
+      });
+      const firstStarted = createDeferred();
+      const firstRelease = createDeferred();
+      const events: string[] = [];
+      const errors: unknown[] = [];
+      const reserved = new Set<string>();
+      const sources = ["ada", "grace"].map((profileId, index) =>
+        createUserTurnTranscriptRecorder({
+          input: {
+            text: "@" + profileId,
+            mentions: [{ profileId, start: 0, end: profileId.length + 1 }],
+          },
+          target,
+          retainOriginalInputCompletion: () => {
+            reserved.add(profileId);
+            return async (complete) => {
+              try {
+                await complete();
+              } finally {
+                reserved.delete(profileId);
+              }
+            };
+          },
+          onOriginalInputCommitted: async () => {
+            events.push(profileId + ":start");
+            if (index === 0) {
+              firstStarted.resolve();
+              await firstRelease.promise;
+            }
+            events.push(profileId + ":settled");
+            if (index === 0 && failFirst) {
+              throw new Error("source notification failed");
+            }
+          },
+          onPersistenceError: (error) => {
+            errors.push(error);
+          },
+        }),
+      );
+      const aggregate = createUserTurnTranscriptRecorder({
+        input: {
+          text: "@ada\n@grace",
+          mentions: [
+            { profileId: "ada", start: 0, end: 4 },
+            { profileId: "grace", start: 5, end: 11 },
+          ],
+        },
+        pendingInputSources: sources,
+        target,
+        onOriginalInputCommitted: () => {
+          events.push("aggregate");
+        },
+      });
+      const unsubscribe = onInternalSessionTranscriptUpdate((update) => {
+        if (update.messageId && update.sessionKey === target.sessionKey) {
+          events.push("published");
+        }
+      });
+      const persistence = aggregate.persistApproved().then((result) => {
+        events.push("returned");
+        return result;
+      });
+      try {
+        await firstStarted.promise;
+        let nextSourceSettled = false;
+        const nextSourceCompletion = sources[1]!.waitForRuntimePersistence().then(() => {
+          nextSourceSettled = true;
+        });
+        expect(await readTranscriptMessages(target)).toHaveLength(1);
+        expect(events).toEqual(["ada:start"]);
+        expect([...reserved]).toEqual(["ada", "grace"]);
+        expect(nextSourceSettled).toBe(false);
+        // All original sources were reserved at commit, not when their asynchronous
+        // callbacks happen to start. Cancellation cannot erase the second source.
+        sources[1]!.markBlocked();
+        firstRelease.resolve();
+        await expect(persistence).resolves.toMatchObject({ appended: true });
+        await nextSourceCompletion;
+        await aggregate.persistFallback();
+        expect(events).toEqual([
+          "ada:start",
+          "ada:settled",
+          "grace:start",
+          "grace:settled",
+          "aggregate",
+          "published",
+          "returned",
+        ]);
+        expect(errors).toHaveLength(failFirst ? 1 : 0);
+        expect(reserved.size).toBe(0);
+      } finally {
+        firstRelease.resolve();
+        await persistence;
+        unsubscribe();
+      }
+    },
+  );
+
+  it("retains runtime postcommit work through recorder and lifecycle settlement", async () => {
+    const target = createSqliteTranscriptTarget({
+      dir: tempDirs.make("runtime-input-settlement-"),
+    });
+    const input = { text: "Hello @Ada", idempotencyKey: "runtime-settlement:user" };
+    const result = await persistUserTurnTranscript({ ...target, input, updateMode: "none" });
+    const release = createDeferred();
+    const started = createDeferred();
+    let attempts = 0;
+    const lifecycleFailures = new Set<unknown>();
+    const lifecycle = new AsyncWorkScope(lifecycleFailures);
+    const errors: unknown[] = [];
+    const recorder = createUserTurnTranscriptRecorder({
+      input,
+      target,
+      onOriginalInputCommitted: async (commit) => {
+        attempts += 1;
+        recorder.markRuntimePersisted(commit.message, commit.anchor, { appended: true });
+        started.resolve();
+        await release.promise;
+        throw new Error("postcommit notification failed");
+      },
+      onPersistenceError: (error) => {
+        errors.push(error);
+      },
+    });
+    lifecycle.run(() => {
+      recorder.markRuntimePersisted(result?.message, result?.admission, { appended: true });
+      recorder.markRuntimePersisted(result?.message, result?.admission, { appended: true });
+    });
+    await started.promise;
+    const events: string[] = [];
+    const drain = lifecycle.drain().then(() => {
+      events.push("drained");
+    });
+    const settled = recorder.waitForRuntimePersistence().then(() => {
+      events.push("recorder");
+    });
+    try {
+      expect(lifecycle.hasPendingWork).toBe(true);
+      expect(events).toEqual([]);
+      release.resolve();
+      await Promise.all([drain, settled]);
+      await recorder.persistFallback();
+      expect(attempts).toBe(1);
+      expect(errors).toEqual([
+        expect.objectContaining({ message: "postcommit notification failed" }),
+      ]);
+      expect(lifecycleFailures.size).toBe(0);
+      expect(events).toEqual(expect.arrayContaining(["drained", "recorder"]));
+    } finally {
+      release.resolve();
+      await Promise.all([drain, settled]);
+    }
+  });
+
   it.each([undefined, false, true])(
     "requires explicit runtime append freshness (%s), not an admission anchor",
     async (appended) => {
@@ -462,11 +626,14 @@ describe("persistUserTurnTranscript", () => {
       const recorder = createUserTurnTranscriptRecorder({
         input,
         target,
-        onOriginalInputCommitted: (commit) => commits.push(commit),
+        onOriginalInputCommitted: (commit) => {
+          commits.push(commit);
+        },
       });
       const persistence = appended === undefined ? undefined : { appended };
       recorder.markRuntimePersisted(result?.message, result?.admission, persistence);
       recorder.markRuntimePersisted(result?.message, result?.admission, persistence);
+      await recorder.waitForRuntimePersistence();
       expect(recorder.getAdmissionReceipt()?.entryId).toBe(result?.messageId);
       expect(commits).toHaveLength(appended === true ? 1 : 0);
     },
@@ -497,7 +664,9 @@ describe("persistUserTurnTranscript", () => {
     const recorder = createUserTurnTranscriptRecorder({
       message,
       target,
-      onOriginalInputCommitted: (commit) => commits.push(commit),
+      onOriginalInputCommitted: (commit) => {
+        commits.push(commit);
+      },
     });
     await (kind === "blocked" ? recorder.persistBlocked(message) : recorder.persistApproved());
     expect(await readTranscriptMessages(target)).toHaveLength(1);
@@ -524,7 +693,9 @@ describe("persistUserTurnTranscript", () => {
             },
           },
           target,
-          onOriginalInputCommitted: (commit) => commits.push(commit),
+          onOriginalInputCommitted: (commit) => {
+            commits.push(commit);
+          },
         }),
       );
       for (const [index, source] of sources.entries()) {
@@ -713,7 +884,7 @@ describe("persistUserTurnTranscript", () => {
     const dir = tempDirs.make("openclaw-user-turn-redacted-idempotent-");
     const target = createSqliteTranscriptTarget({ dir });
 
-    await persistUserTurnTranscript({
+    const input = (): Parameters<typeof persistUserTurnTranscript>[0] => ({
       ...target,
       input: {
         text: "secret prompt",
@@ -733,26 +904,8 @@ describe("persistUserTurnTranscript", () => {
       },
       beforeMessageWrite: runAgentHarnessBeforeMessageWriteHook,
     });
-    await persistUserTurnTranscript({
-      ...target,
-      input: {
-        text: "secret prompt",
-        idempotencyKey: "chat-run-1:user",
-        replyToId: "transcript-reply-1",
-        replyToPreview: { text: "Original reply", senderLabel: "Molty" },
-        senderIsOwner: true,
-        provenance,
-        sender: { id: "user-42", name: "Ada" },
-        transport: {
-          channel: "reef",
-          conversationRef: "conv_0123456789abcdef0123456789abcdef",
-          messageId: "inbound-1",
-          replyToId: "outbound-1",
-          clients: [{ id: "cli", mode: "cli", displayName: "Original app" }],
-        },
-      },
-      beforeMessageWrite: runAgentHarnessBeforeMessageWriteHook,
-    });
+    await persistUserTurnTranscript(input());
+    await persistUserTurnTranscript(input());
 
     await expect(readTranscriptMessages(target)).resolves.toEqual([
       expect.objectContaining({

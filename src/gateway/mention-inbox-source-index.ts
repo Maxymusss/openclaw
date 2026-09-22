@@ -1,15 +1,11 @@
-import type { DatabaseSync } from "node:sqlite";
 import { MENTION_INBOX_MAX_ITEMS } from "../../packages/gateway-protocol/src/index.js";
-import { readUserProfileVersion } from "../state/user-profile-events.js";
-import type { createHumanMentionPolicy } from "./human-mention-policy.js";
-import {
-  mentionSourceChunkKey,
-  readMentionStoreSnapshot,
-  writeMentionStoreChanges,
-  type MentionStoreHead,
-  type MentionStoreMessage,
-  type MentionStoreSource,
-} from "./mention-inbox-store.js";
+import { mentionSourceChunkKey } from "./mention-inbox-store.js";
+import type {
+  MentionStoreHead,
+  MentionStoreMessage,
+  MentionStoreSource,
+  MentionStoreSnapshot,
+} from "./mention-inbox-store.types.js";
 
 export type StoredMention = {
   id: string;
@@ -29,24 +25,21 @@ type ProcessedSource = {
 };
 
 /** Disposable chunk and recipient indexes, rebuilt only from the durable Inbox source owner. */
-export function createMentionInboxSourceIndex(policy: ReturnType<typeof createHumanMentionPolicy>) {
+export function createMentionInboxSourceIndex(
+  resolveCanonical: (id: string) => string = (id) => id,
+) {
   const items = new Map<string, StoredMention>();
   const itemsByProfile = new Map<string, Set<StoredMention>>();
   const processed = new Map<string, ProcessedSource>();
   const dirtySources = new Set<string>();
   let head: MentionStoreHead = { revision: -1, nextSequence: 0 };
-  let profileVersion = readUserProfileVersion();
   let nextExpiryAt = Infinity;
 
   function createSource(key: string, sequence: number, expiresAt: number): ProcessedSource {
     return { key, sequence, expiresAt, recipients: new Map(), rootKey: key };
   }
 
-  function synchronize(database?: DatabaseSync): boolean {
-    const snapshot = readMentionStoreSnapshot(head.revision, database);
-    if (!snapshot) {
-      return false;
-    }
+  function hydrate(snapshot: MentionStoreSnapshot): void {
     items.clear();
     itemsByProfile.clear();
     processed.clear();
@@ -86,9 +79,6 @@ export function createMentionInboxSourceIndex(policy: ReturnType<typeof createHu
       }
     }
     head = snapshot.head;
-    // A restart or another writer may have preceded this process's profile events.
-    profileVersion = -1;
-    return true;
   }
 
   function removeItem(item: StoredMention | null | undefined): boolean {
@@ -147,18 +137,13 @@ export function createMentionInboxSourceIndex(policy: ReturnType<typeof createHu
   }
 
   function reconcileProfiles(): void {
-    const version = readUserProfileVersion();
-    if (version === profileVersion) {
-      return;
-    }
-    profileVersion = version;
     const families = new Map<string, Map<string, ProcessedSource>>();
     for (const source of processed.values()) {
       const family = families.get(source.rootKey) ?? new Map<string, ProcessedSource>();
       families.set(source.rootKey, family);
       const recipients = new Map<string, StoredMention | null>();
       for (const [profileId, item] of source.recipients) {
-        const canonical = policy.readProfile(profileId)?.profileId ?? profileId;
+        const canonical = resolveCanonical(profileId);
         if (canonical !== profileId || family.has(canonical)) {
           dirtySources.add(source.key);
         }
@@ -193,16 +178,16 @@ export function createMentionInboxSourceIndex(policy: ReturnType<typeof createHu
     }
   }
 
-  function writeChanges(db: DatabaseSync): void {
-    const changes = new Map<string, MentionStoreSource | undefined>();
+  function changes() {
+    const pending = new Map<string, MentionStoreSource | undefined>();
     for (const key of dirtySources) {
       const source = processed.get(key);
       if (!source) {
-        changes.set(key, undefined);
+        pending.set(key, undefined);
         continue;
       }
       const message = [...source.recipients.values()].find((item) => item !== null)?.message;
-      changes.set(key, {
+      pending.set(key, {
         key,
         sequence: source.sequence,
         expiresAt: source.expiresAt,
@@ -213,7 +198,7 @@ export function createMentionInboxSourceIndex(policy: ReturnType<typeof createHu
         ...(message ? { message } : {}),
       });
     }
-    head = writeMentionStoreChanges(db, head, changes);
+    return pending;
   }
 
   return {
@@ -224,9 +209,6 @@ export function createMentionInboxSourceIndex(policy: ReturnType<typeof createHu
     get head() {
       return head;
     },
-    get profileVersion() {
-      return profileVersion;
-    },
     get nextExpiryAt() {
       return nextExpiryAt;
     },
@@ -234,16 +216,13 @@ export function createMentionInboxSourceIndex(policy: ReturnType<typeof createHu
       nextExpiryAt = value;
     },
     createSource,
-    synchronize,
+    hydrate,
     removeItem,
     trimItems,
     indexItem,
     expireItems,
     reconcileProfiles,
-    writeChanges,
-    invalidate() {
-      head = { revision: -1, nextSequence: 0 };
-    },
+    changes,
     clear() {
       items.clear();
       itemsByProfile.clear();
