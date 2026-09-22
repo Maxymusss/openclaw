@@ -38,7 +38,9 @@ export function renderCapabilityToggleRow(options: {
     >
       ${options.icon ? html`<span slot="icon" aria-hidden="true">${options.icon}</span>` : nothing}
       <span class="agent-chat__capability-menu-label">
-        <span>${options.label}</span>
+        <span title=${options.title ? `${options.label}: ${options.title}` : options.label}
+          >${options.label}</span
+        >
         ${options.note ?? nothing}
       </span>
       ${

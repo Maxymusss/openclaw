@@ -66,8 +66,8 @@ describe("composer overflow presentation", () => {
           skills: [
             "apple-notes",
             "apple-reminders",
-            "bear-notes",
-            "A skill with a long descriptive name that wraps across multiple lines",
+            "writing-for-agents",
+            "A skill with a long descriptive name that must remain on one line",
             ...Array.from({ length: 12 }, (_, index) => `fixture-skill-${index}`),
           ].map((name) => ({
             key: name,
@@ -117,6 +117,14 @@ describe("composer overflow presentation", () => {
         expect(label.bottom).toBeLessThanOrEqual(box.bottom);
         expect(label.left).toBeGreaterThanOrEqual(box.left);
         expect(label.right).toBeLessThanOrEqual(box.right);
+        const name = row.querySelector<HTMLElement>(".agent-chat__capability-menu-label > span")!;
+        const nameBox = name.getBoundingClientRect();
+        expect(nameBox.height).toBeLessThanOrEqual(
+          Number.parseFloat(getComputedStyle(name).lineHeight) + 1,
+        );
+        const toggle = row.querySelector("wa-switch")!.getBoundingClientRect();
+        expect(nameBox.right).toBeLessThanOrEqual(toggle.left);
+        expect(toggle.right).toBeLessThanOrEqual(box.right);
       }
       const name = rows[1]!.querySelector<HTMLElement>(
         ".agent-chat__capability-menu-label > span",
@@ -124,6 +132,12 @@ describe("composer overflow presentation", () => {
       expect(name.getBoundingClientRect().height).toBeLessThan(
         2 * Number.parseFloat(getComputedStyle(name).lineHeight),
       );
+      const longName = rows[3]!.querySelector<HTMLElement>(
+        ".agent-chat__capability-menu-label > span",
+      )!;
+      expect(longName.title).toBe(`${longName.textContent}: deps missing`);
+      expect(longName.scrollWidth).toBeGreaterThan(longName.clientWidth);
+      expect(getComputedStyle(longName).textOverflow).toBe("ellipsis");
       expect(menu.scrollWidth).toBeLessThanOrEqual(menu.clientWidth);
       expect(menu.getBoundingClientRect().right).toBeLessThanOrEqual(width);
     },

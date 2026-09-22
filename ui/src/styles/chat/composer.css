@@ -297,6 +297,18 @@
   scrollbar-gutter: auto;
 }
 
+.agent-chat__capability-menu[data-view="skills"]::part(menu) {
+  width: min(320px, calc(100vw - 24px));
+  min-width: 0;
+  max-width: min(320px, calc(100vw - 24px));
+}
+
+/* Skill rows have no leading icon; do not reserve an empty icon rail. */
+.agent-chat__capability-menu[data-view="skills"]
+  .agent-chat__capability-menu-item:not(:has([slot="icon"]))::part(icon) {
+  display: none;
+}
+
 .agent-chat__capability-menu-item[value="back"] {
   position: sticky;
   top: calc(-1 * var(--menu-padding));
@@ -331,6 +343,7 @@
 }
 
 .agent-chat__capability-menu-divider {
+  flex-shrink: 0;
   height: 1px;
   margin: 4px 6px;
   background: color-mix(in srgb, var(--border) 72%, transparent);
@@ -404,6 +417,9 @@
   line-height: 1.25;
 }
 
+.agent-chat__capability-menu[data-view="skills"]
+  .agent-chat__capability-menu-label
+  > span:first-child,
 .agent-chat__capability-menu-item[value^="library-"] .agent-chat__capability-menu-label > span {
   overflow: hidden;
   text-overflow: ellipsis;
