@@ -13,14 +13,13 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
 type CaptureParams = {
   cwd: string;
-  tarball: string;
   env: NodeJS.ProcessEnv;
   stderr: string | null;
   startedAt: number;
   finishedAt: number;
   /** Exact --logs-dir supplied to this invocation; never an inferred cache. */
   explicitLogsDir?: string;
-};
+} & ({ operation?: "install"; tarball: string } | { operation: "pack"; explicitLogsDir: string });
 
 // Failure-only observation: no config loading, npm invocation, directory creation,
 // cache writes or raw log output. A guessed cache location is never called selected.
@@ -33,6 +32,7 @@ export function captureNpmFailureEvidence(params: CaptureParams) {
 }
 
 function capture(params: CaptureParams) {
+  const operation = params.operation ?? "install";
   const debugName = /^\d{4}-\d{2}-\d{2}T\d{2}_\d{2}_\d{2}_\d{3}Z-debug-\d+\.log$/;
   const envValue = (name: string) =>
     Object.entries(params.env).find(([key]) => key.toLowerCase() === name)?.[1];
@@ -125,13 +125,33 @@ function capture(params: CaptureParams) {
             );
             // A killed npm may never write its final cwd record. Its argv contains
             // this fixture's unique tarball even when stderr has no log pointer.
-            const tarballMatches = lines.some(
-              (line) =>
-                /^\d+ verbose argv "install" /.test(line) &&
-                line.includes(JSON.stringify(params.tarball)),
+            const operationLines = lines.filter((line) =>
+              line
+                .match(/^\d+ verbose argv (.*)$/)?.[1]
+                .startsWith(JSON.stringify(operation) + " "),
             );
+            const tarballMatches =
+              params.operation !== "pack" &&
+              operationLines.some(
+                (line) =>
+                  /^\d+ verbose argv "install" /.test(line) &&
+                  line.includes(JSON.stringify(params.tarball)),
+              );
+            const packMatches =
+              params.operation === "pack" &&
+              operationLines.some(
+                (line) =>
+                  line.includes('"--logs-dir" ') &&
+                  line.includes(JSON.stringify(params.explicitLogsDir)),
+              );
             const emittedByChild = file === reportedFile;
-            if (!cwdMatches && !tarballMatches && !emittedByChild) continue;
+            // A pack cwd may be shared across fixtures. Its unique CLI-selected
+            // log path binds this operation; cwd alone cannot identify it.
+            const invocationMatches =
+              params.operation === "pack"
+                ? packMatches || emittedByChild
+                : cwdMatches || tarballMatches || emittedByChild;
+            if (operationLines.length === 0 || !invocationMatches) continue;
             const fields = lines
               .filter((line) =>
                 /^\d+ (?:(?:verbose|error) (?:exit|errno) -?\d+|error code E[A-Z0-9_]+|verbose (?:node|npm) v?\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?|info using (?:npm|node)@v?\d+\.\d+\.\d+)\s*$/.test(
@@ -143,7 +163,7 @@ function capture(params: CaptureParams) {
             // values, dependency names or raw debug lines.
             const phases = lines.flatMap((line) => {
               const match = line.match(
-                /^\d+ (?:silly|verbose|timing) (?:unfinished npm timer )?(idealTree|reify|loadActual|loadVirtual|build|extract|audit)(?=[:\s]|$)/,
+                /^\d+ (?:silly|verbose|timing) (?:unfinished npm timer )?(idealTree|reify|loadActual|loadVirtual|build|extract|audit|pack)(?=[:\s]|$)/,
               );
               return match ? [match[1]] : [];
             });
@@ -156,8 +176,9 @@ function capture(params: CaptureParams) {
               binding: emittedByChild ? "child-stderr" : "unique-fixture-path-and-time-window",
               cwdMatches,
               tarballMatches,
+              packMatches,
               fields,
-              phases: [...new Set(phases)].slice(0, 7),
+              phases: [...new Set(phases)].slice(0, 8),
               sampledBytes: prefixRead + tailRead,
               sampleSha256: createHash("sha256")
                 .update(prefixBytes)

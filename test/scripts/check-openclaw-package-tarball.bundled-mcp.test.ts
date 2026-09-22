@@ -45,18 +45,66 @@ function sourceRoot() {
 
 function installPatchedMcp(packageRoot: string) {
   const fixtureRoot = dirname(packageRoot);
+  const packCwd = sourceRoot();
+  const packLogsDir = join(fixtureRoot, "npm-pack-logs");
   const npm = resolveNpmRunner({
-    npmArgs: ["pack", "--offline", "--ignore-scripts", "--json", "--pack-destination", fixtureRoot],
+    npmArgs: [
+      "pack",
+      "--offline",
+      "--ignore-scripts",
+      "--json",
+      "--pack-destination",
+      fixtureRoot,
+      "--logs-dir",
+      packLogsDir,
+      "--logs-max=4",
+      "--timing",
+    ],
   });
+  const packWallStartedAt = Date.now();
+  const packStartedAt = performance.now();
   const packed = spawnSync(npm.command, npm.args, {
-    cwd: sourceRoot(),
+    cwd: packCwd,
     encoding: "utf8",
     env: npm.env,
     shell: npm.shell,
     windowsVerbatimArguments: npm.windowsVerbatimArguments,
     timeout: 30_000,
   });
-  expect(packed.status, packed.stderr).toBe(0);
+  expect(
+    packed.status,
+    JSON.stringify({
+      phase: "pack-patched-mcp",
+      command: npm.command,
+      args: npm.args,
+      cwd: packCwd,
+      node: { execPath: process.execPath, version: process.version },
+      elapsedMs: performance.now() - packStartedAt,
+      timeoutMs: 30_000,
+      pid: packed.pid,
+      status: packed.status,
+      signal: packed.signal,
+      error: packed.error && {
+        name: packed.error.name,
+        code: "code" in packed.error ? packed.error.code : undefined,
+        message: packed.error.message,
+      },
+      npmEvidence:
+        packed.status === 0
+          ? undefined
+          : captureNpmFailureEvidence({
+              operation: "pack",
+              cwd: packCwd,
+              env: npm.env ?? process.env,
+              stderr: packed.stderr,
+              startedAt: packWallStartedAt,
+              finishedAt: Date.now(),
+              explicitLogsDir: packLogsDir,
+            }),
+      stdoutTail: packed.stdout?.slice(-4096),
+      stderrTail: packed.stderr?.slice(-4096),
+    }),
+  ).toBe(0);
   // A local override supplies real pnpm metadata without registry or host-cache access.
   writeFileSync(
     join(packageRoot, "pnpm-workspace.yaml"),
