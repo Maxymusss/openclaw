@@ -45,13 +45,14 @@ import {
   addTaskIndexes,
   removeTaskIndexes,
   getTaskRegistryProcessState,
+  installRestoredTaskRegistrySnapshot,
+  clearTaskRegistryProjectionRows,
   selectTaskRegistryScopes,
   captureTaskRegistryPublicationRollback,
   recordTaskRegistryPublication,
   recordTaskRegistryProjectionWrite,
   selectLiveTaskFlowForSync,
   clearTaskProgressBatches,
-  clearTaskRegistryIndexes,
 } from "./task-registry.process-state.js";
 import {
   deliverTaskRegistryObserverEvent,
@@ -119,34 +120,12 @@ function clearTaskRegistryEphemeralState(): void {
 
 export function clearTaskRegistryMemory(): void {
   clearTaskRegistryEphemeralState();
-  tasks.clear();
+  clearTaskRegistryProjectionRows();
   bumpTaskRegistryRevision();
-  taskDeliveryStates.clear();
-  clearTaskRegistryIndexes();
   recordTaskRegistryProjectionWrite("snapshot");
 }
 
 export { getTasksByRunId, getTasksByRunScope } from "./task-registry.process-state.js";
-
-function installRestoredTaskRegistrySnapshot(
-  snapshot: TaskRegistryStoreSnapshot,
-  committed = true,
-): void {
-  // Replace rows in snapshot order without disturbing live execution owners.
-  tasks.clear();
-  taskDeliveryStates.clear();
-  clearTaskRegistryIndexes();
-  for (const [id, task] of snapshot.tasks) {
-    tasks.set(id, task);
-    addTaskIndexes(task);
-  }
-  for (const [id, delivery] of snapshot.deliveryStates) {
-    taskDeliveryStates.set(id, delivery);
-  }
-  if (committed) {
-    recordTaskRegistryProjectionWrite("snapshot");
-  }
-}
 
 function isCurrentTaskRegistryDatabase(admission: OpenClawStateDatabaseReadAdmission): boolean {
   const current = openClawStateDatabaseCache.getKnownOpenClawStateDatabaseIdentity(
@@ -173,6 +152,20 @@ function getTaskRegistryRestoreState(admission: OpenClawStateDatabaseReadAdmissi
     bumpTaskRegistryRevision();
   }
   return taskRegistryProcessState.restore;
+}
+
+/** Preserve recorded restore failures without starting storage work after admission closes. */
+export function assertTaskRegistryRestoreNotFailed(): void {
+  const state = taskRegistryProcessState.restore;
+  if (
+    state.status !== "failed" ||
+    state.store !== getTaskRegistryStore() ||
+    !isCurrentTaskRegistryDatabase(state.admission)
+  ) {
+    return;
+  }
+  // Same-identity failures outlive read-admission generations until an explicit reload.
+  throw state.error;
 }
 
 export function taskFlowSyncOwner(
@@ -413,7 +406,12 @@ function failTaskRegistryRestore(
   }
   const message = formatErrorMessage(error);
   const restoreError = new Error(`Task registry restore failed: ${message}`, { cause: error });
-  taskRegistryProcessState.restore = { status: "failed", error: restoreError, admission };
+  taskRegistryProcessState.restore = {
+    status: "failed",
+    error: restoreError,
+    admission,
+    store: getTaskRegistryStore(),
+  };
   // Compact console logs omit structured metadata, so keep the rejected value visible there too.
   taskRegistryLog.warn("Failed to restore task registry", {
     error: message,

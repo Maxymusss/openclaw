@@ -1,4 +1,5 @@
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import type { TaskRegistryObservers, TaskRegistryStore } from "./task-registry-runtime.types.js";
 import { getTaskRegistryProcessState } from "./task-registry.process-state.js";
 // Stores task registry records in memory and bridges persistence runtime hooks.
@@ -58,8 +59,18 @@ const defaultTaskRegistryStore: TaskRegistryStore = {
   },
   loadSnapshot: loadTaskRegistryStateFromSqlite,
   async loadMutationSnapshotAsync(context, scope) {
-    const { executeOpenClawStateWorker } = await import("../state/openclaw-state-worker-store.js");
-    return executeOpenClawStateWorker(context, { type: "tasks.mutationSnapshot", input: scope });
+    const reply = await executeExistingOpenClawStateRead(
+      { path: context.admission.databasePath, env: context.environment },
+      { type: "tasks.mutationSnapshot", input: scope },
+      { context },
+    );
+    if (!reply) {
+      throw new Error("Task registry snapshot requires an admitted database");
+    }
+    if (!reply.ok || reply.type !== "tasks.mutationSnapshot") {
+      throw new Error("Unexpected task registry snapshot result");
+    }
+    return reply.snapshot;
   },
   loadMutationSnapshot: loadTaskRegistryMutationStateFromSqlite,
   withMutation: withTaskRegistrySqliteMutation,
