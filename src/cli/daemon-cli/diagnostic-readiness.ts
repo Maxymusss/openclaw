@@ -9,6 +9,8 @@ import { readActiveGatewayLockIdentity } from "../../infra/gateway-lock.js";
 import { readGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
 import { LOOPBACK_PORT_PROBE_HOSTS } from "../../infra/ports-probe.js";
 import { parseTcpPortFromArgs } from "../../infra/tcp-port.js";
+import { withCommandProcessScope } from "../../process/exec-spawn.js";
+import { createGatewayRestartDeadline } from "./restart-health-deadline.js";
 import { resolveGatewayRestartProbeContext } from "./restart-health-probe.js";
 import { DEFAULT_RESTART_HEALTH_TIMEOUT_MS } from "./restart-health.constants.js";
 import { waitForGatewayHealthyRestart, type GatewayRestartSnapshot } from "./restart-health.js";
@@ -54,68 +56,101 @@ export async function waitForGatewayDiagnosticReadiness(opts: {
   const nativeService = resolveGatewayService();
   let nativeCommand: Promise<GatewayServiceCommandConfig | null> | undefined;
   let nativeServiceAbsent = false;
-  const snapshot = await waitForGatewayHealthyRestart({
-    port,
-    timeoutMs: opts.timeoutMs ?? DEFAULT_RESTART_HEALTH_TIMEOUT_MS,
-    deadlineMs: opts.deadlineMs,
-    probeContext,
-    probeHosts: LOOPBACK_PORT_PROBE_HOSTS,
-    requirePluginHealth: false,
-    waitForMissingService: false,
-    onProgress: opts.onProgress,
-    service: {
-      readCommand: async () => null,
-      readRuntime: async (env, options) => {
-        const owner = readGatewayOwnerLease({ env, port });
-        if (
-          owner?.state === "live" &&
-          (owner.mode === "foreground" || owner.supervisor?.kind === "external")
-        ) {
-          return { status: "running", pid: owner.pid };
-        }
-        const startedAt = performance.now();
-        const remainingReadOptions = () => ({
-          ...options,
-          ...(options?.timeoutMs === undefined
-            ? {}
-            : { timeoutMs: Math.max(1, options.timeoutMs - (performance.now() - startedAt)) }),
-        });
-        const command = await (nativeCommand ??= (async () => {
-          nativeServiceAbsent =
-            (await nativeService.isAbsent?.({
-              env,
-              timeoutMs: remainingReadOptions().timeoutMs,
-            })) === true;
-          return nativeServiceAbsent
-            ? null
-            : nativeService.readCommand(env, { ...remainingReadOptions(), requireEffective: true });
-        })());
-        const serviceEnv = mergeGatewayServiceEnv(env, command);
-        const servicePort =
-          parseTcpPortFromArgs(command?.programArguments) ??
-          resolveGatewayPort(probeContext.config, serviceEnv);
-        if (
-          !command ||
-          servicePort !== port ||
-          resolveStateDir(serviceEnv) !== resolveStateDir(env) ||
-          resolveConfigPath(serviceEnv) !== resolveConfigPath(env)
-        ) {
-          // Published Gateways before owner leases still record their verified process lock.
-          const legacyOwner = await readActiveGatewayLockIdentity({ env, requireInspection: true });
-          if (legacyOwner?.port === port) {
-            return { status: "running", pid: legacyOwner.pid };
-          }
-          // A strict command read can still omit a system-domain owner on macOS.
-          // The native runtime owns its missing-unit verdict.
-          return nativeServiceAbsent || command !== null
-            ? { status: "unknown", missingUnit: true }
-            : nativeService.readRuntime(env, remainingReadOptions());
-        }
-        return nativeService.readRuntime(env, remainingReadOptions());
-      },
-    },
+  const deadline = createGatewayRestartDeadline({
+    timeoutMs: Math.max(
+      0,
+      Math.min(
+        opts.timeoutMs ?? DEFAULT_RESTART_HEALTH_TIMEOUT_MS,
+        opts.deadlineMs === undefined ? Infinity : opts.deadlineMs - performance.now(),
+      ),
+    ),
   });
-  return snapshot.waitOutcome === "stopped-free" && snapshot.runtime.missingUnit
-    ? undefined
-    : snapshot;
+  try {
+    const snapshot = await withCommandProcessScope(
+      () =>
+        waitForGatewayHealthyRestart({
+          port,
+          timeoutMs: opts.timeoutMs ?? DEFAULT_RESTART_HEALTH_TIMEOUT_MS,
+          deadline,
+          deadlineOutcome: "snapshot",
+          probeContext,
+          probeHosts: LOOPBACK_PORT_PROBE_HOSTS,
+          requirePluginHealth: false,
+          waitForMissingService: false,
+          onProgress: opts.onProgress,
+          service: {
+            readCommand: async () => null,
+            readRuntime: async (env, options) => {
+              const owner = readGatewayOwnerLease({ env, port });
+              if (
+                owner?.state === "live" &&
+                (owner.mode === "foreground" || owner.supervisor?.kind === "external")
+              ) {
+                return { status: "running", pid: owner.pid };
+              }
+              const startedAt = performance.now();
+              const remainingReadOptions = () => ({
+                ...options,
+                ...(options?.timeoutMs === undefined
+                  ? {}
+                  : {
+                      timeoutMs: Math.max(1, options.timeoutMs - (performance.now() - startedAt)),
+                    }),
+              });
+              const command = await (nativeCommand ??= (async () => {
+                nativeServiceAbsent =
+                  (await nativeService.isAbsent?.({
+                    env,
+                    timeoutMs: remainingReadOptions().timeoutMs,
+                  })) === true;
+                deadline.signal.throwIfAborted();
+                return nativeServiceAbsent
+                  ? null
+                  : deadline.read("diagnostic:service-command", () =>
+                      nativeService.readCommand(env, {
+                        ...remainingReadOptions(),
+                        requireEffective: true,
+                      }),
+                    );
+              })());
+              deadline.signal.throwIfAborted();
+              const readNativeRuntime = () =>
+                deadline.read("diagnostic:native-runtime", () =>
+                  nativeService.readRuntime(env, remainingReadOptions()),
+                );
+              const serviceEnv = mergeGatewayServiceEnv(env, command);
+              const servicePort =
+                parseTcpPortFromArgs(command?.programArguments) ??
+                resolveGatewayPort(probeContext.config, serviceEnv);
+              if (
+                !command ||
+                servicePort !== port ||
+                resolveStateDir(serviceEnv) !== resolveStateDir(env) ||
+                resolveConfigPath(serviceEnv) !== resolveConfigPath(env)
+              ) {
+                // Published Gateways before owner leases still record their verified process lock.
+                const legacyOwner = await deadline.read("diagnostic:legacy-owner", () =>
+                  readActiveGatewayLockIdentity({ env, requireInspection: true }),
+                );
+                if (legacyOwner?.port === port) {
+                  return { status: "running", pid: legacyOwner.pid };
+                }
+                // A strict command read can still omit a system-domain owner on macOS.
+                // The native runtime owns its missing-unit verdict.
+                return nativeServiceAbsent || command !== null
+                  ? { status: "unknown", missingUnit: true }
+                  : readNativeRuntime();
+              }
+              return readNativeRuntime();
+            },
+          },
+        }),
+      deadline.signal,
+    );
+    return snapshot.waitOutcome === "stopped-free" && snapshot.runtime.missingUnit
+      ? undefined
+      : snapshot;
+  } finally {
+    deadline.dispose();
+  }
 }

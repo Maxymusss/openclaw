@@ -1,10 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayService } from "../../daemon/service.js";
 import { gatewayHealthResponse } from "../../gateway/health-response.test-support.js";
 import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import {
   callGateway,
+  hasActiveStartupMigrationLease,
   inspectPortUsage,
   monotonicClock,
   readActiveGatewayLockIdentity,
@@ -114,20 +116,22 @@ describe("diagnostic Gateway readiness", () => {
 
   it.each(
     [
-      { timeoutMs: 20_000, ownerAppearsDuringProbe: false },
-      { timeoutMs: 7_500, ownerAppearsDuringProbe: false },
-      { timeoutMs: 20_000, ownerAppearsDuringProbe: true },
-      { timeoutMs: 7_500, ownerAppearsDuringProbe: true },
-    ].flatMap(({ timeoutMs, ownerAppearsDuringProbe }) =>
+      { timeoutMs: 20_000, readyAtMs: 19_500, ownerAppearsDuringProbe: false },
+      { timeoutMs: 7_500, readyAtMs: 20_000, ownerAppearsDuringProbe: false },
+      { timeoutMs: 20_000, readyAtMs: 19_500, ownerAppearsDuringProbe: true },
+      { timeoutMs: 7_500, readyAtMs: 20_000, ownerAppearsDuringProbe: true },
+      { timeoutMs: 20_000, readyAtMs: 20_000, ownerAppearsDuringProbe: false },
+    ].flatMap(({ timeoutMs, readyAtMs, ownerAppearsDuringProbe }) =>
       ["lease", "legacy lock"].map((ownerKind) => ({
         timeoutMs,
+        readyAtMs,
         ownerAppearsDuringProbe,
         ownerKind,
       })),
     ),
   )(
-    "observes $ownerKind foreground startup within $timeoutMs ms (owner appears during probe: $ownerAppearsDuringProbe)",
-    async ({ timeoutMs, ownerAppearsDuringProbe, ownerKind }) => {
+    "observes $ownerKind startup at $readyAtMs ms within $timeoutMs ms (owner appears during probe: $ownerAppearsDuringProbe)",
+    async ({ timeoutMs, readyAtMs, ownerAppearsDuringProbe, ownerKind }) => {
       isAbsent.mockResolvedValue(true);
       const config: OpenClawConfig = { gateway: { port: 19091, auth: { mode: "token" } } };
       resolveGatewayProbeAuthSafeWithSecretInputs.mockResolvedValue({
@@ -174,9 +178,9 @@ describe("diagnostic Gateway readiness", () => {
         };
       });
       requestStartupProbe.mockImplementation(async () => ({
-        statusCode: monotonicClock.nowMs < 20_000 ? 503 : 200,
+        statusCode: monotonicClock.nowMs < readyAtMs ? 503 : 200,
         body: JSON.stringify(
-          monotonicClock.nowMs < 20_000
+          monotonicClock.nowMs < readyAtMs
             ? { status: "starting", pendingReason: "plugin-convergence" }
             : { status: "started" },
         ),
@@ -188,14 +192,14 @@ describe("diagnostic Gateway readiness", () => {
         timeoutMs,
       });
       expect(result).toMatchObject({
-        healthy: timeoutMs === 20_000,
-        waitOutcome: timeoutMs === 20_000 ? "healthy" : "still-starting",
-        elapsedMs: timeoutMs,
+        healthy: readyAtMs < timeoutMs,
+        waitOutcome: readyAtMs < timeoutMs ? "healthy" : "still-starting",
+        elapsedMs: Math.min(timeoutMs, readyAtMs),
         runtime: { status: "running", pid: 8000 },
         portUsage: { port: 19091 },
       });
       expect(readRuntime).not.toHaveBeenCalled();
-      if (timeoutMs === 20_000) {
+      if (readyAtMs < timeoutMs) {
         expect(callGateway).toHaveBeenCalledWith(
           expect.objectContaining({ config, token: "fixture-token", localPortOverride: 19091 }),
         );
@@ -367,6 +371,108 @@ describe("diagnostic Gateway readiness", () => {
     expect(readCommand).not.toHaveBeenCalled();
     expect(readRuntime).not.toHaveBeenCalled();
   });
+
+  it("waits for startup migration to hand off to a foreground Gateway", async () => {
+    isAbsent.mockResolvedValue(true);
+    hasActiveStartupMigrationLease.mockImplementation(() => monotonicClock.nowMs < 500);
+    readGatewayOwnerLease.mockImplementation(() =>
+      monotonicClock.nowMs < 1_000
+        ? undefined
+        : {
+            owner: "migrated-owner",
+            pid: 8000,
+            host: "fixture-host",
+            startedAt: 1,
+            port: 18789,
+            mode: "foreground",
+            supervisor: null,
+            state: "live",
+            expired: false,
+          },
+    );
+    inspectPortUsage.mockImplementation(async (port) => ({
+      port,
+      status: monotonicClock.nowMs < 1_000 ? "free" : "busy",
+      listeners: monotonicClock.nowMs < 1_000 ? [] : [{ pid: 8000 }],
+      hints: [],
+    }));
+    requestStartupProbe.mockResolvedValue({ statusCode: 200, body: '{"status":"started"}' });
+    callGateway.mockImplementation(gatewayHealthResponse());
+
+    await expect(
+      waitForGatewayDiagnosticReadiness({
+        config: { gateway: { auth: { mode: "none" } } },
+        timeoutMs: 1_250,
+      }),
+    ).resolves.toMatchObject({ healthy: true, waitOutcome: "healthy", elapsedMs: 1_000 });
+  });
+
+  it("retains grace when startup migration ownership cannot be inspected", async () => {
+    isAbsent.mockResolvedValue(true);
+    hasActiveStartupMigrationLease.mockImplementation(() => {
+      throw new Error("startup migration owner unavailable");
+    });
+
+    await expect(
+      waitForGatewayDiagnosticReadiness({
+        config: { gateway: { auth: { mode: "none" } } },
+        timeoutMs: 1_250,
+      }),
+    ).resolves.toMatchObject({ waitOutcome: "timeout", elapsedMs: 1_250 });
+  });
+
+  it.each(["initial", "late"])(
+    "bounds the %s legacy lookup through the numeric diagnostic budget",
+    async (phase) => {
+      isAbsent.mockResolvedValue(true);
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const entered = createDeferred();
+      const released = createDeferred();
+      if (phase === "late") {
+        readActiveGatewayLockIdentity.mockResolvedValueOnce(undefined);
+      }
+      readActiveGatewayLockIdentity.mockImplementationOnce(async () => {
+        entered.resolve();
+        await released.promise;
+        return undefined;
+      });
+      let outcome:
+        | { value?: Awaited<ReturnType<typeof waitForGatewayDiagnosticReadiness>>; error?: unknown }
+        | undefined;
+      const observed = waitForGatewayDiagnosticReadiness({
+        config: { gateway: { auth: { mode: "none" } } },
+        timeoutMs: 1_250,
+        deadlineMs: 60_000,
+      }).then(
+        (value) => {
+          outcome = { value };
+        },
+        (error: unknown) => {
+          outcome = { error };
+        },
+      );
+      const reads = () => [
+        readRuntime.mock.calls.length,
+        inspectPortUsage.mock.calls.length,
+        readGatewayOwnerLease.mock.calls.length,
+      ];
+      try {
+        await entered.promise;
+        monotonicClock.nowMs = 1_250;
+        await vi.advanceTimersByTimeAsync(1_250);
+        expect(outcome).toMatchObject({ value: { waitOutcome: "timeout", elapsedMs: 1_250 } });
+        const atExpiry = reads();
+        released.resolve();
+        await observed;
+        await vi.advanceTimersByTimeAsync(0);
+        expect(reads()).toEqual(atExpiry);
+      } finally {
+        released.resolve();
+        await observed;
+        vi.useRealTimers();
+      }
+    },
+  );
 
   it.each(["loaded", "unverifiable", "absent"] as const)(
     "uses the native runtime's %s owner verdict after a strict command read finds no command",
