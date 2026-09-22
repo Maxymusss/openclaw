@@ -7,7 +7,6 @@ import { registerExecApprovalFollowupRuntimeHandoff } from "../../agents/bash-to
 import { FailoverError } from "../../agents/failover-error.js";
 import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import type { AgentWaitResult } from "../../agents/run-wait.types.js";
-import type { SubagentRegistryDeps } from "../../agents/subagents/registry/subagent-registry-deps.js";
 import {
   addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
@@ -43,7 +42,6 @@ import {
   registerYieldedRequesterSettlementCase,
 } from "./agent.task-settlement.test-utils.js";
 import {
-  applyGatewaySubagentRegistryTestDeps,
   getAgentTestMocks,
   operatorWriteCliClient,
   makeContext,
@@ -349,6 +347,7 @@ describe("gateway agent handler", () => {
       } as const;
 
       await registerPluginSubagentRunFromGateway({
+        assertAdmissionCurrent: () => {},
         cfg: {
           session: { mainKey: "main", scope: "per-sender" },
           agents: {
@@ -416,14 +415,8 @@ describe("gateway agent handler", () => {
         const runId = "orchestrator-completion-followup";
         const result = "All worker results are ready.";
         const completion = createDeferred<AgentWaitResult>();
-        const announce = vi.fn<SubagentRegistryDeps["runSubagentAnnounceFlow"]>(
-          async () => "delivered",
-        );
-        applyGatewaySubagentRegistryTestDeps({
-          callGateway: (async () =>
-            await completion.promise) as SubagentRegistryDeps["callGateway"],
-          runSubagentAnnounceFlow: announce,
-        });
+        const announce = mocks.registryAnnounce.mockResolvedValue("delivered");
+        mocks.registryCallGateway.mockReturnValue(completion.promise);
         addSubagentRunForTests({
           runId: previousRunId,
           childSessionKey,
@@ -570,10 +563,8 @@ describe("gateway agent handler", () => {
         expectsCompletionMessage: true,
       });
       mockSpawnedChildSessionEntry(childSessionKey, root);
-      applyGatewaySubagentRegistryTestDeps({
-        persistSubagentRunsToDiskOrThrow: () => {
-          throw new Error("task replacement failed");
-        },
+      mocks.registryPersistOrThrow.mockImplementation(() => {
+        throw new Error("task replacement failed");
       });
       const runtime = await import("../../agents/prepared-model-runtime.js");
       const acquire = vi.mocked(runtime.acquireAgentRunPreparedModelRuntime);
@@ -638,7 +629,7 @@ describe("gateway agent handler", () => {
           pauseReason: "sessions_yield",
         });
       } finally {
-        applyGatewaySubagentRegistryTestDeps();
+        mocks.registryPersistOrThrow.mockReset();
       }
     });
   });
@@ -674,14 +665,8 @@ describe("gateway agent handler", () => {
         mocks.updateSessionStore.mockResolvedValue(undefined);
         const result = "The separately requested follow-up is complete.";
         const completion = createDeferred<AgentWaitResult>();
-        const announce = vi.fn<SubagentRegistryDeps["runSubagentAnnounceFlow"]>(
-          async () => "delivered",
-        );
-        applyGatewaySubagentRegistryTestDeps({
-          callGateway: (async () =>
-            await completion.promise) as SubagentRegistryDeps["callGateway"],
-          runSubagentAnnounceFlow: announce,
-        });
+        const announce = mocks.registryAnnounce.mockResolvedValue("delivered");
+        mocks.registryCallGateway.mockReturnValue(completion.promise);
         addSubagentRunForTests({
           runId: previousRunId,
           childSessionKey,
@@ -788,6 +773,7 @@ describe("gateway agent handler", () => {
         // A requester-bound follow-up lands at a higher generation than the paused
         // owner, so it becomes the newest row for this session.
         await registerPluginSubagentRunFromGateway({
+          assertAdmissionCurrent: () => {},
           cfg,
           runId: "plugin-subagent-sibling",
           childSessionKey,
@@ -800,6 +786,7 @@ describe("gateway agent handler", () => {
         });
 
         await registerPluginSubagentRunFromGateway({
+          assertAdmissionCurrent: () => {},
           cfg,
           runId: "plugin-subagent-default-followup",
           childSessionKey,
@@ -836,9 +823,7 @@ describe("gateway agent handler", () => {
         persistSubagentRunsToDiskOrThrow.mockImplementationOnce(() => {
           throw persistenceError;
         });
-        applyGatewaySubagentRegistryTestDeps({
-          persistSubagentRunsToDiskOrThrow,
-        });
+        mocks.registryPersistOrThrow.mockImplementation(persistSubagentRunsToDiskOrThrow);
         const runId = "plugin-subagent-registry-fail";
         const childSessionKey = "agent:main:subagent:registry-fail";
         const cfg = {
