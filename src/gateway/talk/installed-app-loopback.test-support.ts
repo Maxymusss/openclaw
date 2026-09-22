@@ -13,7 +13,12 @@ export function createInstalledAppLoopbackTransport(
   {
     beforeProgress,
     onAllowPermit,
-  }: { beforeProgress?: () => void; onAllowPermit?: () => void } = {},
+    beforeResult,
+  }: {
+    beforeProgress?: () => void;
+    onAllowPermit?: () => void;
+    beforeResult?: (command: string, result: unknown) => void;
+  } = {},
 ) {
   const invocations = new Map<
     string,
@@ -62,6 +67,7 @@ export function createInstalledAppLoopbackTransport(
       nativeCommands.push(frame.command);
       const request: NodeHostClient["request"] = async (method, value) => {
         if (method === "node.invoke.result") {
+          beforeResult?.(frame.command, value);
           registry.handleInvokeResult({
             ...(value as Parameters<NodeRegistry["handleInvokeResult"]>[0]),
             connId: "node-connection",

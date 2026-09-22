@@ -229,7 +229,10 @@ Launches accept only an installed desktop-entry identity, its revision, and the
 explicit node. Both `app_list` and `app_launch` use the current Gateway; per-call
 Gateway routing overrides are not supported by these closed actions.
 The initial Linux implementation supports top-level XDG application
-entries that directly select a native ELF executable with no arguments, including
+entries with a nonempty filename stem containing only ASCII letters, digits,
+dot, underscore, or hyphen, followed by `.desktop`. Other filename characters
+are outside this initial app-ID schema, even if another desktop launcher accepts them.
+Eligible entries directly select a native ELF executable with no arguments, including
 a single correctly quoted executable path. Entries
 requiring shell/script launchers, field codes, terminal execution, custom working
 directories, or command-line arguments are not eligible. Other applications keep
@@ -255,6 +258,12 @@ The node rechecks its local permission and app revision immediately before a
 zero-argument, non-shell spawn. Revocation stops operations that have not received
 that final permit; it does not undo an already admitted launch. A short permit
 round-trip budget prevents a delayed permit from executing later.
+
+Revision revalidation is not an immutable-image execution guarantee. The node
+and its installation writers remain trusted: a local writer can race the final
+path check and the operating system’s pathname-based spawn. Keep executable
+files and their directories protected from untrusted writers. Descriptor-pinned
+or immutable-image execution is outside this initial implementation.
 
 Tool permissions, node allowlists, pairing, plugin denials, and ordinary node
 execution approvals still apply. Nodes configured with `ask: "always"` return an

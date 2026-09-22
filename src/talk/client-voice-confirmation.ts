@@ -372,6 +372,8 @@ function resolveClientVoiceToolConfirmationPolicy(
     params.toolName === "nodes"
       ? InstalledAppLaunchToolParamsSchema.safeParse(params.toolParams)
       : undefined;
+  // App preparation is not the effect boundary, even when a reusable policy matches.
+  const consumeHere = consume && (!appLaunch?.success || params.appLaunchEffectBoundary === true);
   if (appLaunch?.success) {
     const policy = resolveClientVoiceAppLaunchPolicy({
       agentId: params.agentId,
@@ -382,12 +384,13 @@ function resolveClientVoiceToolConfirmationPolicy(
       nowMs: now,
     });
     if (policy) {
+      if (consumeHere) {
+        // This exact action also spends a matching spoken grant; it cannot authorize a replay.
+        resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, true);
+      }
       return { allowed: true, policyId: policy.id, policyExpiresAtMs: policy.expiresAtMs };
     }
   }
-  // The app owner still prepares the target and crosses node policies after the generic wrapper.
-  // Its final dispatch consumes a spoken grant; all other tools keep the existing boundary.
-  const consumeHere = consume && (!appLaunch?.success || params.appLaunchEffectBoundary === true);
   if (resolveApprovedFingerprint(scopeKey, params.runId, fingerprint, now, consumeHere)) {
     return { allowed: true };
   }

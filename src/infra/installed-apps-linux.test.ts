@@ -97,6 +97,31 @@ describe.runIf(process.platform === "linux")("Linux installed app preparation", 
       expect(prepareLinuxInstalledApp(appId, env)?.executable).toBe(binary);
     },
   );
+  it.each([1, 2, 3])(
+    "rejects a quoted literal backslash encoded with %s source backslashes",
+    (count) => {
+      const slash = String.fromCharCode(92);
+      const binary = path.join(directory, "Example" + slash + "App");
+      fs.copyFileSync(executable, binary);
+      fs.chmodSync(binary, 0o755);
+      install('"' + binary.replaceAll(slash, slash.repeat(count)) + '"');
+      expect(prepareLinuxInstalledApp(appId, env)).toBeUndefined();
+      expect(scanLinuxInstalledApps(env)).toEqual([]);
+    },
+  );
+  it.each(['"', "$", String.fromCharCode(96)])(
+    "requires both escape stages for quoted %s",
+    (reserved) => {
+      const slash = String.fromCharCode(92);
+      const binary = path.join(directory, "Example" + reserved + "App");
+      fs.copyFileSync(executable, binary);
+      fs.chmodSync(binary, 0o755);
+      install('"' + binary.replaceAll(reserved, slash + reserved) + '"');
+      expect(prepareLinuxInstalledApp(appId, env)).toBeUndefined();
+      install('"' + binary.replaceAll(reserved, slash.repeat(2) + reserved) + '"');
+      expect(prepareLinuxInstalledApp(appId, env)?.executable).toBe(binary);
+    },
+  );
   it("accepts a quoted bare executable without allowing another token", () => {
     install('"calculator"');
     expect(prepareLinuxInstalledApp(appId, env)?.executable).toBe(executable);

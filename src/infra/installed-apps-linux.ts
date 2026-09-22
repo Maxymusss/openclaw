@@ -17,7 +17,7 @@ const DESKTOP_ENTRY_ESCAPES: Record<string, string> = {
   "\\": "\\",
 };
 
-function desktopEntryLabel(raw: string | undefined): string | undefined {
+function decodeDesktopEntryString(raw: string | undefined): string | undefined {
   if (!raw) {
     return undefined;
   }
@@ -72,13 +72,10 @@ function desktopEntryFields(raw: string): Map<string, string> | undefined {
 
 /** Decode one Exec executable under Desktop Entry §§4/7, never a shell command line. */
 function singleDesktopExecutable(raw: string | undefined): string | undefined {
-  if (!raw) {
+  const command = decodeDesktopEntryString(raw);
+  if (!command) {
     return undefined;
   }
-  const command = raw.replace(
-    /\\([sntr\\])/g,
-    (_match: string, escape: string) => DESKTOP_ENTRY_ESCAPES[escape] ?? "",
-  );
   const backtick = String.fromCharCode(96);
   let executable = "";
   if (command.startsWith('"')) {
@@ -168,7 +165,7 @@ export function prepareLinuxInstalledApp(
       const raw = fs.readFileSync(entryPath, "utf8");
       const fields = desktopEntryFields(raw);
       const exec = singleDesktopExecutable(fields?.get("Exec"));
-      const label = desktopEntryLabel(fields?.get("Name"));
+      const label = decodeDesktopEntryString(fields?.get("Name"));
       if (
         fields?.get("Type") !== "Application" ||
         !label ||
