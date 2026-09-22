@@ -7,7 +7,7 @@ import type { MessagePort } from "node:worker_threads";
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { computeBackoffSchedule } from "../../../packages/retry/src/index.js";
-import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { createAbortError, racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { isGatewayExternallySupervised } from "../../infra/gateway-supervision.js";
 import { isPathInside } from "../../infra/path-guards.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
@@ -705,34 +705,42 @@ export async function waitForSessionTranscriptProjection(
       return pending.found && pending.value;
     };
   }
-  while (running) {
-    abortSignal?.throwIfAborted();
-    // Revoked work retains its close fence until settlement. Do not admit a reader
-    // or recreate a disposed incognito owner while that fence is held.
-    if (!running.signal?.aborted) {
-      running.assertCurrent?.();
-      if (!(await needsReconcile())) {
-        return;
+  try {
+    while (running) {
+      abortSignal?.throwIfAborted();
+      // Revoked work retains its close fence until settlement. Do not admit a reader
+      // or recreate a disposed incognito owner while that fence is held.
+      if (!running.signal?.aborted) {
+        running.assertCurrent?.();
+        if (!(await needsReconcile())) {
+          return;
+        }
       }
+      await delay(
+        PROJECTION_READY_POLL_MS,
+        undefined,
+        abortSignal ? { signal: abortSignal } : undefined,
+      );
+      if (
+        !runningReconciles.has(key) &&
+        running.signal?.aborted &&
+        isSessionTranscriptReconcileGenerationCurrent(running.generation) &&
+        (await needsReconcile())
+      ) {
+        // Re-admit through the existing owner after cache turnover, within the same lifecycle.
+        startPreparedSessionTranscriptIndexReconcile({
+          ...databaseOptions,
+          generation: running.generation,
+          preferredSessionId: resolved.sessionId,
+        });
+      }
+      running = runningReconciles.get(key);
     }
-    await delay(
-      PROJECTION_READY_POLL_MS,
-      undefined,
-      abortSignal ? { signal: abortSignal } : undefined,
-    );
-    if (
-      !runningReconciles.has(key) &&
-      running.signal?.aborted &&
-      isSessionTranscriptReconcileGenerationCurrent(running.generation) &&
-      (await needsReconcile())
-    ) {
-      // Re-admit through the existing owner after cache turnover, within the same lifecycle.
-      startPreparedSessionTranscriptIndexReconcile({
-        ...databaseOptions,
-        generation: running.generation,
-        preferredSessionId: resolved.sessionId,
-      });
+  } catch (error) {
+    // Worker reads settle before exposing the same cancellation shape as polling.
+    if (abortSignal?.aborted && error === abortSignal.reason) {
+      throw createAbortError("Operation aborted", { cause: error });
     }
-    running = runningReconciles.get(key);
+    throw error;
   }
 }

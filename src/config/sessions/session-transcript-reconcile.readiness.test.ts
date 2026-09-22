@@ -170,7 +170,7 @@ it.each(["reader-import", "between-polls", "queued-status", "during-close"] as c
           ]);
           expect(outcome.kind).toBe("rejected");
           if (outcome.kind === "rejected") {
-            expect(outcome.error).toBe(reason);
+            expect(outcome.error).toMatchObject({ name: "AbortError", cause: reason });
           }
         } finally {
           releasePreparation.resolve();
