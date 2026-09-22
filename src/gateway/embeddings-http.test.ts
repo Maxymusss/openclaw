@@ -830,6 +830,9 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
   ])(
     "does not bypass pending cleanup with $kind",
     async ({ localProvider, modelOverride, closeFails }) => {
+      const lifetime = await import("./embeddings-provider-lifetime.js");
+      const acquireLease = lifetime.acquireEmbeddingProviderLease;
+      const acquireLeaseSpy = vi.spyOn(lifetime, "acquireEmbeddingProviderLease");
       Reflect.set(openAiAdapter, "transport", localProvider ? "remote" : "local");
       const closeStarted = createDeferred();
       const { promise: closeGate, resolve: releaseClose } = createProviderGate();
@@ -841,6 +844,7 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
         }
       });
       if (localProvider) {
+        registerEmbeddingProvider({ ...openAiAdapter, id: "local", transport: "local" });
         createEmbeddingProviderMock.mockResolvedValueOnce({
           provider: {
             id: "local",
@@ -861,12 +865,18 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
       try {
         await waitForProviderEntry(closeStarted.promise, firstPromise);
         expect(closeEmbeddingProviderMock).toHaveBeenCalledTimes(closesBefore + 1);
+        const queued = createDeferred();
+        acquireLeaseSpy.mockImplementationOnce((...args) => {
+          const lease = acquireLease(...args);
+          queued.resolve();
+          return lease;
+        });
         const secondPromise = postEmbeddings(
           { model: "openclaw/default", input: "second" },
           modelOverride ? { "x-openclaw-model": "openai/model-b" } : undefined,
         );
         requests.push(secondPromise);
-        await Promise.resolve();
+        await waitForProviderEntry(queued.promise, secondPromise);
         expect(createEmbeddingProviderMock).toHaveBeenCalledTimes(createsBefore + 1);
 
         releaseClose();
@@ -880,6 +890,7 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
           await Promise.allSettled(requests);
           await drainRetainedOpenAiEmbeddingProviders();
         } finally {
+          acquireLeaseSpy.mockRestore();
           Reflect.set(openAiAdapter, "transport", "remote");
         }
       }
