@@ -111,6 +111,7 @@ export async function admitChatSend(params: {
     expectedLeafEntryId,
   } = session;
   const cachedResponseMeta = { cached: true, runId: clientRunId };
+  const inFlightPayload = { runId: clientRunId, status: "in_flight" as const };
   const chatSendTraceAttributes = {
     runId: clientRunId,
     sessionKey,
@@ -138,6 +139,11 @@ export async function admitChatSend(params: {
       entry: context.dedupe.get(pendingChatSendKey),
       keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
     });
+  // Keep no-I/O reservation synchronous; inspect competing claims after any real read.
+  const retryPreparation = prepareChatSendRequestConflict(params);
+  if (retryPreparation) {
+    await retryPreparation;
+  }
   const goalRetry = inspectGoalChatSendRetry(params);
   if (goalRetry.kind !== "new") {
     if (goalRetry.kind === "replay") {
@@ -154,7 +160,6 @@ export async function admitChatSend(params: {
     );
     return { ok: false as const };
   }
-  await prepareChatSendRequestConflict(params);
   if (!request.goalOperation && respondChatSendRetry(params)) {
     return { ok: false as const };
   }
@@ -487,12 +492,7 @@ export async function admitChatSend(params: {
       );
       return { ok: false as const };
     }
-    respond(
-      true,
-      { runId: clientRunId, status: "in_flight" as const },
-      undefined,
-      cachedResponseMeta,
-    );
+    respond(true, inFlightPayload, undefined, cachedResponseMeta);
     return { ok: false as const };
   }
   if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
@@ -528,12 +528,7 @@ export async function admitChatSend(params: {
   }
   if (!activeRunAbort.registered) {
     gatewayWorkAdmission.release();
-    respond(
-      true,
-      { runId: clientRunId, status: "in_flight" as const },
-      undefined,
-      cachedResponseMeta,
-    );
+    respond(true, inFlightPayload, undefined, cachedResponseMeta);
     return { ok: false as const };
   }
   let releaseGatewayRootContinuation = () => {};

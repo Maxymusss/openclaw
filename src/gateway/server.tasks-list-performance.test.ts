@@ -1,4 +1,4 @@
-import { afterAll, describe, expect, test, vi } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import {
   TASKS_LIST_CURSOR_MAX_LENGTH,
   type TasksListResult,
@@ -13,14 +13,11 @@ import {
   listTaskRecords,
   markTaskTerminalById,
 } from "../tasks/task-registry.js";
-import {
-  configureTaskRegistryRuntime,
-  getTaskRegistryStore,
-} from "../tasks/task-registry.store.js";
-import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
+import { getTaskRegistryStore } from "../tasks/task-registry.store.js";
 import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
 import { installGatewayTestHooks, onceMessage } from "./server.auth.test-helpers.js";
 import {
+  configureTaskGatewayStore,
   createTaskSnapshot,
   expectedTaskIds,
   expectCursorRejected,
@@ -35,17 +32,12 @@ import * as taskSessionAccess from "./task-session-access.js";
 
 installGatewayTestHooks({ scope: "suite" });
 
-afterAll(() => {
-  resetTaskRegistryForTests({ persist: false });
-});
-
 describe("tasks.list Gateway performance", () => {
   test("preserves task cursors across chat liveness while rejecting changed sharing", async () => {
     const tasks = new Map([...createTaskSnapshot()].slice(0, 3));
     await withAuthenticatedTaskGateway(
       () => {
-        resetTaskRegistryForTests({ persist: false });
-        configureTaskRegistryRuntime({
+        configureTaskGatewayStore({
           store: createInMemoryTaskRegistryStore({ tasks, deliveryStates: new Map() }),
         });
       },
@@ -189,8 +181,7 @@ describe("tasks.list Gateway performance", () => {
 
     let onSnapshotLoad: (() => void) | undefined;
     const initializeTasks = () => {
-      resetTaskRegistryForTests({ persist: false });
-      configureTaskRegistryRuntime({
+      configureTaskGatewayStore({
         store: {
           ...createInMemoryTaskRegistryStore(),
           loadSnapshot: () => {
@@ -382,7 +373,6 @@ describe("tasks.list Gateway performance", () => {
         if (!convergingTaskId) {
           throw new Error("expected a converging task fixture");
         }
-        resetTaskRegistryForTests({ persist: false });
         let convergingChurnStarted = false;
         let convergingRevision = 0;
         const convergingRevisionTarget = 1;
@@ -398,7 +388,7 @@ describe("tasks.list Gateway performance", () => {
           });
           setImmediate(convergeTaskRegistry);
         };
-        configureTaskRegistryRuntime({
+        configureTaskGatewayStore({
           store: {
             ...createInMemoryTaskRegistryStore(),
             loadSnapshot: () => {
@@ -425,8 +415,7 @@ describe("tasks.list Gateway performance", () => {
           { sliceWorkMs: 3, expectedQueuedWork: [false, true, true] },
         ]) {
           const retryTasks = new Map([...createTaskSnapshot()].slice(0, 65));
-          resetTaskRegistryForTests({ persist: false });
-          configureTaskRegistryRuntime({
+          configureTaskGatewayStore({
             store: createInMemoryTaskRegistryStore({
               tasks: retryTasks,
               deliveryStates: new Map(),
@@ -512,8 +501,7 @@ describe("tasks.list Gateway performance", () => {
         if (!churnTaskId) {
           throw new Error("expected a task churn fixture");
         }
-        resetTaskRegistryForTests({ persist: false });
-        configureTaskRegistryRuntime({
+        configureTaskGatewayStore({
           store: createInMemoryTaskRegistryStore({
             tasks: churnTasks,
             deliveryStates: new Map(),
@@ -582,8 +570,7 @@ describe("tasks.list Gateway performance", () => {
             });
           }
         };
-        resetTaskRegistryForTests({ persist: false });
-        configureTaskRegistryRuntime({
+        configureTaskGatewayStore({
           store: {
             ...createInMemoryTaskRegistryStore(),
             loadSnapshot: () => {
@@ -610,8 +597,7 @@ describe("tasks.list Gateway performance", () => {
         }
 
         const accessTasks = new Map([...createTaskSnapshot()].slice(0, 1_000));
-        resetTaskRegistryForTests({ persist: false });
-        configureTaskRegistryRuntime({
+        configureTaskGatewayStore({
           store: {
             ...createInMemoryTaskRegistryStore(),
             loadSnapshot: () => ({ tasks: accessTasks, deliveryStates: new Map() }),

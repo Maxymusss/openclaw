@@ -19,7 +19,7 @@ import {
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { readTranscriptMessageByScopedIdempotencyKey } from "./session-accessor.sqlite-transcript-store.js";
 
-export type PendingInputAdmissionScope = Pick<
+type PendingInputAdmissionScope = Pick<
   ResolvedTranscriptScope,
   "sessionKey" | "sessionId" | "agentId"
 >;

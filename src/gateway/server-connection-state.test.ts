@@ -5,6 +5,7 @@ import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { createSessionRowProjection, type SessionRowProjection } from "./session-row-projection.js";
 
 type ConnectionIdReads = { count: number };
 
@@ -45,59 +46,69 @@ function makeClient(
 describe("gateway connection state", () => {
   it("advertises online people only through live operator connections", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const state = createGatewayConnectionState({
-        bootId: "online-recipients",
-        cfg: { agents: { entries: { main: {} } } },
-      });
-      onTestFinished(() => state.mentionInbox.dispose());
-      const reads = { count: 0 };
-      const requester = makeClient("requester", reads);
-      const recipient = makeClient("recipient", reads);
-      for (const [name, peer] of [
-        ["requester", requester],
-        ["recipient", recipient],
-      ] as const) {
-        peer.client.connect.client = {
-          id: "openclaw-control-ui",
-          version: "test",
-          platform: "web",
-          mode: "webchat",
+      const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
+      const state = createGatewayConnectionState({ bootId: "online-recipients", cfg });
+      let projection: SessionRowProjection | undefined;
+      let detach: (() => void) | undefined;
+      try {
+        projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+        detach = state.attachSessionRowProjection(projection);
+        const reads = { count: 0 };
+        const requester = makeClient("requester", reads);
+        const recipient = makeClient("recipient", reads);
+        for (const [name, peer] of [
+          ["requester", requester],
+          ["recipient", recipient],
+        ] as const) {
+          peer.client.connect.client = {
+            id: "openclaw-control-ui",
+            version: "test",
+            platform: "web",
+            mode: "webchat",
+          };
+          peer.client.authenticatedUserProfile = {
+            profileId: ensureProfileForEmail(`${name}@example.test`).id,
+            displayName: name,
+            avatarRevision: "test",
+            hasAvatar: false,
+            updatedAt: 1,
+          };
+          state.clients.add(peer.client);
+        }
+        const recipientOnline = async () => {
+          let online: boolean | undefined;
+          await state.mentionInbox.mentionable(
+            requester.client,
+            { agentId: "main", visibility: "shared" },
+            (result) => {
+              if (!result.ok) {
+                throw new Error(result.error.message);
+              }
+              online = result.value.users.find(
+                (user) => user.profileId === recipient.client.authenticatedUserProfile?.profileId,
+              )?.online;
+            },
+          );
+          return online;
         };
-        peer.client.authenticatedUserProfile = {
-          profileId: ensureProfileForEmail(`${name}@example.test`).id,
-          displayName: name,
-          avatarRevision: "test",
-          hasAvatar: false,
-          updatedAt: 1,
-        };
-        state.clients.add(peer.client);
-      }
-      const recipientOnline = async () => {
-        let online: boolean | undefined;
-        await state.mentionInbox.mentionable(
-          requester.client,
-          { agentId: "main", visibility: "shared" },
-          (result) => {
-            if (!result.ok) {
-              throw new Error(result.error.message);
-            }
-            online = result.value.users.find(
-              (user) => user.profileId === recipient.client.authenticatedUserProfile?.profileId,
-            )?.online;
-          },
-        );
-        return online;
-      };
 
-      expect(await recipientOnline()).toBe(true);
-      recipient.socket.readyState = WebSocket.CLOSING;
-      expect(await recipientOnline()).toBe(false);
-      recipient.socket.readyState = WebSocket.OPEN;
-      recipient.client.connect.role = "node";
-      expect(await recipientOnline()).toBe(false);
-      recipient.client.connect.role = "operator";
-      recipient.client.invalidated = true;
-      expect(await recipientOnline()).toBe(false);
+        expect(await recipientOnline()).toBe(true);
+        recipient.socket.readyState = WebSocket.CLOSING;
+        expect(await recipientOnline()).toBe(false);
+        recipient.socket.readyState = WebSocket.OPEN;
+        recipient.client.connect.role = "node";
+        expect(await recipientOnline()).toBe(false);
+        recipient.client.connect.role = "operator";
+        recipient.client.invalidated = true;
+        expect(await recipientOnline()).toBe(false);
+      } finally {
+        try {
+          await state.mentionInbox.dispose();
+        } finally {
+          detach?.();
+          projection?.dispose();
+        }
+      }
     });
   });
 

@@ -4,8 +4,15 @@ import { writeConfigFile } from "../config/config.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import type { GatewayAuthConfig } from "../config/types.gateway.js";
 import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
+import {
+  clearTaskRegistryMemory,
+  resetTaskRegistryRestoreState,
+} from "../tasks/task-registry-state.js";
+import {
+  configureTaskRegistryRuntime,
+  type TaskRegistryStore,
+} from "../tasks/task-registry.store.js";
 import type { TaskRecord } from "../tasks/task-registry.types.js";
-import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import {
   connectReq,
@@ -98,6 +105,13 @@ export function createTaskSnapshot(): Map<string, TaskRecord> {
     });
   }
   return tasks;
+}
+
+/** Reseed a live Gateway's synthetic tasks without closing its shared-state database. */
+export function configureTaskGatewayStore(params: { store: TaskRegistryStore }): void {
+  clearTaskRegistryMemory();
+  resetTaskRegistryRestoreState();
+  configureTaskRegistryRuntime(params);
 }
 
 export async function withAuthenticatedTaskGateway(
@@ -201,7 +215,6 @@ export async function withAuthenticatedTaskGateway(
       } finally {
         admin.close();
         viewer.close();
-        resetTaskRegistryForTests({ persist: false });
       }
     });
   } finally {

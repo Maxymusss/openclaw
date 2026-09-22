@@ -5,7 +5,9 @@ import {
   stageSessionPendingInput,
   upsertSessionEntryCore,
   loadTranscriptEvents,
+  type SessionPendingInputReceipt,
 } from "../../config/sessions/session-accessor.js";
+import { runOpenClawAgentWriteTransaction } from "../../state/openclaw-agent-db.js";
 import * as userProfileList from "../../state/user-profile-list.js";
 import { ensureProfileForEmail, setAvatar } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -18,7 +20,6 @@ import type { GatewayRequestContext } from "./types.js";
 describe("pending input read boundary", () => {
   it("projects pending input acceptance times with fresh page-scoped sender displays", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const now = vi.spyOn(Date, "now").mockReturnValue(2_000);
       const profile = ensureProfileForEmail("pending-sender@example.test");
       const scope = {
         agentId: "main",
@@ -26,11 +27,10 @@ describe("pending input read boundary", () => {
         sessionId: "pending-display-time",
       };
       await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
-      const receipts = [];
+      const receipts: SessionPendingInputReceipt[] = [];
       const readDisplay = vi.spyOn(userProfileList, "getUserProfileDisplay");
       try {
         for (let index = 0; index < 20; index += 1) {
-          now.mockReturnValue(2_000 + index);
           receipts.push(
             expectDefined(
               await stageSessionPendingInput(scope, {
@@ -51,6 +51,18 @@ describe("pending input read boundary", () => {
             ),
           );
         }
+        // Acceptance uses the worker's clock; seed exact durable times for this display test.
+        runOpenClawAgentWriteTransaction(
+          ({ db }) => {
+            const update = db.prepare(
+              "UPDATE session_pending_inputs SET accepted_at = ? WHERE input_id = ?",
+            );
+            for (const [index, receipt] of receipts.entries()) {
+              update.run(2_000 + index, receipt.inputId);
+            }
+          },
+          { agentId: scope.agentId },
+        );
         const context = await createHistoryReadContext();
         const readPage = async () => {
           readDisplay.mockClear();
@@ -128,7 +140,6 @@ describe("pending input read boundary", () => {
         for (const receipt of receipts) {
           receipt.finish("interrupted");
         }
-        now.mockRestore();
       }
     });
   });

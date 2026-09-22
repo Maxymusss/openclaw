@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { z } from "zod";
-import { MAX_EVERYONE_MENTION_RECIPIENTS } from "../../packages/gateway-protocol/src/index.js";
+import { MAX_EVERYONE_MENTION_RECIPIENTS } from "../../packages/gateway-protocol/src/schema/human-mentions.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,

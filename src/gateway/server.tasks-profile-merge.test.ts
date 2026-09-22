@@ -11,12 +11,8 @@ import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-d
 import { ensureProfileForEmail, setUserProfileRole } from "../state/user-profiles.js";
 import { readTaskRegistryRevision, tasks as residentTasks } from "../tasks/task-registry-state.js";
 import { runTaskRegistryMaintenance } from "../tasks/task-registry.maintenance.js";
-import {
-  configureTaskRegistryRuntime,
-  getTaskRegistryStore,
-} from "../tasks/task-registry.store.js";
+import { getTaskRegistryStore } from "../tasks/task-registry.store.js";
 import type { TaskRecord } from "../tasks/task-registry.types.js";
-import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { createInMemoryTaskRegistryStore } from "../test-utils/task-registry-store.js";
 import { invalidateOperatorRolePolicy } from "./operator-role-policy.js";
 import {
@@ -28,6 +24,7 @@ import {
   testState,
   withGatewayServer,
 } from "./server.auth.test-helpers.js";
+import { configureTaskGatewayStore } from "./server.tasks-list.test-helpers.js";
 
 installGatewayTestHooks({ scope: "suite" });
 
@@ -105,9 +102,8 @@ test("expires task cursors when a profile merge changes the same caller's sessio
           },
         );
       }
-      resetTaskRegistryForTests({ persist: false });
       const fixtureStore = createInMemoryTaskRegistryStore({ tasks, deliveryStates: new Map() });
-      configureTaskRegistryRuntime({ store: fixtureStore });
+      configureTaskGatewayStore({ store: fixtureStore });
       const stateDir = process.env.OPENCLAW_STATE_DIR;
       if (!stateDir) {
         throw new Error("OPENCLAW_STATE_DIR is required for the Gateway proof");
@@ -202,7 +198,6 @@ test("expires task cursors when a profile merge changes the same caller's sessio
       } finally {
         admin.close();
         viewer.close();
-        resetTaskRegistryForTests({ persist: false });
       }
     });
   } finally {

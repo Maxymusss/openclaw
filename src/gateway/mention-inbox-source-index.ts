@@ -1,4 +1,4 @@
-import { MENTION_INBOX_MAX_ITEMS } from "../../packages/gateway-protocol/src/index.js";
+import { MENTION_INBOX_MAX_ITEMS } from "../../packages/gateway-protocol/src/schema/human-mentions.js";
 import { mentionSourceChunkKey } from "./mention-inbox-store.js";
 import type {
   MentionStoreHead,

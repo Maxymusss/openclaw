@@ -8,6 +8,7 @@ import {
   readAcpSessionMeta,
   writeAcpSessionMetaForMigration,
 } from "../acp/runtime/session-meta.js";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import {
   loadSessionEntry,
   loadTranscriptEvents,
@@ -19,6 +20,7 @@ import {
   beginSessionWorkAdmission,
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
+import { loadGatewayTestConfig } from "./test-helpers.config-runtime.js";
 import { embeddedRunMock, rpcReq, testState, writeSessionStore } from "./test-helpers.js";
 import {
   setupGatewaySessionsTestHarness,
@@ -101,6 +103,7 @@ test("sessions.delete protects the sole explicit agent's global session before c
   const { storePath } = await createSessionStoreDir();
   testState.agentsConfig = { ownership: "explicit", entries: { ops: {} } };
   testState.sessionConfig = { scope: "global" };
+  setRuntimeConfigSnapshot(loadGatewayTestConfig());
   const target = { agentId: "ops", sessionKey: "global", storePath };
   await replaceSessionEntry(target, sessionStoreEntry("sole-global"));
   const before = loadSessionEntry(target);

@@ -13,17 +13,21 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../../state/openclaw-state-db-cache.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 
 export function createChatDirectiveSuiteResources() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-chat-directive-suite-"));
   const databasePath = path.join(root, "openclaw-agent.sqlite");
   const env = { ...process.env, OPENCLAW_STATE_DIR: root };
+  const previousEnv = captureEnv(["OPENCLAW_STATE_DIR"]);
   return {
     root,
     databasePath,
     env,
     // The caller retains cleanup ownership before opening can fail.
     open() {
+      // Every admission and media write must retain the same shared-state owner.
+      setTestEnvValue("OPENCLAW_STATE_DIR", root);
       openOpenClawAgentDatabase({ agentId: "main", env, path: databasePath });
     },
     async close() {
@@ -32,6 +36,7 @@ export function createChatDirectiveSuiteResources() {
       );
       await closeOpenClawStateDatabaseByPathAsync(resolveOpenClawStateSqlitePath(env));
       fs.rmSync(root, { recursive: true, force: true });
+      previousEnv.restore();
     },
   };
 }

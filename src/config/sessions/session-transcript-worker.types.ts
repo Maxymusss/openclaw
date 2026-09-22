@@ -239,7 +239,7 @@ export type SessionPendingSourceWorkerInput = {
         lifecycleGeneration: string;
       };
 };
-export type SessionPendingSourceWorkerResult = {
+type SessionPendingSourceWorkerResult = {
   kind: "pending-source";
   value:
     | boolean

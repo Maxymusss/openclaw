@@ -37,13 +37,13 @@ const preparedRetrySources = new WeakMap<
 >();
 
 /** Prepare exact source evidence before entering synchronous admission and commit guards. */
-export async function prepareChatSendRequestConflict(
+export function prepareChatSendRequestConflict(
   params: Omit<ChatSendRetryParams, "respond">,
-): Promise<void> {
+): Promise<void> | undefined {
   params.assertCurrent?.();
   const sessionId = params.session.entry?.sessionId;
   if (!sessionId || params.request.goalOperation) {
-    return;
+    return undefined;
   }
   const target = JSON.stringify([
     params.session.agentId,
@@ -60,7 +60,7 @@ export async function prepareChatSendRequestConflict(
     (params.session.entry?.restartRecoveryDeliverySourceRunId === params.session.clientRunId &&
       params.session.entry?.restartRecoveryDeliveryRequestFingerprint !== undefined)
   ) {
-    return;
+    return undefined;
   }
   const knownRetry =
     entries.some(Boolean) ||
@@ -70,9 +70,9 @@ export async function prepareChatSendRequestConflict(
     params.context.chatAbortControllers.has(params.session.clientRunId) ||
     params.context.chatQueuedTurns?.has(params.session.clientRunId);
   if (!knownRetry) {
-    return;
+    return undefined;
   }
-  const message = await readSessionSubmittedInput(
+  return readSessionSubmittedInput(
     {
       agentId: params.session.agentId,
       sessionId,
@@ -80,24 +80,21 @@ export async function prepareChatSendRequestConflict(
       storePath: params.session.storePath,
     },
     `${params.session.clientRunId}:user`,
-  );
-  params.assertCurrent?.();
-  if (
-    params.session.entry?.sessionId !== sessionId ||
-    target !==
-      JSON.stringify([
-        params.session.agentId,
-        params.session.storePath,
-        params.session.sessionKey,
-        params.session.clientRunId,
-      ])
-  ) {
-    throw new Error("Chat retry source target changed while preparing evidence");
-  }
-  preparedRetrySources.set(params.request, {
-    sessionId,
-    message,
-    target,
+  ).then((message) => {
+    params.assertCurrent?.();
+    if (
+      params.session.entry?.sessionId !== sessionId ||
+      target !==
+        JSON.stringify([
+          params.session.agentId,
+          params.session.storePath,
+          params.session.sessionKey,
+          params.session.clientRunId,
+        ])
+    ) {
+      throw new Error("Chat retry source target changed while preparing evidence");
+    }
+    preparedRetrySources.set(params.request, { sessionId, message, target });
   });
 }
 

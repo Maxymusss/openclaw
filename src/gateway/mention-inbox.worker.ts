@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
-import { MAX_EVERYONE_MENTION_RECIPIENTS } from "../../packages/gateway-protocol/src/index.js";
+import { MAX_EVERYONE_MENTION_RECIPIENTS } from "../../packages/gateway-protocol/src/schema/human-mentions.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import {

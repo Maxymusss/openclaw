@@ -115,7 +115,7 @@ function expectConflict(respond: RetryParams["respond"]) {
 }
 
 beforeEach(() => {
-  vi.mocked(readSessionSubmittedInput).mockReset();
+  vi.mocked(readSessionSubmittedInput).mockReset().mockResolvedValue(undefined);
   vi.mocked(resolveDurableChatClaim).mockReset();
 });
 

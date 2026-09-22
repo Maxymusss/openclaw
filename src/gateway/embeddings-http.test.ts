@@ -12,8 +12,9 @@ import path from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { resolveAgentDir } from "../agents/agent-scope.js";
-import { createConfigIO, resetConfigRuntimeState } from "../config/config.js";
+import { createConfigIO, resetConfigRuntimeState, writeConfigFile } from "../config/config.js";
 import { getRuntimeConfig, setRuntimeConfigSnapshot } from "../config/io.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type {
   EmbeddingInput,
   EmbeddingProviderCallOptions,
@@ -70,6 +71,7 @@ let registerEmbeddingProvider: typeof import("../plugins/embedding-providers.js"
 let enabledServer: Awaited<ReturnType<typeof startOpenAiCompatGatewayServer>>;
 let genericEmbeddingServer: { baseUrl: string; close: () => Promise<void> };
 let enabledPort: number;
+let suiteConfig: OpenClawConfig;
 let genericEmbeddingBaseUrl: string;
 const genericEmbeddingRequests: Array<{
   method: string | undefined;
@@ -185,9 +187,12 @@ beforeAll(async () => {
     auth: { mode: "token", token: "secret" },
     openAiChatCompletionsEnabled: true,
   });
+  suiteConfig = structuredClone((await createConfigIO().readConfigFileSnapshot()).config);
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  // A live suite Gateway keeps its config file; provider-routing changes belong to one case.
+  await writeConfigFile(suiteConfig);
   const builder = createPluginRegistry({
     logger: {
       info() {},
@@ -755,7 +760,12 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
       const cfg = getRuntimeConfig();
       const pending = postEmbeddings({ model: "openclaw/default", input: "hello" });
       try {
-        await operationStarted.promise;
+        await Promise.race([
+          operationStarted.promise,
+          pending.then((response) => {
+            throw new Error(`Embedding request completed before ${phase} (${response.status})`);
+          }),
+        ]);
         setRuntimeConfigSnapshot({
           ...cfg,
           gateway: {

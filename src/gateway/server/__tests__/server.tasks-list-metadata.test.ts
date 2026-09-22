@@ -1,16 +1,15 @@
 import { err } from "@openclaw/normalization-core/result";
-import { afterAll, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
 import type { TasksListResult } from "../../../../packages/gateway-protocol/src/index.js";
 import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
 import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
 import * as agentDatabaseReadOnly from "../../../state/openclaw-agent-db-readonly.js";
 import { listTaskRecords } from "../../../tasks/task-registry.js";
-import { configureTaskRegistryRuntime } from "../../../tasks/task-registry.store.js";
 import type { TaskRecord } from "../../../tasks/task-registry.types.js";
-import { resetTaskRegistryForTests } from "../../../tasks/task-runtime.test-helpers.js";
 import { createInMemoryTaskRegistryStore } from "../../../test-utils/task-registry-store.js";
 import { installGatewayTestHooks } from "../../server.auth.test-helpers.js";
 import {
+  configureTaskGatewayStore,
   createTaskSnapshot,
   expectedTaskIds,
   expectCursorRejected,
@@ -24,14 +23,9 @@ import {
 
 installGatewayTestHooks({ scope: "suite" });
 
-afterAll(() => {
-  resetTaskRegistryForTests({ persist: false });
-});
-
 test("preserves task pagination during metadata patches but invalidates new requester access", async () => {
   const initializeTasks = () => {
-    resetTaskRegistryForTests({ persist: false });
-    configureTaskRegistryRuntime({
+    configureTaskGatewayStore({
       store: {
         ...createInMemoryTaskRegistryStore(),
         loadSnapshot: () => ({
@@ -138,8 +132,7 @@ test("preserves task pagination during metadata patches but invalidates new requ
       ownerKey: missingSessionKey,
       lastEventAt: TASK_COUNT + 100,
     };
-    resetTaskRegistryForTests({ persist: false });
-    configureTaskRegistryRuntime({
+    configureTaskGatewayStore({
       store: {
         ...createInMemoryTaskRegistryStore(),
         loadSnapshot: () => ({

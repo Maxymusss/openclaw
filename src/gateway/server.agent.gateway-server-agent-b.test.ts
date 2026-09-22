@@ -634,9 +634,11 @@ describe("gateway server agent", () => {
     const target = resolveSqliteTargetFromSessionStorePath(storePath, { agentId: "main" });
     const database = openOpenClawAgentDatabase({ agentId: "main", path: target.path }).db;
     ensureSessionPendingInputsSchema(database);
+    // The admission worker cannot observe a trigger in this connection's TEMP schema.
     database.exec(`
-      CREATE TEMP TRIGGER fail_agent_turn_admission
+      CREATE TRIGGER fail_agent_turn_admission
       BEFORE INSERT ON session_pending_inputs
+      WHEN NEW.run_id = 'idem-agent-durable-failure'
       BEGIN
         SELECT RAISE(ABORT, 'injected agent transcript admission failure');
       END;
