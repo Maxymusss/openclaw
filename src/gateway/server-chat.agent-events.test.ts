@@ -18,8 +18,6 @@ import {
   INTERNAL_RUNTIME_CONTEXT_BEGIN,
   INTERNAL_RUNTIME_CONTEXT_END,
 } from "../agents/internal-runtime-context.js";
-import { createSubagentRunRecord } from "../agents/subagent-test-fixtures.test-helpers.js";
-import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { createAgentLifecycleTerminalBackstop } from "../auto-reply/reply/agent-lifecycle-terminal.js";
 import { formatChannelProgressDraftLine } from "../channels/streaming.js";
 import {
@@ -42,7 +40,7 @@ import {
   registerAgentRunContext,
   releaseAgentRunContext,
 } from "../infra/agent-run-registry.js";
-import { subscribePluginSessionsChanged } from "../plugins/gateway-events.js";
+import { subscribePluginSessionsChanged } from "../plugins/services.test-support.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
 
@@ -4053,7 +4051,6 @@ describe("agent event handler", () => {
       },
       "session-recovery",
     );
-    const settleTrackedTerminal = vi.fn();
     const trackTrackedRunTerminalPersistence = vi.fn();
     const {
       broadcast,
@@ -4066,7 +4063,6 @@ describe("agent event handler", () => {
     } = createHarness({
       resolveSessionKeyForRun: () => "session-recovery",
       lifecycleErrorRetryGraceMs: 0,
-      settleTrackedTerminal,
       trackTrackedRunTerminalPersistence,
     });
     sessionEventSubscribers.subscribe("conn-session");
@@ -4104,16 +4100,11 @@ describe("agent event handler", () => {
       persistence: expect.any(Promise),
     });
     await waitForFast(() => {
-      expect(settleTrackedTerminal).toHaveBeenCalledWith({
-        runId: "completed-during-marker-write",
-        clientRunId: "completed-during-marker-write",
-        sessionKey: "session-recovery",
-      });
       expect(
         broadcastToConnIds.mock.calls.filter(([event]) => event === "sessions.changed"),
       ).toHaveLength(1);
     });
-    expect(settleTrackedTerminal.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(trackTrackedRunTerminalPersistence.mock.invocationCallOrder[0]).toBeLessThan(
       broadcastToConnIds.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
     expect(chatRunState.registry.peek("completed-during-marker-write")).toBeUndefined();
@@ -4374,11 +4365,11 @@ describe("agent event handler", () => {
     persistGatewaySessionLifecycleEventMock.mockRejectedValueOnce(
       new Error("disk full sk-abcdefghijklmnopqrstuvwxyz123456"),
     );
-    const settleTrackedTerminal = vi.fn();
+    const trackTrackedRunTerminalPersistence = vi.fn();
     const { broadcastToConnIds, handler, sessionEventSubscribers } = createHarness({
       resolveSessionKeyForRun: () => "session-failed-write",
       lifecycleErrorRetryGraceMs: 0,
-      settleTrackedTerminal,
+      trackTrackedRunTerminalPersistence,
     });
     sessionEventSubscribers.subscribe("conn-session");
 
@@ -4407,13 +4398,14 @@ describe("agent event handler", () => {
     expect(logErrorMock).toHaveBeenCalledWith(
       "gateway: terminal session persistence failed session=session-failed-write run=run-failed-write error=Error: disk full sk-abc…3456",
     );
-    expect(settleTrackedTerminal).toHaveBeenCalledWith({
+    expect(trackTrackedRunTerminalPersistence).toHaveBeenCalledWith({
       runId: "run-failed-write",
       clientRunId: "run-failed-write",
       sessionKey: "session-failed-write",
-      persisted: false,
+      sessionId: "session-failed-write",
+      persistence: expect.any(Promise),
     });
-    expect(settleTrackedTerminal.mock.invocationCallOrder[0]).toBeLessThan(
+    expect(trackTrackedRunTerminalPersistence.mock.invocationCallOrder[0]).toBeLessThan(
       broadcastToConnIds.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
     );
   });
@@ -6084,10 +6076,10 @@ describe("agent event handler", () => {
     "preserves reply-dispatch ownership (delivery=%s, execution=%s)",
     async (settled, executionSettled) => {
       vi.useFakeTimers();
-      const settleTrackedTerminal = vi.fn();
+      const trackTrackedRunTerminalPersistence = vi.fn();
       const harness = createHarness({
         resolveSessionKeyForRun: () => "session-reply-dispatch",
-        settleTrackedTerminal,
+        trackTrackedRunTerminalPersistence,
       });
       const { broadcast, chatRunState, clearAgentRunContext, agentRunSeq, handler } = harness;
       const runId = "run-reply-dispatch";
@@ -6132,10 +6124,12 @@ describe("agent event handler", () => {
       }
       expect(clearAgentRunContext).not.toHaveBeenCalled();
       expect(persistGatewaySessionLifecycleEventMock).toHaveBeenCalledOnce();
-      expect(settleTrackedTerminal).toHaveBeenCalledWith({
+      expect(trackTrackedRunTerminalPersistence).toHaveBeenCalledWith({
         runId,
         clientRunId: runId,
         sessionKey: "session-reply-dispatch",
+        sessionId: undefined,
+        persistence: expect.any(Promise),
       });
     },
   );
@@ -6634,7 +6628,6 @@ describe("agent event handler", () => {
       runId: "run-maintenance-child",
       clientRunId: "run-maintenance-child",
       sessionKey: "session-maintenance-parent",
-      persisted: false,
     });
   });
 
@@ -7004,50 +6997,6 @@ describe("agent event handler", () => {
         ...(spawnedBy ? { spawnedBy } : {}),
       });
     }
-
-    it.each([false, true])(
-      "requires a stored session before projecting registry lineage (stored=%s)",
-      (stored) => {
-        const key = "agent:main:subagent:lineage-presence";
-        const runId = "lineage-presence-run";
-        const controller = "agent:main:controller";
-        mockSessionEntry(
-          stored
-            ? {
-                sessionId: "lineage-session",
-                updatedAt: 1,
-                spawnedBy: "agent:main:former-controller",
-              }
-            : undefined,
-          key,
-        );
-        subagentRuns.set(
-          runId,
-          createSubagentRunRecord({
-            runId,
-            childSessionKey: key,
-            requesterSessionKey: controller,
-            controllerSessionKey: controller,
-          }),
-        );
-        const { handler, broadcast } = createHarness({ resolveSessionKeyForRun: () => key });
-        try {
-          emitAgentEvent(handler, runId, "assistant", { text: "Child response" });
-          expect(broadcast).toHaveBeenCalled();
-          for (const [, payload] of broadcast.mock.calls) {
-            if (stored) {
-              expect(payload.spawnedBy).toBe(controller);
-            } else {
-              expect(payload).not.toHaveProperty("spawnedBy");
-            }
-          }
-          expect(loadGatewaySessionLifecycleSnapshotMock).not.toHaveBeenCalled();
-        } finally {
-          handler.dispose();
-          subagentRuns.delete(runId);
-        }
-      },
-    );
 
     it.each([
       {

@@ -100,8 +100,7 @@ private final class NativeRouteReadSession: WebSocketSessioning, @unchecked Send
 
 @MainActor
 struct NativeActionRouterTests {
-
-    @Test func modalActionsFreezeRootRegistrationAndDismissOnlyTheirReceipt() throws {
+    @Test func `modal actions freeze root registration and dismiss only their receipt`() throws {
         let model = NodeAppModel(audioAdmissionInitiallyAllowed: false)
         let controller = GatewayConnectionController(appModel: model, startDiscovery: false)
         let router = NativeActionRouter(appModel: model, gatewayController: controller)
@@ -110,15 +109,22 @@ struct NativeActionRouterTests {
         let owner = OpenClawChatModalPresentations()
         let origin = OpenClawChatModalOrigin(viewModel: chat)
         owner.synchronize(origin: origin)
-        defer { owner.invalidate(origin: origin); chat.detachTransport() }
+        defer { owner.invalidate(origin: origin)
+            chat.detachTransport()
+        }
         var oldRetirements = 0
         let oldRoot = router.registerPresentation(onRetire: { _ in oldRetirements += 1 }, { _, _, _ in })
         let actions = RootTabs.makeChatModalActions(
             origin: origin, router: router, rootID: oldRoot,
             isCurrentScope: { true }, isCurrentContainer: { true })
         let oldAuthority = try #require(router.capturePresentationAuthority(oldRoot))
-        let first = try #require(owner.present("Original", at: \.widgetError,
-            capture: owner.capture(origin: origin, producerID: UUID(), actions: actions)))
+        let first = try #require(owner.present(
+            "Original",
+            at: \.widgetError,
+            capture: owner.capture(
+                origin: origin,
+                producerID: UUID(),
+                actions: actions)))
         #expect(!router.isCurrentPresentation(oldAuthority))
         #expect(oldRetirements == 1)
         let pending = try #require(owner.capture(origin: origin, producerID: UUID(), actions: actions))
@@ -138,8 +144,13 @@ struct NativeActionRouterTests {
         let fresh = RootTabs.makeChatModalActions(
             origin: origin, router: router, rootID: successor,
             isCurrentScope: { true }, isCurrentContainer: { true })
-        let replacement = try #require(owner.present("Original", at: \.widgetError,
-            capture: owner.capture(origin: origin, producerID: UUID(), actions: fresh)))
+        let replacement = try #require(owner.present(
+            "Original",
+            at: \.widgetError,
+            capture: owner.capture(
+                origin: origin,
+                producerID: UUID(),
+                actions: fresh)))
         let afterOpen = try #require(router.capturePresentationAuthority(successor))
         owner.dismiss(first.receipt)
         #expect(owner.widgetError?.id == replacement.id)
@@ -149,7 +160,7 @@ struct NativeActionRouterTests {
         #expect(!owner.hasActivePresentation)
     }
 
-    @Test func modalContainerPermitCannotReplaceNewerSameTargetInspection() async throws {
+    @Test func `modal container permit cannot replace newer same target inspection`() async throws {
         try await self.withHost { host in
             #expect(await host.router.open(.session(host.session())) == .opened)
             let chat = try #require(host.chat)
@@ -167,7 +178,9 @@ struct NativeActionRouterTests {
             let publicationRelease = AsyncStream<Void>.makeStream()
             var publicationAttempted = false
             let publication = Task { @MainActor in
-                for await _ in publicationRelease.stream { break }
+                for await _ in publicationRelease.stream {
+                    break
+                }
                 #expect(owner.present("Late widget error", at: \.widgetError, capture: delayed) == nil)
                 publicationAttempted = true
             }
@@ -197,7 +210,7 @@ struct NativeActionRouterTests {
         }
     }
 
-    @Test func acceptedAppModalKeepsNestedPublicationAndExactDismissalAuthority() throws {
+    @Test func `accepted app modal keeps nested publication and exact dismissal authority`() throws {
         let model = NodeAppModel(audioAdmissionInitiallyAllowed: false)
         let controller = GatewayConnectionController(appModel: model, startDiscovery: false)
         let router = NativeActionRouter(appModel: model, gatewayController: controller)
@@ -225,9 +238,14 @@ struct NativeActionRouterTests {
         let nestedActions = RootTabs.makeChatModalActions(
             origin: origin, router: router, rootID: rootID,
             isCurrentScope: { true }, isCurrentContainer: { container == parent })
-        let child = try #require(owner.present("Nested reader error", at: \.widgetError,
-            capture: owner.capture(origin: origin, producerID: UUID(),
-                ancestors: [appCapture.receipt.id], parentIsCurrent: { container == parent },
+        let child = try #require(owner.present(
+            "Nested reader error",
+            at: \.widgetError,
+            capture: owner.capture(
+                origin: origin,
+                producerID: UUID(),
+                ancestors: [appCapture.receipt.id],
+                parentIsCurrent: { container == parent },
                 actions: nestedActions)))
         owner.dismiss(child.receipt)
         #expect(container == parent)
@@ -296,7 +314,7 @@ struct NativeActionRouterTests {
         #expect(!router.isCurrentPresentation(beforeOpening))
     }
 
-    @Test func exactPresentationAnchorTeardownCannotUnregisterSuccessor() {
+    @Test func `exact presentation anchor teardown cannot unregister successor`() {
         let model = NodeAppModel(audioAdmissionInitiallyAllowed: false)
         let controller = GatewayConnectionController(appModel: model, startDiscovery: false)
         let router = NativeActionRouter(appModel: model, gatewayController: controller)
@@ -811,7 +829,9 @@ struct NativeActionRouterTests {
             let release = AsyncStream<Void>.makeStream()
             host.deferredNewChatReply = {
                 entered.continuation.yield(())
-                for await _ in release.stream { break }
+                for await _ in release.stream {
+                    break
+                }
             }
             let creating = Task { @MainActor in
                 defer { entered.continuation.finish() }
@@ -1044,11 +1064,17 @@ struct NativeActionRouterTests {
                     #expect(host.presentations == 1)
                     #expect(host.binding?.session == host.session())
                 }
-                for task in openings { _ = await task.value }
+                for task in openings {
+                    _ = await task.value
+                }
                 completions.continuation.finish()
             } catch {
-                for task in openings { task.cancel() }
-                for task in openings { _ = await task.value }
+                for task in openings {
+                    task.cancel()
+                }
+                for task in openings {
+                    _ = await task.value
+                }
                 completions.continuation.finish()
                 throw error
             }
@@ -2058,7 +2084,8 @@ struct NativeActionRouterTests {
             let oldID = try #require(host.presentationID)
             host.router.unregisterPresentation(oldID)
             var successorRetirements = 0
-            let currentID = host.router.registerPresentation(onRetire: { _ in successorRetirements += 1 }) { _, _, _ in }
+            let currentID = host.router
+                .registerPresentation(onRetire: { _ in successorRetirements += 1 }) { _, _, _ in }
             host.presentationID = currentID
             host.router.unregisterPresentation(oldID)
             host.router.unregisterPresentation(oldID)

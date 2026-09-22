@@ -130,9 +130,9 @@ struct OpenClawChatComposer: View {
         }
         .modifier(self.$modals.originating(in: self.viewModel))
         .onChange(of: self.presentationOwner) { _, _ in
-                self.invalidateModelSignIn()
-            }
-            .onDisappear { self.invalidateModelSignIn() }
+            self.invalidateModelSignIn()
+        }
+        .onDisappear { self.invalidateModelSignIn() }
     }
 
     var usesDesktopModelMenu: Bool {

@@ -417,7 +417,9 @@ struct IOSGatewayChatTransportTests {
     }
 
     @Test(arguments: ["explicit target", "implicit target", "string focus"])
-    @MainActor func `full target focus supplies the stored owner used by ordinary history`(selection: String) async throws {
+    @MainActor func `full target focus supplies the stored owner used by ordinary history`(
+        selection: String) async throws
+    {
         let model = NodeAppModel()
         model.gatewayDefaultAgentId = "main"
         model.setSelectedAgentId("main")

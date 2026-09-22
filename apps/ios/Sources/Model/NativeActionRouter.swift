@@ -46,7 +46,9 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     private(set) var chatRegistrationID: UUID?
     @ObservationIgnored private var preparation: Preparation?
 
-    var presentationRegistrationID: UUID? { self.presentation?.id }
+    var presentationRegistrationID: UUID? {
+        self.presentation?.id
+    }
 
     init(appModel: NodeAppModel, gatewayController: GatewayConnectionController) {
         self.appModel = appModel
@@ -386,8 +388,8 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         guard case let .registeredRoot(rootID, navigationRevision)? = self.preparation else {
             throw OpenClawNativeActionError("Open OpenClaw before running this action.")
         }
-        // Connection-owned target projection can retire a binding while switching
-        // Gateways. Explicit navigation and actual host departure cannot be adopted.
+        /// Connection-owned target projection can retire a binding while switching
+        /// Gateways. Explicit navigation and actual host departure cannot be adopted.
         func requireOrigin() throws {
             try Task.checkCancellation()
             guard self.presentation?.id == rootID, self.navigationRevision == navigationRevision else {

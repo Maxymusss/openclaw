@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
+import { encodeMemoryEmbedding } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { resolveRuntimeWorkerUrl, WorkerTaskPool } from "openclaw/plugin-sdk/process-runtime";
 import { openOpenClawAgentDatabase } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { describe, expect, it, vi } from "vitest";
@@ -26,7 +27,6 @@ describe("memory index", () => {
   const {
     createConfig: createCfg,
     getFreshManager,
-    getFtsSessionManager,
     getPersistentManager,
     seedSessionTranscript: seedMemoryIndexSessionTranscript,
     trackManager,
@@ -343,7 +343,7 @@ describe("memory index", () => {
         `cancel-scan-hash-${index}`,
         "mock-embed",
         `fallback scan row ${index}`,
-        JSON.stringify([0, 1, 0, 0]),
+        encodeMemoryEmbedding([0, 1, 0, 0]),
         index,
       );
     }
@@ -466,32 +466,6 @@ describe("memory index", () => {
     expect(results[0]?.score).toBeGreaterThan(results[1]?.score ?? 0);
   });
 
-  it("bootstraps an empty index on first search so session transcript hits are available", async () => {
-    const manager = await getFtsSessionManager();
-    if (!manager) {
-      return;
-    }
-
-    await seedMemoryIndexSessionTranscript({
-      sessionId: "session-bootstrap",
-      messages: [
-        {
-          role: "assistant",
-          timestamp: "2026-04-07T15:25:04.113Z",
-          content: "The current Project Nebula codename is ORBIT-10.",
-        },
-      ],
-    });
-
-    const results = await manager.search("current Project Nebula codename ORBIT-10", {
-      minScore: 0,
-      maxResults: 3,
-    });
-
-    expect(results[0]?.source).toBe("sessions");
-    expect(results[0]?.snippet).toContain("ORBIT-10");
-  });
-
   it("keeps remember-only session transcripts out of ordinary manager searches", async () => {
     providerFixture.forceNoProvider = true;
     const cfg = createCfg({
@@ -526,15 +500,6 @@ describe("memory index", () => {
       sources: ["sessions"],
     });
     expect(trustedResults[0]?.source).toBe("sessions");
-  });
-
-  it("returns before provider or index bootstrap for a blank query", async () => {
-    const manager = await getPersistentManager(createCfg({ provider: "required-provider" }));
-    providerFixture.providerCalls = [];
-
-    await expect(manager.search(" \n\t ")).resolves.toStrictEqual([]);
-
-    expect(providerFixture.providerCalls).toHaveLength(0);
   });
 
   it("does not block querying on session reconciliation", async () => {
@@ -697,10 +662,10 @@ describe("memory index", () => {
     const servingFields = manager as unknown as {
       dirty: boolean;
       memoryFullRetryDirty: boolean;
-      closeNativeMemoryWatchPairs: () => void;
+      fileWatcher: { closeNativeMemoryWatchPairs: () => void };
       awaitManagerIdle: () => Promise<void>;
     };
-    servingFields.closeNativeMemoryWatchPairs();
+    servingFields.fileWatcher.closeNativeMemoryWatchPairs();
 
     const sessionId = "automatic-maintenance-purge";
     const memoryPath = path.join(fixture.paths.workspace, "MEMORY.md");

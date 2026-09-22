@@ -42,13 +42,15 @@ async function runImportBoundaryChild(forbidden: RegExp, workload: string) {
       const result = await runCliProcessChild({
         nodeExecutable: resolveTestNodeExecPath(),
         nodeArgs: ["--import", "tsx", "--input-type=module", "--eval", script],
-        // state.env inherits Vitest and operator flags; only fixture paths cross this boundary.
+        // Keep the child environment explicit; state.env includes Vitest and operator flags.
         env: {
           PATH: process.env.PATH,
+          ESBUILD_WORKER_THREADS: process.env.ESBUILD_WORKER_THREADS,
           ...state.envVars,
-          TMPDIR: state.root,
-          TMP: state.root,
-          TEMP: state.root,
+          // TSX's compiler cache belongs to the runner, not the disposable app state.
+          TMPDIR: process.env.TMPDIR,
+          TMP: process.env.TMP,
+          TEMP: process.env.TEMP,
         },
         timeoutMs: 30_000,
       });
@@ -105,6 +107,22 @@ it("keeps MCP client and catalog paths free of plugin tool construction and chan
     `,
   );
   expect(stdout).toContain("Disposed cached MCP runtimes.");
+});
+
+it("keeps registry reads independent of agent tool materialization", async () => {
+  await runImportBoundaryChild(
+    /\/src\/agents\/agent-bundle-mcp-materialize\.(?:ts|js)(?:[?#].*)?$/u,
+    String.raw`
+      const { Command } = await import("commander");
+      const { registerMcpCli } = await import(${JSON.stringify(new URL("./mcp-cli.ts", import.meta.url).href)});
+      const program = new Command();
+      program.exitOverride();
+      registerMcpCli(program);
+      for (const command of ["list", "show", "status", "doctor"]) {
+        assert.equal(await program.parseAsync(["mcp", command, "--json"], { from: "user" }), program);
+      }
+    `,
+  );
 });
 
 it("keeps the metadata owner independent of plugin loading and channel serving", async () => {

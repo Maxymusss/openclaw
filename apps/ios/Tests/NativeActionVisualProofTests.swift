@@ -111,7 +111,6 @@ final class NativeActionVisualProofTests: XCTestCase {
         }
     }
 
-
     func testChatOwnedSheetsRefuseNativeMutationBeforeSelection() async throws {
         for scenario in [Scenario.chatModalAdmissionApp, .chatModalAdmissionShared] {
             try await self.runNativeVisualProof(scenario)
@@ -418,7 +417,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                         let response = NativeGatewayWebSocketFixture.RPCResponse.success(history)
                         if holdNativeHistory, profile == session.owner.profileID,
                            !(scenario.testsChatModal || scenario.testsPagesEditor) ||
-                               (params["limit"] as? Int == 100 && params["maxChars"] as? Int == 2000),
+                           (params["limit"] as? Int == 100 && params["maxChars"] as? Int == 2000),
                            holdAnyNativeHistory || params["inputRunIds"] as? [String] == [run.runID]
                         {
                             holdNativeHistory = false
@@ -887,7 +886,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 _ = try await router.prepareSend(to: destination, message: "Refused behind Pages")
                                 XCTFail("Pages admitted a native confirmation")
                             } catch {
-                                XCTAssertEqual(error.localizedDescription,
+                                XCTAssertEqual(
+                                    error.localizedDescription,
                                     "Finish the current screen in OpenClaw, then try again.")
                             }
                             assertPagesState()
@@ -906,7 +906,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 _ = try await oldConfirmation.submit()
                                 XCTFail("Removed Pages Root retained native confirmation authority")
                             } catch {
-                                XCTAssertEqual(error.localizedDescription,
+                                XCTAssertEqual(
+                                    error.localizedDescription,
                                     "The action route changed. Select the session again.")
                             }
                         }
@@ -986,7 +987,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 _ = try await prepared.submit()
                                 XCTFail("Pages open-close revived an old confirmation")
                             } catch {
-                                XCTAssertEqual(error.localizedDescription,
+                                XCTAssertEqual(
+                                    error.localizedDescription,
                                     "The action route changed. Select the session again.")
                             }
                         }
@@ -1031,13 +1033,13 @@ final class NativeActionVisualProofTests: XCTestCase {
                     XCTAssertTrue(chat.input.isEmpty)
                     XCTAssertTrue(protectedAttachments.isEmpty)
                     XCTAssertNil(protectedReply)
-                    let prepared: OpenClawNativePreparedSend?
-                    if scenario == .chatModalPreparedApp || scenario == .chatModalPreparedShared ||
+                    let prepared: OpenClawNativePreparedSend? = if scenario == .chatModalPreparedApp || scenario ==
+                        .chatModalPreparedShared ||
                         scenario == .chatModalRemovalApp || scenario == .chatModalRemovalShared
                     {
-                        prepared = try await router.prepareSend(to: session, message: "fresh after dismissal")
+                        try await router.prepareSend(to: session, message: "fresh after dismissal")
                     } else {
-                        prepared = nil
+                        nil
                     }
                     // Preparation may publish an equivalent binding and register its exact
                     // visible projection. Freeze cover custody only after that operation.
@@ -1076,8 +1078,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                     let title = scenario.usesSharedChatModal ? "Select Text" :
                         (scenario == .chatModalNewOptionsCover ? "New Thread" : "Background Tasks")
                     try await self.waitUntil {
-                        hosting.presentedViewController != nil &&
-                            (try self.accessibilityElement(nil, label: title, in: ownedWindow)) != nil
+                        try hosting.presentedViewController != nil &&
+                            (self.accessibilityElement(nil, label: title, in: ownedWindow)) != nil
                     }
                     let sheet = try XCTUnwrap(hosting.presentedViewController)
                     if scenario.usesSharedChatModal {
@@ -1109,7 +1111,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                             _ = try await oldConfirmation.submit()
                             XCTFail("Removed Root retained native confirmation authority")
                         } catch {
-                            XCTAssertEqual(error.localizedDescription,
+                            XCTAssertEqual(
+                                error.localizedDescription,
                                 "The action route changed. Select the session again.")
                         }
                         XCTAssertEqual(sends, 0)
@@ -1141,7 +1144,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 XCTAssertEqual(chat.attachments.map(\.id), protectedAttachments)
                                 XCTAssertTrue(hosting.presentedViewController === sheet)
                                 XCTAssertEqual(model.operatorAuthorityGeneration, generation)
-                                XCTAssertTrue(model.chatPresentation.transport?.nativeBinding?.canReuse(binding) == true)
+                                XCTAssertTrue(model.chatPresentation.transport?.nativeBinding?
+                                    .canReuse(binding) == true)
                                 XCTAssertEqual(sends, 0)
                                 XCTAssertEqual(creates, 0)
                             }
@@ -1198,7 +1202,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                                     _ = try await prepared.submit()
                                     XCTFail("A modal open-close revived an old confirmation")
                                 } catch {
-                                    XCTAssertEqual(error.localizedDescription,
+                                    XCTAssertEqual(
+                                        error.localizedDescription,
                                         "The action route changed. Select the session again.")
                                 }
                             }
@@ -1477,7 +1482,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                             _ = try await prepared.submit()
                             XCTFail("New Chat revived the old prepared confirmation")
                         } catch {
-                            XCTAssertEqual(error.localizedDescription,
+                            XCTAssertEqual(
+                                error.localizedDescription,
                                 "The action route changed. Select the session again.")
                         }
                     }
@@ -1498,8 +1504,10 @@ final class NativeActionVisualProofTests: XCTestCase {
                     XCTAssertEqual(createdKeys, [created])
                     XCTAssertEqual(creates, 1)
                     XCTAssertEqual(model.chatDeliveryAgentId, session.agentID)
-                    XCTAssertEqual(OpenClawChatSessionKey.agentID(from: chat.currentSessionTarget.sessionKey) ??
-                        chat.currentSessionTarget.agentID, session.agentID)
+                    XCTAssertEqual(
+                        OpenClawChatSessionKey.agentID(from: chat.currentSessionTarget.sessionKey) ??
+                            chat.currentSessionTarget.agentID,
+                        session.agentID)
                     if let parentBinding {
                         let child = try XCTUnwrap(model.chatPresentation.transport?.nativeBinding)
                         XCTAssertEqual(child.session, .init(
@@ -1507,7 +1515,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                         XCTAssertEqual(child.profileObservationID, parentBinding.profileObservationID)
                         XCTAssertEqual(child.route, parentBinding.route)
                         XCTAssertTrue(child.gateway === parentBinding.gateway)
-                        XCTAssertTrue((chat.transport as? IOSGatewayChatTransport)?.nativeBinding?.canReuse(child) == true)
+                        XCTAssertTrue((chat.transport as? IOSGatewayChatTransport)?.nativeBinding?
+                            .canReuse(child) == true)
                         let isCurrent = await child.isCurrent()
                         XCTAssertTrue(isCurrent)
                         XCTAssertFalse(oldAuthority())
@@ -2010,7 +2019,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                          .chatModalAdmissionApp, .chatModalAdmissionShared, .chatModalHeldOpenApp,
                          .chatModalHeldOpenShared, .chatModalHeldInspectApp, .chatModalHeldInspectShared,
                          .chatModalHeldPrepareApp, .chatModalHeldPrepareShared, .chatModalPreparedApp,
-                         .chatModalPreparedShared, .chatModalNewOptionsCover, .chatModalRemovalApp, .chatModalRemovalShared,
+                         .chatModalPreparedShared, .chatModalNewOptionsCover, .chatModalRemovalApp,
+                         .chatModalRemovalShared,
                          .pagesAdmission, .pagesAdmissionCover, .pagesHeldOpen, .pagesHeldInspect, .pagesHeldPrepare,
                          .pagesPrepared, .pagesRemoval:
                         XCTFail("Unexpected held-history scenario")

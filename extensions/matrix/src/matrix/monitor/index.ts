@@ -7,7 +7,10 @@ import {
   waitUntilAbort,
 } from "openclaw/plugin-sdk/channel-outbound";
 import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
-import { resolveOptionalIntegerOption } from "openclaw/plugin-sdk/number-runtime";
+import {
+  resolvePromptHistoryLimit,
+  resolveOptionalIntegerOption,
+} from "openclaw/plugin-sdk/number-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import {
   GROUP_POLICY_BLOCKED_LABEL,
@@ -55,7 +58,7 @@ import { resolveMatrixRoomConfig } from "./rooms.js";
 import { runMatrixStartupMaintenance } from "./startup.js";
 import { createMatrixMonitorStatusController } from "./status.js";
 import { createMatrixMonitorSyncLifecycle } from "./sync-lifecycle.js";
-import { createMatrixMonitorTaskRunner } from "./task-runner.js";
+import { createMatrixMonitorTaskRunner, getMatrixMonitorTaskSignal } from "./task-runner.js";
 
 type MonitorMatrixOpts = {
   runtime?: RuntimeEnv;
@@ -265,7 +268,10 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   const globalGroupChatHistoryLimit = (
     cfg.messages as { groupChat?: { historyLimit?: number } } | undefined
   )?.groupChat?.historyLimit;
-  const historyLimit = Math.max(0, accountConfig.historyLimit ?? globalGroupChatHistoryLimit ?? 0);
+  const historyLimit = resolvePromptHistoryLimit(
+    accountConfig.historyLimit ?? globalGroupChatHistoryLimit,
+    0,
+  );
   const mediaMaxMb = opts.mediaMaxMb ?? accountConfig.mediaMaxMb ?? DEFAULT_MEDIA_MAX_MB;
   const mediaMaxBytes = Math.max(1, mediaMaxMb) * 1024 * 1024;
   const streaming = resolveMatrixStreamingMode(accountConfig.streaming);
@@ -493,12 +499,16 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     logVerboseMessage("matrix: client started");
 
     logger.info(`matrix: logged in as ${auth.userId}`);
-    void backfillMatrixAuthDeviceIdAfterStartup({
-      auth,
-      env: process.env,
-      abortSignal: monitorLifecycleSignal,
-    }).catch((err: unknown) => {
-      logVerboseMessage(`matrix: failed to backfill deviceId after startup (${String(err)})`);
+    void monitorTaskRunner.runDetachedTask("deviceId backfill", async () => {
+      const taskSignal = getMatrixMonitorTaskSignal();
+      await backfillMatrixAuthDeviceIdAfterStartup({
+        auth,
+        env: process.env,
+        abortSignal:
+          taskSignal && monitorLifecycleSignal
+            ? AbortSignal.any([taskSignal, monitorLifecycleSignal])
+            : (taskSignal ?? monitorLifecycleSignal),
+      });
     });
 
     registerChannelRuntimeContext({

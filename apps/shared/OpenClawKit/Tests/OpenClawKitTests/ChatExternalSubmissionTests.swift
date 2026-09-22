@@ -1029,7 +1029,9 @@ private struct ChatExternalSubmissionTests {
             await historyGate.open()
             await fixture.transport.release()
             _ = await submitting.value
-            for owner in ownedRuns + currentOwners { await owner.value }
+            for owner in ownedRuns + currentOwners {
+                await owner.value
+            }
             await fixture.close()
         }
         do {
@@ -1042,7 +1044,7 @@ private struct ChatExternalSubmissionTests {
             #expect(await fixture.transport.targetedHistoryReturns == [1])
             #expect(vm.pendingRuns == [ackRunID])
             #expect(vm.liveUsageRunID == ackRunID)
-            ownedRuns.append(try #require(vm.pendingRunOwnerTasks[ackRunID]))
+            try ownedRuns.append(#require(vm.pendingRunOwnerTasks[ackRunID]))
             await historyGate.open()
 
             try await waitUntil("reconciled run installed before terminal admission") { await routeGate.entered }

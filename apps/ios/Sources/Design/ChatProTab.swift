@@ -29,7 +29,6 @@ struct IOSChatModalPublication {
 }
 
 struct ChatProTab: View {
-
     private struct VisibleChatIdentity: Equatable {
         let model: ObjectIdentifier?
         let binding: ObjectIdentifier?
@@ -201,7 +200,6 @@ struct ChatProTab: View {
                     }
                 }
             }
-
     }
 
     @ViewBuilder

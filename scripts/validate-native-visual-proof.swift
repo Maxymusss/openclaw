@@ -9,8 +9,7 @@ guard Set(inputs.map(\.lastPathComponent)).count == inputs.count,
       !FileManager.default.fileExists(atPath: output.path)
 else { exit(EXIT_FAILURE) }
 try FileManager.default.createDirectory(
-    at: output, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]
-)
+    at: output, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
 
 // Decode only bounded, complete PNGs. Header dimensions alone can certify a
 // truncated file, and ImageIO otherwise defers decoding until display time.
@@ -29,10 +28,9 @@ for url in inputs {
           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [String: Any],
           let width = properties[kCGImagePropertyPixelWidth as String] as? Int,
           let height = properties[kCGImagePropertyPixelHeight as String] as? Int,
-          (1 ... 4096).contains(width), (1 ... 4096).contains(height),
+          (1...4096).contains(width), (1...4096).contains(height),
           let image = CGImageSourceCreateImageAtIndex(
-              source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary
-          ),
+              source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary),
           image.width == width, image.height == height,
           CGImageSourceGetStatus(source) == .statusComplete,
           CGImageSourceGetStatusAtIndex(source, 0) == .statusComplete

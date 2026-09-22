@@ -65,6 +65,12 @@ final class GatewayRequestCancellationGate: @unchecked Sendable {
 }
 
 extension GatewayChannelActor {
+    struct PendingRequest {
+        let continuation: CheckedContinuation<GatewayFrame, Error>
+        var timeoutTask: Task<Void, Never>?
+        let transportLifetime = WebSocketRequestLifetime()
+    }
+
     enum ConnectChallengeError: Error {
         case invalid
     }

@@ -993,27 +993,27 @@ struct RootTabs: View {
                 Text("OpenClaw could not prepare the Markdown file.").font(OpenClawType.body)
             }
             .fullScreenCover(isPresented: self.$showOnboarding) {
-                OnboardingWizardView(
-                    allowSkip: self.onboardingAllowSkip,
-                    onRequestLocalNetworkAccess: { reason in
-                        self.requestLocalNetworkAccess(reason: reason)
-                    },
-                    onClose: {
-                        self.showOnboarding = false
-                    },
-                    onComplete: {
-                        self.showOnboarding = false
-                        self.selectSidebarDestination(.chat)
-                    })
-                    .environment(self.appModel)
-                    .environment(self.voiceWake)
-                    .environment(self.gatewayController)
-            }
-            .gatewayTrustPromptAlert(isEnabled: !self.showOnboarding)
-            .deepLinkAgentPromptAlert()
-            .execApprovalPromptDialog(
-                suppressedApproval: self.activeExecApprovalPromptSuppression)
-            .notificationPermissionGuidanceDialog(openNotifications: notificationSettingsAction())
+                    OnboardingWizardView(
+                        allowSkip: self.onboardingAllowSkip,
+                        onRequestLocalNetworkAccess: { reason in
+                            self.requestLocalNetworkAccess(reason: reason)
+                        },
+                        onClose: {
+                            self.showOnboarding = false
+                        },
+                        onComplete: {
+                            self.showOnboarding = false
+                            self.selectSidebarDestination(.chat)
+                        })
+                        .environment(self.appModel)
+                        .environment(self.voiceWake)
+                        .environment(self.gatewayController)
+                }
+                .gatewayTrustPromptAlert(isEnabled: !self.showOnboarding)
+                .deepLinkAgentPromptAlert()
+                .execApprovalPromptDialog(
+                    suppressedApproval: self.activeExecApprovalPromptSuppression)
+                .notificationPermissionGuidanceDialog(openNotifications: notificationSettingsAction())
     }
 
     private func updateIdleTimer() {

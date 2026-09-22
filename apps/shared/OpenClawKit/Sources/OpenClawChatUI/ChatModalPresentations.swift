@@ -59,8 +59,10 @@ public struct OpenClawChatModalActions {
     }
 
     static var local: Self {
-        Self(capture: { _ in Permit(isCurrent: { true }, accept: { true }) },
-             dismiss: { _ in }, isCurrent: { _ in true })
+        Self(
+            capture: { _ in Permit(isCurrent: { true }, accept: { true }) },
+            dismiss: { _ in },
+            isCurrent: { _ in true })
     }
 }
 
@@ -124,7 +126,9 @@ public final class OpenClawChatModalPresentations {
     struct Request<Value>: Identifiable {
         let receipt: Receipt
         let value: Value
-        var id: UUID { self.receipt.id }
+        var id: UUID {
+            self.receipt.id
+        }
     }
 
     struct FullMessage {
@@ -172,15 +176,17 @@ public final class OpenClawChatModalPresentations {
             self.fullMessage?.receipt, self.selectText?.receipt, self.image?.receipt,
             self.source?.receipt, self.mermaid?.receipt, self.widgetImage?.receipt,
             self.widgetError?.receipt, self.signIn?.receipt,
-        ].compactMap { $0 }
+        ].compactMap(\.self)
         #if canImport(UIKit)
         values += [self.photoPicker?.receipt, self.fileImporter?.receipt, self.cameraPicker?.receipt]
-            .compactMap { $0 }
+            .compactMap(\.self)
         #endif
         return values
     }
 
-    public var hasActivePresentation: Bool { !self.receipts.isEmpty }
+    public var hasActivePresentation: Bool {
+        !self.receipts.isEmpty
+    }
 
     public func hasActivePresentation(for origin: OpenClawChatModalOrigin) -> Bool {
         self.receipts.contains { $0.origin == origin }
@@ -267,8 +273,8 @@ public final class OpenClawChatModalPresentations {
     enum AttachmentKind { case photo, file, camera }
 
     private func presentationSlot(_ kind: AttachmentKind) -> ReferenceWritableKeyPath<
-        OpenClawChatModalPresentations, Request<ChatModalAttachmentCapture>?>
-    {
+        OpenClawChatModalPresentations, Request<ChatModalAttachmentCapture>?,
+    > {
         switch kind {
         case .photo: \.photoPicker
         case .file: \.fileImporter
@@ -277,8 +283,8 @@ public final class OpenClawChatModalPresentations {
     }
 
     private func resultSlot(_ kind: AttachmentKind) -> ReferenceWritableKeyPath<
-        OpenClawChatModalPresentations, Request<ChatModalAttachmentCapture>?>
-    {
+        OpenClawChatModalPresentations, Request<ChatModalAttachmentCapture>?,
+    > {
         switch kind {
         case .photo: \.photoResult
         case .file: \.fileResult
@@ -464,7 +470,9 @@ extension View {
 @MainActor
 private struct ChatModalHost: ViewModifier {
     let context: ChatModalContext
-    private var owner: OpenClawChatModalPresentations { self.context.owner }
+    private var owner: OpenClawChatModalPresentations {
+        self.context.owner
+    }
 
     func body(content: Content) -> some View {
         let error = self.owner.binding(\.widgetError, context: self.context)
@@ -503,24 +511,26 @@ private struct ChatModalHost: ViewModifier {
             }
             #if os(iOS)
             .sheet(item: self.owner.binding(\.selectText, context: self.context)) { request in
-                self.nested(request.receipt, content: ChatSelectableTextSheet(
-                    text: ChatMessageVisibleText.copyText(in: request.value),
-                    onClose: { self.owner.dismiss(request.receipt) }))
-            }
-            .sheet(item: self.owner.binding(\.source, context: self.context)) { request in
-                self.nested(request.receipt, content: ScrollView {
-                    ChatSourcePreviewDetail(source: request.value) { self.owner.dismiss(request.receipt) }
+                    self.nested(request.receipt, content: ChatSelectableTextSheet(
+                        text: ChatMessageVisibleText.copyText(in: request.value),
+                        onClose: { self.owner.dismiss(request.receipt) }))
                 }
-                .presentationDetents([.medium, .large])
-                .presentationDragIndicator(.visible))
-            }
-            .sheet(item: self.owner.binding(\.widgetImage, context: self.context)) { request in
-                self.nested(request.receipt, content: ChatInlineWidgetShareSheet(image: request.value))
-            }
+                .sheet(item: self.owner.binding(\.source, context: self.context)) { request in
+                    self.nested(
+                        request.receipt,
+                        content: ScrollView {
+                            ChatSourcePreviewDetail(source: request.value) { self.owner.dismiss(request.receipt) }
+                        }
+                        .presentationDetents([.medium, .large])
+                        .presentationDragIndicator(.visible))
+                }
+                .sheet(item: self.owner.binding(\.widgetImage, context: self.context)) { request in
+                    self.nested(request.receipt, content: ChatInlineWidgetShareSheet(image: request.value))
+                }
             #endif
             #if canImport(WebKit) && os(macOS)
-            .sheet(item: self.owner.binding(\.mermaid, context: self.context)) { request in
-                self.diagram(request)
+                .sheet(item: self.owner.binding(\.mermaid, context: self.context)) { request in
+                    self.diagram(request)
             }
             #elseif canImport(WebKit) && os(iOS)
             .fullScreenCover(item: self.owner.binding(\.mermaid, context: self.context)) { request in
@@ -549,15 +559,16 @@ private struct ChatModalHost: ViewModifier {
         receipt.origin == self.context.origin && receipt.ancestors == self.context.ancestors
     }
 
-    private func isPresented<Value>(
+    private func isPresented(
         _ slot: ReferenceWritableKeyPath<
-            OpenClawChatModalPresentations, OpenClawChatModalPresentations.Request<Value>?>) -> Binding<Bool>
+            OpenClawChatModalPresentations, OpenClawChatModalPresentations.Request<some Any>?,
+        >) -> Binding<Bool>
     {
         let binding = self.owner.binding(slot, context: self.context)
         return Binding(get: { binding.wrappedValue != nil }, set: { if !$0 { binding.wrappedValue = nil } })
     }
 
-    // Erase the recursive host type, not the typed payload or its receipt.
+    /// Erase the recursive host type, not the typed payload or its receipt.
     private func nested(_ receipt: OpenClawChatModalPresentations.Receipt, content: some View) -> AnyView {
         AnyView(content.modifier(ChatModalHost(context: self.context.nested(receipt))))
     }
@@ -739,6 +750,7 @@ final class ChatModalAttachmentCapture {
         }
     }
 }
+
 @MainActor
 private struct ChatModalAttachmentHost: View {
     let owner: OpenClawChatModalPresentations

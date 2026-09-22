@@ -166,11 +166,7 @@ function expectTraceOrder(trace: ReturnType<Proxy["snapshot"]>["firstConnection"
   }
 }
 
-function holdCloseNotification(
-  owner: EventEmitter,
-  order: string[],
-  tag = "outbound-close",
-) {
+function holdCloseNotification(owner: EventEmitter, order: string[], tag = "outbound-close") {
   const entered = createDeferred<void>();
   const delivered = createDeferred<void>();
   const originalEmit = owner.emit;
@@ -1366,11 +1362,15 @@ describe("QA Gateway proxy held responses", () => {
               );
               assert(response);
               expect(proxy.snapshot().heldResponse).toBeUndefined();
-              expect(proxy.snapshot().events.filter(({ kind }) => kind === "response-released")).toEqual([]);
+              expect(
+                proxy.snapshot().events.filter(({ kind }) => kind === "response-released"),
+              ).toEqual([]);
               await expectFixtureControlRejected(proxy, "hold-response", "users.self");
               await expectFixtureControlRejected(proxy, "release-response");
               expect(
-                await fetch(new URL("/ordinary-media", proxy.controlUrl)).then((result) => result.text()),
+                await fetch(new URL("/ordinary-media", proxy.controlUrl)).then((result) =>
+                  result.text(),
+                ),
               ).toBe("ordinary media");
 
               if (outcome === "stop") {
@@ -1392,7 +1392,9 @@ describe("QA Gateway proxy held responses", () => {
                 // The socket is gone, but finished(response) still owns the held
                 // close notification. Listener closure cannot settle this release.
                 expect(response.destroyed).toBe(true);
-                expect(proxy.snapshot().firstConnection.some(({ tag }) => tag === "front-close")).toBe(true);
+                expect(
+                  proxy.snapshot().firstConnection.some(({ tag }) => tag === "front-close"),
+                ).toBe(true);
                 expect(order).toEqual([]);
                 closeGate.release();
                 await closeGate.delivered;
@@ -1412,14 +1414,20 @@ describe("QA Gateway proxy held responses", () => {
                   } else {
                     abort.abort();
                   }
-                  await withTestTimeout(responseClosed.promise, 5000, "media response did not close");
+                  await withTestTimeout(
+                    responseClosed.promise,
+                    5000,
+                    "media response did not close",
+                  );
                   await expect(media).rejects.toThrow();
                 }
                 await releasing;
                 // Success and failed delivery both retire the same reservation.
                 await fixtureControl(proxy, "hold-response", "users.self");
               }
-              expect(proxy.snapshot().events.filter(({ kind }) => kind === "response-released")).toEqual([
+              expect(
+                proxy.snapshot().events.filter(({ kind }) => kind === "response-released"),
+              ).toEqual([
                 expect.objectContaining({ method: "media.get", delivered: outcome === "success" }),
               ]);
             },
@@ -1433,11 +1441,7 @@ describe("QA Gateway proxy held responses", () => {
             },
             async () => {
               stopped ??= proxy.stop();
-              await Promise.all([
-                media?.catch(() => {}),
-                releasing?.catch(() => {}),
-                stopped,
-              ]);
+              await Promise.all([media?.catch(() => {}), releasing?.catch(() => {}), stopped]);
             },
             () => {
               endSpy?.mockRestore();
@@ -1531,7 +1535,9 @@ describe("QA Gateway proxy held responses", () => {
                 assert(writeSocket);
                 const frontend = writeSocket;
                 expect(frontend.readyState).toBe(WebSocket.OPEN);
-                const frontendClosed = new Promise<void>((resolve) => frontend.once("close", resolve));
+                const frontendClosed = new Promise<void>((resolve) =>
+                  frontend.once("close", resolve),
+                );
                 const backendClosed = new Promise<void>((resolve) => back.once("close", resolve));
                 stopped = proxy.stop();
                 void stopped.then(

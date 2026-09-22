@@ -190,6 +190,12 @@ export function createControlUiSessionFixtures(
       );
       set("pinned", next.pinnedAt !== undefined);
     }
+    // Advance the fixture's synthetic timeline without making its later events stale.
+    const latestUpdatedAt = Math.max(
+      0,
+      ...[...records.values()].map(({ row }) => row.updatedAt ?? 0),
+    );
+    set("updatedAt", latestUpdatedAt + 1);
     value.row = next;
     for (const field of changed) {
       value.changed.add(field);
@@ -252,6 +258,11 @@ export function createControlUiSessionFixtures(
         ? [...new Set([...activeRunIds, runId])]
         : activeRunIds.filter((id) => id !== runId);
     const fields = {
+      // Like the Gateway projection, a newly started sole run has no execution
+      // model until it publishes one; the previous fallback is not evidence.
+      ...(outcome === "running" && activeRunIds.length === 0
+        ? { activeModel: undefined, activeModelProvider: undefined }
+        : {}),
       activeRunIds: remaining,
       hasActiveRun: remaining.length > 0,
       status: remaining.length > 0 ? "running" : outcome,

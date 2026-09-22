@@ -12,8 +12,7 @@ export function isColdArchivedSessionRow(row: records.Row) {
 export function createSessionRowProjectionArchive(params: {
   rows: ReadonlyMap<string, records.Row>;
   dirty: Set<string>;
-  enqueue: (id: string, change: SessionRowChange) => void;
-  acquire: (row: records.Row, fresh: boolean) => records.Row | undefined;
+  enqueue: (id: string, change?: SessionRowChange) => void;
   put: (row: records.Row) => void;
   release: (id: string) => void;
   prepare: (row: records.Row) => records.Row | undefined;
@@ -35,6 +34,13 @@ export function createSessionRowProjectionArchive(params: {
   }
   return {
     demote,
+    deferAcquisition(row: records.Row) {
+      const id = records.identity(row);
+      params.put(row);
+      params.dirty.add(id);
+      params.enqueue(id);
+      return undefined;
+    },
     isCurrentMaterialization(row: records.Row) {
       const current = params.rows.get(records.identity(row));
       return (
@@ -56,16 +62,7 @@ export function createSessionRowProjectionArchive(params: {
       change: Extract<SessionRowChange, { all: true }>,
       candidates: Iterable<records.Row>,
     ) {
-      for (const previous of candidates) {
-        const row =
-          typeof change.scope === "object" && previous.entry?.archivedAt !== undefined
-            ? params.acquire({ ...previous, hasBoard: undefined }, true)
-            : change.scope === "subagent-runs" && previous.entry?.archivedAt !== undefined
-              ? params.acquire(previous, false)
-              : previous;
-        if (!row) {
-          continue;
-        }
+      for (const row of candidates) {
         if (row.entry?.archivedAt !== undefined) {
           if (row.materialized) {
             demote(row);
@@ -82,16 +79,6 @@ export function createSessionRowProjectionArchive(params: {
     },
     forget: (id: string) => materialized.delete(id),
     clear: () => materialized.clear(),
-    invalidate() {
-      for (const id of materialized) {
-        demote(params.rows.get(id)!);
-      }
-      for (const row of params.rows.values()) {
-        if (!isColdArchivedSessionRow(row)) {
-          params.dirty.add(records.identity(row));
-        }
-      }
-    },
     describe(initial: records.Row | undefined) {
       if (initial?.entry?.archivedAt === undefined) {
         return initial;

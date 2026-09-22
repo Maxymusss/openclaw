@@ -26,9 +26,13 @@ final class IOSNativePresentationLifetime {
 struct IOSNativePresentationAnchor: UIViewRepresentable {
     let lifetime: IOSNativePresentationLifetime
 
-    func makeCoordinator() -> IOSNativePresentationLifetime { self.lifetime }
+    func makeCoordinator() -> IOSNativePresentationLifetime {
+        self.lifetime
+    }
 
-    func makeUIView(context _: Context) -> UIView { UIView(frame: .zero) }
+    func makeUIView(context _: Context) -> UIView {
+        UIView(frame: .zero)
+    }
 
     func updateUIView(_: UIView, context _: Context) {}
 

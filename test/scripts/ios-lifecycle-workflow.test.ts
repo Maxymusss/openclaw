@@ -1,28 +1,35 @@
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { evaluateWorkflowExpression } from "./ci-workflow.test-support.js";
 
 type Command = { tool: string; args: string[] };
 
-const workflow: { jobs: Record<string, { steps: { name?: string; run?: string }[] }> } = parse(
-  readFileSync(".github/workflows/ci.yml", "utf8"),
-);
+const workflow: {
+  jobs: Record<string, { steps: { name?: string; id?: string; if?: string; run?: string }[] }>;
+} = parse(readFileSync(".github/workflows/ci.yml", "utf8"));
 const watchStep = workflow.jobs["ios-build"]?.steps.find(
   (step) => step.name === "Run focused Apple Watch operation simulator tests",
 );
 const voiceStep = workflow.jobs["ios-build"]?.steps.find(
   (step) => step.name === "Run focused iOS voice cleanup simulator tests",
 );
+const nativeActionStep = workflow.jobs["ios-build"]?.steps.find(
+  (step) => step.name === "Run focused iOS native action simulator tests",
+);
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
 function runSimulatorStep(mode = "ready", step = watchStep) {
   const root = tempDirs.make("openclaw-watch-workflow-");
   const bin = path.join(root, "bin");
+  const harnessLib = path.join(root, ".ci-harness", "scripts", "lib");
   const product = path.join(root, "project derived data", "Watch Product.app");
   mkdirSync(bin, { recursive: true });
+  mkdirSync(harnessLib, { recursive: true });
+  copyFileSync("scripts/lib/swift-toolchain.sh", path.join(harnessLib, "swift-toolchain.sh"));
   mkdirSync(product, { recursive: true });
   const runner = path.join(root, "tools.mjs");
   writeFileSync(
@@ -174,4 +181,54 @@ describe.skipIf(process.platform === "win32")("iOS voice cleanup workflow", () =
     expect(build.args).toEqual(expect.arrayContaining(["-configuration", "Debug", "test"]));
     expect(build.args.some((arg) => arg.startsWith("CODE_SIGN"))).toBe(false);
   });
+});
+
+describe("iOS native action workflow", () => {
+  it.skipIf(process.platform === "win32")(
+    "runs each complete native suite once and exports its own simulator bundle",
+    () => {
+      const { result, commands } = runSimulatorStep("voice", nativeActionStep);
+      expect(result.status, result.stderr).toBe(0);
+      const builds = commands.filter((command) => command.tool === "xcodebuild");
+      expect(builds).toHaveLength(1);
+      const args = builds[0]!.args;
+      const selectors = [
+        "-only-testing:OpenClawTests/NativeActionRouterTests",
+        "-only-testing:OpenClawTests/NativeActionVisualProofTests",
+        "-only-testing:OpenClawTests/SwiftUIRenderSmokeTests",
+      ];
+      expect(args.filter((arg) => arg.startsWith("-only-testing:"))).toEqual(selectors);
+      expect(args).toEqual(expect.arrayContaining(["-configuration", "Debug", "test"]));
+      expect(args.some((arg) => arg.startsWith("CODE_SIGN"))).toBe(false);
+      const bundle = args[args.indexOf("-resultBundlePath") + 1];
+      expect(bundle).toBe("apps/ios/build/LifecycleTestResults/OpenClawNativeActionTests.xcresult");
+      const steps = workflow.jobs["ios-build"]!.steps;
+      for (const selector of selectors) {
+        expect(steps.filter((step) => step.run?.includes(selector))).toEqual([nativeActionStep]);
+      }
+      const exporter = steps.find((step) => step.name === "Export native action visual proof");
+      expect(exporter?.run).toContain(`bundle = ${JSON.stringify(bundle)}`);
+    },
+  );
+
+  it.each(["success", "failure", "cancelled", "skipped"] as const)(
+    "exports the attempted native result on %s independently of lifecycle tests",
+    (outcome) => {
+      const exporter = workflow.jobs["ios-build"]!.steps.find(
+        (step) => step.name === "Export native action visual proof",
+      );
+      expect(nativeActionStep?.id).toBe("ios_native_action_tests");
+      expect(
+        evaluateWorkflowExpression(exporter?.if, {
+          eventName: "pull_request",
+          repository: "openclaw/openclaw",
+          runAttempt: 1,
+          steps: {
+            ios_native_action_tests: { outputs: {}, outcome },
+            ios_lifecycle_tests: { outputs: {}, outcome: "success" },
+          },
+        }),
+      ).toBe(outcome !== "skipped");
+    },
+  );
 });
