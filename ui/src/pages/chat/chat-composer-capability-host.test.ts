@@ -542,9 +542,9 @@ describe("ChatComposerCapabilityHost", () => {
     reconnected.onLoadSkills?.();
     expect(statusRequest).toHaveBeenCalledTimes(2);
     expect(request.mock.calls).toEqual([
-      ["skills.status", { agentId: "main" }],
+      ["skills.status", { agentId: "main", sessionKey: "main" }],
       ["skills.library.list", { sessionKey: "main" }],
-      ["skills.status", { agentId: "main" }],
+      ["skills.status", { agentId: "main", sessionKey: "main" }],
       ["skills.library.list", { sessionKey: "main" }],
     ]);
 
@@ -560,6 +560,80 @@ describe("ChatComposerCapabilityHost", () => {
         "current",
       ]);
     });
+  });
+
+  it("retires completed and pending skill reports when the same session changes project", async () => {
+    const context = createContext({ runtimeConfig: {} });
+    const state = createState();
+    let session = { key: "main", spawnedCwd: "/projects/first" } as GatewaySessionRow;
+    const first = deferred<unknown>();
+    const second = deferred<unknown>();
+    const third = deferred<unknown>();
+    const firstLoaded = deferred();
+    const thirdLoaded = deferred();
+    const statusRequest = vi
+      .fn()
+      .mockReturnValueOnce(first.promise)
+      .mockReturnValueOnce(second.promise)
+      .mockReturnValueOnce(third.promise);
+    const request = vi.fn((method: string) => {
+      if (method === "skills.status") {
+        return statusRequest();
+      }
+      if (method === "skills.library.list") {
+        return Promise.resolve({
+          entries: [],
+          profileId: null,
+          multipleProfiles: false,
+          defaultTarget: "workspace",
+          canManageWorkspace: true,
+          defaultSelectionLimit: 64,
+          session: { sessionKey: "main", selections: [], attachable: [] },
+        } satisfies SkillsLibraryListResult);
+      }
+      throw new Error(`Unexpected request: ${method}`);
+    });
+    state.client = { request } as unknown as GatewayBrowserClient;
+    const host = new ChatComposerCapabilityHost(() => {
+      const rows = host.props(context, state, session, "main").skills;
+      if (rows?.some(({ name }) => name === "first-project")) {
+        firstLoaded.resolve();
+      }
+      if (rows?.some(({ name }) => name === "third-project")) {
+        thirdLoaded.resolve();
+      }
+    });
+    const skillReport = (name: string) => ({
+      skills: [
+        {
+          name,
+          skillKey: name,
+          disabled: false,
+          blockedByAllowlist: false,
+          missing: { bins: [], env: [], config: [], os: [] },
+        },
+      ],
+    });
+    host.props(context, state, session, "main").onLoadSkills?.();
+    first.resolve(skillReport("first-project"));
+    await firstLoaded.promise;
+    expect(host.props(context, state, session, "main").skills?.map(({ name }) => name)).toEqual([
+      "first-project",
+    ]);
+    session = { ...session, spawnedCwd: "/projects/second" };
+    const rebound = host.props(context, state, session, "main", false, true);
+    expect(rebound.skills).toBeNull();
+    expect(rebound.skillsLoading).toBe(true);
+    session = { ...session, spawnedCwd: "/projects/third" };
+    host.props(context, state, session, "main", false, true);
+    third.resolve(skillReport("third-project"));
+    await thirdLoaded.promise;
+    second.resolve(skillReport("second-project"));
+    await second.promise;
+    expect(host.props(context, state, session, "main").skills?.map(({ name }) => name)).toEqual([
+      "third-project",
+    ]);
+    expect(statusRequest).toHaveBeenCalledTimes(3);
   });
 
   it("records an unexpected effective-tools loader rejection", async () => {

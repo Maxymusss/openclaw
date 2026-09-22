@@ -1,4 +1,18 @@
 import path from "node:path";
+import type { SessionEntry } from "../../config/sessions/types.js";
+
+/** Use the session's admitted project root, never an ancestor of its selected workspace. */
+export function resolveSessionSkillWorkspaceDir(
+  entry: Pick<SessionEntry, "worktree" | "spawnedCwd" | "spawnedWorkspaceDir"> | undefined,
+  fallback?: string,
+): string | undefined {
+  return (
+    entry?.worktree?.canonicalWorkspaceDir ??
+    entry?.spawnedCwd ??
+    entry?.spawnedWorkspaceDir ??
+    fallback
+  );
+}
 
 type WorkspaceSkillRoots = {
   agentWorkspaceDir: string;

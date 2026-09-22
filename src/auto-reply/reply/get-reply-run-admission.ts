@@ -21,6 +21,7 @@ import {
   interruptSessionWorkAdmissions,
 } from "../../sessions/session-lifecycle-admission.js";
 import { readSessionInputProfileId } from "../../sessions/session-participant-input.js";
+import { resolveSessionSkillWorkspaceDir } from "../../skills/loading/workspace-skill-roots.js";
 import { resolveCommandTurnTargetSessionKey } from "../command-turn-context.js";
 import {
   formatThinkingLevels,
@@ -213,8 +214,10 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
           sessionId,
           isFirstTurnInSession,
           workspaceDir: context.skillsWorkspaceDir,
-          executionWorkspaceDir:
-            sessionEntry?.worktree?.canonicalWorkspaceDir ?? context.workspaceDir,
+          executionWorkspaceDir: resolveSessionSkillWorkspaceDir(
+            sessionEntry,
+            context.workspaceDir,
+          ),
           cfg,
           execOverrides: params.execOverrides,
           skillFilter: opts?.skillFilter,

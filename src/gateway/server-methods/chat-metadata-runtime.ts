@@ -24,6 +24,11 @@ import {
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { listUserProfileAuthLinks } from "../../state/user-model-accounts.js";
 import { resolveChatAccountSelection } from "./chat-account-selection.js";
+import {
+  commandProjectionKey,
+  prepareChatCommandProjection,
+  type CommandProjectionEntry,
+} from "./chat-metadata-command-projection.js";
 import type {
   ChatMetadataReadParams,
   ChatMetadataResult,
@@ -49,7 +54,6 @@ import type {
 import type { GatewayModelCatalogContext } from "./models-list-context.js";
 
 type PreparedAgentMetadata = PreparedAgentFacts & {
-  commands?: unknown[];
   swarmEnabled: boolean;
 };
 
@@ -68,9 +72,10 @@ type AgentProjectionEntry =
 type PreparedMetadataGeneration = {
   epoch: number;
   facts: PreparedGenerationFacts;
-  agentsById: Map<string, Promise<PreparedAgentMetadata>>;
+  agentsById: Map<string, PreparedAgentMetadata>;
   neutralProjectionByAgentId: Map<string, AgentProjectionEntry>;
   sessionProjectionByKey: Map<string, AgentProjectionEntry>;
+  commandsByScope: Map<string, CommandProjectionEntry>;
 };
 
 type ChatMetadataRefreshOptions = { notifyIfUnchanged?: boolean };
@@ -81,6 +86,7 @@ function readPreparedChatMetadata(
   projection: PreparedChatMetadataProjection,
   readParams: ChatMetadataReadParams,
   config: OpenClawConfig,
+  commands: unknown[] | undefined,
 ): ChatMetadataResult {
   readParams.draftAccountSelection?.assertCurrent();
   const { agent } = projection;
@@ -88,7 +94,7 @@ function readPreparedChatMetadata(
     readParams,
     {
       ...projection.read(),
-      ...(agent.commands !== undefined ? { commands: agent.commands } : {}),
+      ...(commands !== undefined ? { commands } : {}),
       swarmEnabled: agent.swarmEnabled,
       accountSelection: resolveChatAccountSelection({
         authStore: agent.authStore,
@@ -191,9 +197,9 @@ export function createGatewayChatMetadataRuntime(params: {
     getAuthStoreRevision: getRuntimeAuthProfileStoreMetadataRevision,
     getSkillsVersion: getSkillsSnapshotVersion,
     getPluginRegistryVersion: getActivePluginRegistryVersion,
-    buildCommands: async ({ cfg, agentId }) => {
+    buildCommands: async (commandParams) => {
       const { buildCommandsListResult } = await import("./commands-list-result.js");
-      return buildCommandsListResult({ cfg, agentId, includeArgs: true, scope: "text" });
+      return buildCommandsListResult({ ...commandParams, includeArgs: true, scope: "text" });
     },
     buildProjection: prepareChatMetadataModelProjection,
     ...params.deps,
@@ -328,32 +334,30 @@ export function createGatewayChatMetadataRuntime(params: {
     if (!agent) {
       return undefined;
     }
-    const preparing: Promise<PreparedAgentMetadata> = trackWork(
-      (async (): Promise<PreparedAgentMetadata> => {
-        let commands: unknown[] | undefined;
-        try {
-          commands = (await deps.buildCommands({ cfg: generation.facts.config, agentId })).commands;
-        } catch (error) {
-          params.log.warn(
-            `chat metadata continuing without text commands for ${agentId}: ${formatErrorMessage(error)}`,
-          );
-        }
-        return {
-          ...agent,
-          ...(commands !== undefined ? { commands } : {}),
-          swarmEnabled: resolveSwarmConfig(generation.facts.config, agentId).enabled,
-        };
-      })().catch((error: unknown) => {
-        if (generation.agentsById.get(agentId) === preparing) {
-          generation.agentsById.delete(agentId);
-        }
-        throw error;
+    const prepared = {
+      ...agent,
+      swarmEnabled: resolveSwarmConfig(generation.facts.config, agentId).enabled,
+    };
+    generation.agentsById.set(agentId, prepared);
+    pruneMapToMaxSize(generation.agentsById, CHAT_METADATA_CACHE_MAX_ENTRIES);
+    return prepared;
+  };
+
+  const prepareCommands = (
+    generation: PreparedMetadataGeneration,
+    readParams: ChatMetadataReadParams,
+  ) =>
+    trackWork(
+      prepareChatCommandProjection({
+        entries: generation.commandsByScope,
+        config: generation.facts.config,
+        readParams,
+        buildCommands: deps.buildCommands,
+        isCurrent: () => generation.epoch === invalidationEpoch,
+        maxEntries: CHAT_METADATA_CACHE_MAX_ENTRIES,
+        log: params.log,
       }),
     );
-    generation.agentsById.set(agentId, preparing);
-    pruneMapToMaxSize(generation.agentsById, CHAT_METADATA_CACHE_MAX_ENTRIES);
-    return preparing;
-  };
 
   const runRefresh = async (version: number) => {
     if (version !== refreshVersion) {
@@ -376,6 +380,7 @@ export function createGatewayChatMetadataRuntime(params: {
         agentsById: new Map(),
         neutralProjectionByAgentId: new Map(),
         sessionProjectionByKey: new Map(),
+        commandsByScope: new Map(),
       };
     } catch (error) {
       // Invalidation and stop revoke old preparation, including its failures.
@@ -557,12 +562,13 @@ export function createGatewayChatMetadataRuntime(params: {
       : readParams.sessionEntry;
     return await readCurrent(async (generation) => {
       const agentId = normalizeAgentId(readParams.agentId);
-      const agent = await prepareAgent(generation, agentId);
+      const agent = prepareAgent(generation, agentId);
       if (!agent) {
         throw new ChatMetadataSnapshotUnavailableError(
           `prepared chat metadata is unavailable for agent "${agentId}"`,
         );
       }
+      const commandsPromise = prepareCommands(generation, { ...readParams, sessionEntry });
       const projection = await projectAgent(
         generation,
         agent,
@@ -572,6 +578,7 @@ export function createGatewayChatMetadataRuntime(params: {
         // Existing sessions use their saved selection, never a viewer's newer default.
         !readParams.sessionKey && !readParams.sessionEntry,
       );
+      const commands = await commandsPromise;
       return {
         isCurrent: projection.isCurrent,
         read: () =>
@@ -583,6 +590,7 @@ export function createGatewayChatMetadataRuntime(params: {
               requesterProfileId: draft?.owner ?? readParams.requesterProfileId,
             },
             deps.getConfig(),
+            commands,
           ),
       };
     });
@@ -601,6 +609,7 @@ export function createGatewayChatMetadataRuntime(params: {
     const assemble = (
       neutral: PreparedChatMetadataProjection,
       session: PreparedChatMetadataProjection,
+      commands: unknown[] | undefined,
     ): ChatStartupProjectionResult => ({
       // History consumes stable catalogs only; live readiness stays inside the current-read fence.
       ...(readParams.readPolicy === "ready"
@@ -613,6 +622,7 @@ export function createGatewayChatMetadataRuntime(params: {
                 requesterProfileId: readParams.readRequesterProfileId?.(),
               },
               deps.getConfig(),
+              commands,
             ),
           }),
       sessionModelCatalog: session.modelCatalog,
@@ -622,7 +632,7 @@ export function createGatewayChatMetadataRuntime(params: {
       generation: PreparedMetadataGeneration,
     ): Promise<PreparedProjection<ChatStartupProjectionResult>> => {
       const agentId = normalizeAgentId(readParams.agentId);
-      const agent = await prepareAgent(generation, agentId);
+      const agent = prepareAgent(generation, agentId);
       if (!agent) {
         throw new ChatMetadataSnapshotUnavailableError(
           `prepared chat startup projection is unavailable for agent "${agentId}"`,
@@ -637,9 +647,10 @@ export function createGatewayChatMetadataRuntime(params: {
             readParams.readRequesterProfileId?.(),
           )
         : readNeutral;
+      const commands = await prepareCommands(generation, readParams);
       return {
         isCurrent: () => readNeutral.isCurrent() && readSession.isCurrent(),
-        read: () => assemble(readNeutral, readSession),
+        read: () => assemble(readNeutral, readSession, commands),
       };
     };
     if (readParams.readPolicy !== "ready" && hasSessionContext) {
@@ -676,7 +687,12 @@ export function createGatewayChatMetadataRuntime(params: {
     ) {
       return undefined;
     }
-    return assemble(neutral.projection, session.projection);
+    const commands = generation.commandsByScope.get(commandProjectionKey(readParams));
+    return assemble(
+      neutral.projection,
+      session.projection,
+      commands?.state === "ready" ? commands.commands : undefined,
+    );
   };
 
   const invalidate = () => {
