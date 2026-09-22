@@ -113,7 +113,7 @@ export function createSessionHistoryWorkerReaders(
           }
           parts.push(text.decoder.decode(frame.data, { stream: !frame.endOfEvent }));
           if (frame.endOfEvent) {
-            events.push(JSON.parse(parts.join("")) as TranscriptEvent);
+            events.push(JSON.parse(parts.join("")));
             parts = [];
           }
         }
