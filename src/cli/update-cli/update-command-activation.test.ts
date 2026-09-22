@@ -1,10 +1,10 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { closeIdleSqliteCoordinators } from "../../infra/sqlite-coordinator.js";
 import { withStateDatabaseCoordinatorRuntimeDirectory } from "../../infra/state-database-coordinator.js";
@@ -268,6 +268,7 @@ it.each([
         vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
         const refusal = vi.fn((cause: unknown) => admission.revoke(cause));
         const replaceOwner = () => {
+          const { DatabaseSync } = requireNodeSqlite();
           const db = new DatabaseSync(path.join(temporary, "managed-update-handoffs.sqlite"));
           try {
             db.prepare("UPDATE managed_update_handoffs SET owner = ? WHERE install_root = ?").run(
