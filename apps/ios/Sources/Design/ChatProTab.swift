@@ -56,7 +56,7 @@ struct ChatProTab: View {
     let showsAgentBadge: Bool
     let nativeBinding: IOSNativeActionBinding?
     let nativePresentationID: UUID?
-    let openSettings: (() -> Void)?
+    let openSettings: (@MainActor () -> Void)?
     let prepareModal: ((OpenClawChatViewModel) -> IOSChatModalPublication?)?
     let retainModalPresentation: @MainActor () -> Bool
 
@@ -66,7 +66,7 @@ struct ChatProTab: View {
         showsAgentBadge: Bool = true,
         nativeBinding: IOSNativeActionBinding? = nil,
         nativePresentationID: UUID? = nil,
-        openSettings: (() -> Void)? = nil,
+        openSettings: (@MainActor () -> Void)? = nil,
         prepareModal: ((OpenClawChatViewModel) -> IOSChatModalPublication?)? = nil,
         retainModalPresentation: @escaping @MainActor () -> Bool = { false })
     {

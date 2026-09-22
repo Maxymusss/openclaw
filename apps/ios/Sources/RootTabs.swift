@@ -1159,7 +1159,7 @@ extension RootTabs {
     private func userAction(
         detail: Bool = false,
         disposition: NativeActionRouter.RetirementDisposition = .departure,
-        _ perform: @escaping @MainActor () -> Void) -> () -> Void
+        _ perform: @escaping @MainActor () -> Void) -> @MainActor () -> Void
     {
         let action = self.navigationAction(detail: detail, disposition: disposition)
         return {
@@ -1168,7 +1168,7 @@ extension RootTabs {
         }
     }
 
-    private func userDestinationAction(_ destination: SidebarDestination) -> () -> Void {
+    private func userDestinationAction(_ destination: SidebarDestination) -> @MainActor () -> Void {
         self.userAction(detail: true) { self.selectSidebarDestination(destination) }
     }
 
