@@ -1,0 +1,243 @@
+import fs from "node:fs";
+import path from "node:path";
+import { JSDOM } from "jsdom";
+import stylelint from "stylelint";
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  collectIconFixtures,
+  scanIconGridFit,
+  type IconFixture,
+} from "../../scripts/lib/control-ui-icon-grid-fit.mts";
+import plugin from "../../scripts/lib/stylelint-icon-grid-fit.mts";
+import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+const base = "* { box-sizing: border-box; }";
+const fixture: IconFixture = {
+  file: "ui/src/control.ts",
+  line: 1,
+  html: '<header class="toolbar"><button class="icon" data-icon-grid-control><svg></svg></button></header>',
+};
+const original = `
+  .icon { display:inline-grid; place-items:center; width:32px; height:32px; padding:6px; border:1px solid var(--border); }
+  .icon svg { width:17px; height:17px; }
+  .toolbar > button { width:26px; height:26px; }
+`;
+
+function scan(css: string) {
+  return scanIconGridFit(css, [fixture], base);
+}
+
+describe("fixed icon-grid fit", () => {
+  it("catches the shipped size override rather than flagging the safe base control", () => {
+    const findings = scan(original).findings;
+    expect(findings).toHaveLength(2);
+    expect(findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "overflow",
+          axis: "width",
+          size: 26,
+          padding: 12,
+          border: 2,
+          icon: 17,
+          available: 12,
+        }),
+        expect.objectContaining({
+          kind: "overflow",
+          axis: "height",
+          size: 26,
+          padding: 12,
+          border: 2,
+          icon: 17,
+          available: 12,
+        }),
+      ]),
+    );
+    expect(scan(original + ".toolbar > button {padding:0}").findings).toEqual([]);
+    expect(scan(original.replace("width:26px; height:26px;", "")).findings).toEqual([]);
+  });
+
+  it("requires authored padding instead of trusting jsdom's zero native default", () => {
+    const css = original.replace("padding:6px;", "");
+    expect(scan(css).findings).toEqual([
+      expect.objectContaining({
+        kind: "native-padding",
+        axis: "width",
+        padding: null,
+        available: null,
+      }),
+      expect.objectContaining({
+        kind: "native-padding",
+        axis: "height",
+        padding: null,
+        available: null,
+      }),
+    ]);
+    expect(scan(css + ".icon {padding:0}").findings).toEqual([]);
+  });
+
+  it.each([
+    ["flex centering", original.replace("inline-grid", "inline-flex")],
+    ["content-box sizing", original + ".icon {box-sizing:content-box}"],
+    [
+      "minimum sizes",
+      original + ".icon {min-width:32px;min-height:32px;max-width:20px;max-height:20px}",
+    ],
+    ["centered tracks", original + ".icon {justify-content:center;align-content:center}"],
+    [
+      "bounded tracks",
+      original + ".icon {grid-template-columns:minmax(0,1fr);grid-template-rows:minmax(0,1fr)}",
+    ],
+  ])("does not treat %s as the implicit-grid defect", (_label, css) => {
+    expect(scan(css).findings).toEqual([]);
+  });
+
+  it("does not treat unresolved padding as a known zero", () => {
+    const result = scan(original.replace("padding:6px;", "padding:var(--control-padding);"));
+    expect(result.findings).toEqual([]);
+    expect(result.unresolved).toBeGreaterThan(0);
+  });
+
+  it.each([
+    ["font-relative dimensions", ".icon {width:2em;font-size:20px}"],
+    ["logical dimensions", ".icon {inline-size:40px}"],
+    ["logical borders", ".icon {border-inline-width:2px}"],
+    ["all reset", ".icon {all:unset}"],
+    [
+      "competing important widths",
+      ".toolbar .icon {width:40px!important}.icon {width:24px!important}",
+    ],
+    ["always-applicable media correction", "@media all {.icon {padding:0}}"],
+    ["supports correction", "@supports (display:grid) {.icon {padding:0}}"],
+    ["nested-only padding", ".icon {&:hover {padding:0}}"],
+  ])("defers %s rather than inventing a resolved geometry", (_name, correction) => {
+    const result = scan(original + correction);
+    expect(result.findings).toEqual([]);
+    expect(result.unresolved).toBeGreaterThan(0);
+  });
+
+  it("respects fixed SVG max bounds and excludes nonparticipating or offset SVGs", () => {
+    expect(scan(original + ".icon svg {max-width:8px;max-height:8px}").findings).toEqual([]);
+    for (const declaration of [
+      "display:none",
+      "position:absolute",
+      "transform:translateX(-2px)",
+      "justify-self:start",
+    ]) {
+      const result = scan(original + ".icon svg {" + declaration + "}");
+      expect(result.findings).toEqual([]);
+      expect(result.unresolved).toBeGreaterThan(0);
+    }
+  });
+
+  it("does not misclassify an inline padding reset as native padding", () => {
+    const inline = {
+      ...fixture,
+      html: fixture.html.replace('class="icon"', 'class="icon" style="padding:0"'),
+    };
+    const result = scanIconGridFit(original, [inline], base);
+    expect(result.findings).toEqual([]);
+    expect(result.unresolved).toBeGreaterThan(0);
+  });
+
+  it("excludes empty extra grid items and unresolved selector-state bindings", () => {
+    const dom = new JSDOM();
+    try {
+      const extra = 'html`<button class="icon"><span></span>${icons.refresh}</button>`';
+      expect(collectIconFixtures(extra, "ui/src/extra.ts", dom.window.document)).toEqual([]);
+      const source = 'html`<button class="icon" aria-pressed=${pressed}>${icons.refresh}</button>`';
+      const fixtures = collectIconFixtures(source, "ui/src/state.ts", dom.window.document);
+      const result = scanIconGridFit(
+        original + '.icon:not([aria-pressed="true"]) {padding:8px}',
+        fixtures,
+        base,
+      );
+      expect(result.findings).toEqual([]);
+      expect(result.unresolved).toBeGreaterThan(0);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("collects literal ancestry and conditional icons, not dynamic class or text guesses", () => {
+    const dom = new JSDOM();
+    try {
+      const source =
+        'html`<header class="toolbar"><button class="icon">${busy ? icons.loader : icons.refresh}</button><button class="icon">Save ${icons.check}</button><button class="icon ${variant}">${icons.x}</button></header>`';
+      const fixtures = collectIconFixtures(source, "ui/src/control.ts", dom.window.document);
+      expect(fixtures).toHaveLength(1);
+      const template = dom.window.document.createElement("template");
+      template.innerHTML = fixtures[0]!.html;
+      expect(template.content.querySelectorAll("[data-icon-grid-control]")).toHaveLength(1);
+      expect(scanIconGridFit(original, fixtures, base).findings).toHaveLength(2);
+    } finally {
+      dom.window.close();
+    }
+  });
+
+  it("reports through Stylelint and rereads changed source in the same process", async () => {
+    const root = tempDirs.make("openclaw-icon-grid-");
+    const styles = path.join(root, "ui/src/styles");
+    fs.mkdirSync(styles, { recursive: true });
+    fs.writeFileSync(path.join(styles, "base.css"), base);
+    fs.writeFileSync(path.join(styles, "components.css"), "");
+    const source = path.join(root, "ui/src/control.ts");
+    fs.writeFileSync(
+      source,
+      'html`<header class="toolbar"><button class="icon">${icons.refresh}</button></header>`',
+    );
+    const lint = () =>
+      stylelint.lint({
+        code: original,
+        codeFilename: path.join(styles, "control.css"),
+        config: { plugins: [plugin], rules: { "openclaw/icon-grid-fit": true } },
+      });
+    const first = await lint();
+    expect(first.errored).toBe(true);
+    expect(first.results[0]?.warnings).toHaveLength(2);
+    expect(first.results[0]?.warnings[0]?.text).toContain("12px content space");
+    fs.writeFileSync(source, 'html`<button class="icon">${icons.refresh}</button>`');
+    expect((await lint()).errored).toBe(false);
+    const added = path.join(root, "ui/src/added.ts");
+    const cramped =
+      'html`<header class="toolbar"><button class="icon">${icons.refresh}</button></header>`';
+    fs.writeFileSync(added, cramped);
+    expect((await lint()).errored).toBe(true);
+    fs.unlinkSync(added);
+    expect((await lint()).errored).toBe(false);
+    fs.writeFileSync(source, cramped);
+    expect((await lint()).errored).toBe(true);
+    const sibling = path.join(styles, "other.css");
+    fs.writeFileSync(sibling, ".shell .icon {padding:0}");
+    expect((await lint()).errored).toBe(false);
+    fs.unlinkSync(sibling);
+    expect((await lint()).errored).toBe(true);
+    fs.writeFileSync(
+      path.join(styles, "base.css"),
+      base + ".icon {min-width:32px;min-height:32px}",
+    );
+    expect((await lint()).errored).toBe(false);
+  });
+
+  it("does not append the base sheet again after component overrides", async () => {
+    const root = tempDirs.make("openclaw-icon-grid-order-");
+    const styles = path.join(root, "ui/src/styles");
+    fs.mkdirSync(styles, { recursive: true });
+    fs.writeFileSync(path.join(styles, "base.css"), base + original);
+    fs.writeFileSync(
+      path.join(styles, "components.css"),
+      ".toolbar > button {width:32px;height:32px}",
+    );
+    fs.writeFileSync(
+      path.join(root, "ui/src/control.ts"),
+      'html`<header class="toolbar"><button class="icon">${icons.refresh}</button></header>`',
+    );
+    const result = await stylelint.lint({
+      code: base + original,
+      codeFilename: path.join(styles, "base.css"),
+      config: { plugins: [plugin], rules: { "openclaw/icon-grid-fit": true } },
+    });
+    expect(result.errored).toBe(false);
+  });
+});

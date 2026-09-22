@@ -2,6 +2,7 @@
 // components (postcss-lit). Error-class rules only — oxfmt owns formatting.
 export default {
   extends: "stylelint-config-recommended",
+  plugins: ["../scripts/lib/stylelint-icon-grid-fit.mts"],
   rules: {
     // Cascade-order advice, not an error class; 400+ intentional hits in the
     // existing token/override cascade make it pure noise here.
@@ -16,6 +17,7 @@ export default {
     {
       files: ["**/*.css"],
       rules: {
+        "openclaw/icon-grid-fit": true,
         "color-no-hex": true,
         // Control UI max-width breakpoints use one ladder: 400, 560, 640,
         // 768, 900, 1100, and 1320px. Round thresholds up to the next rung
