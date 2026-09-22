@@ -679,6 +679,7 @@ src/infra/replace-file.ts
 src/infra/restart-stale-pids.ts
 src/infra/runtime-process-entrypoints.ts
 src/infra/runtime-process-url.ts
+src/infra/runtime-worker-generation.ts
 src/infra/runtime-worker-url.ts
 src/infra/safe-cwd.ts
 src/infra/sealed-runtime-registry.ts
@@ -701,6 +702,7 @@ src/infra/sqlite-handle-lifecycle.ts
 src/infra/sqlite-index-schema.ts
 src/infra/sqlite-integrity.ts
 src/infra/sqlite-live-snapshot.ts
+src/infra/sqlite-maintenance-cache.ts
 src/infra/sqlite-number.ts
 src/infra/sqlite-post-commit.ts
 src/infra/sqlite-private-directory.ts

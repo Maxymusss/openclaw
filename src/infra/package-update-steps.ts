@@ -2,9 +2,9 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { validRange } from "semver";
 import { LEGACY_PACKAGE_INSTALL_GUARD_RELATIVE_PATH } from "../../scripts/lib/package-lifecycle-marker.mjs";
+import { hasCommandProcessCleanupError } from "../process/exec-result.js";
 import { UPDATE_GLOBAL_PERMISSION_REASON } from "../shared/update-outcome.js";
 import { resolveBunGlobalInstallOwner } from "./detect-package-manager.js";
 import { formatErrorMessage } from "./errors.js";
@@ -33,7 +33,10 @@ import {
   type PackageUpdateTransaction,
   type StagedPackageInstall,
 } from "./package-update-swap.js";
-import { createPackageVerificationFailureStep } from "./package-update-verification-step.js";
+import {
+  createPackageVerificationFailureStep,
+  type PackagePostInstallVerifier,
+} from "./package-update-verification-step.js";
 import { createUpdateFailureFact } from "./update-failure-facts.js";
 import {
   createFreeBsdPkgOwnershipInspection,
@@ -52,7 +55,10 @@ import {
   verifyPackageUpdateRecovery,
   type ResolvedGlobalInstallTarget,
 } from "./update-global.js";
-import { prepareNativePackageStage } from "./update-native-package-stage.js";
+import {
+  prepareNativePackageStage,
+  resolveNativeInstallSpecFromCwd,
+} from "./update-native-package-stage.js";
 import {
   readPackageManagerProbeValue,
   resolveNpmGlobalPrefixLayoutFromGlobalRoot,
@@ -149,63 +155,6 @@ function isRegistrySourceInstallSpec(spec: string): boolean {
   );
 }
 
-function resolveNativeInstallSpecFromCwd(
-  spec: string,
-  packageName: string,
-  sourceCwd: string,
-  manager: "pnpm" | "bun",
-): string {
-  const trimmed = spec.trim();
-  const aliasPrefix = `${packageName.trim()}@`;
-  const hasAlias = trimmed.toLowerCase().startsWith(aliasPrefix.toLowerCase());
-  const targetSpec = hasAlias ? trimmed.slice(aliasPrefix.length).trim() : trimmed;
-  const windowsPath = /^[a-z]:[\\/]/iu.test(sourceCwd) || sourceCwd.startsWith("\\\\");
-  const paths = windowsPath ? path.win32 : path;
-  const localProtocol = /^(file:|git\+file:|link:)(.*)$/iu.exec(targetSpec);
-  if (localProtocol) {
-    const protocol = localProtocol[1] ?? "";
-    // Bun's link: names refer to its global link registry, not caller-relative directories.
-    if (manager === "bun" && protocol.toLowerCase() === "link:") {
-      return spec;
-    }
-    const target = localProtocol[2]?.trim() ?? "";
-    const fragmentIndex = protocol.toLowerCase() === "git+file:" ? target.indexOf("#") : -1;
-    const targetPath = fragmentIndex >= 0 ? target.slice(0, fragmentIndex) : target;
-    const fragment = fragmentIndex >= 0 ? target.slice(fragmentIndex) : "";
-    const resolvedTarget =
-      targetPath &&
-      !/^~[\\/]/u.test(targetPath) &&
-      !path.isAbsolute(targetPath) &&
-      !path.win32.isAbsolute(targetPath)
-        ? paths.resolve(sourceCwd, targetPath)
-        : targetPath;
-    if (protocol.toLowerCase() === "git+file:") {
-      return resolvedTarget === targetPath
-        ? spec
-        : `${hasAlias ? aliasPrefix : ""}git+${pathToFileURL(resolvedTarget, { windows: windowsPath }).href}${fragment}`;
-    }
-    return `${aliasPrefix}${protocol}${resolvedTarget}`;
-  }
-  const isPath =
-    /^(?:\.{1,2}|~)(?:[\\/]|$)/u.test(targetSpec) ||
-    path.isAbsolute(targetSpec) ||
-    path.win32.isAbsolute(targetSpec);
-  // Match the updater's explicit archive targets; bare .tar remains a registry name.
-  if (
-    !isPath &&
-    (hasAlias || /[:@]/u.test(targetSpec) || !/\.(?:tgz|tar\.gz)$/iu.test(targetSpec))
-  ) {
-    return spec;
-  }
-  const target =
-    isPath && !/^\.{1,2}(?:[\\/]|$)/u.test(targetSpec)
-      ? targetSpec
-      : paths.resolve(sourceCwd, targetSpec);
-  // Native pnpm needs a package name; source links must follow atomic file replacements.
-  const protocol = manager === "bun" || /\.(?:tgz|tar\.gz|tar)$/iu.test(target) ? "file" : "link";
-  return `${aliasPrefix}${protocol}:${target}`;
-}
-
 async function createStagedPackageInstall(
   installTarget: ResolvedGlobalInstallTarget,
   packageName: string,
@@ -287,7 +236,7 @@ async function prepareNpmGitSourceInstallSpec(params: {
     env: params.env,
     timeoutMs: params.timeoutMs,
   });
-  if (packStep.exitCode !== 0) {
+  if (isFailedUpdateStep(packStep)) {
     return {
       installSpec: params.installSpec,
       installCwd: params.installCwd ?? null,
@@ -407,7 +356,7 @@ export async function runGlobalPackageUpdateSteps(params: {
   timeoutMs: number;
   env?: NodeJS.ProcessEnv;
   installCwd?: string;
-  postVerifyStep?: (packageRoot: string) => Promise<UpdateStepResult | null>;
+  postVerifyStep?: PackagePostInstallVerifier;
   beforeVerifyCandidate?: (packageRoot: string) => Promise<void>;
   resolveLifecycleNodeRunner?: () => string | undefined;
   validateCandidate?: (packageRoot: string) => Promise<UpdateStepResult[]>;
@@ -428,6 +377,7 @@ export async function runGlobalPackageUpdateSteps(params: {
   const initialRecovery = await verifyPackageUpdateRecovery(originalPackageRoot);
   let liveTreeMutated = false;
   let committed = false;
+  let cleanupUncertain = false;
   let packageRollbackVerified: boolean | undefined;
   const steps: UpdateStepResult[] = [];
   const cleanupStage = async (): Promise<UpdateStepResult | null> => {
@@ -959,6 +909,10 @@ export async function runGlobalPackageUpdateSteps(params: {
         : { serviceRestartSafe: false, reason: "runtime-verification-failed" },
     };
   } catch (error) {
+    cleanupUncertain = hasCommandProcessCleanupError(error);
+    if (cleanupUncertain) {
+      throw error;
+    }
     if (error instanceof PackageUpdateActivationError) {
       throw error.cause;
     }
@@ -981,11 +935,13 @@ export async function runGlobalPackageUpdateSteps(params: {
     );
     return await packageUpdateFailure(failedStep, [...steps, failedStep]);
   } finally {
-    // Normal returns already disposed or retained their exact stage. Exceptional
-    // activation/service causes still clean safely without replacing their cause.
-    await cleanupStage();
-    if (packedInstallDir) {
-      await removePackageUpdatePath(packedInstallDir);
+    if (!cleanupUncertain) {
+      // Normal returns already disposed or retained their exact stage. Exceptional
+      // activation/service causes still clean safely without replacing their cause.
+      await cleanupStage();
+      if (packedInstallDir) {
+        await removePackageUpdatePath(packedInstallDir);
+      }
     }
   }
 }

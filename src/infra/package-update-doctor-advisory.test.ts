@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { markPackagePostInstallDoctorAdvisory } from "./package-update-doctor-advisory.js";
+import { markPackagePostInstallDoctorAdvisory } from "./package-update-verification-step.js";
 import {
   createDeferredConfiguredPluginRepairDoctorResult,
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,

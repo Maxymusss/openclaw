@@ -584,7 +584,6 @@ export async function executeMutableUpdate(
         startedAt: params.startedAt,
         progress: params.progress,
         channel: params.channel,
-        tag: params.tag,
         devTarget: params.devTarget,
         assertCurrent: assertExecutionCurrent,
         inspectGitTarget: async (target) => {
@@ -622,16 +621,11 @@ export async function executeMutableUpdate(
             );
           }
         },
-        beforeGitMutation:
-          params.updateInstallKind === "git"
-            ? async (target) => {
-                assertReadableGitTarget(target);
-                admittedTargetSchemaVersions = target.schemaVersions;
-                await beforeActivate(gitMutationRoots ?? [params.root]);
-              }
-            : undefined,
-        allowGatewayServiceRepair: false,
-        allowGatewayActivation: false,
+        beforeGitMutation: async (target) => {
+          assertReadableGitTarget(target);
+          admittedTargetSchemaVersions = target.schemaVersions;
+          await beforeActivate(gitMutationRoots ?? [params.root]);
+        },
       });
     }
   } catch (err) {
