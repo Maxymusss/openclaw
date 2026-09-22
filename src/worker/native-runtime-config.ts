@@ -1,6 +1,7 @@
 import path from "node:path";
+import { MODEL_CATALOG_THINKING_LEVELS } from "@openclaw/model-catalog-core/model-catalog-types";
 import { z } from "zod";
-const ThinkingSchema = z.enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+const ThinkingSchema = z.enum(MODEL_CATALOG_THINKING_LEVELS);
 export const NativeRuntimeIdentifier = z.string().trim().min(1).max(256);
 const provider = NativeRuntimeIdentifier.refine(
   (value) => !value.includes("/"),

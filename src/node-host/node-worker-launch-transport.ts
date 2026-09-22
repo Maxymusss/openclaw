@@ -11,6 +11,7 @@ import {
   projectNativeInferenceStartup,
   WORKER_NATIVE_INFERENCE_STARTUP_ENV,
 } from "../worker/native-inference-startup.js";
+import type { NativeInferenceStartup } from "../worker/native-inference-startup.js";
 import { parseNodeWorkerConnectionFailureMessage } from "../worker/node-supervisor-protocol.js";
 import {
   buildWorkerProcessTurn,
@@ -30,7 +31,6 @@ import type {
   NodeWorkerLaunchReceipt,
   NodeWorkerLaunchStore,
 } from "./node-worker-launch-store.js";
-import type { NodeWorkerNativeInferenceStartup } from "./node-worker-native-inference.js";
 import {
   sanitizeNodeWorkerDiagnostic,
   type NodeWorkerCredentialScrubber,
@@ -45,7 +45,7 @@ export type NodeWorkerChildAdapter = AwaitedStdoutChildAdapter & {
 type NodeWorkerLaunchTransportOptions = {
   bundleRoot: string;
   workerEnv: NodeJS.ProcessEnv;
-  nativeInferenceStartup?: NodeWorkerNativeInferenceStartup;
+  nativeInferenceStartup?: NativeInferenceStartup;
   engineEnv: NodeJS.ProcessEnv;
   input: NodeWorkerLaunchInput;
   descriptor: WorkerLaunchDescriptor;

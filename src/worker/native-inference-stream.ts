@@ -8,37 +8,27 @@ import type {
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
 import type { NativeRuntimeResolved } from "./native-runtime.js";
 
-function generatedText(message: AssistantMessage): string {
-  return message.content
-    .map((block) =>
-      block.type === "text"
-        ? block.text
-        : block.type === "thinking"
-          ? block.thinking
-          : stringParts(block.arguments).join(""),
-    )
-    .join("");
-}
-
-function stringParts(value: unknown, includeKeys = false, strings: string[] = []): string[] {
+function stringParts(value: unknown, includeKeys: boolean, strings: string[]): string {
+  let text = "";
   if (typeof value === "string") {
     strings.push(value);
+    text = value;
   } else if (Array.isArray(value)) {
     for (const item of value) {
-      stringParts(item, includeKeys, strings);
+      text += stringParts(item, includeKeys, strings);
     }
   } else if (value !== null && typeof value === "object") {
     for (const [key, item] of Object.entries(value)) {
       if (includeKeys) {
         strings.push(key);
       }
-      stringParts(item, includeKeys, strings);
+      text += stringParts(item, includeKeys, strings);
     }
   }
-  return strings;
+  return text;
 }
 
-function generatedStrings(message: AssistantMessage): string[] {
+function generatedOutput(message: AssistantMessage) {
   // Fixed protocol/request tags are not generated output. Keep independent strings
   // independent: a later safe argument must not conceal an earlier field's prefix.
   const {
@@ -53,17 +43,20 @@ function generatedStrings(message: AssistantMessage): string[] {
     ...metadata
   } = message;
   const strings: string[] = [];
+  let text = "";
   for (const block of content) {
     if (block.type === "toolCall") {
       strings.push(block.id, block.name);
-      stringParts(block.arguments, true, strings);
+      text += stringParts(block.arguments, true, strings);
       stringParts(block.thoughtSignature, false, strings);
     } else {
+      text += block.type === "text" ? block.text : block.thinking;
       const { type: _type, ...fields } = block;
       stringParts(fields, false, strings);
     }
   }
-  return stringParts(metadata, false, strings);
+  stringParts(metadata, false, strings);
+  return { text, strings };
 }
 
 /** Guard provider output before the shared loop can publish it or execute generated tools. */
@@ -101,9 +94,10 @@ export function createNativeInferenceStreamGuard(native: NativeRuntimeResolved) 
             throw new Error("Native stream delta has no message owner");
           }
           native.assertProtocolSafe(event);
-          const text = completedText + generatedText(currentMessage);
+          const generated = generatedOutput(currentMessage);
+          const text = completedText + generated.text;
           native.assertProtocolSafe(text);
-          const strings = generatedStrings(currentMessage);
+          const strings = generated.strings;
           if ("delta" in event) {
             strings.push(event.delta);
           }
@@ -111,7 +105,9 @@ export function createNativeInferenceStreamGuard(native: NativeRuntimeResolved) 
             strings.push(event.content);
           }
           if (event.type === "toolcall_end") {
-            strings.push(...generatedStrings({ ...currentMessage, content: [event.toolCall] }));
+            strings.push(
+              ...generatedOutput({ ...currentMessage, content: [event.toolCall] }).strings,
+            );
           }
           if (event.type === "toolcall_delta") {
             // Parsed argument snapshots can lag an incomplete JSON key/value.

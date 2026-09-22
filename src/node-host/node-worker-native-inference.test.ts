@@ -117,6 +117,9 @@ describe("node-local native inference startup custody", () => {
     expect(projected.credentials).toEqual({ NATIVE_TEST_KEY: credential });
     expect(JSON.stringify(projected)).not.toContain("other-agent");
     expect(projected.config.workspaces[0]!.id).toBe("agent-1");
+    expect(projected.config.models[0]!.cost).not.toBe(startup.config.models[0]!.cost);
+    delete startup.credentials.NATIVE_TEST_KEY;
+    expect(() => projectNativeInferenceStartup(startup, descriptor)).toThrow();
   });
 
   it("admits generated workspaces under an explicit canonical root and rejects escapes", () => {
@@ -141,6 +144,17 @@ describe("node-local native inference startup custody", () => {
     descriptor.assignment.workspaceDir = link;
     expect(() => projectNativeInferenceStartup(startup, descriptor)).toThrow("escapes");
   });
+  it("reads a shared named credential once for all startup models", () => {
+    const f = createFixture();
+    f.config.models.push({ ...f.config.models[0]!, id: "second-model" });
+    fs.writeFileSync(f.configPath, JSON.stringify(f.config));
+    const readCredential = vi.fn(() => credential);
+    Object.defineProperty(f.env, "NATIVE_TEST_KEY", { get: readCredential, enumerable: true });
+    const startup = snapshotNodeWorkerNativeInference(f.configPath, f.env)!;
+    expect(readCredential).toHaveBeenCalledOnce();
+    expect(startup.credentials).toEqual({ NATIVE_TEST_KEY: credential });
+  });
+
   it("snapshots only referenced credentials and header bytes without changing worker environments", () => {
     const { configPath, env, config } = createFixture();
     const startup = snapshotNodeWorkerNativeInference(configPath, env)!;

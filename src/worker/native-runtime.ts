@@ -17,7 +17,6 @@ import {
   NativeRuntimeIdentifier as id,
   type NativeRuntimeConfig,
 } from "./native-runtime-config.js";
-const provider = id.refine((value) => !value.includes("/"));
 const BindingSchema = z.object({ workspaceId: id, workspacePath: z.string().optional() });
 
 export { NativeRuntimeConfigSchema, type NativeRuntimeConfig } from "./native-runtime-config.js";
@@ -51,11 +50,13 @@ type Workspace = {
 };
 type RegisteredModel = {
   model: Model;
-  apiKey: string;
+  apiKeyEnv: string;
   headers: Record<string, string>;
-  sensitiveHeaderNames: ReadonlySet<string>;
 };
-const SelectionSchema = z.strictObject({ provider, modelId: id });
+const SelectionSchema = z.strictObject({
+  provider: NativeRuntimeConfigSchema.shape.models.element.shape.provider,
+  modelId: id,
+});
 
 async function assertWorkspace(workspace: Workspace): Promise<void> {
   const canonicalPath = await realpath(workspace.sourcePath);
@@ -85,6 +86,16 @@ export async function createNativeRuntime(
   const workspaces = new Map<string, Workspace>();
   const credentials = new Map<string, string>();
 
+  const protocolSecrets = new Set<string>();
+  const addProtocolSecret = (value: string) => {
+    protocolSecrets.add(value);
+    // HTTP Headers removes surrounding whitespace; guard that effective value too.
+    const normalized = value.trim();
+    if (normalized) {
+      protocolSecrets.add(normalized);
+    }
+  };
+
   // Snapshot only explicitly named credentials, before the first asynchronous work.
   for (const entry of parsed.models) {
     if (!credentials.has(entry.apiKeyEnv)) {
@@ -95,6 +106,7 @@ export async function createNativeRuntime(
         );
       }
       credentials.set(entry.apiKeyEnv, value);
+      addProtocolSecret(value);
     }
   }
   for (const entry of parsed.models) {
@@ -117,8 +129,14 @@ export async function createNativeRuntime(
     ) {
       throw new Error("Native runtime Vertex requires an explicit API key, not ambient ADC");
     }
+    const {
+      apiKeyEnv,
+      headers: configuredHeaders,
+      sensitiveHeaderNames: classifiedHeaders,
+      ...definition
+    } = entry;
     const headers = Object.fromEntries(
-      Object.entries(entry.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
+      Object.entries(configuredHeaders ?? {}).map(([name, value]) => [name.toLowerCase(), value]),
     );
     // The OpenAI SDK otherwise adds ambient organization/project headers. Empty
     // explicit values suppress that fallback without reading those env variables.
@@ -127,17 +145,10 @@ export async function createNativeRuntime(
       headers["openai-project"] ??= "";
     }
     const model: Model = {
-      provider: entry.provider,
-      id: entry.id,
-      api: entry.api,
-      baseUrl: entry.baseUrl,
+      ...definition,
       name: entry.name ?? entry.id,
-      contextWindow: entry.contextWindow,
-      maxTokens: entry.maxTokens,
       reasoning: entry.reasoning ?? false,
-      thinkingLevelMap: entry.thinkingLevelMap,
       input: entry.input ?? ["text"],
-      cost: entry.cost,
     };
     Object.freeze(model.input);
     Object.freeze(model.cost);
@@ -146,14 +157,24 @@ export async function createNativeRuntime(
     }
     Object.freeze(model);
     const sensitiveHeaderNames = new Set(
-      (entry.sensitiveHeaderNames ?? []).map((name) => name.toLowerCase()),
+      (classifiedHeaders ?? []).map((name) => name.toLowerCase()),
     );
     if ([...sensitiveHeaderNames].some((name) => !Object.hasOwn(headers, name))) {
       throw new Error("Sensitive native header name is not configured");
     }
-    models.set(ref, { model, apiKey, headers: Object.freeze(headers), sensitiveHeaderNames });
+    models.set(ref, { model, apiKeyEnv, headers: Object.freeze(headers) });
+    for (const [name, value] of Object.entries(headers)) {
+      if (value && (isCredentialFieldName(name) || sensitiveHeaderNames.has(name))) {
+        addProtocolSecret(value);
+        if (name === "authorization" || name === "proxy-authorization") {
+          const token = /^(?:Bearer|Basic)\s+(\S+)$/iu.exec(value.trim())?.[1];
+          if (token) {
+            protocolSecrets.add(token);
+          }
+        }
+      }
+    }
   }
-  credentials.clear();
   for (const entry of parsed.workspaces) {
     if (workspaces.has(entry.id)) {
       throw new Error("Duplicate native runtime workspace: " + entry.id);
@@ -180,29 +201,6 @@ export async function createNativeRuntime(
     });
   }
 
-  const protocolSecrets = new Set<string>();
-  const addProtocolSecret = (value: string) => {
-    protocolSecrets.add(value);
-    // HTTP Headers removes surrounding whitespace; guard that effective value too.
-    const normalized = value.trim();
-    if (normalized) {
-      protocolSecrets.add(normalized);
-    }
-  };
-  for (const entry of models.values()) {
-    addProtocolSecret(entry.apiKey);
-    for (const [name, value] of Object.entries(entry.headers)) {
-      if (value && (isCredentialFieldName(name) || entry.sensitiveHeaderNames.has(name))) {
-        addProtocolSecret(value);
-        if (name === "authorization" || name === "proxy-authorization") {
-          const token = /^(?:Bearer|Basic)\s+(\S+)$/iu.exec(value.trim())?.[1];
-          if (token) {
-            protocolSecrets.add(token);
-          }
-        }
-      }
-    }
-  }
   const hasCredentialPrefix = (value: unknown): boolean => {
     if (typeof value === "string") {
       for (const secret of protocolSecrets) {
@@ -271,7 +269,7 @@ export async function createNativeRuntime(
       const sessionId = randomUUID();
       const assertActive = () => {
         assertOpen();
-        if (!activeTurns.has(controller)) {
+        if (controller.signal.aborted) {
           throw new Error("Native runtime turn is closed");
         }
       };
@@ -299,7 +297,7 @@ export async function createNativeRuntime(
           maxRetryDelayMs: options?.maxRetryDelayMs,
           onActiveResponse: options?.onActiveResponse,
           asyncToolExecution: options?.asyncToolExecution,
-          apiKey: registered.apiKey,
+          apiKey: credentials.get(registered.apiKeyEnv)!,
           headers: { ...registered.headers },
           sessionId,
           transport: "sse",
@@ -354,9 +352,9 @@ export async function createNativeRuntime(
       }
       activeTurns.clear();
       for (const registered of models.values()) {
-        registered.apiKey = "";
         registered.headers = {};
       }
+      credentials.clear();
       protocolSecrets.clear();
       models.clear();
       workspaces.clear();

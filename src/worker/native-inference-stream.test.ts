@@ -394,6 +394,26 @@ describe("worker native inference output owner", () => {
     await drain;
     expect((await result.result()).stopReason).toBe("stop");
   });
+  it("retains object argument values across completed responses without concatenating their keys", async () => {
+    const guard = createNativeInferenceStreamGuard(native());
+    const first = createAssistantMessageEventStream();
+    first.end(
+      message([
+        {
+          type: "toolCall",
+          id: "call",
+          name: "write",
+          arguments: { nested: { harmless: secret.slice(0, 12) } },
+        },
+      ]),
+    );
+    expect((await collect(guard(() => first))).message.stopReason).toBe("stop");
+    const second = createAssistantMessageEventStream();
+    second.end(message([{ type: "text", text: secret.slice(12) }]));
+    const result = await collect(guard(() => second));
+    expect(result.message.stopReason).toBe("error");
+    expect(JSON.stringify(result.events)).not.toContain(secret.slice(12));
+  });
   it("blocks completing a credential literal across separate provider responses", async () => {
     const guard = createNativeInferenceStreamGuard(native());
     const first = createAssistantMessageEventStream();

@@ -5,6 +5,7 @@ import {
   type WorkerLaunchDescriptor,
 } from "../worker/launch-descriptor.js";
 import { assertNativeInferenceAssignment } from "../worker/native-inference-startup.js";
+import type { NativeInferenceStartup } from "../worker/native-inference-startup.js";
 import {
   nodeWorkerPlanHash,
   validateNodeWorkerLaunchInput,
@@ -38,7 +39,6 @@ import {
 import {
   nodeWorkerNativeInferenceSecrets,
   snapshotNodeWorkerNativeInference,
-  type NodeWorkerNativeInferenceStartup,
 } from "./node-worker-native-inference.js";
 import {
   inspectNodeWorkerProcessIdentity,
@@ -90,7 +90,7 @@ class NodeWorkerSupervisor {
   private readonly admissions = new Map<string, NodeWorkerPendingAdmission>();
   private readonly retentions = new Set<Promise<NodeWorkerWorkspaceRetainResult>>();
   private readonly stoppingEnvironments = new Map<string, number>();
-  private readonly nativeInferenceStartup?: NodeWorkerNativeInferenceStartup;
+  private readonly nativeInferenceStartup?: NativeInferenceStartup;
   private readonly workerEnv: NodeJS.ProcessEnv;
   private readonly engineEnv: NodeJS.ProcessEnv;
   private readonly capacity: NodeWorkerCapacity;

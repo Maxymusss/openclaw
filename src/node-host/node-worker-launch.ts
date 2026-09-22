@@ -1,6 +1,7 @@
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { WorkerLaunchDescriptor } from "../worker/launch-descriptor.js";
+import type { NativeInferenceStartup } from "../worker/native-inference-startup.js";
 import type { NodeWorkerCapacity } from "./node-worker-capacity.js";
 import type { NodeWorkerContainerEngine } from "./node-worker-container-engine.js";
 import type { NodeWorkerContainerLifecycle } from "./node-worker-container-lifecycle.js";
@@ -16,10 +17,7 @@ import {
   startNodeWorkerLaunchTransport,
   type NodeWorkerChildAdapter,
 } from "./node-worker-launch-transport.js";
-import {
-  nodeWorkerNativeInferenceSecrets,
-  type NodeWorkerNativeInferenceStartup,
-} from "./node-worker-native-inference.js";
+import { nodeWorkerNativeInferenceSecrets } from "./node-worker-native-inference.js";
 import {
   createNodeWorkerCredentialScrubber,
   sanitizeNodeWorkerDiagnostic,
@@ -44,7 +42,7 @@ export const NODE_WORKER_STOP_GRACE_MS = 1_000;
 type NodeWorkerLaunchContext = {
   bundleRoot: string;
   workerEnv: NodeJS.ProcessEnv;
-  nativeInferenceStartup?: NodeWorkerNativeInferenceStartup;
+  nativeInferenceStartup?: NativeInferenceStartup;
   engineEnv: NodeJS.ProcessEnv;
   store: NodeWorkerLaunchStore;
   turns: NodeWorkerTurnStore;

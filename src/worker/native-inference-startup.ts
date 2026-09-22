@@ -74,10 +74,13 @@ export function projectNativeInferenceStartup(
   const models = startup.config.models.filter(
     (model) => grant.models === undefined || grant.models.includes(model.provider + "/" + model.id),
   );
-  return NativeInferenceStartupSchema.parse({
-    config: { models, workspaces: [{ ...grant, path: root }] },
-    credentials: Object.fromEntries(
-      models.map((model) => [model.apiKeyEnv, startup.credentials[model.apiKeyEnv]]),
+  return {
+    // Projection changes selection and canonical path, not the validated model definitions.
+    config: structuredClone({ models, workspaces: [{ ...grant, path: root }] }),
+    credentials: NativeInferenceStartupSchema.shape.credentials.parse(
+      Object.fromEntries(
+        models.map((model) => [model.apiKeyEnv, startup.credentials[model.apiKeyEnv]]),
+      ),
     ),
-  });
+  };
 }
