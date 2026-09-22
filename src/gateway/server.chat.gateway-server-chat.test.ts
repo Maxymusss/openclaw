@@ -33,6 +33,7 @@ import {
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import * as sessionLifecycleState from "./session-lifecycle-state.js";
+import { expectAgentSendAndParticipantCompletion } from "./session-participant-recording.test-support.js";
 import { removeChatTestDirectory as removeTempDir } from "./session-test-directories.test-support.js";
 import {
   agentDiscoveryMock,
@@ -1193,17 +1194,7 @@ describe("gateway server chat", () => {
         },
       });
 
-      vi.mocked(agentCommandMock).mockClear();
-      const agentAllowedRes = await rpcReq(ws, "agent", {
-        sessionKey: "cron:job-1",
-        message: "hi",
-        idempotencyKey: "idem-2",
-      });
-      expect(agentAllowedRes.ok).toBe(true);
-      expect(agentAllowedRes.payload?.status).toBe("accepted");
-      expect(agentAllowedRes.payload?.runId).toBe("idem-2");
-      await waitForFast(() => expect(agentCommandMock).toHaveBeenCalled());
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+      await expectAgentSendAndParticipantCompletion(ws, "cron:job-1", "idem-2");
 
       testState.sessionStorePath = undefined;
       testState.sessionConfig = undefined;

@@ -33,6 +33,7 @@ import {
 import { waitForAgentCommandCall } from "./agent-command.test-helpers.js";
 import { setRegistry } from "./server.agent.gateway-server-agent.mocks.js";
 import { createRegistry } from "./server.e2e-registry-helpers.js";
+import { observeParticipantRecording } from "./session-participant-recording.test-support.js";
 import { readSessionMessagesAsync } from "./session-transcript-readers.js";
 import { installConnectedSessionStoreGatewaySuite } from "./test-helpers.connected-session-store.js";
 import {
@@ -299,6 +300,7 @@ describe("gateway server agent", () => {
   });
 
   test("keeps accepted detached agent work on its retained request root", async () => {
+    const participantsSettled = observeParticipantRecording();
     await setTestSessionStore({
       entries: {
         main: {
@@ -329,9 +331,7 @@ describe("gateway server agent", () => {
     await vi.waitFor(() => {
       expect(subordinateAdmissionClosed).toBe(false);
     });
-    await vi.waitFor(() => {
-      expect(getActiveGatewayRootWorkCount()).toBe(0);
-    });
+    expect(await participantsSettled()).toBe(0);
   });
 
   test("agent marks implicit delivery when lastTo is stale", async () => {

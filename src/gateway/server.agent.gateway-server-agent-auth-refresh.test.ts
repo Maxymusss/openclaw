@@ -17,6 +17,7 @@ import {
   clearSecretsRuntimeSnapshot,
   prepareSecretsRuntimeSnapshot,
 } from "../secrets/runtime.js";
+import { observeParticipantRecording } from "./session-participant-recording.test-support.js";
 import { installConnectedSessionStoreGatewaySuite } from "./test-helpers.connected-session-store.js";
 import {
   agentCommandMock,
@@ -260,6 +261,7 @@ describe("gateway agent auth refresh dispatch", () => {
   });
 
   test("aborts one affected waiter without cancelling shared auth publication", async () => {
+    const participantsSettled = observeParticipantRecording();
     const affectedAgentId = "auth-wait";
     const abortedRunId = "idem-agent-auth-aborted";
     const waitingRunId = "idem-agent-auth-waiting";
@@ -315,7 +317,7 @@ describe("gateway agent auth refresh dispatch", () => {
       expect(agentCommandCallsFor(siblingRunId)).toHaveLength(1);
       expect(agentCommandCallsFor(abortedRunId)).toHaveLength(0);
       expect(agentCommandCallsFor(waitingRunId)).toHaveLength(0);
-      await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(activeWorkBefore + 2));
+      expect(await participantsSettled()).toBe(activeWorkBefore + 2);
 
       const abort = await rpcReq(gatewaySuite.ws, "chat.abort", {
         sessionKey: `agent:${affectedAgentId}:main`,
