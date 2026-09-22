@@ -325,43 +325,51 @@ export function readTranscriptEventAtSeqSync(
   });
 }
 
-export function loadTranscriptEventsFromDatabase(
+/** Select the same fenced rows for synchronous materialization and worker transfer. */
+export function prepareTranscriptEventReadQuery(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
   options: {
     beforeEventSeq?: number;
-    projection?: "reset-boundary";
     maxEventBytes?: number;
   } = {},
-): TranscriptEvent[] {
-  return readHotSessionTranscriptSnapshot(database, sessionId, "events", () => {
-    const { beforeEventSeq, maxEventBytes } = options;
-    const db = getSessionKysely(database.db);
-    if (maxEventBytes !== undefined && Number.isFinite(maxEventBytes) && maxEventBytes >= 0) {
-      assertSqliteJsonlReadBudget(
-        database.db,
-        db
-          .selectFrom("transcript_events")
-          .select(["event_json", "event_utf8_bytes"])
-          .where("session_id", "=", sessionId)
-          .$if(beforeEventSeq !== undefined, (query) => query.where("seq", "<", beforeEventSeq!))
-          .as("events"),
-        Math.floor(maxEventBytes),
-        "Trajectory transcript store",
-        { hasExactUtf8Bytes: true },
-      );
-    }
-    const rows = iterateSqliteQuerySync(
+) {
+  const { beforeEventSeq, maxEventBytes } = options;
+  const db = getSessionKysely(database.db);
+  if (maxEventBytes !== undefined && Number.isFinite(maxEventBytes) && maxEventBytes >= 0) {
+    assertSqliteJsonlReadBudget(
       database.db,
       db
         .selectFrom("transcript_events")
+        .select(["event_json", "event_utf8_bytes"])
+        .where("session_id", "=", sessionId)
+        .$if(beforeEventSeq !== undefined, (query) => query.where("seq", "<", beforeEventSeq!))
+        .as("events"),
+      Math.floor(maxEventBytes),
+      "Trajectory transcript store",
+      { hasExactUtf8Bytes: true },
+    );
+  }
+  return db
+    .selectFrom("transcript_events")
+    .where("session_id", "=", sessionId)
+    .$if(beforeEventSeq !== undefined, (query) => query.where("seq", "<", beforeEventSeq!));
+}
+
+export function loadTranscriptEventsFromDatabase(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+  options: { beforeEventSeq?: number; projection?: "reset-boundary"; maxEventBytes?: number } = {},
+): TranscriptEvent[] {
+  return readHotSessionTranscriptSnapshot(database, sessionId, "events", () => {
+    const rows = iterateSqliteQuerySync(
+      database.db,
+      prepareTranscriptEventReadQuery(database, sessionId, options)
         .select([
           options.projection === "reset-boundary"
             ? transcriptEventResetNavigationSql().as("event_json")
             : transcriptEventJsonSql(database.db).as("event_json"),
         ])
-        .where("session_id", "=", sessionId)
-        .$if(beforeEventSeq !== undefined, (query) => query.where("seq", "<", beforeEventSeq!))
         .orderBy("seq", "asc"),
     );
     // Array.from closes the iterator on parse failure; no live cursor escapes a fenced read.

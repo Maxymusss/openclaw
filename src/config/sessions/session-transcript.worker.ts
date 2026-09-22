@@ -50,7 +50,7 @@ async function withHistoryDatabase<T>(
   try {
     const value = await scope.run(database, operation);
     historyDatabaseScopes.delete(key);
-    // Missing stores must not evict useful connections or retain empty scopes.
+    // Tasks without retained connections must not evict useful connections or retain empty scopes.
     if (!scope.hasRetainedConnection) {
       return { value, closedHistoryDatabase: database };
     }
@@ -288,29 +288,30 @@ serveWorkerTasks(
             if (quarantine) {
               throw quarantine;
             }
-            const { loadTranscriptReadSnapshotSync } =
-              await import("./session-accessor.sqlite-read.js");
             const { readSessionTranscriptBoundedActiveContextCore } =
               await import("./session-accessor.sqlite-active-context.js");
+            const { streamSessionTranscriptHydration } =
+              await import("./session-transcript-hydration.worker.js");
             return {
               ok: true,
-              ...(await withHistoryDatabase(request.database, () =>
-                request.limits
-                  ? {
+              ...(await withHistoryDatabase<SessionTranscriptWorkerValues["transcript-hydration"]>(
+                request.database,
+                () => {
+                  if (request.limits) {
+                    return {
                       kind: "bounded" as const,
                       snapshot: readSessionTranscriptBoundedActiveContextCore(request.target, {
                         ...request.limits,
                         readOnly: true,
                         resolvedScope: request.resolvedScope,
                       }),
-                    }
-                  : {
-                      kind: "full" as const,
-                      snapshot: loadTranscriptReadSnapshotSync(request.target, {
-                        readOnly: true,
-                        resolvedScope: request.resolvedScope,
-                      }),
-                    },
+                    };
+                  }
+                  if (!channel) {
+                    throw new Error("Full transcript hydration requires its host channel");
+                  }
+                  return streamSessionTranscriptHydration(request, channel, control);
+                },
               )),
             };
           }

@@ -94,6 +94,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/cli-runner/session-history.async.test.ts",
   "src/auto-reply/reply/memory-flush-session.test.ts",
   "src/agents/sessions/session-manager-hydration.test.ts",
+  "src/agents/sessions/session-manager-hydration-stream.test.ts",
   "src/channels/join-intro/report-channel-room-join.test.ts",
   "src/plugin-sdk/ingress-effect-once.test.ts",
   "src/plugin-sdk/persistent-dedupe.worker.test.ts",

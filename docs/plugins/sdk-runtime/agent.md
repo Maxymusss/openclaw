@@ -67,6 +67,11 @@ loads the selected active branch, and `openDetachedBoundedAsync` returns the sam
 selection without persistence. File-backed SQLite reads run on the history worker.
 The synchronous getters consume the prepared view without reading storage.
 
+Full reads transfer bounded chunks from one committed SQLite snapshot without
+truncating the transcript to fit the worker. The caller still holds the complete
+result in memory; use the bounded methods when the complete history is unnecessary.
+Cancellation and failed transfers leave the current view intact and join worker cleanup.
+
 `await manager.setSessionTargetAsync(target, signal?)` replaces a prepared view.
 It rejects if the manager changes while reading and leaves the current view intact
 when preparation fails. `reloadPersistedTranscriptAsync(signal?)` retains the

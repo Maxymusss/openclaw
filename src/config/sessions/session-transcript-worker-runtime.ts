@@ -143,8 +143,10 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
       inputBytes,
       receive,
       signal,
+      onRequest,
     ) => {
       assertCurrent();
+      const deadline = performance.now() + 60_000;
       let sequence = 0;
       let executionRetired = false;
       try {
@@ -161,6 +163,19 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
             inputBytes,
             timeoutMs: 60_000,
             signal,
+            onRequest: onRequest
+              ? async (value, context) => {
+                  context.signal.throwIfAborted();
+                  assertCurrent();
+                  onRequest(value);
+                  assertCurrent();
+                  const remaining = deadline - performance.now();
+                  if (remaining <= 0) {
+                    throw new WorkerTaskError("worker task timed out", "timeout");
+                  }
+                  return { input: null, timeoutMs: remaining };
+                }
+              : undefined,
             onExecutionSettled: ({ retired }) => {
               if (retired) {
                 executionRetired = true;
