@@ -1,10 +1,16 @@
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { runNodeScript } from "../../../test/helpers/run-node-script.js";
+import {
+  resolveRuntimeWorkerArgv,
+  resolveRuntimeWorkerUrl,
+} from "../../infra/runtime-worker-url.js";
 import { prepareSecretsRuntimeFastPathSnapshot } from "../../secrets/runtime-fast-path.js";
 import { activateSecretsRuntimeSnapshotState } from "../../secrets/runtime-state.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import { withEnv } from "../../test-utils/env.js";
+import { withEnv, withEnvAsync } from "../../test-utils/env.js";
 import {
   assertAuthProfileMigrationReady,
   AuthProfileMigrationRequiredError,
@@ -32,6 +38,7 @@ import {
   saveAuthProfileStoreIfPersistenceSnapshotMatches,
   updateAuthProfileStoreWithLock,
 } from "./store-runtime.js";
+import { authProfileScopeCwdEntrypoint } from "./store-scope-cwd-runtime.test-support.js";
 import { createAuthOwnerTestFixtures } from "./store-state-owner.test-support.js";
 import {
   captureAuthProfileStorePersistenceSnapshot,
@@ -148,7 +155,7 @@ describe("auth publication owner receipts", () => {
     );
     const before = snapshotAt(root.agentPath);
     const assertOuterUnchanged = unreadableOuter("future");
-    withAuthProfileStoreAgentDir(root.agentDir, root.stateDir, () => {
+    await withAuthProfileStoreAgentDir(root.agentDir, root.stateDir, () => {
       for (const agentDir of [undefined, tempDirs.make("openclaw-auth-unselected-agent-")]) {
         expect(resolveAuthProfileProviderForSelection({ agentDir, profileId: "account" })).toBe(
           "google",
@@ -165,11 +172,11 @@ describe("auth publication owner receipts", () => {
     assertOuterUnchanged();
   });
 
-  it("retains the effective directory's runtime-only provider in a legacy bounded scope", () => {
+  it("retains the effective directory's runtime-only provider in a legacy bounded scope", async () => {
     const stateDir = tempDirs.make("openclaw-auth-selection-legacy-");
     const agentDir = tempDirs.make("openclaw-auth-selection-legacy-agent-");
     const unrelatedAgentDir = tempDirs.make("openclaw-auth-selection-unrelated-agent-");
-    withEnv({ OPENCLAW_STATE_DIR: stateDir, OPENCLAW_AGENT_DIR: undefined }, () => {
+    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir, OPENCLAW_AGENT_DIR: undefined }, async () => {
       writePersistedAuthProfileStoreRaw(
         { version: 1, profiles: { persisted: { ...apiKey("persisted"), provider: "anthropic" } } },
         agentDir,
@@ -179,7 +186,7 @@ describe("auth publication owner receipts", () => {
         agentDir,
       );
       setRuntimeAuthProfileStoreSnapshot(store("unrelated"), unrelatedAgentDir);
-      withAuthProfileStoreAgentDir(agentDir, stateDir, () => {
+      await withAuthProfileStoreAgentDir(agentDir, stateDir, () => {
         expect(
           resolveAuthProfileProviderForSelection({
             agentDir: unrelatedAgentDir,
@@ -725,8 +732,8 @@ describe("auth publication owner receipts", () => {
   it("keeps the original shared owner after a bounded temporary-state exec save", async () => {
     const original = await seedRoot("original");
     const temporary = tempDirs.make("openclaw-auth-owner-bounded-temp-");
-    withEnv({ ...original.env, OPENCLAW_STATE_DIR: temporary }, () => {
-      withAuthProfileStoreAgentDir(original.agentDir, original.stateDir, () => {
+    await withEnvAsync({ ...original.env, OPENCLAW_STATE_DIR: temporary }, async () => {
+      await withAuthProfileStoreAgentDir(original.agentDir, original.stateDir, () => {
         const current = ensureAuthProfileStoreWithoutExternalProfiles();
         saveAuthProfileStore(current, undefined, saveOptions);
       });
@@ -736,6 +743,32 @@ describe("auth publication owner receipts", () => {
       profiles: [{ profileId: "shared", credential: apiKey("updated-original") }],
     });
     expect(snapshotAt(original.agentPath)?.profiles.shared).toEqual(apiKey("updated-original"));
+  });
+
+  it("keeps relative scope paths bound to their original working directory during preparation", async ({
+    signal,
+  }) => {
+    const stateDir = tempDirs.make("openclaw-auth-scope-state-");
+    const agentDir = tempDirs.make("openclaw-auth-scope-agent-");
+    const entryCwd = tempDirs.make("openclaw-auth-scope-entry-cwd-");
+    const laterCwd = path.join(tempDirs.make("openclaw-auth-scope-later-cwd-"), "nested");
+    fs.mkdirSync(laterCwd);
+    const result = await runNodeScript(
+      [
+        ...resolveRuntimeWorkerArgv(resolveRuntimeWorkerUrl(authProfileScopeCwdEntrypoint)),
+        stateDir,
+        agentDir,
+        laterCwd,
+      ],
+      {
+        ...process.env,
+        TSX_TSCONFIG_PATH: fileURLToPath(new URL("../../../tsconfig.json", import.meta.url)),
+      },
+      undefined,
+      { cwd: entryCwd, signal, requireProcessTreeExit: process.platform !== "win32" },
+    );
+    expect(result.error, result.stderr).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
   });
 
   it("retains shared OAuth in the owner snapshot but excludes it from bounded exec", async () => {
@@ -753,8 +786,8 @@ describe("auth publication owner receipts", () => {
     });
     expect(snapshotAt(original.agentPath)?.profiles["shared-oauth"]).toEqual(oauth);
     const temporary = tempDirs.make("openclaw-auth-owner-bounded-oauth-");
-    withEnv({ ...original.env, OPENCLAW_STATE_DIR: temporary }, () => {
-      withAuthProfileStoreAgentDir(original.agentDir, original.stateDir, () => {
+    await withEnvAsync({ ...original.env, OPENCLAW_STATE_DIR: temporary }, async () => {
+      await withAuthProfileStoreAgentDir(original.agentDir, original.stateDir, () => {
         const current = ensureAuthProfileStoreWithoutExternalProfiles();
         expect(current.profiles["shared-oauth"]).toBeUndefined();
         saveAuthProfileStore(current, undefined, saveOptions);

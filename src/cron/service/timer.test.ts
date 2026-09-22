@@ -11,12 +11,14 @@ import type { CronJob } from "../../cron/types.js";
 import { getActiveGatewayRootWorkCount } from "../../process/gateway-work-admission.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import * as taskExecutor from "../../tasks/task-executor.js";
-import { findTaskByRunId, listTaskRecordsUnsorted } from "../../tasks/task-registry.js";
+import { findTaskByRunId, listTaskRecords } from "../../tasks/task-registry.js";
 import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers.js";
 import { formatTaskStatusDetail } from "../../tasks/task-status.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { getSuspensionVisibleCronTaskRunCount } from "./active-run-cancellation.js";
 import { start, stop } from "./ops-lifecycle.js";
+import { add as addJob, update as updateJob } from "./ops-mutations.js";
+import { status as cronStatus } from "./ops-read.js";
 import { run } from "./ops-run.js";
 import { executeJobCore } from "./timer-execution.js";
 
@@ -107,7 +109,7 @@ function createDueScriptJob(params: {
 function findCronTaskByBaseRunId(baseRunId: string) {
   return (
     findTaskByRunId(baseRunId) ??
-    listTaskRecordsUnsorted().find((task) => task.runId?.startsWith(`${baseRunId}:`))
+    listTaskRecords().find((task) => task.runId?.startsWith(`${baseRunId}:`))
   );
 }
 
@@ -472,6 +474,60 @@ describe("cron service timer seam coverage", () => {
     });
     expect(runIsolatedAgentJob).not.toHaveBeenCalled();
   });
+
+  it.each([
+    { kind: "on-exit", command: "true" },
+    { kind: "stream", command: ["true"] },
+  ] satisfies CronJob["schedule"][])(
+    "keeps $kind jobs event-driven after a next-run state update",
+    async (schedule) => {
+      const { storePath } = await makeStorePath();
+      const now = Date.parse("2026-03-23T12:00:00.000Z");
+      const runPayload = vi.fn(async () => ({ status: "ok" as const }));
+      const state = createCronServiceState({
+        storePath,
+        cronEnabled: true,
+        log: logger,
+        nowMs: () => now,
+        enqueueSystemEvent: vi.fn(),
+        requestHeartbeat: vi.fn(),
+        runIsolatedAgentJob: runPayload,
+        runCommandJob: runPayload,
+      });
+
+      try {
+        const job = await addJob(state, {
+          agentId: "finn",
+          name: "event command",
+          enabled: true,
+          schedule,
+          sessionTarget: "isolated",
+          wakeMode: "now",
+          payload:
+            schedule.kind === "stream"
+              ? { kind: "agentTurn", message: "Handle stream events" }
+              : { kind: "command", argv: ["true"] },
+        });
+        await updateJob(state, job.id, { state: { nextRunAtMs: now - 1 } });
+        await onTimer(state);
+        expect(runPayload).not.toHaveBeenCalled();
+        await expect(cronStatus(state)).resolves.toMatchObject({
+          enabled: true,
+          jobs: 1,
+          nextWakeAtMs: null,
+        });
+        await expect(run(state, job.id, "due")).resolves.toEqual({
+          ok: true,
+          ran: false,
+          reason: "not-due",
+        });
+        await expect(run(state, job.id, "force")).resolves.toEqual({ ok: true, ran: true });
+        expect(runPayload).toHaveBeenCalledOnce();
+      } finally {
+        stop(state);
+      }
+    },
+  );
 
   it("records an execution error when script payloads are disabled", async () => {
     const { storePath } = await makeStorePath();

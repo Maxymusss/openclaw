@@ -28,7 +28,7 @@ import { isHeartbeatLifecycleRunKind } from "../bootstrap-mode.js";
 import type { AcceptedCompactionSuccessor } from "../embedded-agent-runner/compaction-successor.js";
 import { buildMainSessionRecoveryClearPatch } from "../main-session-recovery/main-session-recovery-clear.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
-import type { AgentRunSessionTarget } from "../run-session-target.js";
+import type { AgentRunSessionTarget } from "../run-session-target.types.js";
 import { throwAgentRunRestartAbortReason } from "../run-termination.js";
 import type { SessionMaintenanceRequest } from "../session-maintenance/run.js";
 import { persistAssistantTranscriptRepairRecord } from "./assistant-transcript-repair.js";
@@ -89,6 +89,21 @@ export async function clearCommandRecoveryClaim(params: {
         },
         shouldPersist: (current) =>
           shouldPersistRestartRecoveryCleanup(current, params.runOwnedSessionId, runId),
+      });
+    }
+    // Finalization may already have cleared the active claim before this finally.
+    // Its durable receipt, not the transient monitor waiter, settles the task.
+    if (
+      (sessionStore[sessionKey] ?? entry)?.restartRecoveryTerminalDeliveryEvidence?.some(
+        (receipt) => receipt.harnessCompletion,
+      )
+    ) {
+      const { reconcileSessionHarnessCompletionDeliveries } =
+        await import("../agent-harness-completion-delivery.js");
+      reconcileSessionHarnessCompletionDeliveries({
+        agentId: params.prepared.sessionAgentId,
+        sessionKey,
+        storePath,
       });
     }
   } catch (error) {
@@ -284,6 +299,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
         const transcriptResult = await attemptExecutionRuntime.persistCliTurnTranscript({
           body,
           transcriptBody,
+          inputProvenance: params.opts.inputProvenance,
           result,
           sessionId: effectiveSessionId,
           sessionKey: internalSessionTarget?.sessionKey ?? sessionKey ?? effectiveSessionId,
@@ -523,6 +539,7 @@ export async function finalizeEmbeddedAgentCommand(params: {
       result,
       payloads,
       assertDeliveryCurrent: () => {
+        params.opts.assertSourceCurrent?.();
         params.opts.abortSignal?.throwIfAborted();
         assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
       },

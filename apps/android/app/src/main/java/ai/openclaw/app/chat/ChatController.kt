@@ -527,9 +527,11 @@ class ChatController internal constructor(
   val streamingAssistantText: StateFlow<String?> = _streamingAssistantText.asStateFlow()
   private var streamingAssistantOwner: ChatRunOwner? = null
 
-  private val pendingToolCallsById = ConcurrentHashMap<String, OwnedPendingToolCall>()
+  private val turnToolCallsById = ConcurrentHashMap<String, OwnedPendingToolCall>()
   private val _pendingToolCalls = MutableStateFlow<List<ChatPendingToolCall>>(emptyList())
   val pendingToolCalls: StateFlow<List<ChatPendingToolCall>> = _pendingToolCalls.asStateFlow()
+  private val _toolActivities = MutableStateFlow<List<ChatPendingToolCall>>(emptyList())
+  val toolActivities: StateFlow<List<ChatPendingToolCall>> = _toolActivities.asStateFlow()
 
   private val subagentActivityLock = Any()
 
@@ -3929,12 +3931,12 @@ class ChatController internal constructor(
     requestOutboxFlush()
   }
 
-  /** Sends best-effort abort requests for every currently pending gateway run. */
+  /** Stops the captured selection's pending runs, even if navigation happens during a request. */
   fun abort() {
-    val abortGatewayId = currentCacheScope()?.gatewayId
-    val runIds =
-      synchronized(pendingRuns) {
-        pendingRuns.toList()
+    val (snapshot, runIds) =
+      synchronized(gatewayScopeApplyLock) {
+        val snapshot = currentSessionActionSnapshot(_sessionKey.value) ?: return
+        snapshot to synchronized(pendingRuns) { pendingRuns.toList() }
       }
     if (runIds.isEmpty()) return
     scope.launch {
@@ -3942,12 +3944,21 @@ class ChatController internal constructor(
         try {
           val params =
             buildJsonObject {
-              put("sessionKey", JsonPrimitive(_sessionKey.value))
+              put("sessionKey", JsonPrimitive(snapshot.sessionKey))
+              put("agentId", JsonPrimitive(snapshot.ownerAgentId))
               put("runId", JsonPrimitive(runId))
             }
-          requestGatewayBound(abortGatewayId, "chat.abort", params.toString())
-        } catch (_: Throwable) {
-          // best-effort
+          requestGatewayBound(snapshot.gatewayScope?.gatewayId, "chat.abort", params.toString())
+        } catch (err: CancellationException) {
+          throw err
+        } catch (err: Throwable) {
+          synchronized(gatewayScopeApplyLock) {
+            if (isCurrentSessionAction(snapshot)) {
+              updateLocalizedErrorText(
+                err.message?.let(::verbatimText) ?: nativeText("Could not stop the response. Refresh and try again."),
+              )
+            }
+          }
         }
       }
     }
@@ -6895,6 +6906,23 @@ class ChatController internal constructor(
         }
       }
 
+      "item" -> {
+        val activity = data?.let { runCatching { json.decodeFromJsonElement<ChatAgentActivity>(it) }.getOrNull() } ?: return
+        if (activity.kind == "preamble" || activity.suppressChannelProgress) return
+        val toolCallId = activity.toolCallId ?: activity.itemId
+        val ts = payload["ts"].asLongOrNull() ?: System.currentTimeMillis()
+        synchronized(gatewayScopeApplyLock) {
+          val owner = liveRunOwner(runId)
+          val existing = turnToolCallsById[toolCallId]?.takeIf { it.owner == owner }?.call
+          turnToolCallsById[toolCallId] =
+            OwnedPendingToolCall(
+              owner,
+              (existing ?: ChatPendingToolCall(toolCallId, activity.name ?: activity.title, startedAtMs = ts)).copy(activity = activity, isComplete = activity.phase == "end"),
+            )
+          publishPendingToolCalls()
+        }
+      }
+
       "tool" -> {
         val phase = data?.get("phase")?.asStringOrNull()
         val name = data?.get("name")?.asStringOrNull()
@@ -6906,8 +6934,8 @@ class ChatController internal constructor(
           val owner = liveRunOwner(runId)
           when (phase) {
             "start" -> {
-              val existing = pendingToolCallsById[toolCallId]?.takeIf { it.owner == owner }?.call
-              pendingToolCallsById[toolCallId] =
+              val existing = turnToolCallsById[toolCallId]?.takeIf { it.owner == owner }?.call
+              turnToolCallsById[toolCallId] =
                 OwnedPendingToolCall(
                   owner,
                   ChatPendingToolCall(
@@ -6917,15 +6945,26 @@ class ChatController internal constructor(
                     startedAtMs = existing?.startedAtMs ?: ts,
                     isError = null,
                     liveDiff = existing?.liveDiff,
+                    activity = existing?.activity,
                   ),
                 )
               publishPendingToolCalls()
             }
 
+            "result" -> {
+              val existing = turnToolCallsById[toolCallId]?.takeIf { it.owner == owner }
+              if (existing?.call?.activity != null) {
+                turnToolCallsById[toolCallId] = existing.copy(call = existing.call.copy(isComplete = true))
+              } else if (existing != null) {
+                turnToolCallsById.remove(toolCallId, existing)
+              }
+              publishPendingToolCalls()
+            }
+
             "input_delta" -> {
               val diff = parseChatDiffStat(data["diff"], includeFiles = false) ?: return
-              val existing = pendingToolCallsById[toolCallId]?.takeIf { it.owner == owner }?.call
-              pendingToolCallsById[toolCallId] =
+              val existing = turnToolCallsById[toolCallId]?.takeIf { it.owner == owner }?.call
+              turnToolCallsById[toolCallId] =
                 OwnedPendingToolCall(
                   owner,
                   existing?.copy(name = name, liveDiff = diff)
@@ -6936,13 +6975,6 @@ class ChatController internal constructor(
                       liveDiff = diff,
                     ),
                 )
-              publishPendingToolCalls()
-            }
-
-            "result" -> {
-              pendingToolCallsById[toolCallId]?.takeIf { it.owner == owner }?.let {
-                pendingToolCallsById.remove(toolCallId, it)
-              }
               publishPendingToolCalls()
             }
           }
@@ -7057,7 +7089,9 @@ class ChatController internal constructor(
 
   private fun publishPendingToolCalls() {
     synchronized(gatewayScopeApplyLock) {
-      _pendingToolCalls.value = pendingToolCallsById.values.map { it.call }.sortedBy { it.startedAtMs }
+      val activities = turnToolCallsById.values.map { it.call }.sortedWith(compareBy<ChatPendingToolCall> { it.isComplete }.thenBy { it.startedAtMs })
+      _toolActivities.value = activities
+      _pendingToolCalls.value = activities.filterNot { it.isComplete }
     }
   }
 
@@ -7184,9 +7218,9 @@ class ChatController internal constructor(
         _streamingAssistantText.value = null
       }
       if (runId == null) {
-        pendingToolCallsById.clear()
+        turnToolCallsById.clear()
       } else {
-        pendingToolCallsById.entries.removeAll { it.value.owner == retiringOwner }
+        turnToolCallsById.entries.removeAll { it.value.owner == retiringOwner }
       }
       publishPendingToolCalls()
     }
@@ -7468,7 +7502,7 @@ class ChatController internal constructor(
       if (previousOwner != null) {
         val nextOwner = previousOwner.copy(runId = newRunId)
         if (streamingAssistantOwner == previousOwner) streamingAssistantOwner = nextOwner
-        pendingToolCallsById.replaceAll { _, tool ->
+        turnToolCallsById.replaceAll { _, tool ->
           if (tool.owner == previousOwner) tool.copy(owner = nextOwner) else tool
         }
       }
@@ -7671,7 +7705,11 @@ class ChatController internal constructor(
     val sessionInfo = root["sessionInfo"].asObjectOrNull()?.let { parseSessionEntry(it, fallbackKey = sessionKey) }
     val array = root["messages"].asArrayOrNull() ?: JsonArray(emptyList())
 
-    val messages = array.mapNotNull { it.asObjectOrNull()?.let { message -> parseMessage(message) } }
+    val activity = root["activity"]?.let { json.decodeFromJsonElement<List<ChatHistoryActivity>>(it) }?.associate { it.messageId to it.items }
+    val messages =
+      array
+        .mapNotNull { it.asObjectOrNull()?.let { message -> parseMessage(message) } }
+        .map { it.copy(activity = activity?.get(it.entryId)) }
 
     return ChatHistory(
       sessionKey = sessionKey,
@@ -8738,8 +8776,9 @@ internal fun parseChatMessageUsage(obj: JsonObject): ChatMessageUsage? {
       input = read("input"),
       output = read("output", "outputTokens", "output_tokens", "completionTokens", "completion_tokens"),
       cacheRead = read("cacheRead", "cache_read_input_tokens"),
+      cacheWrite = read("cacheWrite", "cache_creation_input_tokens"),
     )
-  return parsed.takeIf { listOf(it.input, it.output, it.cacheRead).any { value -> value != null } }
+  return parsed.takeIf { listOf(it.input, it.output, it.cacheRead, it.cacheWrite).any { value -> value != null } }
 }
 
 internal fun parseChatMessageCost(obj: JsonObject): ChatMessageCost? {

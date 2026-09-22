@@ -15,6 +15,7 @@ import { CODEX_INFERENCE_GENERATION_KEY } from "./inference-context.js";
 import { getCodexInferenceThread } from "./inference-routing.js";
 import { assertCodexTurnStartResponse } from "./protocol-validators.js";
 import type { CodexTurnStartResponse } from "./protocol.js";
+import { prepareCodexProviderReviewContinuation } from "./provider-review-continuation.js";
 import { readCodexRateLimitsRevision } from "./rate-limit-cache.js";
 import {
   emitCodexAppServerEvent,
@@ -28,6 +29,11 @@ import { recordCodexTrajectoryContext } from "./trajectory.js";
 import { buildCodexUserPromptMessage } from "./transcript-mirror.js";
 import { buildCodexParentLocalInstructions } from "./turn-params.js";
 
+export type CodexStartedTurn = {
+  turn: CodexTurnStartResponse;
+  upstreamUserText: string;
+};
+
 export async function prepareCodexAttemptTurnRequest(
   resources: CodexAttemptResources,
   turnRuntime: CodexAttemptTurnState,
@@ -35,7 +41,12 @@ export async function prepareCodexAttemptTurnRequest(
   waitForActiveNativeTurnCompletion: () => Promise<boolean>,
 ) {
   const { prompt, state: resourceState, releaseCurrentRoute } = resources;
-  const { context, turnState, buildRenderedCodexDeveloperInstructions } = prompt;
+  const {
+    context,
+    turnState,
+    buildRenderedCodexDeveloperInstructions,
+    nativeHistoryProvenancePrefix,
+  } = prompt;
   const { runtime, attemptTools, hookContextWindowFields, workspaceBootstrapContext } = context;
   const { connection, runtimeParams, effectiveRuntimeProviderId, effectiveRuntimeModelId } =
     runtime;
@@ -113,7 +124,7 @@ export async function prepareCodexAttemptTurnRequest(
     prompt.refreshWorkspaceReferences(references.include);
     return references;
   };
-  const startCodexTurn = async (): Promise<CodexTurnStartResponse> => {
+  const startCodexTurn = async (): Promise<CodexStartedTurn> => {
     const activeTurnRoute = (await ensureCurrentThreadRoute()) as {
       armTurn(): void;
       cancelTurn(): Promise<void>;
@@ -130,9 +141,6 @@ export async function prepareCodexAttemptTurnRequest(
     );
     connection.mutable.pluginAppServer = turnAppServer;
     const references = prepareWorkspaceReferences();
-    const referencesRetained = turnState.codexTurnPromptText.includes(
-      workspaceBootstrapContext.promptContext ?? "",
-    );
     const inferenceRoute = usesSupervisionConnection
       ? undefined
       : getCodexInferenceThread(resourceState.client, resourceState.thread.threadId);
@@ -141,6 +149,7 @@ export async function prepareCodexAttemptTurnRequest(
       cwd: resourceState.codexExecutionCwd,
       appServer: turnAppServer,
       promptText: turnState.codexTurnPromptText,
+      historyProvenancePrefix: nativeHistoryProvenancePrefix,
       contextImageGroups: prompt.contextImageGroups,
       explicitSkillInputs,
       sandboxPolicy: resourceState.codexSandboxPolicy,
@@ -213,6 +222,17 @@ export async function prepareCodexAttemptTurnRequest(
             : file,
         );
     }
+    const continuation = await prepareCodexProviderReviewContinuation({
+      acknowledgment: params.providerReviewAcknowledgment,
+      client: resourceState.client,
+      turnStartParams,
+      provider: params.provider,
+      model: params.modelId,
+      api: runtimeParams.model.api,
+      signal: runAbortController.signal,
+      timeoutMs: params.timeoutMs,
+      assertCurrent: connection.assertCurrent,
+    });
     codexModelCallDiagnostics.setRequestPayloadBytes(utf8JsonByteLength(turnStartParams));
     recordCodexTrajectoryContext(resources.trajectoryRecorder, {
       attempt: params,
@@ -239,22 +259,34 @@ export async function prepareCodexAttemptTurnRequest(
       },
     });
     let acceptedTurnId: string | undefined;
+    const upstreamUserText = turnStartParams.input
+      .flatMap((item) => (item.type === "text" ? [item.text] : []))
+      .join("\n");
     try {
       const startedTurn = assertCodexTurnStartResponse(
         await resourceState.client.request("turn/start", turnStartParams, {
           timeoutMs: params.timeoutMs,
           signal: runAbortController.signal,
-          assertCurrent: connection.assertCurrent,
+          assertCurrent: () => {
+            connection.assertCurrent();
+            continuation?.dispatch();
+          },
         }),
       );
       acceptedTurnId = startedTurn.turn.id;
+      resources.nativeProcessAuthority?.bindTurn(
+        resourceState.client,
+        resourceState.thread.threadId,
+        acceptedTurnId,
+      );
       connection.assertCurrent();
       // Fitting may drop or truncate references; only acknowledge the complete block.
-      if (referencesRetained) {
+      if (upstreamUserText.includes(workspaceBootstrapContext.promptContext ?? "")) {
         references.accepted();
       }
       throwIfTurnStartAcceptedAfterAbort();
-      return startedTurn;
+      await continuation?.accept(acceptedTurnId);
+      return { turn: startedTurn, upstreamUserText };
     } catch (error) {
       if (acceptedTurnId || isCodexAppServerIndeterminateRequestCancellationError(error)) {
         // Codex serializes start/interrupt per thread; an empty id interrupts
@@ -268,12 +300,20 @@ export async function prepareCodexAttemptTurnRequest(
             await retireUnsafeCodexTurnClientBestEffort(resourceState.client, "startup interrupt");
           }
         } finally {
-          releaseCurrentRoute();
+          await releaseCurrentRoute();
         }
       } else {
         await activeTurnRoute.cancelTurn();
       }
+      if (params.providerReviewAcknowledgment) {
+        // oxlint-disable-next-line preserve-caught-error -- Native RPC errors can contain the submitted steer; continuation diagnostics must stay generic.
+        throw new Error(
+          "Could not continue this chat. Review its latest status before trying again.",
+        );
+      }
       throw error;
+    } finally {
+      continuation?.dispose();
     }
   };
   if (

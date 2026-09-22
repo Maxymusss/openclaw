@@ -4,7 +4,7 @@ import {
   type ProgressDisclosureEvent,
 } from "./session-progress-disclosure.ts";
 
-function mount(manualOpen?: boolean) {
+function mount(manualOpen?: boolean | number) {
   return resolve(undefined, {
     type: "mount",
     open: true,
@@ -49,11 +49,13 @@ describe("progress disclosure transitions", () => {
     (readingHistory) => {
       let state = collapse();
       state = resolve(state, { type: "history", readingHistory });
-      expect(resolve(state, { type: "complete", runId: "older-run" }).open).toBe(false);
-      state = resolve(state, { type: "complete", runId: "run-1" });
+      expect(resolve(state, { type: "complete", runId: "older-run", reopen: true }).open).toBe(
+        false,
+      );
+      state = resolve(state, { type: "complete", runId: "run-1", reopen: true });
       expect(state.open).toBe(!readingHistory);
       state = resolve(state, { type: "history", readingHistory: false });
-      state = resolve(state, { type: "complete", runId: "run-1" });
+      state = resolve(state, { type: "complete", runId: "run-1", reopen: true });
       expect(state.open).toBe(!readingHistory);
     },
   );
@@ -61,7 +63,7 @@ describe("progress disclosure transitions", () => {
   it("keeps a manual close through completion, new runs, and later visits", () => {
     let state = resolve(mount(), { type: "click", open: false });
     state = resolve(state, { type: "history", readingHistory: false });
-    state = resolve(state, { type: "complete", runId: "run-1" });
+    state = resolve(state, { type: "complete", runId: "run-1", reopen: true });
     expect(state.open).toBe(false);
     state = resolve(state, { type: "run", runId: "run-2", open: true });
     expect(state.open).toBe(false);
@@ -103,11 +105,54 @@ describe("progress disclosure transitions", () => {
       completedRunId: "run-1",
       readingHistory: false,
     });
-    state = resolve(state, { type: "complete", runId: "run-1" });
+    state = resolve(state, { type: "complete", runId: "run-1", reopen: true });
     expect(state.open).toBe(false);
     state = resolve(state, { type: "run", runId: "run-2", open: false });
     expect(state.open).toBe(false);
-    state = resolve(state, { type: "complete", runId: "run-2" });
+    state = resolve(state, { type: "complete", runId: "run-2", reopen: true });
     expect(state.open).toBe(true);
+  });
+});
+
+describe("elastic progress disclosure", () => {
+  it("retains pixel choices through history and completion, resetting only for a new run", () => {
+    let state = resolve(mount(), { type: "extent", extent: 48 });
+    state = resolve(state, { type: "history", readingHistory: false });
+    state = resolve(state, { type: "complete", runId: "run-1", reopen: true });
+    state = resolve(state, { type: "run", runId: "run-1", open: false });
+    expect(state).toMatchObject({ open: true, manualOpen: 48 });
+    expect(mount(state.manualOpen).manualOpen).toBe(48);
+    state = resolve(state, { type: "run", runId: "run-2", open: false });
+    expect(state).toMatchObject({ open: false, manualOpen: undefined });
+  });
+
+  it("takes over pending history input and counts a reopen once, not once per frame", () => {
+    let state = resolve(resolve(mount(), historyScroll(160)), historyScroll(160));
+    state = resolve(state, { type: "takeover" });
+    expect(resolve(state, { type: "settle" }).open).toBe(true);
+    state = resolve(state, { type: "extent", extent: 0 });
+    for (const extent of [1, 20, 48, 32, 80]) {
+      state = resolve(state, { type: "extent", extent });
+    }
+    state = resolve(state, { type: "click", open: true });
+    expect(state.manualReopens).toBe(1);
+    for (let i = 0; i < 3; i++) {
+      state = resolve(state, historyScroll(220));
+    }
+    state = resolve(state, { type: "settle" });
+    expect(state.open).toBe(false);
+    state = resolve(state, { type: "extent", extent: 32 });
+    for (let i = 0; i < 4; i++) {
+      state = resolve(state, historyScroll(400));
+    }
+    expect(resolve(state, { type: "settle" })).toMatchObject({
+      open: true,
+      manualOpen: 32,
+      manualReopens: 2,
+    });
+    expect(resolve(state, { type: "clamp", limit: 16 })).toMatchObject({
+      manualOpen: 16,
+      manualReopens: 2,
+    });
   });
 });

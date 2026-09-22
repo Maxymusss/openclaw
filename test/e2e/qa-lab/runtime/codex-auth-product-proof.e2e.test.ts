@@ -64,7 +64,10 @@ function expectBoundedMissingProfileRecovery(
   const serialized = JSON.stringify(value);
   if (options?.allowSessionTruncation) {
     expect(typeof value).toBe("string");
-    expect(value).toBe(SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT.slice(0, 160));
+    expect(value).toContain("The selected auth profile is unavailable");
+    expect(value).toContain("`openclaw configure`");
+    expect(value).toMatch(/then retry\.$/u);
+    expect(value).toHaveLength(160);
   } else {
     expect(serialized).toContain(SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT);
   }
@@ -236,7 +239,6 @@ describe("Codex auth product proof", () => {
                     command: process.execPath,
                     args: [appServerFixture],
                     requestTimeoutMs: REQUEST_TIMEOUT_MS,
-                    turnCompletionIdleTimeoutMs: REQUEST_TIMEOUT_MS,
                   },
                 },
               },
@@ -414,7 +416,6 @@ describe("Codex auth product proof", () => {
                     command: process.execPath,
                     args: [appServerFixture],
                     requestTimeoutMs: REQUEST_TIMEOUT_MS,
-                    turnCompletionIdleTimeoutMs: REQUEST_TIMEOUT_MS,
                   },
                 },
               },

@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { resetFileLockStateForTest } from "../../infra/file-lock.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseAsync,
+  closeOpenClawStateDatabaseForTest,
+} from "../../state/openclaw-state-db.js";
 import {
   connectUserModelAccount,
   readUserModelAuthProfile,
@@ -78,9 +81,10 @@ describe("inherited auth-profile usage persistence", () => {
     clearRuntimeAuthProfileStoreSnapshots();
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     clearRuntimeAuthProfileStoreSnapshots();
     closeOpenClawAgentDatabasesForTest();
+    await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     resetFileLockStateForTest();
     env.restore();
@@ -231,7 +235,7 @@ describe("inherited auth-profile usage persistence", () => {
     },
   );
 
-  it("does not carry personal credentials into isolated auth scopes", () => {
+  it("does not carry personal credentials into isolated auth scopes", async () => {
     const personalId = connectPersonalAccount(ensureProfileForEmail("alice@example.test").id);
     expect(resolveAuthProfileProviderForSelection({ profileId: personalId })).toBe("anthropic");
     expect(
@@ -244,7 +248,7 @@ describe("inherited auth-profile usage persistence", () => {
         () => ensureAuthProfileStore(childAgentDir, { profileId: personalId }).profiles[personalId],
       ),
     ).toBeUndefined();
-    withAuthProfileStoreAgentDir(childAgentDir, rootDir, () => {
+    await withAuthProfileStoreAgentDir(childAgentDir, rootDir, () => {
       expect(
         ensureAuthProfileStore(childAgentDir, { profileId: personalId }).profiles[personalId],
       ).toBeUndefined();
