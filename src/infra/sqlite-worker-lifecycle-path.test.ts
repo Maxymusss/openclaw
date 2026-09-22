@@ -54,6 +54,7 @@ it("services agent worker preparation at the shared-state coordinator location u
   };
   const slot: Slot = {
     worker: new Worker(new URL("file:///synthetic/sqlite-store.worker.js")),
+    sourceLoaderPreloaded: false,
     receiveReply: edge.forbidden,
     actors: new Set(),
     queue: [],

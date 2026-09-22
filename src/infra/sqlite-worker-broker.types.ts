@@ -58,6 +58,7 @@ export type Job = {
 };
 export type Slot = {
   worker: Worker;
+  sourceLoaderPreloaded: boolean;
   receiveReply(reply: SqliteWorkerReply, pumping?: boolean): void;
   actors: Set<Actor>;
   queue: Job[];
