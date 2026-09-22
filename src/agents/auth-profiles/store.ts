@@ -1404,26 +1404,25 @@ export function createAuthProfileStoreRuntime(
     loadAuthProfileStoreForRuntime,
     loadAuthProfileStoreForRuntimeAsync,
     prepareAuthProfileProviderForSelection,
-  } =
-    createAuthProfileStoreRuntimeReader({
-      isEnvOnlyAuthProfileRuntime,
-      getScopedAuthProfileEnv,
-      getScopedSharedAuthStore,
-      resolveRuntimeAuthProfileAgentDir,
-      resolveRuntimeAuthProfileLoadOptions,
-      loadAuthProfileStoreForAgent,
-      overlayExternalAuthProfiles,
-      captureScope: () => {
-        const mode = authProfileRuntimeMode.getStore();
-        return {
-          isolated: Boolean(mode),
-          run: (agentDir, env, run) =>
-            mode?.kind === "agent-dir"
-              ? authProfileRuntimeMode.run({ ...mode, agentDir: agentDir!, env }, run)
-              : run(),
-        };
-      },
-    });
+  } = createAuthProfileStoreRuntimeReader({
+    isEnvOnlyAuthProfileRuntime,
+    getScopedAuthProfileEnv,
+    getScopedSharedAuthStore,
+    resolveRuntimeAuthProfileAgentDir,
+    resolveRuntimeAuthProfileLoadOptions,
+    loadAuthProfileStoreForAgent,
+    overlayExternalAuthProfiles,
+    captureScope: () => {
+      const mode = authProfileRuntimeMode.getStore();
+      return {
+        isolated: Boolean(mode),
+        run: (agentDir, env, run) =>
+          mode?.kind === "agent-dir"
+            ? authProfileRuntimeMode.run({ ...mode, agentDir: agentDir!, env }, run)
+            : run(),
+      };
+    },
+  });
 
   /** Retain read owners, never copies of their migration refusals, for a session facade. */
   function createAuthProfileStoreReadScope(agentDir: string, config: OpenClawConfig | undefined) {

@@ -135,7 +135,8 @@ vi.mock("../../agents/auth-profiles.runtime.js", () => ({
 
 vi.mock("../../agents/auth-profiles/store-runtime.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../agents/auth-profiles/store-runtime.js")>()),
-  prepareAuthProfileProviderForSelection: authProfileStoreMock.prepareAuthProfileProviderForSelection,
+  prepareAuthProfileProviderForSelection:
+    authProfileStoreMock.prepareAuthProfileProviderForSelection,
 }));
 
 vi.mock("../../agents/auth-profiles/store.js", async (importOriginal) => ({

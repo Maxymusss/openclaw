@@ -140,9 +140,9 @@ export function shouldPreserveUnavailableSessionAuthProfileOverride(
   }
   return Boolean(
     profileId &&
-      !params.store.profiles[profileId] &&
-      resolveCollapsedSessionAuthPinSource(params.entry) === "user" &&
-      shouldPreserveSessionAuthProfileOverrideWithProvider(params, params.preparedProfile.provider),
+    !params.store.profiles[profileId] &&
+    resolveCollapsedSessionAuthPinSource(params.entry) === "user" &&
+    shouldPreserveSessionAuthProfileOverrideWithProvider(params, params.preparedProfile.provider),
   );
 }
 

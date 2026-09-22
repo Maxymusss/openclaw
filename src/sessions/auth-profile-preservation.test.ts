@@ -49,7 +49,12 @@ describe("shouldPreserveSessionAuthProfileOverride", () => {
   it.each(["", " "])("does not read provider metadata for an empty target %j", (provider) => {
     const lookup = vi.spyOn(authStore, "resolveAuthProfileProviderForSelection");
     expect(
-      shouldPreserveSessionAuthProfileOverride({ cfg: {}, entry, currentProvider: "openai", provider }),
+      shouldPreserveSessionAuthProfileOverride({
+        cfg: {},
+        entry,
+        currentProvider: "openai",
+        provider,
+      }),
     ).toBe(false);
     expect(lookup).not.toHaveBeenCalled();
   });
@@ -68,8 +73,14 @@ describe("shouldPreserveSessionAuthProfileOverride", () => {
         });
       expect(
         shouldPreserveUnavailableSessionAuthProfileOverride({
-          cfg: { auth: { profiles: { "team:account": { provider: configured, mode: "api_key" } } } },
-          entry: { ...entry, authProfileOverride: "team:account", authProfileOverrideSource: "user" },
+          cfg: {
+            auth: { profiles: { "team:account": { provider: configured, mode: "api_key" } } },
+          },
+          entry: {
+            ...entry,
+            authProfileOverride: "team:account",
+            authProfileOverrideSource: "user",
+          },
           currentProvider: "anthropic",
           provider: "openai",
           store: { profiles: {} },
@@ -81,18 +92,28 @@ describe("shouldPreserveSessionAuthProfileOverride", () => {
   );
 
   it.each([
-    "pin", "source", "compaction", "session", "row", "distinct-row-pin", "distinct-row-source",
+    "pin",
+    "source",
+    "compaction",
+    "session",
+    "row",
+    "distinct-row-pin",
+    "distinct-row-source",
   ] as const)(
     "rejects a changed %s after provider preparation without mutating the newer selection",
     async (change) => {
       const started = createDeferredCore();
       const read = createDeferredCore<{ profileId: string; provider: string | undefined }>();
-      vi.spyOn(authStoreRuntime, "prepareAuthProfileProviderForSelection").mockImplementation(() => {
-        started.resolve();
-        return read.promise;
-      });
+      vi.spyOn(authStoreRuntime, "prepareAuthProfileProviderForSelection").mockImplementation(
+        () => {
+          started.resolve();
+          return read.promise;
+        },
+      );
       const selected: SessionEntry = { ...entry, authProfileOverrideSource: "user" };
-      const sessionStore = { selected: change.startsWith("distinct-row") ? { ...selected } : selected };
+      const sessionStore = {
+        selected: change.startsWith("distinct-row") ? { ...selected } : selected,
+      };
       const preparing = prepareUnavailableSessionAuthProfileOverride({
         entry: selected,
         store: { profiles: {} },
@@ -113,9 +134,11 @@ describe("shouldPreserveSessionAuthProfileOverride", () => {
         if (change === "source") selected.authProfileOverrideSource = "auto";
         if (change === "compaction") selected.authProfileOverrideCompactionCount = 2;
         if (change === "session") selected.sessionId = "replacement-session";
-        if (change === "row") sessionStore.selected = { ...selected, authProfileOverride: "openai:new" };
+        if (change === "row")
+          sessionStore.selected = { ...selected, authProfileOverride: "openai:new" };
         if (change === "distinct-row-pin") sessionStore.selected.authProfileOverride = "openai:new";
-        if (change === "distinct-row-source") sessionStore.selected.authProfileOverrideSource = "auto";
+        if (change === "distinct-row-source")
+          sessionStore.selected.authProfileOverrideSource = "auto";
         const before = { entry: { ...selected }, row: { ...sessionStore.selected } };
         read.resolve({ profileId: entry.authProfileOverride, provider: "openai" });
         await expect(preparing).rejects.toThrow("Session auth profile changed");
@@ -132,7 +155,8 @@ describe("shouldPreserveSessionAuthProfileOverride", () => {
     const read = vi.spyOn(authStoreRuntime, "prepareAuthProfileProviderForSelection");
     expect(
       prepareUnavailableSessionAuthProfileOverride({
-        entry: { ...entry, authProfileOverrideSource: "auto" }, store: { profiles: {} },
+        entry: { ...entry, authProfileOverrideSource: "auto" },
+        store: { profiles: {} },
       }),
     ).toBeUndefined();
     expect(

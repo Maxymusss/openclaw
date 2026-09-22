@@ -573,7 +573,8 @@ export function createAuthProfileStoreRuntimeReader({
           const requested = readPreparedProfile(selectedAgentPath, selectionProfileId);
           // A selected credential or captured shared scope needs no ambient shared owner.
           if (requested.credential || scopedSharedStore) {
-            const selected = requested.credential ?? scopedSharedStore?.profiles[selectionProfileId];
+            const selected =
+              requested.credential ?? scopedSharedStore?.profiles[selectionProfileId];
             const assertCurrent = () => assertReadOwnersCurrent([selectedAgentPath]);
             assertCurrent();
             return {
@@ -632,7 +633,11 @@ export function createAuthProfileStoreRuntimeReader({
             (effectiveAgentDir && requestedPath !== inheritedPath
               ? readPreparedProfile(inheritedPath, selectionProfileId).credential
               : undefined));
-        return { store: requested.store, selectedProfileProvider: selected?.provider, assertCurrent };
+        return {
+          store: requested.store,
+          selectedProfileProvider: selected?.provider,
+          assertCurrent,
+        };
       }
       const load = () =>
         loadRuntimeAuthProfileStore(

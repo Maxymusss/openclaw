@@ -22,14 +22,16 @@ import { AuthProfileStoreUnreadableError } from "./store-unreadable-error.js";
 import { createAuthProfileStoreRuntime } from "./store.js";
 import type { AuthProfileStore, AuthProfileRowRead } from "./types.js";
 
-function prepareProviderReader(options: {
-  shared?: AuthProfileStore;
-  isolated?: boolean;
-  envOnly?: boolean;
-  inherited?: boolean;
-  unbound?: boolean;
-  preparedStore?: AuthProfileStore;
-} = {}) {
+function prepareProviderReader(
+  options: {
+    shared?: AuthProfileStore;
+    isolated?: boolean;
+    envOnly?: boolean;
+    inherited?: boolean;
+    unbound?: boolean;
+    preparedStore?: AuthProfileStore;
+  } = {},
+) {
   const root = tempDirs.make("openclaw-profile-provider-read-");
   const agentDir = path.join(root, "agents/worker/agent");
   const inheritedDir = options.inherited ? path.join(root, "agents/main/agent") : agentDir;
@@ -41,7 +43,9 @@ function prepareProviderReader(options: {
   });
   reader.assertCurrent.mockReset();
   reader.dispose.mockReset().mockResolvedValue(undefined);
-  const overlay = vi.fn(() => { throw new Error("selection metadata must not compose external credentials"); });
+  const overlay = vi.fn(() => {
+    throw new Error("selection metadata must not compose external credentials");
+  });
   const storeView = vi.fn((store: AuthProfileStore) => options.preparedStore ?? store);
   const runtime = createAuthProfileStoreRuntimeReader({
     isEnvOnlyAuthProfileRuntime: () => options.envOnly === true,
@@ -53,15 +57,20 @@ function prepareProviderReader(options: {
     loadAuthProfileStoreForAgent: (_dir, _options, _env, rows) => {
       if (!rows) throw new Error("selection metadata requires prepared rows");
       return storeView(
-        sqliteRead.loadPersistedAuthProfileStoreFromRows(rows, "fixture-owner") ?? { version: 1, profiles: {} },
+        sqliteRead.loadPersistedAuthProfileStoreFromRows(rows, "fixture-owner") ?? {
+          version: 1,
+          profiles: {},
+        },
       );
     },
     overlayExternalAuthProfiles: overlay,
     captureScope: () => ({ isolated: options.isolated === true, run: (_dir, _env, run) => run() }),
   });
-  const synchronousRead = vi.spyOn(persisted, "loadPersistedAuthProfileStore").mockImplementation(() => {
-    throw new Error("unexpected synchronous persisted read");
-  });
+  const synchronousRead = vi
+    .spyOn(persisted, "loadPersistedAuthProfileStore")
+    .mockImplementation(() => {
+      throw new Error("unexpected synchronous persisted read");
+    });
   return { agentDir, inheritedDir, runtime, overlay, synchronousRead, storeView };
 }
 
@@ -69,7 +78,10 @@ function providerRows(provider: string | undefined): AuthProfileRowRead {
   return {
     store: {
       status: "readable",
-      raw: { version: 1, profiles: provider ? { account: { type: "api_key", provider, key: "fixture" } } : {} },
+      raw: {
+        version: 1,
+        profiles: provider ? { account: { type: "api_key", provider, key: "fixture" } } : {},
+      },
     },
     state: { status: "missing", reason: "row" },
     cacheable: false,
@@ -95,11 +107,18 @@ afterEach(() => {
 
 it("prepares published provider metadata without opening persisted readers", async () => {
   const { agentDir, runtime, synchronousRead } = prepareProviderReader();
-  setRuntimeAuthProfileStoreSnapshot({ version: 1, profiles: {
-    account: { type: "api_key", provider: "published", key: "fixture" },
-  } }, agentDir);
-  await expect(runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }))
-    .resolves.toEqual({ profileId: "account", provider: "published" });
+  setRuntimeAuthProfileStoreSnapshot(
+    {
+      version: 1,
+      profiles: {
+        account: { type: "api_key", provider: "published", key: "fixture" },
+      },
+    },
+    agentDir,
+  );
+  await expect(
+    runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }),
+  ).resolves.toEqual({ profileId: "account", provider: "published" });
   expect(sqliteRead.prepareAgentAuthProfileRowsRead).not.toHaveBeenCalled();
   expect(reader.read).not.toHaveBeenCalled();
   expect(synchronousRead).not.toHaveBeenCalled();
@@ -114,7 +133,9 @@ it("uses a published shared provider before unreadable persisted rows", async ()
   const failure = new Error("fixture persisted rows are unreadable");
   reader.read.mockRejectedValue(failure);
   const sharedRead = vi.spyOn(sqliteRead, "readSharedAuthProfileRows").mockRejectedValue(failure);
-  await expect(runtime.prepareAuthProfileProviderForSelection({ profileId: "account" })).resolves.toEqual({
+  await expect(
+    runtime.prepareAuthProfileProviderForSelection({ profileId: "account" }),
+  ).resolves.toEqual({
     profileId: "account",
     provider: "published",
   });
@@ -128,25 +149,34 @@ it.each([
   { local: "local", inherited: "shared", expected: "local" },
   { local: undefined, inherited: "shared", expected: "shared" },
   { local: undefined, inherited: undefined, expected: undefined },
-])("prepares raw local=$local/inherited=$inherited metadata with explicit absence", async ({ local, inherited, expected }) => {
-  const { agentDir, runtime, overlay, synchronousRead } = prepareProviderReader({ inherited: true });
-  reader.read.mockResolvedValueOnce(providerRows(local)).mockResolvedValueOnce(providerRows(inherited));
-  await expect(runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }))
-    .resolves.toEqual({ profileId: "account", provider: expected });
-  expect(reader.read).toHaveBeenCalledTimes(local ? 1 : 2);
-  expect(reader.dispose).toHaveBeenCalledTimes(2);
-  expect(overlay).not.toHaveBeenCalled();
-  expect(synchronousRead).not.toHaveBeenCalled();
-});
+])(
+  "prepares raw local=$local/inherited=$inherited metadata with explicit absence",
+  async ({ local, inherited, expected }) => {
+    const { agentDir, runtime, overlay, synchronousRead } = prepareProviderReader({
+      inherited: true,
+    });
+    reader.read
+      .mockResolvedValueOnce(providerRows(local))
+      .mockResolvedValueOnce(providerRows(inherited));
+    await expect(
+      runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }),
+    ).resolves.toEqual({ profileId: "account", provider: expected });
+    expect(reader.read).toHaveBeenCalledTimes(local ? 1 : 2);
+    expect(reader.dispose).toHaveBeenCalledTimes(2);
+    expect(overlay).not.toHaveBeenCalled();
+    expect(synchronousRead).not.toHaveBeenCalled();
+  },
+);
 
 it("uses selected raw provider metadata before unrelated shared-owner refusal", async () => {
   const { agentDir, runtime, synchronousRead } = prepareProviderReader({ unbound: true });
   reader.read.mockResolvedValueOnce(providerRows("selected"));
-  const sharedOwner = vi.spyOn(authPaths, "resolveSharedAuthStoreOwnershipAsync").mockRejectedValue(
-    new Error("fixture unrelated shared-owner refusal"),
-  );
-  await expect(runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }))
-    .resolves.toEqual({ profileId: "account", provider: "selected" });
+  const sharedOwner = vi
+    .spyOn(authPaths, "resolveSharedAuthStoreOwnershipAsync")
+    .mockRejectedValue(new Error("fixture unrelated shared-owner refusal"));
+  await expect(
+    runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }),
+  ).resolves.toEqual({ profileId: "account", provider: "selected" });
   expect(sharedOwner).not.toHaveBeenCalled();
   expect(reader.read).toHaveBeenCalledTimes(1);
   expect(reader.dispose).toHaveBeenCalledTimes(2);
@@ -161,8 +191,9 @@ it("projects the raw selected credential before a transformed host store", async
     },
   });
   reader.read.mockResolvedValueOnce(providerRows("raw-selected"));
-  await expect(runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }))
-    .resolves.toEqual({ profileId: "account", provider: "raw-selected" });
+  await expect(
+    runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }),
+  ).resolves.toEqual({ profileId: "account", provider: "raw-selected" });
   expect(storeView).toHaveBeenCalledExactlyOnceWith({
     version: 1,
     profiles: { account: { type: "api_key", provider: "raw-selected", key: "fixture" } },
@@ -172,45 +203,69 @@ it("projects the raw selected credential before a transformed host store", async
 });
 
 it("uses captured shared facts and excludes the ambient runtime snapshot", async () => {
-  const shared: AuthProfileStore = { version: 1, profiles: {
-    account: { type: "token", provider: "portable", token: "fixture" },
-  } };
+  const shared: AuthProfileStore = {
+    version: 1,
+    profiles: {
+      account: { type: "token", provider: "portable", token: "fixture" },
+    },
+  };
   const { agentDir, runtime } = prepareProviderReader({ shared, isolated: true });
-  setRuntimeAuthProfileStoreSnapshot({ version: 1, profiles: {
-    account: { type: "api_key", provider: "ambient", key: "fixture" },
-    private: { type: "api_key", provider: "ambient", key: "fixture" },
-  } }, agentDir);
-  await expect(runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }))
-    .resolves.toEqual({ profileId: "account", provider: "portable" });
-  await expect(runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "private" }))
-    .resolves.toEqual({ profileId: "private", provider: undefined });
-});
-
-it.each([{ envOnly: true }, { isolated: true }])("does not read a personal account in an isolated scope: %j", async (scope) => {
-  const { agentDir, runtime } = prepareProviderReader(scope);
-  const personalRead = vi.spyOn(sqliteRead, "readUserModelAuthProfileAsync");
-  const profileId = "personal:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
-  await expect(runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId }))
-    .resolves.toEqual({ profileId, provider: undefined });
-  expect(personalRead).not.toHaveBeenCalled();
-  expect(sqliteRead.prepareAgentAuthProfileRowsRead).not.toHaveBeenCalled();
-});
-
-it.each(["selected", "shared"] as const)("prepares the %s personal account without unrelated shared-auth ownership", async (scope) => {
-  const { agentDir, runtime } = prepareProviderReader();
-  const unrelatedOwner = vi.spyOn(authPaths, "resolveSharedAuthStoreOwnershipAsync").mockRejectedValue(
-    new Error("INVALID_SHARED_AUTH_STORE_OWNERSHIP"),
+  setRuntimeAuthProfileStoreSnapshot(
+    {
+      version: 1,
+      profiles: {
+        account: { type: "api_key", provider: "ambient", key: "fixture" },
+        private: { type: "api_key", provider: "ambient", key: "fixture" },
+      },
+    },
+    agentDir,
   );
-  const personalRead = vi.spyOn(sqliteRead, "readUserModelAuthProfileAsync").mockResolvedValue({
-    credential: { type: "token", provider: "personal-provider", token: "fixture" },
-  });
-  const profileId = "personal:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
-  await expect(runtime.prepareAuthProfileProviderForSelection({ agentDir: scope === "selected" ? agentDir : undefined, profileId }))
-    .resolves.toEqual({ profileId, provider: "personal-provider" });
-  expect(personalRead).toHaveBeenCalledExactlyOnceWith(profileId, expect.anything());
-  expect(unrelatedOwner).not.toHaveBeenCalled();
-  expect(sqliteRead.prepareAgentAuthProfileRowsRead).not.toHaveBeenCalled();
+  await expect(
+    runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }),
+  ).resolves.toEqual({ profileId: "account", provider: "portable" });
+  await expect(
+    runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "private" }),
+  ).resolves.toEqual({ profileId: "private", provider: undefined });
 });
+
+it.each([{ envOnly: true }, { isolated: true }])(
+  "does not read a personal account in an isolated scope: %j",
+  async (scope) => {
+    const { agentDir, runtime } = prepareProviderReader(scope);
+    const personalRead = vi.spyOn(sqliteRead, "readUserModelAuthProfileAsync");
+    const profileId =
+      "personal:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
+    await expect(
+      runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId }),
+    ).resolves.toEqual({ profileId, provider: undefined });
+    expect(personalRead).not.toHaveBeenCalled();
+    expect(sqliteRead.prepareAgentAuthProfileRowsRead).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["selected", "shared"] as const)(
+  "prepares the %s personal account without unrelated shared-auth ownership",
+  async (scope) => {
+    const { agentDir, runtime } = prepareProviderReader();
+    const unrelatedOwner = vi
+      .spyOn(authPaths, "resolveSharedAuthStoreOwnershipAsync")
+      .mockRejectedValue(new Error("INVALID_SHARED_AUTH_STORE_OWNERSHIP"));
+    const personalRead = vi.spyOn(sqliteRead, "readUserModelAuthProfileAsync").mockResolvedValue({
+      credential: { type: "token", provider: "personal-provider", token: "fixture" },
+    });
+    const profileId =
+      "personal:11111111-1111-4111-8111-111111111111:22222222-2222-4222-8222-222222222222";
+    await expect(
+      runtime.prepareAuthProfileProviderForSelection({
+        agentDir: scope === "selected" ? agentDir : undefined,
+        profileId,
+      }),
+    ).resolves.toEqual({ profileId, provider: "personal-provider" });
+    expect(personalRead).toHaveBeenCalledExactlyOnceWith(profileId, expect.anything());
+    expect(unrelatedOwner).not.toHaveBeenCalled();
+    expect(sqliteRead.prepareAgentAuthProfileRowsRead).not.toHaveBeenCalled();
+  },
+);
 
 it.each(["selected", "inherited", "invalidated", "cleanup"] as const)(
   "retains the actual %s failure and joins provider readers",
@@ -218,10 +273,16 @@ it.each(["selected", "inherited", "invalidated", "cleanup"] as const)(
     const { agentDir, runtime } = prepareProviderReader({ inherited: true });
     const error = new Error(`fixture ${failure} refusal`);
     if (failure === "selected") reader.read.mockRejectedValueOnce(error);
-    if (failure === "inherited") reader.read.mockResolvedValueOnce(providerRows(undefined)).mockRejectedValueOnce(error);
-    if (failure === "invalidated") reader.assertCurrent.mockImplementation(() => { throw error; });
+    if (failure === "inherited")
+      reader.read.mockResolvedValueOnce(providerRows(undefined)).mockRejectedValueOnce(error);
+    if (failure === "invalidated")
+      reader.assertCurrent.mockImplementation(() => {
+        throw error;
+      });
     if (failure === "cleanup") reader.dispose.mockRejectedValueOnce(error);
-    await expect(runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" })).rejects.toBe(error);
+    await expect(
+      runtime.prepareAuthProfileProviderForSelection({ agentDir, profileId: "account" }),
+    ).rejects.toBe(error);
     expect(reader.dispose).toHaveBeenCalledTimes(2);
   },
 );

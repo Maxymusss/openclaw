@@ -217,7 +217,9 @@ export function registerModelSelectionAuthProfileTests({
         allowKeychainPrompt: false,
         profileId: selectedProfileId,
       });
-      expect(authProfileStoreMock.prepareAuthProfileProviderForSelection).toHaveBeenCalledExactlyOnceWith({
+      expect(
+        authProfileStoreMock.prepareAuthProfileProviderForSelection,
+      ).toHaveBeenCalledExactlyOnceWith({
         agentDir,
         profileId: selectedProfileId,
       });
