@@ -205,6 +205,9 @@ other database, updater, plugin, or rollback compatibility requirements.
 
 Model-originated config proposals cannot obtain these grants from Full Access
 alone: the system-agent owner requires explicit approval of the exact proposal.
+Replacing an ancestor such as `talk` or `talk.realtime` also requires that approval,
+because the replacement can add, remove, or replace the policy list. Unrelated
+leaf settings retain their ordinary approval behavior.
 Delegation text, transcripts, and provider/plugin prompts never mint grants.
 
 The originating client must authenticate with its signed, paired-device token.
@@ -223,7 +226,9 @@ or transport resume; completion releases that hold. The same owner handles Brows
 clients using Gateway control, Gateway relay, and native sideband delegation.
 
 Launches accept only an installed desktop-entry identity, its revision, and the
-explicit node. The initial Linux implementation supports top-level XDG application
+explicit node. Both `app_list` and `app_launch` use the current Gateway; per-call
+Gateway routing overrides are not supported by these closed actions.
+The initial Linux implementation supports top-level XDG application
 entries that directly select a native ELF executable with no arguments, including
 a single correctly quoted executable path. Entries
 requiring shell/script launchers, field codes, terminal execution, custom working
@@ -232,6 +237,16 @@ their existing launch/confirmation paths. The revision binds the canonical entry
 metadata, not cosmetic desktop-entry text. Changes to the selected executable or
 its installation invalidate that binding; inspect and explicitly authorize the
 new revision rather than broadening the match.
+
+This is native `Exec` discovery, not a desktop-menu or D-Bus launcher. It uses
+the desktop entry’s compatibility `Exec` even when `DBusActivatable=true`;
+optional menu availability hints such as `TryExec` are not launch authority.
+The selected `Exec` itself must exist and pass the executable and ELF checks.
+
+Preparation is limited to 2,048 distinct top-level desktop-entry names, selected
+in XDG root precedence and filename order before eligibility filtering. Invalid
+or ineligible entries still consume this budget, so very large inventories can
+be partial. Nested desktop entries are outside this initial discovery contract.
 
 The Gateway rechecks current policy and originating-device authority after hook,
 node-policy, and readiness waits. After the node has completed its independent

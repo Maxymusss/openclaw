@@ -12,47 +12,47 @@ import {
   readCodexDynamicToolCallParams,
   createCodexNativeTestState,
   createIsolatedCodexAppServerClient,
-} from "../../../extensions/codex/test-api.js";
-import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+} from "../../extensions/codex/test-api.js";
 import {
   closeAdmittedRunDelegatedAuthority,
   prepareSystemAgentRunAdmission,
   type PreparedAgentRunAdmission,
-} from "../../agents/admitted-run-context.js";
-import { createAgentHarnessHostCapabilities } from "../../agents/harness/host-capability.js";
+} from "../../src/agents/admitted-run-context.js";
+import { createAgentHarnessHostCapabilities } from "../../src/agents/harness/host-capability.js";
 import {
   createGatewayToolCallerWrapper,
   getGatewayToolCallerIdentity,
-} from "../../agents/tools/gateway-caller-context.js";
-import { shouldUseInProcessGatewayTool } from "../../agents/tools/gateway.js";
-import { createNodesTool } from "../../agents/tools/nodes-tool.js";
+} from "../../src/agents/tools/gateway-caller-context.js";
+import { shouldUseInProcessGatewayTool } from "../../src/agents/tools/gateway.js";
+import { createNodesTool } from "../../src/agents/tools/nodes-tool.js";
+import type { GatewayRequestContext } from "../../src/gateway/server-methods/types.js";
+import { createTalkClientAgentConsultRunner } from "../../src/gateway/talk/client-agent-consult.js";
+import { createTalkClientGatewayControlOwner } from "../../src/gateway/talk/client-gateway-control.js";
+import { createNativeAppPolicyFixture } from "../../src/gateway/talk/native-app-policy.test-support.js";
 import {
   onTrustedToolExecutionEvent,
   setDiagnosticsEnabledForProcess,
-} from "../../infra/diagnostic-events.js";
-import { createSubsystemLogger } from "../../logging/subsystem.js";
-import type { consultRealtimeVoiceAgent } from "../../talk/agent-consult-runtime.js";
-import { resetClientVoiceConfirmationStateForTest } from "../../talk/client-voice-confirmation.test-support.js";
+} from "../../src/infra/diagnostic-events.js";
+import { createSubsystemLogger } from "../../src/logging/subsystem.js";
+import type { consultRealtimeVoiceAgent } from "../../src/talk/agent-consult-runtime.js";
+import { resetClientVoiceConfirmationStateForTest } from "../../src/talk/client-voice-confirmation.test-support.js";
 import {
   closeClientVoiceSession,
   createOrResumeClientVoiceSession,
   resolveOpenClientVoiceSessionId,
-} from "../../talk/client-voice-session.js";
-import { clientVoiceSessionTesting } from "../../talk/client-voice-session.test-support.js";
-import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import type { GatewayRequestContext } from "../server-methods/types.js";
-import { createTalkClientAgentConsultRunner } from "./client-agent-consult.js";
-import { createTalkClientGatewayControlOwner } from "./client-gateway-control.js";
-import { createNativeAppPolicyFixture } from "./native-app-policy.test-support.js";
+} from "../../src/talk/client-voice-session.js";
+import { clientVoiceSessionTesting } from "../../src/talk/client-voice-session.test-support.js";
+import { withOpenClawTestState } from "../../src/test-utils/openclaw-test-state.js";
+import { createDeferred, withTestTimeout } from "../helpers/promise.js";
 
 type Consult = typeof consultRealtimeVoiceAgent;
-type CoreRun = typeof import("../../agents/embedded-agent.js").runEmbeddedAgent;
+type CoreRun = typeof import("../../src/agents/embedded-agent.js").runEmbeddedAgent;
 const mocks = vi.hoisted(() => ({
   run: vi.fn<CoreRun>(),
   consult: vi.fn<Consult>(),
 }));
-vi.mock("../../agents/embedded-agent.js", () => ({ runEmbeddedAgent: mocks.run }));
-vi.mock("../../talk/agent-consult-runtime.js", () => ({
+vi.mock("../../src/agents/embedded-agent.js", () => ({ runEmbeddedAgent: mocks.run }));
+vi.mock("../../src/talk/agent-consult-runtime.js", () => ({
   consultRealtimeVoiceAgent: mocks.consult,
 }));
 

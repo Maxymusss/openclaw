@@ -9,6 +9,7 @@ import {
   type InternalDiagnosticEventInterest,
   updateInternalDiagnosticEventInterest,
 } from "./diagnostic-event-listener-presence.js";
+import { deepFreezeDiagnosticValue } from "./diagnostic-event-value.js";
 import {
   consumeCoreModelRequestLifecycleDiagnosticEvent,
   CORE_MODEL_REQUEST_LIFECYCLE_METADATA_KEY,
@@ -1290,26 +1291,6 @@ function makeRoomForPriorityAsyncDiagnosticEvent(
     return state.asyncQueue.splice(nonPriorityIndex, 1)[0];
   }
   return state.asyncQueue.shift();
-}
-
-function deepFreezeDiagnosticValue(value: unknown, seen = new WeakSet<object>()): unknown {
-  if (!value || typeof value !== "object") {
-    return value;
-  }
-  if (seen.has(value)) {
-    return value;
-  }
-  seen.add(value);
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      deepFreezeDiagnosticValue(item, seen);
-    }
-    return Object.freeze(value);
-  }
-  for (const nested of Object.values(value as Record<string, unknown>)) {
-    deepFreezeDiagnosticValue(nested, seen);
-  }
-  return Object.freeze(value);
 }
 
 function scheduleAsyncDiagnosticDrain(state: DiagnosticEventsGlobalState): void {

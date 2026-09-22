@@ -47,6 +47,20 @@ describe.runIf(process.platform === "linux")("Linux installed app preparation", 
     );
   });
   it.each([
+    [String.raw`Example\sApp`, "Example App"],
+    [String.raw`Example\\App`, String.raw`Example\App`],
+    [String.raw`Example\qApp`, undefined],
+  ])("decodes desktop string escapes before exposing labels: %s", (raw, label) => {
+    install();
+    fs.writeFileSync(
+      entry,
+      fs.readFileSync(entry, "utf8").replace("Name=Calculator", "Name=" + raw),
+    );
+    const prepared = prepareLinuxInstalledApp(appId, env);
+    expect(prepared?.app.label).toBe(label);
+    expect(scanLinuxInstalledApps(env)).toEqual(prepared ? [prepared.app] : []);
+  });
+  it.each([
     "calculator --new-window",
     "sh -c calculator",
     "calculator; echo unexpected",
@@ -70,15 +84,19 @@ describe.runIf(process.platform === "linux")("Linux installed app preparation", 
       expect(prepareLinuxInstalledApp(appId, env)).toBeUndefined();
     },
   );
-  it("accepts a quoted zero-argument executable path containing spaces", () => {
-    const spaced = path.join(directory, "Example App");
-    fs.mkdirSync(spaced);
-    const binary = path.join(spaced, "calculator");
-    fs.copyFileSync(executable, binary);
-    fs.chmodSync(binary, 0o755);
-    install(JSON.stringify(binary));
-    expect(prepareLinuxInstalledApp(appId, env)?.executable).toBe(binary);
-  });
+  it.each(["Example App", "Example\\App"])(
+    "accepts a quoted zero-argument executable path: %s",
+    (name) => {
+      const spaced = path.join(directory, name);
+      fs.mkdirSync(spaced);
+      const binary = path.join(spaced, "calculator");
+      fs.copyFileSync(executable, binary);
+      fs.chmodSync(binary, 0o755);
+      // Desktop Entry requires four backslashes: value unescaping precedes Exec quoting.
+      install('"' + binary.replaceAll("\\", "\\\\\\\\") + '"');
+      expect(prepareLinuxInstalledApp(appId, env)?.executable).toBe(binary);
+    },
+  );
   it("accepts a quoted bare executable without allowing another token", () => {
     install('"calculator"');
     expect(prepareLinuxInstalledApp(appId, env)?.executable).toBe(executable);

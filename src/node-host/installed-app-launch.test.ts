@@ -47,7 +47,8 @@ function harness() {
     io,
   });
   return {
-    prepared,
+    run: (assertCurrent: () => void = () => {}) =>
+      prepared.run([executable], undefined, {}, undefined, controller.signal, assertCurrent),
     emitChunk,
     controller,
     reply: (value: unknown) => input!(JSON.stringify(value)),
@@ -58,59 +59,40 @@ describe.runIf(process.platform === "linux")("installed-app final launch boundar
   it("waits for invocation authorization and rechecks local permission before a real native spawn", async () => {
     const h = harness();
     const assertCurrent = vi.fn();
-    const launched = h.prepared.run(
-      [executable],
-      undefined,
-      {},
-      undefined,
-      h.controller.signal,
-      assertCurrent,
-    );
+    const launched = h.run(assertCurrent);
     expect(h.emitChunk).toHaveBeenCalledWith(expect.stringContaining("installed-app-launch.ready"));
     expect(assertCurrent).not.toHaveBeenCalled();
     h.reply({ type: "installed-app-launch.allow", validForMs: 5000 });
     await expect(launched).resolves.toMatchObject({ success: true });
     expect(assertCurrent).toHaveBeenCalledOnce();
   });
-  it("rejects descriptor substitution while waiting for authorization", async () => {
-    const h = harness();
-    const launched = h.prepared.run(
-      [executable],
-      undefined,
-      {},
-      undefined,
-      h.controller.signal,
-      () => {},
-    );
-    fs.appendFileSync(entry, "Exec=/usr/bin/true\n");
-    h.reply({ type: "installed-app-launch.allow", validForMs: 5000 });
-    await expect(launched).rejects.toThrow("descriptor changed");
-  });
+  it.each(["descriptor", "executable"])(
+    "rejects %s substitution while waiting for authorization",
+    async (changed) => {
+      const h = harness();
+      const launched = h.run();
+      if (changed === "descriptor") {
+        fs.appendFileSync(entry, "Exec=/usr/bin/true\n");
+      } else {
+        fs.renameSync(executable, executable + ".original");
+        fs.copyFileSync(process.execPath, executable);
+        fs.chmodSync(executable, 0o755);
+      }
+      h.reply({ type: "installed-app-launch.allow", validForMs: 5000 });
+      await expect(launched).rejects.toThrow("descriptor changed");
+    },
+  );
   it("keeps an independent local permission denial authoritative", async () => {
     const h = harness();
-    const launched = h.prepared.run(
-      [executable],
-      undefined,
-      {},
-      undefined,
-      h.controller.signal,
-      () => {
-        throw new Error("local policy denied");
-      },
-    );
+    const launched = h.run(() => {
+      throw new Error("local policy denied");
+    });
     h.reply({ type: "installed-app-launch.allow", validForMs: 5000 });
     await expect(launched).rejects.toThrow("local policy denied");
   });
   it.each(["deny", "abort"])("does not launch after %s during the final wait", async (mode) => {
     const h = harness();
-    const launched = h.prepared.run(
-      [executable],
-      undefined,
-      {},
-      undefined,
-      h.controller.signal,
-      () => {},
-    );
+    const launched = h.run();
     if (mode === "abort") {
       h.controller.abort();
     } else {
@@ -121,14 +103,7 @@ describe.runIf(process.platform === "linux")("installed-app final launch boundar
   it("rejects expiry after the permit round trip without relying on clock synchronization", async () => {
     const h = harness();
     const now = vi.spyOn(performance, "now").mockReturnValue(100);
-    const launched = h.prepared.run(
-      [executable],
-      undefined,
-      {},
-      undefined,
-      h.controller.signal,
-      () => {},
-    );
+    const launched = h.run();
     now.mockReturnValue(200);
     h.reply({ type: "installed-app-launch.allow", validForMs: 50 });
     await expect(launched).rejects.toThrow("expired");

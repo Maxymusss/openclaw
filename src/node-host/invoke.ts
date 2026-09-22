@@ -1,12 +1,10 @@
 /** Node-host command dispatcher for system commands, approvals, env policy, and plugin commands. */
-import fs from "node:fs";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
-import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { DEFAULT_ASK, DEFAULT_SECURITY } from "../infra/exec-approvals-config.js";
 import {
@@ -51,6 +49,7 @@ import {
 } from "./client.js";
 import { invokeNodeWorkerComputerCommand, type NodeWorkerComputer } from "./computer-command.js";
 import { invokeNodeDesktopStream } from "./desktop-stream-command.js";
+import { resolveEffectiveSystemRunExecPolicy } from "./exec-policy.js";
 import { prepareInstalledAppLaunch } from "./installed-app-launch.js";
 import {
   handleClaudeCliNodeInvoke,
@@ -61,11 +60,8 @@ import { invokeNodeFileCommand } from "./invoke-file-commands.js";
 import { boundMcpToolResultPayload } from "./invoke-mcp-result.js";
 import { runCommand } from "./invoke-run-command.js";
 import { buildSystemRunPrepareCoverageEnv } from "./invoke-system-run-plan.js";
-import {
-  buildSystemRunApprovalPlan,
-  handleSystemRunInvoke,
-  resolveEffectiveSystemRunExecPolicy,
-} from "./invoke-system-run.js";
+import { buildSystemRunApprovalPlan, handleSystemRunInvoke } from "./invoke-system-run.js";
+import { handleSystemWhich, type SystemWhichParams } from "./invoke-system-which.js";
 import type {
   ExecEventPayload,
   ExecFinishedEventParams,
@@ -85,7 +81,6 @@ import { resolveNodeHostedSkillDirectory } from "./skills.js";
 const MCP_ERROR_MESSAGE_MAX_CHARS = 1_024;
 
 const OUTPUT_EVENT_TAIL = 20_000;
-const DEFAULT_NODE_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 
 type NodeHostPrivateInvokeRuntime = NodeHostInvokeRuntime & {
   canReportAbortedFailure?: (error: unknown) => boolean;
@@ -101,10 +96,6 @@ const execHostEnforced =
 const execHostFallbackAllowed =
   normalizeLowercaseStringOrEmpty(process.env.OPENCLAW_NODE_EXEC_FALLBACK ?? "") !== "0";
 const preferMacAppExecHost = process.platform === "darwin" && execHostEnforced;
-
-type SystemWhichParams = {
-  bins: string[];
-};
 
 type McpToolsCallParams = {
   server: string;
@@ -248,56 +239,6 @@ function requireExecApprovalsBaseHash(
   if (baseHash !== snapshot.hash) {
     throw new Error("INVALID_REQUEST: exec approvals changed; reload and retry");
   }
-}
-
-function resolveEnvPath(env?: Record<string, string>): string[] {
-  const raw =
-    env?.PATH ??
-    (env as Record<string, string>)?.Path ??
-    process.env.PATH ??
-    process.env.Path ??
-    DEFAULT_NODE_PATH;
-  return raw.split(path.delimiter).filter(Boolean);
-}
-
-function resolveExecutable(bin: string, env?: Record<string, string>) {
-  if (bin.includes("/") || bin.includes("\\")) {
-    return null;
-  }
-  const extensions =
-    process.platform === "win32"
-      ? (
-          env?.PATHEXT ??
-          env?.PathExt ??
-          env?.Pathext ??
-          process.env.PATHEXT ??
-          process.env.PathExt ??
-          ".EXE;.CMD;.BAT;.COM"
-        )
-          .split(";")
-          .map((ext) => normalizeLowercaseStringOrEmpty(ext))
-      : [""];
-  for (const dir of resolveEnvPath(env)) {
-    for (const ext of extensions) {
-      const candidate = path.join(dir, bin + ext);
-      if (fs.existsSync(candidate)) {
-        return candidate;
-      }
-    }
-  }
-  return null;
-}
-
-async function handleSystemWhich(params: SystemWhichParams, env?: Record<string, string>) {
-  const bins = normalizeStringEntries(params.bins);
-  const found: Record<string, string> = {};
-  for (const bin of bins) {
-    const pathLocal = resolveExecutable(bin, env);
-    if (pathLocal) {
-      found[bin] = pathLocal;
-    }
-  }
-  return { bins: found };
 }
 
 function buildExecEventPayload(payload: ExecEventPayload): ExecEventPayload {

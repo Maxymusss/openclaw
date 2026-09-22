@@ -3,6 +3,7 @@ import { MEDIA_AUDIO_FIELD_LABELS } from "./media-audio-field-metadata.js";
 import { GATEWAY_FIELD_LABELS } from "./schema.gateway-labels.js";
 import { AGENT_MODEL_FIELD_LABELS } from "./schema.labels.agent-models.js";
 import { SESSION_FIELD_LABELS } from "./schema.labels.session.js";
+import { TALK_SESSION_FIELD_LABELS, TALK_PROVIDER_FIELD_LABELS } from "./schema.labels.talk.js";
 import { META_FIELD_LABELS } from "./schema.meta.js";
 import { NODE_CAPABILITY_FIELD_LABELS } from "./schema.node-capabilities.js";
 import { CLOUD_WORKER_FIELD_LABELS } from "./zod-schema.cloud-workers.js";
@@ -744,13 +745,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "discovery.wideArea": "Wide-area Discovery",
   "discovery.wideArea.domain": "Wide-area Discovery Domain",
   "discovery.mdns": "mDNS Discovery",
-  talk: "Talk",
-  "talk.agentId": "Talk Agent",
-  "talk.speechLocale": "Talk Speech Locale",
-  "talk.interruptOnSpeech": "Talk Interrupt on Speech",
-  "talk.silenceTimeoutMs": "Talk Silence Timeout (ms)",
-  "talk.consultThinkingLevel": "Talk Consult Thinking Level",
-  "talk.consultFastMode": "Talk Consult Fast Mode",
+  ...TALK_SESSION_FIELD_LABELS,
   messages: "Messages",
   "messages.visibleReplies": "Visible Replies",
   "messages.responsePrefix": "Outbound Response Prefix",
@@ -782,28 +777,7 @@ export const FIELD_LABELS: Record<string, string> = {
   "tts.providers": "TTS Provider Settings",
   "tts.providers.*": "TTS Provider Config",
   "tts.providers.*.apiKey": "TTS Provider API Key", // pragma: allowlist secret
-  "talk.provider": "Talk Active Provider",
-  "talk.providers": "Talk Provider Settings",
-  "talk.providers.*": "Talk Provider Config",
-  "talk.providers.*.apiKey": "Talk Provider API Key", // pragma: allowlist secret
-  "talk.realtime": "Talk Realtime",
-  "talk.realtime.provider": "Talk Realtime Provider",
-  "talk.realtime.providers": "Talk Realtime Provider Settings",
-  "talk.realtime.providers.*": "Talk Realtime Provider Config",
-  "talk.realtime.providers.*.apiKey": "Talk Realtime Provider API Key", // pragma: allowlist secret
-  "talk.realtime.model": "Talk Realtime Model",
-  "talk.realtime.speakerVoice": "Talk Realtime Speaker Voice",
-  "talk.realtime.speakerVoiceId": "Talk Realtime Speaker Voice ID",
-  "talk.realtime.instructions": "Talk Realtime Instructions",
-  "talk.realtime.mode": "Talk Realtime Mode",
-  "talk.realtime.transport": "Talk Realtime Transport",
-  "talk.realtime.vadThreshold": "Talk Realtime VAD Threshold",
-  "talk.realtime.silenceDurationMs": "Talk Realtime Silence Duration (ms)",
-  "talk.realtime.prefixPaddingMs": "Talk Realtime Prefix Padding (ms)",
-  "talk.realtime.reasoningEffort": "Talk Realtime Reasoning Effort",
-  "talk.realtime.brain": "Talk Realtime Brain",
-  "talk.realtime.appLaunchPolicies": "Talk Installed-App Launch Policies",
-  "talk.realtime.consultRouting": "Talk Realtime Consult Routing",
+  ...TALK_PROVIDER_FIELD_LABELS,
   channels: "Channels",
   "channels.defaults": "Channel Defaults",
   "channels.defaults.groupPolicy": "Default Group Policy",

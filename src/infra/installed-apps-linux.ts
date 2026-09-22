@@ -3,11 +3,32 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { hasErrnoCode } from "./errno.js";
 import { InstalledAppIdSchema, type InstalledAppLaunchRequest } from "./installed-app-launch.js";
 import type { InstalledApp } from "./installed-apps.js";
 
 const MAX_DESKTOP_ENTRY_BYTES = 64 * 1024;
 const MAX_DESKTOP_ENTRIES = 2048;
+const DESKTOP_ENTRY_ESCAPES: Record<string, string> = {
+  s: " ",
+  n: "\n",
+  t: "\t",
+  r: "\r",
+  "\\": "\\",
+};
+
+function desktopEntryLabel(raw: string | undefined): string | undefined {
+  if (!raw) {
+    return undefined;
+  }
+  let valid = true;
+  const label = raw.replace(/\\([\s\S]?)/g, (_match: string, escape: string) => {
+    const value = DESKTOP_ENTRY_ESCAPES[escape];
+    valid &&= value !== undefined;
+    return value ?? "";
+  });
+  return valid ? label : undefined;
+}
 
 function applicationRoots(env: NodeJS.ProcessEnv): string[] {
   const dataHome = env.XDG_DATA_HOME || path.join(os.homedir(), ".local", "share");
@@ -54,10 +75,9 @@ function singleDesktopExecutable(raw: string | undefined): string | undefined {
   if (!raw) {
     return undefined;
   }
-  const escapes: Record<string, string> = { s: " ", n: "\n", t: "\t", r: "\r", "\\": "\\" };
   const command = raw.replace(
     /\\([sntr\\])/g,
-    (_match: string, escape: string) => escapes[escape] ?? "",
+    (_match: string, escape: string) => DESKTOP_ENTRY_ESCAPES[escape] ?? "",
   );
   const backtick = String.fromCharCode(96);
   let executable = "";
@@ -110,8 +130,8 @@ function singleDesktopExecutable(raw: string | undefined): string | undefined {
     }
     executable = command;
   }
-  // Field expansion and executable assignments are outside the closed zero-argument contract.
-  // Desktop Entry forbids control characters; field codes and assignments are not launch identities.
+  // Field expansion is outside this closed contract; Desktop Entry also forbids equals in Exec paths.
+  // Control characters are never launch identities.
   // eslint-disable-next-line no-control-regex
   return executable && !/[\u0000-\u001f\u007f%=]/u.test(executable) ? executable : undefined;
 }
@@ -136,7 +156,7 @@ export function prepareLinuxInstalledApp(
     try {
       entry = fs.lstatSync(entryPath);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      if (hasErrnoCode(error, "ENOENT")) {
         continue;
       }
       return undefined;
@@ -148,7 +168,7 @@ export function prepareLinuxInstalledApp(
       const raw = fs.readFileSync(entryPath, "utf8");
       const fields = desktopEntryFields(raw);
       const exec = singleDesktopExecutable(fields?.get("Exec"));
-      const label = fields?.get("Name");
+      const label = desktopEntryLabel(fields?.get("Name"));
       if (
         fields?.get("Type") !== "Application" ||
         !label ||
