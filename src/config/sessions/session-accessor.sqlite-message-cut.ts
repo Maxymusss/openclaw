@@ -426,6 +426,7 @@ function cloneMessageCutSessionEntry(params: {
     systemSent: false,
     abortedLastRun: false,
     lifecycleRunId: undefined,
+    foregroundRun: undefined,
     lastRunId: undefined,
     startedAt: undefined,
     endedAt: undefined,

@@ -16,6 +16,7 @@ import {
 } from "../../auto-reply/reply/reply-run-registry.js";
 import { resolveSessionWorkStartError } from "../../config/sessions.js";
 import { SESSION_ROUTING_CHANGED_ERROR_REASON } from "../../config/sessions/main-session.js";
+import type { SessionForegroundRun } from "../../config/sessions/session-foreground-run.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { createAbortError } from "../../infra/abort-signal.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
@@ -32,18 +33,13 @@ import {
   isCompetingSessionWorkAdmissionActive,
 } from "../../sessions/session-lifecycle-admission.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
-import {
-  isChatAbortControllerEntryAbortable,
-  registerChatAbortController,
-  resolveChatRunExpiresAtMs,
-} from "../chat-abort.js";
+import { isChatAbortControllerEntryAbortable, registerChatAbortController } from "../chat-abort.js";
 import { ExpectedProfileMismatchError } from "../expected-profile.js";
 import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
-import { PENDING_CHAT_SEND_DEDUPE_PREFIX, type DedupeEntry } from "../server-shared.js";
+import type { DedupeEntry } from "../server-shared.js";
 import { loadSessionEntry } from "../session-utils.js";
 import {
   buildAbortedChatSendPayload,
-  readPreRegisteredRun,
   writePreRegisteredChatAbort,
 } from "./chat-abort-authorization.js";
 import { resolveChatSendOriginatingRoute } from "./chat-origin-routing.js";
@@ -53,6 +49,8 @@ import {
   resolveRestartSafeChatAdmission,
 } from "./chat-restart-recovery.js";
 import { assertExpectedLeafActive } from "./chat-send-active-leaf.js";
+import { prepareForegroundChatAdmission } from "./chat-send-foreground.js";
+import { createChatSendPendingReservation } from "./chat-send-pending-reservation.js";
 import {
   inspectGoalChatSendRetry,
   readChatSendDedupeResponse,
@@ -87,10 +85,8 @@ export async function admitChatSend(params: {
   const { p, explicitOrigin, normalizedAttachments, turnKind } = request;
   const progressRefresh = isProgressCardRefreshInputProvenance(request.systemInputProvenance);
   const {
-    rawSessionKey,
     sessionLoadKey,
     clientRunId,
-    pendingChatSendKey,
     sessionLoadOptions,
     cfg,
     storePath,
@@ -130,12 +126,8 @@ export async function admitChatSend(params: {
   });
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   const pendingAttemptId = randomUUID();
-  const readPendingReservation = () =>
-    readPreRegisteredRun({
-      key: pendingChatSendKey,
-      entry: context.dedupe.get(pendingChatSendKey),
-      keyPrefix: PENDING_CHAT_SEND_DEDUPE_PREFIX,
-    });
+  const pendingChatSendReservation = createChatSendPendingReservation(params, pendingAttemptId);
+  const { readPendingReservation, clearPendingChatSendReservation } = pendingChatSendReservation;
   const goalRetry = inspectGoalChatSendRetry(params);
   if (goalRetry.kind !== "new") {
     if (goalRetry.kind === "replay") {
@@ -161,41 +153,13 @@ export async function admitChatSend(params: {
   // Keep the run abortable while lifecycle mutation owns the session. Admission
   // must reject an expired/missing reservation instead of reviving evicted work.
   params.assertCurrent?.();
-  context.dedupe.set(pendingChatSendKey, {
-    ts: now,
-    ok: true,
-    requestIdentity: request.requestIdentity,
-    payload: {
-      runId: clientRunId,
-      attemptId: pendingAttemptId,
-      status: "accepted" as const,
-      sessionKey,
-      ...(backingSessionId ? { sessionId: backingSessionId } : {}),
-      ...(rawSessionKey === sessionKey ? {} : { sessionKeyAliases: [rawSessionKey] }),
-      ...(selectedAgent.agentId ? { agentId: selectedAgent.agentId } : {}),
-      ownerConnId: normalizeOptionalChatText(client?.connId),
-      ownerDeviceId: normalizeOptionalChatText(client?.connect?.device?.id),
-      expiresAtMs: resolveChatRunExpiresAtMs({ now, timeoutMs }),
-      turnKind,
-      ...(request.goalOperation
-        ? { goalFingerprint: request.goalOperation.requestFingerprint }
-        : {}),
-    },
-  });
-  const clearPendingChatSendReservation = () => {
-    const pending = readPendingReservation();
-    if (
-      pending?.runId === clientRunId &&
-      normalizeUnknownChatText(pending.payload.attemptId) === pendingAttemptId
-    ) {
-      context.dedupe.delete(pendingChatSendKey);
-    }
-  };
+  pendingChatSendReservation.reserve();
   let admittedSessionId = backingSessionId ?? clientRunId;
   let expectedActiveReplyOperation: ReplyOperation | undefined;
   let gatewayWorkAdmission: Awaited<ReturnType<typeof beginSessionWorkAdmission>> | undefined;
   let admittedRunAbort: ReturnType<typeof registerChatAbortController> | undefined;
   let restartSafeAdmission: ReturnType<typeof resolveRestartSafeChatAdmission>;
+  let foregroundAdmission: SessionForegroundRun | undefined;
   let initialSessionEntry: SessionEntry | undefined;
   let admittedSessionSettings: ReturnType<typeof captureAdmittedChatSendSessionSettings>;
   let assertInitialSkillSelection: (() => void) | undefined;
@@ -277,7 +241,20 @@ export async function admitChatSend(params: {
       expectedPermissionMode: p.expectedPermissionMode,
       expectedToolOverrides: p.expectedToolOverrides,
     });
-    assertChatSendExclusiveAdmission(request, session);
+    const currentForegroundAdmission = prepareForegroundChatAdmission({
+      client,
+      context,
+      request,
+      session: { ...session, entry: latestEntry },
+    });
+    if (
+      currentForegroundAdmission &&
+      (entry?.sessionId !== currentForegroundAdmission.sessionId ||
+        (entry.lifecycleRevision ?? null) !== currentForegroundAdmission.lifecycleRevision)
+    ) {
+      throw new Error("Foreground session changed before admission; refresh and retry.");
+    }
+    assertChatSendExclusiveAdmission(request, session, currentForegroundAdmission !== undefined);
     if (entry && !latestEntry) {
       throw new Error(`Session "${sessionKey}" was deleted while starting work. Retry.`);
     }
@@ -341,6 +318,7 @@ export async function admitChatSend(params: {
     if (!commitOutcome) {
       return;
     }
+    foregroundAdmission = currentForegroundAdmission;
     admittedSessionId = latestEntry?.sessionId ?? backingSessionId ?? clientRunId;
     // Retain compaction lineage before attachment/context preparation can outlive this owner.
     expectedActiveReplyOperation = replyRunRegistry.get(activeRunScopeKey);
@@ -403,6 +381,10 @@ export async function admitChatSend(params: {
     gatewayWorkAdmission = await beginSessionWorkAdmission({
       scope: storePath,
       identities: [sessionKey, backingSessionId],
+      signal:
+        client?.internal?.operatorRunAuthority?.executionPolicy === "foreground-only"
+          ? client.internal.operatorRunAuthority.signal
+          : undefined,
       assertAllowed: () => assertChatWorkAdmissionAllowed(false),
       revalidateAllowed: () => assertChatWorkAdmissionAllowed(true),
       onInterrupt: (reason) => {
@@ -557,6 +539,11 @@ export async function admitChatSend(params: {
       runId: clientRunId,
       entry: activeRunAbort.entry,
     });
+    // Foreground preparation owns the same finite turn before runtime startup;
+    // attachment/workspace awaits must not outlive its original authority.
+    if (foregroundAdmission) {
+      capturedOperator.armCancellation();
+    }
     releaseCallerAuthority = () => {
       try {
         capturedOperator.release?.();
@@ -713,6 +700,7 @@ export async function admitChatSend(params: {
       retainGatewayWorkAdmission: retainedWork.retain,
       setPendingInputCleanup: retainedWork.setPendingInputCleanup,
       assertWorkAdmissionCurrent: () => {
+        capturedOperator.authority?.assertCurrent();
         const queued = context.chatQueuedTurns.get(clientRunId);
         // Collect retires source cancellation while retaining the original
         // admission until the aggregate commits or settles.
@@ -727,6 +715,7 @@ export async function admitChatSend(params: {
         }
       },
       restartSafeAdmission,
+      foregroundAdmission,
       setDiscardAbandonedPreparedMedia: (discard: (() => void) | undefined) => {
         discardAbandonedPreparedMedia = discard;
       },

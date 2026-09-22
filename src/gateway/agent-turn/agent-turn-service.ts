@@ -13,6 +13,7 @@ import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import { discardPreparedInboundMedia, type OffloadedRef } from "../chat-attachments.js";
 import { errorShapeFromError } from "../error-shape.js";
+import { authorizeOperatorBackgroundWork } from "../operator-foreground-work.js";
 import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
 import { createCronContinuationController } from "../server-methods/agent-cron-continuation.js";
 import { runAgentResetPhase } from "../server-methods/agent-reset-phase.js";
@@ -29,24 +30,11 @@ import { replayAgentTurnIfCached } from "./agent-dedupe.js";
 import { resolveAgentDeliveryPhase } from "./agent-delivery-phase.js";
 import type { RestoredCronContinuation } from "./agent-handler-helpers.js";
 import { captureAgentJobSession, getAgentJobSession, waitForAgentJob } from "./agent-job.js";
-import type { AgentRequestPreflight } from "./agent-request-preflight.js";
 import { prepareAgentRequestRouting } from "./agent-request-routing.js";
 import { prepareAgentRunDispatch } from "./agent-run-admission-phase.js";
 import { startAgentRunExecution } from "./agent-run-execution-phase.js";
 import { persistAgentSessionPhase } from "./agent-session-persist.js";
-import type { RequesterSettleWakeReplay } from "./internal-facade.types.js";
-import type { AgentTurnIo, AgentTurnPrincipal } from "./types.js";
-
-type AgentTurnStartRequest = {
-  privateCompletion?: true;
-  settleWakeReplay?: RequesterSettleWakeReplay;
-  assertAdmissionCurrent?: () => void;
-  hasCurrentClientAuthority?: () => boolean;
-  preflight: AgentRequestPreflight;
-  principal: AgentTurnPrincipal | null;
-  io: AgentTurnIo;
-  onRunObserved?: (runId: string) => void;
-};
+import type { AgentTurnStartRequest } from "./types.js";
 
 export function createAgentTurnService(
   { context, isWebchatConnect }: Pick<GatewayRequestHandlerOptions, "context" | "isWebchatConnect">,
@@ -64,6 +52,11 @@ export function createAgentTurnService(
   }: AgentTurnStartRequest): Promise<void> => {
     const promptedAt = Date.now();
     assertAdmissionCurrent?.();
+    const foregroundError = authorizeOperatorBackgroundWork(principal);
+    if (foregroundError) {
+      io.emitAcceptance([false, undefined, foregroundError]);
+      return;
+    }
     if (replayAgentTurnIfCached({ preflight, context, io, acceptedOnly: privateCompletion })) {
       return;
     }

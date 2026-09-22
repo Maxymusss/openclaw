@@ -38,6 +38,7 @@ export function captureGatewayOperatorRunAuthority(params: {
     assertCurrent: () => void;
     signal?: AbortSignal;
     gatewayAccessGrant?: AdmittedRunOperatorAuthority["gatewayAccessGrant"];
+    executionPolicy?: AdmittedRunOperatorAuthority["executionPolicy"];
   }> | null;
 }): { authority: AdmittedRunOperatorAuthority; release: () => void } | undefined {
   const inherited = params.client?.internal?.operatorRunAuthority;
@@ -195,6 +196,7 @@ export function captureGatewayOperatorRunAuthority(params: {
         profileId,
         scopes,
         gatewayAccessGrant: sourceAuthority === null ? null : sourceAuthority?.gatewayAccessGrant,
+        executionPolicy: sourceAuthority?.executionPolicy,
         source,
         assertCurrent,
         signal: revocation.signal,

@@ -23,6 +23,7 @@ import {
 } from "../../sessions/input-provenance.js";
 import { isSubagentSessionKey } from "../../sessions/session-key-utils.js";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
+import { authorizeOperatorBackgroundWork } from "../operator-foreground-work.js";
 import {
   resolveExpectedExistingSessionConstraint,
   type ExpectedExistingSessionConstraint,
@@ -68,6 +69,11 @@ export function prepareAgentRequestPreflight(params: {
   client: AgentTurnPrincipal | null;
   io: AgentTurnIo;
 }): AgentRequestPreflight | undefined {
+  const foregroundError = authorizeOperatorBackgroundWork(params.client);
+  if (foregroundError) {
+    params.io.emitAcceptance([false, undefined, foregroundError]);
+    return undefined;
+  }
   const { request } = params;
   const cfg = params.context.getRuntimeConfig();
   const canUseInternalRuntimeHandoff = resolveCanUseInternalRuntimeHandoff(params.client);

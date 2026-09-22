@@ -5,6 +5,10 @@ import type {
   PluginGatewayAccessAuthority,
 } from "../plugins/gateway-access-policy.types.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
+import {
+  readOperatorExecutionPolicy,
+  type OperatorExecutionPolicy,
+} from "../shared/operator-execution-policy.js";
 import { onUserProfilesChanged, readUserProfileVersion } from "../state/user-profile-events.js";
 import { getUserProfileListItem } from "../state/user-profiles.js";
 import type { UserProfileAccessFacts } from "../state/user-profiles.types.js";
@@ -13,6 +17,9 @@ import { resolveOperatorRolePolicyForAssignment } from "./operator-role-policy.j
 
 export const GATEWAY_OPERATOR_ACCESS_DENIED_MESSAGE =
   "Gateway access is no longer active; ask a Gateway administrator to restore it.";
+
+// A restriction is advertised only after every ingress and recovery owner enforces it.
+const supportedExecutionPolicies: readonly OperatorExecutionPolicy[] = Object.freeze([]);
 
 export class GatewayOperatorAccessDeniedError extends Error {
   constructor() {
@@ -169,6 +176,7 @@ export function resolvePreparedGatewayOperatorAccessAuthority(
     const authorities = policies.flatMap(({ policy, pluginId }) => {
       const authority = policy.authorize({
         config,
+        supportedExecutionPolicies,
         profile: { profileId: profile.profileId, emails: [...emails], assignedRole: profile.role },
         requiredByRole: pluginId === requiredPlugin,
       });
@@ -202,10 +210,19 @@ export function resolvePreparedGatewayOperatorAccessAuthority(
     // Retaining only the composed signal must also retain its policy sources.
     profileAccessChecks.set(signal, assertCurrent);
     assertCurrent();
+    let executionPolicy: OperatorExecutionPolicy | undefined;
+    for (const { authority } of authorities) {
+      const restriction = readOperatorExecutionPolicy(authority.executionPolicy);
+      if (restriction && !supportedExecutionPolicies.includes(restriction)) {
+        throw new GatewayOperatorAccessDeniedError();
+      }
+      executionPolicy ??= restriction;
+    }
     const original = authorities.length === 1 ? authorities[0] : undefined;
     return {
       assertCurrent,
       signal,
+      executionPolicy,
       gatewayAccessGrant: original?.authority.grantId
         ? Object.freeze({ pluginId: original.pluginId, grantId: original.authority.grantId })
         : undefined,
@@ -236,6 +253,7 @@ export function resumeGatewayOperatorAccessGrant(
   const context = {
     config,
     profile,
+    supportedExecutionPolicies,
   };
   if (grant) {
     const policy = policies.find(({ pluginId }) => pluginId === grant.pluginId)?.policy;
@@ -256,6 +274,10 @@ export function resumeGatewayOperatorAccessGrant(
       throw new GatewayOperatorAccessUnavailableError();
     }
     if (!authority || authority.grantId !== grant.grantId) {
+      throw new GatewayOperatorAccessDeniedError();
+    }
+    if (readOperatorExecutionPolicy(authority.executionPolicy)) {
+      // A recovered durable request cannot become foreground work in this process.
       throw new GatewayOperatorAccessDeniedError();
     }
   }

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { isOperatorForegroundWork } from "../../agents/operator-foreground-work.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { runWithGatewayIndependentRootWorkContinuation } from "../../process/gateway-work-admission.js";
@@ -88,6 +89,11 @@ function scheduleDashboardSessionTitle(
   params: DashboardSessionTitleRequest,
   admissionScope: "session" | "gateway",
 ): void {
+  // Optional title inference is detached work too; retain the existing title
+  // instead of creating a second, independently owned guest operation.
+  if (isOperatorForegroundWork()) {
+    return;
+  }
   const titleSource = buildDashboardSessionTitleSource({
     message: params.request.rawMessage,
     attachments: params.request.normalizedAttachments,

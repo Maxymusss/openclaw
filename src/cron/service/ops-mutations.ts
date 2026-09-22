@@ -4,6 +4,7 @@ import {
   AgentDeletionAuthorityRollbackError,
   AgentDeletionCommitUncertainError,
 } from "../../agents/agent-lifecycle-registry.js";
+import { assertOperatorBackgroundWorkAllowed } from "../../agents/operator-foreground-work.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   type CronActiveJobMarker,
@@ -14,6 +15,7 @@ import {
 } from "../active-jobs.js";
 import { describeUnavailableCronAgent } from "../agent-availability.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
+import { isCronDisableOnlyPatch } from "../disable-only-patch.js";
 import { withCronMutationCommitHook } from "../mutation-completion.js";
 import { cronSchedulingInputsEqual } from "../schedule-identity.js";
 import { removeCronJobBaseSession } from "../session-reaper.js";
@@ -197,6 +199,7 @@ export async function add(
   input: CronJobCreate,
   opts?: CronAddOptions,
 ): Promise<CronAddResult> {
+  assertOperatorBackgroundWorkAllowed();
   let pendingSessionCleanup: Promise<void> | undefined;
   return await locked(state, async () => {
     warnIfDisabled(state, "add");
@@ -395,6 +398,9 @@ async function updateLoadedJob(params: {
   opts?: CronUpdateOptions;
 }) {
   const { state, id, patch, precondition, opts } = params;
+  if (!isCronDisableOnlyPatch(patch)) {
+    assertOperatorBackgroundWorkAllowed();
+  }
   warnIfDisabled(state, "update");
   if (patch.payload?.kind === "heartbeat") {
     throw new Error("system-owned payloads cannot be patched by cron clients");

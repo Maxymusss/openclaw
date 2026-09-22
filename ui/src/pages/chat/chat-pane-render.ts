@@ -26,6 +26,7 @@ import {
   resolveUiConfiguredMainKey,
 } from "../../lib/sessions/session-key.ts";
 import { showToast } from "../../lib/toast.ts";
+import { foregroundChatAdmissionError, isForegroundChat } from "./chat-foreground-policy.ts";
 import { chatGoalRecovery, mutateChatGoal, submitChatGoalDraft } from "./chat-goals.ts";
 import { clearChatHistory } from "./chat-history-actions.ts";
 import { isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
@@ -34,7 +35,7 @@ import { chatModelUnavailableBanner, requiresChatModelSetup } from "./chat-model
 import { ChatPaneLayoutRender } from "./chat-pane-layout-render.ts";
 import { createChatPaneRails } from "./chat-pane-rails.ts";
 import {
-  createChatPaneQueuedEditProps,
+  createChatPaneQueueProps,
   createChatPaneSessionActionCallbacks,
   readChatPaneMutationAccess,
   renderChatPaneComposerControls,
@@ -328,8 +329,11 @@ export class ChatPane extends ChatPaneLayoutRender {
       unarchiveAccess: mutationAccess.unarchive,
     });
     const initialHistoryUnavailable = !catalogKey && isInitialChatHistoryUnavailable(state);
+    const foregroundOnly = isForegroundChat(state);
+    const foregroundDisabledReason = foregroundChatAdmissionError(state);
     const composerAvailability = {
       canSend:
+        !foregroundDisabledReason &&
         !providerPaused &&
         sessionDisabledBanner?.kind !== "composer-replacement" &&
         (catalogKey
@@ -342,6 +346,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       ...initialHistorySubmitState(state, initialHistoryUnavailable),
       modelRequiredReason,
       disabledReason:
+        foregroundDisabledReason ??
         catalogDisabledReason ??
         disabledReason ??
         placementComposer.busyMessage ??
@@ -451,7 +456,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       runUsageById: catalogKey ? undefined : state.chatRunUsageById,
       assistantAvatarUrl: resolveChatAvatarUrl(state),
       sendShortcut: state.settings.chatSendShortcut,
-      followUpMode: state.chatFollowUpMode,
+      followUpMode: foregroundOnly ? undefined : state.chatFollowUpMode,
       draft: state.chatMessage,
       mentions: state.chatMentions,
       getMentions: () => state.chatMentions ?? [],
@@ -617,14 +622,12 @@ export class ChatPane extends ChatPaneLayoutRender {
         state.requestUpdate?.();
       },
       onAbort: sessionActionCallbacks.onAbort,
-      onQueueRemove: state.removeQueuedMessage,
-      onQueueRetry: providerPaused ? undefined : (id) => void state.retryQueuedChatMessage(id),
-      onQueueSteer:
-        sessionParticipationBlocked || providerPaused
-          ? undefined
-          : (id) => void state.steerQueuedChatMessage(id),
-      onQueueMove: sessionParticipationBlocked ? undefined : state.moveQueuedChatMessage,
-      queuedEdit: createChatPaneQueuedEditProps(state, sessionParticipationBlocked),
+      ...createChatPaneQueueProps(
+        state,
+        sessionParticipationBlocked,
+        providerPaused,
+        foregroundOnly,
+      ),
       goalRecovery: chatGoalRecovery(state),
       onGoalAction: (goalId, action) => void mutateChatGoal(state, { goalId, action }),
       goalDraftMode: state.chatGoalDraftMode ?? null,

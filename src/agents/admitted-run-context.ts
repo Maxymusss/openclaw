@@ -18,6 +18,10 @@ import {
 } from "../infra/agent-run-registry.js";
 import type { GatewayAccessGrantRef } from "../plugins/gateway-access-policy.types.js";
 import { prepareGatewayContextBindingOwner } from "../plugins/runtime/gateway-context-binding-owner.js";
+import {
+  readOperatorExecutionPolicy,
+  type OperatorExecutionPolicy,
+} from "../shared/operator-execution-policy.js";
 
 /** Operational lifecycle correlation. This is never identity or authorization evidence. */
 export type OperationalRunInstanceRef = Readonly<{
@@ -38,6 +42,10 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   scopes: readonly string[];
   /** Original access dependency; null is proven independent, undefined is unclassified. */
   gatewayAccessGrant?: GatewayAccessGrantRef | null;
+  executionPolicy?: OperatorExecutionPolicy;
+  /** Host-captured absolute bound; inherited work cannot restart this clock. */
+  foregroundDeadlineAt?: number;
+  foregroundRunId?: string;
   assertCurrent: () => void;
   signal?: AbortSignal;
   /** Opaque original source identity used only to compare compatible queued input. */
@@ -54,6 +62,20 @@ export function createAdmittedRunOperatorAuthority(
 ): AdmittedRunOperatorAuthority {
   const check = source.assertCurrent;
   const signal = source.signal;
+  const executionPolicy = readOperatorExecutionPolicy(source.executionPolicy);
+  const foregroundDeadlineAt = source.foregroundDeadlineAt;
+  const foregroundRunId = source.foregroundRunId;
+  if (
+    (foregroundDeadlineAt !== undefined || foregroundRunId !== undefined) &&
+    (executionPolicy !== "foreground-only" ||
+      foregroundDeadlineAt === undefined ||
+      !Number.isFinite(foregroundDeadlineAt) ||
+      foregroundDeadlineAt <= 0 ||
+      typeof foregroundRunId !== "string" ||
+      !foregroundRunId.trim())
+  ) {
+    throw new TypeError("A foreground deadline requires a finite foreground-only authority");
+  }
   let revoked = false;
   const authority = Object.freeze({
     profileId: source.profileId,
@@ -61,6 +83,9 @@ export function createAdmittedRunOperatorAuthority(
     gatewayAccessGrant: source.gatewayAccessGrant
       ? Object.freeze({ ...source.gatewayAccessGrant })
       : source.gatewayAccessGrant,
+    executionPolicy,
+    foregroundDeadlineAt,
+    foregroundRunId,
     source: source.source ?? Object.freeze({}),
     signal,
     retain: source.retain,
@@ -70,6 +95,9 @@ export function createAdmittedRunOperatorAuthority(
       }
       try {
         signal?.throwIfAborted();
+        if (foregroundDeadlineAt !== undefined && Date.now() >= foregroundDeadlineAt) {
+          throw new Error("The foreground turn deadline has expired. Start a new request.");
+        }
         check();
       } catch (error) {
         revoked = true;
@@ -231,6 +259,7 @@ export function retainAdmittedRunBeforeToolCallRecovery(
   if (
     !lease ||
     lease.foregroundClosed ||
+    lease.operatorAuthority?.executionPolicy === "foreground-only" ||
     activeNativeHookRecoveryLeases.has(runId) ||
     !validateAgentRunDelegatedAuthority(lease.authority)
   ) {
@@ -350,6 +379,16 @@ export function prepareAgentRunAdmission(params: {
   const operatorAuthority = params.operatorAuthority;
   if (operatorAuthority !== undefined) {
     assertAdmittedRunOperatorAuthority(operatorAuthority);
+    if (
+      operatorAuthority.executionPolicy === "foreground-only" &&
+      (operatorAuthority.foregroundRunId !== params.facts.runId ||
+        operatorAuthority.foregroundDeadlineAt === undefined ||
+        params.recovery)
+    ) {
+      throw new Error(
+        "Foreground execution requires its original admitted turn; background or recovered work is unavailable",
+      );
+    }
   }
   const assertOperatorCurrent = operatorAuthority?.assertCurrent;
   const releaseOperatorAuthority = operatorAuthority?.retain?.();
@@ -400,6 +439,11 @@ export function prepareAgentRunAdmission(params: {
     admit: (runtimeKind, runtimeInstanceId) => {
       if (closed) {
         return Promise.reject(new Error("prepared execution context is already closed"));
+      }
+      if (operatorAuthority?.executionPolicy === "foreground-only" && runtimeKind !== "embedded") {
+        return Promise.reject(
+          new Error("This runtime has not qualified foreground-only execution"),
+        );
       }
       // The first runtime that actually executes fixes the captured runtime fact.
       // Later fallback paths reuse this exact admission instead of recapturing identity.
@@ -456,6 +500,15 @@ export async function resolvePreparedRunAdmission(params: {
     throw new Error("prepared execution context is unavailable or disagrees with the run");
   }
   const lease = delegatedAuthorityLeases.get(admitted);
+  if (lease?.operatorAuthority?.executionPolicy === "foreground-only") {
+    lease.operatorAuthority.assertCurrent();
+    if (
+      params.runtimeKind !== "embedded" ||
+      lease.operatorAuthority.foregroundRunId !== params.runId
+    ) {
+      throw new Error("Foreground execution cannot transfer to another run or runtime");
+    }
+  }
   if (lease && !getAdmittedRunDelegatedAuthority(admitted)) {
     throw new Error("prepared execution authority is no longer active");
   }

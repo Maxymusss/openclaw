@@ -108,6 +108,17 @@ serveWorkerTasks(
       }
     }
     try {
+      if (request.kind === "foreground-stopped-receipt") {
+        const { readForegroundStoppedReceiptInWorker } =
+          await import("./session-foreground-receipt.worker.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => ({
+            kind: "foreground-stopped-receipt" as const,
+            receipt: readForegroundStoppedReceiptInWorker(request),
+          }))),
+        };
+      }
       if (request.kind === "transcript-search") {
         const { searchSessionTranscriptsReadOnlySync } =
           await import("./session-transcript-search.js");

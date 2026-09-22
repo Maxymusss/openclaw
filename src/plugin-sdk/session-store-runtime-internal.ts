@@ -70,6 +70,10 @@ export function generationValidPrivateFieldsForSameSession(
     return undefined;
   }
   const state: Partial<InternalSessionEntry> = {
+    // A public roundtrip must not erase even malformed negative recovery state.
+    ...(Object.hasOwn(existingEntry, "foregroundRun")
+      ? { foregroundRun: existingEntry.foregroundRun }
+      : {}),
     ...(existingEntry.cliHistoryBoundary
       ? { cliHistoryBoundary: existingEntry.cliHistoryBoundary }
       : {}),

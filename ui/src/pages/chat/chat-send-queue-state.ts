@@ -5,7 +5,10 @@ import { registerChatMessageMetadataEnglish } from "../../i18n/locales/en-chat-m
 import type { ChatAttachment, ChatQueueItem, HumanMention } from "../../lib/chat/chat-types.ts";
 import { resolveCurrentUserIdentity } from "../../lib/chat/current-user-identity.ts";
 import { trimHumanMentions } from "../../lib/chat/human-mentions.ts";
-import { sameQueuedDeliveryVersion } from "../../lib/chat/outbox-store-codec.ts";
+import {
+  INTERRUPTED_SETTINGS_WAIT_ERROR,
+  sameQueuedDeliveryVersion,
+} from "../../lib/chat/outbox-store-codec.ts";
 import {
   captureChatOutboxAdmission,
   storedChatOutboxScopeKey,
@@ -14,6 +17,7 @@ import {
 import { formatUiError } from "../../lib/format-error.ts";
 import { visibleSessionMatches } from "../../lib/sessions/index.ts";
 import { generateUUID } from "../../lib/uuid.ts";
+import { foregroundChatAdmissionError, isForegroundChat } from "./chat-foreground-policy.ts";
 import { loadChatBranches } from "./chat-history-branches.ts";
 import { getChatHistoryLoadState, isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
 import { loadChatHistory } from "./chat-history.ts";
@@ -99,6 +103,7 @@ export function createPendingSendMessage(
     refreshSessions,
     sendAttempts: 0,
     sendRunId: generateUUID(),
+    ...(isForegroundChat(host) ? { foregroundOnly: true as const } : {}),
     sendState,
     ...(queueMode ? { queueMode } : {}),
     ...(intent
@@ -246,6 +251,27 @@ export function finishChatDeliveryAdmission(
   if (!current) {
     return "failed";
   }
+  if (isForegroundChat(host, current)) {
+    const owner = chatOutboxOwner(host);
+    const durable = owner.durable(host, current.id)?.queue.find((row) => row.id === current.id);
+    const error =
+      foregroundChatAdmissionError(host, current) ??
+      (!durable ||
+      !owner.hasPendingSubmission(
+        { sessionKey: queueSessionKey, agentId: current.agentId },
+        durable,
+      ) ||
+      current.queueMode ||
+      current.intent ||
+      current.localCommandName
+        ? t("chat.foreground.review")
+        : null);
+    if (error) {
+      setState("unconfirmed", error);
+      surfaceChatDeliveryFailure(host, route, current.agentId, error);
+      return "failed";
+    }
+  }
   if (current.sendState === "held" || (current.sendState === "unconfirmed" && !current.sendRunId)) {
     return "pending";
   }
@@ -339,6 +365,11 @@ export function settleQueuedChatSendFailure(
     (err instanceof GatewayRequestError
       ? err.retryable
       : /gateway (?:not connected|closed)|websocket|disconnected/i.test(error));
+  if (recoverable && isForegroundChat(host, prepared)) {
+    setState("unconfirmed", t("chat.foreground.review"));
+    surfaceChatDeliveryFailure(host, sessionKey, prepared.agentId, t("chat.foreground.review"));
+    return "pending";
+  }
   if (recoverable) {
     const failedBeforeTransport =
       err instanceof Error &&
@@ -426,6 +457,83 @@ export function settleQueuedChatSendFailure(
   });
   recordChatSendTiming(host, prepared, "failed", prepared.sendSubmittedAtMs, { error });
   return "failed";
+}
+
+export async function settleDeliverySettings(
+  host: ChatHost,
+  item: ChatQueueItem,
+  storageMode: QueuedChatStorageMode,
+  queueSessionKey: string,
+  options: QueuedChatSendOptions | undefined,
+  deliver: (item: ChatQueueItem) => QueuedChatSendResult | Promise<QueuedChatSendResult>,
+): Promise<QueuedChatSendResult> {
+  const route = options?.routingSessionKey ?? queueSessionKey;
+  const setState = deliveryStateWriter(host, storageMode, item.id);
+  const routeVisible = (agentId = item.agentId) => visibleSessionMatches(host, route, agentId);
+  const consumed = new Set<Promise<boolean>>();
+  let pendingSettings =
+    options?.pendingSettings ?? getPendingChatPickerPatch(host, route, item.agentId);
+  let current = pendingSettings ? readQueuedMessageById(host, item.id) : item;
+
+  while (pendingSettings && !consumed.has(pendingSettings)) {
+    if (
+      current?.sendState === "held" ||
+      (current?.sendState === "unconfirmed" && !current.sendRunId)
+    ) {
+      return "pending";
+    }
+    if (current?.sendState !== "waiting-model") {
+      current = setState("waiting-model");
+      if (!current) {
+        setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+      }
+    }
+    host.requestUpdate?.();
+
+    const ready = await pendingSettings;
+    consumed.add(pendingSettings);
+    current = readQueuedMessageById(host, item.id);
+    if (!current) {
+      return "failed";
+    }
+    if (
+      current.sendState === "held" ||
+      (current.sendState === "unconfirmed" && !current.sendRunId)
+    ) {
+      return "pending";
+    }
+    if (!ready) {
+      const restored =
+        routeVisible(current.agentId) && restoreRejectedChatDelivery(host, current, options);
+      if (!restored && !setState("failed", INTERRUPTED_SETTINGS_WAIT_ERROR)) {
+        setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+      }
+      host.requestUpdate?.();
+      return "failed";
+    }
+    pendingSettings = getPendingChatPickerPatch(host, route, current.agentId);
+  }
+  if (consumed.size) {
+    // Publish only after the complete picker tail, then continue synchronously:
+    // returning to an awaiting caller would admit another picker in that gap.
+    current = setState(reconnectSafeQueuedSendState(host));
+  }
+  if (!current) {
+    setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+    return "failed";
+  }
+  if (consumed.size) {
+    host.requestUpdate?.();
+  }
+  return deliver(current);
+}
+
+export async function waitForSubmittedRoute(host: ChatHost, sessionKey: string): Promise<boolean> {
+  const pending = getPendingChatPickerPatch(host, sessionKey);
+  if (pending && !(await waitForPendingChatSettings(host, sessionKey, pending))) {
+    return false;
+  }
+  return host.sessionKey === sessionKey;
 }
 
 export async function waitForPendingChatSettings(

@@ -46,6 +46,7 @@ export function sameQueuedDeliveryVersion(left: ChatQueueItem, right: ChatQueueI
     JSON.stringify(left.workContext) === JSON.stringify(right.workContext) &&
     JSON.stringify(left.mentions ?? []) === JSON.stringify(right.mentions ?? []) &&
     left.sendRunId === right.sendRunId &&
+    left.foregroundOnly === right.foregroundOnly &&
     left.sendAttempts === right.sendAttempts &&
     left.sendState === right.sendState &&
     left.agentId === right.agentId &&
@@ -117,6 +118,10 @@ export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
         .filter((item): item is ChatAttachment => item !== null)
     : [];
   const item: ChatQueueItem = { id, text, createdAt };
+  // A malformed negative restriction still cannot restore automatic delivery.
+  if (entry.foregroundOnly !== undefined) {
+    item.foregroundOnly = true;
+  }
   const asyncQuestionItemId = normalizeOptionalString(entry.asyncQuestionItemId);
   if (asyncQuestionItemId && asyncQuestionItemId.length <= 256) {
     item.asyncQuestionItemId = asyncQuestionItemId;

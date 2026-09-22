@@ -58,7 +58,7 @@ export async function withChatSubmitHandoff(
   // Admission is durable, but delivery has not made a transport attempt yet.
   // Present that handoff inline without flashing the waiting-message tray.
   const submission =
-    yieldsToInput && host.connected && options.isCurrent()
+    (yieldsToInput || queued.foregroundOnly) && host.connected && options.isCurrent()
       ? chatOutboxOwner(host).beginSubmission(host, queued.id, {
           inline: Boolean(startsImmediately),
           isCurrent: () => host.connected && options.isCurrent(),

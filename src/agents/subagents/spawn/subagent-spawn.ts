@@ -15,6 +15,7 @@ import { recordSessionCreated } from "../../../sessions/session-created.js";
 import { recordSessionParticipantBestEffort } from "../../../sessions/session-participant-recording.js";
 import { recordSubagentSpawned } from "../../../sessions/session-state-events.js";
 import { hasDeliveryTargetFields } from "../../../utils/delivery-context.shared.js";
+import { assertOperatorBackgroundWorkAllowed } from "../../operator-foreground-work.js";
 import {
   runSpawnPipeline,
   type SpawnBackendAdapter,
@@ -78,6 +79,7 @@ export async function spawnSubagentDirect(
     gatewayScope?.context?.resolveGatewayContext;
   const operatorAuthority =
     gatewayCaller?.operatorAuthority ?? gatewayScope?.client?.internal?.operatorRunAuthority;
+  assertOperatorBackgroundWorkAllowed();
   const requestResolution = resolveSubagentSpawnRequest(params, ctx);
   if (!requestResolution.ok) {
     return requestResolution.result;

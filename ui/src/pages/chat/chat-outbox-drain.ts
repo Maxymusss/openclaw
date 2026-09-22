@@ -1,4 +1,5 @@
 import type { GatewayBrowserClient, GatewayEventFrame } from "../../api/gateway.ts";
+import { t } from "../../i18n/index.ts";
 import type { ChatAttachment, ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import { sameQueuedDeliveryVersion } from "../../lib/chat/outbox-store-codec.ts";
 import {
@@ -27,6 +28,7 @@ import {
   type ChatCommandTarget,
   type ChatCommandResetOptions,
 } from "./chat-commands.ts";
+import { isForegroundChat } from "./chat-foreground-policy.ts";
 import { chatOutboxOwner } from "./chat-outbox-owner.ts";
 import {
   consumeChatOutboxRetry,
@@ -271,7 +273,26 @@ async function drainStoredChatOutbox(
         (entry.queueMode ||
           (!entry.intent && lane.pendingOptions.get(entry.id)?.allowActiveRunSend)),
     );
+    // Restricted retained rows own receipt observation, not FIFO execution.
+    // They cannot strand a separately submitted, currently owned foreground turn.
+    const freshAfterRestrictedReceipts = outbox.queue.find(
+      (entry, index) =>
+        index > 0 &&
+        lane.freshAdmissions.has(entry.id) &&
+        (!isForegroundChat(host, entry) ||
+          chatOutboxOwner(host).hasPendingSubmission(outbox, entry)) &&
+        outbox.queue
+          .slice(0, index)
+          .every(
+            (prior) =>
+              prior.foregroundOnly &&
+              prior.sendState !== "held" &&
+              !isQueuedMessageBeingEdited(host, prior.id) &&
+              chatOutboxOwner(host).needsReview(outbox, prior),
+          ),
+    );
     const storedItem =
+      freshAfterRestrictedReceipts ??
       freshActiveRunItem ??
       outbox.queue.find(
         (entry) =>
@@ -286,6 +307,13 @@ async function drainStoredChatOutbox(
     const item = freshItem
       ? (readQueuedMessageById(host, storedItem.id) ?? storedItem)
       : storedItem;
+    if (isForegroundChat(host) && !item.foregroundOnly) {
+      if (!updateQueuedMessage(host, item.id, (entry) => ({ ...entry, foregroundOnly: true }))) {
+        dependencies.setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+        return "blocked";
+      }
+      continue;
+    }
     if (item.sendState === "failed" && !freshItem) {
       return "empty";
     }
@@ -306,6 +334,15 @@ async function drainStoredChatOutbox(
     }
     const visible = visibleSessionMatches(host, outbox.sessionKey, outbox.agentId);
     if (item.localCommandName) {
+      if (isForegroundChat(host, item)) {
+        updateQueuedMessage(host, item.id, (entry) => ({
+          ...entry,
+          foregroundOnly: true,
+          sendState: "unconfirmed",
+          sendError: t("chat.foreground.review"),
+        }));
+        return "blocked";
+      }
       const setCommandState = (sendState: ChatQueueItem["sendState"], sendError?: string) =>
         updateQueuedMessage(host, item.id, (entry) => ({
           ...entry,
@@ -486,7 +523,16 @@ async function drainStoredChatOutbox(
     const freshAdmission = lane.freshAdmissions.delete(item.id);
     const pendingOptions = lane.pendingOptions.get(item.id);
     const retryUnconfirmed = freshAdmission && item.sendState === "unconfirmed";
-    if (!freshAdmission || retryUnconfirmed || !visible) {
+    const foregroundSubmission =
+      isForegroundChat(host, item) &&
+      freshAdmission &&
+      chatOutboxOwner(host).hasPendingSubmission(outbox, storedItem);
+    if (
+      !freshAdmission ||
+      retryUnconfirmed ||
+      !visible ||
+      (isForegroundChat(host, item) && !foregroundSubmission)
+    ) {
       // History reconciles canonical stored versions, not the live row's transport alias.
       const reconciled = await reconcileStoredChatOutboxHead(
         host,
@@ -501,6 +547,17 @@ async function drainStoredChatOutbox(
       if (reconciled === "continue") {
         continue;
       }
+    }
+    // Receipt observation remains available. Only the still-live explicit submitter
+    // may deliver restricted input; a reconnect or Retry cannot recreate that custody.
+    if (isForegroundChat(host, item) && !foregroundSubmission) {
+      updateQueuedMessage(host, item.id, (entry) => ({
+        ...entry,
+        foregroundOnly: true,
+        sendState: "unconfirmed",
+        sendError: t("chat.foreground.review"),
+      }));
+      return "blocked";
     }
     const currentOutbox = readStoredChatOutbox(host, scope);
     const currentItem = freshAdmission

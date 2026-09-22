@@ -129,6 +129,13 @@ describe("resetReplyRunSession", () => {
       updatedAt: 1,
       sessionFile: path.join(rootDir, "session.jsonl"),
       lifecycleRunId: "run-before-reset",
+      foregroundRun: {
+        runId: "run-before-reset",
+        sessionId: "session",
+        lifecycleRevision: null,
+        gatewayLifecycleGeneration: "old-gateway",
+        deadlineAt: 1000,
+      },
       lastRunId: "run-before-reset",
       agentHarnessId: "codex",
       claudeCliSessionId: "native-before-boundary",
@@ -209,6 +216,7 @@ describe("resetReplyRunSession", () => {
     expect(activeSessionEntry?.sessionId).toBe("session");
     expect(activeSessionEntry?.lifecycleRevision).toBe("00000000-0000-0000-0000-000000000123");
     expect(activeSessionEntry?.lifecycleRunId).toBeUndefined();
+    expect(activeSessionEntry?.foregroundRun).toBeUndefined();
     expect(activeSessionEntry?.lastRunId).toBeUndefined();
     expect(followupRun.run.sessionId).toBe(activeSessionEntry?.sessionId);
     expect(activeSessionEntry?.modelProvider).toBeUndefined();

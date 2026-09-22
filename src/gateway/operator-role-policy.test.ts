@@ -73,6 +73,47 @@ function identifiedClient(profileId: string): GatewayClient {
 afterEach(() => closeOpenClawStateDatabaseForTest());
 
 describe("operator role policy", () => {
+  it.each([undefined, "foreground-only"] as const)(
+    "preserves execution policy %s when inherited scopes narrow",
+    async (executionPolicy) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const profile = ensureProfileForEmail("execution-policy@example.test");
+        const cfg = roleConfig();
+        const client = identifiedClient(profile.id);
+        client.connect.scopes = ["operator.read", "operator.write"];
+        const revocation = new AbortController();
+        const sourceAuthority = {
+          executionPolicy,
+          signal: revocation.signal,
+          assertCurrent: () => revocation.signal.throwIfAborted(),
+        };
+        const context = { getRuntimeConfig: () => cfg };
+        const original = expectDefined(
+          captureGatewayOperatorRunAuthority({ client, context, sourceAuthority }),
+          "original operator authority",
+        );
+        const inherited = identifiedClient(profile.id);
+        inherited.internal = { operatorRunAuthority: original.authority };
+        const narrowed = expectDefined(
+          captureGatewayOperatorRunAuthority({ client: inherited, context }),
+          "narrowed operator authority",
+        );
+        original.release();
+        try {
+          sourceAuthority.executionPolicy = undefined;
+          expect(narrowed.authority.scopes).toEqual(["operator.read"]);
+          expect(narrowed.authority.executionPolicy).toBe(executionPolicy);
+          expect(narrowed.authority.source).toBe(original.authority.source);
+          expect(narrowed.authority.assertCurrent).not.toThrow();
+          revocation.abort(new Error("original grant ended"));
+          expect(narrowed.authority.assertCurrent).toThrow("original grant ended");
+        } finally {
+          narrowed.release();
+        }
+      });
+    },
+  );
+
   it("retires the original source on a profile merge while preserving unrelated sources", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const source = ensureProfileForEmail("source-role@example.test");

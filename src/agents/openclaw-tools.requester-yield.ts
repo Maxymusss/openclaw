@@ -2,6 +2,7 @@ import { isCronSessionKey, isSubagentSessionKey } from "../sessions/session-key-
 import { listFinishedSessions, listRunningSessions } from "./bash-process-registry.js";
 import { resolveProcessToolScopeKey } from "./bash-process-scope.js";
 import { bindRequesterYieldCronAuthority } from "./cron-creator-authority-context.js";
+import { assertOperatorBackgroundWorkAllowed } from "./operator-foreground-work.js";
 import type { SessionsYieldClaimResult, SessionsYieldIntent } from "./tools/sessions-yield-tool.js";
 
 const ISOLATED_AUTOMATION_YIELD_UNSUPPORTED_ERROR =
@@ -55,6 +56,7 @@ export function createRequesterYieldCallback(params: {
     agentId: params.requesterAgentId,
   });
   return async (intent) => {
+    assertOperatorBackgroundWorkAllowed();
     // Runtime claims are observational. Check them before durable registry state
     // so a runtime failure cannot record a yield that never reaches onYield.
     const runtimeClaimed = (await params.claimYieldCompletion?.()) ?? false;

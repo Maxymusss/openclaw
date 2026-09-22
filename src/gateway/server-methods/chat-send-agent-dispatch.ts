@@ -14,6 +14,7 @@ import { isInternalSourceReplyChannel } from "../../auto-reply/reply/source-repl
 import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
+import { runWithAsyncWorkResources } from "../../shared/async-work-resources.js";
 import { isOperatorUiClient } from "../../utils/message-channel.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { updateChatRunProvider } from "../chat-abort.js";
@@ -234,11 +235,32 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
   };
   const dispatchAdmission = {
     run: <T>(operation: () => Promise<T>) =>
-      gatewayWorkAdmission.run(() =>
-        userTurnRecorder.withPendingInput
-          ? userTurnRecorder.withPendingInput(operation)
-          : operation(),
-      ),
+      gatewayWorkAdmission.run(() => {
+        const run = () =>
+          userTurnRecorder.withPendingInput
+            ? userTurnRecorder.withPendingInput(operation)
+            : operation();
+        if (admission.operatorAuthority?.executionPolicy !== "foreground-only") {
+          return run();
+        }
+        return runWithAsyncWorkResources(async (onAcquired) => {
+          const release = retainGatewayWorkAdmission();
+          // Logical cancellation can precede provider/tool cleanup. Keep the same
+          // session admission until those actual tails drain, then publish liveness.
+          onAcquired({
+            releaseBeforeResultWhenIdle: true,
+            release: () => {
+              release();
+              emitSessionsChanged(
+                context,
+                { sessionKey, agentId, reason: "agent.input.settled" },
+                { accessChanged: false },
+              );
+            },
+          });
+          return await run();
+        });
+      }),
   };
   const dashboardReadAdmission = assertDashboardReadCurrent
     ? {

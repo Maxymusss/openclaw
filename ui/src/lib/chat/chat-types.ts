@@ -142,6 +142,8 @@ export type ChatQueueItem = {
   sendAttempts?: number;
   sendError?: string;
   sendRunId?: string;
+  /** Original admission forbids passive queue delivery, including after a role change. */
+  foregroundOnly?: true;
   /** One-send override retained with the durable row for reconnect and retry. */
   queueMode?: QueueMode;
   /** Admission intent and its original issue time survive transport retries together. */

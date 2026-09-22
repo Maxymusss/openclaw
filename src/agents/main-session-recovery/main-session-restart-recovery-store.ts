@@ -10,6 +10,11 @@ import {
   loadExactSessionEntry,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import {
+  captureForegroundRecoveryExpectation,
+  readSessionForegroundRun,
+} from "../../config/sessions/session-foreground-run.js";
+import { writeSessionForegroundRun } from "../../config/sessions/session-foreground-store.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
 import { readSessionMessagesAsync } from "../../gateway/session-transcript-readers.js";
@@ -277,6 +282,57 @@ export async function recoverStore(params: {
       continue;
     }
     const resumeDedupeKey = JSON.stringify([agentId, dispatchSessionKey]);
+    const foreground = readSessionForegroundRun(entry);
+    if (foreground.kind === "invalid") {
+      mainSessionRecoveryLog.warn(
+        `foreground restart restriction is invalid; work was not resumed: ${sessionKey}`,
+      );
+      result.failed++;
+      continue;
+    }
+    if (
+      foreground.kind === "bound" &&
+      (entry.lifecycleRunId === undefined || entry.lifecycleRunId === foreground.admission.runId) &&
+      (entry.activeWriterRunId === undefined ||
+        entry.activeWriterRunId === foreground.admission.runId) &&
+      (entry.restartRecoveryDeliveryRunId === undefined ||
+        entry.restartRecoveryDeliveryRunId === foreground.admission.runId)
+    ) {
+      try {
+        const stoppedRun = await writeSessionForegroundRun({
+          kind: "stop",
+          scope: target,
+          admission: foreground.admission,
+          expectedWriterRunId: entry.activeWriterRunId ?? null,
+          expectedRecovery: captureForegroundRecoveryExpectation(entry),
+          assertCurrent: () => {
+            if (
+              !shouldContinue() ||
+              hasCurrentProcessOwner({
+                activeSessionIds: resolveActiveSessionIds(),
+                activeSessionKeys: resolveActiveSessionKeys(),
+                entry,
+                sessionKey,
+              })
+            ) {
+              throw new Error("Foreground restart settlement lost its inactive run");
+            }
+          },
+        });
+        if (stoppedRun) {
+          params.handledSessionKeys.add(resumeDedupeKey);
+          result.settled++;
+        } else {
+          result.skipped++;
+        }
+      } catch (error) {
+        mainSessionRecoveryLog.warn(
+          `foreground turn was not resumed; stop notice failed: ${sessionKey}: ${String(error)}`,
+        );
+        result.failed++;
+      }
+      continue;
+    }
     if (params.handledSessionKeys.has(resumeDedupeKey)) {
       result.skipped++;
       continue;

@@ -157,6 +157,23 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
       }
     };
     const owner: SessionHistoryWorkerDatabase = {
+      readForegroundStoppedReceipt: async (input) =>
+        await runRequest(
+          () => ({ kind: "foreground-stopped-receipt", ...input }),
+          JSON.stringify(input).length * 2,
+          (value) => {
+            if (
+              typeof value === "boolean" ||
+              Array.isArray(value) ||
+              value.kind !== "foreground-stopped-receipt"
+            ) {
+              throw new Error(
+                "Session history worker returned another result instead of a foreground receipt",
+              );
+            }
+            return value.receipt;
+          },
+        ),
       searchTranscripts: async (params) =>
         await runRequest(
           () => ({ kind: "transcript-search", params }),
@@ -179,6 +196,7 @@ function retainSessionHistoryWorkerDatabase(options: OpenClawAgentDatabaseOption
           if (
             typeof value === "boolean" ||
             Array.isArray(value) ||
+            value.kind === "foreground-stopped-receipt" ||
             value.kind === "session-preview" ||
             value.kind === "session-title-fields" ||
             value.kind === "session-membership-facts" ||

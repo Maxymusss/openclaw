@@ -1,5 +1,6 @@
 // Enqueues follow-up reply runs and schedules queue drains.
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { assertOperatorBackgroundWorkAllowed } from "../../../agents/operator-foreground-work.js";
 import { normalizeChatType } from "../../../channels/chat-type.js";
 import { racePromiseWithAbortSignal } from "../../../infra/abort-signal.js";
 import { logMessageQueuedWithBacklogPolicy } from "../../../logging/diagnostic-runtime.js";
@@ -140,6 +141,7 @@ export function enqueueFollowupRun(
   if (isFollowupRunAborted(run)) {
     return false;
   }
+  assertOperatorBackgroundWorkAllowed({ operatorAuthority: run.operatorAuthority });
   if (options.position === "front") {
     run.protectFromQueueOverflow = true;
   }

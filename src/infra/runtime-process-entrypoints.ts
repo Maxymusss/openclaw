@@ -89,6 +89,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../config/sessions/session-sharing-store.worker",
     distWorkerPath: "config/sessions/session-sharing-store.worker.js",
   },
+  sessionForegroundStore: {
+    currentModuleUrl,
+    sourceWorkerName: "../config/sessions/session-foreground-store.worker",
+    distWorkerPath: "config/sessions/session-foreground-store.worker.js",
+  },
   heartbeatOutcomeStore: {
     currentModuleUrl,
     sourceWorkerName: "heartbeat-outcome-store.worker",

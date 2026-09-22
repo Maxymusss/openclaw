@@ -69,8 +69,9 @@ export function createChatSendWorkAdmission(params: {
 export function assertChatSendExclusiveAdmission(
   request: NormalizedChatSendRequest,
   session: PreparedChatSendSession,
+  foregroundOnly = false,
 ): void {
-  if (!request.goalOperation && !request.providerReviewAcknowledgment) {
+  if (!foregroundOnly && !request.goalOperation && !request.providerReviewAcknowledgment) {
     return;
   }
   const { storePath, sessionKey, backingSessionId, activeRunScopeKey } = session;
@@ -80,9 +81,11 @@ export function assertChatSendExclusiveAdmission(
     replyRunRegistry.isActive(activeRunScopeKey)
   ) {
     throw new Error(
-      request.providerReviewAcknowledgment
-        ? "The session still has active work. Review its status before continuing."
-        : "goal-session-busy",
+      foregroundOnly
+        ? "The foreground turn is still running. Wait for it to stop before sending a new request."
+        : request.providerReviewAcknowledgment
+          ? "The session still has active work. Review its status before continuing."
+          : "goal-session-busy",
     );
   }
 }

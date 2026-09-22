@@ -7,7 +7,7 @@ import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.
 import type { OpenClawConfig } from "../../../config/config.js";
 import { replaceSessionEntry } from "../../../config/sessions/session-accessor.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db.js";
-import { resolveAgentTimeoutMs } from "../../timeout.js";
+import { resolveAgentTimeoutMs, resolveForegroundRunDeadline } from "../../timeout.js";
 import { getSubagentDepthFromSessionStore } from "./subagent-depth.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -248,5 +248,33 @@ describe("resolveAgentTimeoutMs", () => {
   it("clamps very large timeout overrides to timer-safe values", () => {
     expect(resolveAgentTimeoutMs({ overrideSeconds: 9_999_999 })).toBe(MAX_TIMER_TIMEOUT_MS);
     expect(resolveAgentTimeoutMs({ overrideMs: 9_999_999_999 })).toBe(MAX_TIMER_TIMEOUT_MS);
+  });
+});
+
+describe("foreground run deadline", () => {
+  it.each([undefined, 0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "refuses an absent, unlimited or invalid configured timeout (%s)",
+    (timeoutSeconds) => {
+      expect(() =>
+        resolveForegroundRunDeadline({
+          cfg: { agents: { defaults: { timeoutSeconds } } },
+          nowMs: 1_000,
+          overrideMs: 100,
+        }),
+      ).toThrow("explicitly configured positive agent timeout");
+    },
+  );
+
+  it.each([
+    [undefined, 31_000],
+    [0, 31_000],
+    [60_000, 31_000],
+    [10_000, 11_000],
+  ])("allows timeout override %s only to shorten the configured bound", (overrideMs, expected) => {
+    const cfg = { agents: { defaults: { timeoutSeconds: 30 } } };
+    expect(resolveForegroundRunDeadline({ cfg, nowMs: 1_000, overrideMs })).toBe(expected);
+    expect(
+      resolveForegroundRunDeadline({ cfg, nowMs: 2_000, overrideMs, inheritedDeadlineAt: 3_000 }),
+    ).toBe(3_000);
   });
 });

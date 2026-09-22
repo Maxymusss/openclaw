@@ -5,6 +5,7 @@
  */
 import { Type } from "typebox";
 import { getAgentToolExecutionContext } from "../../../packages/agent-core/src/tool-execution-context.js";
+import { assertOperatorBackgroundWorkAllowed } from "../operator-foreground-work.js";
 import type { UnsettledRequesterChild } from "../subagents/registry/subagent-registry-requester-yield.js";
 import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readToolStringParam } from "./common.js";
@@ -87,6 +88,7 @@ export function createSessionsYieldTool(opts?: {
       'End this turn for pending child completion events; this is not a final-result submission. Return completed work normally. An unfinished subagent waiting for an incoming continuation must set waitFor:"message". Collector runs require explicit collection instead. acknowledgment can send a waiting reply for an otherwise-silent interactive parent.',
     parameters: SessionsYieldToolSchema,
     execute: async (_toolCallId, args) => {
+      assertOperatorBackgroundWorkAllowed();
       const params = args as Record<string, unknown>;
       const message = readToolStringParam(params, "message") || "Turn yielded.";
       const acknowledgment = readToolStringParam(params, "acknowledgment") || undefined;

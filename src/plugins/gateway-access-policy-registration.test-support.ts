@@ -32,6 +32,11 @@ const resumedContext = {
 function assertNativeAuthority(authority: PluginGatewayAccessAuthority | undefined) {
   assert.ok(authority);
   assert.equal(authority.grantId, grantId, "Registration must preserve the original grant");
+  assert.equal(
+    authority.executionPolicy,
+    "foreground-only",
+    "Registration must retain restrictions",
+  );
   assert.equal(types.isProxy(authority.signal), false, "Native cleanup must not enter a proxy");
   authority.assertCurrent();
   return authority;
@@ -55,6 +60,7 @@ function createRegisteredPolicy(resumable = true) {
   const createAuthority = () =>
     Object.freeze({
       grantId,
+      executionPolicy: "foreground-only" as const,
       assertCurrent() {
         grant.signal.throwIfAborted();
         lifetime.signal.throwIfAborted();

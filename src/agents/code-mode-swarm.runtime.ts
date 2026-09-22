@@ -7,6 +7,7 @@ import {
   runAgentToolSourceExecutionGuard,
 } from "./agent-tool-source-execution-guard.js";
 import type { PendingBridgeRequest } from "./code-mode-worker-types.js";
+import { assertOperatorBackgroundWorkAllowed } from "./operator-foreground-work.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
 import {
   getSwarmRunByLaunchReplayKey,
@@ -82,6 +83,7 @@ async function runAgentSpawnBridge(params: {
   signal?: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
 }) {
+  assertOperatorBackgroundWorkAllowed();
   const prompt = params.request.args[0];
   const options = isRecord(params.request.args[1]) ? params.request.args[1] : {};
   if (typeof prompt !== "string" || !prompt.trim()) {

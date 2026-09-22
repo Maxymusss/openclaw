@@ -23,6 +23,7 @@ import { assertPreparedSkillLibrarySelection } from "../../skills/library/select
 import { buildDashboardSessionTitleSource } from "../dashboard-session-title.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
+import { authorizeOperatorBackgroundWork } from "../operator-foreground-work.js";
 import { resolveSessionCreateCatalogSelectionError } from "../session-create-model-selection.js";
 import { buildDashboardSessionKey, createGatewaySession } from "../session-create-service.js";
 import type { PreparedGatewaySessionLifecycle } from "../session-lifecycle-preparation.js";
@@ -179,6 +180,11 @@ export const sessionCreateHandlers: GatewayRequestHandlers = {
       return;
     }
     const { attachments, hasInitialTurn, message } = initialTurn;
+    const foregroundError = hasInitialTurn ? authorizeOperatorBackgroundWork(client) : undefined;
+    if (foregroundError) {
+      respond(false, undefined, foregroundError);
+      return;
+    }
     const repositoryCreation = resolveSessionRepositoryCreation(p, hasInitialTurn);
     if (!repositoryCreation.ok) {
       respond(false, undefined, repositoryCreation.error);

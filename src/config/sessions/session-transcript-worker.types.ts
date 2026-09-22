@@ -34,6 +34,10 @@ import type {
 } from "./session-accessor.types.js";
 import type { CanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import type {
+  SessionForegroundRun,
+  SessionForegroundStoppedReceipt,
+} from "./session-foreground-run.js";
+import type {
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
 } from "./session-history-types.js";
@@ -127,6 +131,13 @@ export type SessionRowPresenceWorkerInput = {
   kind: "session-row-presence";
   database: { agentId: string; path: string };
   scope: SessionAccessScope & { databaseAgentId: string };
+};
+
+type SessionForegroundReceiptWorkerInput = {
+  kind: "foreground-stopped-receipt";
+  database: { agentId: string; path: string };
+  scope: SessionAccessScope;
+  expected: Pick<SessionForegroundRun, "runId" | "sessionId" | "lifecycleRevision">;
 };
 
 type SessionMembersWorkerInput = {
@@ -232,6 +243,7 @@ export type SessionBranchSummaryWorkerInput = {
 };
 
 export type SessionHistoryWorkerInput =
+  | SessionForegroundReceiptWorkerInput
   | SessionTranscriptHistoryWorkerInput
   | SessionPreviewWorkerInput
   | SessionTitleFieldsWorkerInput
@@ -260,6 +272,10 @@ export type SessionHistoryWorkerPreparedInput = {
 }[SessionHistoryDatabaseWorkerInput["kind"]];
 
 export type SessionTranscriptWorkerValues = {
+  "foreground-stopped-receipt": {
+    kind: "foreground-stopped-receipt";
+    receipt: SessionForegroundStoppedReceipt;
+  };
   "transcript-search": SessionTranscriptSearchWorkerResult;
   "branch-summaries": SessionBranchSummaryReadResult;
   "history-page": SessionHistoryWorkerResult;
@@ -298,6 +314,9 @@ export type SessionTranscriptWorkerReply<Kind extends keyof SessionTranscriptWor
     };
 
 export type SessionHistoryWorkerDatabase = {
+  readForegroundStoppedReceipt: (
+    input: Omit<SessionForegroundReceiptWorkerInput, "kind" | "database">,
+  ) => Promise<SessionForegroundStoppedReceipt>;
   searchTranscripts: (
     params: SessionTranscriptSearchWorkerInput["params"],
   ) => Promise<SessionTranscriptSearchWorkerResult["result"]>;
