@@ -19,7 +19,6 @@ import {
   importTargetNames,
   createPluginSourceLinkCapture,
   pluginSourceStatIdentity,
-  verifyPluginSourceInputs,
   pluginSourceContentHash,
   readPluginSourceBytes,
   createPluginPackageMetadataCapture,
@@ -622,16 +621,19 @@ export function capturePluginGenerationArtifact(
       );
       capturedPaths.set(alias, capturedPaths.get(entry)!);
     }
-    const assertSourceCurrent = () => {
-      if (
-        fs.realpathSync(rootDir) !== sourceRoot ||
-        (entryFile && fs.realpathSync(entryFile) !== entry)
-      ) {
-        throw new Error("Plugin source root changed after capture");
-      }
-      verifyPluginSourceInputs(inputs, inputs.keys());
-    };
-    assertSourceCurrent();
+    const sourceLookup = createPluginGenerationSourceLookup({
+      rootDir,
+      sourceRoot,
+      entryFile,
+      entry,
+      inputs,
+      capturedRoot: root,
+      boundaryRoot: directory,
+      capturedPaths,
+      hardlinkedSources,
+      assertModuleAvailable,
+    });
+    sourceLookup.assertSourceCurrent();
     pendingInputs.clear();
     additions.clear();
     const captures = [moduleCaptures, hardlinkedSources, metadataCapture, packages];
@@ -645,16 +647,7 @@ export function capturePluginGenerationArtifact(
       boundaryRoot: directory,
       // The receipt attests the initial snapshot; first-demand inputs extend only its identity ledger.
       sourceDigest: digest.copy().digest("hex"),
-      ...createPluginGenerationSourceLookup({
-        rootDir,
-        sourceRoot,
-        capturedRoot: root,
-        boundaryRoot: directory,
-        capturedPaths,
-        hardlinkedSources,
-        assertModuleAvailable,
-      }),
-      assertSourceCurrent,
+      ...sourceLookup,
       moduleRoot: (filename: string) =>
         originalSources.has(filename) ? packageForFile(filename)?.capturedRoot : undefined,
       assertModuleAvailable,
