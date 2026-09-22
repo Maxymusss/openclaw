@@ -5,9 +5,9 @@ import { afterEach, describe, expect, it } from "vitest";
 import { auditIconButtons } from "../../scripts/audit-control-ui-icon-buttons.mts";
 import {
   collectIconFixtures,
-  scanIconGridFit,
   type IconFixture,
-} from "../../scripts/lib/control-ui-icon-grid-fit.mts";
+} from "../../scripts/lib/control-ui-icon-fixtures.mts";
+import { scanIconGridFit } from "../../scripts/lib/control-ui-icon-grid-fit.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -114,6 +114,40 @@ describe("fixed icon-grid fit", () => {
     const result = scan(original + correction);
     expect(result.findings).toEqual([]);
     expect(result.unresolved).toBeGreaterThan(0);
+  });
+
+  it.each(["hover", "focus-visible", "active"])("defers top-level %s geometry", (state) => {
+    const result = scan(
+      original + ".toolbar > button {padding:0}.toolbar > button:" + state + " {padding:8px}",
+    );
+    expect(result.findings).toHaveLength(0);
+    expect(result.checked).toBe(0);
+    expect(result.unresolved).toBeGreaterThan(0);
+  });
+
+  it("defers cross-sheet ancestor, tag, ID, attribute, and SVG overrides", () => {
+    const root = tempDirs.make("openclaw-icon-grid-cross-sheet-");
+    const styles = path.join(root, "ui/src/styles");
+    fs.mkdirSync(styles, { recursive: true });
+    fs.writeFileSync(path.join(styles, "base.css"), base);
+    fs.writeFileSync(path.join(styles, "components.css"), "");
+    fs.writeFileSync(path.join(styles, "control.css"), original);
+    fs.writeFileSync(
+      path.join(root, "ui/src/control.ts"),
+      'html`<header class="toolbar"><button class="icon" id="action" title="Preview">${icons.refresh}</button></header>`',
+    );
+    for (const correction of [
+      ".toolbar > button {padding:0}",
+      "button {padding:0!important}",
+      "#action {padding:0}",
+      'button[title="Preview"] {padding:0}',
+      "svg {max-width:8px;max-height:8px}",
+    ]) {
+      fs.writeFileSync(path.join(styles, "other.css"), correction);
+      const result = auditIconButtons(root, ["ui/src/styles/control.css"]);
+      expect(result.findings).toHaveLength(0);
+      expect(result.unresolvedAxes).toBeGreaterThan(0);
+    }
   });
 
   it("respects fixed SVG max bounds and excludes nonparticipating or offset SVGs", () => {

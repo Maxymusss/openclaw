@@ -3,10 +3,8 @@ import path from "node:path";
 import { JSDOM, VirtualConsole } from "jsdom";
 import postcss, { type Declaration, type Root, type Rule } from "postcss";
 import selectorParser from "postcss-selector-parser";
-import ts from "typescript";
-import { getChangedPathFacts, isTestSupportFileTarget } from "./changed-path-facts.mjs";
+import type { IconFixture } from "./control-ui-icon-fixtures.mts";
 
-export type IconFixture = { file: string; line: number; html: string };
 export type IconGridFinding = {
   file: string;
   line: number;
@@ -20,120 +18,8 @@ export type IconGridFinding = {
   icon: number;
   available: number | null;
 };
-const dynamic = "openclaw_unresolved_expression";
 const geometry =
   /^(?:display|box-sizing|(?:min-|max-)?(?:width|height)|padding(?:-.+)?|border(?:-.+)?|(?:place|align|justify)-(?:items|content|self)|grid(?:-.+)?|gap|position|transform|margin(?:-.+)?)$/u;
-
-function iconExpression(expression: ts.Expression): boolean {
-  if (ts.isParenthesizedExpression(expression)) {
-    return iconExpression(expression.expression);
-  }
-  if (ts.isPropertyAccessExpression(expression)) {
-    return expression.expression.getText() === "icons";
-  }
-  return (
-    ts.isConditionalExpression(expression) &&
-    iconExpression(expression.whenTrue) &&
-    iconExpression(expression.whenFalse)
-  );
-}
-
-/** Only literal HTML ancestry and a single known SVG are witnesses, not invented class combinations. */
-export function collectIconFixtures(
-  source: string,
-  file: string,
-  document: Document,
-): IconFixture[] {
-  const parsed = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true);
-  const fixtures: IconFixture[] = [];
-  // Plain stylesheets cannot establish the cascade inside a shadow/custom render root.
-  let customRoot = false;
-  const inspectRoot = (node: ts.Node) => {
-    if (ts.isClassDeclaration(node) || ts.isClassExpression(node)) {
-      const base = node.heritageClauses
-        ?.find((clause) => clause.token === ts.SyntaxKind.ExtendsKeyword)
-        ?.types[0]?.expression.getText(parsed);
-      if (base && !["OpenClawLightDomElement", "OpenClawLightDomContentsElement"].includes(base)) {
-        customRoot = true;
-      }
-      if (node.members.some((member) => member.name?.getText(parsed) === "createRenderRoot")) {
-        customRoot = true;
-      }
-    }
-    ts.forEachChild(node, inspectRoot);
-  };
-  inspectRoot(parsed);
-  if (customRoot) {
-    return fixtures;
-  }
-  const visit = (node: ts.Node) => {
-    if (ts.isTaggedTemplateExpression(node) && node.tag.getText(parsed) === "html") {
-      const template = node.template;
-      let html = ts.isNoSubstitutionTemplateLiteral(template) ? template.text : template.head.text;
-      if (ts.isTemplateExpression(template)) {
-        for (const span of template.templateSpans) {
-          html +=
-            (iconExpression(span.expression)
-              ? '<svg data-icon-grid-probe="" viewBox="0 0 24 24"></svg>'
-              : dynamic) + span.literal.text;
-        }
-      }
-      const holder = document.createElement("template");
-      holder.innerHTML = html;
-      if (holder.content.querySelector("style, link[rel=stylesheet]")) {
-        return;
-      }
-      for (const control of holder.content.querySelectorAll("button, a, [role=button]")) {
-        if (control.querySelectorAll("svg").length !== 1) {
-          continue;
-        }
-        const icon = control.querySelector("svg");
-        if (!icon || icon.parentElement !== control || control.children.length !== 1) {
-          continue;
-        }
-        const copy = control.cloneNode(true);
-        if (!(copy instanceof document.defaultView!.Element)) {
-          continue;
-        }
-        copy.querySelectorAll("svg, .sr-only").forEach((element) => element.remove());
-        if (copy.textContent?.trim()) {
-          continue;
-        }
-        let unresolved = false;
-        const dynamicAttributes = new Set<string>();
-        let ancestor: Element | null = control;
-        while (ancestor) {
-          for (const attribute of ancestor.attributes) {
-            if (!attribute.value.includes(dynamic) || attribute.name.startsWith("@")) {
-              continue;
-            }
-            const name = attribute.name.replace(/^[?.]/u, "").replace(/^classname$/u, "class");
-            dynamicAttributes.add(name);
-            if (/^(?:class|style|data-)/u.test(name)) {
-              unresolved = true;
-            }
-          }
-          ancestor = ancestor.parentElement;
-        }
-        if (unresolved) {
-          continue;
-        }
-        control.setAttribute("data-icon-grid-control", "");
-        control.setAttribute("data-icon-grid-dynamic", [...dynamicAttributes].join(" "));
-      }
-      if (holder.content.querySelector("[data-icon-grid-control]")) {
-        fixtures.push({
-          file,
-          line: parsed.getLineAndCharacterOfPosition(node.getStart(parsed)).line + 1,
-          html: holder.innerHTML,
-        });
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(parsed);
-  return fixtures;
-}
 
 function px(value: string): number | undefined {
   if (value === "0" || value === "0px") {
@@ -147,6 +33,7 @@ const relevantGeometry =
 
 type GeometryRule = {
   selectors: string[];
+  potentialSelectors: string[];
   classes: Set<string>;
   attributes: Set<string>;
   ids: boolean;
@@ -180,6 +67,7 @@ function geometryRules(root: Root): GeometryRule[] {
     if (!fact) {
       fact = {
         selectors: owner.selectors,
+        potentialSelectors: [],
         classes: new Set(),
         attributes: new Set(),
         ids: false,
@@ -229,7 +117,27 @@ function geometryRules(root: Root): GeometryRule[] {
         parsed.walkAttributes((node) => {
           fact!.attributes.add(node.attribute.toLowerCase());
         });
+        const potential = parsed.clone();
+        potential.walkPseudos((node) => {
+          const state = (value: string) =>
+            !value.startsWith("::") && ![":root", ":is", ":where", ":not"].includes(value);
+          let nestedState = false;
+          if (node.value === ":not") {
+            node.walkPseudos((child) => {
+              if (state(child.value)) {
+                nestedState = true;
+              }
+            });
+          }
+          if (state(node.value) || nestedState) {
+            node.remove();
+          }
+        });
+        fact.potentialSelectors.push(potential.toString().trim() || "*");
         parsed.walkPseudos((node) => {
+          if (![":root", ":is", ":where", ":not"].includes(node.value)) {
+            fact!.conditional = true;
+          }
           if ([":enabled", ":disabled"].includes(node.value)) {
             fact!.attributes.add("disabled");
           }
@@ -248,10 +156,63 @@ function geometryRules(root: Root): GeometryRule[] {
   return [...rules.values()];
 }
 
-function matchesRule(element: Element, rule: GeometryRule): boolean {
-  return rule.selectors.some((selector) => {
+function matchesRule(
+  element: Element,
+  rule: GeometryRule,
+  potential = false,
+  dynamicAttributes: ReadonlySet<string> = new Set(),
+): boolean {
+  return (potential ? rule.potentialSelectors : rule.selectors).some((selector) => {
     try {
-      return element.matches(selector);
+      let candidate = selector;
+      if (
+        potential &&
+        ((rule.ids && dynamicAttributes.has("id")) ||
+          [...rule.attributes].some((name) => dynamicAttributes.has(name)))
+      ) {
+        const tree = selectorParser().astSync(selector);
+        const removeUnknown = (node: selectorParser.Node) => {
+          const previous = node.prev(),
+            next = node.next();
+          if (
+            (!previous || previous.type === "combinator") &&
+            (!next || next.type === "combinator")
+          ) {
+            node.replaceWith(selectorParser.universal({ value: "*" }));
+          } else {
+            node.remove();
+          }
+        };
+        tree.walkPseudos((node) => {
+          if (node.value !== ":not") {
+            return;
+          }
+          let unknown = false;
+          node.walkAttributes((attribute) => {
+            if (dynamicAttributes.has(attribute.attribute.toLowerCase())) {
+              unknown = true;
+            }
+          });
+          node.walkIds(() => {
+            if (dynamicAttributes.has("id")) {
+              unknown = true;
+            }
+          });
+          if (unknown) {
+            removeUnknown(node);
+          }
+        });
+        tree.walkAttributes((node) => {
+          if (dynamicAttributes.has(node.attribute.toLowerCase())) {
+            removeUnknown(node);
+          }
+        });
+        if (dynamicAttributes.has("id")) {
+          tree.walkIds(removeUnknown);
+        }
+        candidate = tree.toString();
+      }
+      return element.matches(candidate);
     } catch {
       return false;
     }
@@ -304,26 +265,36 @@ function witnessIsUnresolved(
   control: Element,
   icon: Element,
   rules: GeometryRule[],
-  otherClasses: ReadonlySet<string>,
+  otherRules: readonly GeometryRule[],
 ): boolean {
   if (control.hasAttribute("style") || icon.hasAttribute("style")) {
     return true;
   }
-  if ([...control.classList].some((name) => otherClasses.has(name))) {
-    return true;
-  }
+  const contextClasses = new Set([...control.classList, ...icon.classList]);
   const dynamicAttributes = new Set(
     control.getAttribute("data-icon-grid-dynamic")?.split(" ") ?? [],
   );
+  const externalRule = otherRules.find(
+    (rule) =>
+      matchesRule(control, rule, true, dynamicAttributes) ||
+      matchesRule(icon, rule, true, dynamicAttributes) ||
+      [...rule.classes].some((name) => contextClasses.has(name)) ||
+      (rule.conditional &&
+        rule.classes.size === 0 &&
+        (rule.universal || rule.tags.has(control.tagName.toLowerCase()) || rule.tags.has("svg"))),
+  );
+  if (externalRule) {
+    return true;
+  }
   for (const rule of rules) {
     const matches = matchesRule(control, rule) || matchesRule(icon, rule);
     const potential =
       matches ||
+      matchesRule(control, rule, true, dynamicAttributes) ||
+      matchesRule(icon, rule, true, dynamicAttributes) ||
       [...control.classList].some((name) => rule.classes.has(name)) ||
       (rule.classes.size === 0 &&
-        (rule.universal || rule.tags.has(control.tagName.toLowerCase()) || rule.tags.has("svg"))) ||
-      [...rule.attributes].some((name) => dynamicAttributes.has(name)) ||
-      (rule.ids && dynamicAttributes.has("id"));
+        (rule.universal || rule.tags.has(control.tagName.toLowerCase()) || rule.tags.has("svg")));
     if (!potential) {
       continue;
     }
@@ -398,7 +369,7 @@ export function scanIconGridFit(
   css: string,
   fixtures: IconFixture[],
   baseCss = "",
-  options: { trailingCss?: string; otherClasses?: ReadonlySet<string> } = {},
+  options: { trailingCss?: string; otherRules?: readonly GeometryRule[] } = {},
 ) {
   const root = postcss.parse(css);
   const dom = new JSDOM("<!doctype html><html><head></head><body></body></html>", {
@@ -450,7 +421,7 @@ export function scanIconGridFit(
           unresolved += 2;
           continue;
         }
-        if (witnessIsUnresolved(control, icon, rules, options.otherClasses ?? new Set())) {
+        if (witnessIsUnresolved(control, icon, rules, options.otherRules ?? [])) {
           unresolved += 2;
           continue;
         }
@@ -546,36 +517,6 @@ export function scanIconGridFit(
   return { findings, checked, unresolved };
 }
 
-export function loadIconFixtures(rootDir: string): IconFixture[] {
-  const sourceRoot = path.join(rootDir, "ui/src");
-  const dom = new JSDOM();
-  const fixtures: IconFixture[] = [];
-  try {
-    for (const relative of fs.readdirSync(sourceRoot, { recursive: true }).map(String).toSorted()) {
-      const sourcePath = path.join("ui/src", relative).split(path.sep).join("/");
-      const facts = getChangedPathFacts(sourcePath);
-      if (
-        !relative.endsWith(".ts") ||
-        facts.isChangedLaneTest ||
-        facts.isTestOnly ||
-        isTestSupportFileTarget(sourcePath) ||
-        sourcePath.startsWith("ui/src/e2e/")
-      ) {
-        continue;
-      }
-      const file = path.join(sourceRoot, relative);
-      const source = fs.readFileSync(file, "utf8");
-      if (!source.includes("<button") && !source.includes("<a")) {
-        continue;
-      }
-      fixtures.push(...collectIconFixtures(source, sourcePath, dom.window.document));
-    }
-  } finally {
-    dom.window.close();
-  }
-  return fixtures;
-}
-
 export function selectIconFixtures(css: string, fixtures: IconFixture[]): IconFixture[] {
   if (!/display:\s*(?:inline-)?grid/u.test(css)) {
     return [];
@@ -593,7 +534,7 @@ export function selectIconFixtures(css: string, fixtures: IconFixture[]): IconFi
 
 /** Preserve global order and conservatively defer controls with geometry owned by another sheet. */
 export function createIconStyleContext(rootDir: string) {
-  const cache = new Map<string, { source: string; classes: Set<string> }>();
+  const cache = new Map<string, { source: string; rules: GeometryRule[] }>();
   return (target: string) => {
     const sourceRoot = path.join(rootDir, "ui/src");
     const baseFile = path.join(sourceRoot, "styles/base.css");
@@ -601,7 +542,7 @@ export function createIconStyleContext(rootDir: string) {
     const base = fs.readFileSync(baseFile, "utf8");
     const components = fs.readFileSync(componentFile, "utf8");
     const file = path.resolve(target);
-    const otherClasses = new Set<string>();
+    const otherRules: GeometryRule[] = [];
     const seen = new Set<string>();
     for (const relative of fs.readdirSync(sourceRoot, { recursive: true }).map(String)) {
       if (!relative.endsWith(".css")) {
@@ -615,18 +556,10 @@ export function createIconStyleContext(rootDir: string) {
       const source = fs.readFileSync(sibling, "utf8");
       let entry = cache.get(sibling);
       if (entry?.source !== source) {
-        const classes = new Set<string>();
-        for (const rule of geometryRules(postcss.parse(source))) {
-          for (const name of rule.classes) {
-            classes.add(name);
-          }
-        }
-        entry = { source, classes };
+        entry = { source, rules: geometryRules(postcss.parse(source)) };
         cache.set(sibling, entry);
       }
-      for (const name of entry.classes) {
-        otherClasses.add(name);
-      }
+      otherRules.push(...entry.rules);
     }
     for (const sibling of cache.keys()) {
       if (!seen.has(sibling)) {
@@ -636,7 +569,7 @@ export function createIconStyleContext(rootDir: string) {
     return {
       baseCss: file === baseFile ? "" : file === componentFile ? base : base + "\n" + components,
       trailingCss: file === baseFile ? components : "",
-      otherClasses,
+      otherRules,
     };
   };
 }

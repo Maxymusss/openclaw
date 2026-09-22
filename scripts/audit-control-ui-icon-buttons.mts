@@ -2,9 +2,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadIconFixtures } from "./lib/control-ui-icon-fixtures.mts";
 import {
   createIconStyleContext,
-  loadIconFixtures,
   scanIconGridFit,
   selectIconFixtures,
 } from "./lib/control-ui-icon-grid-fit.mts";
