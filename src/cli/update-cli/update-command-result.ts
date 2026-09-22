@@ -549,14 +549,16 @@ export async function writeControlPlaneUpdateRestartSentinelBestEffort(params: {
   if (!params.meta) {
     return;
   }
-  // Terminal publication outlives the executor. The store commits synchronously
-  // before yielding, so retain the run's refusal at this existing writer boundary.
-  params.run?.freebsdWriteAdmission?.assertCurrent();
+  // Publication outlives the executor and can be the first write after an await.
+  // The sentinel commits synchronously, so check its admitted generation here.
+  let env = params.env;
+  if (params.run?.freebsdWriteAdmission) {
+    const options = updateCommandLedgerOptions(params.run);
+    options.assertWriteAdmission?.(params.run.runId, options);
+    env = options.env;
+  }
   try {
-    await writeControlPlaneUpdateRestartSentinel(
-      { meta: params.meta, result: params.result },
-      params.env,
-    );
+    await writeControlPlaneUpdateRestartSentinel({ meta: params.meta, result: params.result }, env);
   } catch (err) {
     if (params.meta.completionOwner === "gateway-restart") {
       // The replacement cannot finish its run from a pending sentinel.
@@ -581,9 +583,14 @@ export async function markControlPlaneUpdateRestartSentinelFailureBestEffort(par
   if (!params.meta) {
     return;
   }
-  params.run?.freebsdWriteAdmission?.assertCurrent();
+  let env = params.env;
+  if (params.run?.freebsdWriteAdmission) {
+    const options = updateCommandLedgerOptions(params.run);
+    options.assertWriteAdmission?.(params.run.runId, options);
+    env = options.env;
+  }
   try {
-    await markControlPlaneUpdateRestartSentinelFailure(params.reason, params.meta, params.env);
+    await markControlPlaneUpdateRestartSentinelFailure(params.reason, params.meta, env);
   } catch (err) {
     const message = `Failed to mark update.run restart sentinel failed: ${String(err)}`;
     if (params.jsonMode) {

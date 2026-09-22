@@ -139,7 +139,11 @@ async function finalizeMigratedUpdate(): Promise<void> {
           input.params.opts.run?.runId ?? "",
           input.params.result.root ?? input.params.root,
           async (fence) => finalizeInput(input, fence, registerRun, freebsdWriteAdmission),
-          { activationTimeoutMs, onAuthorityFailure: freebsdWriteAdmission?.revoke },
+          freebsdWriteAdmission
+            ? { activationTimeoutMs, onAuthorityFailure: freebsdWriteAdmission.revoke }
+            : activationTimeoutMs === undefined
+              ? undefined
+              : { activationTimeoutMs },
         );
       }
       // The shipped v2026.9.3 producer overrides these selectors for worker

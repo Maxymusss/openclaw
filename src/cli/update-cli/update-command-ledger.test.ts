@@ -1,6 +1,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import { openNodeSqliteDatabase } from "../../infra/node-sqlite.js";
+import { readRestartSentinelReadOnly, writeRestartSentinel } from "../../infra/restart-sentinel.js";
 import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
 import { createFreeBsdUpdateWriteAdmission } from "../../infra/update-freebsd-write-admission.js";
 import { readUpdateRunDriver } from "../../infra/update-run-driver.js";
@@ -10,6 +13,7 @@ import {
   getUpdateRun,
   heartbeatUpdateRun,
 } from "../../infra/update-run-ledger.js";
+import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
@@ -17,6 +21,10 @@ import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { withUpdateCommandExecutor } from "./update-command-executor.js";
 import { admitUpdateCommandLedger, updateCommandLedgerOptions } from "./update-command-ledger.js";
+import {
+  markControlPlaneUpdateRestartSentinelFailureBestEffort,
+  writeControlPlaneUpdateRestartSentinelBestEffort,
+} from "./update-command-result.js";
 import { completeUpdateCommandRun, createUpdateRunProgress } from "./update-command-run.js";
 
 afterEach(() => {
@@ -35,6 +43,25 @@ async function admittedRun(env: NodeJS.ProcessEnv) {
   };
   admitUpdateCommandLedger(run);
   return { run, admission };
+}
+
+function readPublicationRows(pathname: string) {
+  const db = openNodeSqliteDatabase(pathname, { readOnly: true });
+  try {
+    const state = getNodeSqliteKysely<OpenClawStateKyselyDatabase>(db);
+    return {
+      runs: executeSqliteQuerySync(
+        db,
+        state.selectFrom("update_runs").selectAll().orderBy("run_id"),
+      ).rows,
+      sentinels: executeSqliteQuerySync(
+        db,
+        state.selectFrom("gateway_restart_sentinel").selectAll().orderBy("sentinel_key"),
+      ).rows,
+    };
+  } finally {
+    db.close();
+  }
 }
 
 it.each(["cloned environment", "state selector", "config selector", "run id", "missing admission"])(
@@ -194,3 +221,119 @@ it("does not recapture a deferred parent's generation when flushing; a receiver 
     expect(receiverAdmission.canWrite).toBe(true);
   });
 });
+
+it.each(["write", "mark"] as const)(
+  "refuses the first sentinel %s after awaited preparation replaces the admitted database",
+  async (operation) => {
+    await withTestDir({ prefix: "update-sentinel-generation-" }, async (root) => {
+      const env = { OPENCLAW_STATE_DIR: path.join(root, "selected") };
+      const replacementEnv = { OPENCLAW_STATE_DIR: path.join(root, "replacement") };
+      const { run, admission } = await admittedRun(env);
+      const sibling = createUpdateRun({ trigger: "cli" }, { env: replacementEnv });
+      const meta = { runId: run.runId, handoffId: "admitted-owner" };
+      const pending = {
+        kind: "update" as const,
+        status: "skipped" as const,
+        ts: 1,
+        stats: meta,
+      };
+      await writeRestartSentinel(pending, env);
+      await writeRestartSentinel(pending, replacementEnv);
+      expect(getUpdateRun(run.runId, { env: replacementEnv })).toBeUndefined();
+      expect(getUpdateRun(sibling.runId, { env: replacementEnv })).toBeDefined();
+      closeOpenClawStateDatabaseForTest();
+      const pathname = resolveOpenClawStateSqlitePath(env);
+      const replacement = resolveOpenClawStateSqlitePath(replacementEnv);
+      const displaced = pathname + ".prior";
+      const originalBefore = readPublicationRows(pathname);
+      const replacementBefore = readPublicationRows(replacement);
+      // Restart preparation yields before notice publication. No heartbeat or
+      // execution guard observes the replacement before this first writer.
+      await Promise.resolve().then(() => {
+        fs.renameSync(pathname, displaced);
+        fs.copyFileSync(replacement, pathname);
+      });
+      const publish = () =>
+        operation === "write"
+          ? writeControlPlaneUpdateRestartSentinelBestEffort({
+              meta,
+              result: { status: "ok", mode: "npm", steps: [], durationMs: 1 },
+              jsonMode: true,
+              env,
+              run,
+            })
+          : markControlPlaneUpdateRestartSentinelFailureBestEffort({
+              meta,
+              reason: "restart-unhealthy",
+              jsonMode: true,
+              env,
+              run,
+            });
+      await expect(publish()).rejects.toThrow(
+        "SQLite database file identity changed before existing-only open",
+      );
+      const first = admission.failure;
+      expect(first).toBeInstanceOf(Error);
+      expect(admission.canWrite).toBe(false);
+      expect(readPublicationRows(displaced)).toEqual(originalBefore);
+      expect(readPublicationRows(pathname)).toEqual(replacementBefore);
+      closeOpenClawStateDatabaseForTest();
+      const rejected = pathname + ".rejected";
+      fs.renameSync(pathname, rejected);
+      fs.renameSync(displaced, pathname);
+      await expect(publish()).rejects.toBe(first);
+      expect(admission.revoke(new Error("later refusal"))).toBe(first);
+      expect(readPublicationRows(pathname)).toEqual(originalBefore);
+      expect(readPublicationRows(rejected)).toEqual(replacementBefore);
+    });
+  },
+);
+
+it.each([false, true])(
+  "retains admitted-generation CLI sentinel policy (requested=%s)",
+  async (requested) => {
+    await withTestDir({ prefix: "update-sentinel-current-" }, async (root) => {
+      const { run, admission } = await admittedRun({
+        OPENCLAW_STATE_DIR: path.join(root, "selected"),
+      });
+      const callerEnv = { OPENCLAW_STATE_DIR: path.join(root, "caller") };
+      const meta = { runId: run.runId, ...(requested ? { note: "requested follow-up" } : {}) };
+      const before = getUpdateRun(run.runId, { env: run.env });
+      await writeControlPlaneUpdateRestartSentinelBestEffort({
+        meta,
+        result: { status: "skipped", mode: "npm", steps: [], durationMs: 1 },
+        jsonMode: true,
+        env: callerEnv,
+        run,
+      });
+      const published = await readRestartSentinelReadOnly(run.env);
+      if (requested) {
+        expect(published?.payload).toMatchObject({
+          status: "skipped",
+          stats: { runId: run.runId },
+        });
+      } else {
+        expect(published).toBeNull();
+      }
+      await markControlPlaneUpdateRestartSentinelFailureBestEffort({
+        meta,
+        reason: "restart-unhealthy",
+        jsonMode: true,
+        env: callerEnv,
+        run,
+      });
+      const marked = await readRestartSentinelReadOnly(run.env);
+      if (requested) {
+        expect(marked?.payload).toMatchObject({
+          status: "error",
+          stats: { runId: run.runId, reason: "restart-unhealthy" },
+        });
+      } else {
+        expect(marked).toBeNull();
+      }
+      expect(getUpdateRun(run.runId, { env: run.env })).toEqual(before);
+      expect(admission.canWrite).toBe(true);
+      expect(fs.existsSync(callerEnv.OPENCLAW_STATE_DIR)).toBe(false);
+    });
+  },
+);

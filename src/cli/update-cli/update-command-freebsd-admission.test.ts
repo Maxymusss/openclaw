@@ -148,6 +148,7 @@ it.each(["write", "mark"] as const)(
         env,
         freebsdWriteAdmission: admission,
       };
+      admitUpdateCommandLedger(run);
       const meta = { runId: run.runId, handoffId: "write-admission" };
       const pending = buildUpdateRestartSentinelPayload({
         result: { status: "skipped", mode: "npm", steps: [], durationMs: 1 },
