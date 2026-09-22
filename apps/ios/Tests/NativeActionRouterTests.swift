@@ -1962,9 +1962,11 @@ struct NativeActionRouterTests {
             let root = try #require(host.presentationID)
             #expect(host.router.userNavigationDidChange(presentationID: root))
             #expect(host.binding == nil)
+            var parentSession = OpenClawChatSessionEntry.placeholder(key: "global")
+            parentSession.agentId = "main"
             let captured = try #require(PreparedChatNavigation.capture(
                 appModel: host.model, router: host.router, presentationID: root,
-                session: .init(key: "global", agentId: "main"), isCurrentContext: { true },
+                session: parentSession, isCurrentContext: { true },
                 currentNativeBinding: { host.binding }, open: { target in
                     host.model.focusChatSession(target)
                     host.model.openChat(sessionKey: target.sessionKey)
