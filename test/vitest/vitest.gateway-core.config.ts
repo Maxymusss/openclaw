@@ -1,8 +1,10 @@
 // Vitest gateway core config wires the gateway core test shard.
+import { databaseWorkerCoreTestFiles } from "./vitest.database-worker-core-paths.mjs";
 import { gatewayDatabaseWorkerTestFiles } from "./vitest.gateway-server-paths.mjs";
 import { createScopedVitestConfig } from "./vitest.scoped-config.ts";
 
 const nonCoreGatewayTestExclude = [
+  ...databaseWorkerCoreTestFiles,
   ...gatewayDatabaseWorkerTestFiles,
   "src/gateway/server-methods/**/*.test.ts",
   "packages/gateway-protocol/src/**/*.test.ts",

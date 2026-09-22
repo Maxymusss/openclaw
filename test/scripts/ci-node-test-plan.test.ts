@@ -70,6 +70,7 @@ import {
   isGatewayServerTestFile,
 } from "../vitest/vitest.gateway-server-paths.mjs";
 import { createGatewayServerVitestConfig } from "../vitest/vitest.gateway-server.config.ts";
+import { createGatewayVitestConfig } from "../vitest/vitest.gateway.config.ts";
 import { createInfraVitestConfig } from "../vitest/vitest.infra.config.ts";
 import { createMediaUnderstandingVitestConfig } from "../vitest/vitest.media-understanding.config.ts";
 import { createMediaVitestConfig } from "../vitest/vitest.media.config.ts";
@@ -5006,12 +5007,33 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         createWizardVitestConfig({}),
         createCommandsVitestConfig({}),
         createRuntimeConfigVitestConfig({}),
+        createGatewayVitestConfig({}),
+        createGatewayCoreVitestConfig({}),
+        createGatewayClientVitestConfig({}),
+        createGatewayMethodsVitestConfig({}),
+        createGatewayMethodsIsolatedVitestConfig({}),
+        createGatewayServerVitestConfig({}),
+        createGatewayServerIsolatedVitestConfig({}),
+        createGatewayDatabaseWorkersVitestConfig({}),
       ].flatMap(listMatchedTestFiles),
     );
     for (const file of databaseWorkerCoreTestFiles) {
       expect(admitted.has(file), file).toBe(true);
       expect(former.has(file), file).toBe(false);
     }
+    const gatewayWorkerFiles = databaseWorkerCoreTestFiles.filter((file) =>
+      file.startsWith("src/gateway/"),
+    );
+    const gatewayPlanFiles = defaultShards
+      .filter((shard) => shard.shardName.startsWith("agentic-gateway-core"))
+      .flatMap((shard) => shard.includePatterns ?? []);
+    expect(gatewayPlanFiles.filter((file) => gatewayWorkerFiles.includes(file))).toEqual([]);
+    const infraPlanFiles = defaultShards
+      .filter((shard) => shard.configs.includes("test/vitest/vitest.infra.config.ts"))
+      .flatMap((shard) => shard.includePatterns ?? []);
+    expect(infraPlanFiles.filter((file) => gatewayWorkerFiles.includes(file)).toSorted()).toEqual(
+      gatewayWorkerFiles.toSorted(),
+    );
     const recoveryTest = "src/wizard/setup.inference-recovery.integration.test.ts";
     expect(admitted.has(recoveryTest), recoveryTest).toBe(true);
     expect(former.has(recoveryTest), recoveryTest).toBe(false);
