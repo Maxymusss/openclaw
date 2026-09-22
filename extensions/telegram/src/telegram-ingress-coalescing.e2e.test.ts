@@ -44,6 +44,7 @@ const downstreamTurns = vi.hoisted(() =>
     counts: { block: 0, final: 0, tool: 0 },
   })),
 );
+const prepareSessionEntry = vi.fn(async () => undefined);
 const runtimeErrors: unknown[] = [];
 
 vi.mock("./fetch.js", () => ({
@@ -229,21 +230,24 @@ describe("Telegram durable ingress coalescing", () => {
     resetPluginStateStoreForTests({ closeDatabase: false });
     resetTelegramAccountThrottlersForTest();
     setRuntimeConfigSnapshot(cfg, cfg);
-    setTelegramRuntime({
-      state: {
-        openChannelIngressQueue: (
-          options?: Omit<Parameters<typeof createChannelIngressQueueForTests>[0], "channelId">,
-        ) => createChannelIngressQueueForTests({ ...options, channelId: "telegram" }),
-        // Command-menu locale ledger reads the keyed store during hydration;
-        // an absent store degrades with a warning that breaks watchdog asserts.
-        openKeyedStore: ((options) =>
-          createPluginStateKeyedStoreForTests(
-            "telegram",
-            options,
-          )) as TelegramRuntime["state"]["openKeyedStore"],
-      },
-      channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
-    } as TelegramRuntime);
+    prepareSessionEntry.mockReset().mockResolvedValue(undefined);
+    setTelegramRuntime(
+      createPluginRuntimeMock({
+        state: {
+          openChannelIngressQueue: (
+            options?: Omit<Parameters<typeof createChannelIngressQueueForTests>[0], "channelId">,
+          ) => createChannelIngressQueueForTests({ ...options, channelId: "telegram" }),
+          // Command-menu locale ledger reads the keyed store during hydration;
+          // an absent store degrades with a warning that breaks watchdog asserts.
+          openKeyedStore: ((options) =>
+            createPluginStateKeyedStoreForTests(
+              "telegram",
+              options,
+            )) as TelegramRuntime["state"]["openKeyedStore"],
+        },
+        channel: { session: { prepareSessionEntry } },
+      }),
+    );
   });
 
   afterEach(async () => {
@@ -346,10 +350,12 @@ describe("Telegram durable ingress coalescing", () => {
     const ordinaryStarted = createDeferred<void>();
     const releaseOrdinary = createDeferred<void>();
     const aliasEntered = createDeferred<void>();
+    let ordinaryCompleted = false;
     downstreamTurns.mockImplementation(async (ctx) => {
       if (ctx.RawBody === "ordinary run") {
         ordinaryStarted.resolve();
         await releaseOrdinary.promise;
+        ordinaryCompleted = true;
       } else if (ctx.RawBody === "/quick") {
         aliasEntered.resolve();
       }
@@ -373,6 +379,15 @@ describe("Telegram durable ingress coalescing", () => {
       await monitor.admit(alias);
       await aliasEntered.promise;
       expect(downstreamTurns).toHaveBeenCalledTimes(2);
+      expect(ordinaryCompleted).toBe(false);
+      expect(prepareSessionEntry).toHaveBeenCalled();
+      expect(prepareSessionEntry).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: expect.any(String),
+          sessionKey: expect.any(String),
+          storePath: expect.any(String),
+        }),
+      );
 
       releaseOrdinary.resolve();
       await monitor.waitForIdle();

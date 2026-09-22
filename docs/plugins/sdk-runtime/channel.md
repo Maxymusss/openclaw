@@ -34,6 +34,20 @@ Channel-specific runtime helpers, available when a channel plugin is loaded. Par
     | `threadBindings` | Adjust idle-timeout/max-age for bound session threads. |
     | `runtimeContexts` | Register, read, and watch process-local per-channel/account/capability context. |
 
+    ### Worker-backed session preparation
+
+    `api.runtime.channel.session.prepareSessionEntry(...)` is an optional capability for
+    pre-dispatch policy that needs one session entry without blocking the Gateway thread.
+    It accepts the resolved `agentId`, `storePath`, and `sessionKey`, plus an optional
+    `env`, and resolves to the matching `SessionEntry` or `undefined` when that key is
+    absent. The read is non-mutating and does not create a store or session. Worker,
+    storage, schema, and decoding failures reject the Promise; callers must not treat a
+    failed read as a missing entry.
+
+    Older hosts may omit this capability. A channel that needs the entry to grant a fast
+    or privileged path must choose its conservative behavior when the method is absent;
+    it must not infer an owner-free or authorized state from missing capability support.
+
     `api.runtime.channel.media` is the preferred surface for channel media downloads and storage:
 
     ```typescript
