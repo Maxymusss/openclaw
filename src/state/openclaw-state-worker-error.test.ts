@@ -26,7 +26,7 @@ import {
   OpenClawStateExternalOwnershipError,
   OpenClawStateOwnershipError,
   OpenClawStateOwnershipMetadataError,
-} from "./openclaw-state-ownership.js";
+} from "./openclaw-state-ownership-error.js";
 import {
   encodeOpenClawStateWorkerError,
   hydrateOpenClawStateWorkerError,

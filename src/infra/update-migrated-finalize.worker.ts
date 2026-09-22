@@ -43,6 +43,7 @@ import {
 import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import {
   createManagedUpdateRequesterAuthority,
+  createManagedUpdateRequesterContinuationAuthority,
   UpdateRequesterRevokedError,
 } from "./update-requester-authority.js";
 import { adoptUpdateRun, getUpdateRun, recordUpdateRunStep } from "./update-run-ledger.js";
@@ -263,9 +264,14 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
     input.runId,
     input.root,
     async (fence) => {
-      const requester = input.requester
-        ? await createManagedUpdateRequesterAuthority(input.requester)
-        : undefined;
+      const requester = input.requester?.authorizationSource?.startsWith("profile:")
+        ? await createManagedUpdateRequesterContinuationAuthority(input.requester, {
+            runId: input.runId,
+            executor: fence,
+          })
+        : input.requester
+          ? await createManagedUpdateRequesterAuthority(input.requester)
+          : undefined;
       if (freebsdRootAdmission) {
         await freebsdRootAdmission.revalidate({ roots: [input.root] }, fence.assertCurrent);
       }
@@ -355,18 +361,21 @@ async function finalizeInput(
   if (!freebsdRootAdmission) {
     adoptUpdateRun(runIdentity.runId, { env: runIdentity.env });
   }
-  // Parent closures cannot cross JSON. Only the fresh installed runtime rebinds
-  // the captured requester to the same current installation policy.
+  // Parent closures cannot cross JSON. The fresh runtime retains identity checks
+  // under its validated original native update lineage.
   const run: NonNullable<UpdateCommandOptions["run"]> = {
     ...runIdentity,
     ...(executorFence ? { executorFence } : {}),
     ...(freebsdRootAdmission ? { freebsdRootAdmission } : {}),
     ...(descriptor
       ? {
-          requesterAuthority: await createManagedUpdateRequesterAuthority(
-            descriptor.requester,
-            runIdentity.env,
-          ),
+          requesterAuthority: descriptor.requester.authorizationSource?.startsWith("profile:")
+            ? await createManagedUpdateRequesterContinuationAuthority(
+                descriptor.requester,
+                { runId: runIdentity.runId, executor: executorFence },
+                runIdentity.env,
+              )
+            : await createManagedUpdateRequesterAuthority(descriptor.requester, runIdentity.env),
         }
       : {}),
   };

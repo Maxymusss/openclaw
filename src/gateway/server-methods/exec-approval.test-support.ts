@@ -2,7 +2,11 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { vi, type TestContext } from "vitest";
 import { GATEWAY_CLIENT_IDS } from "../../../packages/gateway-protocol/src/client-info.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { createTestApprovalFixture } from "../exec-approval-manager.test-support.js";
+import type { ExecApprovalRequestPayload } from "../../infra/exec-approvals.js";
+import {
+  createPreparedTestApprovalManager,
+  createTestApprovalFixture,
+} from "../exec-approval-manager.test-support.js";
 import { createChatRunState } from "../server-chat-state.js";
 import {
   waitForApprovalAccepted,
@@ -243,7 +247,13 @@ export function createExecApprovalFixture(
   testContext: TestContext,
   opts?: { config?: OpenClawConfig },
 ) {
-  const fixture = createTestApprovalFixture(testContext);
+  return buildExecApprovalFixture(createTestApprovalFixture(testContext), opts);
+}
+
+function buildExecApprovalFixture(
+  fixture: ReturnType<typeof createTestApprovalFixture<ExecApprovalRequestPayload>>,
+  opts?: { config?: OpenClawConfig },
+) {
   const { manager } = fixture;
   const handlers = createExecApprovalHandlers(manager);
   const broadcasts: Array<{ event: string; payload: unknown }> = [];
@@ -295,7 +305,7 @@ export async function withAcceptedExecApproval(
   },
   inspect: (approval: RequestedExecApproval) => Promise<void>,
 ) {
-  const fixture = createExecApprovalFixture(testContext);
+  const fixture = buildExecApprovalFixture(await createPreparedTestApprovalManager(testContext));
   await fixture.run(async () => {
     const { pending: requestPromise } = await waitForApprovalAccepted(fixture.respond, (respond) =>
       fixture.track(

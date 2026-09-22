@@ -23,7 +23,7 @@ import {
   OpenClawStateExternalOwnershipError,
   OpenClawStateOwnershipError,
   OpenClawStateOwnershipMetadataError,
-} from "./openclaw-state-ownership.js";
+} from "./openclaw-state-ownership-error.js";
 
 type MaintenanceKind = ConstructorParameters<typeof StartupMaintenanceRequiredError>[0];
 type StateMigrationKind = ConstructorParameters<

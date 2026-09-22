@@ -256,7 +256,9 @@ avatar bytes, fetch limits, and final identity and permission checks are unchang
 
 Required queued collector registration writes its named registry rows through the
 shared-state worker. The host captures those rows and deletions before waiting,
-retains the original database admission, and authorizes the transaction again
+and binds SQL values from the isolated capture without copying the full payload again.
+Binding retains both normalization passes and restores the capture before publication.
+The host retains the original database admission and authorizes the transaction again
 before mutation and commit. Synchronous Stop, replacement, and completion writes
 supersede pending row authority; delayed worker acknowledgments cannot overwrite
 newer local projections or notification history. Database shutdown joins physical
@@ -1031,9 +1033,13 @@ fresh storage reads. An earlier read cannot replace metadata acknowledged by a
 later write. If a write reports an error after a possible commit, the provider
 requires an acknowledged read before serving metadata again. Login callbacks
 recheck their current lifecycle after awaited reads. Status and inventory reads
-do not create state. Lease validation and mutations retain their native owners
-and captured store context until their complete lifecycle moves off the
-application thread.
+do not create state. Runtime lease acquisition, verification, renewal, release,
+and bounded mutations run in workers under the original captured context.
+Transactions reread the exact lease and obtain live caller authority before
+writing and committing. Token callbacks lock cancellation at commit admission
+and report saved credentials only after acknowledgement. Canonical close drains
+accepted lease work before releasing its exact owner; an uncertain write retains
+the lease barrier. Native maintenance and Doctor keep their existing owners.
 
 Requester MCP setup reads its sorted authorization set in one current read-worker
 operation. The worker decodes selected rows in caller order and returns only
