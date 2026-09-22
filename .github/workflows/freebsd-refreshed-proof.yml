@@ -21,7 +21,7 @@ jobs:
       github.repository == 'openclaw/openclaw' &&
       github.actor == 'vincentkoc' && github.event_name == 'push' &&
       github.run_attempt == 1 && !github.event.forced && !github.event.deleted &&
-      github.event.before == '82845539c110b395efdd257e5493bea532b44abd' &&
+      github.event.before == '3f7ed788c310c953a578cd416fcf1838bb520d61' &&
       github.event.after == github.sha &&
       github.ref == 'refs/heads/test/freebsd-integrated-package-proof'
     runs-on: ubuntu-22.04
@@ -78,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 3
+          fetch-depth: 4
           persist-credentials: false
       - name: Authenticate single-launch carrier
         env:
@@ -87,22 +87,21 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$HARNESS_SHA"
-          test "$(git show -s --format=%P HEAD)" = 82845539c110b395efdd257e5493bea532b44abd
-          test "$(git rev-parse HEAD^:.)" = 23e9edc5e2492d5474d02761a9fd32b4dd651e19
+          test "$(git show -s --format=%P HEAD)" = 3f7ed788c310c953a578cd416fcf1838bb520d61
+          test "$(git rev-parse HEAD^1^{tree})" = c56f1d7fcc10b5e88efa7ee37a32a41c442063c3
           test "$(git rev-parse 892e4e1aca46d6a5ae8ee699fd78aec606054aa3^{tree})" = 7c5bc951d87e603e21ca803cc10abec122cbc987
           test "$PROOF_ATTEMPT" = 1
           python3 -I -S - <<'ADMIT'
           import json,os,subprocess
           def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
           assert git('diff','--name-only','HEAD^','HEAD').splitlines()==[
-              '.github/workflows/freebsd-integrated-native-proof.yml',
               '.github/workflows/freebsd-refreshed-proof.yml']
           assert git('diff','--name-only','892e4e1aca46d6a5ae8ee699fd78aec606054aa3','HEAD').splitlines()==[
               '.github/workflows/freebsd-integrated-native-proof.yml',
               '.github/workflows/freebsd-integrated-package-proof.yml',
               '.github/workflows/freebsd-refreshed-proof.yml']
-          producer='.github/workflows/freebsd-integrated-package-proof.yml'
-          assert git('rev-parse','HEAD:'+producer)==git('rev-parse','HEAD^:'+producer)
+          for workflow in ['.github/workflows/freebsd-integrated-native-proof.yml', '.github/workflows/freebsd-integrated-package-proof.yml']:
+              assert git('rev-parse','HEAD:'+workflow)==git('rev-parse','HEAD^:'+workflow)
           assert not git('status','--porcelain')
           pr=json.loads(subprocess.check_output(['gh','api','repos/openclaw/openclaw/pulls/155851']))
           assert pr['state']=='open' and pr['draft'] is True and pr['auto_merge'] is None
