@@ -23,60 +23,69 @@ export function createCronViewJob(id: string, overrides: Partial<CronJob> = {}):
 
 type CronTestOverrides = Record<string, unknown>;
 
-function createCronViewProps<T extends CronTestOverrides>(overrides: T): CronProps & T;
-function createCronViewProps(): CronProps;
 function createCronViewProps(overrides: CronTestOverrides = {}): CronProps {
-  const legacy = {
-    basePath: "",
-    agentId: "main",
-    loading: false,
-    hasLoaded: true,
-    listError: null,
-    canManage: true,
-    jobsLoadingMore: false,
-    status: {
+  const value = <T>(key: string, fallback: T): T =>
+    key in overrides ? (overrides[key] as T) : fallback;
+  const jobs = value<CronProps["state"]["cronJobs"]>("jobs", []);
+  const jobsTotal = value("jobsTotal", 0);
+  const state = Object.assign(createInitialCronState({ connected: true }), {
+    cronLoading: value("loading", false),
+    cronJobsError: value("listError", null),
+    cronJobsLoadingMore: value("jobsLoadingMore", false),
+    cronStatus: value("status", {
       enabled: true,
       triggersEnabled: true,
-      jobs: 0,
+      jobs: Math.max(jobsTotal, jobs.length),
+    }),
+    cronJobs: jobs,
+    cronJobsTotal: jobsTotal,
+    cronJobsHasMore: value("jobsHasMore", false),
+    cronJobsSnapshotRevision: value("hasLoaded", true) ? "test" : null,
+    cronJobsQuery: value("jobsQuery", ""),
+    cronJobsEnabledFilter: value("jobsEnabledFilter", "all"),
+    cronJobsScheduleKindFilter: value("jobsScheduleKindFilter", "all"),
+    cronJobsLastStatusFilter: value("jobsLastStatusFilter", "all"),
+    cronJobsTriggerFilter: value("jobsTriggerFilter", "all"),
+    cronJobsSortBy: value("jobsSortBy", "nextRunAtMs"),
+    cronJobsSortDir: value("jobsSortDir", "asc"),
+    cronError: value("error", null),
+    cronBusy: value("busy", false),
+    cronForm: value("form", { ...DEFAULT_CRON_FORM }),
+    cronFieldErrors: value("fieldErrors", {}),
+    cronEditingJob: value("editingJob", null),
+    cronCreateOpen: value("createOpen", false),
+    cronRuns: value("runs", []),
+    cronRunsTotal: value("runsTotal", 0),
+    cronRunsHasMore: value("runsHasMore", false),
+    cronRunsLoadingMore: value("runsLoadingMore", false),
+    cronRunsStatuses: value("runsStatuses", []),
+    cronRunsDeliveryStatuses: value("runsDeliveryStatuses", []),
+    cronRunsQuery: value("runsQuery", ""),
+    cronRunsSortDir: value("runsSortDir", "desc"),
+    ...(overrides.state as Partial<CronProps["state"]> | undefined),
+  });
+  const channels = value<string[]>("channels", []);
+  const channelState = {
+    channelsSnapshot: {
+      channelOrder: channels,
+      channelLabels: value("channelLabels", {}),
+      channelMeta: value("channelMeta", []),
     },
-    jobs: [],
-    jobsTotal: 0,
-    jobsHasMore: false,
-    jobsQuery: "",
-    jobsEnabledFilter: "all",
-    jobsScheduleKindFilter: "all",
-    jobsLastStatusFilter: "all",
-    jobsTriggerFilter: "all",
-    jobsSortBy: "nextRunAtMs",
-    jobsSortDir: "asc",
-    error: null,
-    busy: false,
-    form: { ...DEFAULT_CRON_FORM },
-    heartbeatScratch: "",
-    fieldErrors: {},
-    canSubmit: true,
-    editingJob: null,
-    createOpen: false,
-    listTab: "tasks",
-    detailTab: "settings",
-    channels: [],
-    channelLabels: {},
-    channelMeta: [] as NonNullable<CronProps["channels"]["channelsSnapshot"]>["channelMeta"],
-    runs: [],
-    runsState: "ready",
-    runsTotal: 0,
-    runsHasMore: false,
-    runsLoadingMore: false,
-    runsStatuses: [],
-    runsDeliveryStatuses: [],
-    runsQuery: "",
-    runsSortDir: "desc",
-    agentSuggestions: [],
-    modelSuggestions: [],
-    thinkingSuggestions: [],
-    timezoneSuggestions: [],
-    deliveryToSuggestions: [],
-    accountSuggestions: [],
+  } as unknown as CronProps["channels"];
+  const suggestions: CronProps["suggestions"] = {
+    agentSuggestions: value("agentSuggestions", []),
+    modelSuggestions: value("modelSuggestions", []),
+    timezoneSuggestions: value("timezoneSuggestions", []),
+    deliveryToSuggestions: value("deliveryToSuggestions", []),
+    accountTargets: value("accountSuggestions", []),
+  };
+  return {
+    canManage: value("canManage", true),
+    error: value("error", null),
+    heartbeatScratch: value("heartbeatScratch", ""),
+    listTab: value("listTab", "tasks"),
+    detailTab: value("detailTab", "settings"),
+    runsState: value("runsState", "ready"),
     onListTabChange: () => undefined,
     onDetailTabChange: () => undefined,
     onFormChange: () => undefined,
@@ -96,59 +105,12 @@ function createCronViewProps(overrides: CronTestOverrides = {}): CronProps {
     onLoadMoreRuns: () => undefined,
     onRunsFiltersChange: () => undefined,
     ...overrides,
-  };
-  const state = createInitialCronState();
-  Object.assign(state, {
-    cronLoading: legacy.loading,
-    cronJobsError: legacy.listError,
-    cronJobsLoadingMore: legacy.jobsLoadingMore,
-    cronStatus: legacy.status,
-    cronJobs: legacy.jobs,
-    cronJobsTotal: legacy.jobsTotal,
-    cronJobsHasMore: legacy.jobsHasMore,
-    cronJobsSnapshotRevision: legacy.hasLoaded ? "test" : null,
-    cronJobsQuery: legacy.jobsQuery,
-    cronJobsEnabledFilter: legacy.jobsEnabledFilter,
-    cronJobsScheduleKindFilter: legacy.jobsScheduleKindFilter,
-    cronJobsLastStatusFilter: legacy.jobsLastStatusFilter,
-    cronJobsTriggerFilter: legacy.jobsTriggerFilter,
-    cronJobsSortBy: legacy.jobsSortBy,
-    cronJobsSortDir: legacy.jobsSortDir,
-    cronError: legacy.error,
-    cronBusy: legacy.busy,
-    cronForm: legacy.form,
-    cronFieldErrors: legacy.fieldErrors,
-    cronEditingJob: legacy.editingJob,
-    cronCreateOpen: legacy.createOpen,
-    cronRuns: legacy.runs,
-    cronRunsTotal: legacy.runsTotal,
-    cronRunsHasMore: legacy.runsHasMore,
-    cronRunsLoadingMore: legacy.runsLoadingMore,
-    cronRunsStatuses: legacy.runsStatuses,
-    cronRunsDeliveryStatuses: legacy.runsDeliveryStatuses,
-    cronRunsQuery: legacy.runsQuery,
-    cronRunsSortDir: legacy.runsSortDir,
-    ...(overrides.state as Partial<CronProps["state"]> | undefined),
-  });
-  const channels = {
-    channelsSnapshot: {
-      channelOrder: legacy.channels,
-      channelLabels: legacy.channelLabels,
-      channelMeta: legacy.channelMeta ?? [],
-    },
-  } as unknown as CronProps["channels"];
-  const suggestions: CronProps["suggestions"] = {
-    agentSuggestions: legacy.agentSuggestions,
-    modelSuggestions: legacy.modelSuggestions,
-    timezoneSuggestions: legacy.timezoneSuggestions,
-    deliveryToSuggestions: legacy.deliveryToSuggestions,
-    accountTargets: legacy.accountSuggestions,
-  };
-  return { ...legacy, state, channels, suggestions } as CronProps;
+    state,
+    channels: channelState,
+    suggestions,
+  } as CronProps;
 }
 
-export function renderCronView(overrides: CronTestOverrides): HTMLDivElement;
-export function renderCronView(): HTMLDivElement;
 export function renderCronView(overrides: CronTestOverrides = {}) {
   const container = document.createElement("div");
   render(renderCron(createCronViewProps(overrides)), container);
