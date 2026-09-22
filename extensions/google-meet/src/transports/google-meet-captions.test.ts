@@ -1,169 +1,12 @@
-import { createContext, Script } from "node:vm";
 import { describe, expect, it } from "vitest";
-import { meetTranscriptScript } from "./google-meet-caption-scripts.js";
-import { meetStatusScript } from "./google-meet-page-scripts.js";
+import {
+  CaptionNode,
+  createCaptionPage,
+  GUEST_NAME,
+  onlyLine,
+  onlySourcedLine,
+} from "./google-meet-captions.test-support.js";
 import { GOOGLE_MEET_TRANSCRIPT_MAX_LINES } from "./types.js";
-
-const MEETING_URL = "https://meet.google.com/abc-defg-hij";
-const GUEST_NAME = "Meeting Assistant";
-
-type CaptionSource = {
-  id: string;
-  epoch: string;
-  revision: string;
-  finalized: boolean;
-  ownEcho?: boolean;
-};
-
-type CaptionLine = {
-  speaker?: string;
-  text: string;
-  source?: CaptionSource;
-};
-
-type Transcript = {
-  sessionMatched: boolean;
-  epoch: string;
-  lines: CaptionLine[];
-  pendingLines: CaptionLine[];
-};
-
-class CaptionNode {
-  constructor(
-    public textContent: string,
-    private attributes: Record<string, string> = {},
-    public parentElement: CaptionNode | null = null,
-  ) {}
-
-  get innerText() {
-    return this.textContent;
-  }
-
-  getAttribute(name: string) {
-    return this.attributes[name] ?? null;
-  }
-
-  closest(selector: string): CaptionNode | null {
-    return closestCaptionNode(this, selector);
-  }
-}
-
-function createCaptionPage(initialRows: CaptionNode[]) {
-  let rows = initialRows;
-  let now = 1_000;
-  let nextTimer = 0;
-  let nextEpoch = 0;
-  const timers = new Map<number, { callback: () => void; delay: number }>();
-  const observers = new Set<() => void>();
-  const windowState: Record<string, unknown> = {};
-  const leaveButton = {
-    disabled: false,
-    innerText: "",
-    getAttribute: (name: string) => (name === "aria-label" ? "Leave call" : null),
-  };
-  const context = createContext({
-    Date: class extends Date {
-      static override now() {
-        return now;
-      }
-    },
-    URL,
-    crypto: { randomUUID: () => `epoch-${++nextEpoch}` },
-    document: {
-      body: { innerText: "Meeting in progress" },
-      title: "Meet",
-      querySelector: (selector: string) =>
-        selector.includes("aria-live") ? (rows[0] ?? null) : null,
-      querySelectorAll: (selector: string) => {
-        if (selector === "button") {
-          return [leaveButton];
-        }
-        return selector.includes("aria-live") ? rows : [];
-      },
-    },
-    location: { href: MEETING_URL, hostname: "meet.google.com" },
-    MutationObserver: class {
-      constructor(private callback: () => void) {}
-
-      observe() {
-        observers.add(this.callback);
-      }
-
-      disconnect() {
-        observers.delete(this.callback);
-      }
-    },
-    setTimeout: (callback: () => void, delay: number) => {
-      const id = ++nextTimer;
-      timers.set(id, { callback, delay });
-      return id;
-    },
-    clearTimeout: (id: number) => timers.delete(id),
-    window: windowState,
-  });
-  return {
-    async poll(sessionId = "session-1") {
-      const inspect = new Script(
-        `(${meetStatusScript({
-          allowMicrophone: false,
-          autoJoin: false,
-          captionSessionId: sessionId,
-          captureCaptions: true,
-          guestName: GUEST_NAME,
-          readOnly: true,
-        })})`,
-      ).runInContext(context) as () => Promise<string>;
-      await inspect();
-    },
-    read(finalize = false, sessionId = "session-1"): Transcript {
-      const read = new Script(
-        `(${meetTranscriptScript(MEETING_URL, sessionId, finalize)})`,
-      ).runInContext(context) as () => string;
-      return JSON.parse(read()) as Transcript;
-    },
-    show(nextRows: CaptionNode[]) {
-      rows = nextRows;
-      for (const notify of observers) {
-        notify();
-      }
-    },
-    advance(milliseconds: number) {
-      now += milliseconds;
-    },
-    settle() {
-      expect(timers.size).toBeGreaterThan(0);
-      // Callbacks may schedule another timer; settle only the current snapshot.
-      const pendingTimers = Array.from(timers);
-      for (const [id, timer] of pendingTimers) {
-        timers.delete(id);
-        now += timer.delay;
-        timer.callback();
-      }
-    },
-    reload() {
-      timers.clear();
-      observers.clear();
-      delete windowState["__openclawMeetCaptions"];
-    },
-  };
-}
-
-function onlyLine(lines: CaptionLine[]): CaptionLine {
-  expect(lines).toHaveLength(1);
-  const line = lines[0];
-  if (!line) {
-    throw new Error("Expected one captured caption");
-  }
-  return line;
-}
-
-function onlySourcedLine(lines: CaptionLine[]): CaptionLine & { source: CaptionSource } {
-  const line = onlyLine(lines);
-  if (!line.source) {
-    throw new Error("Expected caption source identity");
-  }
-  return { ...line, source: line.source };
-}
 
 describe("Google Meet caption source identity", () => {
   it("retains identity through polls and a non-prefix correction in the same row", async () => {
@@ -186,12 +29,13 @@ describe("Google Meet caption source identity", () => {
     row.textContent = "Alice\nActually, use the green version";
     page.show([row]);
     const corrected = page.read();
-    const previous = onlySourcedLine(corrected.lines);
+    const previous = onlyLine(corrected.lines);
     const line = onlySourcedLine(corrected.pendingLines);
     expect(previous.text).toBe("Please use the blue version");
-    expect(previous.source).toEqual({ ...source, revision: "2", finalized: true });
+    expect(previous.source).toBeUndefined();
+    expect(previous.provenance).toEqual(initial.pendingLines[0]?.provenance);
     expect(line.text).toBe("Actually, use the green version");
-    expect(line.source).toEqual({ ...source, revision: "3", finalized: false });
+    expect(line.source).toEqual({ ...source, revision: "2", finalized: false });
     await page.poll();
     expect(onlySourcedLine(page.read().pendingLines).source).toEqual(line.source);
     expect(page.read().lines).toEqual(corrected.lines);
@@ -278,13 +122,16 @@ describe("Google Meet caption source identity", () => {
     const row = new CaptionNode(originalText);
     const page = createCaptionPage([row]);
     await page.poll();
+    const original = onlySourcedLine(page.read().pendingLines);
     row.textContent = "Alice\nActually, use the green version";
     page.show([row]);
     const corrected = page.read();
-    const previous = onlySourcedLine(corrected.lines);
+    const previous = onlyLine(corrected.lines);
     const pending = onlySourcedLine(corrected.pendingLines);
-    expect(pending.source.id).toBe(previous.source.id);
-    expect(pending.source.revision).not.toBe(previous.source.revision);
+    expect(previous.source).toBeUndefined();
+    expect(previous.provenance).toEqual(original.provenance);
+    expect(pending.source.id).toBe(original.source.id);
+    expect(pending.source.revision).not.toBe(original.source.revision);
     const committed = page.read(true).lines;
 
     page.show([new CaptionNode(originalText)]);
@@ -383,6 +230,7 @@ describe("Google Meet caption source identity", () => {
     expect(sourceIds).not.toContain(undefined);
     expect(new Set(sourceIds).size).toBe(GOOGLE_MEET_TRANSCRIPT_MAX_LINES);
     expect(initial.pendingLines.at(-1)).not.toHaveProperty("source");
+    expect(initial.pendingLines.every((line) => line.provenance?.self === "unknown")).toBe(true);
     const original = onlySourcedLine(initial.pendingLines.slice(0, 1));
 
     const committed = page.read(true);
@@ -405,6 +253,7 @@ describe("Google Meet caption source identity", () => {
     const pending = onlyLine(page.read().pendingLines);
     expect(pending.text).toBe(nextText);
     expect(pending).not.toHaveProperty("source");
+    expect(pending.provenance).toMatchObject({ speaker: "Alice", self: "unknown" });
     const finalized = page.read(true);
     expect(finalized.lines).toHaveLength(GOOGLE_MEET_TRANSCRIPT_MAX_LINES);
     expect(finalized.lines.at(-1)).toMatchObject({ text: nextText });
@@ -495,12 +344,3 @@ describe("Google Meet caption source identity", () => {
     },
   );
 });
-
-function closestCaptionNode(startNode: CaptionNode | null, selector: string): CaptionNode | null {
-  for (let node = startNode; node; node = node.parentElement) {
-    if (selector === "[data-is-self]" && node.getAttribute("data-is-self") !== null) {
-      return node;
-    }
-  }
-  return null;
-}

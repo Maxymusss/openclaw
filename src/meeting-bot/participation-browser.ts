@@ -43,7 +43,7 @@ export async function runMeetingParticipationWithBrowser(params: {
     if (invalidAction) {
       return { status: "rejected", message: invalidAction };
     }
-    const deadline = Date.now() + Math.max(1, params.timeoutMs);
+    const deadline = performance.now() + Math.max(1, params.timeoutMs);
     const result = await runMeetingBrowserAct({
       deadline,
       targetId: params.targetId,
@@ -67,7 +67,7 @@ export async function runMeetingParticipationWithBrowser(params: {
           action: params.action,
         };
         const remainingTimeoutMs = () => {
-          const timeoutMs = Math.floor(deadline - Date.now());
+          const timeoutMs = Math.floor(deadline - performance.now());
           if (timeoutMs <= 0) {
             throw new Error("Meeting participation timed out before dispatch.");
           }

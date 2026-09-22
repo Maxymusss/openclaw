@@ -5,6 +5,11 @@ import type {
   TranscriptStopRequest,
   TranscriptsStopResult,
 } from "../transcripts/provider-types.js";
+import {
+  meetingCaptionParticipationSources,
+  snapshotMeetingObservation,
+  snapshotMeetingTranscript,
+} from "./observation-provenance.js";
 import type {
   MeetingParticipationRequest,
   MeetingParticipationSource,
@@ -108,7 +113,7 @@ export class MeetingSessionRuntime<
         if (!isCurrent(session.id)) {
           throw new Error("The meeting session no longer owns the captured browser tab and route.");
         }
-        return snapshot;
+        return snapshot && snapshotMeetingTranscript(snapshot);
       },
       onSnapshot: (session, snapshot) => {
         if (
@@ -117,14 +122,8 @@ export class MeetingSessionRuntime<
         ) {
           return;
         }
-        for (const line of [...snapshot.lines, ...(snapshot.pendingLines ?? [])]) {
-          if (line.source) {
-            this.observeParticipationSource(session.id, {
-              ...line.source,
-              kind: "caption",
-              text: line.text,
-            });
-          }
+        for (const source of meetingCaptionParticipationSources(snapshot)) {
+          this.observeParticipationSource(session.id, source);
         }
       },
       onLines: async (session, lines) => await this.#durableTranscripts.ingest(session, lines),
@@ -172,15 +171,14 @@ export class MeetingSessionRuntime<
   }
 
   participationContext(sessionId: string) {
-    return (
-      this.#participation?.context(sessionId) ?? {
-        sessionId,
-        active: false,
-        sourceOrder: 0,
-        capabilities: [],
-        sources: [],
-      }
-    );
+    const context = this.#participation?.context(sessionId) ?? {
+      sessionId,
+      active: false,
+      sourceOrder: 0,
+      capabilities: [],
+      sources: [],
+    };
+    return { ...context, sources: context.sources.map(snapshotMeetingObservation) };
   }
 
   observeParticipationEpoch(
@@ -195,11 +193,12 @@ export class MeetingSessionRuntime<
     sessionId: string,
     source: MeetingParticipationSource,
   ): string | undefined {
-    return this.#participation?.observe(sessionId, source);
+    return this.#participation?.observe(sessionId, snapshotMeetingObservation(source));
   }
 
   inspectParticipationSource(sessionId: string, sourceId: string) {
-    return this.#participation?.inspect(sessionId, sourceId);
+    const inspected = this.#participation?.inspect(sessionId, sourceId);
+    return inspected && { ...inspected, source: snapshotMeetingObservation(inspected.source) };
   }
 
   async participate(sessionId: string, request: MeetingParticipationRequest) {
@@ -213,7 +212,7 @@ export class MeetingSessionRuntime<
   }
 
   async transcript(sessionId: string, options: { sinceIndex?: number } = {}) {
-    return await this.#transcriptStore.read(sessionId, options);
+    return snapshotMeetingTranscript(await this.#transcriptStore.read(sessionId, options));
   }
 
   async startTranscriptSource(request: TranscriptStartRequest): Promise<TranscriptsStartResult> {

@@ -1,4 +1,5 @@
 import type { PluginStateKeyedStore } from "../plugin-state/plugin-state-store.types.js";
+import type { MeetingObservationProvenance } from "./session-types.js";
 
 export type MeetingParticipationAction = { type: string; [key: string]: unknown };
 export type MeetingParticipationRequest = {
@@ -27,6 +28,8 @@ export type MeetingParticipationSource = {
   revision: string;
   kind: "chat" | "caption";
   text: string;
+  /** Observation that supplied this source; does not refresh its age, order, or authority. */
+  provenance?: MeetingObservationProvenance;
   ownEcho?: boolean;
   finalized: boolean;
 };

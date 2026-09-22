@@ -32,8 +32,21 @@ describe("caption source wire metadata", () => {
     expect(parsed).toEqual({
       droppedLines: 0,
       epoch: "epoch-1",
-      lines: [completed],
-      pendingLines: [pending],
+      lines: [
+        {
+          ...completed,
+          provenance: {
+            observer: "google-meet",
+            epoch: "epoch-1",
+            observedAt: completed.at,
+            speaker: "Alice",
+            self: "unknown",
+          },
+        },
+      ],
+      pendingLines: [
+        { ...pending, provenance: { observer: "google-meet", epoch: "epoch-1", self: "unknown" } },
+      ],
     });
   });
 
@@ -50,7 +63,12 @@ describe("caption source wire metadata", () => {
         lines: [{ text: "Still a transcript line", source: invalidSource }],
       }),
     });
-    expect(parsed.lines).toEqual([{ text: "Still a transcript line" }]);
+    expect(parsed.lines).toEqual([
+      {
+        text: "Still a transcript line",
+        provenance: { observer: "google-meet", epoch: "epoch-1", self: "unknown" },
+      },
+    ]);
   });
 
   it("preserves compatibility for transcript providers without source metadata", () => {

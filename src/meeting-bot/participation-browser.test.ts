@@ -78,6 +78,54 @@ describe("meeting participation browser dispatch", () => {
     expect(parse).toHaveBeenCalledWith({ result: "test-result" }, { type: "test-action" });
   });
 
+  it.each([86_400_000, -86_400_000])(
+    "keeps one monotonic budget when the wall clock jumps by %i ms",
+    async (wallClockJump) => {
+      let monotonicNow = 1_000;
+      let wallClockNow = 1_800_000_000_000;
+      const monotonic = vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+      const wallClock = vi.spyOn(Date, "now").mockImplementation(() => wallClockNow);
+      const callBrowser = vi.fn<MeetingBrowserRequestCaller>(async (request) => {
+        monotonicNow += request.path === "/tabs" ? 2_000 : 3_000;
+        wallClockNow += wallClockJump;
+        return request.path === "/tabs" ? tabs : { result: "ready" };
+      });
+      try {
+        await expect(
+          run(callBrowser, { adapter: createPreparingAdapter() }),
+        ).resolves.toMatchObject({
+          status: "succeeded",
+        });
+        expect(callBrowser.mock.calls.map(([request]) => request.timeoutMs)).toEqual([
+          10_000, 8_000, 5_000,
+        ]);
+      } finally {
+        monotonic.mockRestore();
+        wallClock.mockRestore();
+      }
+    },
+  );
+
+  it("does not dispatch after preparation exhausts the monotonic budget", async () => {
+    let monotonicNow = 1_000;
+    const monotonic = vi.spyOn(performance, "now").mockImplementation(() => monotonicNow);
+    const callBrowser = vi.fn<MeetingBrowserRequestCaller>(async (request) => {
+      if (request.path === "/act") {
+        monotonicNow += 10_000;
+      }
+      return request.path === "/tabs" ? tabs : { result: "ready" };
+    });
+    try {
+      await expect(run(callBrowser, { adapter: createPreparingAdapter() })).resolves.toEqual({
+        status: "failed",
+        message: "Meeting participation timed out before dispatch.",
+      });
+      expect(callBrowser).toHaveBeenCalledTimes(2);
+    } finally {
+      monotonic.mockRestore();
+    }
+  });
+
   it.each([
     { capabilities: [], expected: "unsupported" },
     { capabilities: ["test-action"], expected: "rejected" },
@@ -92,7 +140,7 @@ describe("meeting participation browser dispatch", () => {
     const { promise: gate, resolve: release } = createDeferredCore();
     const blocker = runMeetingBrowserAct({
       targetId,
-      deadline: Date.now() + 10_000,
+      deadline: performance.now() + 10_000,
       operation: async () => await gate,
     });
     let current = true;
@@ -243,7 +291,7 @@ describe("meeting participation browser dispatch", () => {
     const concurrentOperation = vi.fn(async () => {});
     const concurrent = runMeetingBrowserAct({
       targetId,
-      deadline: Date.now() + 10_000,
+      deadline: performance.now() + 10_000,
       operation: concurrentOperation,
     });
     await Promise.resolve();

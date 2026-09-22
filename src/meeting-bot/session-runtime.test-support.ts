@@ -1,6 +1,9 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { vi } from "vitest";
-import type { MeetingParticipationOptions } from "./participation-types.js";
+import type {
+  MeetingParticipationAttempt,
+  MeetingParticipationOptions,
+} from "./participation-types.js";
 import {
   MeetingSessionRuntime,
   type MeetingSessionRuntimeHandles,
@@ -158,4 +161,51 @@ export function createTestRuntime(params: {
       : {}),
   });
   return { createdSessions, runtime };
+}
+
+export function createParticipationTestRuntime(
+  params: {
+    captureTranscript?: Parameters<typeof createTestRuntime>[0]["captureTranscript"];
+    transcribe?: boolean;
+    durableTranscripts?: { stateDir: string };
+  } = {},
+) {
+  const rows = new Map<string, MeetingParticipationAttempt>();
+  const execute = vi.fn<MeetingParticipationOptions<TestSession>["execute"]>(async () => ({
+    status: "succeeded",
+  }));
+  const store: MeetingParticipationOptions<TestSession>["store"] = {
+    lookup: async (key) => rows.get(key),
+    register: async (key, value) => {
+      rows.set(key, value);
+    },
+    registerIfAbsent: async (key, value) => {
+      if (rows.has(key)) {
+        return false;
+      }
+      rows.set(key, value);
+      return true;
+    },
+    entries: async () => [...rows].map(([key, value]) => ({ key, value, createdAt: 0 })),
+    delete: async (key) => rows.delete(key),
+  };
+  const { runtime } = createTestRuntime({
+    ...params,
+    participation: {
+      store,
+      capabilities: () => ["hand.set"],
+      validateAction: () => undefined,
+      execute,
+    },
+    joinTransport: async ({ session }) => {
+      session.browser = {
+        launched: true,
+        tab: { targetId: "tracked-tab", openedByPlugin: false },
+        health: { inCall: true },
+      };
+      return {};
+    },
+    releaseBrowserTab: async () => true,
+  });
+  return { runtime, store, execute };
 }

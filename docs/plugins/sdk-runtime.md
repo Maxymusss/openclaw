@@ -228,6 +228,20 @@ snapshot replay or correction time. Repeated snapshots preserve unchanged
 retained references and guards; older replayed sources cannot displace newer
 ones from a full live-source window.
 
+Retained transcript rows carry a separate `provenance` envelope: observer, optional
+observation/session/document identifiers and observation time, observed speaker
+label, and native `self`, `other`, or `unknown` attribution. Speaker labels are not
+participant identities. Missing or malformed attribution remains unknown; a
+provenance record never grants participation authority. Interim, historical, own-echo,
+and otherwise non-actionable rows retain provenance independently of `source`.
+
+This is a retained-snapshot contract, not a revision journal. Unchanged polls keep
+unchanged observation identifiers; intermediate states between polls need not be
+retained. Existing transcript storage carries the envelope in
+`metadata.meetingObservationProvenance` on the utterances it already stores, under
+the existing retention policy. There is no separate observation archive. Removing
+one DOM copy must not finalize a source that still has a live copy.
+
 Browser adapters may implement `MeetingBrowserParticipationAdapter` and dispatch
 through `runMeetingParticipationWithBrowser`. The helper uses the existing tab
 lock, a pinned route, and the session guard. An optional preparation script may

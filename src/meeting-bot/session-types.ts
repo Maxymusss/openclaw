@@ -10,10 +10,23 @@ export type MeetingResolvedJoin<TTransport extends string, TMode extends string>
   agentId: string;
 };
 
+/** Descriptive facts for one retained observation, never participation authority. */
+export type MeetingObservationProvenance = {
+  observer: string;
+  observationId?: string;
+  sessionId?: string;
+  epoch?: string;
+  observedAt?: string;
+  speaker?: string;
+  self: "self" | "other" | "unknown";
+};
+
 export type MeetingTranscriptLine = {
   at?: string;
   speaker?: string;
   text: string;
+  /** Independent of the optional, mutable action-source identity below. */
+  provenance?: MeetingObservationProvenance;
   /** Optional identity assigned by the provider's canonical caption observer. */
   source?: {
     id: string;
@@ -72,7 +85,7 @@ export type MeetingPluginProbeHealth = MeetingBrowserHealth & {
   lastCaptionSpeaker?: string;
   lastCaptionText?: string;
   lastOutputBytes?: number;
-  recentTranscript?: Array<{ at?: string; speaker?: string; text: string }>;
+  recentTranscript?: MeetingTranscriptLine[];
   transcriptLines?: number;
 };
 

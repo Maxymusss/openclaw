@@ -1,11 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
-import type {
-  MeetingParticipationAttempt,
-  MeetingParticipationOptions,
-} from "./participation-types.js";
-import { createTestRuntime } from "./session-runtime.test-support.js";
-import type { TestSession } from "./session-runtime.test-support.js";
+import {
+  createParticipationTestRuntime,
+  type createTestRuntime,
+} from "./session-runtime.test-support.js";
 import type { MeetingTranscriptSnapshot } from "./session-types.js";
 
 afterEach(() => {
@@ -13,54 +11,8 @@ afterEach(() => {
 });
 
 describe("MeetingSessionRuntime participation ownership", () => {
-  function participationRuntime(
-    params: {
-      captureTranscript?: Parameters<typeof createTestRuntime>[0]["captureTranscript"];
-      transcribe?: boolean;
-    } = {},
-  ) {
-    const rows = new Map<string, MeetingParticipationAttempt>();
-    const execute = vi.fn<MeetingParticipationOptions<TestSession>["execute"]>(async () => ({
-      status: "succeeded",
-    }));
-    const store: MeetingParticipationOptions<TestSession>["store"] = {
-      lookup: async (key) => rows.get(key),
-      register: async (key, value) => {
-        rows.set(key, value);
-      },
-      registerIfAbsent: async (key, value) => {
-        if (rows.has(key)) {
-          return false;
-        }
-        rows.set(key, value);
-        return true;
-      },
-      entries: async () => [...rows].map(([key, value]) => ({ key, value, createdAt: 0 })),
-      delete: async (key) => rows.delete(key),
-    };
-    const { runtime } = createTestRuntime({
-      ...params,
-      participation: {
-        store,
-        capabilities: () => ["hand.set"],
-        validateAction: () => undefined,
-        execute,
-      },
-      joinTransport: async ({ session }) => {
-        session.browser = {
-          launched: true,
-          tab: { targetId: "tracked-tab", openedByPlugin: false },
-          health: { inCall: true },
-        };
-        return {};
-      },
-      releaseBrowserTab: async () => true,
-    });
-    return { runtime, store, execute };
-  }
-
   it("revokes participation as soon as leave starts, while an admitted claim is awaiting storage", async () => {
-    const { runtime, store, execute } = participationRuntime();
+    const { runtime, store, execute } = createParticipationTestRuntime();
     const { session } = await runtime.join({
       url: "https://meeting.example/room",
       agentId: "operator",
@@ -90,7 +42,7 @@ describe("MeetingSessionRuntime participation ownership", () => {
   });
 
   it("does not transfer an observed source to a replacement browser tab", async () => {
-    const { runtime, execute } = participationRuntime();
+    const { runtime, execute } = createParticipationTestRuntime();
     const { session } = await runtime.join({
       url: "https://meeting.example/room",
       agentId: "operator",
@@ -127,7 +79,7 @@ describe("MeetingSessionRuntime participation ownership", () => {
         return await pending;
       })
       .mockResolvedValue(undefined);
-    const { runtime } = participationRuntime({ captureTranscript, transcribe: true });
+    const { runtime } = createParticipationTestRuntime({ captureTranscript, transcribe: true });
     const { session } = await runtime.join({
       url: "https://meeting.example/room",
       agentId: "operator",
@@ -183,7 +135,7 @@ describe("MeetingSessionRuntime participation ownership", () => {
         pendingLines: [{ text: "Please wait", source: { ...source, revision: "3" } }],
       },
     ];
-    const { runtime } = participationRuntime({
+    const { runtime } = createParticipationTestRuntime({
       captureTranscript: async () => snapshots.shift(),
       transcribe: true,
     });
@@ -229,7 +181,7 @@ describe("MeetingSessionRuntime participation ownership", () => {
       { droppedLines: 0, epoch: "new-page", lines: [], pendingLines: [] },
       oldSnapshot,
     ];
-    const { runtime } = participationRuntime({
+    const { runtime } = createParticipationTestRuntime({
       captureTranscript: async () => snapshots.shift(),
       transcribe: true,
     });

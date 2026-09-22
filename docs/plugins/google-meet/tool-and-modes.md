@@ -143,13 +143,23 @@ does not displace newer retained sources. A newer eligible observation replaces
 only the oldest retained source. Unchanged retained sources keep their references
 and live guards; rereading them does not extend the two-minute lifetime.
 
+Retained caption rows also carry independent observation provenance, including
+the observed speaker label and native self/other/unknown marker. Equal text does
+not transfer those facts between participants. Historical, interim, own-echo, and
+capacity-ineligible rows retain their provenance even when they have no actionable
+`source`. A duplicate DOM row disappearing does not finalize another live copy.
+The latest retained snapshots are not a complete journal of intermediate edits.
+
 A rejected request may return `correctionOf`. It permits one corrected request
 with a new `requestId`, that exact `correctionOf`, and the same source and action
 type. It does not permit retrying an uncertain effect or changing who authorized
 it. Attempts and results use the existing SQLite plugin state store. History is
 bounded: at capacity, the oldest closed-session rows are reclaimed. Active
 claims never expire or get evicted to admit another action; discarded closed
-requests remain inactive and cannot run again.
+requests remain inactive and cannot run again. A known pre-insertion capacity
+rejection permits one fresh atomic admission attempt after bounded cleanup,
+including when another request reclaimed the same rows. Unknown write outcomes
+are never retried automatically.
 
 ## Agent and bidi modes
 

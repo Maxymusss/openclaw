@@ -495,9 +495,8 @@ export class MeetingParticipation<TSession> {
           break;
         }
       }
-      if (!removed) {
-        throw error;
-      }
+      // Another claimant may have reclaimed the same rows. Atomic admission, not
+      // this sweep's deletion count, decides whether capacity is still exhausted.
       return await this.options.store.registerIfAbsent(key, attempt);
     }
   }

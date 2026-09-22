@@ -7,6 +7,7 @@ import {
 } from "./chrome-transport.js";
 import { createMeetingConfiguredNodeHost } from "./configured-node-host.js";
 import { isMeetingRealtimeRouteReady, isMeetingTalkBackMode } from "./meeting-modes.js";
+import { normalizeMeetingObservationProvenance } from "./observation-provenance.js";
 import type {
   MeetingBrowserAdapter,
   MeetingBrowserLeaveStep,
@@ -132,11 +133,13 @@ const meetingTranscriptLineSchema = z
     at: optionalBrowserString,
     speaker: optionalBrowserString,
     text: z.string().refine((value) => value.trim().length > 0),
+    provenance: z.unknown().optional(),
   })
-  .transform(({ at, speaker, text }) => ({
+  .transform(({ at, speaker, text, provenance }) => ({
     ...(at !== undefined ? { at } : {}),
     ...(speaker !== undefined ? { speaker } : {}),
     text,
+    ...(provenance !== undefined ? { provenance } : {}),
   }));
 
 const meetingBrowserStatusSchema = z.looseObject({
@@ -175,6 +178,7 @@ const meetingBrowserStatusSchema = z.looseObject({
 
 function parseMeetingBrowserStatus<Health extends MeetingBrowserHealth>(
   result: unknown,
+  adapterId: string,
   options: MeetingPlatformAdapterOptions<
     never,
     string,
@@ -204,7 +208,18 @@ function parseMeetingBrowserStatus<Health extends MeetingBrowserHealth>(
     lastCaptionAt: parsed.lastCaptionAt,
     lastCaptionSpeaker: parsed.lastCaptionSpeaker,
     lastCaptionText: parsed.lastCaptionText,
-    recentTranscript: parsed.recentTranscript,
+    recentTranscript: parsed.recentTranscript?.map((line) => ({
+      ...line,
+      ...(line.provenance !== undefined
+        ? {
+            provenance: normalizeMeetingObservationProvenance(line.provenance, {
+              observer: adapterId,
+              observedAt: line.at,
+              speaker: line.speaker,
+            }),
+          }
+        : {}),
+    })),
     audioInputRouted: parsed.audioInputRouted,
     audioInputDeviceLabel: parsed.audioInputDeviceLabel,
     audioInputRouteError: parsed.audioInputRouteError,
@@ -250,6 +265,7 @@ function parseMeetingLeaveResult(result: unknown): MeetingBrowserLeaveStep {
 
 function parseMeetingTranscript<Transcript extends MeetingTranscriptSnapshot>(
   result: unknown,
+  adapterId: string,
   options: MeetingPlatformAdapterOptions<
     never,
     string,
@@ -293,6 +309,7 @@ function parseMeetingTranscript<Transcript extends MeetingTranscriptSnapshot>(
             speaker?: unknown;
             text?: unknown;
             source?: unknown;
+            provenance?: unknown;
           };
           if (typeof line.text !== "string" || !line.text.trim()) {
             return [];
@@ -300,11 +317,23 @@ function parseMeetingTranscript<Transcript extends MeetingTranscriptSnapshot>(
           const source = meetingCaptionSourceSchema.safeParse(line.source);
           const identity =
             source.success && source.data.epoch === payload.epoch ? source.data : undefined;
+          // Text-only legacy providers keep their shape. A supplied source or envelope
+          // needs explicit unknown facts when observation provenance is unavailable.
           return [
             {
               ...(typeof line.at === "string" ? { at: line.at } : {}),
               ...(typeof line.speaker === "string" ? { speaker: line.speaker } : {}),
               text: line.text,
+              ...(line.provenance !== undefined || line.source !== undefined
+                ? {
+                    provenance: normalizeMeetingObservationProvenance(line.provenance, {
+                      observer: adapterId,
+                      epoch: payload.epoch,
+                      observedAt: line.at,
+                      speaker: line.speaker,
+                    }),
+                  }
+                : {}),
               ...(identity ? { source: identity } : {}),
             },
           ];
@@ -360,7 +389,7 @@ function createMeetingPlatformAdapter<
     ...platform,
     browser: {
       ...browser,
-      parseStatus: (result) => parseMeetingBrowserStatus(result, parsing),
+      parseStatus: (result) => parseMeetingBrowserStatus(result, options.id, parsing),
       classifyManualAction: (health) => {
         if (!health.manualAction) {
           return undefined;
@@ -374,7 +403,7 @@ function createMeetingPlatformAdapter<
       parseLeaveResult: parseMeetingLeaveResult,
       captions: {
         ...browser.captions,
-        parseTranscript: (result) => parseMeetingTranscript(result, parsing),
+        parseTranscript: (result) => parseMeetingTranscript(result, options.id, parsing),
       },
       permissionNotes:
         browser.permissionNotes ??
