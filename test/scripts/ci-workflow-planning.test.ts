@@ -5322,8 +5322,8 @@ describe("ci workflow guards", () => {
   );
 
   it.each([
-    ["pull_request", "compact", "hybrid", 131],
-    ["pull_request", "precise", "hybrid", 131],
+    ["pull_request", "compact", "hybrid", 130],
+    ["pull_request", "precise", "hybrid", 130],
     ["pull_request", "compact", "blacksmith", 130],
     ["pull_request", "precise", "blacksmith", 130],
     ["pull_request", "compact", "github", 130],
