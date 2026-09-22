@@ -485,10 +485,10 @@ export async function prepareAgentRunDispatch(
     assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
     const entry = params.context.chatAbortControllers.get(params.runId);
     if (
-      !entry ||
       entry !== activeRunAbort.entry ||
-      entry.operationalRunInstance !== operationalRunInstance ||
-      (!terminal && entry.registrationCleanupRequested)
+      (entry &&
+        (entry.operationalRunInstance !== operationalRunInstance ||
+          (!terminal && entry.registrationCleanupRequested)))
     ) {
       throw new Error("agent input admission no longer owns this run");
     }
