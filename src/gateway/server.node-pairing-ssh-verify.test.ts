@@ -178,7 +178,6 @@ describeWithLanNodePairingServer("gateway ssh-verified node pairing auto-approve
           // The node must keep retrying while the detached probe can still land.
           expect(details?.recommendedNextStep).toBe("wait_then_retry");
           expect(details?.pauseReconnect).toBe(false);
-
           probe.resolve({
             status: "ok",
             stdout: `motd noise\n{"deviceId":"${loaded.identity.deviceId}","publicKey":"${loaded.publicKey}"}\n`,

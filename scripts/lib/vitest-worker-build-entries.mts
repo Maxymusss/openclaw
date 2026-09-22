@@ -24,6 +24,7 @@ import { doctorConfigRuntimeEntrypoints } from "../../src/commands/doctor-config
 import { cronOwnerHardeningEntrypoints } from "../../src/cron/owner-hardening-runtime.test-support.ts";
 import { sessionChildCacheRetentionEntrypoint } from "../../src/gateway/session-child-cache-retention-entrypoint.test-support.ts";
 import { sessionTitleRetentionEntrypoints } from "../../src/gateway/session-title-retention.test-support.ts";
+import { sqliteReadOnlyCompileCacheParentEntrypoint } from "../../src/infra/sqlite-readonly-worker.compile-cache-runtime.test-support.ts";
 import {
   triageTestRuntimeEntrypoints,
   triageMaintenanceRuntimeEntrypoints,
@@ -54,7 +55,13 @@ import { createRuntimeProcessBuildEntries } from "./runtime-process-core-build-e
 import { nativeSchtasksIntegrationEnabled } from "./vitest-worker-declarations.mts";
 
 // These fixture hooks require physical module boundaries and complete namespaces.
-export const legacyFinalizerBuildSources = [
+export const preservedModuleBuildSources = [
+  "src/cli/mcp-cli.ts",
+  "src/agents/agent-bundle-mcp-materialize.ts",
+  "src/plugins/tool-metadata.ts",
+  "src/plugins/tools.ts",
+  "src/plugins/loader.ts",
+  "src/mcp/channel-server.ts",
   "src/cli/update-finalization-output.test-support.ts",
   "src/cli/program/register.maintenance.ts",
   "src/cli/one-shot-exit.ts",
@@ -99,6 +106,7 @@ export const vitestWorkerBuildEntries = {
     codexCatalogPageWorkerEntrypoint,
     agentWorkerStoreFixtureEntrypoint,
     memoryPublicationFaultEntrypoint,
+    sqliteReadOnlyCompileCacheParentEntrypoint,
     ...Object.values(triageTestRuntimeEntrypoints),
     ...Object.values(triageMaintenanceRuntimeEntrypoints),
     authProfileScopeCwdEntrypoint,
