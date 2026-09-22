@@ -109,6 +109,8 @@ export async function withSessionEntriesWorkerRead<T>(
             );
             let changed = false;
             const unsubscribe = sessionChanges.subscribe((change) => {
+              // Run-index publications refresh presentation, not durable session lineage.
+              if (change.scope === "agent-runs") return;
               if ("all" in change) {
                 changed = true;
                 return;

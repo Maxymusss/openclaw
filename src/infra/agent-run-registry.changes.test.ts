@@ -21,19 +21,21 @@ it("publishes affected session identities for registration, moves, models, and r
   const changed = vi.fn();
   const stop = sessionChanges.subscribe(changed);
   const before = { sessionKey: "agent:main:before", agentId: "main" };
+  const beforeChange = { ...before, scope: "agent-runs" };
   const after = { sessionKey: "agent:other:after", agentId: "other" };
+  const afterChange = { ...after, scope: "agent-runs" };
   try {
     registerAgentRunContext("moving", before);
-    expect(changed.mock.calls).toEqual([[before]]);
+    expect(changed.mock.calls).toEqual([[beforeChange]]);
     changed.mockClear();
 
     registerAgentRunContext("moving", after);
-    expect(changed.mock.calls).toEqual(expect.arrayContaining([[before], [after]]));
+    expect(changed.mock.calls).toEqual(expect.arrayContaining([[beforeChange], [afterChange]]));
     expect(changed).toHaveBeenCalledTimes(2);
     changed.mockClear();
 
     recordAgentRunModel("moving", { provider: "openai", model: "test-model" });
-    expect(changed.mock.calls).toEqual([[after]]);
+    expect(changed.mock.calls).toEqual([[afterChange]]);
     changed.mockClear();
     recordAgentRunModel("moving", { provider: "openai", model: "test-model" });
     expect(changed).not.toHaveBeenCalled();
@@ -41,7 +43,7 @@ it("publishes affected session identities for registration, moves, models, and r
     const claim = claimAgentRunContext("moving", after, { trackOwner: true, ownsContext: true });
     changed.mockClear();
     releaseAgentRunContext("moving", claim);
-    expect(changed.mock.calls).toEqual([[after]]);
+    expect(changed.mock.calls).toEqual([[afterChange]]);
     changed.mockClear();
     clearAgentRunContext("missing");
     expect(changed).not.toHaveBeenCalled();

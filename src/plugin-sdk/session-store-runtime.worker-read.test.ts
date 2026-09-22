@@ -6,6 +6,7 @@ import {
   acquireHistoryDatabaseResource,
   historyPages,
 } from "../config/sessions/session-transcript-worker-resources.js";
+import { bumpAgentRunIndexVersion } from "../infra/agent-run-registry-state.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -152,6 +153,45 @@ it("does not create missing stores and rejects a revoked physical reader", async
     expect(consume).not.toHaveBeenCalled();
   });
 });
+
+it.each(["session", "global"] as const)(
+  "keeps durable session authority across %s run-index publication",
+  async (scope) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const params = {
+        agentId: "main",
+        sessionKey: "agent:main:run-index",
+        readConsistency: "latest" as const,
+        hydrateSkillPromptRefs: false as const,
+      };
+      replaceSessionEntrySync(params, { sessionId: "current", updatedAt: 1 });
+      const expected = getSessionEntry(params);
+      const run = historyPages.run.bind(historyPages);
+      let published = false;
+      const spy = vi.spyOn(historyPages, "run").mockImplementation(async (...args) => {
+        const reply = await run(...args);
+        if (
+          !published &&
+          reply.ok &&
+          typeof reply.value === "object" &&
+          !Array.isArray(reply.value) &&
+          reply.value.kind === "session-exact-entries"
+        ) {
+          published = true;
+          bumpAgentRunIndexVersion(scope === "session" ? params : undefined);
+        }
+        return reply;
+      });
+      try {
+        expect(await withSessionEntriesRead([params], ([entry]) => entry)).toEqual(expected);
+        expect(published).toBe(true);
+        expect(getSessionEntry(params)).toEqual(expected);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  },
+);
 
 it.each(["same-ID lineage", "folded alias"] as const)(
   "rejects %s publication between worker result and consumption",
