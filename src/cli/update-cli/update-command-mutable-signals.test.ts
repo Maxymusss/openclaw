@@ -3,7 +3,8 @@ import { once } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, expect, it } from "vitest";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { afterEach, assert, expect, it } from "vitest";
 import { resolveVitestNodeArgs } from "../../../scripts/lib/vitest-process-env.mts";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { cronOwnerHardeningEntrypoints } from "../../cron/owner-hardening-runtime.test-support.js";
@@ -271,6 +272,7 @@ async function assertOwnedSignal(
     expect(child.kill(signal)).toBe(true);
     if (proof) {
       const receipt = await proof;
+      assert(isRecord(receipt));
       expect(receipt).toMatchObject({
         kind: "refusal-drain",
         canWrite: false,

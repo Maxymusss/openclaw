@@ -183,10 +183,9 @@ async function finalizeMigratedUpdate(): Promise<void> {
           });
           return await finalizeInput(input, fence, registerRun, freebsdWriteAdmission);
         },
-        {
-          ...(legacyManagedParent ? { legacyManagedParent } : {}),
-          onAuthorityFailure: freebsdWriteAdmission?.revoke,
-        },
+        legacyManagedParent
+          ? { legacyManagedParent, onAuthorityFailure: freebsdWriteAdmission?.revoke }
+          : { onAuthorityFailure: freebsdWriteAdmission?.revoke },
       );
     },
     {

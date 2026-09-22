@@ -634,13 +634,11 @@ export async function withUpdateCommandExecutor<T>(
             children.close();
             try {
               await children.settle();
-              if ("result" in operationOutcome || options?.onAuthorityFailure) {
-                if (lease) {
-                  assertSettled();
-                }
-                if ("result" in operationOutcome) {
-                  identityWarnings.flush();
-                }
+              if (lease && ("result" in operationOutcome || options?.onAuthorityFailure)) {
+                assertSettled();
+              }
+              if ("result" in operationOutcome) {
+                identityWarnings.flush();
               }
             } catch (cause) {
               try {

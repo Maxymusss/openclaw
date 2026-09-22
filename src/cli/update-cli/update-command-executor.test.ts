@@ -307,8 +307,10 @@ describe("live update executor", () => {
         expect(inventory).toHaveBeenCalledTimes(mode.startsWith("computed") ? 1 : 0);
         expect(schedule).toHaveBeenCalledTimes(budget === undefined ? 0 : 1);
         if (budget !== undefined) {
-          expect(schedule.mock.calls[0][0]).toBeGreaterThanOrEqual(before + budget);
-          expect(schedule.mock.calls[0][0]).toBeLessThanOrEqual(Date.now() + budget);
+          const scheduled = schedule.mock.calls[0];
+          assert(scheduled);
+          expect(scheduled[0]).toBeGreaterThanOrEqual(before + budget);
+          expect(scheduled[0]).toBeLessThanOrEqual(Date.now() + budget);
           await executor.enter(root, { activationTimeoutMs: 91_000 });
           expect(schedule).toHaveBeenCalledTimes(1);
         }
