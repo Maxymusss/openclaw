@@ -78,7 +78,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          fetch-depth: 5
+          fetch-depth: 6
           persist-credentials: false
       - name: Authenticate single-launch carrier
         env:
@@ -87,9 +87,10 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$HARNESS_SHA"
-          test "$(git show -s --format=%P HEAD)" = 6be1b742e89f53d5385c516c098ef02e0ea42c13
-          test "$(git rev-parse HEAD^1^{tree})" = b2929b7004ca257f7cfe230ca20595ab4f69cb2d
-          test "$(git show -s --format=%P HEAD^1)" = 3f7ed788c310c953a578cd416fcf1838bb520d61
+          test "$(git show -s --format=%P HEAD)" = 0077fafbe01505d029e51dd98495d149483ec335
+          test "$(git rev-parse HEAD^1^{tree})" = 2a2207741df2c836b86d5f2e52efe9e8eef62a0f
+          test "$(git show -s --format=%P HEAD^1)" = 6be1b742e89f53d5385c516c098ef02e0ea42c13
+          test "$(git show -s --format=%P HEAD~2)" = 3f7ed788c310c953a578cd416fcf1838bb520d61
           test "$(git rev-parse 892e4e1aca46d6a5ae8ee699fd78aec606054aa3^{tree})" = 7c5bc951d87e603e21ca803cc10abec122cbc987
           test "$PROOF_ATTEMPT" = 1
           python3 -I -S - <<'ADMIT'
@@ -104,7 +105,7 @@ jobs:
               '.github/workflows/freebsd-refreshed-proof.yml']
           workflow='.github/workflows/freebsd-integrated-package-proof.yml'
           assert git('rev-parse','HEAD:'+workflow)==git('rev-parse','HEAD^:'+workflow)
-          assert hashlib.sha256(subprocess.check_output(['git','show','HEAD:.github/workflows/freebsd-integrated-native-proof.yml'])).hexdigest()=='9b554b938b51bd8c46adb751e7e0eb0b2958e4af49f1e7a65130c6e07dce7387'
+          assert hashlib.sha256(subprocess.check_output(['git','show','HEAD:.github/workflows/freebsd-integrated-native-proof.yml'])).hexdigest()=='8b54d7a1a8632968ee9d8f3951e24f5d7a33c669fb044520a5fc66a25bf26330'
           assert not git('status','--porcelain')
           pr=json.loads(subprocess.check_output(['gh','api','repos/openclaw/openclaw/pulls/155851']))
           assert pr['state']=='open' and pr['draft'] is True and pr['auto_merge'] is None

@@ -1,5 +1,5 @@
 # Temporary source-bound qualification. Never merge this harness.
-name: Temporary integrated FreeBSD seeded qualification
+name: Temporary integrated FreeBSD remaining qualification
 
 on:
   push:
@@ -21,8 +21,8 @@ env:
   HARNESS_SHA: "82845539c110b395efdd257e5493bea532b44abd"
   PRODUCER_TREE: "23e9edc5e2492d5474d02761a9fd32b4dd651e19"
   CONSUMER_SHA: ${{ github.sha }}
-  CONSUMER_PARENT_SHA: "6be1b742e89f53d5385c516c098ef02e0ea42c13"
-  CONSUMER_PARENT_TREE: "b2929b7004ca257f7cfe230ca20595ab4f69cb2d"
+  CONSUMER_PARENT_SHA: "0077fafbe01505d029e51dd98495d149483ec335"
+  CONSUMER_PARENT_TREE: "2a2207741df2c836b86d5f2e52efe9e8eef62a0f"
   PRIOR_CONSUMER_SHA: "3f7ed788c310c953a578cd416fcf1838bb520d61"
   PRIOR_CONSUMER_TREE: "c56f1d7fcc10b5e88efa7ee37a32a41c442063c3"
   FIXTURE_RUN_ID: "35784025702"
@@ -45,7 +45,7 @@ env:
 
 jobs:
   fixtures:
-    # Exactly one reviewed successor reuses the original fixtures and repeats seeded cells.
+    # One reviewed successor reuses fixtures and completed Linux/x64 fresh evidence.
     if: github.repository == 'openclaw/openclaw' && github.actor == 'vincentkoc' && github.event_name == 'push' && github.run_attempt == 1 && github.event.before == '3f7ed788c310c953a578cd416fcf1838bb520d61' && !github.event.forced && !github.event.deleted
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -54,10 +54,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.CONSUMER_SHA }}
-          fetch-depth: 6
+          fetch-depth: 7
           persist-credentials: false
       - &admit
-        name: Bind the seeded successor, successful producer, and completed prior proof
+        name: Bind the remaining cases, successful producer, and terminal prior proof
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -67,7 +67,9 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CONSUMER_SHA"
           test "$(git show -s --format=%P HEAD)" = "$CONSUMER_PARENT_SHA"
           test "$(git rev-parse "$CONSUMER_PARENT_SHA^{tree}")" = "$CONSUMER_PARENT_TREE"
-          test "$(git show -s --format=%P "$CONSUMER_PARENT_SHA")" = "$PRIOR_CONSUMER_SHA"
+          test "$(git show -s --format=%P "$CONSUMER_PARENT_SHA")" = 6be1b742e89f53d5385c516c098ef02e0ea42c13
+          test "$(git rev-parse 6be1b742e89f53d5385c516c098ef02e0ea42c13^{tree})" = b2929b7004ca257f7cfe230ca20595ab4f69cb2d
+          test "$(git show -s --format=%P 6be1b742e89f53d5385c516c098ef02e0ea42c13)" = "$PRIOR_CONSUMER_SHA"
           test "$(git rev-parse "$PRIOR_CONSUMER_SHA^{tree}")" = "$PRIOR_CONSUMER_TREE"
           test "$(git show -s --format=%P "$PRIOR_CONSUMER_SHA")" = "$HARNESS_SHA"
           test "$(git rev-parse "$HARNESS_SHA^{tree}")" = "$PRODUCER_TREE"
@@ -103,13 +105,19 @@ jobs:
           assert a['size_in_bytes']==int(os.environ['PAYLOAD_ARTIFACT_SIZE']) and a['digest']==os.environ['PAYLOAD_ARTIFACT_DIGEST']
           prior=api(f"repos/{repo}/actions/runs/{os.environ['FIXTURE_RUN_ID']}")
           assert prior['head_sha']==os.environ['PRIOR_CONSUMER_SHA'] and prior['run_attempt']==1
-          assert prior['status']=='completed' and prior['conclusion']=='failure' and prior['event']=='push'
+          assert prior['status']=='completed' and prior['conclusion']=='cancelled' and prior['event']=='push'
           assert prior['path']=='.github/workflows/freebsd-integrated-native-proof.yml'
           jobs=api(f"repos/{repo}/actions/runs/{prior['id']}/attempts/1/jobs?per_page=100")
           assert jobs['total_count']==10 and len(jobs['jobs'])==10
-          required={106936290556:'fixtures',106936776534:'linux',
-                    106941764241:'native (x86_64, root, fresh)',106941764341:'native (x86_64, ordinary, fresh)',
-                    106941764413:'native (aarch64, root, fresh)',106941764257:'native (aarch64, ordinary, fresh)'}
+          expected={106936290556:('fixtures','success'),106936776534:('linux','success'),
+                    106941764241:('native (x86_64, root, fresh)','success'),106941764341:('native (x86_64, ordinary, fresh)','success'),
+                    106941764299:('native (x86_64, root, seeded)','failure'),106941764426:('native (x86_64, ordinary, seeded)','failure'),
+                    106941764413:('native (aarch64, root, fresh)','cancelled'),106941764257:('native (aarch64, ordinary, fresh)','cancelled'),
+                    106941764358:('native (aarch64, root, seeded)','cancelled'),106941764260:('native (aarch64, ordinary, seeded)','cancelled')}
+          for job in jobs['jobs']:
+              assert job['id'] in expected and (job['name'],job['conclusion'])==expected[job['id']]
+              assert job['status']=='completed' and job['head_sha']==prior['head_sha'] and job['run_id']==prior['id'] and job['run_attempt']==1
+          required={job_id:name for job_id,(name,result) in expected.items() if result=='success'}
           for job_id,name in required.items():
               matches=[job for job in jobs['jobs'] if job['id']==job_id]
               assert len(matches)==1
@@ -120,7 +128,7 @@ jobs:
           assert not fixture['expired'] and fixture['workflow_run']['id']==prior['id'] and fixture['workflow_run']['head_sha']==prior['head_sha']
           assert fixture['name']==f"freebsd-integrated-fixtures-{prior['id']}-1"
           assert fixture['size_in_bytes']==int(os.environ['FIXTURE_ARTIFACT_SIZE']) and fixture['digest']==os.environ['FIXTURE_ARTIFACT_DIGEST']
-          out=dict(source=os.environ['SOURCE_SHA'],sourceTree=os.environ['SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],consumerRun=os.environ['GITHUB_RUN_ID'],consumerAttempt=1,producer=r['head_sha'],producerRun=r['id'],producerJob=j['id'],artifact=a['id'],digest=a['digest'],bytes=a['size_in_bytes'],priorConsumer=prior['head_sha'],priorRun=prior['id'],reusedSuccessfulJobs=required,fixtureArtifact=fixture['id'],fixtureDigest=fixture['digest'],fixtureBytes=fixture['size_in_bytes'])
+          out=dict(source=os.environ['SOURCE_SHA'],sourceTree=os.environ['SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],consumerRun=os.environ['GITHUB_RUN_ID'],consumerAttempt=1,producer=r['head_sha'],producerRun=r['id'],producerJob=j['id'],artifact=a['id'],digest=a['digest'],bytes=a['size_in_bytes'],priorConsumer=prior['head_sha'],priorRun=prior['id'],reusedSuccessfulJobs=required,priorOutcomes=expected,fixtureArtifact=fixture['id'],fixtureDigest=fixture['digest'],fixtureBytes=fixture['size_in_bytes'])
           pathlib.Path('evidence/admission.json').write_text(json.dumps(out)+'\n');print(json.dumps(out))
           AUTH
       - &payload-download
@@ -198,7 +206,10 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
         account: [root, ordinary]
-        mode: [seeded]
+        mode: [fresh, seeded]
+        exclude:
+          - arch: x86_64
+            mode: fresh
     env:
       PROOF_ACCOUNT: ${{ matrix.account }}
       PROOF_MODE: ${{ matrix.mode }}
@@ -220,17 +231,41 @@ jobs:
             test ! -e "proof-input/$name"
             cp "operator-fixtures/$name" "proof-input/$name"
           done
-      - name: Run native suites and an actual installed update
+      - name: Stage the ten authenticated guest inputs
+        run: |
+          set -euo pipefail
+          python3 - <<'STAGE'
+          import hashlib,json,os,pathlib,shutil,stat,tempfile
+          files=['proof-input/source.tar.gz','proof-input/first-hop.tgz','proof-input/first-hop.json','proof-input/published-2026.9.4.tgz',
+                 *['proof-input/payload/'+name for name in ['candidate.tgz','candidate-pack.json','install.sh','install-cli.sh','install-smoke-candidate-payload.json']],
+                 'scripts/install-smoke-candidate-payload.mts']
+          stage=pathlib.Path(tempfile.mkdtemp(prefix='freebsd-native-stage.',dir=os.environ['RUNNER_TEMP']));rows=[]
+          for name in sorted(files):
+              src=pathlib.Path(name)
+              assert stat.S_ISREG(src.lstat().st_mode) and all(not parent.is_symlink() for parent in src.parents)
+              dest=stage/name;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(src,dest)
+              data=dest.read_bytes();rows.append(dict(name=name,bytes=len(data),sha256=hashlib.sha256(data).hexdigest()))
+          assert len(rows)==10
+          verifier=next(row for row in rows if row['name']=='scripts/install-smoke-candidate-payload.mts')
+          assert verifier['sha256']==json.loads(os.environ['SOURCE_PINS'])[verifier['name']]
+          receipt=dict(source=os.environ['SOURCE_SHA'],consumer=os.environ['CONSUMER_SHA'],files=rows)
+          encoded=json.dumps(receipt,separators=(',',':'))
+          pathlib.Path('evidence/native-transfer-inputs.json').write_text(encoded+'\n')
+          with open(os.environ['GITHUB_ENV'],'a') as env:
+              env.write('NATIVE_HOST_STAGE='+str(stage)+'\nNATIVE_STAGE_INVENTORY='+encoded+'\n')
+          print(json.dumps(dict(stageFiles=len(rows),stageBytes=sum(row['bytes'] for row in rows),inventorySha256=hashlib.sha256(encoded.encode()).hexdigest())))
+          STAGE
+      - name: Prepare the native VM without copying the runner work directory
         uses: vmactions/freebsd-vm@8b0f1a8fc0ea0def307835c258940ca358fe6480 # v1.5.6
         with:
           release: "15.1"
           arch: ${{ matrix.arch }}
           mem: 8192
-          sync: rsync
+          sync: "no"
           copyback: false
           disable-cache: true
           debug-on-error: false
-          envs: PROOF_ACCOUNT PROOF_MODE BASELINE_SRI SOURCE_SHA SOURCE_TREE HARNESS_SHA CONSUMER_SHA CONSUMER_RUN_ID CONSUMER_RUN_ATTEMPT SOURCE_PINS EXPECTED_NODE_ARCH MANIFEST_SHA ARCHIVE_SHA PACKAGE_VERSION PAYLOAD_ARTIFACT_ID PAYLOAD_ARTIFACT_DIGEST PROOF_REPOSITORY PROOF_RUN_ID PROOF_RUN_ATTEMPT
+          envs: NATIVE_STAGE_INVENTORY PROOF_ACCOUNT PROOF_MODE BASELINE_SRI SOURCE_SHA SOURCE_TREE HARNESS_SHA CONSUMER_SHA CONSUMER_RUN_ID CONSUMER_RUN_ATTEMPT SOURCE_PINS EXPECTED_NODE_ARCH MANIFEST_SHA ARCHIVE_SHA PACKAGE_VERSION PAYLOAD_ARTIFACT_ID PAYLOAD_ARTIFACT_DIGEST PROOF_REPOSITORY PROOF_RUN_ID PROOF_RUN_ATTEMPT
           prepare: |
             set -eu
             mkdir -p /usr/local/etc/pkg/repos
@@ -238,8 +273,41 @@ jobs:
             FreeBSD-ports: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }
             REPO
             pkg install -y node24 npm-node24 corepack ca_root_nss git-lite gmake python3 bash
-          run: |
+      - name: Transfer and verify only the authenticated guest inputs
+        env:
+          VM_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          test -d "$NATIVE_HOST_STAGE"
+          ssh freebsd 'test ! -e /var/tmp/openclaw-integrated-stage && mkdir -m 0755 /var/tmp/openclaw-integrated-stage'
+          rsync_path='sh -c '"'"'PATH=$PATH:/usr/local/bin:/usr/local/sbin:/usr/pkg/bin:/usr/pkg/sbin:/opt/local/bin:/opt/local/sbin exec rsync "$@"'"'"' rsync'
+          transport=(ssh)
+          limits=()
+          if [ "$VM_ARCH" = aarch64 ]; then
+            transport+=(-o ServerAliveInterval=30 -o ServerAliveCountMax=60 -o ConnectTimeout=120)
+            limits+=(--timeout 1800)
+          fi
+          echo 'authenticated guest input transfer starting'
+          rsync -rt "${limits[@]}" --rsync-path="$rsync_path" -e "${transport[*]}" "$NATIVE_HOST_STAGE/" freebsd:/var/tmp/openclaw-integrated-stage/
+          ssh freebsd 'python3 -' > evidence/native-transfer-guest.json <<'VERIFY_STAGE'
+          import hashlib,json,os,pathlib,stat
+          root=pathlib.Path('/var/tmp/openclaw-integrated-stage');expected=json.loads(os.environ['NATIVE_STAGE_INVENTORY']);rows=[]
+          assert expected['source']==os.environ['SOURCE_SHA'] and expected['consumer']==os.environ['CONSUMER_SHA']
+          for p in sorted(root.rglob('*')):
+              st=p.lstat()
+              if stat.S_ISDIR(st.st_mode): continue
+              assert stat.S_ISREG(st.st_mode)
+              data=p.read_bytes();rows.append(dict(name=p.relative_to(root).as_posix(),bytes=len(data),sha256=hashlib.sha256(data).hexdigest()))
+          assert len(rows)==10 and rows==expected['files']
+          print(json.dumps(dict(source=expected['source'],consumer=expected['consumer'],files=rows,verified=True)))
+          VERIFY_STAGE
+          cat evidence/native-transfer-guest.json
+          echo 'authenticated guest input transfer complete'
+      - name: Run native suites and an actual installed update
+        shell: freebsd {0}
+        run: |
             set -eu
+            cd /var/tmp/openclaw-integrated-stage
             umask 022
             node --input-type=module <<'NODE'
             import assert from 'node:assert/strict';
