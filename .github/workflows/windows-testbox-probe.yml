@@ -414,6 +414,14 @@ jobs:
             Write-Warning "Failed to apply Defender exclusions, continuing. $($_.Exception.Message)"
           }
 
+      - name: Pin census diagnostic Python
+        if: ${{ inputs.windows_ci_replay != '' }}
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12.10"
+          architecture: "x64"
+          check-latest: false
+
       - &windows_node
         name: Setup Node.js
         if: ${{ inputs.run_windows_ci || inputs.installed_startup_package != '' || inputs.run_private_node_provisioning || inputs.windows_ci_replay != '' }}
@@ -594,12 +602,13 @@ jobs:
           # Preserve the original dispatcher invocation; the input contains data, not shell or CLI options.
           set +e
           node --input-type=module <<'WINDOWS_REPLAY' 2>&1 | tee "$evidence_dir/replay.log"
-          import { spawnSync, execFileSync } from "node:child_process";
+          import { execFileSync } from "node:child_process";
           import { createHash } from "node:crypto";
           import { readFileSync, writeFileSync } from "node:fs";
           import { createRequire } from "node:module";
           import os from "node:os";
           import path from "node:path";
+          import { spawnWindowsJobChild } from "./scripts/lib/managed-windows-job.mts";
           const evidence = process.env.REPLAY_EVIDENCE;
           const binding = JSON.parse(readFileSync(path.join(evidence, "binding.json"), "utf8"));
           const identity = JSON.parse(readFileSync(path.join(evidence, "identity.json"), "utf8"));
@@ -616,6 +625,27 @@ jobs:
           for (const [file, expected] of Object.entries(identity.dependencySha256)) {
             if (hash(file) !== expected) throw new Error(`Frozen dependency input changed: ${file}`);
           }
+          const python = JSON.parse(execFileSync("python", ["-I", "-S", "-c",
+            "import json,platform,sys; print(json.dumps(dict(version=platform.python_version(), executable=sys.executable)))"],
+            { encoding: "utf8" }));
+          writeFileSync(path.join(evidence, "python-runtime.json"), JSON.stringify({
+            ...python, expectedVersion: "3.12.10", executableSha256: hash(python.executable),
+            matchesHistoricalVersion: python.version === "3.12.10",
+          }, null, 2) + "\n");
+          if (python.version !== "3.12.10") throw new Error("Native Python differs from the historical 3.12.10 binding");
+          const proofSourceFiles = [...new Set([...binding.files,
+            "scripts/lib/managed-windows-job.mts",
+            "scripts/lib/managed-windows-job-launcher.mts",
+            "src/process/supervisor/service-child-windows-job-native.ts",
+            "test/scripts/ci-windows-process-census.test-support.ts",
+            "test/scripts/ci-checkout.test-support.ts",
+            "test/scripts/fixtures/ci-platform-checkout.mjs",
+            "test/scripts/fixtures/ci-windows-process-census.mjs",
+            "test/scripts/fixtures/ci-windows-process-census.py",
+            ...(binding.files.includes("test/scripts/windows-census-sharing.diagnostic.test.ts")
+              ? ["test/scripts/fixtures/windows-census-sharing-probe.mjs"] : []),
+          ])];
+          const proofSourceSha256 = Object.fromEntries(proofSourceFiles.map((file) => [file, hash(file)]));
           const args = ["--import", "./scripts/tsx.mjs", "scripts/test-projects.mts", ...binding.files, "--fileParallelism"];
           const environment = Object.fromEntries(["CI", "NODE_OPTIONS", "OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD", "OPENCLAW_TEST_PROJECTS_PARALLEL", "OPENCLAW_VITEST_MAX_WORKERS"].map((key) => [key, process.env[key]]));
           writeFileSync(path.join(evidence, "runtime.json"), JSON.stringify({
@@ -626,14 +656,77 @@ jobs:
             runnerLabel: process.env.REPLAY_RUNNER_LABEL,
             logicalCpuCount: os.cpus().length, availableParallelism: os.availableParallelism(),
             osTotalMemoryBytes: os.totalmem(), osFreeMemoryBytes: os.freemem(),
-            args, environment,
+            args, environment, proofSourceSha256,
+            jobOwnerSha256: Object.fromEntries([
+              "scripts/lib/managed-windows-job.mts",
+              "scripts/lib/managed-windows-job-launcher.mts",
+              "src/process/supervisor/service-child-windows-job-native.ts",
+            ].map((file) => [file, hash(file)])),
           }, null, 2) + "\n");
-          const result = spawnSync(process.execPath, args, { stdio: "inherit" });
-          writeFileSync(path.join(evidence, "process-result.json"), JSON.stringify({
-            status: result.status, signal: result.signal, spawnError: result.error?.code ?? null,
-            descendantSettlement: "not-attested; frozen runner owns test lifetime; Actions owns final runner teardown",
-          }, null, 2) + "\n");
-          if (result.error) throw result.error;
+          const bounded = async (promise, milliseconds, label) => {
+            let timer;
+            try {
+              return await Promise.race([promise, new Promise((_, reject) => {
+                timer = setTimeout(() => reject(new Error(label)), milliseconds);
+              })]);
+            } finally {
+              clearTimeout(timer);
+            }
+          };
+          let owned;
+          let rootClosed = false;
+          const result = {
+            status: null, signal: null, spawnError: null, forcedCleanup: false,
+            descendantSettlement: "unverified", rootClosed: false,
+          };
+          try {
+            owned = spawnWindowsJobChild(process.execPath, args, {
+              cwd: process.cwd(), env: process.env,
+              stdio: ["ignore", "inherit", "inherit"], windowsHide: true,
+            });
+            if (!owned) throw new Error("Native Windows Job containment is unavailable; refusing uncontained replay");
+            const closed = new Promise((resolve) => owned.child.once("close", (code, signal) => {
+              rootClosed = true;
+              resolve({ code, signal });
+            }));
+            await bounded(owned.job.ready, 60_000, "Owned replay did not start within 60 seconds");
+            result.commandPid = owned.job.commandPid;
+            const closedResult = await bounded(closed, 60 * 60_000, "Owned replay exceeded its 60-minute budget");
+            result.status = closedResult.code;
+            result.signal = closedResult.signal;
+            result.membersAtRootClose = owned.job.inspect();
+            // The retained Job observes all descendants, including detached grandchildren.
+            // Certification requires an empty Job before closing its kill-on-close handle.
+            const extinction = await bounded(owned.job.certify(), 30_000,
+              "Owned descendants remained after the replay launcher closed");
+            result.naturalExtinction = { status: extinction.status, reason: extinction.reason ?? null };
+            if (extinction.status !== "confirmed") throw new Error("Native Job extinction is unverified");
+            result.descendantSettlement = "confirmed-before-forced-cleanup";
+          } catch (error) {
+            result.spawnError = error instanceof Error ? error.message : String(error);
+            if (owned) {
+              result.forcedCleanup = true;
+              try {
+                owned.job.stop();
+                const extinction = await owned.job.certify();
+                result.cleanupExtinction = { status: extinction.status, reason: extinction.reason ?? null };
+              } catch (cleanupError) {
+                result.cleanupError = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+              }
+            }
+          } finally {
+            result.rootClosed = rootClosed;
+            try {
+              result.proofSourceUnchanged = Object.entries(proofSourceSha256)
+                .every(([file, expected]) => hash(file) === expected);
+            } catch {
+              result.proofSourceUnchanged = false;
+            }
+            writeFileSync(path.join(evidence, "process-result.json"), JSON.stringify(result, null, 2) + "\n");
+          }
+          if (result.spawnError || !rootClosed || !result.proofSourceUnchanged || result.descendantSettlement !== "confirmed-before-forced-cleanup") {
+            throw new Error("Replay lifecycle is unqualified; retain process-result.json");
+          }
           process.exit(result.status ?? 1);
           WINDOWS_REPLAY
           result=("${PIPESTATUS[@]}")
@@ -662,7 +755,9 @@ jobs:
           $sourceSha = (git rev-parse HEAD).Trim()
           $sourceUnchanged = $LASTEXITCODE -eq 0 -and $sourceSha -ceq $identity.sourceSha
           $retainedNamespaces = @([regex]::Matches($log, '(?m)^\[vitest\] retained temporary namespace .*$') | ForEach-Object { $_.Value })
-          @{ stepOutcome = $env:REPLAY_OUTCOME; expectedProjects = $binding.projects; observedProjects = $observed; orderedPrefix = $orderedPrefix; complete = $complete; dependencyInputsUnchanged = $dependencyInputsUnchanged; sourceUnchanged = $sourceUnchanged; retainedNamespaces = $retainedNamespaces; cleanupOwner = "Actions runner job teardown; no persistent Testbox lease" } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "outcome.json")
+          @([regex]::Matches($log, '(?m)^.*WINDOWS_CENSUS_(?:SHARING|RETIREMENT).*$') | ForEach-Object { $_.Value }) |
+            Set-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "census-observations.log")
+          @{ stepOutcome = $env:REPLAY_OUTCOME; expectedProjects = $binding.projects; observedProjects = $observed; orderedPrefix = $orderedPrefix; complete = $complete; dependencyInputsUnchanged = $dependencyInputsUnchanged; sourceUnchanged = $sourceUnchanged; retainedNamespaces = $retainedNamespaces; cleanupOwner = "Retained Windows Job certifies replay descendants; Actions owns final machine teardown" } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "outcome.json")
           if (-not $orderedPrefix -or -not $dependencyInputsUnchanged -or -not $sourceUnchanged -or ($env:REPLAY_OUTCOME -eq "success" -and -not $complete)) {
             throw "Replay identity or observed project order differs; retained output is diagnostic only."
           }
