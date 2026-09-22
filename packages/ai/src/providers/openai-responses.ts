@@ -61,19 +61,21 @@ export const streamOpenAIResponses: StreamFunction<"openai-responses", OpenAIRes
     model,
     output,
     options,
-    createClient: () => {
+    createClient: (requestModel, beforeRequest) => {
       const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
       const cacheRetention = resolveCacheRetention(options?.cacheRetention);
       const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
       return createClient(
-        model,
+        requestModel,
         context,
         apiKey,
-        resolveProviderSimpleCompletionHeaders(model, options),
+        resolveProviderSimpleCompletionHeaders(requestModel, options),
         cacheSessionId,
+        beforeRequest,
       );
     },
-    buildParams: (_requestModel, replayMode) => buildParams(model, context, options, replayMode),
+    buildParams: (requestModel, replayMode) =>
+      buildParams(requestModel, context, options, replayMode),
     processStreamOptions: {
       serviceTier: options?.serviceTier,
       applyServiceTierPricing: (usage, serviceTier) =>
@@ -110,6 +112,7 @@ function createClient(
   apiKey?: string,
   optionsHeaders?: Record<string, string>,
   sessionId?: string,
+  beforeRequest?: () => void,
 ) {
   if (!apiKey) {
     throw new Error(`No API key for provider: ${model.provider}`);
@@ -133,7 +136,7 @@ function createClient(
     headers["x-client-request-id"] = sessionId;
   }
 
-  return createOpenAIProviderClient(model, apiKey, headers, optionsHeaders);
+  return createOpenAIProviderClient(model, apiKey, headers, optionsHeaders, beforeRequest);
 }
 
 function buildParams(
@@ -173,3 +176,6 @@ function buildParams(
 
   return params;
 }
+
+Object.assign(streamOpenAIResponses, { modelRequestBinding: "wire-model-v1" as const });
+Object.assign(streamSimpleOpenAIResponses, { modelRequestBinding: "wire-model-v1" as const });

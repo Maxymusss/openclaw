@@ -6,6 +6,7 @@ import type {
   ResponseStreamEvent,
 } from "openai/resources/responses/responses.js";
 import type { BaseOpenAIStreamOptions } from "../provider-options.js";
+import { prepareModelRequest } from "../transports/model-request-binding.js";
 import {
   buildOpenAIResponsesReasoningReplayMetadata,
   suppressOpenAIResponsesCompaction,
@@ -218,7 +219,7 @@ export async function runResponsesStreamLifecycle<TApi extends Api>(params: {
   output: AssistantMessage;
   options?: ResponsesLifecycleStreamOptions;
   resolveRequestModel?: (model: Model<TApi>) => Model<TApi>;
-  createClient: (model: Model<TApi>) => ResponsesStreamClient;
+  createClient: (model: Model<TApi>, beforeRequest?: () => void) => ResponsesStreamClient;
   buildParams: (
     model: Model<TApi>,
     replayMode: OpenAIResponsesReplayMode,
@@ -229,15 +230,17 @@ export async function runResponsesStreamLifecycle<TApi extends Api>(params: {
 
   let firstEventAbort: ReturnType<typeof createFirstStreamEventAbortController> | undefined;
   try {
-    const model = params.resolveRequestModel?.(params.model) ?? params.model;
-    const client = params.createClient(model);
+    const requestBinding = prepareModelRequest(params.model, params.resolveRequestModel);
+    const model = requestBinding.model;
+    const client = params.createClient(model, requestBinding.assertCurrent);
     const buildRequest = async (replayMode: OpenAIResponsesReplayMode) => {
       let request = params.buildParams(model, replayMode);
-      const nextRequest = await options?.onPayload?.(request, model);
+      requestBinding.preparePayload(request);
+      const nextRequest = await options?.onPayload?.(request, requestBinding.hookModel);
       if (nextRequest !== undefined) {
         request = nextRequest as ResponsesLifecycleRequest;
       }
-      return request;
+      return requestBinding.acceptPayload(request);
     };
     const requestParams = await buildRequest("checkpoint");
 
@@ -247,6 +250,7 @@ export async function runResponsesStreamLifecycle<TApi extends Api>(params: {
     let admittedRequest: ResponsesLifecycleRequest | undefined;
     const { stream: hookedOpenAIStream } = await createResponsesStreamWithEncryptedContentRetry({
       client: client as never,
+      prepareRequest: requestBinding.acceptPayload,
       request: requestParams as never,
       requestOptions: {
         ...buildResponsesRequestOptions(options),

@@ -4,7 +4,10 @@ import type { Model } from "../../llm/types.js";
 import { createAssistantMessageEventStream } from "../../llm/utils/event-stream.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createAdmittedRunOperatorAuthority } from "../admitted-run-operator-authority.js";
-import { assertOperatorModelAllowed } from "../operator-model-policy.js";
+import {
+  assertOperatorModelAllowed,
+  captureOperatorModelRequest,
+} from "../operator-model-policy.js";
 import type { StreamFn } from "../runtime/index.js";
 import { resolveEmbeddedAgentStream } from "./stream-resolution.js";
 
@@ -38,7 +41,12 @@ describe("embedded stream model authority", () => {
       const key = createDeferredCore<string | undefined>();
       const acquired = createDeferredCore();
       const response = createAssistantMessageEventStream();
-      const provider = vi.fn<StreamFn>(() => response);
+      const provider = vi.fn<StreamFn>((actual) => {
+        const binding = captureOperatorModelRequest(actual);
+        binding?.bindWireModel(actual.id, actual)(actual, actual.id);
+        return response;
+      });
+      Object.assign(provider, { modelRequestBinding: "wire-model-v1" as const });
       const { streamFn } = resolveEmbeddedAgentStream({
         llmRuntime: defaultLlmRuntime,
         currentStreamFn: undefined,

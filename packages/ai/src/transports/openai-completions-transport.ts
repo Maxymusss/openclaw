@@ -16,6 +16,7 @@ import {
   getFirstStreamEventTimeoutMs,
 } from "../utils/stream-first-event-timeout.js";
 import { buildGuardedModelFetch } from "./host-policy.js";
+import { prepareModelRequest } from "./model-request-binding.js";
 import { hasOpenAICompatibleConversationTurn } from "./openai-compatible-conversation-turn.js";
 import { isAzureOpenAICompatibleHost } from "./openai-completions-host.js";
 import { buildOpenAICompletionsParams } from "./openai-completions-params.js";
@@ -182,7 +183,8 @@ function buildOpenAICompletionsClientConfig(
 }
 
 export function createOpenAICompletionsTransportStreamFn(): StreamFn {
-  return (model, context, options) => {
+  const transport: StreamFn = (sourceModel, context, options) => {
+    let model = sourceModel;
     const { eventStream, stream } = createWritableTransportEventStream();
     void (async () => {
       const output: MutableAssistantOutput = {
@@ -204,6 +206,8 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
       };
       let firstEventAbort: ReturnType<typeof createFirstStreamEventAbortController> | undefined;
       try {
+        const request = prepareModelRequest(model);
+        model = request.model;
         const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
         const turnState = resolveProviderTransportTurnState(model, {
           sessionId: options?.sessionId,
@@ -220,7 +224,9 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
         // The OpenAI SDK consumes the SSE terminal without yielding it. Observe
         // the raw body so native tool calls can distinguish clean DONE from EOF.
         const doneDetector = createSseDoneDetector();
-        const baseFetch = buildGuardedModelFetch(model);
+        const baseFetch = buildGuardedModelFetch(model, undefined, {
+          beforeRequest: request.assertCurrent,
+        });
         const doneDetectingFetch: typeof globalThis.fetch = async (url, init) => {
           const response = await baseFetch(url as never, init);
           if (!response.body || !response.ok) {
@@ -267,7 +273,8 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
           context,
           options as OpenAICompletionsOptions | undefined,
         );
-        const nextParams = await options?.onPayload?.(params, model);
+        request.preparePayload(params);
+        const nextParams = await options?.onPayload?.(params, request.hookModel);
         if (nextParams !== undefined) {
           params = nextParams as typeof params;
         }
@@ -292,6 +299,7 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
           model as OpenAIModeModel,
           options as OpenAICompletionsOptions | undefined,
         );
+        params = request.acceptPayload(params);
         firstEventAbort = createFirstStreamEventAbortController(options?.signal);
         const { data: responseStream, response } = await client.chat.completions
           .create(
@@ -336,4 +344,5 @@ export function createOpenAICompletionsTransportStreamFn(): StreamFn {
     })();
     return eventStream;
   };
+  return Object.assign(transport, { modelRequestBinding: "wire-model-v1" as const });
 }

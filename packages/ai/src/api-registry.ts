@@ -1,26 +1,30 @@
-import type {
-  Api,
-  AssistantMessageEventStreamContract,
-  Context,
-  Model,
-  SimpleStreamOptions,
-  StreamFunction,
-  StreamOptions,
+import {
+  inheritModelRequestBinding,
+  type ModelRequestBindingSupport,
+  type Api,
+  type AssistantMessageEventStreamContract,
+  type Context,
+  type Model,
+  type SimpleStreamOptions,
+  type StreamFunction,
+  type StreamOptions,
 } from "@openclaw/llm-core";
 
 /** Runtime stream adapter signature stored in the API provider registry. */
-export type ApiStreamFunction = (
+export type ApiStreamFunction = ((
   model: Model,
   context: Context,
   options?: StreamOptions,
-) => AssistantMessageEventStreamContract;
+) => AssistantMessageEventStreamContract) &
+  ModelRequestBindingSupport;
 
 /** Runtime simple-stream adapter signature stored in the API provider registry. */
-export type ApiStreamSimpleFunction = (
+export type ApiStreamSimpleFunction = ((
   model: Model,
   context: Context,
   options?: SimpleStreamOptions,
-) => AssistantMessageEventStreamContract;
+) => AssistantMessageEventStreamContract) &
+  ModelRequestBindingSupport;
 
 /** Provider implementation registered by core or plugins for a specific model API. */
 export interface ApiProvider<
@@ -51,24 +55,24 @@ function wrapStream<TApi extends Api, TOptions extends StreamOptions>(
   api: TApi,
   stream: StreamFunction<TApi, TOptions>,
 ): ApiStreamFunction {
-  return (model, context, options) => {
+  return inheritModelRequestBinding<ApiStreamFunction>((model, context, options) => {
     if (model.api !== api) {
       throw new Error(`Mismatched api: ${model.api} expected ${api}`);
     }
     return stream(model as Model<TApi>, context, options as TOptions);
-  };
+  }, stream);
 }
 
 function wrapStreamSimple<TApi extends Api>(
   api: TApi,
   streamSimple: StreamFunction<TApi, SimpleStreamOptions>,
 ): ApiStreamSimpleFunction {
-  return (model, context, options) => {
+  return inheritModelRequestBinding<ApiStreamSimpleFunction>((model, context, options) => {
     if (model.api !== api) {
       throw new Error(`Mismatched api: ${model.api} expected ${api}`);
     }
     return streamSimple(model as Model<TApi>, context, options);
-  };
+  }, streamSimple);
 }
 
 /** Creates an isolated provider registry for one runtime or tenant. */

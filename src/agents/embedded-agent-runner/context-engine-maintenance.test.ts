@@ -11,7 +11,7 @@ import {
   registerContextEngineForOwner,
   resolveLogicalTurnContextEngines,
 } from "../../context-engine/registry.js";
-import type { ContextEngine, ContextEngineRuntimeContext } from "../../context-engine/types.js";
+import type { ContextEngineRuntimeContext } from "../../context-engine/types.js";
 import { peekSystemEvents, resetSystemEventsForTest } from "../../infra/system-events.js";
 import {
   enqueueCommandInLane,
@@ -33,6 +33,7 @@ import {
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import { SessionManager } from "../sessions/session-manager.js";
 import { castAgentMessage } from "../test-helpers/agent-message-fixtures.js";
+import { createBackgroundMaintenanceEngine } from "./context-engine-maintenance.test-helpers.js";
 import { resolveSessionLane } from "./lanes.js";
 
 const rewriteTranscriptEntriesInSessionManagerMock = vi.fn((_params?: unknown) => ({
@@ -70,19 +71,6 @@ let runContextEngineMaintenance: typeof import("./context-engine-maintenance.js"
 // Keep this literal aligned with the production module; tests use dynamic
 // import reloading, so they cannot safely import the constant directly.
 const TURN_MAINTENANCE_TASK_KIND = "context_engine_turn_maintenance";
-
-function createBackgroundMaintenanceEngine(
-  maintain: NonNullable<ContextEngine["maintain"]>,
-  id = "test",
-): ContextEngine {
-  return {
-    info: { id, name: "Test Engine", turnMaintenanceMode: "background" },
-    ingest: async () => ({ ingested: true }),
-    assemble: async ({ messages }) => ({ messages, estimatedTokens: 0 }),
-    compact: async () => ({ ok: true, compacted: false }),
-    maintain,
-  };
-}
 
 async function flushAsyncWork(times = 4): Promise<void> {
   for (let index = 0; index < times; index += 1) {

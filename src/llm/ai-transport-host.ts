@@ -2,7 +2,13 @@
 // direct imports need the same wiring as the process-default stream facade.
 import { configureAiTransportHost } from "@openclaw/ai";
 import { configureProviderErrorRedactor } from "@openclaw/ai/diagnostics";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { resolveOpenAIStrictToolSetting } from "../agents/openai-strict-tool-setting.js";
+import {
+  captureOperatorModelRequest,
+  isOperatorModelPolicyError,
+  requireOperatorModelDelegateSupport,
+} from "../agents/operator-model-policy.js";
 import { unwrapModelHeaderSentinelsForProviderEgress } from "../agents/provider-secret-egress.js";
 import {
   buildGuardedModelFetch,
@@ -20,7 +26,15 @@ import { trackAsyncWork } from "../shared/async-work-scope.js";
 
 const transportLogBySubsystem = new Map<string, ReturnType<typeof createSubsystemLogger>>();
 
-configureProviderErrorRedactor(redactSecrets);
+configureProviderErrorRedactor((value) => {
+  const policyDenied = isOperatorModelPolicyError(value);
+  const redacted = redactSecrets(value);
+  // SDK causes carry this public terminal code; masking it would enable failover.
+  // All diagnostic text and arbitrary provider codes still pass through redaction.
+  return policyDenied && isRecord(redacted)
+    ? { ...redacted, errorCode: "OPERATOR_MODEL_POLICY_DENIED" }
+    : redacted;
+});
 
 function transportLog(subsystem: string): ReturnType<typeof createSubsystemLogger> {
   let log = transportLogBySubsystem.get(subsystem);
@@ -32,6 +46,10 @@ function transportLog(subsystem: string): ReturnType<typeof createSubsystemLogge
 }
 
 configureAiTransportHost({
+  modelRequests: {
+    capture: captureOperatorModelRequest,
+    requireDelegateSupport: requireOperatorModelDelegateSupport,
+  },
   observePendingProviderWork: (pending) => {
     void trackAsyncWork(() => pending).catch(() => {});
   },

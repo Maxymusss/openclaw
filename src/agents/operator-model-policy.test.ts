@@ -69,7 +69,7 @@ describe("operator model request lifetime", () => {
       expect(() => cached(model, { messages: [] })).toThrow(OperatorModelPolicyError);
     });
     expect(raw).not.toHaveBeenCalled();
-    cached(model, { messages: [] });
+    await cached(model, { messages: [] });
     expect(raw).toHaveBeenCalledOnce();
   });
 

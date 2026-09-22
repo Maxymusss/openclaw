@@ -4,6 +4,7 @@
  * Registers provider-specific stream functions and rewrites models that need OpenClaw-managed transport semantics.
  */
 import { randomUUID } from "node:crypto";
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import type { Api, Model, StreamFn, StreamOptions } from "@openclaw/llm-core";
 import type { ApiRegistry } from "../api-registry.js";
 import { getAiTransportHost, resolveAiTransportHeaderSentinels } from "../host.js";
@@ -121,8 +122,15 @@ function applyProviderSimpleCompletionWrapper(
   }
 
   const dispatchApi = model.api;
-  const sourceStreamFn: StreamFn = (runtimeModel, context, options) =>
-    sourceProvider.streamSimple(projectModel(runtimeModel, { api: dispatchApi }), context, options);
+  const sourceStreamFn = inheritModelRequestBinding<StreamFn>(
+    (runtimeModel, context, options) =>
+      sourceProvider.streamSimple(
+        projectModel(runtimeModel, { api: dispatchApi }),
+        context,
+        options,
+      ),
+    sourceProvider.streamSimple,
+  );
   const streamFn = getAiTransportHost().plugin.wrapSimpleCompletionStream({
     provider: model.provider,
     config: cfg,
@@ -183,7 +191,7 @@ function resolveModelTransportSentinels<TApi extends Api>(
 }
 
 function wrapPluginProviderStream(streamFn: StreamFn): StreamFn {
-  return (model, context, options) => {
+  return inheritModelRequestBinding<StreamFn>((model, context, options) => {
     const host = getAiTransportHost();
     const apiKey = options?.apiKey ? host.resolveSecretSentinel(options.apiKey) : options?.apiKey;
     const headers = resolveAiTransportHeaderSentinels(options?.headers);
@@ -194,7 +202,7 @@ function wrapPluginProviderStream(streamFn: StreamFn): StreamFn {
         ? options
         : { ...options, apiKey, headers },
     );
-  };
+  }, streamFn);
 }
 
 function prepareProviderStreamModel<TApi extends Api>(params: {
@@ -237,8 +245,11 @@ function prepareProviderStreamModel<TApi extends Api>(params: {
     : params.model.api;
   // The alias selects this stream; wire policy still needs the original API.
   const sourceApi = params.model.api;
-  const sourceStreamFn: StreamFn = (runtimeModel, context, options) =>
-    streamFn(projectModel(runtimeModel, { api: sourceApi }), context, options);
+  const sourceStreamFn = inheritModelRequestBinding<StreamFn>(
+    (runtimeModel, context, options) =>
+      streamFn(projectModel(runtimeModel, { api: sourceApi }), context, options),
+    streamFn,
+  );
   if (!registerCustomApi(params.apiRegistry, api, sourceStreamFn)) {
     return undefined;
   }

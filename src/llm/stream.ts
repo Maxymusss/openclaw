@@ -125,3 +125,7 @@ export async function completeSimple<TApi extends Api>(
   options?.signal?.throwIfAborted();
   return await resolveRuntime(model).completeSimple(model, context, options);
 }
+
+// These facades re-resolve the runtime; its dispatch checks the current delegate.
+Object.assign(stream, { modelRequestBinding: "wire-model-v1" as const });
+Object.assign(streamSimple, { modelRequestBinding: "wire-model-v1" as const });

@@ -9,6 +9,7 @@ import type {
   StreamOptions,
 } from "@openclaw/llm-core";
 import { createApiRegistry, type ApiRegistry } from "./api-registry.js";
+import { getAiTransportHost } from "./host.js";
 
 /** Creates an isolated LLM runtime backed by the supplied provider registry. */
 export function createLlmRuntime(registry: ApiRegistry = createApiRegistry()) {
@@ -25,7 +26,9 @@ export function createLlmRuntime(registry: ApiRegistry = createApiRegistry()) {
     context: Context,
     options?: ProviderStreamOptions,
   ): AssistantMessageEventStreamContract {
-    return resolveApiProvider(model.api).stream(model, context, options as StreamOptions);
+    const delegate = resolveApiProvider(model.api).stream;
+    getAiTransportHost().modelRequests?.requireDelegateSupport(delegate.modelRequestBinding);
+    return delegate(model, context, options as StreamOptions);
   }
 
   async function complete<TApi extends Api>(
@@ -41,7 +44,9 @@ export function createLlmRuntime(registry: ApiRegistry = createApiRegistry()) {
     context: Context,
     options?: SimpleStreamOptions,
   ): AssistantMessageEventStreamContract {
-    return resolveApiProvider(model.api).streamSimple(model, context, options);
+    const delegate = resolveApiProvider(model.api).streamSimple;
+    getAiTransportHost().modelRequests?.requireDelegateSupport(delegate.modelRequestBinding);
+    return delegate(model, context, options);
   }
 
   async function completeSimple<TApi extends Api>(
@@ -52,7 +57,14 @@ export function createLlmRuntime(registry: ApiRegistry = createApiRegistry()) {
     return streamSimple(model, context, options).result();
   }
 
-  return { registry, stream, complete, streamSimple, completeSimple };
+  // Dispatchers qualify by checking the current registration on every invocation.
+  return {
+    registry,
+    stream: Object.assign(stream, { modelRequestBinding: "wire-model-v1" as const }),
+    complete,
+    streamSimple: Object.assign(streamSimple, { modelRequestBinding: "wire-model-v1" as const }),
+    completeSimple,
+  };
 }
 
 export type LlmRuntime = ReturnType<typeof createLlmRuntime>;

@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
  * or continuing the main task.
  */
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import type { GetReplyOptions } from "../auto-reply/get-reply-options.types.js";
 import type { ReplyPayload } from "../auto-reply/reply-payload.js";
+import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.types.js";
 import {
   buildReplyUsageState,
   recordReplyUsageState,
@@ -262,7 +262,7 @@ type RunBtwSideQuestionParams = {
   resolvedReasoningLevel: ReasoningLevel;
   blockReplyChunking?: BlockReplyChunking;
   resolvedBlockStreamingBreak?: "text_end" | "message_end";
-  opts?: GetReplyOptions;
+  opts?: InternalGetReplyOptions;
   isNewSession: boolean;
   messageChannel?: string;
   messageProvider?: string;
@@ -303,7 +303,7 @@ async function runCliBtwSideQuestion(params: {
   resolvedThinkLevel?: ThinkLevel;
   messages: Message[];
   inFlightPrompt?: string;
-  opts?: GetReplyOptions;
+  opts?: InternalGetReplyOptions;
   messageChannel?: string;
   messageProvider?: string;
   currentChannelId?: string;
@@ -1026,8 +1026,8 @@ async function runOwnedBtwSideQuestion(
     });
     const { streamFn } = resolveEmbeddedAgentStream({
       operatorAuthority,
-      assertModelCurrent: (model) =>
-        assertOperatorModelAllowed(operatorAuthority, model.provider, model.id),
+      assertModelCurrent: (selectedModel) =>
+        assertOperatorModelAllowed(operatorAuthority, selectedModel.provider, selectedModel.id),
       llmRuntime: modelRegistryRuntime.llmRuntime,
       currentStreamFn: modelRegistryRuntime.llmRuntime.streamSimple,
       providerStreamFn,

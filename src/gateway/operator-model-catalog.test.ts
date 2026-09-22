@@ -12,7 +12,6 @@ import {
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   captureOperatorModelCatalogAccess,
-  listOperatorModelCatalogAgentIds,
   resolveOperatorModelCatalogAgentId,
 } from "./operator-model-catalog.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
@@ -213,7 +212,12 @@ describe("caller-local operator catalogs", () => {
         f.role.agents = "*";
         expect(access.agentIds()).toEqual(["guest"]);
         expect(access.allowsAgent("main")).toBe(false);
-        expect(listOperatorModelCatalogAgentIds(f.client, f.cfg)).toEqual(["main", "guest"]);
+        const fresh = captureOperatorModelCatalogAccess(f);
+        try {
+          expect(fresh.agentIds()).toEqual(["main", "guest"]);
+        } finally {
+          fresh.release();
+        }
         f.role.agents = [];
         expect(access.agentIds()).toEqual([]);
         expect(() => resolveOperatorModelCatalogAgentId(f.client, f.cfg)).toThrow(

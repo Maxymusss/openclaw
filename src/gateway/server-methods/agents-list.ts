@@ -12,6 +12,7 @@ import {
   isOperatorModelPolicyError,
   OperatorModelPolicyError,
 } from "../../agents/operator-model-policy.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { captureOperatorModelCatalogAccess } from "../operator-model-catalog.js";
 import { listAgentsForGateway } from "../session-utils.js";
 import {
@@ -59,41 +60,39 @@ export const agentListHandler: GatewayRequestHandler = async (options) => {
           ? (cfg.gateway?.controlUi?.basePath ?? "")
           : undefined,
     });
-    const agents = result.agents
-      .filter((agent) => access.allowsAgent(agent.id))
-      .map((agent) => {
-        if (!access.restricted()) {
-          return agent;
-        }
-        const {
-          model,
-          utilityModel,
-          agentRuntime,
-          thinkingLevels,
-          thinkingOptions,
-          thinkingDefault,
-          ...rest
-        } = agent;
-        const primary = model?.primary;
-        const visiblePrimary = Boolean(primary && access.allowsRef(primary));
-        return {
-          ...rest,
-          ...(model
-            ? {
-                model: {
-                  ...(visiblePrimary ? { primary } : {}),
-                  ...(model.fallbacks
-                    ? { fallbacks: model.fallbacks.filter(access.allowsRef) }
-                    : {}),
-                },
-              }
-            : {}),
-          ...(utilityModel && access.allowsRef(utilityModel) ? { utilityModel } : {}),
-          ...(visiblePrimary
-            ? { agentRuntime, thinkingLevels, thinkingOptions, thinkingDefault }
-            : {}),
-        };
+    const agents: typeof result.agents = [];
+    for (const agent of result.agents.filter((row) => access.allowsAgent(row.id))) {
+      if (!access.restricted()) {
+        agents.push(agent);
+        continue;
+      }
+      const {
+        model,
+        utilityModel,
+        agentRuntime,
+        thinkingLevels,
+        thinkingOptions,
+        thinkingDefault,
+        ...rest
+      } = agent;
+      const primary = model?.primary;
+      const visiblePrimary = Boolean(primary && access.allowsRef(primary));
+      agents.push({
+        ...rest,
+        ...(model
+          ? {
+              model: {
+                ...(visiblePrimary ? { primary } : {}),
+                ...(model.fallbacks ? { fallbacks: model.fallbacks.filter(access.allowsRef) } : {}),
+              },
+            }
+          : {}),
+        ...(utilityModel && access.allowsRef(utilityModel) ? { utilityModel } : {}),
+        ...(visiblePrimary
+          ? { agentRuntime, thinkingLevels, thinkingOptions, thinkingDefault }
+          : {}),
       });
+    }
     const defaultId = agents.find((agent) => agent.id === result.defaultId)?.id ?? agents[0]?.id;
     if (!defaultId) {
       throw new OperatorModelPolicyError("Your operator role has no available agents.");
@@ -103,7 +102,7 @@ export const agentListHandler: GatewayRequestHandler = async (options) => {
     if (!isOperatorModelPolicyError(error)) {
       throw error;
     }
-    respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, error.message));
+    respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error)));
   } finally {
     release?.();
   }

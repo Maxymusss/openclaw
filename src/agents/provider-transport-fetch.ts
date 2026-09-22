@@ -152,10 +152,7 @@ function sanitizeOpenAISdkSseResponse(
   if (!response.ok) {
     return capNonOkResponseBodyLazily(response, SSE_NONOK_BODY_MAX_BYTES);
   }
-  if (
-    options?.synthesizeJsonAsSse === true &&
-    (/\bapplication\/json\b/i.test(contentType) || /\+json\b/i.test(contentType))
-  ) {
+  if (options?.synthesizeJsonAsSse === true && isJsonContentType(contentType)) {
     const source = response.body;
     const decoder = new TextDecoder();
     const encoder = new TextEncoder();
@@ -717,12 +714,13 @@ function withModelProviderNetworkRemediation(
 export function buildGuardedModelFetch(
   model: Model,
   timeoutMs?: number,
-  options?: { sanitizeSse?: boolean },
+  options?: { sanitizeSse?: boolean; beforeRequest?: () => void },
 ): typeof fetch {
   const requestConfig = resolveModelRequestPolicy(model);
   const dispatcherPolicy = buildProviderRequestDispatcherPolicy(requestConfig);
   const requestTimeoutMs = resolveModelRequestTimeoutMs(model, timeoutMs);
   return async (input, init) => {
+    options?.beforeRequest?.();
     let localServiceLease: ProviderLocalServiceLease | undefined;
     const request = input instanceof Request ? new Request(input, init) : undefined;
     const rawUrl =
@@ -773,6 +771,7 @@ export function buildGuardedModelFetch(
           model: model.id,
         },
       },
+      beforeRequest: options?.beforeRequest,
       dispatcherPolicy,
       dispatcherPool: getProviderTransportDispatcherPool(),
       timeoutMs: requestTimeoutMs,

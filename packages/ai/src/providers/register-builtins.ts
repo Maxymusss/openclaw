@@ -1,5 +1,6 @@
-// Built-in provider registration installs lazy protocol adapters.
 import type { ApiRegistry } from "../api-registry.js";
+// Built-in provider registration installs lazy protocol adapters.
+import { getAiTransportHost } from "../host.js";
 import type {
   Api,
   AssistantMessage,
@@ -61,10 +62,14 @@ function createLazyStream<TApi extends Api, TOptions extends StreamOptions, TStr
   load: () => Promise<TStreams>,
   select: (streams: TStreams) => StreamFunction<TApi, TOptions>,
 ): StreamFunction<TApi, TOptions> {
-  return (model, context, options) => {
+  const stream: StreamFunction<TApi, TOptions> = (model, context, options) => {
     const outer = new AssistantMessageEventStream();
     load()
-      .then((streams) => forwardStream(outer, select(streams)(model, context, options)))
+      .then((streams) => {
+        const delegate = select(streams);
+        getAiTransportHost().modelRequests?.requireDelegateSupport(delegate.modelRequestBinding);
+        return forwardStream(outer, delegate(model, context, options));
+      })
       .catch((error: unknown) => {
         const message = createLazyLoadErrorMessage(model, error, options?.signal);
         outer.push({ type: "error", reason: message.stopReason, error: message });
@@ -72,6 +77,7 @@ function createLazyStream<TApi extends Api, TOptions extends StreamOptions, TStr
       });
     return outer;
   };
+  return Object.assign(stream, { modelRequestBinding: "wire-model-v1" as const });
 }
 
 function createLazyRegistration<TApi extends Api, TOptions extends StreamOptions, TModule>(

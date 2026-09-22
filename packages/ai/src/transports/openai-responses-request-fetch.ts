@@ -23,7 +23,12 @@ function withDefaultResponsesStreamEncoding(
 /** Preserve the existing fetch policy while binding explicit continuation dispatch to its signal. */
 export function createResponsesRequestFetch(
   model: Model,
-  options: { compact: boolean; stream?: boolean; lifecycle?: ResponsesRequestLifecycle },
+  options: {
+    compact: boolean;
+    stream?: boolean;
+    lifecycle?: ResponsesRequestLifecycle;
+    beforeRequest?: () => void;
+  },
 ): typeof globalThis.fetch | undefined {
   const lifecycle = options.lifecycle;
   if (lifecycle && options.compact) {
@@ -31,13 +36,17 @@ export function createResponsesRequestFetch(
       "Provider review continuation cannot replace its reviewed input with compaction",
     );
   }
+  const modelFetch = () =>
+    buildGuardedModelFetch(model, undefined, { beforeRequest: options.beforeRequest });
   let fetchOverride = options.compact
-    ? createBoundedOpenAIResponsesCompactionFetch(buildGuardedModelFetch(model))
+    ? createBoundedOpenAIResponsesCompactionFetch(modelFetch())
     : options.stream
-      ? withDefaultResponsesStreamEncoding(buildGuardedModelFetch(model))
-      : undefined;
+      ? withDefaultResponsesStreamEncoding(modelFetch())
+      : options.beforeRequest
+        ? modelFetch()
+        : undefined;
   if (lifecycle) {
-    const dispatchFetch = fetchOverride ?? buildGuardedModelFetch(model);
+    const dispatchFetch = fetchOverride ?? modelFetch();
     fetchOverride = async (input, init) => {
       const signal = init?.signal ?? (input instanceof Request ? input.signal : undefined);
       await lifecycle.beforeDispatch(signal ?? undefined);

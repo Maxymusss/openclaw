@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { inheritModelRequestBinding, type Model } from "@openclaw/llm-core";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
 import { operatorModelAllowed } from "../shared/operator-permissions.js";
@@ -147,21 +148,71 @@ export function wrapOperatorModelStream(
   stream: StreamFn,
   authority: AdmittedRunOperatorAuthority | undefined,
 ): StreamFn {
-  return (model, context, options) =>
-    runWithOperatorModelRequest(authority, () => {
-      assertOperatorModelAllowed(authority, model.provider, model.id);
-      return stream(model, context, options);
-    });
+  return inheritModelRequestBinding<StreamFn>(
+    (model, context, options) =>
+      runWithOperatorModelRequest(authority, () => {
+        assertOperatorModelAllowed(authority, model.provider, model.id);
+        requireOperatorModelDelegateSupport(stream.modelRequestBinding);
+        return stream(model, context, options);
+      }),
+    stream,
+  );
 }
 
 /** Cached delegates stay caller-neutral; check after each plugin model rewrite/await. */
 export function guardOperatorModelProviderStream(stream: StreamFn): StreamFn {
-  return (model, context, options) => {
+  return inheritModelRequestBinding<StreamFn>((model, context, options) => {
+    requireOperatorModelDelegateSupport(stream.modelRequestBinding);
     assertOperatorModelAllowed(
       operatorModelRequest.getStore()?.authority,
       model.provider,
       model.id,
     );
     return stream(model, context, options);
+  }, stream);
+}
+
+/** Unsupported delegates must stop before provider effects, including direct completions. */
+export function requireOperatorModelDelegateSupport(support: "wire-model-v1" | undefined): void {
+  const original = currentOperatorModelAuthority(undefined);
+  assertOperatorModelAuthorityCurrent(original);
+  if (original?.permissions?.models && support !== "wire-model-v1") {
+    throw new OperatorModelPolicyError(
+      "The selected transport cannot bind your model restrictions to its request. Choose a supported HTTP transport.",
+    );
+  }
+}
+
+/** The serializer borrows this request-local source; the existing inference owner retains it. */
+export function captureOperatorModelRequest(model: Model) {
+  const original = currentOperatorModelAuthority(undefined);
+  if (!original?.permissions?.models) {
+    return undefined;
+  }
+  assertOperatorModelAllowed(original, model.provider, model.id);
+  const assertCurrent = () => assertOperatorModelAuthorityCurrent(original);
+  return {
+    assertCurrent,
+    bindWireModel(initial: string | undefined, requestModel: Model) {
+      assertOperatorModelAllowed(original, requestModel.provider, requestModel.id);
+      const { provider, id, api, baseUrl } = requestModel;
+      const validate = (current: Model, wireModel: string | undefined) => {
+        assertCurrent();
+        if (
+          !initial ||
+          wireModel !== initial ||
+          current.provider !== provider ||
+          current.id !== id ||
+          current.api !== api ||
+          current.baseUrl !== baseUrl
+        ) {
+          throw new OperatorModelPolicyError(
+            "The provider payload changed or obscured the authorized model route. Select the model before preparing the request.",
+          );
+        }
+      };
+      validate(requestModel, initial);
+      return validate;
+    },
   };
 }

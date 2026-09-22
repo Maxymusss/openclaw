@@ -10,6 +10,7 @@ import type {
   ModelRoutingPercentiles,
   ModelRoutingSortConfig,
 } from "./model-data.js";
+import type { ModelRequestBindingSupport } from "./model-request-binding.js";
 import type { AssistantMessageDiagnostic } from "./utils/diagnostics.js";
 export type { AssistantMessageDiagnostic, DiagnosticErrorInfo } from "./utils/diagnostics.js";
 
@@ -238,11 +239,12 @@ export interface SimpleStreamOptions extends StreamOptions {
 export type StreamFunction<
   TApi extends Api = Api,
   TOptions extends StreamOptions = StreamOptions,
-> = (
+> = ((
   model: Model<TApi>,
   context: Context,
   options?: TOptions,
-) => AssistantMessageEventStreamContract;
+) => AssistantMessageEventStreamContract) &
+  ModelRequestBindingSupport;
 
 export type ImagesFunction<
   TApi extends ImagesApi = ImagesApi,
@@ -728,11 +730,12 @@ export interface ImagesModel<TApi extends ImagesApi = ImagesApi> extends Omit<
   output: ("text" | "image")[];
 }
 
-export type StreamFn = (
+export type StreamFn = ((
   model: Model,
   context: Context,
   options?: SimpleStreamOptions,
-) => AssistantMessageEventStreamLike | Promise<AssistantMessageEventStreamLike>;
+) => AssistantMessageEventStreamLike | Promise<AssistantMessageEventStreamLike>) &
+  ModelRequestBindingSupport;
 
 export type CompleteSimpleFn = (
   model: Model,

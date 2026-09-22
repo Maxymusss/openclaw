@@ -181,6 +181,6 @@ export function projectOperatorSessionPatch<
   ) {
     delete entry.modelFallback;
   }
-  const { resolved, ...rest } = result;
+  const { entry: _entry, resolved, ...rest } = result;
   return { ...rest, entry, ...(selectionVisible && resolved ? { resolved } : {}) };
 }

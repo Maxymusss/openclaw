@@ -9,7 +9,7 @@ import type {
 import { ResponsesWS } from "openai/resources/responses/ws.js";
 import { getAiTransportHost, resolveAiTransportHeaderSentinels } from "../host.js";
 import { registerSessionResourceCleanup } from "../session-resources.js";
-import type { StreamOptions, UserMessage } from "../types.js";
+import type { Model, StreamOptions, UserMessage } from "../types.js";
 import {
   resolveResponsesContinuationRequest,
   type ResponsesContinuationRequest,
@@ -103,6 +103,21 @@ export function supportsNativeOpenAIResponsesEndpoint(params: {
     params.api === "openai-responses" &&
     isOfficialOpenAIResponsesBaseUrl(params.baseUrl)
   );
+}
+
+export function combineWebSocketTimeoutSignal(
+  signal: AbortSignal,
+  model: Model,
+  timeoutMs: number | undefined,
+) {
+  const resolvedTimeoutMs =
+    timeoutMs !== undefined && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? timeoutMs
+      : getAiTransportHost().resolveModelRequestTimeoutMs(model);
+  if (resolvedTimeoutMs === undefined || !Number.isFinite(resolvedTimeoutMs)) {
+    return signal;
+  }
+  return AbortSignal.any([signal, AbortSignal.timeout(Math.max(1, resolvedTimeoutMs))]);
 }
 
 function closeWebSocketSilently(socket: ResponsesWS, reason = "done"): void {

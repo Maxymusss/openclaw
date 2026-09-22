@@ -1,10 +1,11 @@
-/**
- * Resolves provider stream functions and API keys for embedded agents.
- */
 import type { LlmRuntime } from "@openclaw/ai";
 import { notifyLlmRequestActivity, onLlmRequestActivity } from "@openclaw/ai/internal/runtime";
 import { stripSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
 import { createBoundaryAwareStreamFnForModel } from "@openclaw/ai/transports";
+/**
+ * Resolves provider stream functions and API keys for embedded agents.
+ */
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import { hasNonEmptyString as hasResolvedRuntimeApiKey } from "@openclaw/normalization-core/string-coerce";
 import { getStreamLlmRuntime } from "../../llm/model-runtime-binding.js";
 import "../ai-transport-runtime-host.js";
@@ -283,14 +284,14 @@ function wrapEmbeddedAgentStreamFn(
     return signal ? { ...merged, signal } : merged;
   };
   if (!params.authStorage && !params.resolvedApiKey) {
-    return (m, context, options) => {
+    return inheritModelRequestBinding<StreamFn>((m, context, options) => {
       params.assertCurrent?.();
       params.assertModelCurrent?.(m);
       return inner(m, transformContext(context), mergeRunSignal(options));
-    };
+    }, inner);
   }
   const { authStorage, providerId, resolvedApiKey } = params;
-  return async (m, context, options) => {
+  return inheritModelRequestBinding<StreamFn>(async (m, context, options) => {
     params.assertCurrent?.();
     params.assertModelCurrent?.(m);
     const apiKey = await resolveEmbeddedAgentApiKey({
@@ -305,5 +306,5 @@ function wrapEmbeddedAgentStreamFn(
       ...mergeRunSignal(options),
       apiKey: selectedApiKey,
     });
-  };
+  }, inner);
 }

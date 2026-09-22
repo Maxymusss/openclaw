@@ -9,6 +9,7 @@ import { resolveOpenAICompletionsCompat } from "../../packages/ai/src/transports
 import type { Context, Model } from "../../packages/ai/src/types.js";
 import { projectProviderError } from "../../packages/ai/src/utils/provider-error.js";
 import { createOpenClawReadTool } from "../agents/agent-tools.read.js";
+import { OperatorModelPolicyError } from "../agents/operator-model-policy.js";
 import { createZeroUsageFixture } from "../agents/test-helpers/usage-fixtures.js";
 import { registerSecretValueForRedaction } from "../logging/secret-redaction-registry.js";
 import { resetSecretRedactionRegistryForTest } from "../logging/secret-redaction-registry.test-support.js";
@@ -136,6 +137,19 @@ describe("OpenClaw Anthropic inline images", () => {
 });
 
 describe("OpenClaw provider error redaction", () => {
+  it("preserves a nested policy denial while redacting its diagnostics", () => {
+    const secret = "opaque-policy-fixture-secret";
+    registerSecretValueForRedaction(secret);
+    const cause = new OperatorModelPolicyError(`source revoked ${secret}`);
+    const projected = projectProviderError(new Error(`Connection error: ${secret}`, { cause }));
+    expect(projected).toMatchObject({
+      stopReason: "error",
+      errorCode: "OPERATOR_MODEL_POLICY_DENIED",
+    });
+    expect(projected.errorMessage).toContain("Connection error:");
+    expect(JSON.stringify(projected)).not.toContain(secret);
+  });
+
   it("preserves a nested transport code after installed host redaction", () => {
     const cause = Object.assign(new Error("getaddrinfo failed at fixture.invalid"), {
       code: "EAI_AGAIN",

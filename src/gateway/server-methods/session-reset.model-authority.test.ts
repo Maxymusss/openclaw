@@ -40,7 +40,7 @@ describe.each(["sessions.reset", "sessions.create"])("%s model response privacy"
           modelOverride: "gpt-5",
           authProfileOverride: "fixture-account",
           authProfileOverrideSource: "user" as const,
-          contextWindow: 8192,
+          contextWindow: "extended",
           thinkingLevel: "low" as const,
           createdActor: {
             type: "human" as const,
@@ -77,7 +77,7 @@ describe.each(["sessions.reset", "sessions.create"])("%s model response privacy"
           providerOverride: "openai",
           modelOverride: "gpt-5",
           authProfileOverride: "fixture-account",
-          contextWindow: 8192,
+          contextWindow: "extended",
           thinkingLevel: "low",
         });
         const payload = respond.mock.calls[0]?.[1];

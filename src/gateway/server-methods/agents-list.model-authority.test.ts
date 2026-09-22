@@ -101,8 +101,8 @@ describe("caller-local agent catalog", () => {
   it("does not adopt an agent newly allowed while its original catalog read is pending", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const f = fixture();
-      const started = createDeferred<void>();
-      const release = createDeferred<void>();
+      const started = createDeferred();
+      const release = createDeferred();
       f.read.mockImplementation(async () => {
         started.resolve();
         await release.promise;

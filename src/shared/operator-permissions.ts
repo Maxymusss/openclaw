@@ -19,11 +19,11 @@ export function freezeOperatorPermissionCeiling(
   if (permissions === undefined) {
     return undefined;
   }
-  return Object.freeze({
-    ...(permissions.models
+  return Object.freeze(
+    permissions.models
       ? { models: Object.freeze({ allow: Object.freeze([...new Set(permissions.models.allow)]) }) }
-      : {}),
-  });
+      : {},
+  );
 }
 
 /** Removing or widening a current restriction cannot widen the original admission. */

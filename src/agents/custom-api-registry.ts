@@ -2,7 +2,12 @@
  * Registers caller-supplied custom API stream functions with the LLM registry.
  */
 import type { ApiRegistry } from "@openclaw/ai";
-import type { StreamFn } from "@openclaw/llm-core";
+import {
+  inheritModelRequestBinding,
+  type StreamFunction,
+  type SimpleStreamOptions,
+  type StreamFn,
+} from "@openclaw/llm-core";
 import type {
   Api,
   AssistantMessageEventStreamContract,
@@ -66,10 +71,15 @@ export function ensureCustomApiRegistered(
   registry.registerApiProvider(
     {
       api,
-      stream: (model, context, options) =>
-        adaptCustomStream(model, streamFn(model, context, options)),
-      streamSimple: (model, context, options) =>
-        adaptCustomStream(model, streamFn(model, context, options as StreamOptions)),
+      stream: inheritModelRequestBinding<StreamFunction>(
+        (model, context, options) => adaptCustomStream(model, streamFn(model, context, options)),
+        streamFn,
+      ),
+      streamSimple: inheritModelRequestBinding<StreamFunction<Api, SimpleStreamOptions>>(
+        (model, context, options) =>
+          adaptCustomStream(model, streamFn(model, context, options as StreamOptions)),
+        streamFn,
+      ),
     },
     getCustomApiRegistrySourceId(api),
   );

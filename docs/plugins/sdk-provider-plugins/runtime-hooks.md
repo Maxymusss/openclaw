@@ -198,6 +198,25 @@ prefix separately, and consume the marker before sending any payload.
 Use `stripSystemPromptCacheBoundary` when caching is disabled. By default,
 OpenClaw strips the marker before invoking a custom transport.
 
+### Finite model restrictions
+
+`StreamFn.modelRequestBinding: "wire-model-v1"` declares a transport obligation,
+not permission to use a model. A qualified transport binds each request's original
+authority and canonical model to its serialized wire model, owns that routing
+snapshot across hooks, and rechecks authority at final dispatch, including retries.
+Do not capture caller authority in a cached factory or registry entry.
+
+Package-owned Completions and Responses HTTP transports implement this contract.
+Responses WebSocket modes are refused under finite model restrictions; OpenClaw
+does not silently switch transports. Unrestricted requests retain their existing
+behavior. This contract does not qualify a native agent runtime.
+
+Custom wrappers do not inherit qualification automatically. A transparent wrapper
+may declare it only when it performs no inference egress itself and always calls
+a qualified delegate. Custom transports without the contract are unavailable to
+callers with finite model restrictions. Select models through normal model
+selection before request preparation; `onPayload` cannot reroute a finite request.
+
 For custom `createStreamFn` transports that accumulate JSON tool arguments,
 use `createToolArgumentPreviewSchedule()` from `openclaw/plugin-sdk/llm`.
 Create one schedule per tool call and pass the accumulated raw string's

@@ -1,6 +1,3 @@
-import type { ModelFallbackRuntimeContext } from "./model-fallback.types.js";
-import { isOperatorModelPolicyError } from "./operator-model-policy.js";
-export type { ModelFallbackRuntimeContext } from "./model-fallback.types.js";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { TRANSCRIPT_NOT_CONTINUABLE_ERROR_CODE } from "../../packages/agent-core/src/errors.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -36,10 +33,12 @@ import type {
   FallbackAttempt,
   ModelCandidate,
   ModelFallbackAttemptProvenance,
+  ModelFallbackRuntimeContext,
 } from "./model-fallback.types.js";
 import { modelKey } from "./model-ref-shared.js";
 import { isCliRuntimeAlias } from "./model-runtime-aliases.js";
 import { isCliProvider } from "./model-selection-cli.js";
+import { isOperatorModelPolicyError } from "./operator-model-policy.js";
 import {
   isAgentRunDirectAbortReason,
   isAgentRunRestartAbortReason,
@@ -52,6 +51,8 @@ import {
   suspendSession,
   type SessionSuspensionParams,
 } from "./session-suspension.js";
+
+export type { ModelFallbackRuntimeContext } from "./model-fallback.types.js";
 
 type FailoverAttribution = {
   sessionId?: string;

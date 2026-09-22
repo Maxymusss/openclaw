@@ -38,8 +38,8 @@ export function catalogResult(
 }
 
 export function catalogError(error: unknown): { code: string; message: string } {
-  // SAFETY: the object view only reads optional error fields, each narrowed before use.
   const record =
+    // SAFETY: the object view only reads optional error fields, each narrowed before use.
     error && typeof error === "object" ? (error as Record<string, unknown>) : undefined;
   const recordMessage = typeof record?.message === "string" ? record.message.trim() : "";
   const fallbackMessage = typeof error === "string" ? error.trim() : "";

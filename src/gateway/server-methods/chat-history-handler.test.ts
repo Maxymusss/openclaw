@@ -26,73 +26,9 @@ import { authorizeCurrentOperatorRoleScopes } from "../operator-role-policy.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
 import { createHistoryReadContext } from "./chat-history.test-helpers.js";
-import { connectChatMetadataAccount } from "./chat-metadata-runtime.test-support.js";
+import { createPersonalMetadataFixture } from "./chat-metadata-handler.test-support.js";
 import { identifiedClient } from "./sessions-read-cache.test-support.js";
-import type { GatewayRequestContext, GatewayRequestHandlerOptions, RespondFn } from "./types.js";
-
-function createPersonalMetadataFixture() {
-  const owner = ensureProfileForEmail("metadata-owner@example.test");
-  const authProfileId = connectChatMetadataAccount(owner.id);
-  const client: NonNullable<GatewayRequestHandlerOptions["client"]> & { connId: string } = {
-    connId: "metadata-owner-connection",
-    connect: {
-      minProtocol: 1,
-      maxProtocol: 1,
-      client: { id: "openclaw-control-ui", version: "test", platform: "test", mode: "webchat" },
-      role: "operator",
-      scopes: ["operator.read"],
-    },
-    authenticatedUserProfile: {
-      profileId: owner.id,
-      displayName: owner.displayName,
-      hasAvatar: false,
-      updatedAt: owner.updatedAt,
-    },
-  };
-  const config = {
-    gateway: {
-      roles: {
-        default: "reader",
-        definitions: {
-          reader: { agents: "*", scopes: ["operator.read"], sessions: { others: "none" } },
-        },
-      },
-    },
-  } satisfies OpenClawConfig;
-  const clients = new Set([client]);
-  const metadata = { models: [], swarmEnabled: false };
-  const readChatMetadata = vi.fn<GatewayRequestContext["readChatMetadata"]>(async () => metadata);
-  const context = createDirectChatContext({
-    getRuntimeConfig: () => config,
-    readChatMetadata,
-    getClientConnIds: (filter) =>
-      new Set(
-        [...clients]
-          .filter((current) => !filter || filter(current))
-          .map((current) => current.connId),
-      ),
-  });
-  const request = async (
-    params: Record<string, unknown>,
-    overrides: Partial<Pick<GatewayRequestHandlerOptions, "client" | "signal">> = {},
-  ) => {
-    const respond = vi.fn<RespondFn>();
-    await expectDefined(
-      chatHistoryHandlers["chat.metadata"],
-      "metadata handler",
-    )({
-      params,
-      context,
-      client,
-      respond,
-      req: { type: "req", id: "draft-preview", method: "chat.metadata" },
-      isWebchatConnect: () => false,
-      ...overrides,
-    });
-    return respond;
-  };
-  return { owner, authProfileId, client, clients, config, metadata, readChatMetadata, request };
-}
+import type { GatewayRequestContext, RespondFn } from "./types.js";
 
 describe("chat history model selection defaults", () => {
   it("keeps a stored literal global conversation separate from main in per-sender scope", async () => {

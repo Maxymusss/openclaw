@@ -14,7 +14,7 @@ import {
 import { sessionMutationGatewayHello } from "../../test-helpers/gateway-methods.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
 import { patchChatSessionSettings } from "./chat-settings-patches.ts";
-import type { ChatComposerMemoryFallback } from "./chat-state-host.ts";
+import type { ChatComposerMemoryFallback, ChatPageHost } from "./chat-state-host.ts";
 import type { RenderLifecycle } from "./render-lifecycle.ts";
 
 type RequestHandlers = Record<string, unknown>;
@@ -135,6 +135,7 @@ type TestChatHost = Omit<ChatHost, "settings"> & {
   chatModelCatalog: ModelCatalogEntry[];
   chatModelSwitchPromises?: Record<string, Promise<boolean>>;
   sessionsError?: string | null;
+  sessionsResult: ChatPageHost["sessionsResult"];
   sessionsResultAgentId?: string | null;
   sessionsArchivedFilter?: "active" | "archived" | "all";
   password?: string;

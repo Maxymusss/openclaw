@@ -20,7 +20,7 @@ function fixture() {
   let changed = () => {};
   const control = new NewSessionModelControl(() => changed());
   const load = (options: Parameters<NewSessionModelControl["load"]>[3] = {}) => {
-    const settled = createDeferred<void>();
+    const settled = createDeferred();
     changed = () => {
       if (control.modelSelectionBlockedReason(agent) !== "Loading models…") {
         settled.resolve();

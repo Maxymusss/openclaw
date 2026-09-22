@@ -8,7 +8,6 @@ import type {
 } from "../../api/types.ts";
 import type { ApplicationContext } from "../../app/context.ts";
 import { hasOperatorWriteAccess } from "../../app/operator-access.ts";
-import { t } from "../../i18n/index.ts";
 import { registerModelControlsEnglish } from "../../i18n/locales/en-model-controls.ts";
 import { buildQualifiedChatModelValue } from "../../lib/chat/model-ref.ts";
 import { normalizeChatFastModeInput } from "../../lib/chat/model-select-state.ts";

@@ -1,11 +1,12 @@
+import type { ApiRegistry } from "@openclaw/ai";
+import { createTransportAwareStreamFnForModel } from "@openclaw/ai/transports";
+import "./ai-transport-runtime-host.js";
 /**
  * Provider stream registration entry point.
  * Resolves plugin-owned or transport-aware stream functions and registers the
  * model API once a concrete stream implementation exists.
  */
-import type { ApiRegistry } from "@openclaw/ai";
-import "./ai-transport-runtime-host.js";
-import { createTransportAwareStreamFnForModel } from "@openclaw/ai/transports";
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getModelLlmRuntime } from "../llm/model-runtime-binding.js";
 import type { Api, Model } from "../llm/types.js";
@@ -106,8 +107,11 @@ export function registerProviderStreamForModel<TApi extends Api>(params: {
         }) ?? streamFn)
       : streamFn;
   const preparedStreamFn = runtimeHandle
-    ? bindProviderRuntimeHandle(providerWrappedStreamFn, runtimeHandle)
-    : providerWrappedStreamFn;
+    ? bindProviderRuntimeHandle(
+        guardOperatorModelProviderStream(providerWrappedStreamFn),
+        runtimeHandle,
+      )
+    : guardOperatorModelProviderStream(providerWrappedStreamFn);
   // Register custom APIs only after a concrete stream exists, so later callers
   // can route by model.api without reloading provider runtime hooks.
   if (apiRegistry) {
@@ -120,13 +124,16 @@ function bindProviderRuntimeHandle(
   streamFn: StreamFn,
   runtimeHandle: ProviderRuntimePluginHandle,
 ): StreamFn {
-  return (model, context, options) =>
-    streamFn(attachModelProviderRuntimePluginHandle(model, runtimeHandle), context, options);
+  return inheritModelRequestBinding<StreamFn>(
+    (model, context, options) =>
+      streamFn(attachModelProviderRuntimePluginHandle(model, runtimeHandle), context, options),
+    streamFn,
+  );
 }
 
 function wrapPluginProviderStream(streamFn: StreamFn): StreamFn {
   const boundary = "plugin provider stream handoff";
-  return (model, context, options) => {
+  return inheritModelRequestBinding<StreamFn>((model, context, options) => {
     const apiKey = options?.apiKey
       ? unwrapSecretSentinelsForProviderEgress(options.apiKey, boundary)
       : options?.apiKey;
@@ -142,5 +149,5 @@ function wrapPluginProviderStream(streamFn: StreamFn): StreamFn {
       context,
       resolvedOptions,
     );
-  };
+  }, streamFn);
 }

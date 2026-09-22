@@ -4,6 +4,7 @@ import { getEnvApiKey } from "../env-api-keys.js";
 import { clampThinkingLevel } from "../model-utils.js";
 import { reasoningTagTextPolicy, type OpenAICompletionsOptions } from "../provider-options.js";
 import { createAssistantOutput } from "../transports/assistant-output.js";
+import { prepareModelRequest } from "../transports/model-request-binding.js";
 import {
   resolveOpenAICompletionsCompat,
   type ResolvedOpenAICompletionsCompat,
@@ -50,7 +51,12 @@ export { convertMessages } from "../openai-completions-messages.js";
 export const streamOpenAICompletions: StreamFunction<
   "openai-completions",
   OpenAICompletionsOptions
-> = (model: Model<"openai-completions">, context: Context, options?: OpenAICompletionsOptions) => {
+> = (
+  sourceModel: Model<"openai-completions">,
+  context: Context,
+  options?: OpenAICompletionsOptions,
+) => {
+  let model = sourceModel;
   const stream = new AssistantMessageEventStream();
 
   void (async () => {
@@ -58,6 +64,8 @@ export const streamOpenAICompletions: StreamFunction<
     const provisionalCommentaryTags: PendingCommentaryTags = new Map();
     let firstEventAbort: ReturnType<typeof createFirstStreamEventAbortController> | undefined;
     try {
+      const request = prepareModelRequest(model);
+      model = request.model;
       const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
       const compat = resolveOpenAICompletionsCompat(model);
       const shouldEmitReasoning = Boolean(
@@ -74,16 +82,19 @@ export const streamOpenAICompletions: StreamFunction<
         resolveProviderSimpleCompletionHeaders(model, options),
         cacheSessionId,
         compat,
+        request.assertCurrent,
       );
       let params = buildOpenAICompletionsRequest(model, context, options, {
         mode: "direct",
         compat,
         cacheRetention,
       });
-      const nextParams = await options?.onPayload?.(params, model);
+      request.preparePayload(params);
+      const nextParams = await options?.onPayload?.(params, request.hookModel);
       if (nextParams !== undefined) {
         params = nextParams as typeof params;
       }
+      params = request.acceptPayload(params);
       firstEventAbort = createFirstStreamEventAbortController(options?.signal);
       const requestOptions = {
         signal: firstEventAbort.signal,
@@ -246,6 +257,7 @@ function createClient(
   optionsHeaders?: Record<string, string>,
   sessionId?: string,
   compat: ResolvedOpenAICompletionsCompat = resolveOpenAICompletionsCompat(model),
+  beforeRequest?: () => void,
 ) {
   if (!apiKey) {
     throw new Error(`No API key for provider: ${model.provider}`);
@@ -271,5 +283,8 @@ function createClient(
     }
   }
 
-  return createOpenAIProviderClient(model, apiKey, headers, optionsHeaders);
+  return createOpenAIProviderClient(model, apiKey, headers, optionsHeaders, beforeRequest);
 }
+
+Object.assign(streamOpenAICompletions, { modelRequestBinding: "wire-model-v1" as const });
+Object.assign(streamSimpleOpenAICompletions, { modelRequestBinding: "wire-model-v1" as const });

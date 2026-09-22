@@ -4,7 +4,7 @@ import { getAiTransportHost, type AiProviderRequestPolicyInput } from "../host.j
 export function buildGuardedModelFetch(
   model: Model,
   timeoutMs?: number,
-  options?: { sanitizeSse?: boolean },
+  options?: { sanitizeSse?: boolean; beforeRequest?: () => void },
 ): typeof fetch {
   const host = getAiTransportHost();
   if (options !== undefined) {

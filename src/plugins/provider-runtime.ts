@@ -1,4 +1,5 @@
 import { stripSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import {
   findNormalizedProviderValue,
   normalizeProviderId,
@@ -25,6 +26,7 @@ import type {
   PluginMetadataRegistryView,
   PluginMetadataSnapshot,
 } from "./plugin-metadata-snapshot.types.js";
+import { hasConfiguredModelProvider } from "./provider-config-owner.js";
 import { resolvePluginDiscoveryProvidersRuntime } from "./provider-discovery.runtime.js";
 import {
   resolveProviderAuthProfileId,
@@ -169,15 +171,6 @@ function hasExplicitProviderRuntimePluginActivation(params: ProviderRuntimeLooku
   const allow = new Set(params.config.plugins?.allow ?? []);
   const entries = params.config.plugins?.entries ?? {};
   return ownerPluginIds.some((pluginId) => allow.has(pluginId) || entries[pluginId] !== undefined);
-}
-
-function hasConfiguredModelProvider(params: {
-  provider: string;
-  config?: OpenClawConfig;
-}): boolean {
-  return (
-    findNormalizedProviderValue(params.config?.models?.providers, params.provider) !== undefined
-  );
 }
 
 export {
@@ -529,14 +522,17 @@ export function resolveProviderStreamFn(
   if (!streamFn || plugin?.supportsSystemPromptCacheBoundary) {
     return streamFn ?? undefined;
   }
-  return (model, context, options) =>
-    streamFn(
-      model,
-      context.systemPrompt
-        ? { ...context, systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt) }
-        : context,
-      options,
-    );
+  return inheritModelRequestBinding<StreamFn>(
+    (model, context, options) =>
+      streamFn(
+        model,
+        context.systemPrompt
+          ? { ...context, systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt) }
+          : context,
+        options,
+      ),
+    streamFn,
+  );
 }
 
 export function resolveProviderTransportTurnStateWithPlugin(params: {

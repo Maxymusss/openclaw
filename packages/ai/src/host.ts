@@ -129,6 +129,19 @@ type AnthropicInlineContentNormalizer = (
 
 /** Narrow host ports consumed by the built-in provider adapters. */
 export interface AiTransportHost {
+  /** Optional finite-model policy; standalone and unrestricted hosts remain unchanged. */
+  modelRequests?: {
+    requireDelegateSupport(support: "wire-model-v1" | undefined): void;
+    capture(model: Model):
+      | {
+          assertCurrent(): void;
+          bindWireModel(
+            initial: string | undefined,
+            requestModel: Model,
+          ): (currentModel: Model, wireModel: string | undefined) => void;
+        }
+      | undefined;
+  };
   /** Retains accepted lifecycle work after its caller observes cancellation. */
   observePendingProviderWork?: (pending: Promise<unknown>) => void;
   /**
@@ -138,7 +151,7 @@ export interface AiTransportHost {
   buildModelFetch(
     model: Model,
     timeoutMs?: number,
-    options?: { sanitizeSse?: boolean },
+    options?: { sanitizeSse?: boolean; beforeRequest?: () => void },
   ): typeof fetch | undefined;
   /** Resolves host-owned process-local secret sentinel substrings immediately before egress. */
   resolveSecretSentinel(value: string): string;

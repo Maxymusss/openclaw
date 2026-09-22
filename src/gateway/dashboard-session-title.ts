@@ -399,7 +399,7 @@ async function maybeGenerateOwnedSessionTitle(params: SessionTitleParams): Promi
         },
         {
           requireWriteSuccess: true,
-          ...(assertCommitAllowed ? { assertCommitAllowed } : {}),
+          assertCommitAllowed,
         },
       );
       return persisted;

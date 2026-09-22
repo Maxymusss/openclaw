@@ -19,7 +19,7 @@ import type {
 import type { AuthProfileFailurePolicy } from "./run/auth-profile-failure-policy.types.js";
 import type { EmbeddedAgentRunResult } from "./types.js";
 
-export type RunEntryCandidateOptions = {
+type RunEntryCandidateOptions = {
   agentHarnessRuntimeOverride: string | undefined;
   assistantErrorTranscript: AssistantErrorTranscript;
   authProfileFailurePolicy?: AuthProfileFailurePolicy;

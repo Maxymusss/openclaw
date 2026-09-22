@@ -20,7 +20,11 @@ import {
 } from "./admitted-run-operator-authority.js";
 import { resolveEmbeddedAgentStream } from "./embedded-agent-runner/stream-resolution.js";
 import { requireIsolatedAssistantText } from "./isolated-completion-output.js";
-import { OperatorModelPolicyError, runWithOperatorModelRequest } from "./operator-model-policy.js";
+import {
+  captureOperatorModelRequest,
+  OperatorModelPolicyError,
+  runWithOperatorModelRequest,
+} from "./operator-model-policy.js";
 import { registerProviderStreamForModel } from "./provider-stream.js";
 import { Agent, type StreamFn } from "./runtime/index.js";
 import { completeWithPreparedSimpleCompletionModel } from "./simple-completion-execution.js";
@@ -63,6 +67,8 @@ function preparedProvider(
     }
   >();
   const raw = vi.fn<StreamFn>((model) => {
+    const binding = captureOperatorModelRequest(model);
+    binding?.bindWireModel(model.id, model)(model, model.id);
     const result = createAssistantMessageEventStream();
     const message = buildAssistantMessage({
       model,
@@ -73,17 +79,20 @@ function preparedProvider(
     result.push({ type: "done", reason: "stop", message });
     return result;
   });
+  Object.assign(raw, { modelRequestBinding: "wire-model-v1" as const });
   const createStreamFn = vi.fn(() => raw);
   const wrapperCalls = vi.fn<(sessionId: string | undefined) => void>();
   const wrap = vi.fn((context: ProviderWrapStreamFnContext): StreamFn => {
     const inner = expectDefined(context.streamFn, "prepared provider delegate");
-    return async (model, requestContext, options) => {
+    const wrapper: StreamFn = async (model, requestContext, options) => {
       wrapperCalls(options?.sessionId);
       const request = expectDefined(requests.get(options?.sessionId ?? ""), "owned request");
       request.entered.resolve();
       await request.release.promise;
       return inner({ ...model, ...request.target }, requestContext, options);
     };
+    // This fixture has no egress of its own and always calls the guarded delegate.
+    return Object.assign(wrapper, { modelRequestBinding: "wire-model-v1" as const });
   });
   const plugin: ProviderPlugin = {
     id: "fixture",
@@ -204,6 +213,8 @@ it("retains SDK-owned completion authority through cancelled provider callback a
     return callbackDone.promise;
   });
   f.raw.mockImplementationOnce((model) => {
+    const binding = captureOperatorModelRequest(model);
+    binding?.bindWireModel(model.id, model)(model, model.id);
     const stream = createAssistantMessageEventStream();
     void notifyProviderHttpMetadata({
       options: { signal: controller.signal, onResponse },

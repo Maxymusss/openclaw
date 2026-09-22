@@ -279,16 +279,16 @@ export function scheduleSessionMaintenance(
       },
     );
   });
-  void owner
-    .track(run)
-    .catch((error: unknown) => {
+  void (async () => {
+    try {
+      await owner.track(run);
+    } catch (error) {
       if (owner.signal.aborted || isAbortError(error)) {
         log.debug(`Optional session maintenance cancelled: ${formatErrorMessage(error)}`);
       } else {
         log.warn(`Optional session maintenance failed: ${formatErrorMessage(error)}`);
       }
-    })
-    .finally(async () => {
+    } finally {
       try {
         // A timeout can settle the logical result while the provider still owns work.
         await AsyncWorkScope.runWhenAllIdle(
@@ -299,5 +299,6 @@ export function scheduleSessionMaintenance(
         releaseSource?.();
         budget.dispose();
       }
-    });
+    }
+  })();
 }

@@ -171,6 +171,7 @@ export async function resolveNextResponsesEncryptedContentAttempt<
 export async function createResponsesStreamWithEncryptedContentRetry(params: {
   client: ResponsesClientLike;
   request: OpenAIResponsesRequestParams;
+  prepareRequest?: (request: OpenAIResponsesRequestParams) => OpenAIResponsesRequestParams;
   requestOptions: { signal?: AbortSignal } | undefined;
   model: Model;
   observePrompt?: NonNullable<ReturnType<typeof createResponsesPromptEgressObserver>>;
@@ -194,6 +195,10 @@ export async function createResponsesStreamWithEncryptedContentRetry(params: {
   ) => {
     let attempt = initialAttempt;
     for (;;) {
+      if (params.prepareRequest) {
+        const { request, ...state } = attempt;
+        attempt = { ...state, request: params.prepareRequest(request) };
+      }
       // Observer failures are not provider rejections and must never enter recovery.
       params.observePrompt?.(attempt.request, {
         egress: "responses-sdk",

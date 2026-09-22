@@ -10,12 +10,11 @@ import { createPluginMetadataSnapshotFixture } from "./plugin-metadata.test-supp
 import type { ProviderExternalAuthProfile } from "./provider-external-auth.types.js";
 import type { ProviderRuntimeModel } from "./provider-runtime-model.types.js";
 import {
+  createOpenAiCatalogProviderPlugin,
   createProviderRuntimeLogger,
   expectAugmentedCodexCatalog,
   expectCodexMissingAuthHint,
 } from "./provider-runtime.test-support.js";
-import { withPluginRuntimeRegistryScope } from "./runtime/gateway-request-scope.js";
-import { withPluginRuntimeGenerationScope } from "./runtime/generation-scope.js";
 import { setPluginRuntimeLoadContext } from "./runtime/load-context.js";
 import type {
   AnyAgentTool,
@@ -110,6 +109,8 @@ let wrapProviderSimpleCompletionStreamFn: typeof import("./provider-runtime.js")
 let createEmptyPluginRegistry: typeof import("./registry-empty.js").createEmptyPluginRegistry;
 let resetPluginRuntimeStateForTest: typeof import("./runtime.js").resetPluginRuntimeStateForTest;
 let setActivePluginRegistry: typeof import("./runtime.js").setActivePluginRegistry;
+let withPluginRuntimeRegistryScope: typeof import("./runtime/gateway-request-scope.js").withPluginRuntimeRegistryScope;
+let withPluginRuntimeGenerationScope: typeof import("./runtime/generation-scope.js").withPluginRuntimeGenerationScope;
 
 const MODEL: ProviderRuntimeModel = {
   id: "demo-model",
@@ -143,23 +144,6 @@ const DEMO_TOOL = {
   parameters: { type: "object", properties: {} },
   execute: vi.fn(async () => ({ content: [], details: undefined })),
 } as unknown as AnyAgentTool;
-
-function createOpenAiCatalogProviderPlugin(
-  overrides: Partial<ProviderPlugin> = {},
-): ProviderPlugin {
-  return {
-    id: "openai",
-    label: "OpenAI",
-    auth: [],
-    augmentModelCatalog: () => [
-      { provider: "openai", id: "gpt-5.4", name: "gpt-5.4" },
-      { provider: "openai", id: "gpt-5.4-pro", name: "gpt-5.4-pro" },
-      { provider: "openai", id: "gpt-5.4-mini", name: "gpt-5.4-mini" },
-      { provider: "openai", id: "gpt-5.4-nano", name: "gpt-5.4-nano" },
-    ],
-    ...overrides,
-  };
-}
 
 const requireRecord = createRequireRecord("record", "expected-label-object-capitalized");
 
@@ -400,6 +384,8 @@ describe("provider-runtime", () => {
     ({ getAiTransportHost } = await import("@openclaw/ai"));
     ({ createEmptyPluginRegistry } = await import("./registry-empty.js"));
     ({ resetPluginRuntimeStateForTest, setActivePluginRegistry } = await import("./runtime.js"));
+    ({ withPluginRuntimeRegistryScope } = await import("./runtime/gateway-request-scope.js"));
+    ({ withPluginRuntimeGenerationScope } = await import("./runtime/generation-scope.js"));
   });
 
   beforeEach(() => {

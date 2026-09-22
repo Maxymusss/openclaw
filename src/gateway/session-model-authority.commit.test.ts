@@ -2,17 +2,22 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import { getRegisteredAgentHarness, registerAgentHarness } from "../agents/harness/registry.js";
 import type { AgentHarness } from "../agents/harness/types.js";
 import { createModelRuntimeChoiceOwnerFixture } from "../agents/model-runtime-choice.test-support.js";
 import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runtime.types.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
+import * as modelRuntimeSelection from "../auto-reply/reply/model-runtime-normalization.js";
 import {
   listSessionEntriesCore,
   loadSessionEntry,
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
-import { markPluginRegistryActive } from "../plugins/registry-lifecycle.js";
+import {
+  markPluginRegistryActive,
+  markPluginRegistryRetired,
+} from "../plugins/registry-lifecycle.js";
 import { createRuntimeTestRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { disposePluginRegistryInstances } from "../plugins/runtime.js";
 import {
@@ -28,14 +33,17 @@ import {
   createCoreGatewayMethodDescriptors,
   createGatewayMethodRegistry,
 } from "./methods/registry.js";
+import type { OperatorScope } from "./operator-scopes.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "./server-methods.js";
 import { buildModelsListResult } from "./server-methods/models-list-result.js";
 import { sessionCatalogHandlers } from "./server-methods/session-catalog.js";
 import { sessionMutationHandlers } from "./server-methods/sessions-mutations.js";
+import * as sessionModelSelection from "./server-methods/sessions-patch-model-selection.js";
 import type { RespondFn } from "./server-methods/types.js";
 import { registerGatewayModelCatalogPrivateAccess } from "./server-model-catalog-auth.js";
 import { readPreparedGatewayModelCatalogOwnerSnapshot } from "./server-model-catalog.js";
+import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
 import { createGatewaySession } from "./session-create-service.js";
 import type { PreparedGatewaySessionLifecycle } from "./session-lifecycle-preparation.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
@@ -72,7 +80,7 @@ vi.mock("../agents/prepared-model-catalog.js", async (importOriginal) => ({
   materializePreparedModelCatalogOwner: (owner: PreparedModelRuntimeSnapshot) => owner,
 }));
 
-function fixture(mode: string, scopes = ["operator.sessions.write"]) {
+function fixture(mode: string, scopes: OperatorScope[] = ["operator.sessions.write"]) {
   const client = roleClient("view", "model-selection-owner");
   client.connect.scopes = scopes;
   const profileId = client.authenticatedUserProfile!.profileId;
@@ -160,7 +168,15 @@ function fixture(mode: string, scopes = ["operator.sessions.write"]) {
       await disposePluginRegistryInstances(registry);
       registries.delete(registry);
     },
-    catalog: { entries, routeVariants: entries },
+    catalog: {
+      entries,
+      routeVariants: entries,
+      agentId: expectDefined(owner.agentId, "catalog owner agent"),
+      agentDir: owner.agentDir,
+      workspaceDir: expectDefined(owner.workspaceDir, "catalog owner workspace"),
+      config: owner.config,
+      catalogComplete: false,
+    } satisfies GatewayModelCatalogSnapshot,
     revoke: () => {
       active = false;
     },
@@ -501,96 +517,171 @@ describe("durable session model selection authority", () => {
     });
   });
 
-  it.each(["allowed", "explicit-denied", "unsupported", "revoked", "unrestricted"])(
-    "patches the exact stored generation only for an admitted %s selection",
-    async (mode) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        const f = fixture(mode);
-        const scope = { agentId: "main", sessionKey: "agent:main:model-patch" };
-        const original = {
-          sessionId: "selection-generation",
-          updatedAt: 1,
-          providerOverride: "fixture",
-          modelOverride: "hidden",
-          createdActor: { type: "human" as const, source: "profile" as const, id: f.profileId },
-        };
-        await upsertSessionEntryCore(scope, original);
-        const storedOriginal = expectDefined(loadSessionEntry(scope), "original stored generation");
-        const catalogRead = vi.fn(async () => {
-          if (mode === "revoked" || mode === "widened") {
-            f.revoke();
-          }
-          return f.catalog;
-        });
-        const respond = vi.fn<RespondFn>();
-        try {
-          await withPluginRuntimeGenerationScope(f.owner, () =>
-            handleGatewayRequest({
-              req: {
-                type: "req",
-                id: "model-patch",
-                method: "sessions.patch",
-                params: {
-                  key: scope.sessionKey,
-                  expectedSessionId: original.sessionId,
-                  model: mode === "explicit-denied" ? "fixture/hidden" : "fixture/allowed",
-                },
-              },
-              context: createDirectChatContext({
-                getRuntimeConfig: () => f.cfg,
-                loadGatewayModelCatalogSnapshot: catalogRead,
-              }),
-              client: f.client,
-              respond,
-              isWebchatConnect: () => false,
-              methodRegistry: createGatewayMethodRegistry(
-                createCoreGatewayMethodDescriptors(sessionMutationHandlers),
-                f.registry,
-              ),
-            }),
-          );
-          expect(catalogRead).toHaveBeenCalled();
-          if (mode === "allowed" || mode === "unrestricted") {
-            expect(respond).toHaveBeenCalledWith(
-              true,
-              expect.objectContaining({
-                ok: true,
-                resolved: expect.objectContaining({
-                  modelProvider: "fixture",
-                  model: "allowed",
-                  agentRuntime: { id: "selection-runtime", source: "session-key" },
-                }),
-              }),
-              undefined,
-            );
-            expect(loadSessionEntry(scope)).toMatchObject({
-              sessionId: original.sessionId,
-              providerOverride: "fixture",
-              modelOverride: "allowed",
+  it.each([
+    "allowed",
+    "explicit-denied",
+    "unsupported",
+    "revoked",
+    "unrestricted",
+    "repin-allowed",
+    "repin-replaced",
+    "repin-retired",
+    "repin-revoked",
+  ])("patches the exact stored generation only for an admitted %s selection", async (mode) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const f = fixture(mode);
+      const repin = mode.startsWith("repin-");
+      const scope = { agentId: "main", sessionKey: "agent:main:model-patch" };
+      const original = {
+        sessionId: "selection-generation",
+        updatedAt: 1,
+        providerOverride: "fixture",
+        modelOverride: repin ? "allowed" : "hidden",
+        ...(repin
+          ? {
+              authProfileOverride: "fixture:selected",
               agentRuntimeOverride: "selection-runtime",
-            });
-          } else {
-            expect(respond).toHaveBeenCalledWith(
-              false,
-              undefined,
-              expect.objectContaining({
-                code: "FORBIDDEN",
-                message: expect.stringContaining(
-                  mode === "revoked"
+            }
+          : {}),
+        createdActor: { type: "human" as const, source: "profile" as const, id: f.profileId },
+      };
+      await upsertSessionEntryCore(scope, original);
+      const storedOriginal = expectDefined(loadSessionEntry(scope), "original stored generation");
+      const catalogRead = vi.fn(async () => {
+        if (mode === "revoked" || mode === "widened") {
+          f.revoke();
+        }
+        return f.catalog;
+      });
+      const respond = vi.fn<RespondFn>();
+      const prepareRuntime = repin
+        ? vi.spyOn(modelRuntimeSelection, "prepareModelSelectionRuntime")
+        : undefined;
+      const prepareSelection = sessionModelSelection.prepareSessionPatchRuntimeSelection;
+      const selection = repin
+        ? vi
+            .spyOn(sessionModelSelection, "prepareSessionPatchRuntimeSelection")
+            .mockImplementation(async (params) => {
+              const result = await prepareSelection(params);
+              expect(result.ok).toBe(true);
+              if (!result.ok) {
+                throw new Error("Expected the finite-policy repin to prepare successfully");
+              }
+              expect(expectDefined(result.validate, "repin COMMIT validator")()).toBeUndefined();
+              expect(params.operatorAuthority?.permissions?.models).toEqual({
+                allow: ["fixture/allowed"],
+              });
+              expect(params.entry.agentRuntimeOverride).toBe("selection-runtime");
+              expect(loadSessionEntry(scope)).toEqual(storedOriginal);
+              const retained = expectDefined(
+                getRegisteredAgentHarness("selection-runtime"),
+                "retained runtime",
+              );
+              // Change the owner only after real preparation; the SQLite COMMIT must recheck it.
+              if (mode === "repin-replaced") {
+                registerAgentHarness(
+                  { ...retained.harness },
+                  { ownerPluginId: retained.ownerPluginId },
+                );
+                const replacement = expectDefined(
+                  getRegisteredAgentHarness("selection-runtime"),
+                  "replacement runtime",
+                );
+                expect(replacement.harness).not.toBe(retained.harness);
+                expect(replacement.harness.operatorModelPolicySupport).toBe("exact");
+              } else if (mode === "repin-retired") {
+                markPluginRegistryRetired(f.registry);
+                expect(getRegisteredAgentHarness("selection-runtime")).toBeUndefined();
+              } else if (mode === "repin-revoked") {
+                f.revoke();
+              }
+              return result;
+            })
+        : undefined;
+      try {
+        await withPluginRuntimeGenerationScope(f.owner, () =>
+          handleGatewayRequest({
+            req: {
+              type: "req",
+              id: "model-patch",
+              method: "sessions.patch",
+              params: {
+                key: scope.sessionKey,
+                expectedSessionId: original.sessionId,
+                model: repin
+                  ? "fixture/allowed@fixture:selected"
+                  : mode === "explicit-denied"
+                    ? "fixture/hidden"
+                    : "fixture/allowed",
+              },
+            },
+            context: createDirectChatContext({
+              getRuntimeConfig: () => f.cfg,
+              loadGatewayModelCatalogSnapshot: catalogRead,
+            }),
+            client: f.client,
+            respond,
+            isWebchatConnect: () => false,
+            methodRegistry: createGatewayMethodRegistry(
+              createCoreGatewayMethodDescriptors(sessionMutationHandlers),
+              f.registry,
+            ),
+          }),
+        );
+        expect(catalogRead).toHaveBeenCalled();
+        if (repin) {
+          expect(selection).toHaveBeenCalledOnce();
+          expect(prepareRuntime).not.toHaveBeenCalled();
+          expect(f.role.models).toEqual({ allow: ["fixture/allowed"] });
+        }
+        if (mode === "allowed" || mode === "unrestricted" || mode === "repin-allowed") {
+          expect(respond).toHaveBeenCalledWith(
+            true,
+            expect.objectContaining({
+              ok: true,
+              resolved: expect.objectContaining({
+                modelProvider: "fixture",
+                model: "allowed",
+                agentRuntime: { id: "selection-runtime", source: "session-key" },
+              }),
+            }),
+            undefined,
+          );
+          expect(loadSessionEntry(scope)).toMatchObject({
+            sessionId: original.sessionId,
+            providerOverride: "fixture",
+            modelOverride: "allowed",
+            agentRuntimeOverride: "selection-runtime",
+            ...(repin ? { authProfileOverride: "fixture:selected" } : {}),
+          });
+        } else {
+          expect(respond).toHaveBeenCalledWith(
+            false,
+            undefined,
+            expect.objectContaining({
+              code:
+                mode === "repin-replaced" || mode === "repin-retired"
+                  ? "INVALID_REQUEST"
+                  : "FORBIDDEN",
+              message: expect.stringContaining(
+                mode === "repin-replaced" || mode === "repin-retired"
+                  ? "Runtime owner changed during selection"
+                  : mode === "revoked" || mode === "repin-revoked"
                     ? "original model selection authority revoked"
                     : mode === "unsupported"
                       ? "cannot enforce"
                       : "does not allow this model",
-                ),
-              }),
-            );
-            expect(loadSessionEntry(scope)).toEqual(storedOriginal);
-          }
-        } finally {
-          published.owner = undefined;
-          await f.dispose();
+              ),
+            }),
+          );
+          expect(loadSessionEntry(scope)).toEqual(storedOriginal);
         }
-      });
-    },
-  );
+      } finally {
+        selection?.mockRestore();
+        prepareRuntime?.mockRestore();
+        published.owner = undefined;
+        await f.dispose();
+      }
+    });
+  });
 });

@@ -12,6 +12,7 @@ import type {
 import { ErrorCodes, errorShape } from "../../../../packages/gateway-protocol/src/index.js";
 import { listAgentIds } from "../../../agents/agent-scope-config.js";
 import { isOperatorModelPolicyError } from "../../../agents/operator-model-policy.js";
+import { formatErrorMessage } from "../../../infra/errors.js";
 import { normalizeAgentId } from "../../../routing/session-key.js";
 import { resolveGatewayAgentSelectionState } from "../../agent-list.js";
 import { resolveOperatorModelCatalogAgentId } from "../../operator-model-catalog.js";
@@ -86,7 +87,7 @@ export async function publishConnectModelCatalog(
         type: "res",
         id: `catalog:${handler.connId}`,
         ok: false,
-        error: errorShape(ErrorCodes.FORBIDDEN, error.message),
+        error: errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error)),
       });
       return;
     }

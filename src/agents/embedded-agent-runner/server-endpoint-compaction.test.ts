@@ -1,5 +1,5 @@
 import { captureOpenAIResponsesCompaction } from "@openclaw/ai/transports";
-import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
+import type { AgentMessage, StreamFn } from "openclaw/plugin-sdk/agent-core";
 import { SessionManager } from "openclaw/plugin-sdk/agent-sessions";
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,7 +65,7 @@ function attempt(overrides: Partial<Parameters<typeof attemptServerEndpointCompa
     session,
     result: attemptServerEndpointCompaction({
       trigger: "manual",
-      streamFn: vi.fn(),
+      streamFn: vi.fn<StreamFn>(),
       model,
       context: { systemPrompt: "system", messages: session.messages },
       sessionManager: session.sessionManager,

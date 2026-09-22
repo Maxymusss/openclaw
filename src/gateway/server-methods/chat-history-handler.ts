@@ -54,6 +54,7 @@ import {
   loadGatewaySessionEntryReadOnly,
   resolveSessionModelRef,
 } from "../session-utils.js";
+import type { GatewaySessionsDefaults } from "../session-utils.types.js";
 import { prepareSessionWorkspaceIcon } from "../workspace-icon-http.js";
 import {
   CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES,
@@ -534,7 +535,7 @@ async function readChatHistoryRequest(
         sessionInfo.activeLeafEntryId = historyPage.activeLeafEntryId ?? null;
       }
       // Cursor responses publish sessionInfo only; the default-model projection is unused.
-      let defaults =
+      let defaults: GatewaySessionsDefaults | undefined =
         cursor === undefined
           ? {
               ...getSessionDefaults(cfg, defaultModelCatalog, {

@@ -1,5 +1,4 @@
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.js";
-import type { SessionEntry } from "../../config/sessions/types.js";
 import type { AgentCompactionMode } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ContextEngine } from "../../context-engine/types.js";
@@ -20,7 +19,7 @@ import type { SessionManager } from "../sessions/session-manager.js";
 import type { recordCliCompactionInStore as recordCliCompactionInStoreImpl } from "./session-store.js";
 
 export type SessionManagerLike = ReturnType<typeof SessionManager.open>;
-export type SettingsManagerLike = {
+type SettingsManagerLike = {
   getCompactionReserveTokens: () => number;
   getCompactionKeepRecentTokens: () => number;
   applyOverrides: (overrides: {

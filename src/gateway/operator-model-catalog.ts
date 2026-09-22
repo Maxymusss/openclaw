@@ -34,7 +34,7 @@ function catalogRole(client: GatewayClient | null, cfg: OpenClawConfig) {
 }
 
 /** Agent discovery follows the role's existing creation/run ceiling; shared session reads remain separate. */
-export function listOperatorModelCatalogAgentIds(
+function listOperatorModelCatalogAgentIds(
   client: GatewayClient | null,
   cfg: OpenClawConfig,
 ): string[] {
@@ -121,31 +121,33 @@ export function captureOperatorModelCatalogAccess(
       if (!ceiling?.models) {
         return models;
       }
-      return models
-        .filter((model) => operatorModelAllowed(ceiling, model.provider, model.id))
-        .map((model) => {
-          const runtimeChoices = model.runtimeChoices?.map((choice) =>
-            runtimeSupportsModelCeiling(choice.agentRuntime.id)
-              ? choice
-              : {
-                  ...choice,
-                  available: false,
-                  unavailableReason: "unsupported-runtime" as const,
-                  unavailableUntil: undefined,
-                },
-          );
-          return {
-            ...model,
-            ...(runtimeSupportsModelCeiling(model.agentRuntime?.id ?? "openclaw")
-              ? {}
-              : {
-                  available: false,
-                  unavailableReason: "unsupported-runtime" as const,
-                  unavailableUntil: undefined,
-                }),
-            ...(runtimeChoices ? { runtimeChoices } : {}),
-          };
+      const projected: ModelChoice[] = [];
+      for (const model of models.filter((row) =>
+        operatorModelAllowed(ceiling, row.provider, row.id),
+      )) {
+        const runtimeChoices = model.runtimeChoices?.map((choice) =>
+          runtimeSupportsModelCeiling(choice.agentRuntime.id)
+            ? choice
+            : {
+                ...choice,
+                available: false,
+                unavailableReason: "unsupported-runtime" as const,
+                unavailableUntil: undefined,
+              },
+        );
+        projected.push({
+          ...model,
+          ...(runtimeSupportsModelCeiling(model.agentRuntime?.id ?? "openclaw")
+            ? {}
+            : {
+                available: false,
+                unavailableReason: "unsupported-runtime" as const,
+                unavailableUntil: undefined,
+              }),
+          ...(runtimeChoices ? { runtimeChoices } : {}),
         });
+      }
+      return projected;
     };
     const allowsAccountSelection = (
       result: Pick<ModelsListResult, "models" | "accountSelection">,

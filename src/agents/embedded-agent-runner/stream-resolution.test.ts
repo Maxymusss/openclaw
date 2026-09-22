@@ -12,9 +12,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { bindStreamLlmRuntime } from "../../llm/model-runtime-binding.js";
 import { streamSimple } from "../../llm/stream.js";
 import type { Model } from "../../llm/types.js";
+import { createAssistantMessageEventStream } from "../../llm/utils/event-stream.js";
 import { resolveProviderStreamFn } from "../../plugins/provider-runtime.js";
 import { mintSecretSentinel } from "../../secrets/sentinel.js";
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
+import { makeAssistantMessageFixture } from "../test-helpers/assistant-message-fixtures.js";
+import { makeProviderModelFixture } from "../test-helpers/provider-model-fixture.js";
 import { wrapStreamFnWithProviderPromptState } from "./provider-prompt-state.js";
 import {
   resolveEmbeddedAgentApiKey,
@@ -573,25 +576,43 @@ describe("resolveEmbeddedAgentStream", () => {
     }
   });
 
-  it.each(["unbound", "different runtime"])(
-    "keeps %s custom Codex session streams outside the native lifecycle path",
-    (ownership) => {
-      const customStream = vi.fn();
+  it.each([
+    ["unbound", "openai-chatgpt-responses", "openai", "session-custom"],
+    ["different runtime", "openai-chatgpt-responses", "openai", "session-custom"],
+    ["custom", "custom-api", "custom", "session-custom"],
+    ["anthropic-vertex", "anthropic-messages", "anthropic-vertex", "anthropic-vertex"],
+  ])(
+    "forwards %s session streams without cache or run cancellation",
+    async (ownership, api, provider, expectedStrategy) => {
+      const response = createAssistantMessageEventStream();
+      response.end(makeAssistantMessageFixture());
+      const customStream = vi.fn<StreamFn>(() => response);
       if (ownership === "different runtime") {
-        bindStreamLlmRuntime(customStream, { ...llmRuntime } as LlmRuntime);
+        bindStreamLlmRuntime(customStream, { ...llmRuntime });
       }
-
-      const { streamFn } = resolveEmbeddedAgentStream({
-        currentStreamFn: customStream as StreamFn,
-        sessionId: "custom-session",
-        model: {
-          api: "openai-chatgpt-responses",
-          provider: "openai",
-          id: "gpt-5.5",
-        } as never,
+      if (provider === "anthropic-vertex") {
+        streamMocks.anthropicVertex.mockReturnValueOnce(customStream);
+      }
+      const model = makeProviderModelFixture({
+        api,
+        provider,
+        id: provider === "openai" ? "gpt-5.5" : "custom-model",
+        baseUrl: "https://provider.example/v1",
+      });
+      const context = { messages: [] };
+      const options = { temperature: 0.25 };
+      const { streamFn, strategy } = resolveEmbeddedAgentStream({
+        currentStreamFn: customStream,
+        sessionId: provider === "openai" ? "custom-session" : "session-1",
+        model,
       });
 
-      expect(streamFn).toBe(customStream);
+      expect(strategy).toBe(expectedStrategy);
+      expect(await streamFn(model, context, options)).toBe(response);
+      expect(customStream).toHaveBeenCalledTimes(1);
+      expect(customStream.mock.calls[0]?.[0]).toBe(model);
+      expect(customStream.mock.calls[0]?.[1]).toBe(context);
+      expect(customStream.mock.calls[0]?.[2]).toBe(options);
     },
   );
 
@@ -812,27 +833,6 @@ describe("resolveEmbeddedAgentStream", () => {
     expect(result.sessionId).toBe("run-session");
     expect(result.promptCacheKey).toBe("cron-cache-key");
   });
-
-  it.each(["custom", "anthropic-vertex"] as const)(
-    "preserves %s stream identity without cache or run cancellation",
-    (provider) => {
-      const currentStreamFn = vi.fn(async (_model, _context, options) => options);
-      if (provider === "anthropic-vertex") {
-        streamMocks.anthropicVertex.mockReturnValueOnce(currentStreamFn);
-      }
-      const { streamFn } = resolveEmbeddedAgentStream({
-        currentStreamFn: currentStreamFn as never,
-        sessionId: "session-1",
-        model: {
-          api: provider === "anthropic-vertex" ? "anthropic-messages" : "custom-api",
-          provider,
-          id: "custom-model",
-        } as never,
-      });
-
-      expect(streamFn).toBe(currentStreamFn);
-    },
-  );
 
   it.each([
     ["custom", "run"],

@@ -445,9 +445,9 @@ export function prependSystemPromptAddition(params: {
   return prependSystemPromptAdditionAfterCacheBoundary(params);
 }
 
+// Public harness projections omit host admission; core attempts still require and supply it.
 type AfterTurnRuntimeContextAttempt = Pick<
   EmbeddedRunAttemptParams,
-  | "admittedRunContext"
   | "sessionTarget"
   | "contextEngineAgentId"
   | "sessionKey"
@@ -476,9 +476,10 @@ type AfterTurnRuntimeContextAttempt = Pick<
   | "authProfileIdSource"
   | "runtimePlan"
   | "userTurnTranscriptRecorder"
-> & {
-  sessionId?: EmbeddedRunAttemptParams["sessionId"];
-};
+> &
+  Partial<Pick<EmbeddedRunAttemptParams, "admittedRunContext">> & {
+    sessionId?: EmbeddedRunAttemptParams["sessionId"];
+  };
 
 function resolveRuntimeContextSessionTarget(params: {
   attempt: AfterTurnRuntimeContextAttempt;

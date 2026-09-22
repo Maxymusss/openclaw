@@ -1,6 +1,7 @@
 import { expectDefined, safeParseJsonRecord } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { OperatorModelPolicyError } from "../../agents/operator-model-policy.js";
 import { getPreparedModelRuntimeAuthStore } from "../../agents/prepared-model-runtime-auth.js";
 import {
   loadSessionEntry,
@@ -24,6 +25,7 @@ import { ensureProfileForEmail, setDisplayName } from "../../state/user-profiles
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { bumpGatewayAccessRevision } from "../gateway-access-revision.js";
 import { authorizeCurrentOperatorRoleScopes } from "../operator-role-policy.js";
+import type { OperatorScope } from "../operator-scopes.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import {
@@ -45,6 +47,9 @@ function fixture(restrictions?: { models?: string[]; agents?: "*" | string[]; na
   const person = ensureProfileForEmail("catalog-reader@example.test");
   setDisplayName(person.id, "Catalog Reader");
   const authProfileId = connectChatMetadataAccount(person.id);
+  const roleScopes: OperatorScope[] = restrictions?.narrow
+    ? ["operator.sessions.read"]
+    : ["operator.read"];
   const config = {
     ...createOpenAIChatMetadataConfig(),
     gateway: {
@@ -53,7 +58,7 @@ function fixture(restrictions?: { models?: string[]; agents?: "*" | string[]; na
         definitions: {
           reader: {
             agents: restrictions?.agents ?? "*",
-            scopes: restrictions?.narrow ? ["operator.sessions.read"] : ["operator.read"],
+            scopes: roleScopes,
             sessions: { others: "none" },
             ...(restrictions?.models ? { models: { allow: restrictions.models } } : {}),
           },
@@ -159,6 +164,59 @@ const isolated = {
 } as const;
 
 describe("direct session model catalogs", () => {
+  it.each(["wrapped", "non-Error"] as const)(
+    "returns a useful redacted denial for a %s metadata policy failure",
+    async (kind) => {
+      await withOpenClawTestState(isolated, async (state) => {
+        const f = fixture({ narrow: true, models: ["openai/gpt-5.6-luna"] });
+        await state.writeConfig(f.config);
+        const token = "sk-abcdefghijklmnopqrstuv";
+        const message = `Model access denied. Authorization: Bearer ${token}`;
+        const failure =
+          kind === "wrapped"
+            ? new Error("Metadata preparation failed", {
+                cause: new OperatorModelPolicyError(message),
+              })
+            : { errorCode: "OPERATOR_MODEL_POLICY_DENIED", message };
+        const read = vi.spyOn(f.context, "readChatMetadata").mockRejectedValueOnce(failure);
+        const respond = vi.fn<RespondFn>();
+        try {
+          await handleGatewayRequest({
+            req: {
+              type: "req",
+              id: "metadata-policy-failure",
+              method: "chat.metadata",
+              params: { agentId: "main" },
+            },
+            context: f.context,
+            client: f.client,
+            respond,
+            isWebchatConnect: () => false,
+            extraHandlers: { "chat.metadata": handleChatMetadataRequest },
+          });
+          expect(read).toHaveBeenCalledOnce();
+          expect(respond).toHaveBeenCalledExactlyOnceWith(
+            false,
+            undefined,
+            expect.objectContaining({
+              code: "FORBIDDEN",
+              message: expect.stringContaining("Model access denied."),
+            }),
+          );
+          const error = expectDefined(respond.mock.calls[0]?.[2], "metadata policy denial");
+          expect(error.message).not.toContain(token);
+          if (kind === "wrapped") {
+            expect(error.message).toContain("Metadata preparation failed");
+          }
+          expect(f.readPrepared).not.toHaveBeenCalled();
+          expect(f.loadDeferred).not.toHaveBeenCalled();
+        } finally {
+          read.mockRestore();
+        }
+      });
+    },
+  );
+
   it.each(["models.list", "chat.metadata"] as const)(
     "%s preserves only permitted draft and default-pinned personal account selections",
     async (method) => {

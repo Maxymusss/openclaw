@@ -9,6 +9,7 @@ export function createOpenAIProviderClient(
   apiKey: string,
   headers: Record<string, string>,
   optionsHeaders?: Record<string, string>,
+  beforeRequest?: () => void,
 ): OpenAI {
   // Merge options headers last so they can override defaults
   if (optionsHeaders) {
@@ -34,6 +35,6 @@ export function createOpenAIProviderClient(
     defaultHeaders,
     maxRetries: 0,
     // OpenAI supports custom fetch, so sentinels stay opaque until guarded egress.
-    fetch: getAiTransportHost().buildModelFetch(model),
+    fetch: getAiTransportHost().buildModelFetch(model, undefined, { beforeRequest }),
   });
 }

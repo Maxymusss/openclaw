@@ -7,6 +7,8 @@ import {
   agentHarnessStructuredInput,
   attachModelProviderRequestTransport,
   buildAgentHarnessUserInputAnswers,
+  type buildHarnessContextEngineRuntimeContext,
+  type buildHarnessContextEngineRuntimeContextFromUsage,
   classifyAgentHarnessTerminalOutcome,
   deliverAgentHarnessUserInputPrompt,
   formatAgentHarnessUserInputPrompt,
@@ -190,6 +192,12 @@ describe("agent harness runtime SDK facade", () => {
     expectTypeOf<
       Omit<EmbeddedRunAttemptParams, "hostCapabilities">
     >().toMatchTypeOf<EmbeddedRunAttemptParams>();
+    expectTypeOf<EmbeddedRunAttemptParamsV2>().toMatchTypeOf<
+      Parameters<typeof buildHarnessContextEngineRuntimeContext>[0]["attempt"]
+    >();
+    expectTypeOf<EmbeddedRunAttemptParamsV2>().toMatchTypeOf<
+      Parameters<typeof buildHarnessContextEngineRuntimeContextFromUsage>[0]["attempt"]
+    >();
     expectTypeOf<
       Omit<AgentHarnessAttemptParamsV2, "hostCapabilities"> extends AgentHarnessAttemptParamsV2
         ? true

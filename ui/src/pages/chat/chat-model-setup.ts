@@ -77,7 +77,7 @@ export function createChatModelSetupBanner(
   };
 }
 
-export function chatModelUnavailableBanner(
+function chatModelUnavailableBanner(
   model: string | null | undefined,
   provider: string | null | undefined,
   catalog: ModelCatalogEntry[],

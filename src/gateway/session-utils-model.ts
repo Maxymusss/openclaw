@@ -41,9 +41,8 @@ import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot
 import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import type { OperatorPermissionCeiling } from "../shared/operator-permissions.js";
 import { projectOperatorSessionPatch } from "./operator-model-projection.js";
-import { resolveSessionDisplayModelIdentityRef } from "./session-model-display.js";
-export { resolveSessionDisplayModelIdentityRefCached } from "./session-model-display.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
+import { resolveSessionDisplayModelIdentityRef } from "./session-model-display.js";
 import {
   createSessionRowModelCacheKey,
   type GatewayModelThinkingFacts,
@@ -53,6 +52,8 @@ import {
 import { resolveGatewaySessionRuntimeProjection } from "./session-utils-projection.js";
 import type { GatewaySessionsDefaults, SessionsPatchResult } from "./session-utils.types.js";
 import { projectWorkerPlacementAgentRuntime } from "./worker-environments/placement-session-runtime.js";
+
+export { resolveSessionDisplayModelIdentityRefCached } from "./session-model-display.js";
 
 type ThinkingProviderPolicySource = NonNullable<
   Parameters<typeof resolveThinkingProfile>[0]["providerPolicySource"]
@@ -650,7 +651,7 @@ export function projectSessionPatchResult(params: {
             }
           : {}),
       },
-    },
+    } satisfies SessionsPatchResult,
     params.operatorPermissions,
     resolved,
   );

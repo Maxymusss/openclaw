@@ -11,6 +11,7 @@ import {
 } from "../../agents/operator-model-policy.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
@@ -178,7 +179,7 @@ export async function handleChatMetadataRequest(
     ) {
       throw error;
     }
-    respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, error.message));
+    respond(false, undefined, errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error)));
   } finally {
     access?.release();
     scope?.release?.();

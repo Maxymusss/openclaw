@@ -30,7 +30,6 @@ import type {
   RunIsolatedCompletionParams,
   IsolatedCompletionResult,
 } from "./isolated-completion.types.js";
-export type { IsolatedCompletionResult } from "./isolated-completion.types.js";
 import { ensureAuthProfileStore } from "./model-auth.js";
 import {
   isCliRuntimeAliasForProvider,
@@ -57,6 +56,8 @@ import {
 } from "./runtime-plan/prepare-auth.js";
 import { scopeAuthProfileStoreToPreparedPlan } from "./runtime-plan/resolve-auth.js";
 import { prepareSimpleCompletionModel } from "./simple-completion-runtime.js";
+
+export type { IsolatedCompletionResult } from "./isolated-completion.types.js";
 
 type AgentHarnessIsolatedCompletionParams = Parameters<
   NonNullable<AgentHarness["runIsolatedCompletion"]>

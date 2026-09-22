@@ -1,6 +1,24 @@
 // Provides shared assertions for provider plugin runtime tests.
 import { expect, vi, type Mock } from "vitest";
 import type { SubsystemLogger } from "../logging/subsystem.js";
+import type { ProviderPlugin } from "./types.js";
+
+export function createOpenAiCatalogProviderPlugin(
+  overrides: Partial<ProviderPlugin> = {},
+): ProviderPlugin {
+  return {
+    id: "openai",
+    label: "OpenAI",
+    auth: [],
+    augmentModelCatalog: () => [
+      { provider: "openai", id: "gpt-5.4", name: "gpt-5.4" },
+      { provider: "openai", id: "gpt-5.4-pro", name: "gpt-5.4-pro" },
+      { provider: "openai", id: "gpt-5.4-mini", name: "gpt-5.4-mini" },
+      { provider: "openai", id: "gpt-5.4-nano", name: "gpt-5.4-nano" },
+    ],
+    ...overrides,
+  };
+}
 
 const openaiCodexCatalogEntries = [
   { provider: "openai", id: "gpt-5.5", name: "gpt-5.5" },

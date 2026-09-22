@@ -1,13 +1,23 @@
 // Coverage for prompt helper decisions used before embedded attempts.
 import { describe, expect, it, vi } from "vitest";
+import type { OpenClawConfig } from "../../../config/config.js";
+import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
+import type { NormalizedUsage } from "../../usage.js";
+import { buildContextEnginePromptCacheInfo } from "./attempt-context-engine-helpers.js";
 
 const hostHookStateMocks = vi.hoisted(() => ({
   drainPluginNextTurnInjectionContext: vi.fn(),
 }));
 
+vi.mock("../context-engine-capabilities.js", () => ({
+  resolveContextEngineCapabilities: async () => ({ llm: undefined }),
+}));
+
 vi.mock("../../../plugins/host-hook-state.js", () => hostHookStateMocks);
 
 import {
+  buildAfterTurnRuntimeContext,
+  buildAfterTurnRuntimeContextFromUsage,
   forgetPromptBuildDrainCacheForRun,
   mergeOrphanedTrailingUserPrompt,
   resolvePromptBuildHookResult,
@@ -263,5 +273,274 @@ describe("resolvePromptBuildHookResult drain cache", () => {
     });
 
     expect(hostHookStateMocks.drainPluginNextTurnInjectionContext).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("buildAfterTurnRuntimeContext", () => {
+  it("uses primary model when compaction.model is not set", () => {
+    const runtimeAuthPlan = {
+      providerForAuth: "openai",
+      authProfileProviderForAuth: "openai",
+      harnessAuthProvider: "openai",
+      forwardedAuthProfileId: "openai:p1",
+      forwardedAuthProfileSource: "user" as const,
+      modelRoute: {
+        provider: "openai",
+        modelId: "gpt-5.4",
+        api: "openai-chatgpt-responses",
+        baseUrl: "https://chatgpt.com/backend-api/codex",
+        authRequirement: "subscription" as const,
+        requestTransportOverrides: "none" as const,
+      },
+    };
+    const legacy = buildAfterTurnRuntimeContext({
+      attempt: {
+        admittedRunContext: createTestAdmittedRunContext("run-after-turn-context"),
+        sessionKey: "agent:main:session:abc",
+        messageChannel: "slack",
+        messageProvider: "slack",
+        agentAccountId: "acct-1",
+        authProfileId: "openai:p1",
+        authProfileIdSource: "user",
+        runtimePlan: { auth: runtimeAuthPlan } as never,
+        config: {} as OpenClawConfig,
+        skillsSnapshot: undefined,
+        provider: "openai",
+        modelId: "gpt-5.4",
+        thinkLevel: "off",
+        reasoningLevel: "on",
+        extraSystemPrompt: "extra",
+        ownerNumbers: ["+15555550123"],
+      },
+      workspaceDir: "/tmp/workspace",
+      cwd: "/tmp/task-repo",
+      agentDir: "/tmp/agent",
+    });
+
+    expect(legacy.provider).toBe("openai");
+    expect(legacy.model).toBe("gpt-5.4");
+    expect(legacy.authProfileIdSource).toBe("user");
+    expect(legacy.runtimeAuthPlan).toBe(runtimeAuthPlan);
+  });
+
+  it("keeps the primary model for a locked after-turn runtime context", () => {
+    const runtimeContext = buildAfterTurnRuntimeContext({
+      attempt: {
+        admittedRunContext: createTestAdmittedRunContext("run-after-turn-context"),
+        sessionKey: "agent:main:session:locked",
+        sandboxSessionKey: "global",
+        sandboxAgentId: "main",
+        config: {
+          agents: { defaults: { compaction: { model: "anthropic/claude-opus-4-6" } } },
+        } as OpenClawConfig,
+        skillsSnapshot: undefined,
+        provider: "openai",
+        modelId: "gpt-5.5",
+        agentHarnessId: "openclaw",
+        modelSelectionLocked: true,
+        thinkLevel: "off",
+      },
+      workspaceDir: "/tmp/workspace",
+      agentDir: "/tmp/agent",
+    });
+
+    expect(runtimeContext.modelSelectionLocked).toBe(true);
+    expect(runtimeContext.sandboxSessionKey).toBe("global");
+    expect(runtimeContext.sandboxAgentId).toBe("main");
+    expect(runtimeContext.provider).toBe("openai");
+    expect(runtimeContext.model).toBe("gpt-5.5");
+  });
+
+  it("publishes the storage-neutral session target in runtime context", () => {
+    const sessionTarget = {
+      agentId: "main",
+      sessionId: "session-abc",
+      sessionKey: "agent:main:session:abc",
+      storePath: "/tmp/state/agents/main/sessions/sessions.json",
+      threadId: 42,
+    };
+
+    const runtimeContext = buildAfterTurnRuntimeContext({
+      attempt: {
+        admittedRunContext: createTestAdmittedRunContext("run-after-turn-context"),
+        sessionId: "ignored-session-id",
+        sessionKey: "agent:main:fallback",
+        sessionTarget,
+        config: {} as OpenClawConfig,
+        skillsSnapshot: undefined,
+        provider: "openai",
+        modelId: "gpt-5.4",
+        thinkLevel: "off",
+        reasoningLevel: "on",
+      },
+      workspaceDir: "/tmp/workspace",
+      agentDir: "/tmp/agent",
+      activeAgentId: "main",
+    });
+
+    expect(runtimeContext.transcriptStorage).toEqual({ kind: "sqlite" });
+    expect(runtimeContext.sessionTarget).toEqual(sessionTarget);
+  });
+  it("resolves compaction.model override in runtime context so all context engines use the correct model", () => {
+    const legacy = buildAfterTurnRuntimeContext({
+      attempt: {
+        admittedRunContext: createTestAdmittedRunContext("run-after-turn-context"),
+        sessionKey: "agent:main:session:abc",
+        messageChannel: "slack",
+        messageProvider: "slack",
+        agentAccountId: "acct-1",
+        authProfileId: "openai:p1",
+        config: {
+          agents: {
+            defaults: {
+              models: {
+                "openrouter/anthropic/claude-sonnet-4-5": {
+                  alias: "summary",
+                },
+              },
+              compaction: {
+                model: "summary",
+              },
+            },
+          },
+        } as OpenClawConfig,
+        skillsSnapshot: undefined,
+        provider: "openai",
+        modelId: "gpt-5.4",
+        thinkLevel: "off",
+        reasoningLevel: "on",
+        extraSystemPrompt: "extra",
+        ownerNumbers: ["+15555550123"],
+      },
+      workspaceDir: "/tmp/workspace",
+      cwd: "/tmp/task-repo",
+      agentDir: "/tmp/agent",
+    });
+
+    // Resolve aliases before handing runtime context to any context engine;
+    // otherwise third-party engines can dispatch the bare alias as a model id.
+    expect(legacy.provider).toBe("openrouter");
+    expect(legacy.model).toBe("anthropic/claude-sonnet-4-5");
+    // Auth profile dropped because provider changed from openai to openrouter.
+    expect(legacy.authProfileId).toBeUndefined();
+  });
+  it("includes resolved auth profile fields for context-engine afterTurn compaction", () => {
+    const promptCache = buildContextEnginePromptCacheInfo({
+      lastCallUsage: {
+        input: 10,
+        output: 5,
+        cacheRead: 40,
+        cacheWrite: 2,
+        total: 57,
+      },
+    });
+    const legacy = buildAfterTurnRuntimeContext({
+      attempt: {
+        admittedRunContext: createTestAdmittedRunContext("run-after-turn-context"),
+        sessionKey: "agent:main:session:abc",
+        messageChannel: "slack",
+        messageProvider: "slack",
+        agentAccountId: "acct-1",
+        authProfileId: "openai:p1",
+        config: { plugins: { slots: { contextEngine: "lossless-claw" } } } as OpenClawConfig,
+        skillsSnapshot: undefined,
+        provider: "openai",
+        modelId: "gpt-5.4",
+        thinkLevel: "off",
+        reasoningLevel: "on",
+        extraSystemPrompt: "extra",
+        ownerNumbers: ["+15555550123"],
+      },
+      workspaceDir: "/tmp/workspace",
+      cwd: "/tmp/task-repo",
+      agentDir: "/tmp/agent",
+      tokenBudget: 1050000,
+      currentTokenCount: 52,
+      promptCache,
+    });
+
+    expect(legacy.authProfileId).toBe("openai:p1");
+    expect(legacy.provider).toBe("openai");
+    expect(legacy.model).toBe("gpt-5.4");
+    expect(legacy.workspaceDir).toBe("/tmp/workspace");
+    expect(legacy.cwd).toBe("/tmp/task-repo");
+    expect(legacy.agentDir).toBe("/tmp/agent");
+    expect(legacy.tokenBudget).toBe(1050000);
+    expect(legacy.currentTokenCount).toBe(52);
+    expect(legacy.promptCache?.lastCallUsage?.total).toBe(57);
+  });
+
+  it("derives afterTurn token count from the current assistant usage snapshot", () => {
+    const lastCallUsage = {
+      input: 10,
+      output: 5,
+      cacheRead: 40,
+      cacheWrite: 2,
+      contextUsage: {
+        state: "available",
+        promptTokens: 23,
+        totalTokens: 28,
+      },
+      total: 57,
+    } satisfies NormalizedUsage;
+    const promptCache = buildContextEnginePromptCacheInfo({ lastCallUsage });
+    const legacy = buildAfterTurnRuntimeContextFromUsage({
+      attempt: {
+        admittedRunContext: createTestAdmittedRunContext("run-after-turn-context"),
+        sessionKey: "agent:main:session:abc",
+        messageChannel: "slack",
+        messageProvider: "slack",
+        agentAccountId: "acct-1",
+        authProfileId: "openai:p1",
+        config: { plugins: { slots: { contextEngine: "lossless-claw" } } } as OpenClawConfig,
+        skillsSnapshot: undefined,
+        provider: "openai",
+        modelId: "gpt-5.4",
+        thinkLevel: "off",
+        reasoningLevel: "on",
+        extraSystemPrompt: "extra",
+        ownerNumbers: ["+15555550123"],
+      },
+      workspaceDir: "/tmp/workspace",
+      agentDir: "/tmp/agent",
+      tokenBudget: 1050000,
+      lastCallUsage,
+      promptCache,
+    });
+
+    expect(legacy.currentTokenCount).toBe(23);
+    expect(legacy.promptCache?.lastCallUsage?.total).toBe(57);
+  });
+
+  it("preserves sender and channel routing context for scoped compaction discovery", () => {
+    const legacy = buildAfterTurnRuntimeContext({
+      attempt: {
+        admittedRunContext: createTestAdmittedRunContext("run-after-turn-context"),
+        sessionKey: "agent:main:session:abc",
+        messageChannel: "slack",
+        messageProvider: "slack",
+        agentAccountId: "acct-1",
+        currentChannelId: "C123",
+        currentThreadTs: "thread-9",
+        currentMessageId: "msg-42",
+        authProfileId: "openai:p1",
+        config: {} as OpenClawConfig,
+        skillsSnapshot: undefined,
+        senderId: "user-123",
+        provider: "openai",
+        modelId: "gpt-5.4",
+        thinkLevel: "off",
+        reasoningLevel: "on",
+        extraSystemPrompt: "extra",
+        ownerNumbers: ["+15555550123"],
+      },
+      workspaceDir: "/tmp/workspace",
+      agentDir: "/tmp/agent",
+    });
+
+    expect(legacy.senderId).toBe("user-123");
+    expect(legacy.currentChannelId).toBe("C123");
+    expect(legacy.currentThreadTs).toBe("thread-9");
+    expect(legacy.currentMessageId).toBe("msg-42");
   });
 });

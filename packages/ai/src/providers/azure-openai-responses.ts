@@ -67,16 +67,16 @@ export const streamAzureOpenAIResponses: StreamFunction<
       const { baseUrl } = resolveAzureConfig(requestModel, options);
       return baseUrl === requestModel.baseUrl ? requestModel : { ...requestModel, baseUrl };
     },
-    createClient: (requestModel) => {
+    createClient: (requestModel, beforeRequest) => {
       const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
-      return createClient(requestModel, apiKey, options);
+      return createClient(requestModel, apiKey, options, beforeRequest);
     },
     buildParams: (requestModel, replayMode) =>
       buildParams(
         requestModel,
         context,
         options,
-        resolveDeploymentName(model, options),
+        resolveDeploymentName(requestModel, options),
         replayMode,
       ),
   });
@@ -171,6 +171,7 @@ function createClient(
   model: Model<"azure-openai-responses">,
   apiKeyInput: string,
   options?: AzureOpenAIResponsesOptions,
+  beforeRequest?: () => void,
 ) {
   const apiKey = apiKeyInput.trim();
   if (!apiKey) {
@@ -187,7 +188,7 @@ function createClient(
 
   const { baseUrl, apiVersion } = resolveAzureConfig(model, options);
   // Both OpenAI clients support custom fetch, so sentinels stay opaque until guarded egress.
-  const guardedFetch = getAiTransportHost().buildModelFetch({ ...model, baseUrl });
+  const guardedFetch = getAiTransportHost().buildModelFetch(model, undefined, { beforeRequest });
 
   if (isOpenAICompatibleAzureResponsesBaseUrl(baseUrl)) {
     return new OpenAI({
@@ -239,3 +240,6 @@ function buildParams(
 
   return params;
 }
+
+Object.assign(streamAzureOpenAIResponses, { modelRequestBinding: "wire-model-v1" as const });
+Object.assign(streamSimpleAzureOpenAIResponses, { modelRequestBinding: "wire-model-v1" as const });
