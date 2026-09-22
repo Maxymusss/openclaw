@@ -1,5 +1,4 @@
 // Chat-item projection, expansion, reply hydration, and guarded row rendering.
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { nothing } from "lit";
 import { classifySessionKind } from "../../../../../src/sessions/classify-session-kind.js";
 import { markdownGitHubAliasSignature } from "../../../components/markdown-github-repositories.ts";
@@ -8,35 +7,24 @@ import { i18n } from "../../../i18n/index.ts";
 import type { MessageGroup } from "../../../lib/chat/chat-types.ts";
 import { extractTextCached } from "../../../lib/chat/message-extract.ts";
 import {
-  normalizeRoleForGrouping,
-  resolveMessageRole,
-  resolveMessageSender,
-} from "../../../lib/chat/message-normalizer.ts";
-import {
   isUiGlobalScopeConfigured,
   isSubagentSessionKey,
   parseAgentSessionKey,
   resolveUiGlobalAliasAgentId,
 } from "../../../lib/sessions/session-key.ts";
-import { agentRunFrameActiveStatusParts } from "../chat-agent-run-grouping.ts";
 import { messageRecoveryKey } from "../chat-message-recovery.ts";
 import { resolveTurnRecap, type TurnRecap } from "../chat-progress.ts";
 import {
   assistantGroupCanOwnActiveRunStatus,
   buildCachedChatItems,
-  coalesceAgentRunFrames,
-  coalesceActivityRuns,
-  coalesceStreamRuns,
-  collapseCompletedTurnWork,
+  type coalesceAgentRunFrames,
   getExpansionStateVersion,
   getExpandedToolCards,
   getExpandedUserMessages,
   persistedMessageEntryId,
-  pruneAssistantMessageExpansions,
   setExpansionState,
   syncToolCardExpansionState,
 } from "../chat-thread.ts";
-import { hasForwardedSource } from "../chat-turn-boundary.ts";
 import { renderAgentRunFrame } from "./chat-agent-run-frame.ts";
 import { resolveChatDefaultAvatarPlacement } from "./chat-author-avatar.ts";
 import { renderBackgroundTasksStatusRow } from "./chat-background-tasks-status.ts";
@@ -50,20 +38,17 @@ import {
   renderStreamGroup,
   renderWorkGroupSummary,
   type StreamGroupOptions,
-  type StreamGroupPart,
 } from "./chat-message.ts";
-import { projectChatPositions } from "./chat-position-projection.ts";
 import { renderRealtimeTalkConversation } from "./chat-realtime-controls.ts";
-import { createReplyPreviewResolver, type LoadedReplySource } from "./chat-reply-preview.ts";
+import { createReplyPreviewResolver } from "./chat-reply-preview.ts";
 import {
   closeTranscriptSearch,
   getTranscriptState,
   type ChatThreadProps,
 } from "./chat-thread-interactions.ts";
 import { renderBrowserTabPreviews } from "./chat-tool-cards.ts";
-import { latestTranscriptAnnouncement } from "./chat-transcript-announcement.ts";
+import { getTranscriptDerivation } from "./chat-transcript-derived.ts";
 import type { TranscriptRow } from "./chat-transcript-layout.ts";
-import { projectTranscriptMessageIndex } from "./chat-transcript-message-index.ts";
 import {
   guardChatRenderItems,
   trackTranscriptRenderDependencies,
@@ -88,26 +73,8 @@ export function projectChatTranscript(
   const requestUpdate = props.onRequestUpdate ?? (() => {});
   const sessionHost = props.sessionHost ?? null;
   const activeSession = props.selectedSession;
-  // Use unfiltered history and retained participants so searching or paging away
-  // another person's messages cannot turn a shared conversation into a solo one.
-  const showOwnSenderName =
-    (activeSession?.expandedParticipants ?? activeSession?.participants ?? []).some(
-      ({ identity }) =>
-        identity.type !== "agent" && !(identity.type === "profile" && identity.id === props.userId),
-    ) ||
-    [...props.messages, ...(props.pendingInputs ?? []).map((input) => input.message)].some(
-      (message) => {
-        if (normalizeRoleForGrouping(resolveMessageRole(message)) !== "user") {
-          return false;
-        }
-        const sender = resolveMessageSender(
-          asOptionalRecord(asOptionalRecord(message)?.["__openclaw"]),
-        );
-        return Boolean(
-          sender && !(sender.identity?.type === "profile" && sender.identity.id === props.userId),
-        );
-      },
-    );
+  const derivation = getTranscriptDerivation(transcript);
+  const showOwnSenderName = derivation.prepareHistory(props, transcript);
   const mediaPolicyKey = assistantMediaPolicyKey(activeSession, props.mediaPolicyEpoch);
   // Global-alias routing ignores the capped session list, which may omit the
   // canonical row. The scope gate keeps per-sender main threads direct.
@@ -135,13 +102,6 @@ export function projectChatTranscript(
   const expandedAssistantMessages = transcript.expandedAssistantMessages;
   const recoveryKey = (messageId: string) =>
     messageRecoveryKey(props.fullMessageAgentId, messageId);
-  if (expandedAssistantMessages.size > 0) {
-    pruneAssistantMessageExpansions(expandedAssistantMessages, props.fullMessageAgentId, [
-      ...props.messages,
-      ...props.toolMessages,
-      ...(props.pendingInputs ?? []).map((input) => input.message),
-    ]);
-  }
   const chatItems = buildCachedChatItems({
     paneId: props.paneId,
     sessionKey: props.sessionKey,
@@ -184,10 +144,6 @@ export function projectChatTranscript(
           }
         : undefined,
   });
-  const workingIndicator = chatItems.find((item) => item.kind === "reading-indicator");
-  const runOutputTokens = workingIndicator?.runId
-    ? (props.runUsageById?.get(workingIndicator.runId)?.outputTokens ?? null)
-    : null;
   const latestBrowserTabs = props.latestBrowserTabs;
   syncToolCardExpansionState(
     props.sessionKey,
@@ -196,6 +152,11 @@ export function projectChatTranscript(
     searchFiltering || !props.showToolCalls,
   );
   const expandedToolCards = getExpandedToolCards(props.sessionKey);
+  const derived = derivation.project(chatItems, props, searchFiltering, expandedToolCards);
+  const { workingIndicator, hasForwardedGroups, loadedReplySources, positionIndex } = derived;
+  const runOutputTokens = workingIndicator?.runId
+    ? (props.runUsageById?.get(workingIndicator.runId)?.outputTokens ?? null)
+    : null;
   const expandedUserMessages = getExpandedUserMessages(props.sessionKey);
   const questionPrompts = new Map(
     (props.questionPrompts ?? []).map((prompt) => [prompt.id, prompt]),
@@ -264,9 +225,6 @@ export function projectChatTranscript(
   // including groups/channels; identity-resolving gateways also share sessions
   // between people, so both keep avatars. A forwarded cross-session message adds
   // another voice to a direct exchange and restores identity chrome.
-  const hasForwardedGroups = chatItems.some(
-    (item) => item.kind === "group" && hasForwardedSource(item),
-  );
   const defaultAvatarPlacement = resolveChatDefaultAvatarPlacement(
     (sessionKind === "direct" || sessionKind === "cron" || sessionKind === "spawn-child") &&
       !hasForwardedGroups,
@@ -281,12 +239,7 @@ export function projectChatTranscript(
   const showLoadingSkeleton = props.loading && chatItems.length === 0 && !hasTypingActors;
   const threadContextWindow =
     activeSession?.contextTokens ?? props.sessions?.defaults?.contextTokens ?? null;
-  const activeContinuationByGroupKey = new Map<
-    string,
-    { parts: StreamGroupPart[]; options: StreamGroupOptions }
-  >();
   const turnRecapByGroupKey = new Map<string, TurnRecap>();
-  const loadedReplySources = new Map<string, LoadedReplySource>();
   const resolveReplyPreview = createReplyPreviewResolver(loadedReplySources, props);
   const sharedMessageRenderOptions = {
     entryRefFor: transcript.entryAnimations.refFor,
@@ -389,7 +342,9 @@ export function projectChatTranscript(
             }
           : undefined,
       rewindDisabled: Boolean(props.runActive || props.runWorking),
-      activeContinuation: activeContinuationByGroupKey.get(item.key),
+      activeContinuation: derived.activeContinuations.has(item.key)
+        ? { parts: derived.activeContinuations.get(item.key)!, options: streamGroupOptions }
+        : undefined,
       turnRecap: turnRecapByGroupKey.get(item.key),
       latestAssistant: item.key === latestAssistantItemKey,
     } satisfies Parameters<typeof renderMessageGroup>[1];
@@ -415,13 +370,13 @@ export function projectChatTranscript(
     if (item.kind !== "group") {
       return "";
     }
-    const continuation = activeContinuationByGroupKey.get(item.key);
+    const continuation = derived.activeContinuations.get(item.key);
     const recap = turnRecapByGroupKey.get(item.key);
     // Part keys stand in for the rest of the continuation: its remaining
     // options mirror props that already invalidate every row through the
     // shared render context.
     const continuationKey = continuation
-      ? `${continuation.parts.map((part) => part.key).join(" ")}${workingUsageKey}`
+      ? `${continuation.map((part) => part.key).join(" ")}${workingUsageKey}`
       : "";
     const recapKey = recap ? `${recap.runtimeMs}:${recap.outputTokens ?? ""}` : "";
     return `${continuationKey}|${recapKey}|${
@@ -479,16 +434,6 @@ export function projectChatTranscript(
     }
     return nothing;
   });
-  const semanticItems = coalesceActivityRuns(
-    collapseCompletedTurnWork(coalesceStreamRuns(chatItems), {
-      sessionKey: props.sessionKey,
-      runWorking: Boolean(props.runWorking),
-      searchActive: searchFiltering,
-      session: activeSession,
-    }),
-    { searchActive: searchFiltering },
-  );
-  const collapsedItems = coalesceAgentRunFrames(semanticItems, { searchActive: searchFiltering });
   const resolvedRecap = resolveTurnRecap(state, {
     sessionKey: props.sessionKey,
     agentId: props.currentAgentId,
@@ -497,34 +442,7 @@ export function projectChatTranscript(
     row: activeSession,
     usageByRun: props.runUsageById,
   });
-  const transcriptItems = collapsedItems.filter((item, index) => {
-    const previous = collapsedItems[index - 1];
-    const activeStatusParts =
-      item.kind === "stream-run" && item.parts.every((part) => part.kind === "reading-indicator")
-        ? item.parts
-        : item.kind === "agent-run-frame"
-          ? agentRunFrameActiveStatusParts(item)
-          : undefined;
-    const activeStatusRunId =
-      item.kind === "stream-run" || item.kind === "agent-run-frame" ? item.runId : undefined;
-    if (
-      previous?.kind !== "group" ||
-      !activeStatusParts ||
-      !assistantGroupCanOwnActiveRunStatus(previous) ||
-      (previous.runId !== undefined &&
-        activeStatusRunId !== undefined &&
-        previous.runId !== activeStatusRunId)
-    ) {
-      return true;
-    }
-    // A reply and its still-running state are one turn-level presentation.
-    // Keeping the status in the reply avoids a second claw/assistant row.
-    activeContinuationByGroupKey.set(previous.key, {
-      parts: activeStatusParts,
-      options: streamGroupOptions,
-    });
-    return false;
-  });
+  const { transcriptItems } = derived;
   // Default disclosure belongs only to a settled assistant at the transcript
   // tail; any newer visible row returns the prior answer to hover/tap behavior.
   const lastTranscriptItem = transcriptItems.at(-1);
@@ -550,13 +468,7 @@ export function projectChatTranscript(
     (tailStatusOwner.kind !== "group" || !tailStatusOwner.isStreaming)
       ? tailStatusOwner.key
       : null;
-  const { messageRowKeysById, transcriptMessageKeys, expandReplyTargetWork } =
-    projectTranscriptMessageIndex(transcriptItems, expandedToolCards, props, loadedReplySources);
-  const positionIndex = projectChatPositions(
-    transcriptItems,
-    expandedToolCards,
-    messageRowKeysById,
-  );
+  const { messageRowKeysById, transcriptMessageKeys, expandReplyTargetWork } = derived;
   transcript.entryAnimations.project(chatItems);
   transcript.syncMessageRows(messageRowKeysById, transcriptMessageKeys);
   let turnRecapOwnerKey: string | null = null;
@@ -564,27 +476,18 @@ export function projectChatTranscript(
     turnRecapByGroupKey.set(tailStatusOwner.key, turnRecap);
     turnRecapOwnerKey = tailStatusOwner.key;
   }
-  // New row keys measure expanded work immediately; existing keys keep their
-  // cached height until ResizeObserver reports the changed layout.
-  const transcriptRows: TranscriptRow<ChatRenderItem>[] = [];
-  for (const item of transcriptItems) {
-    transcriptRows.push({ kind: "item", key: item.key, item });
-    if (item.kind === "work-group" && expandedToolCards.get(item.key)) {
-      for (const group of item.groups) {
-        transcriptRows.push({ kind: "item", key: `${item.key}:${group.key}`, item: group });
-      }
-    }
-  }
+  // Reuse settled rows. Only supplementary content needs a fresh row list.
+  const contentRows: TranscriptRow<ChatRenderItem>[] = [];
   const realtimeConversation = renderRealtimeTalkConversation(props);
   if (realtimeConversation !== nothing) {
-    transcriptRows.push({
+    contentRows.push({
       kind: "content",
       key: "realtime-talk",
       content: realtimeConversation,
     });
   }
   if (turnRecap !== null && turnRecapOwnerKey === null && !isEmpty && !showLoadingSkeleton) {
-    transcriptRows.push({
+    contentRows.push({
       kind: "content",
       key: "turn-recap",
       content: renderTurnRecapRow(turnRecap),
@@ -595,7 +498,7 @@ export function projectChatTranscript(
       ? renderBackgroundTasksStatusRow(props.backgroundTasks)
       : nothing;
   if (backgroundTasks !== nothing) {
-    transcriptRows.push({
+    contentRows.push({
       kind: "content",
       key: "background-tasks",
       content: backgroundTasks,
@@ -603,8 +506,9 @@ export function projectChatTranscript(
   }
   const typingIndicator = renderChatTypingIndicator(props.typingActors, avatarPlacement);
   if (typingIndicator) {
-    transcriptRows.push({ kind: "content", key: "presence:typing", content: typingIndicator });
+    contentRows.push({ kind: "content", key: "presence:typing", content: typingIndicator });
   }
+  const transcriptRows = contentRows.length > 0 ? [...derived.rows, ...contentRows] : derived.rows;
   // Deferred palettes apply leaf branding after the preference snapshot.
   const appliedBranding = currentThemeBranding();
   trackTranscriptRenderDependencies(state, [
@@ -710,7 +614,7 @@ export function projectChatTranscript(
       transcript.render(
         transcriptRows,
         (row) => (row.kind === "item" ? renderItem(row.item) : row.content),
-        latestTranscriptAnnouncement(collapsedItems),
+        derived.announcement,
         props.announceTranscript !== false && !state.searchOpen && !props.loading,
         overlay,
         header,

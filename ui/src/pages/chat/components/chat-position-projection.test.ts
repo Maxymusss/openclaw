@@ -193,6 +193,41 @@ describe("chat position projection", () => {
     }
   });
 
+  it("rebuilds stream landmarks when visible text becomes reasoning-only and returns", () => {
+    const props = {
+      ...threadProps("rail-live-visibility", "agent:main:dashboard:visibility", [
+        message("question", "user", "Inspect the answer", 1),
+      ]),
+      runId: "visible-run",
+      runActive: true,
+      runWorking: true,
+      stream: "Visible answer",
+      streamStartedAt: 2_000,
+    };
+    const transcript = createTestTranscript();
+    try {
+      transcript.renderSession(props.paneId, props.sessionKey, (session) => {
+        const initial = projectChatTranscript(props, session).positionIndex;
+        expect(initial.markers.map((marker) => marker.role)).toEqual(["user", "assistant"]);
+        props.stream = "<thinking>Private planning</thinking>";
+        const hidden = projectChatTranscript(props, session).positionIndex;
+        expect(hidden.markers.map((marker) => marker.role)).toEqual(["user"]);
+        props.stream = "<thinking>More private planning</thinking>";
+        expect(projectChatTranscript(props, session).positionIndex).toBe(hidden);
+        expect(hidden.markers.map((marker) => marker.role)).toEqual(["user"]);
+        props.stream = "The visible answer is ready";
+        const visible = projectChatTranscript(props, session).positionIndex;
+        expect(visible.markers.map((marker) => marker.role)).toEqual(["user", "assistant"]);
+        expect(visible.markers.at(-1)?.message).toMatchObject({
+          content: [{ type: "text", text: props.stream }],
+        });
+        return html``;
+      });
+    } finally {
+      transcript.hostDisconnected();
+    }
+  });
+
   it("keeps consecutive user messages and another participant while aggregating a run across a steer", () => {
     const messages = [
       message("user-1", "user", "Review the first section", 1),

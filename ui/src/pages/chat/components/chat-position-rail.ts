@@ -40,6 +40,7 @@ class ChatPositionRailDirective extends AsyncDirective {
   private layoutFrame: number | undefined;
   private activeId: string | undefined;
   private markerIds: string[] = [];
+  private markers: ChatPositionIndex["markers"] | undefined;
   private markerIndexes = new Map<string, number>();
   private renderedIndexes: number[] = [];
   private viewportHeight: number | undefined;
@@ -607,41 +608,45 @@ class ChatPositionRailDirective extends AsyncDirective {
       this.markersChanged = true;
     }
     const markers = positions.markers;
-    if (
-      this.markerIdsByMessageId.size !== positions.markerIdsByMessageId.size ||
-      [...positions.markerIdsByMessageId].some(
-        ([messageId, markerId]) => this.markerIdsByMessageId.get(messageId) !== markerId,
-      )
-    ) {
-      this.targetsChanged = true;
+    if (this.markerIdsByMessageId !== positions.markerIdsByMessageId) {
+      if (
+        this.markerIdsByMessageId.size !== positions.markerIdsByMessageId.size ||
+        [...positions.markerIdsByMessageId].some(
+          ([messageId, markerId]) => this.markerIdsByMessageId.get(messageId) !== markerId,
+        )
+      ) {
+        this.targetsChanged = true;
+      }
+      this.markerIdsByMessageId = positions.markerIdsByMessageId;
+      this.positionMessageIds = [...positions.markerIdsByMessageId.keys()];
     }
-    this.markerIdsByMessageId = positions.markerIdsByMessageId;
-    this.positionMessageIds = [...positions.markerIdsByMessageId.keys()];
     const count = markers.length;
     if (count === 0) {
       this.disconnected();
       return nothing;
     }
     const interaction = this.interaction;
-    if (!markers.some((candidate) => candidate.id === interaction.focusedId)) {
+    if (markers !== this.markers) {
+      this.markers = markers;
+      const ids = markers.map((marker) => marker.id);
+      if (
+        ids.length !== this.markerIds.length ||
+        ids.some((id, index) => id !== this.markerIds[index])
+      ) {
+        this.projectionChanged ||= this.markerIds.some((id, index) => id !== ids[index]);
+        this.markerIds = ids;
+        this.markerIndexes = new Map(ids.map((id, index) => [id, index]));
+        if (this.activeId && !this.markerIndexes.has(this.activeId)) {
+          this.activeId = undefined;
+        }
+        this.markersChanged = true;
+      }
+    }
+    if (interaction.focusedId && !this.markerIndexes.has(interaction.focusedId)) {
       interaction.focusedId = null;
     }
-    if (!markers.some((candidate) => candidate.id === interaction.hoveredId)) {
+    if (interaction.hoveredId && !this.markerIndexes.has(interaction.hoveredId)) {
       interaction.hoveredId = null;
-    }
-
-    const ids = markers.map((marker) => marker.id);
-    if (
-      ids.length !== this.markerIds.length ||
-      ids.some((id, index) => id !== this.markerIds[index])
-    ) {
-      this.projectionChanged ||= this.markerIds.some((id, index) => id !== ids[index]);
-      this.markerIds = ids;
-      this.markerIndexes = new Map(ids.map((id, index) => [id, index]));
-      if (this.activeId && !this.markerIndexes.has(this.activeId)) {
-        this.activeId = undefined;
-      }
-      this.markersChanged = true;
     }
     const indexes = this.windowIndexes();
     if (

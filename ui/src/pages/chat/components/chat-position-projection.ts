@@ -1,4 +1,4 @@
-import type { MessageGroup } from "../../../lib/chat/chat-types.ts";
+import type { ChatItem, MessageGroup } from "../../../lib/chat/chat-types.ts";
 import { resolveMessageVisibleContent } from "../../../lib/chat/message-visibility.ts";
 import type { coalesceAgentRunFrames } from "../chat-agent-run-grouping.ts";
 import { persistedMessageEntryId } from "../chat-thread-items.ts";
@@ -18,14 +18,31 @@ export type ChatPositionIndex = {
 };
 
 type RenderItem = ReturnType<typeof coalesceAgentRunFrames>[number];
+type StreamItem = Extract<ChatItem, { kind: "stream" }>;
+
+function streamPosition(part: StreamItem) {
+  const message = {
+    role: "assistant",
+    content: [{ type: "text", text: part.text }],
+    timestamp: part.startedAt,
+  };
+  const { normalizedMessage, displayMarkdown } = prepareChatMessageRender(message);
+  return {
+    message,
+    visible:
+      resolveMessageVisibleContent(message, normalizedMessage) === "non-text" ||
+      Boolean(displayMarkdown.trim()),
+  };
+}
 
 export function projectChatPositions(
   items: readonly RenderItem[],
   expandedWork: ReadonlyMap<string, boolean>,
   messageRowKeysById: Map<string, string>,
-): ChatPositionIndex {
+) {
   const markers = new Map<string, ChatPositionMarker>();
   const markerIdsByMessageId = new Map<string, string>();
+  let livePosition: { key: string; id: string; message: unknown; visible: boolean } | undefined;
   const add = (
     id: string,
     role: ChatPositionMarker["role"],
@@ -83,24 +100,39 @@ export function projectChatPositions(
         if (part.kind !== "stream") {
           continue;
         }
-        const message = {
-          role: "assistant",
-          content: [{ type: "text", text: part.text }],
-          timestamp: part.startedAt,
-        };
-        const { normalizedMessage, displayMarkdown } = prepareChatMessageRender(message);
-        if (
-          resolveMessageVisibleContent(message, normalizedMessage) !== "non-text" &&
-          !displayMarkdown.trim()
-        ) {
-          continue;
+        const { message, visible } = streamPosition(part);
+        const id = item.runId ? `run:${item.runId}` : item.key;
+        if (part.isStreaming) {
+          livePosition = { key: part.key, id, message, visible };
         }
-        add(item.runId ? `run:${item.runId}` : item.key, "assistant", part.key, message, rowKey);
+        if (visible) {
+          add(id, "assistant", part.key, message, rowKey);
+        }
       }
     }
   };
   for (const item of items) {
     visit(item, item.key);
   }
-  return { markers: [...markers.values()], markerIdsByMessageId };
+  return {
+    markers: [...markers.values()],
+    markerIdsByMessageId,
+    refreshLiveStream(part: StreamItem): boolean {
+      if (!livePosition || livePosition.key !== part.key) {
+        return false;
+      }
+      const next = streamPosition(part);
+      if (next.visible !== livePosition.visible) {
+        return false;
+      }
+      const marker = markers.get(livePosition.id);
+      // A later continuation may own this run's preview. Refresh only the
+      // live contribution, preserving the first anchor and later ownership.
+      if (marker && marker.message === livePosition.message) {
+        marker.message = next.message;
+      }
+      livePosition.message = next.message;
+      return true;
+    },
+  };
 }

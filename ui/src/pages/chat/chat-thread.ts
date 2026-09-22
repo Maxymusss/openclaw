@@ -53,6 +53,7 @@ type ToolCardExpansionState = {
 };
 
 const chatItemsByPane = new Map<string, Map<string, CachedChatItems>>();
+const chatItemStructures = new WeakMap<readonly RenderChatItem[], { liveStreamIndex: number }>();
 const toolCardStateBySession = new Map<string, ToolCardExpansionState>();
 const expandedUserMessagesBySession = new Map<string, Map<string, boolean>>();
 const expansionMapVersions = new WeakMap<ReadonlyMap<string, unknown>, number>();
@@ -340,6 +341,9 @@ export function buildCachedChatItems(
   cached.input = input;
   cached.items = items;
   const liveStreamIndex = items.findIndex((item) => item.kind === "stream" && item.isStreaming);
+  // The live slot changes inside the same array. Downstream projections must
+  // distinguish those replacements from a rebuilt history with stable rows.
+  chatItemStructures.set(items, { liveStreamIndex });
   cached.liveStream =
     liveStreamIndex < 0
       ? null
@@ -349,6 +353,10 @@ export function buildCachedChatItems(
           prefix: accumulatedStreamText(input.streamSegments, sanitizeStreamText),
         };
   return items;
+}
+
+export function chatItemsStructure(items: readonly RenderChatItem[]) {
+  return chatItemStructures.get(items);
 }
 
 export function getExpansionStateVersion(values: ReadonlyMap<string, unknown>): number {

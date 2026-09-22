@@ -3,6 +3,7 @@ import path from "node:path";
 import { beforeEach, expect, it } from "vitest";
 import { projectAgentToolActivity } from "../../../src/infra/agent-activity-events.js";
 import type { ApplicationContext } from "../app/context.ts";
+import { createTranscriptPerformanceMessages } from "../test-helpers/chat-transcript-performance.ts";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
   createChatFlowE2eSuite,
@@ -275,9 +276,10 @@ async function emitDeltaBurstInPage(
   page: ChatFlowPage,
   runId: string,
   count: number,
+  sessionKey = "main",
 ): Promise<void> {
   await page.evaluate(
-    ({ runId: targetRunId, count: targetCount }) => {
+    ({ runId: targetRunId, count: targetCount, sessionKey: targetSessionKey }) => {
       const gateway = (window as ScopedWindow).openclawControlUiE2eGateway;
       if (!gateway) {
         throw new Error("mock gateway handle missing");
@@ -298,7 +300,7 @@ async function emitDeltaBurstInPage(
             timestamp: Date.now(),
           },
           runId: targetRunId,
-          sessionKey: "main",
+          sessionKey: targetSessionKey,
           state: "delta",
         });
         if (emitted === targetCount) {
@@ -315,7 +317,7 @@ async function emitDeltaBurstInPage(
       channel.port1.start();
       postNext();
     },
-    { runId, count },
+    { runId, count, sessionKey },
   );
   await page.waitForFunction(() => (window as ScopedWindow).ocBurstDone === true, undefined, {
     timeout: 30_000,
@@ -328,7 +330,9 @@ async function openStreamingTurn(
   gateway: Awaited<ReturnType<typeof installMockGateway>>,
   prompt: string,
 ): Promise<string> {
-  await page.locator(".agent-chat__composer-combobox textarea").fill(prompt);
+  await page
+    .locator(".chat-pane-cache__pane--active .agent-chat__composer-combobox textarea")
+    .fill(prompt);
   await page.getByRole("button", { name: "Send message" }).click();
   const sendRequest = await gateway.waitForRequest("chat.send");
   const params = requireRecord(sendRequest.params);
@@ -344,7 +348,7 @@ async function openStreamingTurn(
       timestamp: Date.now(),
     },
     runId,
-    sessionKey: "main",
+    sessionKey: requireString(params.sessionKey, "chat send session key"),
     state: "delta",
   });
   await page.locator(".chat-bubble.streaming").getByText("warmup").waitFor();
@@ -574,22 +578,6 @@ async function emitRemainingToolLifecycleFlood(
   });
 }
 
-function buildLongTranscriptFixture(messageCount: number): Array<Record<string, unknown>> {
-  return Array.from({ length: messageCount }, (_, index) => {
-    const role = index % 2 === 0 ? "user" : "assistant";
-    const sentinel = index === messageCount - 1 ? " LONG-TAIL-SENTINEL" : "";
-    const text =
-      role === "user"
-        ? `history question ${index}: ${"detail ".repeat(12)}`
-        : `history answer ${index}: ${"context ".repeat(16)}${sentinel}`;
-    return {
-      role,
-      content: [{ type: "text", text }],
-      timestamp: Date.now() - (messageCount - index) * 1_000,
-    };
-  });
-}
-
 suite.define(() => {
   it("commits a streamed delta burst in frame-bound transcript batches", async () => {
     await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
@@ -735,7 +723,7 @@ suite.define(() => {
   it("loads a long transcript and streams a rich turn inside budget ceilings", async () => {
     await suite.withPage(createControlUiE2eContextOptions(), async ({ page, context }) => {
       const gateway = await installMockGateway(page, {
-        historyMessages: buildLongTranscriptFixture(LONG_TRANSCRIPT_MESSAGE_COUNT),
+        historyMessages: createTranscriptPerformanceMessages(LONG_TRANSCRIPT_MESSAGE_COUNT),
       });
 
       const loadStartedAt = Date.now();
@@ -781,7 +769,7 @@ suite.define(() => {
   ])("$name", async ({ scrollAwayAndBack }) => {
     await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
       const gateway = await installMockGateway(page, {
-        historyMessages: buildLongTranscriptFixture(LONG_TRANSCRIPT_MESSAGE_COUNT),
+        historyMessages: createTranscriptPerformanceMessages(LONG_TRANSCRIPT_MESSAGE_COUNT),
       });
       await page.goto(`${suite.server.baseUrl}chat`);
       await gateway.waitForRequest("chat.startup");

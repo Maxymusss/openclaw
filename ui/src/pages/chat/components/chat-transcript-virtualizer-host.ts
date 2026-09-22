@@ -19,6 +19,7 @@ import {
   TranscriptAnnouncementState,
   type TranscriptAnnouncement,
 } from "./chat-transcript-announcement.ts";
+import { releaseTranscriptDerivation } from "./chat-transcript-derived.ts";
 import { TranscriptEndAnchor } from "./chat-transcript-end-anchor.ts";
 import {
   initialTranscriptRect,
@@ -215,6 +216,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     return callback;
   }
   private rowKeys: readonly string[] = [];
+  private committedRows: readonly { key: string }[] = [];
   private rowIndexesByKey = new Map<string, number>();
   private messageRowKeysById: ReadonlyMap<string, string> = new Map();
   private readonly prependAnchor = new TranscriptPrependAnchor();
@@ -417,6 +419,8 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
   }
 
   disconnect(): void {
+    releaseTranscriptDerivation(this);
+    this.committedRows = [];
     this.entryAnimations.disconnect();
     // Clear retires bodies and pending loads; replacement invalidates guarded
     // rows when this presentation reconnects with the same source messages.
@@ -510,8 +514,9 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     const { rows, renderRow, announcement, announce, overlay, header, messageRows, renderKeyRows } =
       snapshot;
     const rowModelChanged =
-      rows.length !== this.rowKeys.length ||
-      rows.some((row, index) => row.key !== this.rowKeys[index]);
+      rows !== this.committedRows &&
+      (rows.length !== this.rowKeys.length ||
+        rows.some((row, index) => row.key !== this.rowKeys[index]));
     const nextKeys = rowModelChanged ? rows.map((row) => row.key) : this.rowKeys;
     const virtualizer = this.virtualizerController.getVirtualizer();
     const nextRowKeys = rowModelChanged
@@ -527,6 +532,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
           announce && !this.offsetState.pendingScrollOffset,
         );
         this.messageRowKeysById = messageRows;
+        this.committedRows = rows;
         this.prependAnchor.committedMessageRows = renderKeyRows;
         this.renderPreviousRows = () => this.renderCommittedRows(snapshot, false);
         // Capture only after the unmount gate permits the projection to commit.
