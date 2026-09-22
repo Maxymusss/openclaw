@@ -596,7 +596,7 @@ jobs:
           node --input-type=module <<'WINDOWS_REPLAY' 2>&1 | tee "$evidence_dir/replay.log"
           import { spawnSync, execFileSync } from "node:child_process";
           import { createHash } from "node:crypto";
-          import { readFileSync, writeFileSync } from "node:fs";
+          import { mkdirSync, realpathSync, readFileSync, writeFileSync } from "node:fs";
           import { createRequire } from "node:module";
           import os from "node:os";
           import path from "node:path";
@@ -628,7 +628,16 @@ jobs:
             osTotalMemoryBytes: os.totalmem(), osFreeMemoryBytes: os.freemem(),
             args, environment,
           }, null, 2) + "\n");
-          const result = spawnSync(process.execPath, args, { stdio: "inherit" });
+          if (binding.files.length !== 1 || binding.files[0] !== "src/agents/agent-tools.read.windows.test.ts") {
+            throw new Error("This diagnostic head is limited to the failing PowerShell fixture file");
+          }
+          const privateRoot = path.join(evidence, "private-stores");
+          mkdirSync(privateRoot);
+          const resolvedPrivateRoot = realpathSync.native(privateRoot);
+          const guard = path.resolve("test/scripts/powershell-diagnostic-sqlite-guard.cjs").replaceAll("\\", "/");
+          const env = { ...process.env, OPENCLAW_PS_DIAGNOSTIC_PRIVATE_ROOT: resolvedPrivateRoot,
+            NODE_OPTIONS: ((process.env.NODE_OPTIONS ?? "") + " --require=" + JSON.stringify(guard)).trim() };
+          const result = spawnSync(process.execPath, args, { stdio: "inherit", env });
           writeFileSync(path.join(evidence, "process-result.json"), JSON.stringify({
             status: result.status, signal: result.signal, spawnError: result.error?.code ?? null,
             descendantSettlement: "not-attested; frozen runner owns test lifetime; Actions owns final runner teardown",

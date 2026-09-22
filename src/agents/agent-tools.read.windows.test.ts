@@ -1,8 +1,8 @@
-import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { observePowerShellFixture } from "../../test/scripts/powershell-fixture-evidence.mjs";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { getWindowsPowerShellExePath } from "../infra/windows-install-roots.js";
 import "./test-helpers/fast-bash-tools.js";
@@ -18,17 +18,7 @@ describe("registered core read on Windows", () => {
     "reads text produced by Windows PowerShell Out-File",
     async () => {
       const workspaceDir = tempDirs.make("openclaw-core-read-utf16-");
-      execFileSync(
-        getWindowsPowerShellExePath(),
-        [
-          "-NoLogo",
-          "-NoProfile",
-          "-NonInteractive",
-          "-Command",
-          "@('first', 'second') | Out-File -LiteralPath 'utf16.txt'",
-        ],
-        { cwd: workspaceDir, timeout: 10_000, windowsHide: true },
-      );
+      await observePowerShellFixture(getWindowsPowerShellExePath(), workspaceDir);
       const filePath = path.join(workspaceDir, "utf16.txt");
       const bytes = await fs.readFile(filePath);
       expect(bytes.subarray(0, 2)).toEqual(Buffer.from([0xff, 0xfe]));
