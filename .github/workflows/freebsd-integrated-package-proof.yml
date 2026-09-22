@@ -16,7 +16,7 @@ jobs:
       github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
       github.event_name == 'push' && github.actor == 'vincentkoc' &&
       github.ref == 'refs/heads/test/freebsd-integrated-package-proof' &&
-      github.event.before == 'cf6eb8d0c40983ef31cc7ba53a7dbe6293323b48' &&
+      github.event.before == '5a98148a8fa573812cd0a37686518973167e061b' &&
       github.event.after == github.sha && !github.event.deleted && !github.event.forced
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 120
@@ -28,8 +28,8 @@ jobs:
       CI: "true"
       NODE_OPTIONS: --max-old-space-size=8192
       OPENCLAW_VITEST_MAX_WORKERS: "2"
-      CANDIDATE_SHA: c593ba4bc541322ce8e0fcc4ebc6243bdae534f1
-      CANDIDATE_TREE: 3be53b2d4a88ccfc91fe53cb3b73c463b4eab4d3
+      CANDIDATE_SHA: 892e4e1aca46d6a5ae8ee699fd78aec606054aa3
+      CANDIDATE_TREE: 7c5bc951d87e603e21ca803cc10abec122cbc987
       CARRIER_SHA: ${{ github.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
@@ -46,11 +46,11 @@ jobs:
           [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
-          test "$(git show -s --format=%P HEAD)" = 'cf6eb8d0c40983ef31cc7ba53a7dbe6293323b48 c593ba4bc541322ce8e0fcc4ebc6243bdae534f1'
-          test "$(git rev-parse cf6eb8d0c40983ef31cc7ba53a7dbe6293323b48^{tree})" = d6d2da84d70954d8693b21bf4d2a08a2796d1af9
+          test "$(git show -s --format=%P HEAD)" = '5a98148a8fa573812cd0a37686518973167e061b 892e4e1aca46d6a5ae8ee699fd78aec606054aa3'
+          test "$(git rev-parse 5a98148a8fa573812cd0a37686518973167e061b^{tree})" = 0ba3d892779d79e846fd31f0b7aa90a8cc508fa8
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
-          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = 'a56e9b8bbc558790ccf45d6447c3cbae1d7ade17'
-          test "$(git rev-parse HEAD:.github/workflows/freebsd-integrated-native-proof.yml)" = "$(git rev-parse cf6eb8d0c40983ef31cc7ba53a7dbe6293323b48:.github/workflows/freebsd-integrated-native-proof.yml)"
+          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = '43f22988f4dcd22644a056591428d5849207593c'
+          test "$(git rev-parse HEAD:.github/workflows/freebsd-integrated-native-proof.yml)" = "$(git rev-parse 5a98148a8fa573812cd0a37686518973167e061b:.github/workflows/freebsd-integrated-native-proof.yml)"
           python3 -I -S - <<'PYTHON'
           import os,subprocess
           assert subprocess.check_output(['git','diff','--name-only',os.environ['CANDIDATE_SHA'],'HEAD'],text=True).splitlines()==[
@@ -73,7 +73,7 @@ jobs:
           data=subprocess.check_output(['git','show',os.environ['CARRIER_SHA']+':'+workflow])
           receipt=dict(source=os.environ['CANDIDATE_SHA'],tree=os.environ['CANDIDATE_TREE'],carrier=os.environ['CARRIER_SHA'],workflow=os.environ['WORKFLOW_SHA'],workflowSha256=hashlib.sha256(data).hexdigest(),
             sourceParents=subprocess.check_output(['git','show','-s','--format=%P',os.environ['CANDIDATE_SHA']],text=True).strip().split(),
-            eventSha=os.environ['GITHUB_SHA'],event='push',previousCarrier='cf6eb8d0c40983ef31cc7ba53a7dbe6293323b48',pullRequest=155851,run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],scope='one canonical package build; native and released-updater proof remain separate')
+            eventSha=os.environ['GITHUB_SHA'],event='push',previousCarrier='5a98148a8fa573812cd0a37686518973167e061b',pullRequest=155851,run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],scope='one canonical package build; native and released-updater proof remain separate')
           Path(os.environ['RUNNER_TEMP'],'freebsd-integrated-proof','source-binding.json').write_text(json.dumps(receipt,indent=2)+'\n')
           print(json.dumps(receipt))
           PYTHON
