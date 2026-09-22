@@ -629,15 +629,11 @@ vi.mock("./auth-profiles/store-runtime.js", async () => {
   };
 });
 
-vi.mock("./auth-profiles/store.js", async (importOriginal) => ({
-  // Native loader bootstrap still needs the real auth-store factory exports.
-  ...(await importOriginal<typeof import("./auth-profiles/store.js")>()),
-  getRuntimeAuthProfileStoreSnapshot: () => state.authProfileStoreMock,
-  findPersistedAuthProfileCredential: ({ profileId }: { profileId: string }) =>
-    state.authProfileStoreMock.profiles[profileId],
-  resolveAuthProfileProviderForSelection: ({ profileId }: { profileId: string }) =>
-    state.authProfileStoreMock.profiles[profileId]?.provider,
-}));
+vi.mock("./auth-profiles/store.js", async () => {
+  const { createAuthProfileStoreSelectionMock } =
+    await import("./auth-profiles/store-selection.test-support.js");
+  return createAuthProfileStoreSelectionMock(() => state.authProfileStoreMock);
+});
 
 vi.mock("./auth-profiles/session-override.js", () => ({
   clearSessionAuthProfileOverride: (...args: unknown[]) =>

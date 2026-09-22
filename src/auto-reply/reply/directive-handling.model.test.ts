@@ -66,14 +66,11 @@ vi.mock("../../agents/sticky-model-selection.js", async (importOriginal) => ({
   }) => stickyModelMock.persistBestEffort(params),
 }));
 
-vi.mock("../../agents/auth-profiles/store.js", async (importOriginal) => {
+vi.mock("../../agents/auth-profiles/store.js", async () => {
+  const { createAuthProfileStoreSelectionMock } =
+    await import("../../agents/auth-profiles/store-selection.test-support.js");
   return {
-    ...(await importOriginal<typeof import("../../agents/auth-profiles/store.js")>()),
-    findPersistedAuthProfileCredential: ({ profileId }: { profileId: string }) =>
-      authProfilesStoreMock.profiles[profileId],
-    resolveAuthProfileProviderForSelection: ({ profileId }: { profileId: string }) =>
-      authProfilesStoreMock.profiles[profileId]?.provider,
-    getRuntimeAuthProfileStoreSnapshot: readAuthProfileStoreForTest,
+    ...(await createAuthProfileStoreSelectionMock(readAuthProfileStoreForTest)),
     hasAnyAuthProfileStoreSource: () => Object.keys(authProfilesStoreMock.profiles).length > 0,
   };
 });

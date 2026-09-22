@@ -12,7 +12,6 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isSqliteLockError } from "../../infra/sqlite-error-diagnostics.js";
 import { deferSqlitePostCommitPublication } from "../../infra/sqlite-post-commit.js";
 import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
-import { readUserModelAuthProfile } from "../../state/user-model-accounts.js";
 import { isRecord, resolveUserPath } from "../../utils.js";
 import { cloneAuthProfileStore } from "./clone.js";
 import { AUTH_STORE_VERSION, authProfilesLog } from "./constants.js";
@@ -43,7 +42,6 @@ import {
 } from "./oauth-shared.js";
 import {
   isInheritedMainOAuthCredentialFromStores,
-  shouldUseMainOwnerForLocalOAuthCredential,
   type PersistedAuthProfileStores,
 } from "./ownership.js";
 import { resolveSharedAuthStorePath as resolveSharedAuthPath } from "./path-resolve.js";
@@ -58,6 +56,7 @@ import {
   materializePersonalAuthProfile,
   updatePersonalAuthProfileStore,
 } from "./personal-profiles.js";
+import { createAuthProfileOwnerReader } from "./profile-owner-read.js";
 import {
   getRuntimeExternalCliProfileIds,
   mergeRuntimeExternalProfileReferences,
@@ -508,105 +507,17 @@ function mergeRuntimeExternalProfileState(params: {
   return merged;
 }
 
-/** Whether an agent dir resolves to the shared main auth-profile owner. */
-export function isSharedMainAuthProfileAgentDir(agentDir?: string): boolean {
-  const effectiveAgentDir = resolveRuntimeAuthProfileAgentDir(agentDir);
-  if (!effectiveAgentDir) {
-    return true;
-  }
-  const mainAgentDir = resolveRuntimeAuthProfileAgentDir();
-  const mainPath = mainAgentDir ? resolveAgentAuthPath(mainAgentDir) : resolveSharedAuthPath();
-  return resolveAgentAuthPath(effectiveAgentDir) === mainPath;
-}
-
-/** Find a persisted credential in the scoped store, falling back to the main store. */
-export function findPersistedAuthProfileCredential(params: {
-  agentDir?: string;
-  profileId: string;
-}): AuthProfileStore["profiles"][string] | undefined {
-  if (isEnvOnlyAuthProfileRuntime()) {
-    return undefined;
-  }
-  if (isUserModelAuthProfileId(params.profileId)) {
-    return authProfileRuntimeMode.getStore()
-      ? undefined
-      : readUserModelAuthProfile(params.profileId)?.credential;
-  }
-  const agentDir = resolveRuntimeAuthProfileAgentDir(params.agentDir);
-  const requestedStore = loadPersistedAuthProfileStore(agentDir);
-  const requestedProfile = requestedStore?.profiles[params.profileId];
-  const scopedSharedStore = getScopedSharedAuthStore();
-  if (scopedSharedStore) {
-    return requestedProfile ?? scopedSharedStore.profiles[params.profileId];
-  }
-  if (requestedProfile || !agentDir) {
-    return requestedProfile;
-  }
-
-  if (isSharedMainAuthProfileAgentDir(agentDir)) {
-    return requestedProfile;
-  }
-
-  return loadPersistedAuthProfileStore(resolveRuntimeAuthProfileAgentDir())?.profiles[
-    params.profileId
-  ];
-}
-
-/** Resolve selection metadata through the same shared or bounded auth-store scope. */
-export function resolveAuthProfileProviderForSelection(params: {
-  agentDir?: string;
-  profileId: string;
-}): string | undefined {
-  if (
-    isEnvOnlyAuthProfileRuntime() ||
-    (isUserModelAuthProfileId(params.profileId) && authProfileRuntimeMode.getStore())
-  ) {
-    return undefined;
-  }
-  const agentDir = resolveRuntimeAuthProfileAgentDir(params.agentDir);
-  // A captured shared view excludes non-portable profiles that ambient snapshots
-  // may contain. Legacy bounded scopes still own their directory's runtime view.
-  const runtimeProvider = getScopedSharedAuthStore()
-    ? undefined
-    : getRuntimeAuthProfileStoreSnapshot(agentDir)?.profiles[params.profileId]?.provider;
-  return (
-    runtimeProvider ??
-    findPersistedAuthProfileCredential({ agentDir, profileId: params.profileId })?.provider
-  );
-}
-
-/** Resolve which agent dir owns a persisted profile, accounting for inherited OAuth. */
-export function resolvePersistedAuthProfileOwnerAgentDir(params: {
-  agentDir?: string;
-  profileId: string;
-}): string | undefined {
-  if (isEnvOnlyAuthProfileRuntime() || isUserModelAuthProfileId(params.profileId)) {
-    return undefined;
-  }
-  const agentDir = resolveRuntimeAuthProfileAgentDir(params.agentDir);
-  if (!agentDir) {
-    return undefined;
-  }
-  const requestedStore = loadPersistedAuthProfileStore(agentDir);
-  if (isSharedMainAuthProfileAgentDir(agentDir)) {
-    return undefined;
-  }
-
-  const mainAgentDir = resolveRuntimeAuthProfileAgentDir();
-  const mainStore = loadPersistedAuthProfileStore(mainAgentDir);
-  const requestedProfile = requestedStore?.profiles[params.profileId];
-  if (requestedProfile) {
-    return shouldUseMainOwnerForLocalOAuthCredential({
-      profileId: params.profileId,
-      local: requestedProfile,
-      main: mainStore?.profiles[params.profileId],
-    })
-      ? undefined
-      : agentDir;
-  }
-
-  return mainStore?.profiles[params.profileId] ? undefined : agentDir;
-}
+export const {
+  isSharedMainAuthProfileAgentDir,
+  findPersistedAuthProfileCredential,
+  resolveAuthProfileProviderForSelection,
+  resolvePersistedAuthProfileOwnerAgentDir,
+} = createAuthProfileOwnerReader({
+  isEnvOnlyAuthProfileRuntime,
+  isIsolatedAuthProfileRuntime: () => Boolean(authProfileRuntimeMode.getStore()),
+  resolveRuntimeAuthProfileAgentDir,
+  getScopedSharedAuthStore,
+});
 
 export {
   hasAnyAuthProfileStoreSource,
