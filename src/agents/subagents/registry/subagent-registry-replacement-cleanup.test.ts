@@ -36,7 +36,7 @@ it.each(["completed", "failed"] as const)(
       sessionKey: childSessionKey,
       defaultSessionId: "steer-session",
     });
-    registerSubagentRun({
+    await registerSubagentRun({
       runId: "run-old",
       childSessionKey,
       requesterSessionKey: "agent:main:main",

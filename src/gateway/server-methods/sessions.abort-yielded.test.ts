@@ -77,7 +77,7 @@ async function seedYieldedParent() {
       event: { runId: parentRunId, sessionId: parentId, ts: Date.now(), data },
     });
   }
-  registerSubagentRun({
+  await registerSubagentRun({
     runId: childRunId,
     childSessionKey: childKey,
     requesterSessionKey: parentKey,
@@ -129,7 +129,7 @@ it.each(["unchanged", "new turn", "reset incarnation", "partial cancellation"] a
         sessionKey: brokenKey,
         defaultSessionId: "broken-child-session",
       });
-      registerSubagentRun({
+      await registerSubagentRun({
         runId: "broken-child-run",
         childSessionKey: brokenKey,
         requesterSessionKey: parentKey,

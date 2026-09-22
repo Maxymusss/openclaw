@@ -375,7 +375,7 @@ export function registerYieldedRequesterSettlementCase(
             ? previousWait.promise
             : completion.promise),
       );
-      registerSubagentRun({
+      await registerSubagentRun({
         runId: previousRunId,
         childSessionKey,
         requesterSessionKey,

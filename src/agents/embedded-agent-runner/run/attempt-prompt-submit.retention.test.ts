@@ -68,7 +68,7 @@ async function publishChild(runId: string, answer: string) {
       __openclaw: { runId },
     },
   });
-  registerSubagentRun({
+  await registerSubagentRun({
     runId,
     childSessionKey,
     requesterSessionKey,

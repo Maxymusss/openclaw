@@ -78,6 +78,7 @@ import {
   createChatVisionModelCatalogSnapshot,
   createDirectChatContext,
   createTextTranscriptEvent,
+  registerChatConnectionIdentityTest,
 } from "./server-chat.agent-events.test-helpers.js";
 import { getMaxChatHistoryMessagesBytes } from "./server-constants.js";
 import { createGatewayChatMetadataRuntime } from "./server-methods/chat-metadata-runtime.js";
@@ -3917,98 +3918,12 @@ describe("gateway server chat", () => {
     }
   });
 
-  test("chat.send persists optional connection identity per turn", async () => {
-    openDirectChatSession();
-    try {
-      await writeStoredMainSession(makeDoneSessionEntry());
-      const context = createDirectChatContext();
-      const send = async (params: {
-        authenticatedUserId?: string;
-        authenticatedUserProfile?: {
-          profileId: string;
-          displayName: string | null;
-          hasAvatar: boolean;
-        };
-        idempotencyKey: string;
-        message: string;
-      }) => {
-        const removeCount = (context.removeChatRun as ReturnType<typeof vi.fn>).mock.calls.length;
-        await sendControlUiChat({
-          context,
-          ...params,
-          respond: vi.fn() as RespondFn,
-        });
-        await waitForFast(
-          () => expect(context.removeChatRun).toHaveBeenCalledTimes(removeCount + 1),
-          FAST_WAIT_OPTS,
-        );
-      };
-
-      await send({
-        authenticatedUserId: "alice@example.com",
-        authenticatedUserProfile: {
-          profileId: "0d9f4c35-d221-49da-9a3f-b8c73921066b",
-          displayName: "Alice",
-          hasAvatar: false,
-        },
-        idempotencyKey: "idem-attributed-alice",
-        message: "prompt from alice",
-      });
-      await send({
-        authenticatedUserId: "bob@example.com",
-        authenticatedUserProfile: {
-          profileId: "77ad3957-b2c8-428a-83d3-fc09e696492e",
-          displayName: "Bob",
-          hasAvatar: true,
-        },
-        idempotencyKey: "idem-attributed-bob",
-        message: "prompt from bob",
-      });
-      await send({
-        idempotencyKey: "idem-unattributed",
-        message: "prompt without identity",
-      });
-
-      const transcriptEvents = loadTranscriptEventsSync(
-        makeMainSessionScope(testState.sessionStorePath),
-      );
-      expect(transcriptEvents).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            type: "message",
-            message: expect.objectContaining({
-              role: "user",
-              content: "prompt from alice",
-              __openclaw: expect.objectContaining({
-                senderId: "0d9f4c35-d221-49da-9a3f-b8c73921066b",
-                senderName: "Alice",
-              }),
-            }),
-          }),
-          expect.objectContaining({
-            type: "message",
-            message: expect.objectContaining({
-              role: "user",
-              content: "prompt from bob",
-              __openclaw: expect.objectContaining({
-                senderId: "77ad3957-b2c8-428a-83d3-fc09e696492e",
-                senderName: "Bob",
-              }),
-            }),
-          }),
-          expect.objectContaining({
-            type: "message",
-            message: expect.objectContaining({
-              role: "user",
-              content: "prompt without identity",
-              __openclaw: expect.not.objectContaining({ senderId: expect.anything() }),
-            }),
-          }),
-        ]),
-      );
-    } finally {
-      resetDirectChatSession();
-    }
+  registerChatConnectionIdentityTest({
+    withDirectChatSession,
+    prepareSession: () => writeStoredMainSession(makeDoneSessionEntry()),
+    sendControlUiChat,
+    readTranscript: () =>
+      loadTranscriptEventsSync(makeMainSessionScope(testState.sessionStorePath)),
   });
 
   test("chat.send preserves a terminal source claim before admitting the next turn", async () => {

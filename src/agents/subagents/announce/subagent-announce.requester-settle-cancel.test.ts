@@ -67,7 +67,7 @@ it.each([
         sessionKey,
         defaultSessionId: `${runId}-session`,
       });
-      registerSubagentRun({
+      await registerSubagentRun({
         runId,
         childSessionKey: sessionKey,
         requesterSessionKey,
@@ -153,7 +153,7 @@ it.each([
       }));
     }
     if (phase === "requester replacement") {
-      registerSubagentRun({
+      await registerSubagentRun({
         runId: "replacement",
         childSessionKey: requesterKey,
         requesterSessionKey: owner,
@@ -216,7 +216,7 @@ it.each(["batch", "ordinary"] as const)(
       { runId: `sibling-${mode}`, childSessionKey: siblingKey, expectsCompletionMessage: true },
     ];
     for (const spawn of acceptedSessionSpawns) {
-      registerSubagentRun({
+      await registerSubagentRun({
         ...spawn,
         requesterSessionKey: parentKey,
         requesterAgentId: "main",

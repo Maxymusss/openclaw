@@ -30,6 +30,7 @@ import {
   closeOpenClawAgentDatabasesAsync,
   listOpenClawRegisteredAgentDatabases,
 } from "../state/openclaw-agent-db.js";
+import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { findTaskByRunId } from "../tasks/task-registry.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
 import { createSyntheticPluginRuntimeClient } from "./server-plugin-runtime-client.js";
@@ -95,7 +96,7 @@ async function arrangeAuthorityProof(name: string) {
   });
   await prepareGatewayReplyRuntimeForTest();
   publishSystemEventStoreConfig(getRuntimeConfig());
-  registerSubagentRun({
+  await registerSubagentRun({
     runId: previousRunId,
     childSessionKey: child,
     controllerSessionKey: parent,
@@ -431,7 +432,7 @@ it.each(["explicit", "automatic"] as const)(
       await prepareGatewayReplyRuntimeForTest();
       publishSystemEventStoreConfig(getRuntimeConfig());
       // Seed paused registry/canonical-task state without polling a nonexistent source execution.
-      registerSubagentRun({
+      await registerSubagentRun({
         runId: previousRunId,
         childSessionKey: child,
         controllerSessionKey: parent,
@@ -477,7 +478,10 @@ it.each(["explicit", "automatic"] as const)(
         {
           client: createSyntheticPluginRuntimeClient({
             scopes: ["operator.write"],
-            operatorRoleActor: { kind: "operator", profileId: "resume-operator" },
+            operatorRoleActor: {
+              kind: "operator",
+              profileId: ensureProfileForEmail("resume-operator@example.test").id,
+            },
           }),
           context: kernel.gatewayRequestContext,
           isWebchatConnect: () => false,
