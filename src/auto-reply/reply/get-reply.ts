@@ -668,6 +668,7 @@ export async function getReplyFromConfig(
     try {
       const baselineEntry = await traceGetReplyPhase("reply.capture_session_diff_baseline", () =>
         ensureSessionDiffBaseline({
+          agentId,
           cwd:
             normalizeOptionalString(sessionState.sessionEntry.spawnedCwd) ??
             normalizeOptionalString(sessionState.sessionEntry.spawnedWorkspaceDir) ??
