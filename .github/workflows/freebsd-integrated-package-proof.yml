@@ -1,0 +1,289 @@
+# Temporary exact-source package producer. Close unmerged after native proof custody.
+name: Temporary FreeBSD integrated package proof
+on:
+  pull_request:
+    types: [opened]
+    branches: [main]
+    paths: [.github/workflows/freebsd-integrated-package-proof.yml]
+permissions:
+  contents: read
+concurrency:
+  group: freebsd-integrated-package-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+jobs:
+  candidate-package:
+    if: >-
+      github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
+      github.event_name == 'pull_request' && github.event.action == 'opened' &&
+      github.actor == 'vincentkoc' && github.event.pull_request.user.login == 'vincentkoc' &&
+      github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.repo.full_name == 'openclaw/openclaw' &&
+      github.event.pull_request.head.ref == 'test/freebsd-integrated-package-proof'
+    runs-on: blacksmith-8vcpu-ubuntu-2404
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+      CI: "true"
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_VITEST_MAX_WORKERS: "2"
+      CANDIDATE_SHA: 1c0c6449c1efb8e742304385aa2de3597bc15281
+      CANDIDATE_TREE: 1bec5b9b3940f4eccbb3e56121f9e4f8aafc1a30
+      CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
+      WORKFLOW_SHA: ${{ github.workflow_sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Bind the sole workflow child to the reviewed source
+        run: |
+          set -euo pipefail
+          [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
+          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = '1ad805569f24651a03e30740201eb88f220457ea e7d11b01a90ec0537cfa960be06434d925ed0d2f'
+          test "$(git diff --name-only "$CANDIDATE_SHA" HEAD)" = .github/workflows/freebsd-integrated-package-proof.yml
+          test -z "$(git status --porcelain)"
+          git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --depth=1 --no-write-fetch-head origin "$WORKFLOW_SHA"
+          test "$(git rev-parse "$CARRIER_SHA:.github/workflows/freebsd-integrated-package-proof.yml")" = "$(git rev-parse "$WORKFLOW_SHA:.github/workflows/freebsd-integrated-package-proof.yml")"
+          mkdir "$RUNNER_TEMP/freebsd-integrated-proof"
+          python3 -I -S - <<'PYTHON'
+          import hashlib,json,os,subprocess
+          from pathlib import Path
+          workflow='.github/workflows/freebsd-integrated-package-proof.yml'
+          data=subprocess.check_output(['git','show',os.environ['CARRIER_SHA']+':'+workflow])
+          receipt=dict(source=os.environ['CANDIDATE_SHA'],tree=os.environ['CANDIDATE_TREE'],carrier=os.environ['CARRIER_SHA'],workflow=os.environ['WORKFLOW_SHA'],workflowSha256=hashlib.sha256(data).hexdigest(),
+            sourceParents=subprocess.check_output(['git','show','-s','--format=%P',os.environ['CANDIDATE_SHA']],text=True).strip().split(),
+            eventMerge=os.environ['GITHUB_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],scope='one canonical package build; native and released-updater proof remain separate')
+          Path(os.environ['RUNNER_TEMP'],'freebsd-integrated-proof','source-binding.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt))
+          PYTHON
+          cat > "$RUNNER_TEMP/freebsd-source-inventory.py" <<'PYTHON'
+          import hashlib,json,os,stat,subprocess,sys
+          from pathlib import Path
+          rows=[]
+          for raw in subprocess.check_output(['git','ls-files','--stage','-z']).split(b'\0'):
+              if not raw: continue
+              info,name=raw.split(b'\t',1);mode,oid,stage=info.decode().split();assert stage=='0'
+              path=os.fsdecode(name);p=Path(path);s=p.lstat()
+              if mode=='120000':
+                  assert stat.S_ISLNK(s.st_mode);data=os.fsencode(os.readlink(p))
+              else:
+                  assert mode in ('100644','100755') and stat.S_ISREG(s.st_mode)
+                  assert bool(s.st_mode & 0o111)==(mode=='100755');data=p.read_bytes()
+              assert hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()==oid
+              rows.append([path,mode,len(data),hashlib.sha256(data).hexdigest()])
+          encoded=json.dumps(rows,separators=(',',':'),ensure_ascii=True).encode()
+          receipt=dict(source=os.environ['CANDIDATE_SHA'],tree=os.environ['CANDIDATE_TREE'],files=len(rows),sha256=hashlib.sha256(encoded).hexdigest())
+          proof=Path(os.environ['RUNNER_TEMP'],'freebsd-integrated-proof');phase=sys.argv[1]
+          if phase=='after': assert receipt==json.loads((proof/'source-before.json').read_text())
+          (proof/('source-'+phase+'.json')).write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt))
+          PYTHON
+      - name: Prepare the canonical Git lifecycle owner
+        uses: ./.github/actions/git-owner
+      - name: Set up one frozen toolchain without a harness dependency install
+        uses: ./.github/actions/setup-node-env
+        with:
+          node-version: "24.21.0"
+          install-bun: "false"
+          install-deps: "false"
+          cache-mode: "off"
+      - name: Create one isolated product root and frozen dependency install
+        run: |
+          set -euo pipefail
+          test "$(node -p process.versions.node)" = 24.21.0
+          test "$(pnpm --version)" = 12.4.0
+          test ! -e node_modules
+          python3 -I -S "$CI_GIT_OWNER" --git 120 worktree add --detach "$RUNNER_TEMP/freebsd-integrated-candidate" "$CANDIDATE_SHA"
+          cd "$RUNNER_TEMP/freebsd-integrated-candidate"
+          python3 -I -S "$RUNNER_TEMP/freebsd-source-inventory.py" before
+          CI=true DEPENDENCY_CACHE=false DEPENDENCY_CACHE_HIT=false FROZEN_LOCKFILE=true \
+            bash .github/actions/setup-node-env/install-dependencies.sh
+          git diff --exit-code
+          git diff --cached --exit-code
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict'; import fs from 'node:fs'; import os from 'node:os'; import path from 'node:path';
+          import {createHash} from 'node:crypto'; import {execFileSync} from 'node:child_process'; import {createRequire} from 'node:module';
+          const root=process.cwd(),sha=b=>createHash('sha256').update(b).digest('hex');
+          const fingerprint=execFileSync(process.execPath,[`${root}/.github/actions/setup-node-env/dependency-fingerprint.mjs`,'--workspace',root,'--frozen-lockfile','true'],{encoding:'utf8'}).trim();
+          assert(!fs.lstatSync(`${root}/node_modules`).isSymbolicLink());
+          assert.equal(process.platform,'linux'); assert.equal(process.arch,'x64');
+          assert(process.report.getReport().header.glibcVersionRuntime,'this producer requires the selected GNU native package');
+          const require=createRequire(`${root}/package.json`),fsSafeMeta=require.resolve('@openclaw/fs-safe/package.json');
+          const fsSafeRoot=path.dirname(fs.realpathSync(fsSafeMeta)),meta=JSON.parse(fs.readFileSync(fsSafeMeta));
+          assert.equal(meta.name,'@openclaw/fs-safe'); assert.equal(meta.version,'0.18.1');
+          const nativeNames=['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-x64-msvc'].map(t=>`@openclaw/fs-safe-${t}`);
+          assert.deepEqual(Object.keys(meta.optionalDependencies).filter(n=>n.startsWith('@openclaw/fs-safe-')).sort(),nativeNames.toSorted());
+          for(const name of nativeNames) assert.equal(meta.optionalDependencies[name],'0.18.1');
+          const nativeName='@openclaw/fs-safe-linux-x64-gnu';
+          const nativeEntry=fs.realpathSync(createRequire(fsSafeMeta).resolve(nativeName));
+          let nativeRoot=path.dirname(nativeEntry);
+          while(!fs.existsSync(path.join(nativeRoot,'package.json'))) { const parent=path.dirname(nativeRoot); assert.notEqual(parent,nativeRoot); nativeRoot=parent; }
+          const nativeMeta=JSON.parse(fs.readFileSync(path.join(nativeRoot,'package.json')));
+          assert.equal(nativeMeta.name,nativeName); assert.equal(nativeMeta.version,'0.18.1');
+          function inventory(directory) {
+            const files=[];
+            function walk(relative) {
+              for(const name of fs.readdirSync(path.join(directory,relative)).sort()) {
+                if(name==='node_modules') continue;
+                const member=path.join(relative,name),file=path.join(directory,member),stat=fs.lstatSync(file);
+                assert(!stat.isSymbolicLink(),`unexpected package symlink: ${member}`);
+                if(stat.isDirectory()) walk(member);
+                else { assert(stat.isFile()); files.push({path:member,bytes:stat.size,sha256:sha(fs.readFileSync(file))}); }
+              }
+            }
+            walk(''); assert(files.length>0); return {files,inventorySha256:sha(JSON.stringify(files))};
+          }
+          const fsSafe=inventory(fsSafeRoot),native=inventory(nativeRoot);
+          for(const file of ['package.json','dist/advanced.js','dist/native.js','dist/file-hash.js']) assert(fsSafe.files.some(f=>f.path===file));
+          assert(native.files.some(f=>f.path.endsWith('.node')));
+          const inputPaths=['package.json','pnpm-lock.yaml','pnpm-workspace.yaml',...['file-transfer','llama-cpp','migrate-claude','onepassword','openshell','signal'].map(n=>`extensions/${n}/package.json`)];
+          const inputs=Object.fromEntries(inputPaths.map(p=>[p,sha(fs.readFileSync(p))]));
+          for(const p of inputPaths) assert.equal(inputs[p],sha(execFileSync('git',['show',`${process.env.CANDIDATE_SHA}:${p}`])));
+          assert.equal(inputs['package.json'],'daeeae9df9b29e09d88c5040f027e1b295f6a2f072887d56b39e525a860ad7ef');
+          assert.equal(inputs['pnpm-lock.yaml'],'3926f52636eac81ac3f5a282c2bc7b39760ea8350aadee5e681228fed3bcba91');
+          assert.equal(inputs['pnpm-workspace.yaml'],'12bce91e5e9e4bb52f043f60ce465191f83a2eae0ec9e7be088e5cea2e2454af');
+          const {parseAllDocuments}=require('yaml');
+          const docs=parseAllDocuments(fs.readFileSync('pnpm-lock.yaml','utf8')); assert.equal(docs.length,2);
+          for(const doc of docs) assert.equal(doc.errors.length,0);
+          const lock=docs[1].toJS();
+          const fsSafeLock=lock.packages['@openclaw/fs-safe@0.18.1'].resolution.integrity;
+          const nativeLock=lock.packages[`${nativeName}@0.18.1`].resolution.integrity;
+          assert.equal(fsSafeLock,'sha512-p56o1BFSQ2Ayc2+WhTJHfiWNyEtl8DOY15uUCUV/lvQILt+58651v964SpqNEgCvaXdccJvK/YHW5+ivOYKt0A==');
+          assert.equal(nativeLock,'sha512-FWug2NdenYPJIVdtdzPH1xqBo5a/HYlZJutKEQkxSSM59Z/tBYiY24MsrjdYC5u2+2zwXPv38noB/hZ89Ec1kQ==');
+          const nativeBinding=require(nativeEntry); assert.equal(typeof nativeBinding,'object');
+          const receipt={source:process.env.CANDIDATE_SHA,node:process.versions.node,pnpm:execFileSync('pnpm',['--version'],{encoding:'utf8'}).trim(),
+            platform:process.platform,arch:process.arch,cpus:os.cpus().length,memory:os.totalmem(),dependencyFingerprint:fingerprint,
+            toolchainSha256:sha(fs.readFileSync(process.execPath)),inputs,
+            fsSafe:{version:meta.version,lockIntegrity:fsSafeLock,...fsSafe},native:{name:nativeName,version:nativeMeta.version,lockIntegrity:nativeLock,loaded:true,entry:path.relative(nativeRoot,nativeEntry),...native},
+            scope:'actual frozen producer install; final operator dependency custody remains separate'};
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/freebsd-integrated-proof/toolchain.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
+          console.log(JSON.stringify(receipt));
+          NODE
+      - name: Build the final canonical package once
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/freebsd-integrated-candidate"
+          started=$(date +%s)
+          set +e
+          node scripts/package-openclaw-for-docker.mjs --allow-unreleased-changelog \
+            --output-dir "$RUNNER_TEMP/freebsd-integrated-proof/unsealed" --output-name candidate.tgz \
+            --pack-json "$RUNNER_TEMP/freebsd-integrated-proof/unsealed/candidate-pack.original.json" 2>&1 | tee "$RUNNER_TEMP/freebsd-integrated-proof/package-build.log"
+          statuses=("${PIPESTATUS[@]}")
+          set -e
+          python3 -I -S - "$started" "${statuses[0]}" "${statuses[1]}" <<'PYTHON'
+          import json,os,sys,time
+          from pathlib import Path
+          receipt=dict(source=os.environ['CANDIDATE_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],
+            command='node scripts/package-openclaw-for-docker.mjs --allow-unreleased-changelog --output-dir <package-dir> --output-name candidate.tgz --pack-json <pack-json>',
+            exit=int(sys.argv[2]),captureExit=int(sys.argv[3]),elapsedSeconds=int(time.time())-int(sys.argv[1]))
+          Path(os.environ['RUNNER_TEMP'],'freebsd-integrated-proof','build-command.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt))
+          PYTHON
+          test "${statuses[0]}" = 0
+          test "${statuses[1]}" = 0
+          git diff --exit-code
+          git diff --cached --exit-code
+      - name: Authenticate the complete package and emitted finalizer
+        run: |
+          set -euo pipefail
+          python3 -I -S - <<'PYTHON'
+          import hashlib,json,os,tarfile
+          from pathlib import Path,PurePosixPath
+          root=Path(os.environ['RUNNER_TEMP']);proof=root/'freebsd-integrated-proof'
+          source=root/'freebsd-integrated-candidate';package=proof/'unsealed/candidate.tgz'
+          digest=lambda data:hashlib.sha256(data).hexdigest()
+          with tarfile.open(package,'r:gz') as archive:
+              members=archive.getmembers();names=[m.name for m in members];assert len(names)==len(set(names))
+              inventory=[]
+              for member in members:
+                  parts=PurePosixPath(member.name).parts
+                  assert parts and parts[0]=='package' and '..' not in parts and not member.name.startswith('/') and '\\' not in member.name
+                  assert member.isfile() or member.isdir()
+                  if member.isfile():
+                      data=archive.extractfile(member).read()
+                      inventory.append(dict(path=member.name,bytes=len(data),mode=member.mode,sha256=digest(data)))
+              def read(name):
+                  member=archive.getmember('package/'+name);assert member.isfile()
+                  return archive.extractfile(member).read()
+              meta=json.loads(read('package.json'));build=json.loads(read('dist/build-info.json'))
+              assert meta['name']=='openclaw' and meta['version']=='2026.9.5'
+              assert meta['dependencies']['@openclaw/fs-safe']=='0.18.1'
+              assert build['commit']==os.environ['CANDIDATE_SHA'] and isinstance(build['buildId'],str) and build['buildId']
+              worker_path='dist/infra/update-migrated-finalize.worker.js';worker=read(worker_path)
+              assert worker==(source/worker_path).read_bytes()
+              entries=[]
+              for prefix,manifest_path,build_root in [('', 'package.json', source),('node_modules/@openclaw/ai/', 'node_modules/@openclaw/ai/package.json', source/'packages/ai')]:
+                  manifest=json.loads(read(manifest_path));entry=manifest['main'].removeprefix('./')
+                  assert '..' not in PurePosixPath(entry).parts and not entry.startswith('/')
+                  data=read(prefix+entry);assert data==(build_root/entry).read_bytes()
+                  entries.append(dict(package=manifest['name'],path=prefix+entry,bytes=len(data),sha256=digest(data)))
+              assert [e['package'] for e in entries]==['openclaw','@openclaw/ai']
+              receipt=dict(source=os.environ['CANDIDATE_SHA'],tree=os.environ['CANDIDATE_TREE'],version=meta['version'],build=build,
+                  packageBytes=package.stat().st_size,packageSha256=hashlib.file_digest(package.open('rb'),'sha256').hexdigest(),
+                  fsSafe=meta['dependencies']['@openclaw/fs-safe'],entries=entries,finalizer=dict(path=worker_path,bytes=len(worker),sha256=digest(worker)),
+                  memberCount=len(members),regularFileCount=len(inventory),inventorySha256=digest(json.dumps(inventory,separators=(',',':')).encode()),
+                  scope='actual complete package and emitted bytes; no native or upgrade outcome inferred')
+          (proof/'package-inventory.json').write_text(json.dumps(inventory,indent=2)+'\n')
+          (proof/'package.json').write_text(json.dumps(receipt,indent=2)+'\n')
+          print(json.dumps(receipt))
+          PYTHON
+      - name: Seal the package and immutable source archive for native consumers
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/freebsd-integrated-candidate"
+          proof="$RUNNER_TEMP/freebsd-integrated-proof"
+          python3 -I -S "$RUNNER_TEMP/freebsd-source-inventory.py" after
+          git diff --exit-code
+          git diff --cached --exit-code
+          git archive --format=tar.gz --prefix=openclaw/ "$CANDIDATE_SHA" > "$proof/source.tar.gz"
+          node scripts/install-smoke-candidate-payload.mts seal \
+            --archive "$proof/source.tar.gz" --package-dir "$RUNNER_TEMP/freebsd-integrated-proof/unsealed" \
+            --output-dir "$proof/payload" --repository "$GITHUB_REPOSITORY" --target-sha "$CANDIDATE_SHA" \
+            --harness-repository "$GITHUB_REPOSITORY" --harness-sha "$CARRIER_SHA" \
+            --run-id "$GITHUB_RUN_ID" --run-attempt "$GITHUB_RUN_ATTEMPT"
+          cp "$RUNNER_TEMP/freebsd-integrated-proof/unsealed/candidate-pack.original.json" "$proof/canonical-pack.json"
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
+          const dir=`${process.env.RUNNER_TEMP}/freebsd-integrated-proof`,sha=f=>createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+          const pkg=JSON.parse(fs.readFileSync(`${dir}/package.json`,'utf8'));
+          const manifest=JSON.parse(fs.readFileSync(`${dir}/payload/install-smoke-candidate-payload.json`,'utf8'));
+          assert.equal(manifest.targetSha,process.env.CANDIDATE_SHA);assert.equal(manifest.harnessSha,process.env.CARRIER_SHA);
+          assert.equal(manifest.runId,process.env.GITHUB_RUN_ID);assert.equal(manifest.runAttempt,process.env.GITHUB_RUN_ATTEMPT);
+          assert.equal(manifest.repository,'openclaw/openclaw');assert.equal(manifest.harnessRepository,'openclaw/openclaw');
+          assert.equal(manifest.packageVersion,'2026.9.5');assert.equal(manifest.sourceArchiveSha256,sha(`${dir}/source.tar.gz`));
+          const tar=manifest.files.find(f=>f.name==='candidate.tgz');assert(tar);assert.equal(tar.sha256,pkg.packageSha256);assert.equal(tar.size,pkg.packageBytes);
+          assert.equal(sha(`${dir}/payload/candidate.tgz`),pkg.packageSha256);
+          const originalTar=`${dir}/unsealed/candidate.tgz`,originalPack=`${dir}/unsealed/candidate-pack.original.json`;
+          assert(fs.lstatSync(originalTar).isFile());assert(fs.lstatSync(originalPack).isFile());
+          assert.equal(fs.statSync(originalTar).size,pkg.packageBytes);assert.equal(sha(originalTar),pkg.packageSha256);
+          const originalPackSha256=sha(originalPack);assert.equal(sha(`${dir}/canonical-pack.json`),originalPackSha256);
+          // Failure before this point retains the original unsealed package and pack receipt.
+          // Remove only the verified duplicate after canonical sealing, never failed outputs.
+          fs.unlinkSync(originalTar);fs.unlinkSync(originalPack);fs.rmdirSync(`${dir}/unsealed`);
+          const receipt={source:process.env.CANDIDATE_SHA,tree:process.env.CANDIDATE_TREE,carrier:process.env.CARRIER_SHA,
+            run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT,complete:true,packageBuildPassed:true,
+            fsSafe:'0.18.1',packageVersion:manifest.packageVersion,buildId:pkg.build.buildId,
+            manifestSha256:sha(`${dir}/payload/install-smoke-candidate-payload.json`),sourceArchiveSha256:manifest.sourceArchiveSha256,
+            packageSha256:pkg.packageSha256,packageBytes:pkg.packageBytes,inventorySha256:pkg.inventorySha256,originalPackSha256,
+            nativeProof:'unrun; separate authenticated x64/ARM and Linux released-updater consumers required'};
+          fs.writeFileSync(`${dir}/complete.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify(receipt));
+          NODE
+      - name: Retain the exact package, source and original custody receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: freebsd-integrated-package-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/freebsd-integrated-proof
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
