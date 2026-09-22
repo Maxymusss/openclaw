@@ -160,6 +160,23 @@ export function createSessionHistoryWorkerReaders(
           return value;
         },
       ),
+    readMembershipFacts: async (input) =>
+      await runRequest(
+        () => ({ kind: "session-membership-facts", ...input }),
+        JSON.stringify(input).length * 2,
+        (value) => {
+          if (
+            typeof value === "boolean" ||
+            Array.isArray(value) ||
+            value.kind !== "session-membership-facts"
+          ) {
+            throw new Error(
+              "Session history worker returned another result instead of membership facts",
+            );
+          }
+          return value;
+        },
+      ),
     readMembers: async (input) =>
       await runRequest(
         () => ({ kind: "session-members", ...input }),

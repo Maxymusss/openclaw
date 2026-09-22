@@ -42,6 +42,7 @@ import type {
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
 } from "./session-history-types.js";
+import type { SessionMembershipFacts } from "./session-membership-facts.types.js";
 import type { SessionMember } from "./session-sharing-store.kernel.js";
 import type { ResolvedSqliteStoreTarget } from "./session-sqlite-target.js";
 import type {
@@ -185,6 +186,14 @@ type SessionMembersWorkerInput = {
   env: NodeJS.ProcessEnv;
 };
 
+type SessionMembershipFactsWorkerInput = {
+  kind: "session-membership-facts";
+  database: { agentId: string; path: string };
+  sessionKeys?: readonly string[];
+  env: NodeJS.ProcessEnv;
+  continuation?: CanonicalSessionReaderContinuation;
+};
+
 type SessionUsageCacheWorkerInput = {
   kind: "usage-cache";
   database: { agentId: string; path: string };
@@ -227,7 +236,6 @@ export type SessionExactEntriesWorkerResult = {
 export const MAX_SESSION_ROW_FACTS_KEYS = 64;
 
 export type SessionRowDatabaseFacts = SessionEntrySummary & {
-  memberIdentityIds: string[];
   hasBoard: boolean;
   activitySummaryWatermark?: SessionTranscriptWatermark;
 };
@@ -281,6 +289,7 @@ export type SessionHistoryWorkerInput =
   | SessionRowPresenceWorkerInput
   | SessionProjectionStatusWorkerInput
   | SessionMembersWorkerInput
+  | SessionMembershipFactsWorkerInput
   | SessionEntryListWorkerInput
   | SessionExactEntriesWorkerInput
   | SessionRowFactsWorkerInput
@@ -314,6 +323,7 @@ export type SessionTranscriptWorkerValues = {
   "session-row-presence": boolean;
   "projection-status": boolean;
   "session-members": SessionMember[];
+  "session-membership-facts": SessionMembershipFacts;
   "session-entry-list": SessionEntryListWorkerResult;
   "session-exact-entries": SessionExactEntriesWorkerResult;
   "session-row-facts": SessionRowFactsWorkerResult;
@@ -385,6 +395,9 @@ export type SessionHistoryWorkerDatabase = {
   readMembers: (
     input: Omit<SessionMembersWorkerInput, "kind" | "database">,
   ) => Promise<SessionMember[]>;
+  readMembershipFacts: (
+    input: Omit<SessionMembershipFactsWorkerInput, "kind" | "database">,
+  ) => Promise<SessionMembershipFacts>;
   readUsageCache: (
     input: Omit<SessionUsageCacheWorkerInput, "kind" | "database">,
   ) => Promise<SessionCostUsageCacheReadResult>;
