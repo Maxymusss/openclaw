@@ -266,12 +266,12 @@ describe("on-demand prepared worker admission", () => {
       context.getGatewayMethodRegistry = () =>
         createGatewayMethodRegistry(createCoreGatewayMethodDescriptors(environmentsHandlers));
       const client = createOperatorClient({
-        profileId: "preparation-operator",
+        profileName: "preparation-operator",
         scopes: ["operator.admin"],
       });
       const controller = new AbortController();
       const source = expectDefined(
-        captureGatewayOperatorRunAuthority({
+        await captureGatewayOperatorRunAuthority({
           client,
           context,
           sourceAuthority: {

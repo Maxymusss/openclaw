@@ -108,7 +108,7 @@ export async function runOpenAiCompatibleAgentCommand(params: {
     throw new Error("OpenAI-compatible operator execution requires a current Gateway context.");
   }
   const captured = gatewayContext
-    ? captureGatewayOperatorRunAuthority({
+    ? await captureGatewayOperatorRunAuthority({
         client,
         context: {
           getRuntimeConfig: gatewayContext.getRuntimeConfig,
@@ -119,6 +119,8 @@ export async function runOpenAiCompatibleAgentCommand(params: {
       })
     : undefined;
   try {
+    assertSourceCurrent();
+    captured?.authority.assertCurrent();
     const sourceSignal = captured?.authority.signal;
     const abortSignal =
       params.abortSignal && sourceSignal

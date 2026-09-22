@@ -96,7 +96,7 @@ async function createOwnRunFixture() {
   };
   await upsertSessionEntryCore(sessionScope, entry);
   const browser = questionPeer(profile, "original-browser");
-  const source = captureGatewayOperatorRunAuthority({
+  const source = await captureGatewayOperatorRunAuthority({
     client: browser.client,
     context: { getRuntimeConfig: () => cfg },
   });

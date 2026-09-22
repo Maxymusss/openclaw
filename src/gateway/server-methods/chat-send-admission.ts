@@ -60,10 +60,10 @@ import {
   respondChatSendAdmissionError,
   respondChatSendRetry,
   respondChatSessionRoutingChanged,
+  type ChatSendPreAdmissionParams,
 } from "./chat-send-pre-admission.js";
-import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
-import { prepareChatSendSessionEntry, type PreparedChatSendSession } from "./chat-send-session.js";
+import { prepareChatSendSessionEntry } from "./chat-send-session.js";
 import {
   assertChatSendExclusiveAdmission,
   createChatSendWorkAdmission,
@@ -72,16 +72,12 @@ import { normalizeOptionalChatText, normalizeUnknownChatText } from "./chat-text
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
 /** Reserve the session lifecycle and register the abortable run before attachment work. */
-export async function admitChatSend(params: {
-  request: NormalizedChatSendRequest;
-  session: PreparedChatSendSession;
-  respond: GatewayRequestHandlerOptions["respond"];
-  context: GatewayRequestHandlerOptions["context"];
-  client: GatewayRequestHandlerOptions["client"];
-  hasCurrentClientAuthority?: GatewayRequestHandlerOptions["hasCurrentClientAuthority"];
-  onAdmissionOwned?: () => Promise<boolean>;
-  assertCurrent?: () => void;
-}) {
+export async function admitChatSend(
+  params: ChatSendPreAdmissionParams & {
+    hasCurrentClientAuthority?: GatewayRequestHandlerOptions["hasCurrentClientAuthority"];
+    onAdmissionOwned?: () => Promise<boolean>;
+  },
+) {
   params.assertCurrent?.();
   const { request, session, respond, context, client } = params;
   const { p, explicitOrigin, normalizedAttachments, turnKind } = request;
@@ -538,7 +534,7 @@ export async function admitChatSend(params: {
   }
   let releaseGatewayRootContinuation = () => {};
   let releaseCallerAuthority: (() => void) | undefined;
-  let capturedOperator: ReturnType<typeof retainGatewayOperatorRun>;
+  let capturedOperator: Awaited<ReturnType<typeof retainGatewayOperatorRun>>;
   // Until dispatch takes custody, interruption and callback failures release every admission hold.
   const cleanupPreDispatchAdmission = () => {
     try {
@@ -552,7 +548,7 @@ export async function admitChatSend(params: {
   };
   let interruptedActiveRun = false;
   try {
-    capturedOperator = retainGatewayOperatorRun({
+    capturedOperator = await retainGatewayOperatorRun({
       ...params,
       runId: clientRunId,
       entry: activeRunAbort.entry,
@@ -566,6 +562,9 @@ export async function admitChatSend(params: {
         }
       }
     };
+    params.assertCurrent?.();
+    activeRunAbort.controller.signal.throwIfAborted();
+    capturedOperator.authority?.assertCurrent();
     let interruptionSettled = true;
     if (runInterruptTarget) {
       interruptedActiveRun = true;

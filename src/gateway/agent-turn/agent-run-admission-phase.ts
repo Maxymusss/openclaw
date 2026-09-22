@@ -268,7 +268,7 @@ export async function prepareAgentRunDispatch(
     cwd: params.sessionEntry?.spawnedCwd,
   });
   let preparedModelRuntimeLease: PreparedModelRuntimeLease | undefined;
-  let capturedOperator: ReturnType<typeof retainGatewayOperatorRun> | undefined;
+  let capturedOperator: Awaited<ReturnType<typeof retainGatewayOperatorRun>> | undefined;
   let registeredFollowupTask: RegisteredGatewayAgentTask | undefined;
   const cleanupPreaccept = async (admissionReleased = false, failure?: string) => {
     const lease = preparedModelRuntimeLease;
@@ -597,13 +597,9 @@ export async function prepareAgentRunDispatch(
           () => preparedModelRuntimeLease?.snapshot,
         ),
       );
-      const taskAdmission = revalidateAdmission();
+      const taskAdmission = revalidateAdmission(userTurn);
       if (taskAdmission !== true) {
-        try {
-          return await taskAdmission;
-        } finally {
-          releasePreparedAgentRunUserTurn(userTurn, "interrupted");
-        }
+        return await taskAdmission;
       }
       assertInputOwnerCurrent();
       dispatchTaskTrackingMode = registeredFollowupTask;
@@ -614,7 +610,13 @@ export async function prepareAgentRunDispatch(
   }
   try {
     // The transport request ends at acceptance; execution retains this exact caller.
-    capturedOperator = retainGatewayOperatorRun({ ...params, entry: activeRunAbort.entry });
+    capturedOperator = await retainGatewayOperatorRun({ ...params, entry: activeRunAbort.entry });
+    const operatorAdmission = revalidateAdmission(userTurn);
+    if (operatorAdmission !== true) {
+      return await operatorAdmission;
+    }
+    assertInputOwnerCurrent();
+    capturedOperator.authority?.assertCurrent();
   } catch (error) {
     const failure = releasePreparedAgentRunUserTurnAfterFailure(userTurn, error);
     return rejectPreaccept(errorShapeFromError(ErrorCodes.INVALID_REQUEST, failure));

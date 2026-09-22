@@ -120,7 +120,7 @@ describe("typed in-process agent continuation authorization", () => {
     "settles sessions_send after its requester ends (%s)",
     async (boundary) => {
       const owner = createOperatorClient({
-        profileId: "reply-owner",
+        profileName: "reply-owner",
         scopes: ["operator.read", "operator.write"],
       });
       const context = createContext();
@@ -152,7 +152,9 @@ describe("typed in-process agent continuation authorization", () => {
       });
       startTurn.mockImplementation(async ({ principal, io, preflight: { request } }) => {
         expect(principal.connect.scopes).toEqual(["operator.write"]);
-        expect(principal.authenticatedUserProfile?.profileId).toBe("reply-owner");
+        expect(principal.authenticatedUserProfile?.profileId).toBe(
+          owner.authenticatedUserProfile!.profileId,
+        );
         io.emitAcceptance([true, { runId: request.idempotencyKey, status: "accepted" }, undefined]);
         io.emitFinal([true, { runId: request.idempotencyKey, status: "ok" }, undefined]);
       });
@@ -236,13 +238,15 @@ describe("typed in-process agent continuation authorization", () => {
     "preserves GitHub identity access after %s admits a write-only continuation",
     async (sourceTool) => {
       const owner = createOperatorClient({
-        profileId: "continuation-owner",
+        profileName: "continuation-owner",
         scopes: ["operator.read", "operator.write"],
       });
       const readResult = { effective: { credentialState: "available", refreshState: "idle" } };
       const readHandler = vi.fn(({ client, respond }: GatewayRequestHandlerOptions) => {
         expect(client?.connect.scopes).toEqual(["operator.read"]);
-        expect(client?.authenticatedUserProfile?.profileId).toBe("continuation-owner");
+        expect(client?.authenticatedUserProfile?.profileId).toBe(
+          owner.authenticatedUserProfile!.profileId,
+        );
         respond(true, readResult);
       });
       const context = createContext();
@@ -312,12 +316,12 @@ describe("typed in-process agent continuation authorization", () => {
     const { runAnnounceAgentCall } =
       await import("../agents/subagents/announce/subagent-announce-completion-delivery.js");
     const owner = createOperatorClient({
-      profileId: "settle-owner",
+      profileName: "settle-owner",
       scopes: ["operator.write"],
     });
     const context = createContext();
     const sourceSignal = new AbortController();
-    const source = captureGatewayOperatorRunAuthority({
+    const source = await captureGatewayOperatorRunAuthority({
       client: owner,
       context,
       sourceAuthority: {

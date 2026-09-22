@@ -9,6 +9,7 @@ import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { resetGatewayWorkAdmission } from "../../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { prepareUserProfileSelectionAuthority } from "../../../state/user-channel-identity-operations.js";
+import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { resolveGatewayAuthPolicyGeneration } from "../../auth-policy.js";
 import { publishOperatorRoleConfigChange } from "../../operator-role-policy.js";
 import { captureGatewayOperatorRunAuthority } from "../../operator-run-authority.js";
@@ -64,25 +65,32 @@ describe("authenticated request mutation custody", () => {
       client.sharedGatewaySessionGeneration = "generation-a";
       client.authPolicyGeneration = resolveGatewayAuthPolicyGeneration(committedConfig);
       client.connectionSignal = connection.signal;
-      client.internal = { operatorRoleActor: { kind: "operator", profileId: "profile-owner" } };
+      client.internal = {
+        operatorRoleActor: {
+          kind: "operator",
+          profileId: ensureProfileForEmail("transport-owner@example.test").id,
+        },
+      };
       const context = createDirectChatContext({
         getRuntimeConfig: () => getRuntimeConfigSnapshot() ?? committedConfig,
         getCommittedRuntimeConfig: () => committedConfig,
       });
       context.resolveGatewayContext = () => context;
-      let captured: ReturnType<typeof captureGatewayOperatorRunAuthority>;
-      const handler = vi.fn<(options: GatewayRequestHandlerOptions) => void>((options) => {
-        captured = captureGatewayOperatorRunAuthority({
-          client: options.client,
-          context,
-          hasCurrentClientAuthority: options.hasCurrentClientAuthority,
-          sourceAuthority: {
-            assertCurrent: () => access.signal.throwIfAborted(),
-            signal: access.signal,
-          },
-        });
-        options.respond(true, { accepted: true });
-      });
+      let captured: Awaited<ReturnType<typeof captureGatewayOperatorRunAuthority>>;
+      const handler = vi.fn<(options: GatewayRequestHandlerOptions) => Promise<void>>(
+        async (options) => {
+          captured = await captureGatewayOperatorRunAuthority({
+            client: options.client,
+            context,
+            hasCurrentClientAuthority: options.hasCurrentClientAuthority,
+            sourceAuthority: {
+              assertCurrent: () => access.signal.throwIfAborted(),
+              signal: access.signal,
+            },
+          });
+          options.respond(true, { accepted: true });
+        },
+      );
       const harness = createDispatchTestHarness({
         getRequiredSharedGatewaySessionGeneration: generation.reader,
         buildRequestContext: () => context,
