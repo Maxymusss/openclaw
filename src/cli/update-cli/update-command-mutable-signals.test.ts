@@ -68,6 +68,8 @@ async function assertOwnedSignal(
   mode: string,
 ): Promise<void> {
   const script = path.join(root, "signal.mjs");
+  const control = path.join(root, "control");
+  fs.mkdirSync(control, { mode: 0o700 });
   fs.writeFileSync(
     script,
     `
@@ -76,6 +78,9 @@ async function assertOwnedSignal(
     import { DatabaseSync } from 'node:sqlite';
     import { createHash } from 'node:crypto';
     import { once } from 'node:events';
+    import * as json5 from ${JSON.stringify(import.meta.resolve("json5"))};
+    import { registerSealedRuntime } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.sealedRuntime).href)};
+    import { createManagedHandoffLeaseStore, resolveManagedUpdateLeaseDatabasePath } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.handoffLease).href)};
     import { createUpdateRun, finishUpdateRun, getUpdateRun, recordUpdateRunPhase } from ${JSON.stringify(resolveRuntimeWorkerUrl(triageTestRuntimeEntrypoints.updateRunLedger).href)};
     import { createRetainedUpdateRecovery } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.retainedRecovery).href)};
     import { closeOpenClawStateDatabaseForTest } from ${JSON.stringify(resolveRuntimeWorkerUrl(cronOwnerHardeningEntrypoints.stateDatabase).href)};
@@ -86,6 +91,11 @@ async function assertOwnedSignal(
     import { writeControlPlaneUpdateRestartSentinelBestEffort } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.commandResult).href)};
     import { withUpdateCommandTerminalResult, deferUpdateCommandTerminalResult } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.commandTerminal).href)};
     const root = ${JSON.stringify(root)};
+    const control = ${JSON.stringify(control)};
+    // Only scratch ownership is private; native lease admission and release stay real.
+    registerSealedRuntime({json5,resolveSecureTempRoot:()=>control});
+    const leaseDatabasePath = resolveManagedUpdateLeaseDatabasePath();
+    assert.equal(leaseDatabasePath, control + "/managed-update-handoffs.sqlite");
     const mode = ${JSON.stringify(mode)};
     const controlled = mode === 'state-refusal-drain' || mode === 'preview-refusal-drain' || mode === 'heartbeat-first-refusal';
     const opts = { restart: false, dryRun: mode === 'preview-refusal-drain' };
@@ -227,11 +237,12 @@ async function assertOwnedSignal(
             } finally { await release; }
           });
         }
-        process.send({runId:run.runId,expected,sibling});
+        process.send({runId:run.runId,expected,sibling,leaseDatabasePath});
         await new Promise(() => setInterval(() => {},1000));
       };
       if (mode === 'lost') {
         await withUpdateCommandExecutor(run.runId, async (executor) => {run.executorFence = await executor.enter(root);});
+        assert.equal(createManagedHandoffLeaseStore().read(root).kind, "absent");
         await hold();
       } else if (mode === 'no-owner') {
         await hold();
@@ -272,6 +283,7 @@ async function assertOwnedSignal(
         ([payload]) =>
           payload as {
             runId: string;
+            leaseDatabasePath: string;
             expected: ReturnType<typeof getUpdateRun>;
             sibling: ReturnType<typeof createUpdateRun>;
           },
@@ -280,6 +292,7 @@ async function assertOwnedSignal(
         throw new Error(`Update process exited before ready: ${stderr}`);
       }),
     ]);
+    expect(message.leaseDatabasePath).toBe(path.join(control, "managed-update-handoffs.sqlite"));
     const controlled =
       mode === "state-refusal-drain" ||
       mode === "preview-refusal-drain" ||
