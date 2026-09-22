@@ -1,4 +1,4 @@
-import type { CliCommandPathPolicy } from "./command-catalog.js";
+import type { CliCommandPathPolicy } from "./command-catalog-types.js";
 
 // These commands own their state boundary; bootstrap must not observe or initialize it first.
 export const PASSIVE_STARTUP_POLICY = {

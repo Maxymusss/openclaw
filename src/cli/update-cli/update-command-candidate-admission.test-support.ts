@@ -8,11 +8,9 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi, type Mock } from "vitest";
 import { PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH } from "../../../scripts/lib/package-lifecycle-marker.mjs";
 import type { ConfigFileSnapshot } from "../../config/types.openclaw.js";
-import type {
-  UpdateAdmissionContext,
-  UpdateAdmissionVerdict,
-} from "../../infra/update-admission-contract.js";
+import type { UpdateAdmissionContext } from "../../infra/update-admission-contract.js";
 import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
+import type { UpdateAdmissionVerdict } from "../../infra/update-run-schema.js";
 import * as versionManagerPath from "../../shared/version-manager-path.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-contract.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";

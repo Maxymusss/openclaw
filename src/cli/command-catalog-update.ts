@@ -1,5 +1,5 @@
 import { PASSIVE_STARTUP_POLICY } from "./command-catalog-policies.js";
-import type { CliCommandCatalogEntry } from "./command-catalog.js";
+import type { CliCommandCatalogEntry } from "./command-catalog-types.js";
 
 /** Update commands retain their own config, state, and protocol admission boundaries. */
 export const updateCommandCatalog: readonly CliCommandCatalogEntry[] = [

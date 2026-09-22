@@ -14,10 +14,12 @@ import {
   isUpdateAdmissionAuthorityEnvKey,
   parseUpdateAdmissionContext,
   UPDATE_ADMISSION_CONTEXT_ENV,
-  UPDATE_ADMISSION_PROTOCOL,
   type UpdateAdmissionContext,
-  type UpdateAdmissionVerdict,
 } from "../../infra/update-admission-contract.js";
+import {
+  UPDATE_ADMISSION_PROTOCOL,
+  type UpdateAdmissionVerdict,
+} from "../../infra/update-run-schema.js";
 import { redactSupportDiagnosticLine } from "../../logging/diagnostic-support-redaction.js";
 import { loadInstalledPluginIndexInstallRecordsSync } from "../../plugins/installed-plugin-index-record-reader.js";
 import { defaultRuntime } from "../../runtime.js";

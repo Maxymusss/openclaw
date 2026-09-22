@@ -6,10 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import {
   isUpdateAdmissionAuthorityEnvKey,
-  parseUpdateAdmissionVerdict,
   type UpdateAdmissionContext,
-  type UpdateAdmissionVerdict,
 } from "../../infra/update-admission-contract.js";
+import {
+  parseUpdateAdmissionVerdict,
+  type UpdateAdmissionVerdict,
+} from "../../infra/update-run-schema.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { runCli } from "../run-main.js";
 import { registerUpdateCli } from "../update-cli.js";

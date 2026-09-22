@@ -291,6 +291,7 @@ export async function initializeAndRunUpdate(
                 targetVersion,
                 targetSchemas: schemas,
               });
+              let initializationStage: InitializedUpdate["stagedPackage"];
               await withUpdateInitializationCleanup(
                 async () => {
                   await withUpdateInitializationCleanup(
@@ -300,9 +301,10 @@ export async function initializeAndRunUpdate(
                         await checkSchemas();
                         assertCurrent();
                         if (!target.packageAlreadyCurrent && !initialization.stagedPackage) {
-                          initialization.stagedPackage = await stagePackageInstallUpdate(
+                          initializationStage = await stagePackageInstallUpdate(
                             stageParams(presentation),
                           );
+                          initialization.stagedPackage = initializationStage;
                         }
                         assertCurrent();
                         await initializeUpdateStateFromTarget({
@@ -323,7 +325,7 @@ export async function initializeAndRunUpdate(
                   );
                   await runInitialized(initialization);
                 },
-                () => (artifact ? undefined : initialization.stagedPackage?.close()),
+                () => initializationStage?.close(),
               );
             };
             const runWithSelectedProfile = async () => {

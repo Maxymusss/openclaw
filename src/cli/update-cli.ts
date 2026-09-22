@@ -8,6 +8,7 @@ import { defaultRuntime, ExitError } from "../runtime.js";
 import { inheritOptionFromParent } from "./command-options.js";
 import { formatHelpExamples } from "./help-format.js";
 import { isJsonOutputModeActive } from "./json-output-mode.js";
+import { setCommandJsonMode } from "./program/json-mode.js";
 import { getProgramContext } from "./program/program-context.js";
 import { UPDATE_OPTION_SPECS } from "./update-option-specs.js";
 export type {
@@ -224,8 +225,7 @@ ${theme.muted("Docs:")} ${formatDocsLink("/cli/update", "docs.openclaw.ai/cli/up
       }
     });
 
-  update
-    .command("admit", { hidden: true })
+  setCommandJsonMode(update.command("admit", { hidden: true }), "output", () => true)
     .description("Internal read-only candidate admission protocol")
     .action(async () => {
       const { updateAdmitCommand } = await import("./update-cli/update-command-admit.js");

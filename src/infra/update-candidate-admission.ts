@@ -14,14 +14,16 @@ import { resolvePreferredOpenClawTmpDir } from "./tmp-openclaw-dir.js";
 import {
   isUpdateAdmissionAuthorityEnvKey,
   parseUpdateAdmissionContext,
-  parseUpdateAdmissionVerdict,
   UPDATE_ADMISSION_CONTEXT_ENV,
-  UPDATE_ADMISSION_PROTOCOL,
   type UpdateAdmissionContext,
-  type UpdateAdmissionVerdict,
 } from "./update-admission-contract.js";
 import { launchCanary, terminateCanary, waitBounded } from "./update-candidate-canary-process.js";
 import { UPDATE_RUN_TEXT_LIMIT } from "./update-run-limits.js";
+import {
+  parseUpdateAdmissionVerdict,
+  UPDATE_ADMISSION_PROTOCOL,
+  type UpdateAdmissionVerdict,
+} from "./update-run-schema.js";
 
 const candidateRuntimeEnvKeys = new Set([
   "NODE_COMPILE_CACHE",

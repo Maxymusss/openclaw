@@ -5,12 +5,10 @@ import path from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import type {
-  UpdateAdmissionContext,
-  UpdateAdmissionVerdict,
-} from "./update-admission-contract.js";
+import type { UpdateAdmissionContext } from "./update-admission-contract.js";
 import { runUpdateCandidateAdmission } from "./update-candidate-admission.js";
 import { UPDATE_RUN_DIAGNOSTIC_LIMIT, UPDATE_RUN_TEXT_LIMIT } from "./update-run-limits.js";
+import type { UpdateAdmissionVerdict } from "./update-run-schema.js";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), signal: vi.fn(), tmpdir: vi.fn() }));
 vi.mock("node:child_process", async (importOriginal) => ({

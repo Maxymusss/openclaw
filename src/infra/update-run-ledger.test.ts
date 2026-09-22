@@ -10,7 +10,6 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
-import { parseUpdateAdmissionVerdict } from "./update-admission-contract.js";
 import {
   createUpdateRun,
   finishUpdateRun,
@@ -23,7 +22,7 @@ import {
 } from "./update-run-ledger.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 import { renderUpdateRunReport } from "./update-run-report.js";
-import { UpdateRunRecordSchema } from "./update-run-schema.js";
+import { parseUpdateAdmissionVerdict, UpdateRunRecordSchema } from "./update-run-schema.js";
 import { updateRunStepsFromResultStep } from "./update-run-step.js";
 import type { UpdateStepResult } from "./update-runner-types.js";
 
