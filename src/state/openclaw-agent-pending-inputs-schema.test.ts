@@ -1,6 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import {
   listSessionPendingInputs,
@@ -8,9 +8,11 @@ import {
 } from "../config/sessions/session-accessor.pending-inputs.js";
 import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import { cleanupSessionStateForTest } from "../test-utils/session-state-cleanup.js";
 import { withoutCanonicalSessionValidationSchema } from "./openclaw-agent-canonical-validation-schema.js";
 import { ensureOpenClawAgentDatabaseSchema } from "./openclaw-agent-db-schema.js";
 import {
+  closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "./openclaw-agent-db.js";
@@ -18,8 +20,19 @@ import { ensureSessionPendingInputsSchema } from "./openclaw-agent-pending-input
 import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
 import { tableHasColumn, tableExists } from "./openclaw-state-db-schema-helpers.js";
 
-const tempDirs = useAutoCleanupTempDirTracker(afterEach);
-afterEach(() => closeOpenClawAgentDatabasesForTest());
+const tempDirs = createTempDirTracker();
+afterEach(async () => {
+  for (const stateDir of tempDirs.dirs) {
+    await cleanupSessionStateForTest({ stateDir });
+    closeOpenClawAgentDatabasesForTest(stateDir);
+  }
+  tempDirs.cleanup();
+});
+
+async function closeFixtureAgentDatabases(stateDir: string) {
+  await closeOpenClawAgentDatabasesAsync(stateDir);
+  closeOpenClawAgentDatabasesForTest(stateDir);
+}
 
 describe("pending input additive schema", () => {
   it("leaves old stores table-free on reads and preserves accepted input through older-reader use and reopen", async () => {
@@ -34,7 +47,7 @@ describe("pending input additive schema", () => {
     };
     await upsertSessionEntryCore(scope, { sessionId: scope.sessionId, updatedAt: 1 });
     const filename = openOpenClawAgentDatabase(options).path;
-    closeOpenClawAgentDatabasesForTest();
+    await closeFixtureAgentDatabases(options.env.OPENCLAW_STATE_DIR);
     const previous = new DatabaseSync(filename);
     previous.exec("DROP TABLE session_pending_inputs");
     const version = previous.prepare("PRAGMA user_version").get();
@@ -61,7 +74,7 @@ describe("pending input additive schema", () => {
     });
     receipt!.finish("interrupted");
     ensureSessionPendingInputsSchema(candidate.db);
-    closeOpenClawAgentDatabasesForTest();
+    await closeFixtureAgentDatabases(options.env.OPENCLAW_STATE_DIR);
     const older = new DatabaseSync(filename);
     const previousSql = OPENCLAW_AGENT_SCHEMA_SQL.slice(
       0,
@@ -87,13 +100,13 @@ describe("pending input additive schema", () => {
     );
   });
 
-  it("rejects a drifted optional table rather than treating it as absent", () => {
+  it("rejects a drifted optional table rather than treating it as absent", async () => {
     const options = {
       agentId: "main",
       env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-input-schema-drift-") },
     };
     const filename = openOpenClawAgentDatabase(options).path;
-    closeOpenClawAgentDatabasesForTest();
+    await closeFixtureAgentDatabases(options.env.OPENCLAW_STATE_DIR);
     const drifted = new DatabaseSync(filename);
     drifted.exec(
       "DROP TABLE session_pending_inputs; CREATE TABLE session_pending_inputs (input_id TEXT NOT NULL PRIMARY KEY) STRICT",
@@ -123,7 +136,7 @@ describe("pending input additive schema", () => {
       });
       receipt!.finish("interrupted");
       const filename = openOpenClawAgentDatabase(options).path;
-      closeOpenClawAgentDatabasesForTest();
+      await closeFixtureAgentDatabases(options.env.OPENCLAW_STATE_DIR);
       const old = new DatabaseSync(filename);
       old.exec("ALTER TABLE session_pending_inputs DROP COLUMN consumed_event_id");
       const version = old.prepare("PRAGMA user_version").get();
@@ -136,7 +149,7 @@ describe("pending input additive schema", () => {
       });
       if (path === "open") {
         openOpenClawAgentDatabase(options);
-        closeOpenClawAgentDatabasesForTest();
+        await closeFixtureAgentDatabases(options.env.OPENCLAW_STATE_DIR);
       } else {
         const current = new DatabaseSync(filename);
         if (path === "doctor") {
