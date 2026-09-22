@@ -1,5 +1,5 @@
 # Temporary source-bound qualification. Never merge this harness.
-name: Temporary integrated FreeBSD package qualification
+name: Temporary integrated FreeBSD seeded qualification
 
 on:
   push:
@@ -21,6 +21,14 @@ env:
   HARNESS_SHA: "82845539c110b395efdd257e5493bea532b44abd"
   PRODUCER_TREE: "23e9edc5e2492d5474d02761a9fd32b4dd651e19"
   CONSUMER_SHA: ${{ github.sha }}
+  CONSUMER_PARENT_SHA: "6be1b742e89f53d5385c516c098ef02e0ea42c13"
+  CONSUMER_PARENT_TREE: "b2929b7004ca257f7cfe230ca20595ab4f69cb2d"
+  PRIOR_CONSUMER_SHA: "3f7ed788c310c953a578cd416fcf1838bb520d61"
+  PRIOR_CONSUMER_TREE: "c56f1d7fcc10b5e88efa7ee37a32a41c442063c3"
+  FIXTURE_RUN_ID: "35784025702"
+  FIXTURE_ARTIFACT_ID: "10719246569"
+  FIXTURE_ARTIFACT_DIGEST: "sha256:f05e47055a921068fa5b7f51a6fa37552d1cc1acae5f79f56f6a5058c164f8b4"
+  FIXTURE_ARTIFACT_SIZE: "164351027"
   WORKFLOW_SHA: ${{ github.workflow_sha }}
   PROOF_REPOSITORY: openclaw/openclaw
   PROOF_RUN_ID: "35781153292"
@@ -37,13 +45,10 @@ env:
 
 jobs:
   fixtures:
-    # Exactly one reviewed successor push consumes the successful producer.
-    if: github.repository == 'openclaw/openclaw' && github.actor == 'vincentkoc' && github.event_name == 'push' && github.run_attempt == 1 && github.event.before == '82845539c110b395efdd257e5493bea532b44abd' && !github.event.forced && !github.event.deleted
+    # Exactly one reviewed successor reuses the original fixtures and repeats seeded cells.
+    if: github.repository == 'openclaw/openclaw' && github.actor == 'vincentkoc' && github.event_name == 'push' && github.run_attempt == 1 && github.event.before == '3f7ed788c310c953a578cd416fcf1838bb520d61' && !github.event.forced && !github.event.deleted
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    outputs:
-      artifact-id: ${{ steps.fixture-upload.outputs.artifact-id }}
-      artifact-digest: ${{ steps.fixture-upload.outputs.artifact-digest }}
     steps:
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,7 +57,7 @@ jobs:
           fetch-depth: 6
           persist-credentials: false
       - &admit
-        name: Bind the single consumer successor and successful sealed producer
+        name: Bind the seeded successor, successful producer, and completed prior proof
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -60,13 +65,18 @@ jobs:
           test "$GITHUB_EVENT_NAME" = push
           test "$GITHUB_RUN_ATTEMPT" = 1
           test "$(git rev-parse HEAD)" = "$CONSUMER_SHA"
-          test "$(git show -s --format=%P HEAD)" = "$HARNESS_SHA"
+          test "$(git show -s --format=%P HEAD)" = "$CONSUMER_PARENT_SHA"
+          test "$(git rev-parse "$CONSUMER_PARENT_SHA^{tree}")" = "$CONSUMER_PARENT_TREE"
+          test "$(git show -s --format=%P "$CONSUMER_PARENT_SHA")" = "$PRIOR_CONSUMER_SHA"
+          test "$(git rev-parse "$PRIOR_CONSUMER_SHA^{tree}")" = "$PRIOR_CONSUMER_TREE"
+          test "$(git show -s --format=%P "$PRIOR_CONSUMER_SHA")" = "$HARNESS_SHA"
           test "$(git rev-parse "$HARNESS_SHA^{tree}")" = "$PRODUCER_TREE"
           test "$(git show -s --format=%P "$HARNESS_SHA")" = "5a98148a8fa573812cd0a37686518973167e061b $SOURCE_SHA"
           test "$(git show -s --format=%P "$SOURCE_SHA")" = 43f22988f4dcd22644a056591428d5849207593c
           test "$(git rev-parse "$SOURCE_SHA^{tree}")" = "$SOURCE_TREE"
-          test "$(git diff --name-only "$HARNESS_SHA" HEAD)" = "$(printf '%s\n' .github/workflows/freebsd-integrated-native-proof.yml .github/workflows/freebsd-refreshed-proof.yml)"
+          test "$(git diff --name-only "$CONSUMER_PARENT_SHA" HEAD)" = "$(printf '%s\n' .github/workflows/freebsd-integrated-native-proof.yml .github/workflows/freebsd-refreshed-proof.yml)"
           test "$(git diff --name-only "$SOURCE_SHA" HEAD)" = "$(printf '%s\n' .github/workflows/freebsd-integrated-native-proof.yml .github/workflows/freebsd-integrated-package-proof.yml .github/workflows/freebsd-refreshed-proof.yml)"
+          test "$(git rev-parse HEAD:.github/workflows/freebsd-integrated-package-proof.yml)" = "$(git rev-parse "$HARNESS_SHA:.github/workflows/freebsd-integrated-package-proof.yml")"
           test -z "$(git status --porcelain)"
           test "$WORKFLOW_SHA" = "$CONSUMER_SHA"
           mkdir -p evidence
@@ -74,7 +84,7 @@ jobs:
           import json,os,subprocess,pathlib
           def api(path): return json.loads(subprocess.check_output(['gh','api',path]))
           e=json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-          assert e['before']==os.environ['HARNESS_SHA'] and e['after']==os.environ['CONSUMER_SHA']
+          assert e['before']==os.environ['PRIOR_CONSUMER_SHA'] and e['after']==os.environ['CONSUMER_SHA']
           assert not e['forced'] and not e['deleted'] and e['ref']=='refs/heads/test/freebsd-integrated-package-proof'
           repo=os.environ['PROOF_REPOSITORY'];p=api(f'repos/{repo}/pulls/155851')
           assert p['state']=='open' and p['draft'] is True and p['auto_merge'] is None
@@ -91,7 +101,26 @@ jobs:
           assert not a['expired'] and a['workflow_run']['id']==r['id'] and a['workflow_run']['head_sha']==r['head_sha']
           assert a['name']==f"freebsd-integrated-package-{r['id']}-1"
           assert a['size_in_bytes']==int(os.environ['PAYLOAD_ARTIFACT_SIZE']) and a['digest']==os.environ['PAYLOAD_ARTIFACT_DIGEST']
-          out=dict(source=os.environ['SOURCE_SHA'],sourceTree=os.environ['SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],consumerRun=os.environ['GITHUB_RUN_ID'],consumerAttempt=1,producer=r['head_sha'],producerRun=r['id'],producerJob=j['id'],artifact=a['id'],digest=a['digest'],bytes=a['size_in_bytes'])
+          prior=api(f"repos/{repo}/actions/runs/{os.environ['FIXTURE_RUN_ID']}")
+          assert prior['head_sha']==os.environ['PRIOR_CONSUMER_SHA'] and prior['run_attempt']==1
+          assert prior['status']=='completed' and prior['conclusion']=='failure' and prior['event']=='push'
+          assert prior['path']=='.github/workflows/freebsd-integrated-native-proof.yml'
+          jobs=api(f"repos/{repo}/actions/runs/{prior['id']}/attempts/1/jobs?per_page=100")
+          assert jobs['total_count']==10 and len(jobs['jobs'])==10
+          required={106936290556:'fixtures',106936776534:'linux',
+                    106941764241:'native (x86_64, root, fresh)',106941764341:'native (x86_64, ordinary, fresh)',
+                    106941764413:'native (aarch64, root, fresh)',106941764257:'native (aarch64, ordinary, fresh)'}
+          for job_id,name in required.items():
+              matches=[job for job in jobs['jobs'] if job['id']==job_id]
+              assert len(matches)==1
+              job=matches[0]
+              assert job['name']==name and job['head_sha']==prior['head_sha'] and job['run_id']==prior['id'] and job['run_attempt']==1
+              assert job['status']=='completed' and job['conclusion']=='success'
+          fixture=api(f"repos/{repo}/actions/artifacts/{os.environ['FIXTURE_ARTIFACT_ID']}")
+          assert not fixture['expired'] and fixture['workflow_run']['id']==prior['id'] and fixture['workflow_run']['head_sha']==prior['head_sha']
+          assert fixture['name']==f"freebsd-integrated-fixtures-{prior['id']}-1"
+          assert fixture['size_in_bytes']==int(os.environ['FIXTURE_ARTIFACT_SIZE']) and fixture['digest']==os.environ['FIXTURE_ARTIFACT_DIGEST']
+          out=dict(source=os.environ['SOURCE_SHA'],sourceTree=os.environ['SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],consumerRun=os.environ['GITHUB_RUN_ID'],consumerAttempt=1,producer=r['head_sha'],producerRun=r['id'],producerJob=j['id'],artifact=a['id'],digest=a['digest'],bytes=a['size_in_bytes'],priorConsumer=prior['head_sha'],priorRun=prior['id'],reusedSuccessfulJobs=required,fixtureArtifact=fixture['id'],fixtureDigest=fixture['digest'],fixtureBytes=fixture['size_in_bytes'])
           pathlib.Path('evidence/admission.json').write_text(json.dumps(out)+'\n');print(json.dumps(out))
           AUTH
       - &payload-download
@@ -132,55 +161,13 @@ jobs:
           assert.equal(receipt.packageVersion,process.env.PACKAGE_VERSION);assert.equal(receipt.fsSafe,'0.18.1');
           console.log(JSON.stringify(receipt));
           VERIFY
-      - name: Derive one metadata-only target and authenticate the exact released driver
-        run: |
-          set -euo pipefail
-          mkdir fixtures
-          npm pack openclaw@2026.9.4 --ignore-scripts --json --min-release-age=0 --registry=https://registry.npmjs.org/ --pack-destination fixtures > fixtures/published-pack.original.json
-          node --input-type=module <<'BASELINE'
-          import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
-          const rows=JSON.parse(fs.readFileSync('fixtures/published-pack.original.json'));assert.equal(rows.length,1);
-          const r=rows[0];assert.equal(r.name,'openclaw');assert.equal(r.version,'2026.9.4');assert.equal(r.filename,'openclaw-2026.9.4.tgz');assert.equal(r.integrity,process.env.BASELINE_SRI);
-          const bytes=fs.readFileSync(`fixtures/${r.filename}`);assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`,process.env.BASELINE_SRI);
-          fs.renameSync(`fixtures/${r.filename}`,'fixtures/published-2026.9.4.tgz');
-          BASELINE
-          node scripts/e2e/lib/update-first-hop-package-fixtures.mjs first-hop-tarball "$PWD/proof-input/payload/candidate.tgz" "$PWD/fixtures/first-hop.tgz" 0 > fixtures/first-hop.json
-          node --input-type=module <<'FIXTURE'
-          import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
-          const hash=f=>createHash('sha256').update(fs.readFileSync(f)).digest('hex');
-          const r=JSON.parse(fs.readFileSync('fixtures/first-hop.json'));
-          assert.equal(r.method,'candidate-same-schema-first-hop-fixture');
-          assert(r.members.changes.length>=2);assert(r.members.changes.every(c=>['package.json','dist/build-info.json','dist/postinstall-content-inventory.json'].includes(c.path)&&c.before&&c.after));
-          assert.equal(r.sourceSha256,hash('proof-input/payload/candidate.tgz'));assert.equal(r.targetSha256,hash('fixtures/first-hop.tgz'));
-          const files=fs.readdirSync('fixtures').sort().map(name=>({name,bytes:fs.statSync(`fixtures/${name}`).size,sha256:hash(`fixtures/${name}`)}));
-          fs.writeFileSync('fixtures/complete.json',JSON.stringify({source:process.env.SOURCE_SHA,consumer:process.env.CONSUMER_SHA,run:process.env.GITHUB_RUN_ID,attempt:1,files})+'\n',{flag:'wx'});console.log(JSON.stringify(r));
-          FIXTURE
-      - id: fixture-upload
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: freebsd-integrated-fixtures-${{ github.run_id }}-${{ github.run_attempt }}
-          path: fixtures
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 7
-
-  linux:
-    needs: fixtures
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - *checkout
-      - *admit
-      - *payload-download
-      - *toolchain
-      - *verify-payload
       - &fixture-download
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           github-token: ${{ github.token }}
           repository: openclaw/openclaw
-          run-id: ${{ github.run_id }}
-          artifact-ids: ${{ needs.fixtures.outputs.artifact-id }}
+          run-id: ${{ env.FIXTURE_RUN_ID }}
+          artifact-ids: ${{ env.FIXTURE_ARTIFACT_ID }}
           digest-mismatch: error
           path: operator-fixtures
           merge-multiple: true
@@ -191,7 +178,7 @@ jobs:
           node --input-type=module <<'FIXTURES'
           import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
           const dir='operator-fixtures',r=JSON.parse(fs.readFileSync(`${dir}/complete.json`));
-          assert.equal(r.source,process.env.SOURCE_SHA);assert.equal(r.consumer,process.env.CONSUMER_SHA);assert.equal(r.run,process.env.GITHUB_RUN_ID);assert.equal(r.attempt,1);
+          assert.equal(r.source,process.env.SOURCE_SHA);assert.equal(r.consumer,process.env.PRIOR_CONSUMER_SHA);assert.equal(r.run,process.env.FIXTURE_RUN_ID);assert.equal(r.attempt,1);
           assert.deepEqual(r.files.map(f=>f.name).sort(),['first-hop.json','first-hop.tgz','published-2026.9.4.tgz','published-pack.original.json']);
           assert.deepEqual(fs.readdirSync(dir).sort(),[...r.files.map(f=>f.name),'complete.json'].sort());
           for(const f of r.files){const stat=fs.lstatSync(`${dir}/${f.name}`);assert(stat.isFile());assert.equal(stat.size,f.bytes);assert.equal(createHash('sha256').update(fs.readFileSync(`${dir}/${f.name}`)).digest('hex'),f.sha256);}
@@ -199,28 +186,9 @@ jobs:
           const target=JSON.parse(fs.readFileSync(`${dir}/first-hop.json`));assert.equal(target.sourceSha256,createHash('sha256').update(fs.readFileSync('proof-input/payload/candidate.tgz')).digest('hex'));
           console.log(JSON.stringify(r));
           FIXTURES
-      - name: Run the actual released9.4 updater and candidate second hop
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/integrated-linux-source"
-          tar -xzf proof-input/source.tar.gz -C "$RUNNER_TEMP/integrated-linux-source"
-          export OPENCLAW_QA_ALLOW_UPDATE_FIRST_HOP=1
-          export OPENCLAW_UPDATE_FIRST_HOP_SOURCE_PACKAGE_TGZ="$PWD/operator-fixtures/published-2026.9.4.tgz"
-          export OPENCLAW_UPDATE_FIRST_HOP_CANDIDATE_PACKAGE_TGZ="$PWD/proof-input/payload/candidate.tgz"
-          export OPENCLAW_UPDATE_FIRST_HOP_ARTIFACT_DIR="$PWD/evidence/linux-first-hop"
-          bash "$RUNNER_TEMP/integrated-linux-source/openclaw/scripts/e2e/update-first-hop-compat-docker.sh"
-          cat "$OPENCLAW_UPDATE_FIRST_HOP_ARTIFACT_DIR/summary.json"
-          echo 'Actual published9.4 updater: Linux service-shim proof; missing-restart-chunk negative is not applicable for9.4.'
-      - if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
-        with:
-          name: freebsd-integrated-linux-${{ github.run_id }}-${{ github.run_attempt }}
-          path: evidence
-          if-no-files-found: error
-          retention-days: 7
 
   native:
-    needs: [fixtures, linux]
+    needs: fixtures
     if: ${{ !cancelled() && needs.fixtures.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
@@ -230,7 +198,7 @@ jobs:
       matrix:
         arch: [x86_64, aarch64]
         account: [root, ordinary]
-        mode: [fresh, seeded]
+        mode: [seeded]
     env:
       PROOF_ACCOUNT: ${{ matrix.account }}
       PROOF_MODE: ${{ matrix.mode }}
@@ -550,6 +518,7 @@ jobs:
             import { DatabaseSync } from 'node:sqlite';
             import { execFileSync } from 'node:child_process';
             const phase=process.argv[2], id='bootstrap-proof', root=process.env.PROOF_ROOT;
+            assert(['published','doctor','first-hop'].includes(phase),'unsupported bootstrap phase');
             const workspace=path.join(process.env.HOME,'workspace-proof');
             const summaries=JSON.parse(execFileSync('openclaw',['agents','list','--json'],{encoding:'utf8',maxBuffer:1048576}));
             const matches=summaries.filter(summary=>summary.id===id); assert.equal(matches.length,1);
@@ -561,7 +530,7 @@ jobs:
             const config=JSON.parse(fs.readFileSync(process.env.OPENCLAW_CONFIG_PATH));
             assert.equal(config.gateway.mode,'local'); assert.equal(config.plugins.enabled,true);
             const entry=config.agents.entries[id]; assert(entry); assert.equal(entry.workspace,workspace);
-            const selectedConfig={gatewayMode:config.gateway.mode,pluginsEnabled:config.plugins.enabled,pluginLoadPaths:config.plugins.load.paths,pluginEntries:config.plugins.entries,pluginSlots:config.plugins.slots,agent:{name:entry.name ?? null,workspace:entry.workspace,agentDir:entry.agentDir ?? null,identity:entry.identity}};
+            const selectedConfig={gatewayMode:config.gateway.mode,pluginsEnabled:config.plugins.enabled,pluginLoadPaths:config.plugins.load.paths,pluginAllow:config.plugins.allow,pluginEntries:config.plugins.entries,pluginSlots:config.plugins.slots,agent:{name:entry.name ?? null,workspace:entry.workspace,agentDir:entry.agentDir ?? null,identity:entry.identity}};
             const db=new DatabaseSync(`${process.env.OPENCLAW_STATE_DIR}/state/openclaw.sqlite`,{readOnly:true});
             let provenance;
             try { provenance=db.prepare('SELECT agent_id,created_via,creator_agent_id,created_at_ms FROM agent_provenance WHERE agent_id=?').get(id); }
@@ -574,8 +543,18 @@ jobs:
             }));
             const snapshot={selected,selectedConfig,provenance:{...provenance},files};
             const baseline=`${root}/bootstrap-before.json`;
-            if(phase==='published') fs.writeFileSync(baseline,JSON.stringify(snapshot),{flag:'wx',mode:0o600});
-            else assert.deepEqual(snapshot,JSON.parse(fs.readFileSync(baseline)),'published agent/config/workspace state changed');
+            if(phase==='published') {
+              assert.deepEqual(snapshot.selectedConfig.pluginEntries,{'survivor-sibling-memory':{enabled:true}});
+              assert.deepEqual(snapshot.selectedConfig.pluginAllow,['survivor-sibling-memory']);
+              fs.writeFileSync(baseline,JSON.stringify(snapshot),{flag:'wx',mode:0o600});
+            } else {
+              const expected=JSON.parse(fs.readFileSync(baseline));
+              // Doctor already ships this exact default-route repair; every other
+              // published config, provenance, and workspace fact must survive unchanged.
+              expected.selectedConfig.pluginEntries.codex={enabled:true};
+              expected.selectedConfig.pluginAllow.push('codex');
+              assert.deepEqual(snapshot,expected,'published agent/config/workspace state changed beyond the expected Doctor repair');
+            }
             console.log(JSON.stringify({bootstrapPhase:phase,agent:id,sharedProvenance:'preserved',workspaceFiles:Object.keys(files).length,semanticSha256:createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'),agentSchemaMigration:'not-claimed'}));
             NODE
             cd "$HOME"
