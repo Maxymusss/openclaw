@@ -190,11 +190,10 @@ The opt-in `runson` profile derives its plan from `hybrid`. It extracts the thre
 `core-runtime-cron-parallel-*` children into one serial job on `c8i.8xlarge`
 with 32 vCPUs, 64 GiB RAM, `ubuntu24-full-x64`, and an 80 GB gp3 root. The
 current 258-file cron inventory retains its two-worker job and group ceilings.
-The three source Blacksmith jobs retain their other children. This profile also
-separates the two measured CLI-process/tooling tail pairs on their existing
-Blacksmith class, preserving child contracts, workers and deadlines. Together
-these changes take broad-PR Node rows from 101 to 104 and compact rows from
-63 to 66, within unchanged caps. The hybrid profile is unchanged. No NVMe,
+The three source Blacksmith jobs retain their other children. Hybrid owns the
+shared serial-tail splits and measured nine-to-four tooling packing, preserving
+child contracts, workers and deadlines. Broad-PR Node /compact counts are
+98 /60 on hybrid and 99 /61 on RunsOn, within unchanged caps. No NVMe,
 sticky disk, warm pool, or test-inventory change is enabled.
 The exact-head comparison passed cron on Spot, Blacksmith, and GitHub in
 396, 432, and 672 seconds, respectively. Both native workflows still failed
@@ -209,7 +208,7 @@ remains unchanged during qualification. A maintainer can instead dispatch
 The workflow branch must be that PR's canonical branch and head, and the
 existing maintainer admission must pass. The qualification adds two identical
 cron controls, on Blacksmith and GitHub, with the same pinned Node version and
-two-worker ceiling. They count against the final Node cap (106/130 for this
+two-worker ceiling. They count against the final Node cap (101/130 for this
 inventory) and are absent from normal PR plans. A qualification must select cron
 tests; otherwise preflight fails before allocating comparison runners. Qualification uses the profile’s
 normal downstream placement, read-only cache admission, and lint partitions.
@@ -217,6 +216,16 @@ Its preflight remains hosted until authorization succeeds and is counted in
 the hosted budget. Release-only lint and minimum-Node compatibility jobs stay
 with ordinary manual validation. Ordinary manual dispatches and
 untrusted or unrelated targets cannot use this override.
+
+For a main-shaped measurement, set `ci_shape=main` with the same exact-head
+PR admission and choose `runner_backend=hybrid` or `runson`. This uses push
+coverage, the 70-row Node cap, Node runtime, and ordinary main proof/native
+selection. It omits PR extension fallback and the two cron comparison controls;
+it does not add full-manual release-only work. Raw GitHub event/ref still own
+trust, concurrency, cache publication and provenance. The initial preflight is
+hosted and included in the measured wall. Ordinary dispatches retain
+`ci_shape=default` and their existing behavior. Explicit hybrid qualification
+with the default shape uses PR coverage.
 
 RunsOn uses one opaque label per row, with a unique run/row identifier:
 

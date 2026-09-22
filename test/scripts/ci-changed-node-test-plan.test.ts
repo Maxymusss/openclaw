@@ -1282,6 +1282,23 @@ describe("CI changed Node test plan", () => {
     }
   });
 
+  it.each(["blacksmith", "hybrid", "runson", "github"])(
+    "keeps measured compact packing changes under the %s full-plan policy",
+    (runnerBackend) => {
+      const shards = createChangedNodeTestShards(["scripts/lib/ci-measured-compact-packing.mts"], {
+        runnerBackend,
+      });
+      if (runnerBackend === "github") {
+        expect(shards).not.toBeNull();
+        expect(
+          fallbackGroups(shards ?? []).flatMap((group) => group.includePatterns ?? []),
+        ).toContain("test/scripts/ci-node-test-plan.test.ts");
+      } else {
+        expect(shards).toBeNull();
+      }
+    },
+  );
+
   it("fails safe for raw Git paths that resemble normalized script paths", () => {
     for (const changedPath of [
       " scripts/changed-lanes.mts",

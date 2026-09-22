@@ -54,6 +54,7 @@ import {
   isParallelCommandsGroup,
   estimateCommandWorkerSeconds,
 } from "./ci-command-test-plan.mts";
+import { rebalanceMeasuredHybridJobs } from "./ci-measured-compact-packing.mts";
 import { isCiProofTestFile } from "./ci-proof-test-inventory.mts";
 import { rebalanceRuntimeTestJobs } from "./ci-runtime-test-placement.mts";
 import { isRuntimePlacementIncludePatterns } from "./ci-test-timings-schema.mts";
@@ -3685,25 +3686,6 @@ export function createSelectedNodeTestShardBundles(
   ];
 }
 
-// These complete selector generations ran serially for 842s and 701s in
-// 35688659765. Changed selectors need fresh evidence before this exception applies.
-const RUNSON_SERIAL_TAIL_PAIRS = [
-  {
-    config: "test/vitest/vitest.cli-process.config.ts",
-    timingKeys: [
-      "agentic-cli-process#selector-54-f7826a9ef2c4#generation-8e36d2d43531#part-6-of-7#include-14-4eac8c23d157",
-      "agentic-cli-process#selector-54-f7826a9ef2c4#generation-8e36d2d43531#part-7-of-7#include-15-d305c0ae5c0a",
-    ],
-  },
-  {
-    config: "test/vitest/vitest.tooling.config.ts",
-    timingKeys: [
-      "core-tooling-6#selector-79-8962b2387129#generation-1f9a356acb92#part-2-of-2#include-78-7a0f52a33d72",
-      "core-tooling-8#selector-42-d01b820346c9#generation-7b6f7f3a2425#part-2-of-2#include-41-a1c886e94c53",
-    ],
-  },
-];
-
 function routeRunsOnJobs(
   jobs: CompactNodeTestShard[],
   compactNodeJobCap: number,
@@ -3711,30 +3693,6 @@ function routeRunsOnJobs(
   const cronGroups: NodeTestShardGroup[] = [];
   const cronTimeouts: number[] = [];
   const routed = jobs.flatMap((job) => {
-    if (
-      job.planConcurrency === 1 &&
-      job.runner === DEFAULT_NODE_TEST_RUNNER &&
-      !job.requiresDist &&
-      !job.pretestBuildMode &&
-      job.groups.length === 2 &&
-      RUNSON_SERIAL_TAIL_PAIRS.some(({ config, timingKeys }) =>
-        timingKeys.every((key) =>
-          job.groups.some(
-            (group) =>
-              group.timing_key === key && group.configs.length === 1 && group.configs[0] === config,
-          ),
-        ),
-      )
-    ) {
-      // Retain each parent's ordering estimate; this placement exception does
-      // not replace the pricing owner or claim a measured per-child prediction.
-      return job.groups.map((group, index) => ({
-        ...job,
-        checkName: index === 0 ? job.checkName : `${job.checkName}-tail`,
-        shardName: index === 0 ? job.shardName : `${job.shardName}-tail`,
-        groups: [group],
-      }));
-    }
     if (
       job.requiresDist ||
       job.pretestBuildMode ||
@@ -3811,8 +3769,7 @@ function createCompactNodeTestShardBundles(
   hostedToolingTailDonation?: HostedToolingTailDonation,
 ): CompactNodeTestShard[] {
   if (options.runnerBackend === "runson") {
-    // Hybrid owns placement; the opt-in profile offloads cron and separates
-    // measured tails after worker and artifact admission has settled.
+    // Hybrid owns placement and measured serial packing; RunsOn only extracts cron.
     return routeRunsOnJobs(
       createCompactNodeTestShardBundles(
         sourceShards,
@@ -4441,11 +4398,6 @@ function createCompactNodeTestShardBundles(
     }
   }
   const finalJobs = compactJobs.filter((job) => !retiredJobs.has(job));
-  if (finalJobs.length > compactJobCap) {
-    throw new Error(
-      `compact ${options.runnerBackend ?? "blacksmith"} node test plan exceeds ${compactJobCap} jobs (${finalJobs.length} planned)`,
-    );
-  }
   for (const job of finalJobs) {
     // The 4/8 classes both deliver two CPUs. Routing must not alter placement anchors.
     if (usesBlacksmithCapacity(job.runner) && job.runner === BUNDLED_NODE_TEST_RUNNER) {
@@ -4483,5 +4435,18 @@ function createCompactNodeTestShardBundles(
     job.predictedSeconds = Math.ceil(job.predictedSeconds! - savedSeconds);
   }
 
-  return finalJobs.toSorted((a, b) => a.checkName.localeCompare(b.checkName));
+  const measuredJobs =
+    options.runnerBackend === "hybrid" && options.compactMode !== undefined
+      ? rebalanceMeasuredHybridJobs(finalJobs, {
+          runner: DEFAULT_NODE_TEST_RUNNER,
+          canShare: (groups) =>
+            groups.length <= COMPACT_NODE_TEST_JOB_GROUPS && hasDistinctStripeFamilies(groups),
+        })
+      : finalJobs;
+  if (measuredJobs.length > compactJobCap) {
+    throw new Error(
+      `compact ${options.runnerBackend ?? "blacksmith"} node test plan exceeds ${compactJobCap} jobs (${measuredJobs.length} planned)`,
+    );
+  }
+  return measuredJobs.toSorted((a, b) => a.checkName.localeCompare(b.checkName));
 }

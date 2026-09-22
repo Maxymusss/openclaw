@@ -702,6 +702,7 @@ export function createChangedNodeTestShards(
       (file) =>
         file === "config/ci-test-timings.json" ||
         file === "scripts/lib/ci-node-test-plan.mts" ||
+        file === "scripts/lib/ci-measured-compact-packing.mts" ||
         file === "test/scripts/ci-node-test-plan.test.ts",
     )
   ) {

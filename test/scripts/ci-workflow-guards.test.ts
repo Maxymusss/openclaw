@@ -1177,6 +1177,71 @@ NODE
     ).toContain("github.run_attempt > 1");
   });
 
+  it("retains main runner placement and native worker policy for admitted main qualification", () => {
+    const workflow = readCiWorkflow();
+    const push = {
+      eventName: "push" as const,
+      repository: "openclaw/openclaw",
+      runnerBackend: "hybrid" as const,
+      runAttempt: 1,
+      matrix: { runner: "blacksmith-8vcpu-ubuntu-2404", check_name: "fixture", task: "test" },
+      preflightOutputs: { node_runner_backend: "hybrid", runner_profile: "hybrid" },
+    };
+    const qualification = {
+      ...push,
+      eventName: "workflow_dispatch" as const,
+      ref: "refs/heads/qualification-branch",
+      releaseGate: true,
+      ciShape: "main" as const,
+      requestedRunnerBackend: "hybrid" as const,
+      preflightOutputs: {
+        ...push.preflightOutputs,
+        ci_qualification: "true",
+        ci_shape: "main",
+        qualification_runner_backend: "hybrid",
+      },
+    };
+    for (const [name, rawJob] of Object.entries(workflow.jobs)) {
+      const job = rawJob as {
+        "runs-on": string;
+        "timeout-minutes"?: string | number;
+        needs?: string[] | string;
+      };
+      if (!String(job.needs).includes("preflight")) {
+        continue;
+      }
+      for (const key of ["runs-on", "timeout-minutes"] as const) {
+        const expression = job[key];
+        if (typeof expression === "string" && expression.startsWith("${{")) {
+          expect(evaluateWorkflowExpression(expression, qualification), `${name}.${key}`).toEqual(
+            evaluateWorkflowExpression(expression, push),
+          );
+        }
+      }
+    }
+    expect(
+      evaluateWorkflowExpression(workflow.jobs.android["timeout-minutes"], {
+        ...qualification,
+        matrix: { task: "build-play" },
+      }),
+    ).toBe(20);
+    expect(evaluateWorkflowExpression(workflow.jobs.preflight["runs-on"], qualification)).toBe(
+      "ubuntu-24.04",
+    );
+    expect(
+      evaluateWorkflowExpression(
+        workflow.jobs["macos-swift"].env.OPENCLAWKIT_TEST_EXECUTION,
+        qualification,
+      ),
+    ).toBe("parallel");
+    expect(
+      evaluateWorkflowExpression(
+        `\${{ ${workflow.jobs["checks-node-compat"].if} }}`,
+        qualification,
+      ),
+    ).toBe(false);
+  });
+
   it("starts Apple builds and screenshots directly on hosted capacity", () => {
     const workflow = readCiWorkflow();
     for (const jobName of ["macos-swift", "ios-build", "ios-screenshot-shard"]) {
@@ -3127,27 +3192,7 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       runStep.run?.match(/^\s*build-play\)\n([\s\S]*?)^\s*;;$/mu)?.[1],
       "Android build-play case",
     );
-    const buildPlayBranches = expectDefined(
-      buildPlayCase.match(
-        /if \[ "\$CI_RUNNER_BACKEND" = "github" \] \|\| \[ "\$GITHUB_EVENT_NAME" = "workflow_dispatch" \]; then\n([\s\S]*?)\n\s*else\n([\s\S]*?)\n\s*fi/u,
-      ),
-      "Android build-play runner branches",
-    );
-    const blacksmithBuild = expectDefined(buildPlayBranches[2], "Blacksmith build branch");
-    const readTasks = (script: string) =>
-      [...script.matchAll(/^\s+(:[a-z][A-Za-z0-9:-]*)\s*\\?$/gmu)].map((match) => match[1]);
-    const blacksmithTasks = readTasks(blacksmithBuild);
-
-    expect(source).toContain('task: useCompatibleAndroidCi ? "test-play-compat" : "test-play"');
-    expect(source).toContain('task: "test-third-party"');
-    expect(source.match(/check_name: "android-build-play"/gu)).toHaveLength(1);
-    expect(source).toContain('task: useCompatibleAndroidCi ? "build-play-compat" : "build-play"');
-    expect(androidJob.name).toBe("${{ matrix.check_name || 'android' }}");
-    expect(runStep.env.CI_RUNNER_BACKEND).toContain(
-      'contains(fromJSON(\'["hybrid","runson"]\'), vars.OPENCLAW_CI_RUNNER_BACKEND) && github.run_attempt > 1',
-    );
-    expect(blacksmithBuild.match(/^\s*\.\/gradlew\b/gmu)).toHaveLength(1);
-    expect(blacksmithTasks).toEqual([
+    const buildTasks = [
       ":app:assemblePlayDebug",
       ":app:assembleThirdPartyDebug",
       ":app:lintPlayDebug",
@@ -3155,7 +3200,111 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       ":benchmark:assembleDebug",
       ":wear-shared:assembleDebug",
       ":wear-shared:lintDebug",
+    ];
+    const buildRoot = tempDirs.make("openclaw-android-build-routing-");
+    const commandLog = path.join(buildRoot, "gradle.log");
+    writeExecutable(path.join(buildRoot, "gradlew"), [
+      "#!/bin/sh",
+      'printf "%s\\n" "$*" >> "$GRADLE_LOG"',
     ]);
+    const buildContexts = (["", "github", "blacksmith", "hybrid"] as const).flatMap(
+      (runnerBackend) => [
+        {
+          runnerBackend,
+          eventName: "push" as const,
+          mainShape: false,
+          runAttempt: 1,
+          expectedCommands: runnerBackend === "github" ? 3 : 1,
+        },
+        {
+          runnerBackend,
+          eventName: "workflow_dispatch" as const,
+          mainShape: false,
+          runAttempt: 1,
+          expectedCommands: 3,
+        },
+        {
+          runnerBackend,
+          eventName: "workflow_dispatch" as const,
+          mainShape: true,
+          runAttempt: 1,
+          expectedCommands: 1,
+        },
+        {
+          runnerBackend,
+          eventName: "workflow_dispatch" as const,
+          mainShape: true,
+          runAttempt: 2,
+          expectedCommands: 3,
+        },
+      ],
+    );
+    for (const {
+      runnerBackend,
+      eventName,
+      mainShape,
+      runAttempt,
+      expectedCommands,
+    } of buildContexts) {
+      const context = {
+        eventName,
+        runAttempt,
+        repository: "openclaw/openclaw",
+        runnerBackend,
+        matrix: { task: "build-play" },
+        preflightOutputs: {
+          ci_shape: mainShape ? "main" : "default",
+          ci_qualification: String(mainShape),
+          qualification_runner_backend: mainShape ? "hybrid" : "",
+        },
+      };
+      const expectedHosted = expectedCommands === 3;
+      expect(evaluateWorkflowExpression(androidJob["runs-on"], context)).toBe(
+        expectedHosted ? "ubuntu-24.04" : "blacksmith-8vcpu-ubuntu-2404",
+      );
+      expect(evaluateWorkflowExpression(androidJob["timeout-minutes"], context)).toBe(
+        expectedHosted ? 35 : 20,
+      );
+      expect(evaluateWorkflowExpression(runStep.env.CI_RUNNER_BACKEND, context)).toBe(
+        expectedHosted ? "github" : "blacksmith",
+      );
+      writeFileSync(commandLog, "");
+      const result = runWorkflowShellScript(buildPlayCase, {
+        cwd: buildRoot,
+        env: {
+          ...process.env,
+          GITHUB_EVENT_NAME: eventName,
+          GRADLE_LOG: commandLog,
+          CI_RUNNER_BACKEND: String(
+            evaluateWorkflowExpression(runStep.env.CI_RUNNER_BACKEND, context),
+          ),
+          CI_MAIN_QUALIFICATION: String(
+            evaluateWorkflowExpression(runStep.env.CI_MAIN_QUALIFICATION, context),
+          ),
+        },
+      });
+      expect(result.status, result.stderr).toBe(0);
+      const commands = readFileSync(commandLog, "utf8").trim().split("\n");
+      expect(commands, `${runnerBackend}/${eventName}/${mainShape}/${runAttempt}`).toHaveLength(
+        expectedCommands,
+      );
+      const tasks = commands.flatMap((command) =>
+        command.split(/\s+/u).filter((argument) => argument.startsWith(":")),
+      );
+      expect(tasks.toSorted()).toEqual(buildTasks.toSorted());
+      if (expectedCommands === 1) {
+        expect(tasks).toEqual(buildTasks);
+      }
+    }
+
+    expect(source).toContain('task: useCompatibleAndroidCi ? "test-play-compat" : "test-play"');
+    expect(source).toContain('task: "test-third-party"');
+    expect(source.match(/check_name: "android-build-play"/gu)).toHaveLength(1);
+    expect(source).toContain('task: useCompatibleAndroidCi ? "build-play-compat" : "build-play"');
+    expect(androidJob.name).toBe("${{ matrix.check_name || 'android' }}");
+    expect(runStep.env.CI_RUNNER_BACKEND).toContain(
+      "contains(fromJSON('[\"hybrid\",\"runson\"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1",
+    );
     expect(nativeResourcesSetup.uses).toBe("./.ci-harness/.github/actions/setup-node-env");
     expect(nativeResourcesSetup.if).toBe(
       "needs.preflight.outputs.use_compatible_android_ci != 'true'",
@@ -3751,7 +3900,7 @@ setImmediate(() => {
         );
       }
       expect(jobs[jobName]?.["timeout-minutes"], jobName).toContain(
-        "vars.OPENCLAW_CI_RUNNER_BACKEND == 'github'",
+        "(needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github'",
       );
     }
     expect(routeDependentTimeoutJobs).toEqual(Object.keys(expectedHostedTimeouts).toSorted());
@@ -8339,7 +8488,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     );
     expect(checkShardRun).toContain('if [ "$HOSTED_RUNNER_STRIPES" = "true" ]; then');
     expect(checkShardStep.env.RELEASE_GATE).toBe(
-      "${{ inputs.release_gate && needs.preflight.outputs.node_runner_backend != 'runson' && 'true' || 'false' }}",
+      "${{ inputs.release_gate && (needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') && 'true' || 'false' }}",
     );
     expect(checkShardRun).toContain("lint_args=(--only=extensions --only=scripts --threads=1)");
     expect(checkShardRun).toContain('if [ "$RELEASE_GATE" = "true" ]; then');
@@ -9272,7 +9421,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.strict_native_i18n }}",
     );
     expect(manifestStep.env.OPENCLAW_CI_RUN_NATIVE_I18N).toBe(
-      "${{ github.event_name == 'workflow_dispatch' && steps.runner_profile.outputs.node_runner_backend != 'runson' && 'true' || steps.changed_scope.outputs.run_native_i18n || 'false' }}",
+      "${{ github.event_name == 'workflow_dispatch' && (steps.runner_profile.outputs.node_runner_backend != 'runson' && steps.runner_profile.outputs.ci_qualification != 'true') && 'true' || steps.changed_scope.outputs.run_native_i18n || 'false' }}",
     );
     expect(sourceStep.run).toContain("pnpm native:i18n:verify");
     expect(sourceStep.run).toContain("Historical release targets");
