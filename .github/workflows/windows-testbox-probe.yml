@@ -47,6 +47,11 @@ on:
         required: false
         default: ""
         type: string
+      windows_ci_replay_count:
+        description: "Planned independent replay invocations, 1–20; stop on the first failure"
+        required: false
+        default: "1"
+        type: string
       run_private_node_provisioning:
         description: "Prove private Node installation and portable updater authorization on native Windows"
         required: false
@@ -99,12 +104,16 @@ jobs:
         if: ${{ inputs.windows_ci_replay != '' }}
         env:
           REPLAY_JSON: ${{ inputs.windows_ci_replay }}
+          REPLAY_COUNT: ${{ inputs.windows_ci_replay_count }}
           TARGET_REF: ${{ inputs.target_ref }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
           KEEPALIVE_MINUTES: ${{ inputs.keepalive_minutes }}
           MIXED_PROOF: ${{ inputs.run_windows_ci || inputs.run_private_node_provisioning || inputs.installed_startup_package != '' || inputs.installed_startup_cpu_diagnostic || inputs.require_wsl2 || inputs.import_ubuntu_wsl2 || inputs.enable_wsl2_features }}
         run: |
           $ErrorActionPreference = "Stop"
+          if ($env:REPLAY_COUNT -cnotmatch '^(?:[1-9]|1[0-9]|20)$') {
+            throw "Replay count must be an integer from 1 through 20."
+          }
           if ($env:KEEPALIVE_MINUTES -ne "0" -or $env:MIXED_PROOF -eq "true") {
             throw "Exact replay requires keepalive 0 and no broad CI, private Node, startup, or WSL proof."
           }
@@ -160,6 +169,7 @@ jobs:
           "OPENCLAW_WINDOWS_REPLAY_NODE_VERSION=$($replay.nodeVersion)" >> $env:GITHUB_ENV
           "OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD=1" >> $env:GITHUB_ENV
           "max_workers=$($replay.maxWorkers)" >> $env:GITHUB_OUTPUT
+          "count=$env:REPLAY_COUNT" >> $env:GITHUB_OUTPUT
           "evidence=$evidence" >> $env:GITHUB_OUTPUT
 
       - name: Validate private Node proof inputs
@@ -591,29 +601,59 @@ jobs:
           OPENCLAW_TEST_PROJECTS_PARALLEL: 1
           OPENCLAW_VITEST_MAX_WORKERS: ${{ steps.replay_input.outputs.max_workers }}
           REPLAY_EVIDENCE: ${{ steps.replay_input.outputs.evidence }}
+          REPLAY_COUNT: ${{ steps.replay_input.outputs.count }}
           REPLAY_RUNNER_LABEL: ${{ inputs.runner_label }}
           REPLAY_PACKAGE_MANAGER_VERSION: ${{ steps.setup_pnpm.outputs.pnpm-version }}
         run: |
           set -euo pipefail
           export PATH="$NODE_BIN:$PATH"
-          evidence_dir="$(cygpath -u "$REPLAY_EVIDENCE")"
+          evidence_root="$(cygpath -u "$REPLAY_EVIDENCE")"
           REPLAY_NPM_VERSION="$(npm -v)"
           export REPLAY_NPM_VERSION
-          # Preserve the original dispatcher invocation; the input contains data, not shell or CLI options.
-          set +e
-          node --input-type=module <<'WINDOWS_REPLAY' 2>&1 | tee "$evidence_dir/replay.log"
+          REPLAY_COHORT_DEADLINE_MS="$(node --input-type=module <<'WINDOWS_REPLAY_CLOCK'
+          import os from "node:os";
+          import path from "node:path";
+          import { writeFileSync } from "node:fs";
+          const count = Number(process.env.REPLAY_COUNT);
+          if (!Number.isInteger(count) || count < 1 || count > 20) throw new Error("Invalid replay count");
+          const startedUptimeMs = Math.floor(os.uptime() * 1000);
+          const deadlineUptimeMs = startedUptimeMs + 60 * 60_000;
+          writeFileSync(path.join(process.env.REPLAY_EVIDENCE, "cohort-clock.json"), JSON.stringify({
+            plannedCount: count, startedAt: new Date().toISOString(), startedUptimeMs,
+            deadlineUptimeMs, cleanupReserveMs: 35_000,
+          }, null, 2) + "\n", { flag: "wx" });
+          console.log(deadlineUptimeMs);
+          WINDOWS_REPLAY_CLOCK
+          )"
+          export REPLAY_COHORT_DEADLINE_MS
+          for ((invocation = 1; invocation <= REPLAY_COUNT; invocation++)); do
+            invocation_dir="$evidence_root/invocation-$(printf '%02d' "$invocation")"
+            mkdir "$invocation_dir"
+            cp "$evidence_root/binding.json" "$evidence_root/identity.json" "$invocation_dir/"
+            REPLAY_INVOCATION_EVIDENCE="$(cygpath -w "$invocation_dir")"
+            REPLAY_INVOCATION="$invocation"
+            export REPLAY_INVOCATION_EVIDENCE REPLAY_INVOCATION
+            # Each stdin module starts a fresh controller, retained Job, dispatcher and workers.
+            set +e
+            node --input-type=module <<'WINDOWS_REPLAY' 2>&1 | tee "$invocation_dir/replay.log"
           import { execFileSync } from "node:child_process";
           import { createHash } from "node:crypto";
-          import { readFileSync, writeFileSync } from "node:fs";
+          import { existsSync, readFileSync, writeFileSync } from "node:fs";
           import { createRequire } from "node:module";
           import os from "node:os";
           import path from "node:path";
           import { spawnWindowsJobChild } from "./scripts/lib/managed-windows-job.mts";
-          const evidence = process.env.REPLAY_EVIDENCE;
+          const evidence = process.env.REPLAY_INVOCATION_EVIDENCE;
+          const cohortEvidence = process.env.REPLAY_EVIDENCE;
+          const deadline = Number(process.env.REPLAY_COHORT_DEADLINE_MS);
+          const remainingWork = () => Math.max(0, deadline - Math.floor(os.uptime() * 1000) - 35_000);
+          if (!Number.isSafeInteger(deadline) || remainingWork() <= 0) {
+            throw new Error("The shared replay allowance is exhausted; no dispatcher admitted");
+          }
           const binding = JSON.parse(readFileSync(path.join(evidence, "binding.json"), "utf8"));
           const identity = JSON.parse(readFileSync(path.join(evidence, "identity.json"), "utf8"));
           const hash = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
-          const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+          const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8", timeout: Math.max(1, remainingWork()) }).trim();
           const require = createRequire(path.join(process.cwd(), "package.json"));
           const vitestVersion = require("vitest/package.json").version;
           if (process.env.REPLAY_PACKAGE_MANAGER_VERSION !== binding.packageManager.slice(5).split("+")[0]) {
@@ -627,13 +667,20 @@ jobs:
           }
           const python = JSON.parse(execFileSync("python", ["-I", "-S", "-c",
             "import json,platform,sys; print(json.dumps(dict(version=platform.python_version(), executable=sys.executable)))"],
-            { encoding: "utf8" }));
+            { encoding: "utf8", timeout: Math.max(1, remainingWork()) }));
+          const pythonExecutableSha256 = hash(python.executable);
           writeFileSync(path.join(evidence, "python-runtime.json"), JSON.stringify({
-            ...python, expectedVersion: "3.12.10", executableSha256: hash(python.executable),
+            ...python, expectedVersion: "3.12.10", executableSha256: pythonExecutableSha256,
             matchesHistoricalVersion: python.version === "3.12.10",
           }, null, 2) + "\n");
           if (python.version !== "3.12.10") throw new Error("Native Python differs from the historical 3.12.10 binding");
-          const proofSourceFiles = [...new Set([...binding.files,
+          const proofSourceFiles = [...new Set([...binding.files, ...binding.projects,
+            "scripts/test-projects.mts",
+            "scripts/test-projects-run.mts",
+            "scripts/test-projects.test-support.mts",
+            "scripts/run-vitest.mts",
+            "scripts/lib/vitest-process.mts",
+            "scripts/lib/vitest-test-runtime.mts",
             "scripts/lib/managed-windows-job.mts",
             "scripts/lib/managed-windows-job-launcher.mts",
             "src/process/supervisor/service-child-windows-job-native.ts",
@@ -646,23 +693,64 @@ jobs:
               ? ["test/scripts/fixtures/windows-census-sharing-probe.mjs"] : []),
           ])];
           const proofSourceSha256 = Object.fromEntries(proofSourceFiles.map((file) => [file, hash(file)]));
+          const sourceObjects = execFileSync("git", ["cat-file", "--batch"], {
+            input: proofSourceFiles.map((file) => `${sourceSha}:${file}\n`).join(""),
+            timeout: Math.max(1, remainingWork()), maxBuffer: 32 * 1024 * 1024,
+          });
+          let objectOffset = 0;
+          for (const file of proofSourceFiles) {
+            const headerEnd = sourceObjects.indexOf(10, objectOffset);
+            const header = sourceObjects.subarray(objectOffset, headerEnd).toString("utf8");
+            const match = /^[0-9a-f]{40} blob ([0-9]+)$/u.exec(header);
+            if (!match) throw new Error(`Missing frozen source object: ${file}`);
+            const size = Number(match[1]);
+            const contents = sourceObjects.subarray(headerEnd + 1, headerEnd + 1 + size);
+            if (contents.length !== size || createHash("sha256").update(contents).digest("hex") !== proofSourceSha256[file]) {
+              throw new Error(`Proof source differs from its frozen Git object: ${file}`);
+            }
+            objectOffset = headerEnd + 1 + size + 1;
+          }
+          if (objectOffset !== sourceObjects.length) throw new Error("Unexpected frozen source object output");
           const args = ["--import", "./scripts/tsx.mjs", "scripts/test-projects.mts", ...binding.files, "--fileParallelism"];
+          const selectedRuntime = process.env.OPENCLAW_VITEST_RUNTIME?.trim();
           const environment = Object.fromEntries(["CI", "NODE_OPTIONS", "OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD", "OPENCLAW_TEST_PROJECTS_PARALLEL", "OPENCLAW_VITEST_MAX_WORKERS"].map((key) => [key, process.env[key]]));
-          writeFileSync(path.join(evidence, "runtime.json"), JSON.stringify({
+          const runtime = {
             sourceSha, node: process.versions.node, nodeSha256: hash(process.execPath),
+            execPath: process.execPath, bun: process.versions.bun ?? null,
             vitest: vitestVersion, packageManager: require("./package.json").packageManager,
             npm: process.env.REPLAY_NPM_VERSION, pnpm: process.env.REPLAY_PACKAGE_MANAGER_VERSION,
             platform: process.platform, arch: process.arch, osRelease: os.release(),
             runnerLabel: process.env.REPLAY_RUNNER_LABEL,
             logicalCpuCount: os.cpus().length, availableParallelism: os.availableParallelism(),
             osTotalMemoryBytes: os.totalmem(), osFreeMemoryBytes: os.freemem(),
-            args, environment, proofSourceSha256,
+            args,
+            environment: { ...environment,
+              OPENCLAW_VITEST_RUNTIME: selectedRuntime === "node" || selectedRuntime === "bun"
+                ? selectedRuntime : selectedRuntime ? "other" : null,
+            },
+            proofSourceSha256, sourceGitBlobsVerified: true,
             jobOwnerSha256: Object.fromEntries([
               "scripts/lib/managed-windows-job.mts",
               "scripts/lib/managed-windows-job-launcher.mts",
               "src/process/supervisor/service-child-windows-job-native.ts",
             ].map((file) => [file, hash(file)])),
-          }, null, 2) + "\n");
+          };
+          writeFileSync(path.join(evidence, "runtime.json"), JSON.stringify(runtime, null, 2) + "\n");
+          const runtimeBinding = {
+            sourceSha, node: runtime.node, nodeSha256: runtime.nodeSha256, execPath: runtime.execPath,
+            bun: runtime.bun, vitest: runtime.vitest, packageManager: runtime.packageManager,
+            pythonVersion: python.version, pythonExecutable: python.executable, pythonExecutableSha256,
+            environment: runtime.environment, proofSourceSha256,
+            dependencySha256: identity.dependencySha256,
+          };
+          const runtimeBindingPath = path.join(cohortEvidence, "cohort-runtime-binding.json");
+          if (existsSync(runtimeBindingPath)) {
+            if (JSON.stringify(JSON.parse(readFileSync(runtimeBindingPath, "utf8"))) !== JSON.stringify(runtimeBinding)) {
+              throw new Error("Source, dependencies or runtime differ from the first invocation");
+            }
+          } else {
+            writeFileSync(runtimeBindingPath, JSON.stringify(runtimeBinding, null, 2) + "\n", { flag: "wx" });
+          }
           const bounded = async (promise, milliseconds, label) => {
             let timer;
             try {
@@ -676,10 +764,13 @@ jobs:
           let owned;
           let rootClosed = false;
           const result = {
+            invocation: Number(process.env.REPLAY_INVOCATION), plannedCount: Number(process.env.REPLAY_COUNT),
+            cohortDeadlineUptimeMs: deadline, cleanupReserveMs: 35_000,
             status: null, signal: null, spawnError: null, forcedCleanup: false,
             descendantSettlement: "unverified", rootClosed: false,
           };
           try {
+            if (remainingWork() <= 0) throw new Error("The shared replay allowance expired before admission");
             owned = spawnWindowsJobChild(process.execPath, args, {
               cwd: process.cwd(), env: process.env,
               stdio: ["ignore", "inherit", "inherit"], windowsHide: true,
@@ -689,15 +780,15 @@ jobs:
               rootClosed = true;
               resolve({ code, signal });
             }));
-            await bounded(owned.job.ready, 60_000, "Owned replay did not start within 60 seconds");
+            await bounded(owned.job.ready, Math.min(60_000, remainingWork()), "Owned replay startup or shared allowance expired");
             result.commandPid = owned.job.commandPid;
-            const closedResult = await bounded(closed, 60 * 60_000, "Owned replay exceeded its 60-minute budget");
+            const closedResult = await bounded(closed, remainingWork(), "Owned replay exhausted the shared 60-minute allowance");
             result.status = closedResult.code;
             result.signal = closedResult.signal;
             result.membersAtRootClose = owned.job.inspect();
             // The retained Job observes all descendants, including detached grandchildren.
             // Certification requires an empty Job before closing its kill-on-close handle.
-            const extinction = await bounded(owned.job.certify(), 30_000,
+            const extinction = await bounded(owned.job.certify(), Math.min(30_000, Math.max(1, deadline - Math.floor(os.uptime() * 1000) - 5_000)),
               "Owned descendants remained after the replay launcher closed");
             result.naturalExtinction = { status: extinction.status, reason: extinction.reason ?? null };
             if (extinction.status !== "confirmed") throw new Error("Native Job extinction is unverified");
@@ -729,39 +820,165 @@ jobs:
           }
           process.exit(result.status ?? 1);
           WINDOWS_REPLAY
-          result=("${PIPESTATUS[@]}")
-          if [[ "${result[0]}" != 0 ]]; then exit "${result[0]}"; fi
-          exit "${result[1]}"
+            command_result=("${PIPESTATUS[@]}")
+            REPLAY_COMMAND_EXIT="${command_result[0]}"
+            REPLAY_TEE_EXIT="${command_result[1]}"
+            export REPLAY_COMMAND_EXIT REPLAY_TEE_EXIT
+            node --input-type=module <<'WINDOWS_REPLAY_OUTCOME'
+          import { createHash } from "node:crypto";
+          import { readFileSync, writeFileSync } from "node:fs";
+          import os from "node:os";
+          import path from "node:path";
+          import { execFileSync } from "node:child_process";
 
-      - name: Record ordered replay outcome
+          const evidence = process.env.REPLAY_INVOCATION_EVIDENCE;
+          const readErrors = [];
+          const read = (name) => {
+            try {
+              return JSON.parse(readFileSync(path.join(evidence, name), "utf8"));
+            } catch {
+              readErrors.push(name);
+              return null;
+            }
+          };
+          const binding = read("binding.json");
+          const identity = read("identity.json");
+          const runtime = read("runtime.json");
+          const result = read("process-result.json");
+          const python = read("python-runtime.json");
+          const count = Number(process.env.REPLAY_COUNT);
+          const invocation = Number(process.env.REPLAY_INVOCATION);
+          const deadline = Number(process.env.REPLAY_COHORT_DEADLINE_MS);
+          const hash = (file) => createHash("sha256").update(readFileSync(file)).digest("hex");
+          let log = "";
+          try {
+            log = readFileSync(path.join(evidence, "replay.log"), "utf8")
+              .replace(/\u001b\[[0-?]*[ -/]*[@-~]/gu, "");
+          } catch {
+            readErrors.push("replay.log");
+          }
+          const observed = [...log.matchAll(/^\[test\] starting (test\/vitest\/vitest\.[a-z0-9-]+\.config\.ts)\r?$/gm)]
+            .map((match) => match[1]);
+          const expected = binding?.projects ?? [];
+          const orderedPrefix = observed.length <= expected.length && observed.every((project, index) => project === expected[index]);
+          const complete = orderedPrefix && observed.length === expected.length && expected.length > 0;
+          const unchanged = (hashes) => {
+            if (!hashes || Object.keys(hashes).length === 0) return false;
+            try {
+              return Object.entries(hashes).every(([file, expectedHash]) => hash(file) === expectedHash);
+            } catch {
+              return false;
+            }
+          };
+          let sourceUnchanged = false;
+          try {
+            const remaining = deadline - Math.floor(os.uptime() * 1000);
+            if (remaining > 0) {
+              sourceUnchanged = execFileSync("git", ["rev-parse", "HEAD"], {
+                encoding: "utf8", timeout: remaining,
+              }).trim() === identity?.sourceSha;
+            }
+          } catch {}
+          const dependencyInputsUnchanged = unchanged(identity?.dependencySha256);
+          const proofSourceUnchanged = unchanged(runtime?.proofSourceSha256);
+          let executableInputsUnchanged = false;
+          try {
+            executableInputsUnchanged = hash(runtime.execPath) === runtime.nodeSha256 &&
+              hash(python.executable) === python.executableSha256;
+          } catch {}
+
+          const receiptErrors = [];
+          const receipts = (marker) => [...log.matchAll(new RegExp(`^${marker} (\\{.*\\})\\r?$`, "gm"))]
+            .flatMap((match) => {
+              try { return [JSON.parse(match[1])]; }
+              catch { receiptErrors.push(marker); return []; }
+            });
+          const retirement = receipts("WINDOWS_CENSUS_RETIREMENT");
+          const sharing = receipts("WINDOWS_CENSUS_SHARING");
+          const attested = (facts) => Boolean(facts && runtime && binding &&
+            Number.isInteger(facts.pid) && facts.pid > 1 && Number.isInteger(facts.ppid) &&
+            typeof facts.execPath === "string" && path.isAbsolute(facts.execPath) &&
+            path.normalize(facts.execPath).toLowerCase() === path.normalize(runtime.execPath).toLowerCase() &&
+            facts.node === binding.nodeVersion && facts.bun === null &&
+            /^[0-9a-f]{64}$/u.test(facts.executableSha256 ?? "") &&
+            facts.executableSha256 === runtime.nodeSha256 &&
+            (facts.vitestRuntime === null || facts.vitestRuntime === "node"));
+          const paired = (facts, child) => Boolean(attested(facts?.worker) && attested(facts?.[child]) &&
+            facts[child].ppid === facts.worker.pid);
+          const checks = [];
+          if (binding?.files.includes("test/scripts/ci-platform-checkout.test.ts")) {
+            const faults = ["sentinel", "startup", "query", "lease"];
+            checks.push(retirement.length === faults.length && faults.every((fault) =>
+              retirement.filter((receipt) => receipt.fault === fault).length === 1) &&
+              retirement.every((receipt) => paired(receipt.runtime, "supervisor")));
+          }
+          if (binding?.files.includes("test/scripts/windows-census-sharing.diagnostic.test.ts")) {
+            checks.push(sharing.length === 1 && paired(sharing[0].runtime, "probe"));
+          }
+          const innerRuntimeQualified = checks.length > 0 && checks.every(Boolean) && receiptErrors.length === 0 &&
+            runtime?.bun === null && runtime?.node === binding?.nodeVersion &&
+            (runtime?.environment?.OPENCLAW_VITEST_RUNTIME === null || runtime?.environment?.OPENCLAW_VITEST_RUNTIME === "node");
+          const withinDeadline = Number.isFinite(deadline) && Math.floor(os.uptime() * 1000) <= deadline;
+          const executionValid = readErrors.length === 0 && Number(process.env.REPLAY_COMMAND_EXIT) === 0 &&
+            Number(process.env.REPLAY_TEE_EXIT) === 0 && result?.status === 0 && result?.signal === null &&
+            result?.spawnError === null && result?.rootClosed === true && result?.forcedCleanup === false &&
+            result?.naturalExtinction?.status === "confirmed" && result?.proofSourceUnchanged === true &&
+            runtime?.sourceGitBlobsVerified === true && complete && sourceUnchanged &&
+            dependencyInputsUnchanged && proofSourceUnchanged && executableInputsUnchanged && withinDeadline;
+          const qualificationValid = executionValid && innerRuntimeQualified;
+          const nextAdmissionHasBudget = invocation === count || deadline - Math.floor(os.uptime() * 1000) > 35_000;
+          const continuationAllowed = executionValid && (count === 1 || qualificationValid) && nextAdmissionHasBudget;
+          const retainedNamespaces = [...log.matchAll(/^\[vitest\] retained temporary namespace .*$/gm)]
+            .map((match) => match[0]);
+          writeFileSync(path.join(evidence, "census-observations.log"), log.split(/\r?\n/u)
+            .filter((line) => /^WINDOWS_CENSUS_(?:SHARING|RETIREMENT) /u.test(line)).join("\n") + "\n");
+          writeFileSync(path.join(evidence, "outcome.json"), JSON.stringify({
+            invocation, plannedCount: count, commandExit: Number(process.env.REPLAY_COMMAND_EXIT),
+            teeExit: Number(process.env.REPLAY_TEE_EXIT), admitted: Number.isInteger(result?.commandPid),
+            expectedProjects: expected, observedProjects: observed, orderedPrefix, complete,
+            sourceUnchanged, dependencyInputsUnchanged, proofSourceUnchanged, executableInputsUnchanged,
+            innerRuntime: { supported: checks.length > 0, qualified: innerRuntimeQualified, receiptErrors },
+            executionValid, qualificationValid, continuationAllowed, withinDeadline, nextAdmissionHasBudget,
+            readErrors, retainedNamespaces,
+            cleanupOwner: "Retained Windows Job certifies this invocation; Actions owns final machine teardown",
+          }, null, 2) + "\n");
+          console.log(`[replay] invocation ${invocation}/${count}: execution=${executionValid}, exact-Node=${qualificationValid}`);
+          if (!continuationAllowed) process.exitCode = 1;
+          WINDOWS_REPLAY_OUTCOME
+            validation_exit=$?
+            if [[ "$REPLAY_COMMAND_EXIT" != 0 ]]; then exit "$REPLAY_COMMAND_EXIT"; fi
+            if [[ "$REPLAY_TEE_EXIT" != 0 ]]; then exit "$REPLAY_TEE_EXIT"; fi
+            if [[ "$validation_exit" != 0 ]]; then exit "$validation_exit"; fi
+            set -e
+          done
+      - name: Record replay cohort outcome
         if: ${{ always() && steps.replay_input.outcome == 'success' }}
         env:
           REPLAY_EVIDENCE: ${{ steps.replay_input.outputs.evidence }}
+          REPLAY_COUNT: ${{ steps.replay_input.outputs.count }}
           REPLAY_OUTCOME: ${{ steps.replay_run.outcome }}
         run: |
           $ErrorActionPreference = "Stop"
-          $binding = Get-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "binding.json") -Raw | ConvertFrom-Json
-          $identity = Get-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "identity.json") -Raw | ConvertFrom-Json -AsHashtable
-          $logPath = Join-Path $env:REPLAY_EVIDENCE "replay.log"
-          $log = if (Test-Path -LiteralPath $logPath) { [string](Get-Content -LiteralPath $logPath -Raw) } else { "" }
-          $observed = @([regex]::Matches($log, '(?m)^\[test\] starting (test/vitest/vitest\.[a-z0-9-]+\.config\.ts)\r?$') | ForEach-Object { $_.Groups[1].Value })
-          $orderedPrefix = $observed.Count -le $binding.projects.Count
-          for ($i = 0; $i -lt $observed.Count -and $orderedPrefix; $i++) { $orderedPrefix = $observed[$i] -ceq $binding.projects[$i] }
-          $complete = $orderedPrefix -and $observed.Count -eq $binding.projects.Count
-          $dependencyInputsUnchanged = $true
-          foreach ($file in $identity.dependencySha256.Keys) {
-            if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $identity.dependencySha256[$file]) { $dependencyInputsUnchanged = $false }
+          $count = [int]$env:REPLAY_COUNT
+          $invocations = @()
+          for ($index = 1; $index -le $count; $index++) {
+            $directory = Join-Path $env:REPLAY_EVIDENCE ("invocation-{0:D2}" -f $index)
+            $file = Join-Path $directory "outcome.json"
+            $record = $null
+            if (Test-Path -LiteralPath $file -PathType Leaf) {
+              try { $record = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json }
+              catch { $record = $null }
+            }
+            $invocations += @{ invocation = $index; attempted = (Test-Path -LiteralPath $directory); outcome = $record }
           }
-          $sourceSha = (git rev-parse HEAD).Trim()
-          $sourceUnchanged = $LASTEXITCODE -eq 0 -and $sourceSha -ceq $identity.sourceSha
-          $retainedNamespaces = @([regex]::Matches($log, '(?m)^\[vitest\] retained temporary namespace .*$') | ForEach-Object { $_.Value })
-          @([regex]::Matches($log, '(?m)^.*WINDOWS_CENSUS_(?:SHARING|RETIREMENT).*$') | ForEach-Object { $_.Value }) |
-            Set-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "census-observations.log")
-          @{ stepOutcome = $env:REPLAY_OUTCOME; expectedProjects = $binding.projects; observedProjects = $observed; orderedPrefix = $orderedPrefix; complete = $complete; dependencyInputsUnchanged = $dependencyInputsUnchanged; sourceUnchanged = $sourceUnchanged; retainedNamespaces = $retainedNamespaces; cleanupOwner = "Retained Windows Job certifies replay descendants; Actions owns final machine teardown" } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "outcome.json")
-          if (-not $orderedPrefix -or -not $dependencyInputsUnchanged -or -not $sourceUnchanged -or ($env:REPLAY_OUTCOME -eq "success" -and -not $complete)) {
-            throw "Replay identity or observed project order differs; retained output is diagnostic only."
+          $completed = @($invocations | Where-Object { $_.outcome.executionValid -eq $true }).Count
+          $qualified = @($invocations | Where-Object { $_.outcome.qualificationValid -eq $true }).Count
+          $complete = $env:REPLAY_OUTCOME -eq "success" -and $completed -eq $count
+          @{ plannedCount = $count; completedCount = $completed; exactNodeQualifiedCount = $qualified; complete = $complete; qualificationComplete = ($complete -and $qualified -eq $count); invocations = $invocations } |
+            ConvertTo-Json -Depth 20 | Set-Content -LiteralPath (Join-Path $env:REPLAY_EVIDENCE "cohort-outcome.json")
+          if (-not $complete -or ($count -gt 1 -and $qualified -ne $count)) {
+            throw "Replay cohort stopped before complete qualified evidence; preserve every admitted invocation."
           }
-
       - name: Upload exact Windows replay evidence
         if: ${{ always() && steps.replay_input.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
