@@ -2,7 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
@@ -40,6 +40,10 @@ import * as service from "./update-command-service.js";
 import { withUpdateCommandTerminalResult } from "./update-command-terminal.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
+beforeEach(() => {
+  const temporary = dirs.make("update-activation-tmp-");
+  vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(temporary);
+});
 afterEach(() => {
   vi.useRealTimers();
   closeOpenClawStateDatabaseForTest();
@@ -58,9 +62,6 @@ it.each([
     const serviceRoot = retained
       ? fs.realpathSync(dirs.make("update-retained-activation-"))
       : undefined;
-    const temporary = path.join(root, "private-tmp");
-    fs.mkdirSync(temporary, { mode: 0o700 });
-    vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(temporary);
     const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
     const freebsdWriteAdmission = freebsd
       ? withMockedPlatform("freebsd", () => createFreeBsdUpdateWriteAdmission())
@@ -153,9 +154,6 @@ it.each([false, true])(
   "checks the activation deadline after synchronous work (expired: %s)",
   async (expired) => {
     const root = fs.realpathSync(dirs.make("update-activation-clock-"));
-    const temporary = path.join(root, "private-tmp");
-    fs.mkdirSync(temporary, { mode: 0o700 });
-    vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(temporary);
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const work = withUpdateCommandExecutor("clock-probe", async (executor) => {
       await executor.enter(root, { activationTimeoutMs: 60_000 });
@@ -204,9 +202,6 @@ it.each([undefined, 48 * 60 * 60_000])(
 it("preserves retained ownership when preflight starts a measured activation deadline", async () => {
   const root = fs.realpathSync(dirs.make("update-preflight-activation-"));
   const serviceRoot = fs.realpathSync(dirs.make("update-preflight-retained-"));
-  const temporary = path.join(root, "private-tmp");
-  fs.mkdirSync(temporary, { mode: 0o700 });
-  vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(temporary);
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
   await expect(
     withUpdateCommandExecutor("retained-preflight", async (executor) => {
