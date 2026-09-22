@@ -37,6 +37,8 @@ export type ProviderAuth = {
   rateLimitTier?: string;
   /** Account email captured on the resolved credential, when known. */
   email?: string;
+  /** Stored auth-profile credential type when resolved from the auth store. */
+  profileType?: "oauth" | "token";
 };
 
 type AuthStore = ReturnType<typeof ensureAuthProfileStore>;
@@ -350,6 +352,7 @@ async function resolveOAuthToken(params: {
         // Token credentials carry an email too; oauth-only gating would drop
         // identity for static bearer profiles whose tokens expose no claims.
         ...(cred.email ? { email: cred.email } : {}),
+        profileType: cred.type,
       };
     } catch {
       // ignore
@@ -399,6 +402,7 @@ async function resolveProviderUsageAuthViaPlugin(params: {
               ...(auth.subscriptionType ? { subscriptionType: auth.subscriptionType } : {}),
               ...(auth.rateLimitTier ? { rateLimitTier: auth.rateLimitTier } : {}),
               ...(auth.email ? { email: auth.email } : {}),
+              ...(auth.profileType ? { profileType: auth.profileType } : {}),
             }
           : null;
       },
@@ -419,6 +423,7 @@ async function resolveProviderUsageAuthViaPlugin(params: {
       ...(resolved.subscriptionType ? { subscriptionType: resolved.subscriptionType } : {}),
       ...(resolved.rateLimitTier ? { rateLimitTier: resolved.rateLimitTier } : {}),
       ...(resolved.email ? { email: resolved.email } : {}),
+      ...(resolved.profileType ? { profileType: resolved.profileType } : {}),
     },
   };
 }

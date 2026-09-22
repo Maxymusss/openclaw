@@ -243,8 +243,8 @@ async function fetchAnthropicAdminUsage(params: {
 function hasClaudeWebUsageFallback(env: NodeJS.ProcessEnv): boolean {
   return Boolean(
     env.CLAUDE_AI_SESSION_KEY?.trim() ||
-      env.CLAUDE_WEB_SESSION_KEY?.trim() ||
-      env.CLAUDE_WEB_COOKIE?.trim(),
+    env.CLAUDE_WEB_SESSION_KEY?.trim() ||
+    env.CLAUDE_WEB_COOKIE?.trim(),
   );
 }
 
@@ -266,20 +266,15 @@ export async function resolveAnthropicUsageAuth(
     return { token: encodeAdminToken(storedAdminKey) };
   }
 
-  const { validateAnthropicSetupToken } = await import("openclaw/plugin-sdk/provider-auth");
-  const storedSetupTokens = new Set(
-    storedCandidates.filter((candidate) => validateAnthropicSetupToken(candidate) === undefined),
-  );
-
   // Resolve the selected OAuth/token profile first so configured profile order is
-  // preserved. A selected static token that is also present in the candidate set
-  // retains enough provenance to classify onboarding setup tokens without letting
-  // a lower-priority setup-token profile preempt a preferred OAuth credential.
+  // preserved. Only a stored `token` profile is the Anthropic setup-token
+  // contract; OAuth login persists as `oauth` even when the access token uses
+  // the same `sk-ant-oat01-` shape. Token prefix alone must not suppress usage.
   const oauthToken = await ctx.resolveOAuthToken({
     excludeProfileIds: [CLAUDE_CLI_PROFILE_ID],
   });
   if (oauthToken) {
-    if (storedSetupTokens.has(oauthToken.token)) {
+    if (oauthToken.profileType === "token") {
       return hasClaudeWebUsageFallback(ctx.env)
         ? { token: encodeSetupUsageToken(oauthToken.token) }
         : { handled: true };
@@ -293,10 +288,12 @@ export async function resolveAnthropicUsageAuth(
     return { token: encodeAdminToken(adminKey) };
   }
   if (apiKey) {
+    const { validateAnthropicSetupToken } = await import("openclaw/plugin-sdk/provider-auth");
     if (validateAnthropicSetupToken(apiKey) === undefined) {
-      return hasClaudeWebUsageFallback(ctx.env)
-        ? { token: encodeSetupUsageToken(apiKey) }
-        : { handled: true };
+      // Env/config/static keys have no stored setup-token profile. Keep the
+      // existing OAuth usage path so a working static credential that happens
+      // to share the setup-token prefix is not suppressed.
+      return { token: apiKey };
     }
   }
 
