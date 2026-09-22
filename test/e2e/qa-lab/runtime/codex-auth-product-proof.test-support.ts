@@ -243,7 +243,7 @@ export async function captureCodexAuthFailure(params: {
             containsFullRecoveryText: value.includes(params.recoveryText),
             containsRecoveryPrefix: value.includes("The selected auth profile is unavailable"),
             containsConfigureAction: value.includes("openclaw configure"),
-            endsWithRetry: /then retry\.$/u.test(value),
+            endsWithRetry: value.endsWith("then retry."),
           }
         : { observed: false };
     const messageFacts = (value: unknown) => {
@@ -266,7 +266,7 @@ export async function captureCodexAuthFailure(params: {
       return {
         observed: true,
         ...pick(value, ["id", "role", "customType"]),
-        openclawOwnership: pick(value.__openclaw, ["runId"]),
+        openclawOwnership: pick(value["__openclaw"], ["runId"]),
         customOwnership: pick(value.details, ["runId"]),
         text: textFacts(content),
       };
@@ -364,10 +364,11 @@ export async function captureCodexAuthFailure(params: {
       .filter((value): value is string => typeof value === "string" && value.length > 0)
       .toSorted((a, b) => b.length - a.length);
     const sanitize = (value: string) => {
+      let redacted = value;
       for (const mask of masks) {
-        value = value.replaceAll(mask, "[redacted]");
+        redacted = redacted.replaceAll(mask, "[redacted]");
       }
-      return redactSensitiveText(value, { mode: "tools" });
+      return redactSensitiveText(redacted, { mode: "tools" });
     };
     let truncatedScalarCount = 0;
     const sanitizeFacts = <T>(value: T): T =>
