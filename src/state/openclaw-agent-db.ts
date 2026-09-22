@@ -19,10 +19,7 @@ import {
   type SqliteIntegrityOperation,
   type SqliteIntegrityConfirmation,
 } from "../infra/sqlite-integrity.js";
-import {
-  deferSqlitePostCommitPublication,
-  withSqlitePostCommitPublications,
-} from "../infra/sqlite-post-commit.js";
+import { withSqlitePostCommitPublications } from "../infra/sqlite-post-commit.js";
 import {
   runSqliteImmediateTransactionSync,
   type SqliteTransactionOptions,
@@ -136,6 +133,7 @@ export {
   assertOpenClawAgentDatabaseForMaintenance,
   migrateOpenClawAgentDatabaseForMaintenance,
 } from "./openclaw-agent-db-maintenance.js";
+export { deferOpenClawAgentPostCommitPublication } from "./openclaw-agent-db-lifecycle.js";
 export { ensureOpenClawAgentDatabasePermissions } from "./openclaw-agent-db-permissions.js";
 export {
   listOpenClawRegisteredAgentDatabases,
@@ -541,26 +539,6 @@ function* openOpenClawAgentDatabaseSteps(
     }
     throw closeError ?? error;
   }
-}
-
-/** Queue a non-throwing runtime publication on the outer database commit edge. */
-export function deferOpenClawAgentPostCommitPublication(
-  database: OpenClawAgentDatabase,
-  publish: (options: OpenClawAgentDatabaseOptions) => void,
-): boolean {
-  const lease = cache.leases.get(database.path);
-  if (
-    cache.databases.get(database.path) !== database ||
-    (!lease && !cache.incognito.has(database))
-  ) {
-    throw new Error("Agent post-commit publication requires its admitted database owner");
-  }
-  const options = {
-    agentId: database.agentId,
-    path: database.path,
-    ...(lease ? { env: { ...lease.env } } : {}),
-  };
-  return deferSqlitePostCommitPublication(database.db, () => publish(options));
 }
 
 export function runOpenClawAgentWriteTransaction<T>(
