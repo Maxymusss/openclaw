@@ -48,8 +48,8 @@ export function registerExecutorHelperHandoffTests(
   it.each([false, true])(
     "borrows the exact helper package owner with a separate service root: %s",
     async (splitRoot) => {
-      const { root, prepareStagedLeaseFixture } = fixture();
-      const { runtimeEntry, options } = prepareStagedLeaseFixture();
+      const { root, prepareStagedLeaseFixture: prepareLease } = fixture();
+      const { runtimeEntry, options } = prepareLease();
       const runId = randomUUID();
       const owner = randomUUID();
       const metadata = path.join(root, "handoff.json");

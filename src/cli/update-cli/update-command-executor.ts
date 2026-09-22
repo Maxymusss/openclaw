@@ -134,7 +134,9 @@ export async function withDelegatedUpdateCommandExecutor<T>(
         assertUpdateCommandChildBindingCurrent(binding);
       });
       const assertBase = () => {
-        if (!active && activation.failure) activation.assertCurrent();
+        if (!active && activation.failure) {
+          activation.assertCurrent();
+        }
         assertNative();
         activation.assertCurrent();
       };
@@ -320,7 +322,9 @@ export async function withUpdateCommandExecutor<T>(
         }
       });
       const assertBase = () => {
-        if (!active && activation.failure) activation.assertCurrent();
+        if (!active && activation.failure) {
+          activation.assertCurrent();
+        }
         assertNative();
         activation.assertCurrent();
       };

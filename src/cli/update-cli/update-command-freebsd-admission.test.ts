@@ -57,7 +57,9 @@ it.each([
       freebsdWriteAdmission: admission,
       executorFence: {
         assertCurrent() {
-          if (!executorCurrent) throw refused;
+          if (!executorCurrent) {
+            throw refused;
+          }
         },
       },
       requesterAuthority: {
@@ -76,16 +78,30 @@ it.each([
         : createUpdateCommandExecutionGuards(opts, root);
     guards.assertCurrent();
     const before = getUpdateRun(run.runId, { env });
-    if (change === "executor") executorCurrent = false;
-    if (change === "requester" || change === "finalizer requester") requesterCurrent = false;
-    if (change === "state selector") env.OPENCLAW_STATE_DIR = path.join(root, "other-state");
-    if (change === "config selector") env.OPENCLAW_CONFIG_PATH = path.join(root, "other.json");
-    if (change === "environment") run.env = { ...env };
-    if (change === "run") opts.run = { ...run };
+    if (change === "executor") {
+      executorCurrent = false;
+    }
+    if (change === "requester" || change === "finalizer requester") {
+      requesterCurrent = false;
+    }
+    if (change === "state selector") {
+      env.OPENCLAW_STATE_DIR = path.join(root, "other-state");
+    }
+    if (change === "config selector") {
+      env.OPENCLAW_CONFIG_PATH = path.join(root, "other.json");
+    }
+    if (change === "environment") {
+      run.env = { ...env };
+    }
+    if (change === "run") {
+      opts.run = { ...run };
+    }
     expect(guards.assertCurrent).toThrow();
     const first = admission.failure;
     expect(first).toBeInstanceOf(Error);
-    if (change === "executor") expect(first).toBe(refused);
+    if (change === "executor") {
+      expect(first).toBe(refused);
+    }
     executorCurrent = true;
     requesterCurrent = true;
     env.OPENCLAW_STATE_DIR = root;

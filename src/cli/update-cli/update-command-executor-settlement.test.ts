@@ -272,8 +272,9 @@ it.each(["direct", "delegated"] as const)(
       if (
         candidate.key === childKey ||
         [...rows.keys()].some((key) => key.startsWith(candidate.key + "/.openclaw-update-child-"))
-      )
+      ) {
         return false;
+      }
       return release(candidate);
     };
     const publish = vi.fn(async () => ({

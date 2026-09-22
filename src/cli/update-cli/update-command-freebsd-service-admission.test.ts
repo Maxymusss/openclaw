@@ -110,7 +110,9 @@ describe.skipIf(!disposableGuest)(
                   run,
                 ).status,
               ).toBe("ok");
-              for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+              for (const spy of spies) {
+                expect(spy).not.toHaveBeenCalled();
+              }
             }
           };
           await withEnvAsync(isolatedEnv(env), () =>

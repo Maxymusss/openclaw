@@ -43,14 +43,22 @@ it.each(["concurrent", "pending assertion", "direct guard", "asynchronous check"
         () => {},
         async () => {
           await resume.promise;
-          if (kind === "asynchronous check") throw failure;
+          if (kind === "asynchronous check") {
+            throw failure;
+          }
         },
       )
       .catch((error: unknown) => error);
     try {
-      if (kind === "concurrent") await expect(admission.revalidate(() => {})).rejects.toThrow();
-      if (kind === "pending assertion") expect(admission.assertCurrent).toThrow();
-      if (kind === "direct guard") admission.revoke(failure);
+      if (kind === "concurrent") {
+        await expect(admission.revalidate(() => {})).rejects.toThrow();
+      }
+      if (kind === "pending assertion") {
+        expect(admission.assertCurrent).toThrow();
+      }
+      if (kind === "direct guard") {
+        admission.revoke(failure);
+      }
     } finally {
       resume.resolve();
     }

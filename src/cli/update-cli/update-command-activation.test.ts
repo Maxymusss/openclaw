@@ -244,7 +244,9 @@ it.each([
         vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(temporary);
         const serviceRoot =
           fault === "retained owner after expiry" ? path.join(root, "service") : undefined;
-        if (serviceRoot) fs.mkdirSync(serviceRoot);
+        if (serviceRoot) {
+          fs.mkdirSync(serviceRoot);
+        }
         const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
         const admission = withMockedPlatform("freebsd", () => createFreeBsdUpdateWriteAdmission()!);
         await admission.revalidate(() => {});
@@ -323,7 +325,9 @@ it.each([
                     finalizationError = error;
                   }
                 } else {
-                  if (fault === "revoked requester finalization") requesterCurrent = false;
+                  if (fault === "revoked requester finalization") {
+                    requesterCurrent = false;
+                  }
                   vi.setSystemTime(Date.now() + 60_001);
                 }
                 try {
@@ -331,17 +335,24 @@ it.each([
                 } catch (error) {
                   timeout = error;
                 }
-                if (!first) expect(timeout).toBeInstanceOf(UpdateActivationTimeoutError);
-                else expect(timeout).toBe(first);
+                if (!first) {
+                  expect(timeout).toBeInstanceOf(UpdateActivationTimeoutError);
+                } else {
+                  expect(timeout).toBe(first);
+                }
                 if (requesterFinalization) {
                   try {
                     await finishSuccessfulPackageSwitch({ packageRoot: root, run });
                   } catch (error) {
                     finalizationError = error;
-                    if (!requesterCurrent) first = error;
+                    if (!requesterCurrent) {
+                      first = error;
+                    }
                   }
                 }
-                if (fault === "native after expiry" || serviceRoot) replaceOwner();
+                if (fault === "native after expiry" || serviceRoot) {
+                  replaceOwner();
+                }
                 if (fault === "private database after expiry") {
                   const database = path.join(temporary, "managed-update-handoffs.sqlite");
                   fs.renameSync(database, database + ".displaced");
@@ -362,8 +373,12 @@ it.each([
           expect(converge).not.toHaveBeenCalled();
           expect(rollbackUpdate).not.toHaveBeenCalled();
           expect(restart).not.toHaveBeenCalled();
-          if (fault === "package admission expiry") expect(admissionAwaitObserved).toBe(true);
-          if (!requesterCurrent) expect(first).toMatchObject({ code: "requester-revoked" });
+          if (fault === "package admission expiry") {
+            expect(admissionAwaitObserved).toBe(true);
+          }
+          if (!requesterCurrent) {
+            expect(first).toMatchObject({ code: "requester-revoked" });
+          }
         }
         if (
           fault === "clean" ||
@@ -382,7 +397,9 @@ it.each([
           expect(admission.canWrite).toBe(false);
           expect(admission.failure).toBeInstanceOf(Error);
           expect(admission.failure).not.toBeInstanceOf(UpdateActivationTimeoutError);
-          if (first) expect(admission.failure).toBe(first);
+          if (first) {
+            expect(admission.failure).toBe(first);
+          }
           expect(getUpdateRun(run.runId, { env })).toEqual(created);
           expect(output).not.toHaveBeenCalled();
         }
@@ -404,7 +421,9 @@ it.each(["clean", "parent", "receiver", "retained receiver", "private database"]
     fs.mkdirSync(temporary, { mode: 0o700 });
     vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(temporary);
     const serviceRoot = fault === "retained receiver" ? path.join(root, "service") : undefined;
-    if (serviceRoot) fs.mkdirSync(serviceRoot);
+    if (serviceRoot) {
+      fs.mkdirSync(serviceRoot);
+    }
     const worker = resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.executor);
     const sourceArgs = worker.pathname.endsWith(".ts")
       ? ["--import", path.resolve("scripts/tsx.mjs")]
@@ -479,8 +498,11 @@ it.each(["clean", "parent", "receiver", "retained receiver", "private database"]
         return result;
       });
     });
-    if (fault === "clean") await running;
-    else await expect(running).rejects.toThrow();
+    if (fault === "clean") {
+      await running;
+    } else {
+      await expect(running).rejects.toThrow();
+    }
     expect(result, "real bound child must finish its assertions").toBeDefined();
     expect(result?.code, result?.stderr).toBe(0);
     expect(result).toMatchObject({ termination: "exit", cleanup: "normal" });

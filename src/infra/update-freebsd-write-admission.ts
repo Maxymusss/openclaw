@@ -59,8 +59,9 @@ export function createFreeBsdUpdateWriteAdmission(): FreeBsdUpdateWriteAdmission
         assertAuthority();
         await inspect?.();
         assertAuthority();
-        if (failure) {
-          throw failure;
+        const refusal = admission.failure;
+        if (refusal) {
+          throw refusal;
         }
         admitted = true;
       } catch (cause) {

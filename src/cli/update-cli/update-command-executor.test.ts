@@ -333,7 +333,9 @@ describe("live update executor", () => {
         withUpdateCommandExecutor(
           randomUUID(),
           async (executor) => {
-            if (preflight) await executor.enter(root, { preflight: true });
+            if (preflight) {
+              await executor.enter(root, { preflight: true });
+            }
             await executor.enter(root, { activationTimeoutMs: inventory });
             effects();
           },

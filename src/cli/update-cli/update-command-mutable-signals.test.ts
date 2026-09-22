@@ -349,7 +349,9 @@ async function assertOwnedSignal(
       }
     }
   } finally {
-    if (child.connected) child.send("release drain", () => {});
+    if (child.connected) {
+      child.send("release drain", () => {});
+    }
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
     }
