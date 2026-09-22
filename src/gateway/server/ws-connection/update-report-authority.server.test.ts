@@ -130,10 +130,14 @@ function createReportHarness(params: { getGeneration: () => string }) {
 
 function grantReportAuthority(
   client: ReturnType<typeof createOperatorWsClient>,
-  authority: "gateway-owner" | "system-admin",
+  authority: "gateway-owner" | "system-admin" | "named-admin",
 ): void {
   if (authority === "system-admin") {
     client.internal = { operatorRoleActor: { kind: "system" } };
+    return;
+  }
+  if (authority === "named-admin") {
+    identifyNonOwner(client);
     return;
   }
   client.authenticatedUserProfile = {
@@ -147,7 +151,7 @@ function grantReportAuthority(
 
 function identifyNonOwner(client: ReturnType<typeof createOperatorWsClient>): void {
   client.authenticatedUserProfile = {
-    profileId: "profile-non-owner",
+    profileId: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
     displayName: "Delegated operator",
     avatarRevision: "operator-avatar",
     hasAvatar: false,
@@ -222,21 +226,23 @@ describe("update report live authority boundary", () => {
     await fs.rm(stateDir, { force: true, recursive: true });
   });
 
-  it.each(["gateway-owner", "system-admin"] as const)(
+  it.each(["gateway-owner", "system-admin", "named-admin"] as const)(
     "permits a current %s to preview, reserve a receipt, and reach the GitHub CLI transport",
     async (authority) => {
       const generation = "current";
       const client = createOperatorWsClient({ connId: `report-current-${authority}` });
       grantReportAuthority(client, authority);
-      client.usesSharedGatewayAuth = true;
+      client.usesSharedGatewayAuth = authority === "gateway-owner";
       client.sharedGatewaySessionGeneration = generation;
       const { harness } = createReportHarness({ getGeneration: () => generation });
+      const profileId = client.authenticatedUserProfile?.profileId;
       const previewDigest = await dispatchPreview({ client, harness, id: "preview-allowed" });
       expect(await countReportFiles()).toBe(0);
 
       await dispatchSubmit({ client, harness, id: "allowed", previewDigest });
       const response = await harness.awaitResponseFrame("allowed");
 
+      expect(client.authenticatedUserProfile?.profileId).toBe(profileId);
       expect(mocks.submitGithubIssue).toHaveBeenCalledOnce();
       expect(await countReportFiles()).toBe(0);
       expect(countReportReceipts()).toBe(1);
@@ -417,7 +423,8 @@ describe("update report live authority boundary", () => {
 
   it.each([
     { label: "operator.write", scopes: ["operator.write"] },
-    { label: "non-owner administrator", scopes: ["operator.admin"] },
+    { label: "operator.read", scopes: ["operator.read"] },
+    { label: "operator.approvals", scopes: ["operator.approvals"] },
   ])("rejects an identified $label before report state or transport", async ({ scopes }) => {
     const client = createOperatorWsClient({
       connId: `report-denied-${scopes[0]}`,
@@ -447,6 +454,7 @@ describe("update report live authority boundary", () => {
   it.each([
     { change: "shared-auth", closeReason: "gateway auth changed" },
     { change: "invalidated", closeReason: "client invalidated: device-token-revoked" },
+    { change: "scopes", closeReason: null },
   ] as const)(
     "blocks issue creation when $change authority closes after auth preflight",
     async (testCase) => {
@@ -493,6 +501,8 @@ describe("update report live authority boundary", () => {
       await enteredAuthPreflight.promise;
       if (testCase.change === "shared-auth") {
         generation = "rotated";
+      } else if (testCase.change === "scopes") {
+        client.connect.scopes = ["operator.write"];
       } else {
         client.invalidated = true;
         client.invalidatedReason = "device-token-revoked";
@@ -501,7 +511,11 @@ describe("update report live authority boundary", () => {
       await finished;
       await dispatch;
 
-      expect(harness.close).toHaveBeenCalledWith(4001, testCase.closeReason);
+      if (testCase.closeReason) {
+        expect(harness.close).toHaveBeenCalledWith(4001, testCase.closeReason);
+      } else {
+        expect(harness.close).not.toHaveBeenCalled();
+      }
       expect(mocks.submitGithubIssue).toHaveBeenCalledOnce();
       expect(issueCreateCalls).toBe(0);
       expect(await countReportFiles()).toBe(0);

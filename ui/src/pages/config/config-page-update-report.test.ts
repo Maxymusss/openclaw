@@ -21,16 +21,23 @@ describe("ConfigPage update failure reporting", () => {
       allowed: true,
     },
     {
-      label: "non-owner administrator",
-      profileId: "other-operator",
+      label: "named administrator",
+      profileId: "named-administrator",
       scope: "operator.admin",
       connected: true,
-      allowed: false,
+      allowed: true,
     },
     {
       label: "unidentified administrator",
       profileId: null,
       scope: "operator.admin",
+      connected: true,
+      allowed: true,
+    },
+    {
+      label: "named operator without administrator scope",
+      profileId: "named-operator",
+      scope: "operator.write",
       connected: true,
       allowed: false,
     },
@@ -84,7 +91,7 @@ describe("ConfigPage update failure reporting", () => {
             selfUser: profileId ? { id: profileId } : null,
             hello: {
               auth: { role: "operator", scopes: [scope] },
-              features: { methods: ["update.status"] },
+              features: { methods: ["update.status", "update.run"] },
             },
           },
           subscribe: () => () => undefined,
@@ -116,6 +123,13 @@ describe("ConfigPage update failure reporting", () => {
       );
       expect(report).toBeDefined();
       expect(report?.disabled).toBe(!allowed);
+      for (const label of ["Check status", "Retry update"]) {
+        const action = [...container.querySelectorAll<HTMLButtonElement>("button")].find(
+          (button) => button.textContent?.trim() === label,
+        );
+        expect(action).toBeDefined();
+        expect(action?.disabled).toBe(!allowed);
+      }
       report?.click();
       expect(reportUpdateFailure).toHaveBeenCalledTimes(allowed ? 1 : 0);
       if (allowed) {

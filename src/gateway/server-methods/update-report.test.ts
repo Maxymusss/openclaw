@@ -73,7 +73,7 @@ async function invoke(
   }
   await handler({
     ...(hasCurrentClientAuthority ? { hasCurrentClientAuthority } : {}),
-    client: { internal: { operatorRoleActor: { kind: "system" } } },
+    client: { connect: { role: "operator", scopes: ["operator.admin"] } },
     params,
     respond,
   } as never);

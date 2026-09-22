@@ -51,8 +51,10 @@ and **Ask OpenClaw**. It previews a bounded report containing the OpenClaw
 version, platform, update target, failed phase, sanitized diagnostics, and
 verified rollback outcome. The report excludes secrets, tokens, chat content,
 raw logs, private absolute paths, and recovery commands. Nothing is submitted
-until an administrator confirms that preview. OpenClaw then uses the existing
-GitHub CLI issue flow. Fallback and pending outcomes retain the sanitized report
+until an administrator confirms that preview. Reporting requires the connected
+`operator.admin` scope, including for named identities signed in through a trusted
+proxy; it does not require the shared Gateway owner profile. OpenClaw then uses
+the existing GitHub CLI issue flow. Fallback and pending outcomes retain the sanitized report
 locally; a confirmed issue keeps only its durable issue URL. OpenClaw first makes
 a silent, read-only request with the active `github.com` account. A missing CLI
 or a failed, unavailable, or timed-out authentication check returns a prefilled

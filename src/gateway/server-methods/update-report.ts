@@ -4,7 +4,6 @@ import {
   validateUpdateReportParams,
   validateUpdateReportResult,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { GATEWAY_OWNER_PROFILE_ID } from "../../../packages/gateway-protocol/src/schema/users.js";
 import type { RestartSentinelPayload } from "../../infra/restart-sentinel.js";
 import { PACKAGE_POST_INSTALL_DOCTOR_ADVISORY } from "../../infra/update-doctor-result.js";
 import {
@@ -15,6 +14,7 @@ import {
 } from "../../infra/update-failure-report.js";
 import { findActiveUpdateRun, listUpdateRuns } from "../../infra/update-run-ledger.js";
 import { classifyUpdateOutcome, isReportableUpdateRun } from "../../shared/update-outcome.js";
+import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { refreshLatestUpdateRestartSentinel } from "../server-restart-sentinel.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -144,13 +144,10 @@ function projectPublicSubmitResult(
   };
 }
 
-function hasUpdateReportOwnerAuthority(
+function hasUpdateReportAdminAuthority(
   client: Parameters<GatewayRequestHandlers["update.report"]>[0]["client"],
 ): boolean {
-  return (
-    client?.internal?.operatorRoleActor?.kind === "system" ||
-    client?.authenticatedUserProfile?.profileId === GATEWAY_OWNER_PROFILE_ID
-  );
+  return client?.connect.scopes?.includes(ADMIN_SCOPE) === true;
 }
 
 export const updateReportHandler: GatewayRequestHandlers["update.report"] = async ({
@@ -170,10 +167,10 @@ export const updateReportHandler: GatewayRequestHandlers["update.report"] = asyn
     });
     return;
   }
-  if (!hasUpdateReportOwnerAuthority(client)) {
+  if (!hasUpdateReportAdminAuthority(client)) {
     respond(false, undefined, {
       code: ErrorCodes.FORBIDDEN,
-      message: "Update failure reports require gateway-owner or system administrator authority.",
+      message: "Update failure reports require operator.admin authority.",
     });
     return;
   }
@@ -185,7 +182,7 @@ export const updateReportHandler: GatewayRequestHandlers["update.report"] = asyn
     hasCurrentClientAuthority() &&
     (!runtimeIdentity ||
       context.validateAgentRuntimeApprovalAuthority?.(runtimeIdentity) === true) &&
-    hasUpdateReportOwnerAuthority(client);
+    hasUpdateReportAdminAuthority(client);
   if (!hasCurrentReportAuthority()) {
     return;
   }

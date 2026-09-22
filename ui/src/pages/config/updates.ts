@@ -165,7 +165,7 @@ function renderRecordedAttempt(props: UpdatesViewProps) {
                   ? html`<button
                       class="btn btn--sm"
                       type="button"
-                      title=${props.canReport ? "" : t("updates.page.reportOwnerRequired")}
+                      title=${props.canReport ? "" : t("updates.page.reportAdminRequired")}
                       ?disabled=${!props.canReport || props.updateBusy || props.update.updateStatusRefreshing || props.update.updateFailureReportBusy}
                       @click=${() => void props.onReportFailure(props.update.reportableUpdateFailureId!)}
                     >

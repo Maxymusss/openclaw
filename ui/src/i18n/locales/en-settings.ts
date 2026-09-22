@@ -675,8 +675,7 @@ const enSettings = {
       checkStatus: "Check status",
       retryUpdate: "Retry update",
       reportFailure: "Report update failure",
-      reportOwnerRequired:
-        "Reporting requires a connected Gateway owner with administrator access.",
+      reportAdminRequired: "Reporting requires a connected Gateway with administrator access.",
       reportResult: "Failure report",
       reportSubmitting: "Submitting report…",
       reportCreated: "GitHub issue created",
