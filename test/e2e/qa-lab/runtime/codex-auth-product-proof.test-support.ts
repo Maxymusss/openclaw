@@ -374,7 +374,7 @@ export async function captureCodexAuthFailure(params: {
       const fileBytes = statSync(diagnosticPath).size;
       const byteLimit = 64 * 1024;
       const recordLimit = 128;
-      const entries = createJsonlRequestTailer<unknown>(diagnosticPath, {
+      const entries = createJsonlRequestTailer(diagnosticPath, {
         maxReadBytes: byteLimit,
         historyLimit: recordLimit,
       }).read();
