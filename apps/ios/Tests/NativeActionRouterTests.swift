@@ -1,10 +1,10 @@
 import Foundation
-import OpenClawKit
 import OpenClawProtocol
 import SwiftUI
 import Testing
 @testable import OpenClaw
 @testable import OpenClawChatUI
+@testable import OpenClawKit
 
 private enum NativeRouteReadContext {
     @TaskLocal static var held = false
@@ -1953,7 +1953,7 @@ struct NativeActionRouterTests {
         try await self.withHost { host in
             #expect(await host.router.open(.session(host.session())) == .opened)
             let chat = try #require(host.chat)
-            chat.inputText = "Retained draft"
+            chat.input = "Retained draft"
             if mode != "warm" {
                 try host.hideChat()
                 host.model.chatPresentation.sync(appModel: host.model)
@@ -2058,7 +2058,7 @@ struct NativeActionRouterTests {
                     #expect(host.model.chatSessionKey == "global")
                     #expect(host.model.openChatRequestID == requestID)
                 }
-                #expect(chat.inputText == "Retained draft")
+                #expect(chat.input == "Retained draft")
                 #expect(host.createdSessions == 1)
                 #expect(host.sent.isEmpty)
             } catch {

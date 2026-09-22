@@ -851,6 +851,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                     XCTAssertTrue(chat.input.isEmpty)
                     XCTAssertTrue(attachments.isEmpty)
                     XCTAssertNil(reply)
+                    @MainActor
                     func assertPagesState() {
                         let current = model.chatPresentation.viewModel
                         XCTAssertNotNil(current)
