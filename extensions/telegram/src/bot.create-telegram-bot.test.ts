@@ -38,8 +38,10 @@ import {
 } from "./bot-native-command-dispatch.test-support.js";
 import {
   makeCallbackRetryContext,
+  makeMessagePolicyCase,
   makePrivateTextContext,
   telegramBotInfoForTest,
+  type MessagePolicyCase,
 } from "./bot.create-telegram-bot.test-support.js";
 import {
   createTelegramCallbackContext,
@@ -164,38 +166,6 @@ function nextForumCacheChatId(): number {
 }
 
 type TelegramMessageHandler = (ctx: TelegramMiddlewareTestContext) => Promise<void>;
-type MessagePolicyCase = {
-  name: string;
-  config: Record<string, unknown>;
-  message: Record<string, unknown>;
-  expectedReplyCount: number;
-};
-
-function makeMessagePolicyCase(params: {
-  name: string;
-  telegram: Record<string, unknown>;
-  expectedReplyCount: number;
-  kind?: "private" | "group";
-  rootConfig?: Record<string, unknown>;
-  message?: Record<string, unknown>;
-}): MessagePolicyCase {
-  const isGroup = params.kind !== "private";
-  return {
-    name: params.name,
-    config: { ...params.rootConfig, channels: { telegram: params.telegram } },
-    message: {
-      chat: isGroup
-        ? { id: -100123456789, type: "group", title: "Test Group" }
-        : { id: 123456789, type: "private" },
-      from: { id: 123456789, username: "testuser" },
-      text: "hello",
-      date: 1736380800,
-      ...params.message,
-    },
-    expectedReplyCount: params.expectedReplyCount,
-  };
-}
-
 function configureOpenDm(
   params: {
     debounceMs?: number;
@@ -4290,10 +4260,12 @@ describe("createTelegramBot", () => {
   it("retries a deferred spooled update after its queued turn is abandoned", async () => {
     configureOpenDm();
     let queuedLifecycle: GetReplyOptions["turnAdoptionLifecycle"];
+    const queued = createDeferred<void>();
     replySpy
       .mockImplementationOnce(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
         queuedLifecycle = opts?.turnAdoptionLifecycle;
         queuedLifecycle?.onDeferred?.();
+        queued.resolve();
         return undefined;
       })
       .mockImplementationOnce(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
@@ -4310,10 +4282,20 @@ describe("createTelegramBot", () => {
       messageId: 702,
       text: "retry after queued turn abandonment",
     });
-    await vi.waitFor(() => {
+    try {
+      // Join actual queue deferral after async preparation, not a host-speed polling budget.
+      await Promise.race([
+        queued.promise,
+        firstReplayPromise.then(async (replay) => {
+          await replay.deferredWork?.task;
+          throw new Error("Spool replay settled before queue deferral");
+        }),
+      ]);
       expect(queuedLifecycle?.onAbandoned).toEqual(expect.any(Function));
-    });
-    queuedLifecycle?.onAbandoned?.();
+    } finally {
+      queuedLifecycle?.onAbandoned?.();
+      await firstReplayPromise;
+    }
     const firstReplay = await firstReplayPromise;
     const firstDeferredWork = requireValue(firstReplay.deferredWork, "first deferred spooled work");
     await expect(firstDeferredWork.task).resolves.toMatchObject({ kind: "failed-retryable" });

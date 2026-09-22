@@ -184,6 +184,38 @@ export function createTelegramPrivateMediaContext(params: {
   };
 }
 
+export type MessagePolicyCase = {
+  name: string;
+  config: Record<string, unknown>;
+  message: Record<string, unknown>;
+  expectedReplyCount: number;
+};
+
+export function makeMessagePolicyCase(params: {
+  name: string;
+  telegram: Record<string, unknown>;
+  expectedReplyCount: number;
+  kind?: "private" | "group";
+  rootConfig?: Record<string, unknown>;
+  message?: Record<string, unknown>;
+}): MessagePolicyCase {
+  const isGroup = params.kind !== "private";
+  return {
+    name: params.name,
+    config: { ...params.rootConfig, channels: { telegram: params.telegram } },
+    message: {
+      chat: isGroup
+        ? { id: -100123456789, type: "group", title: "Test Group" }
+        : { id: 123456789, type: "private" },
+      from: { id: 123456789, username: "testuser" },
+      text: "hello",
+      date: 1736380800,
+      ...params.message,
+    },
+    expectedReplyCount: params.expectedReplyCount,
+  };
+}
+
 export function makePrivateTextContext(params: {
   text: string;
   messageId?: number;

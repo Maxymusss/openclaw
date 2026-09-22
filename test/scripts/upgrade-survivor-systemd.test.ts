@@ -524,7 +524,7 @@ raise SystemExit(code if code >= 0 else 128 - code)
       expect(restarted.status, restarted.stdout + restarted.stderr).toBe(0);
       await waitForStarts(1);
       const firstRuntime = await readLoadedSystemdServiceRuntime(env);
-      expect(firstRuntime).toMatchObject({
+      expect(firstRuntime, JSON.stringify(firstRuntime)).toMatchObject({
         status: "running",
         pid: records()[0]!.pid,
         systemd: { managerUid: process.getuid?.() },
