@@ -303,6 +303,7 @@ type SqliteScopeInput = Pick<
 function resolveSqliteDatabaseScope(
   scope: SqliteScopeInput,
   targetCache?: SessionSqliteTargetResolutionCache,
+  targetOptions?: Parameters<typeof resolveSqliteTargetFromSessionStorePath>[1],
 ) {
   const parsedAgentId = parseAgentSessionKey(scope.sessionKey)?.agentId;
   const scopedAgentId = scope.agentId ? normalizeAgentId(scope.agentId) : parsedAgentId;
@@ -320,6 +321,7 @@ function resolveSqliteDatabaseScope(
           defaultAgentId: scope.defaultAgentId,
           env: scope.env,
           storePath: effectiveStorePath,
+          targetOptions,
         },
         targetCache,
       )
@@ -342,8 +344,9 @@ function resolveSqliteDatabaseScope(
 export function resolveSqliteScope(
   scope: SqliteScopeInput & { sessionKey: string },
   targetCache?: SessionSqliteTargetResolutionCache,
+  targetOptions?: Parameters<typeof resolveSqliteTargetFromSessionStorePath>[1],
 ): ResolvedSqliteScope {
-  const { agentId, ...database } = resolveSqliteDatabaseScope(scope, targetCache);
+  const { agentId, ...database } = resolveSqliteDatabaseScope(scope, targetCache, targetOptions);
   if (!agentId) {
     throw new Error("Cannot resolve SQLite session scope without an agent id");
   }
@@ -379,11 +382,13 @@ function resolveCachedSqliteStoreTarget(
     defaultAgentId?: string;
     env?: NodeJS.ProcessEnv;
     storePath: string;
+    targetOptions?: Parameters<typeof resolveSqliteTargetFromSessionStorePath>[1];
   },
   targetCache: SessionSqliteTargetResolutionCache | undefined,
 ): ReturnType<typeof resolveSqliteTargetFromSessionStorePath> {
   if (!targetCache) {
     return resolveSqliteTargetFromSessionStorePath(params.storePath, {
+      ...params.targetOptions,
       agentId: params.agentId,
       defaultAgentId: params.defaultAgentId,
       ...(params.env ? { env: params.env } : {}),

@@ -336,29 +336,34 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       return false;
     }
     const { bindingStore, bindingIdentity } = connection;
-    const retained = await bindingStore.withLease(bindingIdentity, async () => {
-      if (!isSameCodexAppServerThreadOwner(bindingStore.read(bindingIdentity), thread)) {
-        return false;
-      }
-      try {
-        if (!state.turnStartAttempted) {
-          runAbortController.signal.throwIfAborted();
-        }
-        params.hostCapabilities.assertActive();
-        connection.assertCurrent();
-        thread.liveThreadOwnership?.assertCurrent();
-      } catch {
-        return false;
-      }
-      return await retainCodexAppServerBindingSubscription(client, thread.threadId, {
-        release: thread.liveThreadOwnership?.release,
-        configFingerprint: thread.liveThreadConfigFingerprint,
-        serviceTier: state.turnStartAttempted
-          ? connection.mutable.pluginAppServer.serviceTier
-          : thread.liveThreadOwnership?.serviceTier,
-        ephemeralPolicy: thread.liveThreadEphemeralPolicy,
-      });
-    });
+    const retained = await bindingStore.withLease(
+      bindingIdentity,
+      async () => {
+        let pending: Promise<boolean> | undefined;
+        await connection.withCurrent(() => {
+          if (!isSameCodexAppServerThreadOwner(bindingStore.read(bindingIdentity), thread)) return;
+          try {
+            if (!state.turnStartAttempted) runAbortController.signal.throwIfAborted();
+            params.hostCapabilities.assertActive();
+            connection.assertCurrent();
+            thread.liveThreadOwnership?.assertCurrent();
+          } catch {
+            return;
+          }
+          // This owner publishes its native claim synchronously before optional idle cleanup.
+          pending = retainCodexAppServerBindingSubscription(client, thread.threadId, {
+            release: thread.liveThreadOwnership?.release,
+            configFingerprint: thread.liveThreadConfigFingerprint,
+            serviceTier: state.turnStartAttempted
+              ? connection.mutable.pluginAppServer.serviceTier
+              : thread.liveThreadOwnership?.serviceTier,
+            ephemeralPolicy: thread.liveThreadEphemeralPolicy,
+          });
+        });
+        return pending ? await pending : false;
+      },
+      { assertCurrent: connection.assertCurrent, authority: connection.authority },
+    );
     if (retained) {
       subscriptionSettlement = { thread, retained: true };
     }
@@ -374,7 +379,11 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     subscriptionSettlement = { thread, retained: false };
     if (thread.liveThreadOwnership) {
       try {
-        await thread.liveThreadOwnership.release(thread.threadId, assertCurrent);
+        await thread.liveThreadOwnership.release(
+          thread.threadId,
+          assertCurrent,
+          connection.withCurrent,
+        );
         return true;
       } catch (error) {
         await closeCodexStartupClientBestEffort(client);
@@ -385,6 +394,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       threadId: thread.threadId,
       timeoutMs: CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
       assertCurrent,
+      withCurrent: connection.withCurrent,
     });
     if (!released) {
       await closeCodexStartupClientBestEffort(client);
@@ -489,7 +499,8 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       loopDetectionPreToolUseRelay: appServer.loopDetectionPreToolUseRelay,
       signal: runAbortController.signal,
       hostCapabilities: params.hostCapabilities,
-      assertCurrent: connection.assertCurrent,
+      // Native hook SDK exposes a synchronous retained capability.
+      assertCurrent: connection.assertLegacyCurrent,
       onPreToolUseFailure: (failure) => {
         const projector = projectorRef.current;
         if (projector) {

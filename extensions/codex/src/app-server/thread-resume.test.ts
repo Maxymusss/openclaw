@@ -58,6 +58,28 @@ function createClient(requestImpl: (method: string, params: unknown) => unknown)
 }
 
 describe("resumeCodexAppServerThread", () => {
+  it("rejects revoked asynchronous wire authority without releasing an unacquired subscription", async () => {
+    const harness = createClientHarness();
+    const abandonClient = vi.fn(async () => undefined);
+    const rejection = new Error("host lineage changed");
+    try {
+      await expect(
+        resumeCodexAppServerThread({
+          client: harness.client,
+          abandonClient,
+          request: { threadId: "thread-1" },
+          withCurrent: async () => {
+            throw rejection;
+          },
+        }),
+      ).rejects.toBe(rejection);
+      expect(harness.writes).toHaveLength(0);
+      expect(abandonClient).not.toHaveBeenCalled();
+    } finally {
+      harness.client.close();
+    }
+  });
+
   it("resumes the requested thread and keeps the client leased", async () => {
     const { client, request } = createClient(async () => resumeResponse("thread-1", 2));
     const abandonClient = vi.fn(async () => undefined);

@@ -68,6 +68,8 @@ type RequestOptions = {
   timeoutMs?: number;
   signal?: AbortSignal;
   assertCurrent?: () => void;
+  /** Prepare authority asynchronously, retaining it only through synchronous wire admission. */
+  withCurrent?: (write: () => void) => Promise<void>;
   catalogPreview?: true;
   catalogPreviewCache?: CodexCatalogPreviewCache;
   catalogRows?: number;
@@ -731,7 +733,29 @@ export class CodexAppServerClient {
     if (!attempt.pending) {
       return result;
     }
-    try {
+    let consumed = false;
+    const write = () => {
+      if (consumed) {
+        throw new Error("Codex request wire admission was already consumed");
+      }
+      consumed = true;
+      if (!attempt.pending) {
+        return;
+      }
+      if (this.closed) {
+        throw this.closeError ?? new Error("codex app-server client is closed");
+      }
+      if (options.signal?.aborted) {
+        throw new CodexAppServerLocalRequestCancellationError(
+          method,
+          "aborted",
+          false,
+          options.signal.reason,
+        );
+      }
+      if (deadline !== undefined && performance.now() >= deadline) {
+        throw new CodexAppServerLocalRequestCancellationError(method, "timed out", false);
+      }
       options.assertCurrent?.();
       if (attempt.pending) {
         this.writeMessage(
@@ -742,6 +766,22 @@ export class CodexAppServerClient {
             onWriteStateChange?.(true);
           },
         );
+      }
+    };
+    try {
+      if (options.withCurrent) {
+        // The waiter owns cancellation while preparation is pending. A late grant
+        // cannot write a cancelled attempt, and custody never waits for its response.
+        void options
+          .withCurrent(write)
+          .then(() => {
+            if (!consumed && attempt.pending) {
+              throw new Error("Codex request authority did not admit the wire write");
+            }
+          })
+          .catch((error: unknown) => attempt.failLocal(toStringifiedError(error)));
+      } else {
+        write();
       }
     } catch (error) {
       attempt.failLocal(toStringifiedError(error));

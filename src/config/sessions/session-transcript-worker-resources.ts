@@ -301,7 +301,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
     let revoked = false;
     let closing: Promise<void> | undefined;
     let nativeCleanupPending = false;
-    let dispatched = false;
+    let unsettledDiscoveries = 0;
     let outcome: { value: T } | { error: unknown };
     const assertCurrent = () => {
       if (revoked) {
@@ -358,7 +358,7 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
           const reply = await historyPages.run(
             () => {
               assertCurrent();
-              dispatched = true;
+              unsettledDiscoveries++;
               historyLane.nativeSequence++;
               return { kind: "session-target-inventory", request };
             },
@@ -390,7 +390,14 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
               "Session history worker returned another result instead of target inventory",
             );
           }
-          if (result.kind === "session-target-registry-required") {
+          // Only the worker can confirm its transient discovery handles closed.
+          // Failed/ambiguous replies retain retirement custody; ordinary inventory
+          // retains its cached native readers and still rotates as before.
+          if (result.nativeReadsSettled === true) unsettledDiscoveries--;
+          if (
+            result.kind === "session-target-registry-required" &&
+            result.nativeReadsSettled !== true
+          ) {
             // Native discovery may already have opened other candidates. Settle
             // their worker before continuing through the registry's read owner.
             await retire();
@@ -406,7 +413,10 @@ export async function withSessionHistoryWorkerReadCandidates<T>(
     }
     // Discovery custody includes lexical aliases. Keep it until physical readers
     // settle; a later close through an alias must never miss a retained handle.
-    if (dispatched) {
+    // Physical history readers can outlive discovery. A lexical alias must stay
+    // registered until those readers close, because close-by-alias is lexical.
+    const aliased = candidates.some((candidate) => candidate.path !== candidate.physicalPath);
+    if (unsettledDiscoveries > 0 || aliased) {
       try {
         await retire();
       } catch (cleanupError) {

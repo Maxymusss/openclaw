@@ -208,8 +208,9 @@ describe("Codex app-server binding store", () => {
       state: "active",
       sessionId: "old",
     });
-    // Revocation intentionally leaves the lease for expiry. The next owner is
-    // independent persisted state, not a continuation of that closed callback.
+    expect(values.get(bindingStoreKey(identity))?.lease).toBeUndefined();
+    // Revocation releases only the old token. A successor remains independent
+    // persisted state, never a continuation of that closed callback.
     const successor = {
       version: 1 as const,
       state: "active" as const,

@@ -10,7 +10,11 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginStateSyncKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
-import { getSessionEntry, resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
+import {
+  getSessionEntry,
+  resolveStorePath,
+  withSessionEntriesRead,
+} from "openclaw/plugin-sdk/session-store-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   normalizeCodexAppServerBindingModelProvider,
@@ -76,89 +80,136 @@ const PHYSICAL_SESSION_RETIRE_TTL_MS = BINDING_LEASE_WAIT_MS;
 export type CodexRunSessionBindingAuthority = "current" | "ephemeral" | "superseded";
 
 /** Decides whether a run may share the durable stable-key binding owner. */
-export function resolveCodexRunSessionBindingAuthority(params: {
+export async function resolveCodexRunSessionBindingAuthority(params: {
   identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>;
   config?: OpenClawConfig;
   storePath?: string;
-}): CodexRunSessionBindingAuthority {
-  return captureCodexSessionGenerationAuthority(params)[0];
+}): Promise<CodexRunSessionBindingAuthority> {
+  return (await captureCodexSessionGenerationAuthority(params)).state;
 }
 
-/** Host lineage is recorded in the same transaction as its successor generation. */
-function readCodexBindingSessionEntry(params: {
+type CodexSessionGenerationAuthorityParams = {
   identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>;
   config?: OpenClawConfig;
   storePath?: string;
-}) {
-  const { identity } = params;
-  return identity.sessionKey?.trim()
-    ? getSessionEntry({
-        agentId: identity.agentId,
-        sessionKey: identity.sessionKey.trim(),
-        storePath:
-          params.storePath?.trim() ||
-          resolveStorePath(params.config?.session?.store, { agentId: identity.agentId }),
-        hydrateSkillPromptRefs: false,
-        readConsistency: "latest",
-      })
-    : undefined;
-}
+};
 
-/** Synchronous model selection recognizes the predecessor; admission rewrites its fence. */
-function readCodexSessionOwnershipBinding(params: {
-  bindingStore: {
-    read(identity: CodexAppServerBindingIdentity): CodexAppServerThreadBinding | undefined;
+type CodexBindingLineage = {
+  read: Parameters<typeof withSessionEntriesRead>[0][number];
+  sessionId: string;
+  previousSessionId?: string;
+};
+
+/** A fresh lineage read owns custody only through the synchronous effect admission. */
+export type CodexBindingWithCurrent = <T>(consume: () => T) => Promise<T>;
+
+export type CodexBindingAuthority = {
+  readonly lineage: readonly CodexBindingLineage[];
+  /** Caller cancellation and lifecycle only; never durable SQL. */
+  assertCurrent: () => void;
+  /** Retained only for shipped synchronous SDK capability contracts. */
+  assertLegacyCurrent: () => void;
+  withCurrent: CodexBindingWithCurrent;
+};
+
+function createCodexBindingAuthority(
+  lineage: readonly CodexBindingLineage[],
+  assertCurrent: () => void,
+): CodexBindingAuthority {
+  const assertEntry = (
+    expected: CodexBindingLineage,
+    entry: ReturnType<typeof getSessionEntry>,
+  ) => {
+    if (
+      !entry ||
+      entry.sessionId !== expected.sessionId ||
+      entry.previousSessionId !== expected.previousSessionId
+    ) {
+      throw createCodexSessionGenerationSupersededError(expected.sessionId);
+    }
   };
-  identity: CodexAppServerBindingIdentity;
-  config?: OpenClawConfig;
-  storePath?: string;
-}): CodexAppServerThreadBinding | undefined {
-  const binding = params.bindingStore.read(params.identity);
-  if (binding || params.identity.kind !== "session") {
-    return binding;
-  }
-  const entry = readCodexBindingSessionEntry({ ...params, identity: params.identity });
-  return entry?.sessionId === params.identity.sessionId && entry.previousSessionId
-    ? params.bindingStore.read({ ...params.identity, sessionId: entry.previousSessionId })
-    : undefined;
+  const withCurrent: CodexBindingWithCurrent = async (consume) => {
+    assertCurrent();
+    return await withSessionEntriesRead(
+      lineage.map(({ read }) => read),
+      (entries) => {
+        assertCurrent();
+        lineage.forEach((expected, index) => assertEntry(expected, entries[index]));
+        return consume();
+      },
+    );
+  };
+  return {
+    lineage,
+    assertCurrent,
+    withCurrent,
+    assertLegacyCurrent: () => {
+      assertCurrent();
+      for (const expected of lineage) {
+        let entry: ReturnType<typeof getSessionEntry>;
+        try {
+          entry = getSessionEntry(expected.read);
+        } catch {
+          throw createCodexSessionGenerationSupersededError(expected.sessionId);
+        }
+        assertEntry(expected, entry);
+      }
+    },
+  };
 }
 
-type CodexSessionGenerationAuthorityParams = Parameters<typeof readCodexBindingSessionEntry>[0];
+/** One batched read preserves every owner's proof without nested writer scopes. */
+export function combineCodexBindingAuthority(
+  ...authorities: readonly (CodexBindingAuthority | undefined)[]
+): CodexBindingAuthority {
+  const present = authorities.filter((authority) => authority !== undefined);
+  return createCodexBindingAuthority(
+    present.flatMap(({ lineage }) => lineage),
+    () => {
+      for (const authority of present) authority.assertCurrent();
+    },
+  );
+}
 
-function captureCodexSessionGenerationAuthority(
+async function captureCodexSessionGenerationAuthority(
   params: CodexSessionGenerationAuthorityParams,
   assertCallerCurrent: () => void = () => {},
 ) {
-  const readEntry = () => {
-    try {
-      return readCodexBindingSessionEntry(params);
-    } catch {
-      return null;
-    }
+  const read = {
+    agentId: params.identity.agentId,
+    sessionKey: params.identity.sessionKey?.trim() ?? "",
+    storePath:
+      params.storePath?.trim() ||
+      resolveStorePath(params.config?.session?.store, { agentId: params.identity.agentId }),
+    hydrateSkillPromptRefs: false as const,
+    readConsistency: "latest" as const,
   };
-  const entry = readEntry();
-  const current = entry?.sessionId === params.identity.sessionId;
-  const authority = entry === undefined ? "ephemeral" : current ? "current" : "superseded";
-  const previousSessionId = current ? entry.previousSessionId : undefined;
-  const assertHostCurrent = () => {
-    if (authority === "ephemeral") {
-      return;
-    }
-    const latest = readEntry();
-    if (
-      authority !== "current" ||
-      !latest ||
-      latest.sessionId !== params.identity.sessionId ||
-      latest.previousSessionId !== previousSessionId
-    ) {
-      throw createCodexSessionGenerationSupersededError(params.identity.sessionId);
-    }
-  };
-  const assertCurrent = () => {
+  let entry: ReturnType<typeof getSessionEntry> | null;
+  try {
+    entry = read.sessionKey
+      ? await withSessionEntriesRead([read], ([entry]) => {
+          assertCallerCurrent();
+          return entry;
+        })
+      : undefined;
+  } catch {
     assertCallerCurrent();
-    assertHostCurrent();
-  };
-  return [authority, previousSessionId, assertHostCurrent, assertCurrent] as const;
+    // Read failure is denied authority, never an ephemeral or synchronous fallback.
+    entry = null;
+  }
+  const current = entry?.sessionId === params.identity.sessionId;
+  const state = entry === undefined ? "ephemeral" : current ? "current" : "superseded";
+  const previousSessionId = current ? entry?.previousSessionId : undefined;
+  const authority = createCodexBindingAuthority(
+    state === "current" ? [{ read, sessionId: params.identity.sessionId, previousSessionId }] : [],
+    () => {
+      assertCallerCurrent();
+      if (state === "superseded") {
+        throw createCodexSessionGenerationSupersededError(params.identity.sessionId);
+      }
+    },
+  );
+  return { state, previousSessionId, authority } as const;
 }
 
 /** Builds the terminal coordination error used when a newer OpenClaw session owns the binding. */
@@ -333,6 +384,7 @@ type BindingLeaseOwner = {
   phase: "held" | "deleted" | "closed";
   failure?: Error;
   assertCurrent?: () => void;
+  authority?: CodexBindingAuthority;
 };
 
 function bindingLeaseLostError(key: string, cause?: unknown): Error {
@@ -359,6 +411,7 @@ export type CodexAppServerBindingStore = {
     identity: CodexAppServerBindingIdentity,
     mutation: CodexAppServerBindingMutation,
     assertCurrent?: () => void,
+    authority?: CodexBindingAuthority,
   ): Promise<boolean>;
   prepareSessionGenerationReclaim(
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
@@ -367,6 +420,7 @@ export type CodexAppServerBindingStore = {
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
     expectedPreviousSessionId: string,
     assertCurrent?: () => void,
+    authority?: CodexBindingAuthority,
   ): Promise<CodexSessionGenerationAdoptionResult>;
   resetSessionGeneration(
     identity: Extract<CodexAppServerBindingIdentity, { kind: "session" }>,
@@ -383,36 +437,39 @@ export type CodexAppServerBindingStore = {
     ) => Promise<T>,
   ): Promise<T>;
   withThreadArchiveFence<T>(run: () => Promise<T>): Promise<T>;
-  withLease<T>(identity: CodexAppServerBindingIdentity, run: () => Promise<T>): Promise<T>;
+  withLease<T>(
+    identity: CodexAppServerBindingIdentity,
+    run: () => Promise<T>,
+    options?: { assertCurrent?: () => void; authority?: CodexBindingAuthority },
+  ): Promise<T>;
 };
 
 type CodexSessionGenerationReclaimParams = CodexSessionGenerationAuthorityParams & {
   assertCurrent?: () => void;
-  onHostGenerationVerified?: (assertHostGeneration: () => void) => void;
   bindingStore: CodexAppServerBindingStore;
   reclaimStale?: boolean;
 };
 
 async function reclaimPreparedCodexSessionGeneration(
   params: CodexSessionGenerationReclaimParams,
-  authority: ReturnType<typeof captureCodexSessionGenerationAuthority>,
-  assertCurrent = authority[3],
+  authority: Awaited<ReturnType<typeof captureCodexSessionGenerationAuthority>>,
+  assertCurrent = authority.authority.assertCurrent,
 ): Promise<boolean> {
   const plan = await params.bindingStore.prepareSessionGenerationReclaim(params.identity);
   assertCurrent();
   if (plan.kind === "resolved") {
     return plan.result;
   }
-  const [state, previousSessionId, assertHostCurrent] = authority;
+  const { state, previousSessionId } = authority;
   if (state !== "current") {
     return false;
   }
-  params.onHostGenerationVerified?.(assertHostCurrent);
   if (previousSessionId === plan.expectedPreviousSessionId) {
     const adopted = await params.bindingStore.adoptSessionGeneration(
       params.identity,
       previousSessionId,
       assertCurrent,
+      authority.authority,
     );
     if (adopted !== "absent") {
       return adopted !== "conflict";
@@ -428,6 +485,7 @@ async function reclaimPreparedCodexSessionGeneration(
       expectedPreviousSessionId: plan.expectedPreviousSessionId,
     },
     assertCurrent,
+    authority.authority,
   );
 }
 
@@ -439,8 +497,8 @@ export async function reclaimCurrentCodexSessionGeneration(
   if (!params.identity.sessionKey?.trim()) {
     return true;
   }
-  const authority = captureCodexSessionGenerationAuthority(params, params.assertCurrent);
-  if (authority[0] === "superseded") {
+  const authority = await captureCodexSessionGenerationAuthority(params, params.assertCurrent);
+  if (authority.state === "superseded") {
     return false;
   }
   return reclaimPreparedCodexSessionGeneration(params, authority);
@@ -456,44 +514,64 @@ export async function resolveCodexSessionBinding(params: {
   signal?: AbortSignal;
   assertCurrent?: () => void;
   assertBinding?: (binding: CodexAppServerThreadBinding | undefined) => void;
+  authority?: CodexBindingAuthority;
 }): Promise<{
   binding: CodexAppServerThreadBinding | undefined;
   assertCurrent: () => void;
+  assertLegacyCurrent: () => void;
+  authority: CodexBindingAuthority;
 }> {
-  let assertCurrent = params.assertCurrent ?? (() => {});
+  const assertCallerCurrent = params.assertCurrent ?? (() => {});
   const assertAdmissionCurrent = () => {
-    // Each caller retains its own cancellation error and cleanup behavior.
-    assertCurrent();
+    assertCallerCurrent();
     params.signal?.throwIfAborted();
   };
   assertAdmissionCurrent();
-  params.assertBinding?.(readCodexSessionOwnershipBinding(params));
   const identity = params.identity;
-  const authority =
+  const captured =
     identity.kind === "session" && identity.sessionKey?.trim()
-      ? captureCodexSessionGenerationAuthority({ ...params, identity }, assertCurrent)
+      ? await captureCodexSessionGenerationAuthority({ ...params, identity }, assertCallerCurrent)
       : undefined;
-  assertCurrent = authority?.[3] ?? assertCurrent;
-  assertAdmissionCurrent();
-  let binding = params.bindingStore.read(identity);
-  if (!binding && authority && identity.kind === "session") {
+  const authority = combineCodexBindingAuthority(
+    params.authority,
+    captured?.authority ?? createCodexBindingAuthority([], assertCallerCurrent),
+  );
+  let binding = await authority.withCurrent(() => {
+    assertAdmissionCurrent();
+    const current = params.bindingStore.read(identity);
+    const ownership =
+      current ||
+      (identity.kind === "session" && captured?.previousSessionId
+        ? params.bindingStore.read({ ...identity, sessionId: captured.previousSessionId })
+        : undefined);
+    params.assertBinding?.(ownership);
+    return current;
+  });
+  if (!binding && captured && identity.kind === "session") {
     if (
       !(await reclaimPreparedCodexSessionGeneration(
         { ...params, identity, reclaimStale: params.reclaimStale === true },
-        authority,
+        { ...captured, authority },
         assertAdmissionCurrent,
       )) &&
       params.reclaimStale
     ) {
       throw createCodexSessionGenerationSupersededError(identity.sessionId);
     }
-    binding = params.bindingStore.read(identity);
+    binding = await authority.withCurrent(() => params.bindingStore.read(identity));
   }
-  assertAdmissionCurrent();
-  params.assertBinding?.(binding);
-  // Adoption can finish before a later host rollover. Carry its exact proof
-  // through caller waits instead of treating the rewritten binding as authority.
-  return { binding, assertCurrent };
+  await authority.withCurrent(() => {
+    assertAdmissionCurrent();
+    params.assertBinding?.(binding);
+  });
+  // Cold control paths and shipped synchronous SDK capabilities retain the
+  // legacy contract. Native turn effects consume the explicit worker authority.
+  return {
+    binding,
+    assertCurrent: authority.assertLegacyCurrent,
+    assertLegacyCurrent: authority.assertLegacyCurrent,
+    authority,
+  };
 }
 
 /** Creates the single binding facade owned by the Codex plugin runtime. */
@@ -546,32 +624,37 @@ export function createCodexAppServerBindingStore(
     }
   };
 
-  const renewLease = (key: string, owner: BindingLeaseOwner): void => {
+  const renewLease = async (key: string, owner: BindingLeaseOwner): Promise<void> => {
     if (owner.failure || owner.phase !== "held") {
       return;
     }
     try {
-      let renewed = false;
-      owner.assertCurrent?.();
-      const stored = update(key, (raw) => {
-        const current = readStoredCodexAppServerBinding(raw);
-        if (raw !== undefined && !current) {
-          throw new Error(`Invalid Codex app-server binding row: ${key}`);
+      const renew = () => {
+        if (owner.failure || owner.phase !== "held") return;
+        let renewed = false;
+        owner.assertCurrent?.();
+        const stored = update(key, (raw) => {
+          const current = readStoredCodexAppServerBinding(raw);
+          if (raw !== undefined && !current) {
+            throw new Error(`Invalid Codex app-server binding row: ${key}`);
+          }
+          const lease = current?.lease;
+          const now = Date.now();
+          if (!lease || lease.token !== owner.token || lease.expiresAt <= now) {
+            return undefined;
+          }
+          renewed = true;
+          return {
+            ...current,
+            lease: { token: owner.token, expiresAt: now + BINDING_LEASE_STALE_MS },
+          };
+        });
+        if (!renewed || !stored) {
+          owner.failure = bindingLeaseLostError(key);
         }
-        const lease = current?.lease;
-        const now = Date.now();
-        if (!lease || lease.token !== owner.token || lease.expiresAt <= now) {
-          return undefined;
-        }
-        renewed = true;
-        return {
-          ...current,
-          lease: { token: owner.token, expiresAt: now + BINDING_LEASE_STALE_MS },
-        };
-      });
-      if (!renewed || !stored) {
-        owner.failure = bindingLeaseLostError(key);
-      }
+      };
+      if (owner.authority) await owner.authority.withCurrent(renew);
+      else renew();
     } catch (error) {
       owner.failure = bindingLeaseLostError(key, error);
     }
@@ -588,6 +671,7 @@ export function createCodexAppServerBindingStore(
     },
     ttlMs?: number,
     assertCurrent?: () => void,
+    authority?: CodexBindingAuthority,
   ): Promise<T> => {
     const deadline = Date.now() + BINDING_LEASE_WAIT_MS;
     while (true) {
@@ -602,34 +686,45 @@ export function createCodexAppServerBindingStore(
         throw ownedLease.failure;
       }
       const ownedToken = ownedLease?.token;
-      assertCurrent?.();
-      ownedLease?.assertCurrent?.();
-      update(
-        key,
-        (raw) => {
-          const current = readStoredCodexAppServerBinding(raw);
-          if (raw !== undefined && !current) {
-            throw new Error(`Invalid Codex app-server binding row: ${key}`);
-          }
-          const activeLease = current?.lease;
-          const now = Date.now();
-          if (
-            ownedToken &&
-            (!activeLease || activeLease.token !== ownedToken || activeLease.expiresAt <= now)
-          ) {
-            leaseLost = true;
-            return undefined;
-          }
-          if (activeLease && activeLease.token !== ownedToken && activeLease.expiresAt > now) {
-            busy = true;
-            return undefined;
-          }
-          const applied = apply(current, ownedToken);
-          result = applied.result;
-          return applied.next;
-        },
-        ttlMs == null ? undefined : { ttlMs },
-      );
+      const transact = () => {
+        if (ownedLease && (ownedLease.phase !== "held" || ownedLease.failure)) {
+          throw ownedLease.failure ?? bindingLeaseLostError(key);
+        }
+        assertCurrent?.();
+        ownedLease?.assertCurrent?.();
+        update(
+          key,
+          (raw) => {
+            const current = readStoredCodexAppServerBinding(raw);
+            if (raw !== undefined && !current) {
+              throw new Error(`Invalid Codex app-server binding row: ${key}`);
+            }
+            const activeLease = current?.lease;
+            const now = Date.now();
+            if (
+              ownedToken &&
+              (!activeLease || activeLease.token !== ownedToken || activeLease.expiresAt <= now)
+            ) {
+              leaseLost = true;
+              return undefined;
+            }
+            if (activeLease && activeLease.token !== ownedToken && activeLease.expiresAt > now) {
+              busy = true;
+              return undefined;
+            }
+            const applied = apply(current, ownedToken);
+            result = applied.result;
+            return applied.next;
+          },
+          ttlMs == null ? undefined : { ttlMs },
+        );
+      };
+      const currentAuthority =
+        authority || ownedLease?.authority
+          ? combineCodexBindingAuthority(authority, ownedLease?.authority)
+          : undefined;
+      if (currentAuthority) await currentAuthority.withCurrent(transact);
+      else transact();
       if (leaseLost) {
         const failure = bindingLeaseLostError(key);
         if (ownedLease) {
@@ -650,86 +745,96 @@ export function createCodexAppServerBindingStore(
   const withBindingLease = async <T>(
     identity: CodexAppServerBindingIdentity,
     run: () => Promise<T>,
-    options: { allowRetired?: boolean; assertCurrent?: () => void } = {},
+    options: {
+      allowRetired?: boolean;
+      assertCurrent?: () => void;
+      authority?: CodexBindingAuthority;
+    } = {},
   ): Promise<T> => {
     options.assertCurrent?.();
     const key = bindingStoreKey(identity);
     const owned = leaseContext.getStore();
     const existingOwner = owned?.get(key);
     if (existingOwner) {
-      if (existingOwner.phase !== "held") {
-        throw bindingLeaseLostError(key);
-      }
-      const failureBeforeRun = existingOwner.failure;
-      if (failureBeforeRun) {
-        throw failureBeforeRun;
-      }
+      const assertLeaseCurrent = () => {
+        options.assertCurrent?.();
+        existingOwner.assertCurrent?.();
+        if (existingOwner.phase !== "held" || existingOwner.failure) {
+          throw existingOwner.failure ?? bindingLeaseLostError(key);
+        }
+      };
+      assertLeaseCurrent();
       const result = await run();
-      options.assertCurrent?.();
-      const failureAfterRun = existingOwner.failure;
-      if (failureAfterRun) {
-        throw failureAfterRun;
-      }
+      assertLeaseCurrent();
       return result;
     }
     const token = randomUUID();
-    const acquired = await transactKey(
-      key,
-      (current) => {
-        if (
-          current?.state === "cleared" &&
-          current.retired === true &&
-          ownsStoredSessionGeneration(identity, current) &&
-          !options.allowRetired
-        ) {
-          return { result: false };
-        }
-        const lease = { token, expiresAt: Date.now() + BINDING_LEASE_STALE_MS };
-        if (current?.state === "active") {
+    const owner: BindingLeaseOwner = {
+      token,
+      phase: "held",
+      assertCurrent: options.assertCurrent,
+      authority: options.authority,
+    };
+    let heartbeat: ReturnType<typeof setInterval> | undefined;
+    // Admission may write the token and then reject while releasing its reader.
+    // Settlement starts before that await, so rejection never implies no lease.
+    try {
+      const acquired = await transactKey(
+        key,
+        (current) => {
+          if (
+            current?.state === "cleared" &&
+            current.retired === true &&
+            ownsStoredSessionGeneration(identity, current) &&
+            !options.allowRetired
+          ) {
+            return { result: false };
+          }
+          const lease = { token, expiresAt: Date.now() + BINDING_LEASE_STALE_MS };
+          if (current?.state === "active") {
+            return {
+              result: true,
+              next: { ...current, ...preservedSessionGeneration(identity, current), lease },
+            };
+          }
+          if (current?.state === "cleared" && current.retired === true) {
+            return { result: true, next: { ...current, lease } };
+          }
           return {
             result: true,
-            next: { ...current, ...preservedSessionGeneration(identity, current), lease },
+            next: {
+              version: 1,
+              state: "cleared",
+              ...preservedSessionGeneration(identity, current),
+              lease,
+            },
           };
-        }
-        if (current?.state === "cleared" && current.retired === true) {
-          return { result: true, next: { ...current, lease } };
-        }
-        return {
-          result: true,
-          next: {
-            version: 1,
-            state: "cleared",
-            ...preservedSessionGeneration(identity, current),
-            lease,
-          },
-        };
-      },
-      undefined,
-      options.assertCurrent,
-    );
-    options.assertCurrent?.();
-    if (!acquired) {
-      throw new Error(`Codex binding generation was retired: ${key}`);
-    }
-    const owner: BindingLeaseOwner = { token, phase: "held", assertCurrent: options.assertCurrent };
-    const nested = new Map(owned);
-    nested.set(key, owner);
-    // Long app-server RPCs can outlive the stale-owner window. Renew with an
-    // exact-token CAS so live work stays serialized while a replaced owner remains fenced.
-    const heartbeat = setInterval(() => renewLease(key, owner), BINDING_LEASE_RENEW_INTERVAL_MS);
-    heartbeat.unref();
-    try {
+        },
+        undefined,
+        options.assertCurrent,
+        options.authority,
+      );
+      if (!acquired) throw new Error(`Codex binding generation was retired: ${key}`);
+      options.assertCurrent?.();
+      const nested = new Map(owned);
+      nested.set(key, owner);
+      heartbeat = setInterval(() => {
+        void renewLease(key, owner);
+      }, BINDING_LEASE_RENEW_INTERVAL_MS);
+      heartbeat.unref();
+      // Effects consume their own fresh authority. A generic post-effect read
+      // must not discard an already-accepted native operation's settlement receipt.
       const result = await leaseContext.run(nested, run);
       options.assertCurrent?.();
-      if (owner.failure) {
-        throw owner.failure;
-      }
+      if (owner.failure || owner.phase !== "held")
+        throw owner.failure ?? bindingLeaseLostError(key);
       return result;
     } finally {
       clearInterval(heartbeat);
       owner.phase = "closed";
-      options.assertCurrent?.();
       try {
+        // Cleanup owns this exact token independently of canceled caller or
+        // superseded session authority. Never clear a successor's lease.
         const current = readStoredCodexAppServerBinding(state.lookup(key));
         if (current?.lease?.token === token) {
           const ttlMs =
@@ -738,14 +843,11 @@ export function createCodexAppServerBindingStore(
               : current.retired === true
                 ? PHYSICAL_SESSION_RETIRE_TTL_MS
                 : 1;
-          options.assertCurrent?.();
           update(
             key,
             (raw) => {
               const stored = readStoredCodexAppServerBinding(raw);
-              if (stored?.lease?.token !== token) {
-                return undefined;
-              }
+              if (stored?.lease?.token !== token) return undefined;
               const { lease: _lease, ...released } = stored;
               return released;
             },
@@ -753,8 +855,8 @@ export function createCodexAppServerBindingStore(
           );
         }
       } catch (error) {
-        options.assertCurrent?.();
-        // A crashed owner leaves only its bounded lease for recovery.
+        // Preserve the primary outcome and the actual cleanup failure. A store
+        // that rejects cleanup leaves only the existing bounded lease to expire.
         embeddedAgentLog.warn("failed to release codex app-server binding lease", { key, error });
       }
     }
@@ -861,7 +963,7 @@ export function createCodexAppServerBindingStore(
       return { kind: "verify", expectedPreviousSessionId: currentSessionId };
     },
 
-    async mutate(identity, mutation, assertCurrent) {
+    async mutate(identity, mutation, assertCurrent, authority) {
       return await runBindingMutation(async () => {
         const key = bindingStoreKey(identity);
         // A retained legacy sidecar may be revisited by doctor after runtime
@@ -1056,11 +1158,12 @@ export function createCodexAppServerBindingStore(
             ? 1
             : undefined,
           assertCurrent,
+          authority,
         );
       });
     },
 
-    async adoptSessionGeneration(identity, expectedPreviousSessionId, assertCurrent) {
+    async adoptSessionGeneration(identity, expectedPreviousSessionId, assertCurrent, authority) {
       return await runBindingMutation(async () => {
         const key = bindingStoreKey(identity);
         const expectedSessionId = expectedPreviousSessionId.trim();
@@ -1098,6 +1201,7 @@ export function createCodexAppServerBindingStore(
           },
           undefined,
           assertCurrent,
+          authority,
         );
       });
     },

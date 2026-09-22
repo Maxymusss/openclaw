@@ -189,9 +189,10 @@ export async function prepareCodexAttemptTurnRequest(
               workspaceBootstrapContext.memoryCollaborationInstructions,
           }) ?? "",
         signal: runAbortController.signal,
+        // Existing inference proxy/SSRF capability remains synchronous.
         assertCurrent: () => {
           params.hostCapabilities.assertActive();
-          connection.assertCurrent();
+          connection.assertLegacyCurrent();
           if (
             resourceState.thread !== inferenceThread ||
             getCodexInferenceThread(resourceState.client, inferenceThread.threadId) !==
@@ -259,6 +260,7 @@ export async function prepareCodexAttemptTurnRequest(
           timeoutMs: params.timeoutMs,
           signal: runAbortController.signal,
           assertCurrent: connection.assertCurrent,
+          withCurrent: connection.withCurrent,
         }),
       );
       acceptedTurnId = startedTurn.turn.id;

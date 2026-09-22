@@ -151,6 +151,7 @@ export type SessionExactEntriesWorkerInput = {
   database: { agentId: string; path: string };
   scope: {
     sessionKeys: readonly string[];
+    selection?: "logical";
     projection?: SessionEntryReadScope["projection"];
     includeProjectionFacts?: boolean;
   };

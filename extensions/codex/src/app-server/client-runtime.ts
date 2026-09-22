@@ -42,7 +42,11 @@ export type CodexAppServerLiveThreadOwnership = {
   ephemeralPolicy?: string;
   serviceTier?: CodexServiceTier | null;
   /** Releases this active claim or the exact idle record it published. */
-  release: (threadId: string, assertCurrent?: () => void) => Promise<void>;
+  release: (
+    threadId: string,
+    assertCurrent?: () => void,
+    withCurrent?: (write: () => void) => Promise<void>,
+  ) => Promise<void>;
   /** Forgets this local owner after native shutdown, without unsubscribing a successor. */
   forget: () => void;
 };
@@ -325,6 +329,7 @@ async function releaseRetainedThread(
   runtime: ClientRuntime,
   threadId: string,
   assertCurrent?: () => void,
+  withCurrent?: (write: () => void) => Promise<void>,
 ): Promise<boolean> {
   const pendingRelease = runtime.releasingThreads.get(threadId);
   if (pendingRelease) {
@@ -351,7 +356,11 @@ async function releaseRetainedThread(
     retainedOwnerToken: retained.ownerToken,
     completion: Promise.resolve().then(() => {
       assertCurrent?.();
-      return assertCurrent ? retained.release(threadId, assertCurrent) : retained.release(threadId);
+      return withCurrent
+        ? retained.release(threadId, assertCurrent, withCurrent)
+        : assertCurrent
+          ? retained.release(threadId, assertCurrent)
+          : retained.release(threadId);
     }),
   };
   runtime.releasingThreads.set(threadId, transition);
@@ -426,7 +435,11 @@ async function evictExcessIdleThreads(
 export async function retainCodexAppServerLiveThread(
   client: CodexAppServerClient,
   threadId: string,
-  releaseThread?: (threadId: string, assertCurrent?: () => void) => Promise<void>,
+  releaseThread?: (
+    threadId: string,
+    assertCurrent?: () => void,
+    withCurrent?: (write: () => void) => Promise<void>,
+  ) => Promise<void>,
   configFingerprint?: string,
   serviceTier?: CodexServiceTier | null,
   ephemeralPolicy?: string,
@@ -464,8 +477,14 @@ export async function retainCodexAppServerLiveThread(
         : Number.POSITIVE_INFINITY,
     release:
       (releaseThread ? (physicalThreadReleases.get(releaseThread) ?? releaseThread) : undefined) ??
-      (async (releasedThreadId, assertCurrent) => {
-        await unsubscribeCodexAppServerLiveThread(client, releasedThreadId, 5_000, assertCurrent);
+      (async (releasedThreadId, assertCurrent, withCurrent) => {
+        await unsubscribeCodexAppServerLiveThread(
+          client,
+          releasedThreadId,
+          5_000,
+          assertCurrent,
+          withCurrent,
+        );
       }),
   };
   runtime.retainedThreads.set(threadId, retained);
@@ -546,8 +565,18 @@ export async function claimCodexAppServerLiveThread(
   }
   const retained = runtime.retainedThreads.get(threadId) ?? {
     expiresAt: Date.now() + CODEX_APP_SERVER_LIVE_THREAD_IDLE_TIMEOUT_MS,
-    release: async (releasedThreadId: string, assertCurrent?: () => void) => {
-      await unsubscribeCodexAppServerLiveThread(client, releasedThreadId, 5_000, assertCurrent);
+    release: async (
+      releasedThreadId: string,
+      assertCurrent?: () => void,
+      withCurrent?: (write: () => void) => Promise<void>,
+    ) => {
+      await unsubscribeCodexAppServerLiveThread(
+        client,
+        releasedThreadId,
+        5_000,
+        assertCurrent,
+        withCurrent,
+      );
     },
   };
   return claimCodexAppServerThreadOwnership(client, runtime, threadId, retained, onInvalidated);
@@ -575,6 +604,7 @@ function claimCodexAppServerThreadOwnership(
   const release = async (
     releasedThreadId: string,
     assertReleaseCurrent?: () => void,
+    withCurrent?: (write: () => void) => Promise<void>,
   ): Promise<void> => {
     // Codex subscriptions have no generation identifier. An obsolete owner
     // must be rejected before it can unsubscribe a replacement's live turn.
@@ -586,7 +616,7 @@ function claimCodexAppServerThreadOwnership(
       // A completed turn may release only the idle record it published. A new
       // claim, replacement retention, or eviction ends that release authority.
       if (runtime.retainedThreads.get(threadId)?.ownerToken === claimed) {
-        await releaseRetainedThread(client, runtime, threadId, assertReleaseCurrent);
+        await releaseRetainedThread(client, runtime, threadId, assertReleaseCurrent, withCurrent);
       } else {
         const pendingRelease = runtime.releasingThreads.get(threadId);
         if (pendingRelease?.retainedOwnerToken === claimed) {
@@ -610,9 +640,11 @@ function claimCodexAppServerThreadOwnership(
           return;
         }
         assertReleaseCurrent?.();
-        await (assertReleaseCurrent
-          ? retained.release(releasedThreadId, assertReleaseCurrent)
-          : retained.release(releasedThreadId));
+        await (withCurrent
+          ? retained.release(releasedThreadId, assertReleaseCurrent, withCurrent)
+          : assertReleaseCurrent
+            ? retained.release(releasedThreadId, assertReleaseCurrent)
+            : retained.release(releasedThreadId));
       }),
     };
     runtime.releasingThreads.set(threadId, transition);
@@ -677,6 +709,7 @@ export async function unsubscribeCodexAppServerLiveThread(
   threadId: string,
   timeoutMs: number,
   assertCurrent?: () => void,
+  withCurrent?: (write: () => void) => Promise<void>,
 ): Promise<void> {
   const runtime = configuredClients.get(client);
   const claimed = runtime?.claimedThreads.get(threadId);
@@ -696,7 +729,11 @@ export async function unsubscribeCodexAppServerLiveThread(
       return;
     }
     assertCurrent?.();
-    await client.request("thread/unsubscribe", { threadId }, { timeoutMs, assertCurrent });
+    await client.request(
+      "thread/unsubscribe",
+      { threadId },
+      { timeoutMs, assertCurrent, ...(withCurrent ? { withCurrent } : {}) },
+    );
     // Revalidate before successful release removes its own claim below.
     assertCurrent?.();
     runtime?.workspaceReferences.delete(threadId);
@@ -735,9 +772,12 @@ export async function releaseCodexAppServerLiveThread(
   client: CodexAppServerClient,
   threadId: string,
   assertCurrent?: () => void,
+  withCurrent?: (write: () => void) => Promise<void>,
 ): Promise<boolean> {
   const runtime = configuredClients.get(client);
-  return runtime ? await releaseRetainedThread(client, runtime, threadId, assertCurrent) : false;
+  return runtime
+    ? await releaseRetainedThread(client, runtime, threadId, assertCurrent, withCurrent)
+    : false;
 }
 
 /** Native child work pins its parent's subscription even after the foreground parent turn ends. */

@@ -67,6 +67,7 @@ type CodexLiveThreadReleaseParams = {
   threadId: string;
   cause?: unknown;
   assertCurrent?: () => void;
+  withCurrent?: (write: () => void) => Promise<void>;
 };
 
 /** Preserves the caller's abort reason across thread ownership transitions. */
@@ -96,6 +97,7 @@ export async function releaseCodexConsumedLiveThread(
       threadId: options.threadId,
       timeoutMs: CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
       assertCurrent: options.assertCurrent,
+      withCurrent: options.withCurrent,
     }),
   );
   if (released) {
@@ -122,7 +124,12 @@ async function releaseCodexRetainedLiveThread(
 ): Promise<boolean> {
   try {
     return await options.lifecycleTiming.measure("retained-thread-unsubscribe", () =>
-      releaseCodexAppServerLiveThread(options.client, options.threadId, options.assertCurrent),
+      releaseCodexAppServerLiveThread(
+        options.client,
+        options.threadId,
+        options.assertCurrent,
+        options.withCurrent,
+      ),
     );
   } catch (error) {
     // An owner callback may already have retired the client; do not close it twice.
@@ -358,6 +365,7 @@ export async function tryReuseCodexLiveThread(
       restrictedToolSurface,
       lifecycleTiming,
       assertCurrent: assertWarmOwner,
+      withCurrent: params.authority?.withCurrent,
     });
     assertWarmOwner();
     const nativeHookRelayGeneration =
@@ -391,6 +399,7 @@ export async function tryReuseCodexLiveThread(
             },
           },
           assertWarmOwner,
+          params.authority,
         ),
       ));
     if (!committed) {

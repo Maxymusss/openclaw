@@ -435,7 +435,8 @@ export async function finalizeCodexAttempt(
             config: params.config,
             message: toolState.yieldMessage,
             assertCurrent: () => {
-              connection.assertCurrent();
+              // The SDK invokes this guard inside its synchronous persistence commit.
+              connection.assertLegacyCurrent();
               if (settlementPhase !== "active" || !projectTerminalOutcome().turnSucceeded) {
                 throw new Error("Codex yield settlement is no longer active");
               }
@@ -519,6 +520,7 @@ export async function finalizeCodexAttempt(
               turnId: activeTurnId,
               signal: params.abortSignal,
               assertActive: connection.assertCurrent,
+              withCurrent: connection.withCurrent,
             })
           : undefined) ?? Object.freeze({ source: "unavailable" as const }))
       : undefined;
@@ -619,6 +621,7 @@ export async function finalizeCodexAttempt(
             },
           },
           connection.assertCurrent,
+          connection.authority,
         );
       } catch (error) {
         if (resourceState.thread.connectionScope === "supervision") {
@@ -629,6 +632,7 @@ export async function finalizeCodexAttempt(
             bindingIdentity,
             { kind: "clear", threadId: resourceState.thread.threadId },
             connection.assertCurrent,
+            connection.authority,
           );
           if (!cleared) {
             throw error;

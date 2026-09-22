@@ -6,7 +6,7 @@ import {
 } from "./config-layer-policy.js";
 import type { CodexInferenceProxy } from "./inference-proxy.js";
 import { isJsonObject, type CodexConfigReadResponse, type JsonObject } from "./protocol.js";
-import type { CodexAppServerThreadBinding } from "./session-binding.js";
+import type { CodexBindingAuthority, CodexAppServerThreadBinding } from "./session-binding.js";
 
 type Owner = {
   closed: boolean;
@@ -78,6 +78,7 @@ async function prepareCodexInferenceRoute(params: {
   effectiveConfig?: CodexConfigReadResponse;
   signal?: AbortSignal;
   assertCurrent: () => void;
+  authority?: CodexBindingAuthority;
 }): Promise<CodexInferenceProxy | undefined> {
   const owner = owners.get(params.client);
   if (!owner) {
@@ -93,11 +94,13 @@ async function prepareCodexInferenceRoute(params: {
     params.signal?.throwIfAborted();
     params.assertCurrent();
   };
-  assertCurrent();
+  if (params.authority) await params.authority.withCurrent(assertCurrent);
+  else assertCurrent();
   const snapshot =
     params.effectiveConfig ??
     (await readCodexEffectiveConfig(params.client, params.cwd, { signal: params.signal }));
-  assertCurrent();
+  if (params.authority) await params.authority.withCurrent(assertCurrent);
+  else assertCurrent();
   if (snapshot.config.model_provider != null && snapshot.config.model_provider !== "openai") {
     return undefined;
   }
@@ -136,9 +139,11 @@ async function prepareCodexInferenceRoute(params: {
     {
       signal: params.signal,
       assertCurrent,
+      withCurrent: params.authority?.withCurrent,
     },
   );
-  assertCurrent();
+  if (params.authority) await params.authority.withCurrent(assertCurrent);
+  else assertCurrent();
   const type = account.account?.type;
   if (type !== "apiKey" && type !== "chatgpt") {
     return undefined;
@@ -167,11 +172,16 @@ async function prepareCodexInferenceRoute(params: {
     owner.routes.set(key, pending);
   }
   const route = await pending;
-  assertCurrent();
-  route.assertCurrent();
-  params.client.protectPrivateTransportSecret(new URL(route.baseUrl).pathname.split("/")[1] ?? "");
-  owner.handles.add(route);
-  return route;
+  const publish = () => {
+    assertCurrent();
+    route.assertCurrent();
+    params.client.protectPrivateTransportSecret(
+      new URL(route.baseUrl).pathname.split("/")[1] ?? "",
+    );
+    owner.handles.add(route);
+    return route;
+  };
+  return params.authority ? await params.authority.withCurrent(publish) : publish();
 }
 
 /** Prepare a managed thread without changing an attached or unsupported native profile. */
@@ -184,6 +194,7 @@ export async function prepareCodexInferenceThreadConfig(params: {
   effectiveConfig?: CodexConfigReadResponse;
   signal?: AbortSignal;
   assertCurrent: () => void;
+  authority?: CodexBindingAuthority;
 }): Promise<{ route: CodexInferenceProxy; config: JsonObject } | undefined> {
   const { binding } = params;
   if (binding?.connectionScope === "supervision" || binding?.preserveNativeModel === true) {
@@ -200,9 +211,14 @@ export async function prepareCodexInferenceThreadConfig(params: {
     const { thread } = await params.client.request(
       "thread/read",
       { threadId: binding.threadId, includeTurns: false },
-      { signal: params.signal, assertCurrent: params.assertCurrent },
+      {
+        signal: params.signal,
+        assertCurrent: params.assertCurrent,
+        withCurrent: params.authority?.withCurrent,
+      },
     );
-    params.assertCurrent();
+    if (params.authority) await params.authority.withCurrent(params.assertCurrent);
+    else params.assertCurrent();
     if (thread.id !== binding.threadId || thread.status?.type !== "notLoaded") {
       throw new Error(
         "Codex loaded thread has no owned inference route; reconnect before retrying",

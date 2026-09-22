@@ -276,7 +276,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
     runAbortController.signal.throwIfAborted();
     connection.assertCurrent();
     const client = await connection.attemptClientFactory({
-      assertCurrent: connection.assertCurrent,
+      assertCurrent: connection.assertLegacyCurrent,
       startOptions: connection.appServer.start,
       authProfileId: connection.startupClientAuthProfileId,
       agentDir,
@@ -286,6 +286,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
     try {
       nativeSpecs = await loadCodexNativeToolCatalog({
         client,
+        authority: connection.authority,
         binding: mutable.startupBinding,
         appServer: connection.appServer,
         agentDir,

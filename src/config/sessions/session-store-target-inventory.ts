@@ -2,6 +2,7 @@ import path from "node:path";
 import { resolveAgentSessionDirsFromAgentsDirSync } from "../../agents/session-dirs.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { isIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
+import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import {
   retainLegacyDefaultAgentId,
@@ -11,12 +12,19 @@ import { resolveStateDir } from "../state-dir.js";
 import type { OpenClawConfig } from "../types.openclaw.js";
 import { resolveAgentsDirFromSessionStorePath, resolveSessionStorePathCore } from "./paths.js";
 import {
+  resolveSqliteScope,
+  toDatabaseOptions,
+  type ResolvedSqliteScope,
+} from "./session-accessor.sqlite-scope.js";
+import type { SessionAccessScope } from "./session-accessor.types.js";
+import {
   listSqliteTargetCandidatePathsForSessionStorePath,
   resolveUnsuffixedSqliteTargetFromSessionStorePath,
   SessionStoreRegistryReadRequired,
   type SessionStoreRegistryRead,
 } from "./session-sqlite-target.js";
 import {
+  assertSessionStoreReadCandidate,
   captureSessionStoreReadCandidate,
   type CapturedSessionStorePaths,
   type SessionStoreReadCandidate,
@@ -32,6 +40,8 @@ import { isPerAgentSessionStoreConfig, listConfiguredSessionStoreAgentIds } from
 
 export type SessionStoreTargetInventoryRequest = {
   config: OpenClawConfig;
+  /** Exact SDK selection; does not discover fallback stores or enumerate rows. */
+  exactScope?: SessionAccessScope;
   legacyDefaultAgentId?: string;
   agentIds: string[];
   env: NodeJS.ProcessEnv;
@@ -41,9 +51,11 @@ export type SessionStoreTargetInventoryRequest = {
 };
 
 export type SessionStoreTargetInventoryResult =
-  | { kind: "session-target-registry-required" }
+  | { kind: "session-target-registry-required"; nativeReadsSettled?: true }
   | {
       kind: "session-target-inventory";
+      exactScope?: ResolvedSqliteScope;
+      nativeReadsSettled?: true;
       agents: Array<{
         agentId: string;
         result: SessionStoreTargetsReadResult;
@@ -153,6 +165,23 @@ export function readSessionStoreTargetInventory(
   const config = retainLegacyDefaultAgentId(request.config, request.legacyDefaultAgentId);
   const cache: SessionStoreTargetsReadCache = new Map();
   try {
+    if (request.exactScope) {
+      const resolved = resolveSqliteScope({ ...request.exactScope, env }, undefined, {
+        registeredDatabases: request.registeredDatabases,
+        readCandidates: request.candidates,
+      });
+      resolved.path = resolveOpenClawAgentSqlitePath(toDatabaseOptions(resolved));
+      assertSessionStoreReadCandidate(resolved.path, request.candidates);
+      // Exact target selection only inspects ownership with transient handles.
+      // inspectOpenClawAgentDatabaseOwner closes them in finally; a failed close
+      // throws, so only a successful reply may attest native cleanup.
+      return {
+        kind: "session-target-inventory",
+        exactScope: resolved,
+        agents: [],
+        nativeReadsSettled: true,
+      };
+    }
     return {
       kind: "session-target-inventory",
       agents: request.agentIds.map((agentId) => {
@@ -173,7 +202,10 @@ export function readSessionStoreTargetInventory(
     };
   } catch (error) {
     if (error instanceof SessionStoreRegistryReadRequired) {
-      return { kind: "session-target-registry-required" };
+      return {
+        kind: "session-target-registry-required",
+        ...(request.exactScope ? { nativeReadsSettled: true as const } : {}),
+      };
     }
     throw error;
   }

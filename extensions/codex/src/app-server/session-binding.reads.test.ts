@@ -203,4 +203,80 @@ describe("Codex app-server binding reads", () => {
       await fixture.cleanup();
     }
   });
+  it("combines lease and mutation lineage and refuses a same-id predecessor change", async () => {
+    const fixture = await createOpenClawTestState({
+      prefix: "codex-combined-authority-",
+      layout: "state-only",
+      applyEnv: false,
+    });
+    const storePath = path.join(fixture.stateDir, "sessions.json");
+    const store = createCodexAppServerBindingStore(createCodexTestBindingStateStore());
+    const identity = {
+      kind: "session" as const,
+      agentId: "main",
+      sessionId: "current",
+      sessionKey: "agent:main:lease",
+    };
+    const source = { ...identity, sessionKey: "agent:main:mutation" };
+    const binding = { threadId: "native-thread", cwd: "/repo" };
+    try {
+      for (const target of [identity, source]) {
+        await upsertSessionEntry({
+          agentId: target.agentId,
+          sessionKey: target.sessionKey,
+          storePath,
+          entry: { sessionId: target.sessionId, previousSessionId: "previous", updatedAt: 1 },
+        });
+      }
+      await store.mutate(identity, { kind: "set", binding });
+      const lease = await resolveCodexSessionBinding({ bindingStore: store, identity, storePath });
+      const mutation = await resolveCodexSessionBinding({
+        bindingStore: store,
+        identity: source,
+        storePath,
+      });
+      await store.withLease(
+        identity,
+        async () => {
+          await expect(
+            store.mutate(
+              identity,
+              {
+                kind: "patch",
+                threadId: binding.threadId,
+                patch: { model: "first" },
+              },
+              mutation.authority.assertCurrent,
+              mutation.authority,
+            ),
+          ).resolves.toBe(true);
+          await patchSessionEntry({
+            agentId: source.agentId,
+            sessionKey: source.sessionKey,
+            storePath,
+            update: () => ({ previousSessionId: "changed-without-new-session-id" }),
+          });
+          // Pure caller liveness remains valid. Only the fresh composed source
+          // validation can refuse this mutation, even though its lease is current.
+          mutation.authority.assertCurrent();
+          await expect(
+            store.mutate(
+              identity,
+              {
+                kind: "patch",
+                threadId: binding.threadId,
+                patch: { model: "must-not-publish" },
+              },
+              mutation.authority.assertCurrent,
+              mutation.authority,
+            ),
+          ).rejects.toThrow("Codex session generation is no longer current");
+          expect(store.read(identity)?.model).toBe("first");
+        },
+        { authority: lease.authority, assertCurrent: lease.authority.assertCurrent },
+      );
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });

@@ -182,7 +182,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
   // Only a durable session row authorizes stable-key ownership. Caller-owned
   // transcripts omit a store target, so classify them against the default store too.
   if (bindingIdentity.kind === "session" && bindingIdentity.sessionKey) {
-    const authority = resolveCodexRunSessionBindingAuthority({
+    const authority = await resolveCodexRunSessionBindingAuthority({
       identity: bindingIdentity,
       config: params.config,
       storePath: params.sessionTarget?.storePath,
@@ -207,7 +207,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
       bindingIdentity = physicalIdentity;
     }
   }
-  const { binding: admittedBinding, assertCurrent } = await resolveCodexSessionBinding({
+  const { binding: admittedBinding, authority } = await resolveCodexSessionBinding({
     reclaimStale: true,
     bindingStore,
     identity: bindingIdentity,
@@ -220,6 +220,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
           assertCodexSessionRuntimeOwnership(binding, params.expectedSessionRuntimeOwnership)
       : undefined,
   });
+  const assertCurrent = authority.assertCurrent;
   let startupBinding = admittedBinding;
   preDynamicStartupStages.mark("read-binding");
   const usesSupervisionConnection = startupBinding?.connectionScope === "supervision";
@@ -428,6 +429,7 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
     const startupBindingBeforeRotation = startupBinding;
     const startupBindingResolution = await rotateOversizedCodexAppServerStartupBinding({
       assertCurrent,
+      authority,
       binding: startupBinding,
       bindingStore,
       identity: bindingIdentity,
@@ -488,6 +490,9 @@ export async function prepareCodexAttemptConnection({ params, options }: CodexRu
     return {
       params,
       assertCurrent,
+      authority,
+      withCurrent: authority.withCurrent,
+      assertLegacyCurrent: authority.assertLegacyCurrent,
       options,
       attemptStartedAt,
       profilerEnabled,

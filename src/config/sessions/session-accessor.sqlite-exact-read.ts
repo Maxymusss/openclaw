@@ -95,6 +95,7 @@ export function loadExactSessionEntryCandidates(
     | (PhysicalSessionEntryReadScope & { readOnly: true })
   ) & {
     sessionKeys: readonly string[];
+    selection?: "logical";
     onReadSource?: (source: SessionEntryReadSource) => void;
   },
 ): ExactSessionEntry[] {
@@ -110,7 +111,9 @@ export function loadExactSessionEntryCandidates(
   // Alias candidates share a store; fresh handles must not rescan canonical state per key.
   const read = (database: Pick<OpenClawAgentDatabase, "agentId" | "path" | "db">) => {
     const entries = sessionKeys.flatMap((key) => {
-      const entry = readExactSessionEntryRowValidated(database, key, scope.projection)?.entry;
+      const readEntry =
+        scope.selection === "logical" ? readSessionEntryRow : readExactSessionEntryRowValidated;
+      const entry = readEntry(database, key, scope.projection)?.entry;
       return entry ? [{ sessionKey: key, entry }] : [];
     });
     scope.onReadSource?.({ agentId: database.agentId, path: database.path });

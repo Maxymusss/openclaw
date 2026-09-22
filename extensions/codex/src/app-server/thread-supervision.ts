@@ -31,6 +31,7 @@ import type {
   JsonObject,
 } from "./protocol.js";
 import type {
+  CodexBindingAuthority,
   CodexAppServerBindingIdentity,
   CodexAppServerBindingStore,
   CodexAppServerPendingSupervisionBranch,
@@ -57,6 +58,7 @@ type PendingSupervisionMaterializationParams = {
   client: CodexAppServerClient;
   abandonClient: () => Promise<void>;
   bindingStore: CodexAppServerBindingStore;
+  authority?: CodexBindingAuthority;
   bindingIdentity: CodexAppServerBindingIdentity;
   binding: CodexAppServerThreadBinding & {
     pendingSupervisionBranch: CodexAppServerPendingSupervisionBranch;
@@ -92,7 +94,11 @@ export async function materializePendingSupervisionBranch(
   params: PendingSupervisionMaterializationParams,
 ): Promise<CodexAppServerThreadLifecycleBinding> {
   let pending = params.binding.pendingSupervisionBranch;
-  const requestOptions = { signal: params.signal, assertCurrent: params.throwIfAborted };
+  const requestOptions = {
+    signal: params.signal,
+    assertCurrent: params.throwIfAborted,
+    withCurrent: params.authority?.withCurrent,
+  };
   const connectionFingerprint = buildCodexAppServerConnectionFingerprint(
     params.appServer,
     params.attempt.agentDir,
@@ -354,6 +360,7 @@ export async function materializePendingSupervisionBranch(
           },
         },
         params.throwIfAborted,
+        params.authority,
       );
     } catch (error) {
       let current: CodexAppServerThreadBinding | undefined;

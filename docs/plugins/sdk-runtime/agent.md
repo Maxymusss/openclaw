@@ -339,3 +339,32 @@ Catalog list publishers use `createSessionCatalogSourceActorProjector({ pluginId
 
   </Accordion>
 </AccordionGroup>
+
+## Retained session metadata reads
+
+`withSessionEntriesRead(reads, consume)` from
+`openclaw/plugin-sdk/session-store-runtime` reads fresh session entries
+through the existing read worker. Pass `readConsistency: "latest"` and
+`hydrateSkillPromptRefs: false`, alongside the usual agent, session key, and
+optional store path. The callback receives entries in input order, using the same public projection
+as `getSessionEntry`, or `undefined` for a missing row/store.
+
+All selected physical readers and canonical session writer admissions remain held
+through `consume`. The callback must be synchronous; returning a Promise is an
+error. Validate current owner and session lineage inside this callback immediately
+before an effect. A returned snapshot is not authority for later effects. Do not
+hold the callback open over network work. Process-owned incognito stores retain
+the native in-process read path; durable worker errors propagate without a
+synchronous fallback.
+
+A same-process row publication while a durable read is in flight rejects that
+read before the consumer runs, including synchronous mutations outside the
+writer queue. This orders local published changes; it is not a cross-process
+write lock. Each call observes external commits through its fresh SQLite read.
+
+The batch deduplicates writer queue paths and acquires them in deterministic
+order. Calls made inside a selected active writer scope (foreground or worker), or an
+incompatible inherited writer order, reject rather than deadlock. Do not start
+arbitrary asynchronous work inside the consumer; consume only immediate effects. Queue identity retains
+the existing lexical-path contract; this API does not introduce cross-alias or
+distributed exclusion. Pass a one-item array for a single-source check.

@@ -61,8 +61,9 @@ export async function startOrResumeThread(
 ): Promise<CodexAppServerThreadLifecycleBinding> {
   const incognito = isIncognitoSessionKey(input.params.sessionKey);
   const clientId = resolveCodexAppServerClientInstanceId(input.client);
-  return await withCodexThreadLifecycleBinding(input, async (bindingIdentity, saved, assert) => {
-    const params: CodexStartOrResumeThreadParams = { ...input, assertCurrent: assert };
+  return await withCodexThreadLifecycleBinding(input, async (bindingIdentity, saved, authority) => {
+    const assert = authority.assertCurrent;
+    const params: CodexStartOrResumeThreadParams = { ...input, assertCurrent: assert, authority };
     const expectedOwnership = params.params.expectedSessionRuntimeOwnership;
     let binding = saved;
     if (hasCodexNativeToolCatalog(binding)) {
@@ -73,6 +74,7 @@ export async function startOrResumeThread(
         binding,
         appServer: params.appServer,
         agentDir: resolveCodexThreadAgentDir(params),
+        authority,
         assertCurrent: () => {
           params.signal?.throwIfAborted();
           assert();
@@ -96,12 +98,13 @@ export async function startOrResumeThread(
       params.config = inference.config;
       params.inferenceRoute = inference.route;
     }
-    const publishInferenceBinding = (readyBinding: CodexAppServerThreadLifecycleBinding) => {
-      assert();
-      params.signal?.throwIfAborted();
-      bindCodexInferenceThread(params.client, readyBinding.threadId, inference?.route);
-      return readyBinding;
-    };
+    const publishInferenceBinding = (readyBinding: CodexAppServerThreadLifecycleBinding) =>
+      authority.withCurrent(() => {
+        assert();
+        params.signal?.throwIfAborted();
+        bindCodexInferenceThread(params.client, readyBinding.threadId, inference?.route);
+        return readyBinding;
+      });
     const {
       contextEngineBinding,
       dynamicToolsContainDeferred,
@@ -151,6 +154,7 @@ export async function startOrResumeThread(
         lifecycleTiming,
         threadId,
         assertCurrent,
+        withCurrent: authority.withCurrent,
       });
     if (binding?.pendingSupervisionBranch) {
       await releaseRetainedThread(binding.threadId);
@@ -183,6 +187,7 @@ export async function startOrResumeThread(
           params.abandonClient ?? (() => closeCodexStartupClientBestEffort(params.client)),
         bindingStore: params.bindingStore,
         bindingIdentity,
+        authority,
         binding: pendingBinding,
         attempt: params.params,
         cwd: params.cwd,
@@ -255,6 +260,7 @@ export async function startOrResumeThread(
           threadId: current.threadId,
         },
         assert,
+        authority,
       );
       if (!cleared) {
         throw new CodexThreadBindingConflictError(current.threadId, operation);

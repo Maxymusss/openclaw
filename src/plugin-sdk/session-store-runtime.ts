@@ -32,6 +32,7 @@ import {
   resolveTranscriptSessionKeyBySessionId as resolveAccessorTranscriptSessionKeyBySessionId,
   updateSessionEntry,
 } from "../config/sessions/session-accessor.js";
+import { withSessionEntriesWorkerRead } from "../config/sessions/session-entry-worker-read.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import { resolveSessionStoreEntryCore as resolveSessionStoreEntryFromStore } from "../config/sessions/store-entry.js";
 import { normalizeResolvedMaintenanceConfigInput } from "../config/sessions/store-maintenance.js";
@@ -390,6 +391,23 @@ export function resolveSessionStoreEntry(params: {
 export function getSessionEntry(params: SessionStoreReadParams): SessionEntry | undefined {
   const entry = loadSessionEntryReadOnly(toSessionAccessScope(params));
   return entry ? projectPluginSessionEntry(entry) : undefined;
+}
+
+/**
+ * Read fresh metadata off thread and consume it synchronously under the selected
+ * physical reader and session writer ordering. The callback must check its live
+ * owner/lineage before effects; the returned value is not retained authority.
+ */
+export async function withSessionEntriesRead<T>(
+  reads: readonly (SessionStoreReadParams & {
+    readConsistency: "latest";
+    hydrateSkillPromptRefs: false;
+  })[],
+  consume: (entries: readonly (SessionEntry | undefined)[]) => T,
+): Promise<T> {
+  return await withSessionEntriesWorkerRead(reads.map(toSessionAccessScope), (entries) =>
+    consume(entries.map((entry) => (entry ? projectPluginSessionEntry(entry) : undefined))),
+  );
 }
 
 /** Reads the current session binding of one canonical transport address. */

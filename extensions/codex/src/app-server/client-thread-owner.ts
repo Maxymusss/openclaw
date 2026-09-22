@@ -19,7 +19,11 @@ export type RetainedLiveThread = {
   ephemeralPolicy?: string;
   serviceTier?: CodexServiceTier | null;
   expiresAt: number;
-  release: (threadId: string, assertCurrent?: () => void) => Promise<void>;
+  release: (
+    threadId: string,
+    assertCurrent?: () => void,
+    withCurrent?: (write: () => void) => Promise<void>,
+  ) => Promise<void>;
 };
 
 export type ThreadOwnershipState = {
