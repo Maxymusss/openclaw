@@ -434,9 +434,14 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
     policy: { ownsProtocolStdout: true },
   },
   {
+    commandPath: ["browser", "extension"],
+    // Desktop browser helpers validate config without Gateway Doctor or state migrations.
+    policy: { configGuard: "validate", loadPlugins: "never", networkProxy: "bypass" },
+  },
+  {
     commandPath: ["browser", "extension", "native-host"],
     exact: true,
-    policy: { hideBanner: true, ownsProtocolStdout: true, networkProxy: "bypass" },
+    policy: { ...PASSIVE_STARTUP_POLICY, hideBanner: true, ownsProtocolStdout: true },
   },
   {
     commandPath: ["node"],
