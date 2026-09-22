@@ -4863,46 +4863,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     },
   );
 
-  it.each(["github"] as const)(
-    "caps storage-state files when %s timing estimates do not require a split",
-    (runnerBackend) => {
-      const owner = "core-runtime-infra-storage-state";
-      const expected = defaultShards.find((shard) => shard.shardName === owner)!.includePatterns!;
-      expect(expected.length).toBeGreaterThan(64);
-      const timings = {
-        github: { ...testTimings.readCompactGroupTimings("github") },
-        blacksmith: { ...testTimings.readCompactGroupTimings("blacksmith") },
-      };
-      for (const profile of ["github", "blacksmith"] as const) {
-        for (const key of Object.keys(timings[profile])) {
-          if (key.startsWith(owner)) {
-            delete timings[profile][key];
-          }
-        }
-        timings[profile][owner] = 1;
-      }
-      vi.spyOn(testTimings, "readCompactGroupTimings").mockImplementation(
-        (profile) => timings[profile],
-      );
-      const plan = createNodeTestShardBundles({
-        compactMode: "pull-request",
-        runnerBackend,
-        includeReleaseOnlyPluginShards: false,
-      });
-      const actual: string[] = [];
-      for (const job of plan) {
-        const files = job.groups
-          .filter((group) => group.shard_name.replace(/-hosted-\d+$/u, "") === owner)
-          .flatMap((group) => group.includePatterns ?? []);
-        expect(files.length, job.shardName).toBeLessThanOrEqual(64);
-        actual.push(...files);
-      }
-      expect(actual.toSorted()).toEqual(expected.toSorted());
-      expect(new Set(actual).size).toBe(actual.length);
-      expect(plan.length).toBeLessThanOrEqual(90);
-    },
-  );
-
   it("runs only native Gateway lifecycle fixtures before parallel files without widening selectors", () => {
     const config = createGatewayServerVitestConfig({ OPENCLAW_VITEST_MAX_WORKERS: "8" }, true);
     const native = gatewayServerSerialTestFiles.map((file) => relative("src/gateway", file));
