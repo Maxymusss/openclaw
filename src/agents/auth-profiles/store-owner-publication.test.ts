@@ -176,29 +176,35 @@ describe("auth publication owner receipts", () => {
     const stateDir = tempDirs.make("openclaw-auth-selection-legacy-");
     const agentDir = tempDirs.make("openclaw-auth-selection-legacy-agent-");
     const unrelatedAgentDir = tempDirs.make("openclaw-auth-selection-unrelated-agent-");
-    await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir, OPENCLAW_AGENT_DIR: undefined }, async () => {
-      writePersistedAuthProfileStoreRaw(
-        { version: 1, profiles: { persisted: { ...apiKey("persisted"), provider: "anthropic" } } },
-        agentDir,
-      );
-      setRuntimeAuthProfileStoreSnapshot(
-        { version: 1, profiles: { runtime: { ...apiKey("runtime"), provider: "google" } } },
-        agentDir,
-      );
-      setRuntimeAuthProfileStoreSnapshot(store("unrelated"), unrelatedAgentDir);
-      await withAuthProfileStoreAgentDir(agentDir, stateDir, () => {
-        expect(
-          resolveAuthProfileProviderForSelection({
-            agentDir: unrelatedAgentDir,
-            profileId: "runtime",
-          }),
-        ).toBe("google");
-        expect(resolveAuthProfileProviderForSelection({ profileId: "persisted" })).toBe(
-          "anthropic",
+    await withEnvAsync(
+      { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_AGENT_DIR: undefined },
+      async () => {
+        writePersistedAuthProfileStoreRaw(
+          {
+            version: 1,
+            profiles: { persisted: { ...apiKey("persisted"), provider: "anthropic" } },
+          },
+          agentDir,
         );
-        expect(resolveAuthProfileProviderForSelection({ profileId: "shared" })).toBeUndefined();
-      });
-    });
+        setRuntimeAuthProfileStoreSnapshot(
+          { version: 1, profiles: { runtime: { ...apiKey("runtime"), provider: "google" } } },
+          agentDir,
+        );
+        setRuntimeAuthProfileStoreSnapshot(store("unrelated"), unrelatedAgentDir);
+        await withAuthProfileStoreAgentDir(agentDir, stateDir, () => {
+          expect(
+            resolveAuthProfileProviderForSelection({
+              agentDir: unrelatedAgentDir,
+              profileId: "runtime",
+            }),
+          ).toBe("google");
+          expect(resolveAuthProfileProviderForSelection({ profileId: "persisted" })).toBe(
+            "anthropic",
+          );
+          expect(resolveAuthProfileProviderForSelection({ profileId: "shared" })).toBeUndefined();
+        });
+      },
+    );
   });
 
   it("does not read ambient snapshots or an unreadable store for env-only selection", async () => {
