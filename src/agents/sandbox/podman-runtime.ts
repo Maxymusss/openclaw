@@ -130,7 +130,8 @@ async function isPodmanMachineConnection(params: {
         : "";
     const portMatches = machinePort === uri.port;
     const connectionUser = decodeURIComponent(uri.username);
-    const rootConnection = params.selectedName === `${machineName}-root`;
+    // HOST has no saved name; retain the running-machine, port, and identity checks for root.
+    const rootConnection = !params.selectedName || params.selectedName === `${machineName}-root`;
     const userMatches =
       typeof machine.RemoteUsername === "string" &&
       (connectionUser === machine.RemoteUsername || (rootConnection && connectionUser === "root"));
@@ -142,6 +143,22 @@ async function isPodmanMachineConnection(params: {
       !selectedIdentity || !machineIdentity || selectedIdentity === machineIdentity;
     return machine.Running === true && nameMatches && portMatches && userMatches && identityMatches;
   });
+}
+
+async function podmanClientPrefersConnectionEnv(): Promise<boolean> {
+  const result = await execContainer(PODMAN_SANDBOX_ENGINE, ["--version"], {
+    allowFailure: true,
+    signal: AbortSignal.timeout(SANDBOX_ENGINE_PROBE_TIMEOUT_MS),
+  });
+  const match = /^podman(?:-remote)? version (\d+)\.(\d+)\.\d+(?:[-+]\S+)?\s*$/u.exec(
+    result.stdout,
+  );
+  if (result.code !== 0 || !match) {
+    throw invalidPodmanConfig(
+      "Could not determine Podman client connection selection. Check that podman --version succeeds before retrying.",
+    );
+  }
+  return Number(match[1]) > 4 || (Number(match[1]) === 4 && Number(match[2]) >= 8);
 }
 
 async function assertSupportedPodmanConnection(remoteSocketPath: string): Promise<{
@@ -171,28 +188,34 @@ async function assertSupportedPodmanConnection(remoteSocketPath: string): Promis
         (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null,
       )
     : [];
-  const configuredUri = process.env.CONTAINER_HOST?.trim();
-  const configuredName = process.env.CONTAINER_CONNECTION?.trim();
-  let selected: Record<string, unknown> | undefined;
-  // Podman resolves the explicit URL/CONTAINER_HOST before named or saved destinations.
-  if (configuredUri) {
-    selected = connections.find((entry) => entry.URI === configuredUri);
-  } else if (configuredName) {
-    selected = connections.find((entry) => entry.Name === configuredName);
-  } else {
-    // OpenClaw supplies no Podman global connection flag, so Podman's documented
-    // selection order reaches the saved default after the env overrides above.
-    selected = connections.find((entry) => entry.Default === true);
+  const configuredUri = process.env.CONTAINER_HOST;
+  const configuredName = process.env.CONTAINER_CONNECTION ?? "";
+  let useHost = Boolean(configuredUri) && !configuredName;
+  // Before 4.8, HOST presence wins even when empty. Newer clients prefer a
+  // nonempty CONNECTION. Probe only differing cases; info reports the server version.
+  if (configuredUri !== undefined && (configuredUri === "" || Boolean(configuredName))) {
+    useHost = (await podmanClientPrefersConnectionEnv()) ? useHost : true;
   }
-  const selectedUri =
-    configuredUri ||
-    (typeof selected?.URI === "string" ? selected.URI : "") ||
-    (remoteSocketPath ? `unix://${remoteSocketPath}` : "");
+  // An explicit HOST does not inherit a saved connection's name or credentials.
+  const selected = useHost
+    ? undefined
+    : configuredName
+      ? connections.find((entry) => entry.Name === configuredName)
+      : connections.find((entry) => entry.Default === true);
+  const selectedUri = useHost
+    ? configuredUri
+    : selected
+      ? typeof selected.URI === "string"
+        ? selected.URI
+        : ""
+      : remoteSocketPath
+        ? `unix://${remoteSocketPath}`
+        : "";
   const unsupportedRemoteError = () =>
     invalidPodmanConfig(
       "Podman sandboxing supports a local Podman engine or Podman Machine, but the active Podman connection is remote or could not be identified. Use the SSH sandbox backend for a remote host.",
     );
-  if (!configuredUri && configuredName && !selected) {
+  if (!useHost && configuredName && !selected) {
     throw unsupportedRemoteError();
   }
   if (!selectedUri) {
@@ -200,8 +223,9 @@ async function assertSupportedPodmanConnection(remoteSocketPath: string): Promis
   }
   if (selectedUri && !selectedUri.startsWith("unix://")) {
     const identity =
-      process.env.CONTAINER_SSHKEY?.trim() ||
-      (typeof selected?.Identity === "string" ? selected.Identity : "");
+      (typeof selected?.Identity === "string" ? selected.Identity : "") ||
+      process.env.CONTAINER_SSHKEY ||
+      "";
     if (
       await isPodmanMachineConnection({
         selectedName: typeof selected?.Name === "string" ? selected.Name : "",
