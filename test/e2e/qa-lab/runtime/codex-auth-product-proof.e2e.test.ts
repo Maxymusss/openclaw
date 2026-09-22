@@ -40,6 +40,7 @@ type AppServerLogEntry = {
   method?: string;
   params?: unknown;
   result?: unknown;
+  fixtureAuthOperation?: unknown;
 };
 
 type AppServerRequestLog = { read(): AppServerLogEntry[] };

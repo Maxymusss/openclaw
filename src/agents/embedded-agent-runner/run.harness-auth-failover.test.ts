@@ -196,7 +196,7 @@ describe("native harness auth failover", () => {
       name: "FailoverError",
       code: "selected_auth_profile_unavailable",
       reason: "auth",
-      status: 401,
+      status: undefined,
       profileId: tokenProfileB,
       provider: "openai",
       model: "gpt-5.6-luna",

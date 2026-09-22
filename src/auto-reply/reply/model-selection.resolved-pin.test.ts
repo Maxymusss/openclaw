@@ -129,7 +129,7 @@ type SelectionCase = {
   heartbeat?: boolean;
   oneTurn?: boolean;
   cli?: boolean;
-  missingAuthPin?: boolean;
+  missingAuthPinSource?: "user" | "auto";
 };
 
 test.each<SelectionCase>([
@@ -140,7 +140,18 @@ test.each<SelectionCase>([
   { name: "explicit heartbeat override", pin: "middle", expected: "heartbeat", heartbeat: true },
   { name: "one-turn override", pin: "middle", expected: "once", oneTurn: true },
   { name: "bound CLI provider", pin: "cli-model", expected: "cli-model", cli: true },
-  { name: "missing auth pin", pin: "plain-model", expected: "plain-model", missingAuthPin: true },
+  {
+    name: "missing user auth pin",
+    pin: "plain-model",
+    expected: "plain-model",
+    missingAuthPinSource: "user",
+  },
+  {
+    name: "missing automatic auth pin",
+    pin: "plain-model",
+    expected: "plain-model",
+    missingAuthPinSource: "auto",
+  },
   {
     name: "resolved prefix rejected by a colliding exact allowlist",
     pin: "custom/model",
@@ -264,8 +275,21 @@ test.each<SelectionCase>([
     applyModelOverrideToSessionEntry({
       entry: pinnedEntry,
       selection: { provider, model: fixture.pin },
-      ...(fixture.missingAuthPin ? { profileOverride: "missing-test-profile" } : {}),
+      ...(fixture.missingAuthPinSource
+        ? {
+            profileOverride: "missing-test-profile",
+            profileOverrideSource: fixture.missingAuthPinSource,
+          }
+        : {}),
     });
+    if (fixture.missingAuthPinSource) {
+      expect(pinnedEntry.authProfileOverride).toBe("missing-test-profile");
+      expect(pinnedEntry.authProfileOverrideSource).toBe(fixture.missingAuthPinSource);
+      expect(pinnedEntry.authProfileOverrideCompactionCount).toBeUndefined();
+      if (fixture.missingAuthPinSource === "auto") {
+        pinnedEntry.authProfileOverrideCompactionCount = 2;
+      }
+    }
     if (fixture.raw) {
       delete pinnedEntry.modelOverrideRouteResolution;
     }
@@ -316,6 +340,15 @@ test.each<SelectionCase>([
           model: fixture.readerModel ?? (fixture.raw ? "middle" : fixture.pin),
           routeResolution: fixture.raw ? "raw" : "resolved",
         });
+        if (fixture.missingAuthPinSource) {
+          expect(entry.authProfileOverride).toBe("missing-test-profile");
+          expect(entry.authProfileOverrideSource).toBe(fixture.missingAuthPinSource);
+          if (fixture.missingAuthPinSource === "auto") {
+            expect(entry.authProfileOverrideCompactionCount).toBe(2);
+          } else {
+            expect(entry.authProfileOverrideCompactionCount).toBeUndefined();
+          }
+        }
         const selection = await createModelSelectionState({
           cfg,
           agentId: "main",
@@ -348,8 +381,18 @@ test.each<SelectionCase>([
         if (fixture.inherited) {
           expect(entry.modelOverride).toBeUndefined();
         }
-        if (fixture.missingAuthPin) {
-          expect(entry.authProfileOverride).toBeUndefined();
+        if (fixture.missingAuthPinSource) {
+          expect(sessionStore[sessionKey]).toBeDefined();
+          for (const selectedEntry of [entry, sessionStore[sessionKey]]) {
+            if (fixture.missingAuthPinSource === "user") {
+              expect(selectedEntry?.authProfileOverride).toBe("missing-test-profile");
+              expect(selectedEntry?.authProfileOverrideSource).toBe("user");
+            } else {
+              expect(selectedEntry?.authProfileOverride).toBeUndefined();
+              expect(selectedEntry?.authProfileOverrideSource).toBeUndefined();
+            }
+            expect(selectedEntry?.authProfileOverrideCompactionCount).toBeUndefined();
+          }
         }
       },
     );
