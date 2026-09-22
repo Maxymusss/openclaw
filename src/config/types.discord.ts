@@ -25,6 +25,7 @@ export type DiscordPluralKitConfig = {
 };
 
 export type DiscordMentionAliasesConfig = Record<string, string>;
+export type DiscordRequireMention = boolean | "explicit";
 
 export type DiscordDmConfig = {
   /** If false, ignore all incoming Discord DMs. Default: true. */
@@ -36,7 +37,7 @@ export type DiscordDmConfig = {
 };
 
 export type DiscordGuildChannelConfig = {
-  requireMention?: boolean;
+  requireMention?: DiscordRequireMention;
   /**
    * If true, drop messages addressed to another identity by mention or bot reply, but not this
    * bot (not @everyone/@here).
@@ -70,7 +71,7 @@ export type DiscordReactionNotificationMode = "off" | "own" | "all" | "allowlist
 
 export type DiscordGuildEntry = {
   slug?: string;
-  requireMention?: boolean;
+  requireMention?: DiscordRequireMention;
   /**
    * If true, drop messages addressed to another identity by mention or bot reply, but not this
    * bot (not @everyone/@here).

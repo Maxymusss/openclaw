@@ -8,7 +8,10 @@ import {
   resolveChannelMatchConfig,
   type ChannelMatchSource,
 } from "openclaw/plugin-sdk/channel-targets";
-import type { DiscordGuildEntry } from "openclaw/plugin-sdk/config-contracts";
+import type {
+  DiscordGuildEntry,
+  DiscordRequireMention,
+} from "openclaw/plugin-sdk/config-contracts";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
@@ -27,7 +30,7 @@ type DiscordAllowListMatch = AllowlistMatch<"wildcard" | "id" | "name" | "tag">;
 const DISCORD_OWNER_ALLOWLIST_PREFIXES = ["discord:", "user:", "pk:"];
 
 type DiscordChannelOverrideConfig = {
-  requireMention?: boolean;
+  requireMention?: DiscordRequireMention;
   ignoreOtherMentions?: boolean;
   skills?: string[];
   enabled?: boolean;
@@ -43,7 +46,7 @@ type DiscordChannelOverrideConfig = {
 export type DiscordGuildEntryResolved = Pick<DiscordGuildEntry, "presenceEvents"> & {
   id?: string;
   slug?: string;
-  requireMention?: boolean;
+  requireMention?: DiscordRequireMention;
   ignoreOtherMentions?: boolean;
   reactionNotifications?: "off" | "own" | "all" | "allowlist";
   users?: string[];
@@ -500,7 +503,9 @@ export function resolveDiscordShouldRequireMention(params: {
   if (isBotThread) {
     return false;
   }
-  return params.channelConfig?.requireMention ?? params.guildInfo?.requireMention ?? true;
+  return (
+    (params.channelConfig?.requireMention ?? params.guildInfo?.requireMention ?? true) !== false
+  );
 }
 
 function isDiscordAutoThreadOwnedByBot(params: {

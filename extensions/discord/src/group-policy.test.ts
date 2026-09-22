@@ -11,6 +11,24 @@ function createCfg(discord: Record<string, unknown>): OpenClawConfig {
 }
 
 describe("discord group policy", () => {
+  it("projects explicit Discord policy to the shared boolean group contract", () => {
+    const cfg = createCfg({
+      guilds: {
+        guild: {
+          requireMention: "explicit",
+          channels: { always: { requireMention: false }, strict: { requireMention: "explicit" } },
+        },
+      },
+    });
+    expect(resolveDiscordGroupRequireMention({ cfg, groupSpace: "guild" })).toBe(true);
+    expect(resolveDiscordGroupRequireMention({ cfg, groupSpace: "guild", groupId: "always" })).toBe(
+      false,
+    );
+    expect(resolveDiscordGroupRequireMention({ cfg, groupSpace: "guild", groupId: "strict" })).toBe(
+      true,
+    );
+  });
+
   it("prefers a channel sender policy over the guild plain policy", () => {
     const cfg = createCfg({
       guilds: {

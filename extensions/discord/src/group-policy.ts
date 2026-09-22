@@ -73,13 +73,13 @@ function buildDiscordPolicyTree(guilds: DiscordConfig["guilds"]): ScopeTree {
   const scopes: ScopeTree["scopes"] = {};
   for (const [guildKey, guild] of Object.entries(guilds ?? {})) {
     scopes[guildScopeKey(guildKey)] = {
-      requireMention: guild.requireMention,
+      requireMention: guild.requireMention === "explicit" ? true : guild.requireMention,
       tools: guild.tools,
       toolsBySender: guild.toolsBySender,
     };
     for (const [channelKey, channel] of Object.entries(guild.channels ?? {})) {
       scopes[channelScopeKey(guildKey, channelKey)] = {
-        requireMention: channel.requireMention,
+        requireMention: channel.requireMention === "explicit" ? true : channel.requireMention,
         tools: channel.tools,
         toolsBySender: channel.toolsBySender,
       };

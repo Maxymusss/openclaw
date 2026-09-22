@@ -2,6 +2,14 @@ import { createChannelConfigUiHints } from "openclaw/plugin-sdk/channel-core";
 import type { ChannelConfigUiHint } from "openclaw/plugin-sdk/channel-core";
 
 export const discordChannelConfigUiHints = {
+  "guilds.*.requireMention": {
+    label: "Discord Guild Require Mention",
+    help: 'true uses normal mention rules; false disables the gate; "explicit" requires a typed bot user tag in guild messages, including threads. Slash commands remain separately authorized.',
+  },
+  "guilds.*.channels.*.requireMention": {
+    label: "Discord Channel Require Mention",
+    help: 'Override the guild mention policy: true uses normal mention rules, false disables the gate, and "explicit" requires a typed bot user tag even in auto/bound threads.',
+  },
   "": {
     label: "Discord",
     help: "Discord channel provider configuration for bot auth, retry policy, streaming, thread bindings, and optional voice capabilities. Keep privileged intents and advanced features disabled unless needed.",

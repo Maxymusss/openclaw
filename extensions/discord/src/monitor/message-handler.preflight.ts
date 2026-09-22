@@ -607,6 +607,13 @@ export async function preflightDiscordMessage(
     channelConfig,
     guildInfo,
   });
+  const requiresExplicitMention =
+    isGuildMessage && (channelConfig?.requireMention ?? guildInfo?.requireMention) === "explicit";
+  const hasExplicitUserTag =
+    requiresExplicitMention &&
+    hydratedSources.some(({ message: source }) =>
+      hasRawDiscordUserMention(source.content ?? "", botId),
+    );
   const shouldRequireMention = resolvePreflightMentionRequirement({
     shouldRequireMention: shouldRequireMentionByConfig,
     bypassMentionRequirement,
@@ -685,7 +692,10 @@ export async function preflightDiscordMessage(
     acpBinding: Boolean(configuredBinding),
   });
   const wasMentioned =
-    wasNormallyMentioned || hasActiveBotMention || Boolean(groupThread?.mentionedAgentIds.length);
+    wasNormallyMentioned ||
+    hasActiveBotMention ||
+    hasExplicitUserTag ||
+    Boolean(groupThread?.mentionedAgentIds.length);
   logDiscordPreflightInboundSummary({
     messageId: message.id,
     guildId: params.data.guild_id ?? undefined,
@@ -749,6 +759,17 @@ export async function preflightDiscordMessage(
   }
 
   const canDetectMention = Boolean(groupThread) || Boolean(botId) || mentionRegexes.length > 0;
+  // Only a typed native user tag in an inbound message qualifies, not reply-ping
+  // metadata, embeds, commands, or thread/binding bypasses.
+  if (requiresExplicitMention && !hasExplicitUserTag) {
+    await recordDiscordPendingHistoryEntry({
+      preflight: params,
+      historyKey: messageChannelId,
+      message,
+      entry: historyEntry,
+    });
+    return null;
+  }
   const mentionDecision = resolveInboundMentionDecision({
     facts: {
       canDetectMention,

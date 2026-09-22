@@ -24,6 +24,28 @@ function expectInvalidDiscordConfig(config: unknown) {
 }
 
 describe("discord config schema", () => {
+  it("accepts explicit mention policy for guilds and channels, but not other strings", () => {
+    const cfg = {
+      dmPolicy: "pairing",
+      groupPolicy: "allowlist",
+      guilds: {
+        "123": { requireMention: "explicit", channels: { "456": { requireMention: "explicit" } } },
+      },
+    };
+    expectValidDiscordConfig(cfg);
+    expect(
+      validateJsonSchemaValue({
+        schema: DiscordChannelConfigSchema.schema,
+        cacheKey: "discord-explicit-policy",
+        value: cfg,
+      }).ok,
+    ).toBe(true);
+    expectInvalidDiscordConfig({ guilds: { "123": { requireMention: "implicit" } } });
+    expectInvalidDiscordConfig({
+      guilds: { "123": { channels: { "456": { requireMention: "implicit" } } } },
+    });
+  });
+
   it.each([
     ["2026.3.13", true],
     ["2026.7.1-2", true],

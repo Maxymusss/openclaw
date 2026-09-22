@@ -177,6 +177,15 @@ Who may reach the bot, which guild channels it answers in, and which Discord act
     When writing outbound Discord messages, use canonical mention syntax: `<@USER_ID>` for users, `<#CHANNEL_ID>` for channels, and `<@&ROLE_ID>` for roles. Do not use the legacy `<@!USER_ID>` nickname mention form.
 
     `requireMention` is configured per guild/channel (`channels.discord.guilds...`).
+    Set it to `"explicit"` to require a literal bot user tag (`<@BOT_ID>` or
+    `<@!BOT_ID>`) in the message content. This applies to ordinary guild messages
+    and threads, including auto-created and bound threads. Reply pings, replies
+    to the bot, `@everyone`, mention patterns, text commands, and tags only in
+    embeds or code do not bypass this setting. Escaped tags do not count.
+    `true` retains the existing mention behavior and `false` disables the
+    mention requirement. Channel values override guild values, including `false`.
+    Native slash commands and interactions are separate authenticated ingress:
+    they continue to use Discord access rules without requiring a message tag.
     `ignoreOtherMentions` optionally drops messages addressed to another identity but not the bot. This covers explicit user/role mentions (excluding @everyone/@here) and replies to another non-webhook bot. An explicit mention of the current bot still wins.
 
     Group DMs:

@@ -20,6 +20,7 @@ export type {
   DiscordGuildChannelConfig,
   DiscordGuildEntry,
   DiscordIntentsConfig,
+  DiscordRequireMention,
   DiscordSlashCommandConfig,
   DmConfig,
   DmPolicy,
