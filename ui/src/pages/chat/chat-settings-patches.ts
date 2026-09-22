@@ -106,22 +106,6 @@ export function getPendingChatPickerPatch(
   return pendingChatPickerPatches.get(host.sessions)?.get(patchKey)?.ready;
 }
 
-function trackPendingChatSettingsPatch(
-  sessions: SessionCapability,
-  patchKey: string,
-  pending: PendingChatPickerPatch,
-): void {
-  const pendingBySession =
-    pendingChatPickerPatches.get(sessions) ?? new Map<string, PendingChatPickerPatch>();
-  pendingChatPickerPatches.set(sessions, pendingBySession);
-  pendingBySession.set(patchKey, pending);
-  void pending.ready.finally(() => {
-    if (pendingBySession.get(patchKey) === pending) {
-      pendingBySession.delete(patchKey);
-    }
-  });
-}
-
 export function patchChatSessionSettings(
   host: ChatPickerPatchHost,
   sessionKey: string,
@@ -137,7 +121,10 @@ export function patchChatSessionSettings(
 ): Promise<SessionPatchResult | null> {
   const sessions = host.sessions;
   const patchKey = resolveChatPickerPatchKey(host, sessionKey, options.agentId);
-  const previous = pendingChatPickerPatches.get(sessions)?.get(patchKey);
+  const pendingBySession =
+    pendingChatPickerPatches.get(sessions) ?? new Map<string, PendingChatPickerPatch>();
+  pendingChatPickerPatches.set(sessions, pendingBySession);
+  const previous = pendingBySession.get(patchKey);
   const waitFor = previous?.ready;
   // One flat receipt source survives failed intermediate writes without retaining
   // settled predecessors. Each pending capability claim owns its subscription.
@@ -164,7 +151,7 @@ export function patchChatSessionSettings(
     return result;
   })().catch((error: unknown) => {
     // The canonical tail owns failure presentation as well as FIFO settlement.
-    if (pendingChatPickerPatches.get(sessions)?.get(patchKey) === pending) {
+    if (pendingBySession.get(patchKey) === pending) {
       options.onRejected?.(error, receipt.read());
     }
     throw error;
@@ -176,7 +163,12 @@ export function patchChatSessionSettings(
     ),
     receipt,
   };
-  trackPendingChatSettingsPatch(sessions, patchKey, pending);
+  pendingBySession.set(patchKey, pending);
+  void pending.ready.finally(() => {
+    if (pendingBySession.get(patchKey) === pending) {
+      pendingBySession.delete(patchKey);
+    }
+  });
   return operation;
 }
 

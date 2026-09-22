@@ -233,17 +233,16 @@ export function createSessionMutations(host: SessionMutationsHost) {
     ];
     let rowPatchConfirmed = false;
     let writeConfirmed = false;
-    let modelPatchStarted = false;
     let modelPatchRevision = 0;
-    const modelPatchToken = Symbol("session-model-patch");
+    let modelPatchToken: symbol | undefined;
     let permissionProjection: SessionPermissionClaim | undefined;
     const ownsModelOverride = () => options.ownsModelOverride?.() !== false;
     const startModelPatch = () => {
-      if (!managesModelOverride || modelPatchStarted || !ownsModelOverride()) {
+      if (!managesModelOverride || modelPatchToken || !ownsModelOverride()) {
         return;
       }
       const pendingModelPatch = pendingModelPatches.get(normalizedKey);
-      modelPatchStarted = true;
+      modelPatchToken = Symbol("session-model-patch");
       pendingModelPatches.set(normalizedKey, {
         token: modelPatchToken,
         previous: pendingModelPatch?.previous ?? {
@@ -283,40 +282,44 @@ export function createSessionMutations(host: SessionMutationsHost) {
       startOptimisticPatch();
     }
     const settleModelOverride = (completed: boolean) => {
+      if (!modelPatchToken) {
+        return;
+      }
       const pendingModelPatch = pendingModelPatches.get(normalizedKey);
-      if (modelPatchStarted && pendingModelPatch?.token === modelPatchToken) {
-        pendingModelPatches.delete(normalizedKey);
-        // Success and rollback may settle only this operation's untouched claim.
-        if (pendingModelPatch.revision !== modelPatchRevision) {
-          return;
-        }
-        if (host.connection.isCurrent(scope) && ownsModelOverride()) {
-          if (completed && !options.deferListRefresh) {
-            // The canonical row carries the Gateway-confirmed selection.
-            // Keeping an overlay would hide subsequent external model changes.
-            setModelOverride(key, undefined);
-          } else {
-            const previous = pendingModelPatch.previous;
-            // A failed patch restores a create preview only until its canonical row arrives.
-            const created =
-              !completed &&
-              previous.created &&
-              host.publishedRow(normalizedKey)?.modelOverrideSource === undefined;
-            setModelOverride(
-              key,
-              completed
-                ? patchParams.model
-                : previous.created && !created
-                  ? undefined
-                  : previous.value,
-              created,
-            );
-          }
-        } else {
-          // The shared key now belongs to another agent/connection. Remove only
-          // this operation's untouched optimistic value; preserve newer claims.
+      if (pendingModelPatch?.token !== modelPatchToken) {
+        return;
+      }
+      pendingModelPatches.delete(normalizedKey);
+      // Success and rollback may settle only this operation's untouched claim.
+      if (pendingModelPatch.revision !== modelPatchRevision) {
+        return;
+      }
+      if (host.connection.isCurrent(scope) && ownsModelOverride()) {
+        if (completed && !options.deferListRefresh) {
+          // The canonical row carries the Gateway-confirmed selection.
+          // Keeping an overlay would hide subsequent external model changes.
           setModelOverride(key, undefined);
+        } else {
+          const previous = pendingModelPatch.previous;
+          // A failed patch restores a create preview only until its canonical row arrives.
+          const created =
+            !completed &&
+            previous.created &&
+            host.publishedRow(normalizedKey)?.modelOverrideSource === undefined;
+          setModelOverride(
+            key,
+            completed
+              ? patchParams.model
+              : previous.created && !created
+                ? undefined
+                : previous.value,
+            created,
+          );
         }
+      } else {
+        // The shared key now belongs to another agent/connection. Remove only
+        // this operation's untouched optimistic value; preserve newer claims.
+        setModelOverride(key, undefined);
       }
     };
     const settleOptimisticPatch = (completed: boolean) => {
