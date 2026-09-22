@@ -401,6 +401,6 @@ describe.skipIf(
     expect(JSON.stringify(messages)).not.toContain(KEY);
     expect(JSON.stringify(receipt)).not.toContain(KEY);
     await processOwner.close();
-    expect(processOwner.hasActiveWork()).toBe(false);
+    expect(await processOwner.hasActiveWork()).toBe(false);
   }, 120_000);
 });
