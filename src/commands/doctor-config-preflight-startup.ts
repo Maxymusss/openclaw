@@ -37,6 +37,7 @@ import {
   recordAgentDatabaseAdmissions,
 } from "../state/agent-database-admission.js";
 import { getAgentDatabaseStartupAdmission } from "../state/agent-database-startup.js";
+import type { DoctorAgentSchemaFacts } from "../state/doctor-agent-schema-facts.js";
 import {
   withArtifactPreservingStateReads,
   withOpenClawStateDatabaseReadSnapshot,
@@ -67,6 +68,7 @@ import type { PluginMigrationInspection } from "./doctor/shared/plugin-migration
 /** Admit the same config and state before the lease and again before migration writes. */
 export async function readStartupMigrationSnapshot(params: {
   env: NodeJS.ProcessEnv;
+  doctorAgentSchemaFacts?: DoctorAgentSchemaFacts;
   readSnapshot: () => Promise<DoctorConfigPreflightPluginSnapshotRead>;
   planRepair: (
     read: DoctorConfigPreflightPluginSnapshotRead,
@@ -83,7 +85,7 @@ export async function readStartupMigrationSnapshot(params: {
     pendingDatabasePaths?: readonly string[];
   }
 > {
-  return await withArtifactPreservingStateReads(async () => {
+  const admission = withArtifactPreservingStateReads(async () => {
     await measureDoctorConfigPreflightStep("admission.live-owner", () =>
       refuseStartupMigrationsForLiveGatewayOwner(params.env),
     );
@@ -111,6 +113,9 @@ export async function readStartupMigrationSnapshot(params: {
       // Doctor still rejects incompatible versions before any startup write.
       const databases = await prepareDoctorDatabasePreflight({
         cfg: startupConfig?.sourceConfig ?? candidate.sourceConfig ?? candidate.config,
+        ...(params.doctorAgentSchemaFacts
+          ? { doctorAgentSchemaFacts: params.doctorAgentSchemaFacts }
+          : {}),
       });
       const deferredPluginMigrations = await measureDoctorConfigPreflightStep(
         "admission.plugin-migrations",
@@ -183,6 +188,14 @@ export async function readStartupMigrationSnapshot(params: {
       return throwStartupMigrationRefusal(formatErrorMessage(error), error);
     }
   });
+  try {
+    const admitted = await admission;
+    params.doctorAgentSchemaFacts?.publish();
+    return admitted;
+  } catch (error) {
+    params.doctorAgentSchemaFacts?.discard();
+    throw error;
+  }
 }
 
 /** Preserve the old database generation before image replacement advances its schemas. */

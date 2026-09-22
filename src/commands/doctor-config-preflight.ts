@@ -5,6 +5,7 @@ import { resolveStateDir } from "../config/paths.js";
 import { inspectShippedPluginInstallConfigRecords } from "../config/plugin-install-config-migration.js";
 import type { ConfigFileSnapshot } from "../config/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { resolveSqliteInspectionSignal } from "../infra/sqlite-readonly-worker.js";
 import type {
   MigrationCheckpointIdentity,
   StartupMigrationLease,
@@ -17,6 +18,8 @@ import type {
 } from "../infra/state-migrations.types.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
+import { getAgentDatabaseStartupAdmission } from "../state/agent-database-startup.js";
+import { DoctorAgentSchemaFacts } from "../state/doctor-agent-schema-facts.js";
 import { withArtifactPreservingStateReads } from "../state/openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../state/openclaw-state-ownership.js";
@@ -176,6 +179,11 @@ async function runDoctorConfigPreflightOperation(
       gatewayStartupCheckpointRequired && hasPendingPluginInstallConfig(snapshot);
     shouldPersistRefreshedPluginIndex = needsRefreshedPluginIndexPersistence(snapshotRead);
   };
+  const doctorAgentSchemaFacts = gatewayStartupCheckpointRequired
+    ? new DoctorAgentSchemaFacts(
+        resolveSqliteInspectionSignal(getAgentDatabaseStartupAdmission()?.signal),
+      )
+    : undefined;
   const ensureStartupMigrationLease = async () => {
     if (startupMigrationLease || !migrationCheckpoint) {
       return;
@@ -190,9 +198,14 @@ async function runDoctorConfigPreflightOperation(
     );
     // Another process may have completed the same work between our pre-lease read and acquisition.
     // Refresh every checkpoint input under the lease so only work still missing from state runs.
-    configSnapshotRead = gatewayStartupCheckpointRequired
-      ? await readAdmittedStartupSnapshot()
-      : await readConfigSnapshotForPreflight(false);
+    doctorAgentSchemaFacts?.beginRefresh();
+    try {
+      configSnapshotRead = gatewayStartupCheckpointRequired
+        ? await readAdmittedStartupSnapshot()
+        : await readConfigSnapshotForPreflight(false);
+    } finally {
+      doctorAgentSchemaFacts?.discard();
+    }
     refreshMigrationCheckpoint(migrationCheckpoint, configSnapshotRead);
     if (
       !shouldRecordStateCheckpoint &&
@@ -255,6 +268,7 @@ async function runDoctorConfigPreflightOperation(
   const readAdmittedStartupSnapshot = async () =>
     readStartupMigrationSnapshot({
       env: startupMigrationEnv,
+      doctorAgentSchemaFacts,
       readSnapshot: () => readConfigSnapshotForPreflight(false),
       planRepair: (read) => {
         configSnapshotRead = read;
@@ -738,6 +752,7 @@ async function runDoctorConfigPreflightOperation(
       ...(postSessionPluginMigrationPlanBound ? { postSessionPluginMigrationPlanBound: true } : {}),
     };
   } finally {
+    doctorAgentSchemaFacts?.discard();
     startupMigrationHeartbeat?.stop();
     startupMigrationLease?.release();
   }

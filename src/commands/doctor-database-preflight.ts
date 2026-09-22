@@ -2,6 +2,7 @@ import path from "node:path";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PreparedAgentDatabaseMigrationDiscovery } from "../infra/state-migrations.media-persistence-targets.js";
 import { DoctorUnreadableStateDatabaseError } from "../infra/state-repair-message.js";
+import type { DoctorAgentSchemaFacts } from "../state/doctor-agent-schema-facts.js";
 import type { OpenClawDatabaseSchemaPreflight } from "../state/openclaw-database-preflight.js";
 
 export type DoctorDatabasePreflight = OpenClawDatabaseSchemaPreflight & {
@@ -11,7 +12,11 @@ export type DoctorDatabasePreflight = OpenClawDatabaseSchemaPreflight & {
 
 /** Prepare fleet facts through the artifact-preserving schema readers. */
 export async function prepareDoctorDatabasePreflight(
-  options: { scope?: "state"; cfg?: OpenClawConfig } = {},
+  options: {
+    scope?: "state";
+    cfg?: OpenClawConfig;
+    doctorAgentSchemaFacts?: DoctorAgentSchemaFacts;
+  } = {},
 ): Promise<DoctorDatabasePreflight> {
   const { scope } = options;
   const databasePreflight = await import("../state/openclaw-database-preflight.js");
@@ -39,6 +44,7 @@ export async function prepareDoctorDatabasePreflight(
   let agentDatabaseMigrationDiscovery: PreparedAgentDatabaseMigrationDiscovery | undefined;
   const databaseSchemas = await databasePreflight.preflightOpenClawDatabaseSchemas({
     env: process.env,
+    doctorAgentSchemaFacts: options.doctorAgentSchemaFacts,
     scope,
     openStateSchemaReadAdmission: openDoctorStateSchemaReadAdmission,
     ...(cfg
@@ -58,6 +64,13 @@ export async function prepareDoctorDatabasePreflight(
         }
       : {}),
   });
+  if (
+    databaseSchemas.incompatible.length ||
+    databaseSchemas.indeterminate.length ||
+    databaseSchemas.agentRefusals?.length
+  ) {
+    options.doctorAgentSchemaFacts?.discard();
+  }
   if (databaseSchemas.incompatible.length > 0) {
     throw new databasePreflight.OpenClawDatabaseSchemaPreflightError(databaseSchemas.incompatible, {
       operation: "doctor",

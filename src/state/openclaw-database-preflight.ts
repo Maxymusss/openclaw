@@ -33,6 +33,7 @@ import {
   recordAgentDatabaseAdmissions,
 } from "./agent-database-admission.js";
 import { getAgentDatabaseStartupAdmission } from "./agent-database-startup.js";
+import type { DoctorAgentSchemaFacts } from "./doctor-agent-schema-facts.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { isPersistentOpenClawAgentDatabasePath } from "./openclaw-agent-db-registry.js";
 import { readAgentDatabasePreflightTargets } from "./openclaw-agent-db-registry.read.js";
@@ -323,6 +324,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
   requireStartupMigrationReadiness?: boolean;
   /** Consume this startup owner's unchanged compatibility headers once, never readiness proof. */
   reuseStartupSchemaPreparation?: boolean;
+  doctorAgentSchemaFacts?: DoctorAgentSchemaFacts;
   configuredAgentDatabaseTargets?:
     | readonly { agentId: string; path: string }[]
     | ((
@@ -576,6 +578,8 @@ export async function preflightOpenClawDatabaseSchemas(options: {
         return;
       }
       let agentSnapshot: Awaited<ReturnType<typeof prepareSqliteReadOnlyLocation>> | undefined;
+      let stageDoctorHeader: ReturnType<DoctorAgentSchemaFacts["prepare"]>;
+      let completedDoctorHeader: AgentSchemaInspection | undefined;
       try {
         // Preserve SQLite's filesystem traversal through symlink/.. locators.
         const realAgentPath = realpathSync.native(agentPath);
@@ -587,6 +591,23 @@ export async function preflightOpenClawDatabaseSchemas(options: {
         const recordPreparedSchemaHeader = prepareSchemaHeader?.(realAgentPath);
         const inspectOwnership =
           row.agentId !== undefined && admittedAgentIds?.has(row.agentId) === true;
+        const doctorHeaderInput =
+          options.doctorAgentSchemaFacts &&
+          inspectOwnership &&
+          row.agentId &&
+          !options.verifyCurrentSchemaShape &&
+          !options.requireStartupMigrationReadiness
+            ? {
+                pathname: realAgentPath,
+                agentId: row.agentId,
+                supportedVersion: supportedVersions.agent,
+                env: options.env,
+              }
+            : undefined;
+        if (doctorHeaderInput) {
+          schemaInspection ??= options.doctorAgentSchemaFacts?.read(doctorHeaderInput) ?? null;
+          stageDoctorHeader = options.doctorAgentSchemaFacts?.prepare(doctorHeaderInput);
+        }
         const schemaInput = {
           pathname: realAgentPath,
           agentId: row.agentId,
@@ -676,6 +697,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
           });
         }
         recordPreparedSchemaHeader?.(agentVersion);
+        completedDoctorHeader = schemaInspection;
       } catch (error) {
         if (options.signal?.aborted) {
           throw error;
@@ -692,6 +714,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
           reason: formatErrorMessage(error),
         });
       } finally {
+        let cleanupSucceeded = true;
         if (agentSnapshot) {
           let failure: { error: unknown } | undefined;
           try {
@@ -705,6 +728,7 @@ export async function preflightOpenClawDatabaseSchemas(options: {
           } catch (error) {
             failure = { error };
           }
+          cleanupSucceeded = !failure;
           if (failure && !startup?.recordInspectionFailure(row, inspection, failure.error)) {
             inspection.indeterminate.push({
               kind: "agent",
@@ -712,6 +736,9 @@ export async function preflightOpenClawDatabaseSchemas(options: {
               reason: formatErrorMessage(failure.error),
             });
           }
+        }
+        if (cleanupSucceeded && completedDoctorHeader && !options.signal?.aborted) {
+          stageDoctorHeader?.(completedDoctorHeader);
         }
       }
     },
