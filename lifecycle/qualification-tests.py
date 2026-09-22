@@ -3,6 +3,7 @@ import argparse
 import os
 from pathlib import Path
 import tempfile
+import sys
 import unittest
 
 
@@ -24,7 +25,7 @@ def main():
     os.chdir(Path(__file__).resolve().parent)
     suite = unittest.defaultTestLoader.loadTestsFromNames([
         'test_installed_state', 'test_installed_admission', 'test_release'])
-    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    result = unittest.TextTestRunner(stream=sys.stdout, verbosity=2).run(suite)
     if os.path.lexists(resolved):
         raise ValueError('Byte-only tests unexpectedly created a handoff database')
     if list(resolved.parent.iterdir()):

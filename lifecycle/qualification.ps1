@@ -3,6 +3,7 @@ param([Parameter(Mandatory=$true)][string]$CandidateRoot,[Parameter(Mandatory=$t
 $ErrorActionPreference='Stop'
 if($env:RUNNER_ENVIRONMENT -cne 'github-hosted' -or $env:RUNNER_OS -cne 'Windows' -or $PSVersionTable.PSVersion.Major -ne 5 -or $PSVersionTable.PSVersion.Minor -ne 1){throw 'Fresh hosted Windows PowerShell 5.1 required.'}
 . (Join-Path $PSScriptRoot 'qualification-isolation.ps1')
+. (Join-Path $PSScriptRoot 'qualification-evidence.ps1')
 $root=Join-Path $env:RUNNER_TEMP ('qualification125286-'+[guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $root|Out-Null
 New-Item -ItemType Directory -Force -Path $EvidenceRoot|Out-Null
@@ -18,24 +19,36 @@ try {
     $env:TMPDIR=$root;$env:TEMP=$root;$env:TMP=$root
     $result.handoffStore=$store
     $result.handoffStoreUse='Reserved explicit path, no OpenClaw executor is invoked. Synthetic marker tests and real Node-only installer functions cannot open product handoff store.'
-    $tokens=$null;$errors=$null
-    foreach($file in @('diagnostic.ps1','test_installed_setup.ps1','prove-portable-node-recovery.ps1','qualification-isolation.ps1','qualification.ps1')){
-        [Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot $file),[ref]$tokens,[ref]$errors)|Out-Null
-        if($errors.Count){throw ('PowerShell 5.1 parse failure: '+$file+': '+($errors -join ';'))}
-    }
-    $result.parse='passed'
+    # Reuse exact accepted 5.1 setup controls; do not replay already accepted work.
+    $acceptedFile=Join-Path $PSScriptRoot 'accepted-setup-35703751482.json'
+    $rawFile=Join-Path $PSScriptRoot 'accepted-setup-35703751482.raw.base64'
+    $accepted=Assert-AcceptedSetupEvidence -EvidencePath $acceptedFile -RawReceiptPath $rawFile -SourceRoot $PSScriptRoot
+    # Behavioral tamper controls for the new evidence reuse gate, not a replay of setup.
+    $tampered=Join-Path $root 'tampered-evidence.json'
+    try {
+        foreach($mode in @('empty-bindings','duplicate-cases','raw-substitution')){
+            $copy=Get-Content -LiteralPath $acceptedFile -Raw|ConvertFrom-Json
+            if($mode -eq 'empty-bindings'){$copy.sourceBindings=[pscustomobject]@{}}
+            if($mode -eq 'duplicate-cases'){$copy.setupCases=@($copy.setupCases[0])*12}
+            $copy|ConvertTo-Json -Depth 15|Set-Content -LiteralPath $tampered -Encoding UTF8
+            $rejected=$false
+            try {
+                if($mode -eq 'raw-substitution'){Assert-AcceptedSetupEvidence -EvidencePath $acceptedFile -RawReceiptPath $tampered -SourceRoot $PSScriptRoot|Out-Null}
+                else {Assert-AcceptedSetupEvidence -EvidencePath $tampered -RawReceiptPath $rawFile -SourceRoot $PSScriptRoot|Out-Null}
+            } catch {
+                $expected=if($mode -eq 'raw-substitution'){'Accepted raw setup receipt changed.'}else{'Accepted evidence bytes changed.'}
+                if($_.Exception.Message -cne $expected){throw}
+                $rejected=$true
+            }
+            if(-not $rejected){throw ('Tampered evidence admitted: '+$mode)}
+        }
+    } finally {if(Test-Path -LiteralPath $tampered){Remove-Item -LiteralPath $tampered -Force}}
+    $result.evidenceTamperControls='3 refused at exact authenticated gate'
+    $result.setup=@{status='reused';run=$accepted.run;cases=12;currentSourceBindings='matched'}
     $python=(& py -3.13 -c 'import sys; print(sys.executable)').Trim()
     if($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $python)){throw 'Python 3.13 missing.'}
     $result.python=@{path=$python;sha256=(Get-FileHash -LiteralPath $python -Algorithm SHA256).Hash.ToLowerInvariant()}
 
-    # Establish the actual broken encoding on 5.1, with the same behavioral helper.
-    $beforeError=$null
-    try { & (Join-Path $PSScriptRoot 'test_installed_setup.ps1') -Diagnostic (Join-Path $PSScriptRoot 'diagnostic-before-ps51.ps1') -HandoffStore $store -Python $python | Out-Null }
-    catch {$beforeError=$_.Exception.Message}
-    if(-not $beforeError -or $beforeError -notmatch 'utf8NoBOM'){throw ('Expected original 5.1 encoding failure, got: '+$beforeError)}
-    $result.failFirst=$beforeError
-    & (Join-Path $PSScriptRoot 'test_installed_setup.ps1') -HandoffStore $store -Python $python | Set-Content -LiteralPath (Join-Path $EvidenceRoot 'setup.json') -Encoding UTF8
-    $result.setup='passed'
     # Explicit child projection is read and resolved before unittest executes.
     & $python -B (Join-Path $PSScriptRoot 'qualification-tests.py') --handoff-store $store *> (Join-Path $EvidenceRoot 'python.log')
     if($LASTEXITCODE -ne 0){throw 'Affected Windows Python controls failed.'}

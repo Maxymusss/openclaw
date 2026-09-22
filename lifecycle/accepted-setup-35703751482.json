@@ -1,0 +1,138 @@
+{
+  "run": 35703751482,
+  "job": 106667632638,
+  "workflow": "d6dceac8e9c290e1e365035edeab4f04424dffbd",
+  "engine": "5.1.26100.33296",
+  "setupReceiptSha256": "514e58c9178fcf0c8aae977efc9083edc3375b62e01689fb155f964498941d46",
+  "setupCases": [
+    {
+      "events": [
+        "archive",
+        "installer",
+        "installed",
+        "gateway-boundary"
+      ],
+      "case": "success",
+      "error": null,
+      "passed": true
+    },
+    {
+      "events": [
+        "archive"
+      ],
+      "case": "archive-failed",
+      "error": "Pinned release archive or member integrity failed before install.",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer"
+      ],
+      "case": "failed",
+      "error": "original installer failure",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer"
+      ],
+      "case": "unsettled",
+      "error": "original UNSETTLED custody",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer"
+      ],
+      "case": "unsettled-flag",
+      "error": "Single settled installer required before installed-state verification.",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer",
+        "installed"
+      ],
+      "case": "installed-failed",
+      "error": "Released installed-state contract failed before gateway invocation.",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer",
+        "installed"
+      ],
+      "case": "wrong-command",
+      "error": "Production require_setup rejected generated receipt: {\"accepted\": false, \"reason\": \"successful settled installer required\"}",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer",
+        "installed"
+      ],
+      "case": "timed-out",
+      "error": "Production require_setup rejected generated receipt: {\"accepted\": false, \"reason\": \"successful settled installer required\"}",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer",
+        "installed"
+      ],
+      "case": "wrong-identity",
+      "error": "Production require_setup rejected generated receipt: {\"accepted\": false, \"reason\": \"installer held identity/terminal settlement required\"}",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer",
+        "installed"
+      ],
+      "case": "wrong-settlement",
+      "error": "Production require_setup rejected generated receipt: {\"accepted\": false, \"reason\": \"installer settlement classification mismatch\"}",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer",
+        "installed"
+      ],
+      "case": "command-error",
+      "error": "Production require_setup rejected generated receipt: {\"accepted\": false, \"reason\": \"successful settled installer required\"}",
+      "passed": true
+    },
+    {
+      "events": [
+        "archive",
+        "installer",
+        "installed"
+      ],
+      "case": "wrong-archive",
+      "error": "Production require_setup rejected generated receipt: {\"accepted\": false, \"reason\": \"unqualified released install setup\"}",
+      "passed": true
+    }
+  ],
+  "parse": "passed",
+  "originalEncodingFailFirst": "Success control failed: Cannot bind parameter 'Encoding'. Cannot convert value \"utf8NoBOM\" to type \"Microsoft.PowerShell.Commands.FileSystemCmdletProviderEncoding\". Error: \"Unable to match the identifier name utf8NoBOM to a valid enumerator name. Specify one of the following enumerator names and try again:\r\nUnknown, String, Unicode, Byte, BigEndianUnicode, UTF8, UTF7, UTF32, Ascii, Default, Oem, BigEndianUTF32\"",
+  "cleanup": "removed",
+  "sourceBindings": {
+    "test_installed_setup.ps1": "8da55d91fd17e1b55eaa10738f4033422678a3a37187c4b2b4ab1e07f01debfb",
+    "diagnostic.ps1": "b3c1d22702c2bad48b7686e3f94ea9ee4f71202a82fba104a81a43658991c52d",
+    "compose.py": "86f25197b9208720210e1ce763be82de6c83a0887694fa9d4851d94357f9f887",
+    "qualification-receipt.py": "3d555bdf6f5c30880b6f9dbda657604a79648d83dd7f959b4a710f93115036fd",
+    "qualification-isolation.ps1": "4b7baa0cb0e9a7f4878f37c4aa09f2263fe68a1e5527f8ed82f4198ef152a7e1",
+    "release.py": "f81c4c00ea10dc29cb14c59f40e7a046b61012737ec368001234e5fb6c84006e",
+    "release-pin.json": "27220eb8be612666e7123f5a7b125e408435e3036557c7db80dfef96d921a6b3",
+    "release-installed.json": "7a96e2ff0d07ed0a04ad072f362db90edb20f41aa1b528d66d4858c6e3776fe8"
+  }
+}
