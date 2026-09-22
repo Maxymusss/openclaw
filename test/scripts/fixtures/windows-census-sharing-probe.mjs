@@ -1,11 +1,13 @@
 // Run only on the authorized native Windows proof host; creates synthetic files.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 assert.equal(process.platform, "win32", "native Windows proof required");
+const workerRuntime = JSON.parse(process.argv[2]);
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "census-lease-probe-"));
 const python = String.raw`
 import ctypes as c, json, os, pathlib, platform, sys
@@ -83,9 +85,43 @@ try {
   } finally {
     fs.closeSync(reader);
   }
+  const executableSha256 = createHash("sha256")
+    .update(fs.readFileSync(process.execPath))
+    .digest("hex");
+  const selectedRuntime = process.env.OPENCLAW_VITEST_RUNTIME?.trim();
   console.log(
     JSON.stringify(
-      { platform: process.platform, release: os.release(), node: process.version, cells },
+      {
+        platform: process.platform,
+        release: os.release(),
+        node: process.version,
+        cells,
+        runtime: {
+          worker: {
+            ...workerRuntime,
+            executableSha256:
+              workerRuntime.execPath === process.execPath
+                ? executableSha256
+                : createHash("sha256")
+                    .update(fs.readFileSync(workerRuntime.execPath))
+                    .digest("hex"),
+          },
+          probe: {
+            pid: process.pid,
+            ppid: process.ppid,
+            execPath: process.execPath,
+            node: process.versions.node,
+            bun: process.versions.bun ?? null,
+            executableSha256,
+            vitestRuntime:
+              selectedRuntime === "node" || selectedRuntime === "bun"
+                ? selectedRuntime
+                : selectedRuntime
+                  ? "other"
+                  : null,
+          },
+        },
+      },
       null,
       2,
     ),

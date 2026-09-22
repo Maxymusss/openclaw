@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
@@ -5,6 +6,16 @@ import { expect, it } from "vitest";
 import { spawnOwnedVitestProcess } from "../../scripts/lib/vitest-process.mts";
 import { withCiCheckoutFixture } from "./ci-checkout.test-support.js";
 import { fixturePreloadEnv } from "./fixtures/ci-fixture-runtime.cjs";
+
+const executableHashes = new Map<string, string>();
+function executableSha256(execPath: string) {
+  let digest = executableHashes.get(execPath);
+  if (!digest) {
+    digest = createHash("sha256").update(readFileSync(execPath)).digest("hex");
+    executableHashes.set(execPath, digest);
+  }
+  return digest;
+}
 
 export function censusPreload(root: string, extra = "", delayed = false) {
   const preload = path.join(root, "census-preload.mjs");
@@ -16,6 +27,15 @@ import fs from "node:fs";
 import path from "node:path";
 import { syncFixtureBuiltinExports } from ${JSON.stringify(new URL("./fixtures/ci-fixture-runtime.cjs", import.meta.url).href)};
 const root = process.argv[3];
+if (process.argv[2] === "supervise") {
+  const selectedRuntime = process.env.OPENCLAW_VITEST_RUNTIME?.trim();
+  fs.writeFileSync(path.join(root, "census-runtime.json"), JSON.stringify({
+    pid: process.pid, ppid: process.ppid, execPath: process.execPath,
+    node: process.versions.node, bun: process.versions.bun ?? null,
+    vitestRuntime: selectedRuntime === "node" || selectedRuntime === "bun"
+      ? selectedRuntime : selectedRuntime ? "other" : null,
+  }));
+}
 const delayed = ` +
       JSON.stringify(delayed) +
       String.raw`;
@@ -295,11 +315,35 @@ for line in sys.stdin:
           );
         },
         (report, result, stderr, root) => {
+          const selectedRuntime = process.env.OPENCLAW_VITEST_RUNTIME?.trim();
+          const supervisorRuntime = JSON.parse(
+            readFileSync(path.join(root, "census-runtime.json"), "utf8"),
+          );
           console.log(
             "WINDOWS_CENSUS_RETIREMENT",
             JSON.stringify({
               fault,
               result,
+              runtime: {
+                worker: {
+                  pid: process.pid,
+                  ppid: process.ppid,
+                  execPath: process.execPath,
+                  node: process.versions.node,
+                  bun: process.versions.bun ?? null,
+                  executableSha256: executableSha256(process.execPath),
+                  vitestRuntime:
+                    selectedRuntime === "node" || selectedRuntime === "bun"
+                      ? selectedRuntime
+                      : selectedRuntime
+                        ? "other"
+                        : null,
+                },
+                supervisor: {
+                  ...supervisorRuntime,
+                  executableSha256: executableSha256(supervisorRuntime.execPath),
+                },
+              },
               ownedProcesses: report.ownedProcesses,
               cleanupRemaining: report.cleanupRemaining,
               commands: report.commands.map(({ tool }) => tool),

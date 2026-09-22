@@ -4,9 +4,26 @@ import { spawnOwnedVitestProcess } from "../../scripts/lib/vitest-process.mts";
 
 it("records native Windows lease sharing without claiming a historical handle owner", async () => {
   expect(process.platform, "native Windows proof required").toBe("win32");
+  const selectedRuntime = process.env.OPENCLAW_VITEST_RUNTIME?.trim();
+  const workerRuntime = {
+    pid: process.pid,
+    ppid: process.ppid,
+    execPath: process.execPath,
+    node: process.versions.node,
+    bun: process.versions.bun ?? null,
+    vitestRuntime:
+      selectedRuntime === "node" || selectedRuntime === "bun"
+        ? selectedRuntime
+        : selectedRuntime
+          ? "other"
+          : null,
+  };
   const { child, completion } = spawnOwnedVitestProcess({
     command: process.execPath,
-    args: [fileURLToPath(new URL("./fixtures/windows-census-sharing-probe.mjs", import.meta.url))],
+    args: [
+      fileURLToPath(new URL("./fixtures/windows-census-sharing-probe.mjs", import.meta.url)),
+      JSON.stringify(workerRuntime),
+    ],
     options: { stdio: ["ignore", "pipe", "pipe"] },
   });
   let stdout = "";
