@@ -28,7 +28,9 @@ vi.mock("../../agents/auth-profiles/store-runtime.js", async (importOriginal) =>
   prepareAuthProfileProviderForSelection: prepareAuthProfileProviderForSelectionMock,
 }));
 
-beforeEach(() => prepareAuthProfileProviderForSelectionMock.mockClear());
+beforeEach(() => {
+  prepareAuthProfileProviderForSelectionMock.mockClear();
+});
 afterEach(() => resetPluginRuntimeStateForTest());
 
 test("keeps thinking defaults separate for distinct literal model IDs", async () => {
