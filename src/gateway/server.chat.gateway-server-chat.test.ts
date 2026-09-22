@@ -12,6 +12,7 @@ import type { InternalGetReplyOptions } from "../auto-reply/reply/get-reply.type
 import { replyRunRegistry } from "../auto-reply/reply/reply-run-registry.js";
 import { loadSessionEntry, updateSessionEntry } from "../config/sessions/session-accessor.js";
 import { replaceTranscriptEvents } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
+import * as sessionSharingWrites from "../config/sessions/session-sharing-store.async.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
 import {
   claimAgentRunContext,
@@ -1194,16 +1195,41 @@ describe("gateway server chat", () => {
       });
 
       vi.mocked(agentCommandMock).mockClear();
-      const agentAllowedRes = await rpcReq(ws, "agent", {
-        sessionKey: "cron:job-1",
-        message: "hi",
-        idempotencyKey: "idem-2",
-      });
-      expect(agentAllowedRes.ok).toBe(true);
-      expect(agentAllowedRes.payload?.status).toBe("accepted");
-      expect(agentAllowedRes.payload?.runId).toBe("idem-2");
-      await waitForFast(() => expect(agentCommandMock).toHaveBeenCalled());
-      await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+      const participantSettled = createDeferred();
+      const recordParticipant = sessionSharingWrites.recordSessionParticipantInWorker;
+      let participantWrite: ReturnType<typeof recordParticipant> | undefined;
+      const participantSpy = vi
+        .spyOn(sessionSharingWrites, "recordSessionParticipantInWorker")
+        .mockImplementationOnce((...args) => {
+          try {
+            participantWrite = recordParticipant(...args);
+            void participantWrite.then(
+              () => participantSettled.resolve(),
+              () => participantSettled.resolve(),
+            );
+            return participantWrite;
+          } catch (error) {
+            participantSettled.resolve();
+            throw error;
+          }
+        });
+      try {
+        const agentAllowedRes = await rpcReq(ws, "agent", {
+          sessionKey: "cron:job-1",
+          message: "hi",
+          idempotencyKey: "idem-2",
+        });
+        expect(agentAllowedRes.ok).toBe(true);
+        expect(agentAllowedRes.payload?.status).toBe("accepted");
+        expect(agentAllowedRes.payload?.runId).toBe("idem-2");
+        await waitForFast(() => expect(agentCommandMock).toHaveBeenCalled());
+        // Acceptance leaves participant persistence owned by the request root.
+        await participantSettled.promise;
+        await waitForFast(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+      } finally {
+        await Promise.allSettled(participantWrite ? [participantWrite] : []);
+        participantSpy.mockRestore();
+      }
 
       testState.sessionStorePath = undefined;
       testState.sessionConfig = undefined;
