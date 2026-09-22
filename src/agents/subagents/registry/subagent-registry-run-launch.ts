@@ -190,6 +190,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
               emitSessionLifecycleEvent({
                 sessionKey: entry.childSessionKey,
                 reason: "run-capacity",
+                scope: "runtime",
               });
             }
           });
