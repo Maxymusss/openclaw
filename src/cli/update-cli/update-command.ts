@@ -468,7 +468,7 @@ async function runResolvedUpdate(
     );
   }
 
-  if (updateInstallKind === "package" && !run.candidateAdmissionChecks?.includes("node-runtime")) {
+  if (updateInstallKind === "package") {
     const runtimePreflight = await preparePackageUpdateRuntime({
       ...target,
       managedService: schemaPreflight.service,

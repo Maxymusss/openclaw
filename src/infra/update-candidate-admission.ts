@@ -206,6 +206,9 @@ export async function runUpdateCandidateAdmission(params: {
             })),
             facts: {
               ...verdict.facts,
+              ...(verdict.facts.nodeEngines !== undefined
+                ? { nodeEngines: safe(verdict.facts.nodeEngines) }
+                : {}),
               checks: verdict.facts.checks.map((check) => {
                 const redacted: UpdateAdmissionVerdict["facts"]["checks"][number] = {
                   name: check.name,

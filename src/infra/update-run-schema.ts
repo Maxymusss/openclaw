@@ -45,6 +45,7 @@ const UpdateAdmissionVerdictSchema = z
     facts: z.object({
       candidateVersion: admissionVersion,
       installedVersion: admissionVersion.nullable(),
+      nodeEngines: z.string().optional(),
       checks: z.array(UpdateAdmissionCheckSchema).max(UPDATE_RUN_DIAGNOSTIC_LIMIT),
     }),
   })
@@ -145,6 +146,7 @@ const candidateAdmission = z.object({
   facts: z.object({
     candidateVersion: text,
     installedVersion: text.nullable(),
+    nodeEngines: text.optional(),
     checks: admissionChecks,
   }),
 });

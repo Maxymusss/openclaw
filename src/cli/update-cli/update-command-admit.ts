@@ -10,6 +10,7 @@ import type { PluginInstallRecord } from "../../config/types.plugins.js";
 import { tryReadJson } from "../../infra/json-files.js";
 import { resolveOpenClawPackageRootSync } from "../../infra/openclaw-root.js";
 import { readPackageVersion } from "../../infra/package-json.js";
+import { nodeVersionSatisfiesEngine } from "../../infra/runtime-guard.js";
 import {
   isUpdateAdmissionAuthorityEnvKey,
   parseUpdateAdmissionContext,
@@ -34,7 +35,6 @@ import {
 import { resolveUpdateRoot, UpdatePreMutationError } from "./shared.js";
 import { preflightConfiguredNpmPluginTargets } from "./update-command-plugin-preflight.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
-import { resolvePackageRuntimePreflight } from "./update-command-service-plan.js";
 
 /** Inspect live inputs using this candidate's contracts, without admitting a mutable run. */
 async function inspectUpdateAdmission(
@@ -181,22 +181,22 @@ async function inspectUpdateAdmission(
           }
         }
       }
-      const runtime = await resolvePackageRuntimePreflight({
-        root,
-        target: {
-          version: candidateVersion,
-          nodeEngine:
-            isRecord(manifest.engines) && typeof manifest.engines.node === "string"
-              ? manifest.engines.node
-              : null,
-        },
-        timeoutMs,
+      const nodeEngines =
+        isRecord(manifest.engines) && typeof manifest.engines.node === "string"
+          ? manifest.engines.node
+          : undefined;
+      const runtimeCompatible =
+        !nodeEngines || nodeVersionSatisfiesEngine(process.versions.node, nodeEngines) === true;
+      // Selection and provisioning require the installed supervisor's execution authority.
+      checks.push({
+        name: "node-runtime",
+        status: runtimeCompatible ? "ok" : "warn",
+        ...(!runtimeCompatible
+          ? {
+              detail: `Candidate requires Node ${nodeEngines}; selected runtime is Node ${process.versions.node}. The installed updater selects or provisions a compatible runtime.`,
+            }
+          : {}),
       });
-      if (runtime.ok) {
-        checks.push({ name: "node-runtime", status: "ok" });
-      } else {
-        refuse("node-runtime", "node-runtime-preflight", runtime.error);
-      }
       if (databaseContext && schemasAccepted) {
         const pluginWarnings = await preflightConfiguredNpmPluginTargets({
           config: databaseContext.config,
@@ -224,7 +224,7 @@ async function inspectUpdateAdmission(
         verdict: reasons.length ? "refuse" : "admit",
         reasons,
         warnings,
-        facts: { candidateVersion, installedVersion, checks },
+        facts: { candidateVersion, installedVersion, nodeEngines, checks },
       };
     });
   });

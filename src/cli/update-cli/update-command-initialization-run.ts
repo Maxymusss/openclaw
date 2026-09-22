@@ -254,25 +254,23 @@ export async function initializeAndRunUpdate(
                 controlPlaneUpdateSentinelMeta: prepared.controlPlaneUpdateSentinelMeta,
               });
               initialization.downgradeConfirmed = true;
-              if (!candidateAdmissionChecks?.includes("node-runtime")) {
-                const runtime = await preparePackageUpdateRuntime({
-                  ...target,
-                  managedService: schemaPreflight.service,
-                  shouldRestart: prepared.shouldRestart,
-                  opts,
-                  executor,
-                  timeoutMs,
-                });
-                if (!runtime.ok) {
-                  return await target.refuseUpdate(
-                    "node-runtime-preflight",
-                    runtime.error,
-                    runtime.failureFacts,
-                    runtime.recoverySteps,
-                  );
-                }
-                target.packageUpdateNodeRunner = runtime.value.nodeRunner;
+              const runtime = await preparePackageUpdateRuntime({
+                ...target,
+                managedService: schemaPreflight.service,
+                shouldRestart: prepared.shouldRestart,
+                opts,
+                executor,
+                timeoutMs,
+              });
+              if (!runtime.ok) {
+                return await target.refuseUpdate(
+                  "node-runtime-preflight",
+                  runtime.error,
+                  runtime.failureFacts,
+                  runtime.recoverySteps,
+                );
               }
+              target.packageUpdateNodeRunner = runtime.value.nodeRunner;
               if (schemas.state >= OPENCLAW_STATE_SCHEMA_VERSION) {
                 return await runInitialized(initialization);
               }

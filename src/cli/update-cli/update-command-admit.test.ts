@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { Command } from "commander";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
+import * as runtimeGuard from "../../infra/runtime-guard.js";
 import {
   isUpdateAdmissionAuthorityEnvKey,
   type UpdateAdmissionContext,
@@ -17,7 +18,6 @@ import { runCli } from "../run-main.js";
 import { registerUpdateCli } from "../update-cli.js";
 import { updateAdmitCommand } from "./update-command-admit.js";
 import * as pluginPreflight from "./update-command-plugin-preflight.js";
-import * as runtimePreflight from "./update-command-service-plan.js";
 
 const forbidden = vi.hoisted(() => ({
   lease: vi.fn(() => {
@@ -261,17 +261,31 @@ describe("candidate update admission", () => {
     expect(snapshotFiles()).toEqual(before);
   });
 
-  it("maps an incompatible selected runtime to a candidate refusal", async () => {
-    vi.spyOn(runtimePreflight, "resolvePackageRuntimePreflight").mockResolvedValueOnce({
-      ok: false,
-      error: "Selected Node does not satisfy the candidate engine.",
-    });
+  it("admits an incompatible selected runtime with an informational warning", async () => {
+    vi.spyOn(runtimeGuard, "nodeVersionSatisfiesEngine").mockReturnValue(false);
+    const nodeEngines = JSON.parse(
+      fs.readFileSync(new URL("../../../package.json", import.meta.url), "utf8"),
+    ).engines.node;
+    const before = snapshotFiles();
     await updateAdmitCommand();
     expect(readVerdict()).toMatchObject({
-      verdict: "refuse",
-      reasons: [{ code: "node-runtime-preflight", message: expect.any(String) }],
+      verdict: "admit",
+      reasons: [],
+      facts: {
+        nodeEngines,
+        checks: expect.arrayContaining([
+          {
+            name: "node-runtime",
+            status: "warn",
+            detail: expect.stringContaining(
+              `requires Node ${nodeEngines}; selected runtime is Node ${process.versions.node}`,
+            ),
+          },
+        ]),
+      },
     });
-    expect(process.exitCode).toBe(3);
+    expect(process.exitCode).toBe(0);
+    expect(snapshotFiles()).toEqual(before);
   });
 
   it("keeps unavailable plugin replacements advisory", async () => {

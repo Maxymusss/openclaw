@@ -16,6 +16,7 @@ import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-con
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { withEnvAsync } from "../../test-utils/env.js";
+import { createCommandResult } from "../../test-utils/npm-spec-install-test-helpers.js";
 import {
   writeJsonFixture,
   writeNpmPackageInstall,
@@ -124,6 +125,7 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
     exitCode?: number;
     installed?: boolean;
     pendingLifecycle?: boolean;
+    nodeEngine?: string;
   }) => {
     const { pkgRoot, nodeModules } = await setupInstalledPackageRoot(
       createCaseDir("candidate-admission"),
@@ -134,6 +136,10 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
     const events: string[] = [];
     const databaseExistsAtAdmission: boolean[] = [];
     mockNpmGlobalCommands(nodeModules, async (argv) => {
+      if (argv[1] === "--input-type=module" && argv.at(-1) === "--version") {
+        events.push("runtime-provision");
+        return createCommandResult({ cleanup: "normal" });
+      }
       if (argv[1]?.endsWith("preinstall-package-manager-warning.mjs")) {
         events.push("preinstall");
       } else if (argv[1]?.endsWith("postinstall-bundled-plugins.mjs")) {
@@ -155,7 +161,7 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
       await writeJsonFixture(path.join(stage, "package.json"), {
         name: "openclaw",
         version: "9999.0.0",
-        engines: { node: ">=22.19.0" },
+        engines: { node: params.nodeEngine ?? ">=22.19.0" },
         openclaw: {
           ...(params.marker ? { updateAdmissionProtocol: 1 } : {}),
           schemaVersions: {
@@ -167,6 +173,7 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
       if (params.pendingLifecycle) {
         await fs.writeFile(path.join(stage, PACKAGE_LIFECYCLE_PENDING_RELATIVE_PATH), "pending\n");
       }
+      return undefined;
     });
     mockCurrentProcessFreshDoctor({
       packageRoot: pkgRoot,
@@ -302,7 +309,9 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
 
   it.each(
     (["candidate", "unsupported", "fallback"] as const).flatMap((source) =>
-      (["config", "database-schema", "node-runtime"] as const).map((check) => ({ source, check })),
+      (["config", "database-schema", "node-runtime"] as const)
+        .filter((check) => source !== "candidate" || check !== "node-runtime")
+        .map((check) => ({ source, check })),
     ),
   )(
     "candidate admission: reports $check refusals from $source before mutation",
@@ -394,7 +403,7 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
     },
   );
 
-  it("candidate admission: reuses one staged package and skips reported installed checks", async () => {
+  it("candidate admission: skips reported candidate-owned checks but retains installed Node preflight", async () => {
     const verdict = candidateAdmissionVerdict();
     verdict.warnings = [
       {
@@ -420,7 +429,6 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
       ],
       indeterminate: [],
     });
-    nodeVersionSatisfiesEngine.mockReturnValue(false);
     pluginAvailabilityPreflight.mockRejectedValue(new Error("Installed plugin catalog is stale."));
 
     await invokeUpdateCli({ admission: "auto", yes: true, restart: false, json: true });
@@ -439,7 +447,7 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
       request: { yes: true, noRestart: true, json: true },
     });
     expect(databasePreflightMocks.preflightOpenClawDatabaseSchemas).not.toHaveBeenCalled();
-    expect(nodeVersionSatisfiesEngine).not.toHaveBeenCalled();
+    expect(nodeVersionSatisfiesEngine).toHaveBeenCalled();
     expect(pluginAvailabilityPreflight).not.toHaveBeenCalled();
     expect(JSON.parse(await fs.readFile(path.join(pkgRoot, "package.json"), "utf8"))).toMatchObject(
       { version: "9999.0.0" },
@@ -454,6 +462,86 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
     });
     expect(getErrorOutput()).toContain(verdict.warnings[0]!.message);
   });
+
+  it.each(["existing", "fresh"] as const)(
+    "candidate admit with warn does not bypass runtime recovery (%s profile)",
+    async (profile) => {
+      const verdict = candidateAdmissionVerdict();
+      verdict.facts.nodeEngines = ">=26.1.0";
+      verdict.facts.checks[2] = {
+        name: "node-runtime",
+        status: "warn",
+        detail: "Candidate requires Node >=26.1.0; selected runtime is Node 24.20.0.",
+      };
+      const { pkgRoot, stages, contexts, events } = await prepareCandidateAdmissionFixture({
+        marker: true,
+        verdict,
+        nodeEngine: ">=26.1.0",
+      });
+      vi.mocked(fetchNpmPackageTargetStatus).mockResolvedValue(
+        packageTargetStatus({
+          nodeEngine: ">=26.1.0",
+          schemaVersions: {
+            state: OPENCLAW_STATE_SCHEMA_VERSION,
+            agent: OPENCLAW_AGENT_SCHEMA_VERSION,
+          },
+        }),
+      );
+      const recovery = await import("./update-command-node-runtime-resolution.js");
+      const recoveredNode = path.join(makeTempDir("admission-recovered-node-"), "node");
+      await fs.symlink(process.execPath, recoveredNode);
+      nodeVersionSatisfiesEngine.mockReturnValue(false);
+      const recoverNode = vi
+        .spyOn(recovery, "resolveTargetNodeRuntime")
+        .mockImplementation(async ({ engine, recovery: provision }) => {
+          expect(contexts).toHaveLength(1);
+          expect(engine).toBe(">=26.1.0");
+          const install = expectDefined(provision.installCommand, "installed runtime provisioner");
+          expect(await install(process.execPath, ["--version"], provision.env)).toBe(0);
+          events.push("runtime-recovery");
+          nodeVersionSatisfiesEngine.mockReturnValue(true);
+          return recoveredNode;
+        });
+      const env: NodeJS.ProcessEnv = {};
+      if (profile === "fresh") {
+        const stateDir = makeTempDir("admission-recovery-fresh-");
+        const configPath = path.join(stateDir, "openclaw.json");
+        await fs.writeFile(configPath, "{}\n");
+        Object.assign(env, { OPENCLAW_STATE_DIR: stateDir, OPENCLAW_CONFIG_PATH: configPath });
+        const { createConfigIO } = await import("../../config/io.js");
+        vi.mocked(readConfigFileSnapshot).mockImplementation(() =>
+          createConfigIO({ observe: false, pluginValidation: "skip" }).readConfigFileSnapshot(),
+        );
+      }
+      await withEnvAsync(env, () =>
+        invokeUpdateCli({
+          admission: "auto",
+          yes: true,
+          restart: false,
+          json: true,
+          ...(profile === "fresh"
+            ? { tag: path.join(env.OPENCLAW_STATE_DIR!, "candidate.tgz") }
+            : {}),
+        }),
+      );
+
+      expect(recoverNode).toHaveBeenCalledOnce();
+      expect(events).toContain("runtime-provision");
+      expect(events.indexOf("admission")).toBeLessThan(events.indexOf("runtime-recovery"));
+      expect(stages).toHaveLength(1);
+      expect(stages.every((root) => !fsSync.existsSync(root))).toBe(true);
+      expect(
+        JSON.parse(await fs.readFile(path.join(pkgRoot, "package.json"), "utf8")),
+      ).toMatchObject({ version: "9999.0.0" });
+      expect(lastWriteJsonCall()).toMatchObject({
+        status: "ok",
+        run: { admission: { owner: "candidate" }, origin: { candidateAdmission: verdict } },
+      });
+      expect(candidateValidation).toHaveBeenCalledWith(
+        expect.objectContaining({ nodeRunner: recoveredNode }),
+      );
+    },
+  );
 
   it("candidate admission: retains a check the candidate did not report", async () => {
     const verdict = candidateAdmissionVerdict();
@@ -668,7 +756,9 @@ export function registerCandidateAdmissionTests(f: CandidateAdmissionFixture) {
     );
     nodeVersionSatisfiesEngine.mockReturnValue(false);
 
-    await expect(updateCommand({ yes: true })).rejects.toEqual(new ExitError(1));
+    await expect(updateCommand({ admission: "installed", yes: true })).rejects.toEqual(
+      new ExitError(1),
+    );
 
     expectNoSideEffects(updateGitCheckout, defaultRuntime.exit);
     expect(packageInstallCommandCall()?.[0]).toBeUndefined();

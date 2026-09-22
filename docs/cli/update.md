@@ -170,10 +170,10 @@ internal admission command. Reading this marker does not execute candidate code.
 Managed-service preflight still runs in the installed updater before the
 candidate admission process starts.
 
-| Owner                                | Checks and operations                                                                                                                                                                                                                                                                                    |
-| ------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Candidate-owned (via `update admit`) | Config read/validation with the candidate schema (missing-path style problems that candidate Doctor preserves/handles are `admit` + warning), database schema preflight against the explicit installation root, candidate Node engine requirement vs the selected runner, plugin availability preflight. |
-| Installed-owned (unchanged)          | Run admission/ledger, executor lease, managed-service preflight (ownership/ancestry), directory permissions, npm/pnpm lifecycle policy, staging/verify/canary/swap/post-core.                                                                                                                            |
+| Owner                                | Checks and operations                                                                                                                                                                                                                                                                                                                    |
+| ------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Candidate-owned (via `update admit`) | Config read/validation with the candidate schema (missing-path style problems that candidate Doctor preserves/handles are `admit` + warning), database schema preflight against the explicit installation root, plugin availability preflight. The Node engine comparison is informational (`ok` or `warn`) and cannot refuse admission. |
+| Installed-owned (unchanged)          | Run admission/ledger, executor lease, managed-service preflight (ownership/ancestry), Node runtime selection/provisioning, directory permissions, npm/pnpm lifecycle policy, staging/verify/canary/swap/post-core.                                                                                                                       |
 
 The candidate inspects the live installation read-only, using the same selected
 profile, state directory, configuration path, and environment. It does not
@@ -182,7 +182,9 @@ update execution authority. A missing custom `plugins.load.paths` entry can
 therefore produce an admission warning while preserving the configured path
 and plugin configuration bytes. Admission does not promise to repair that path.
 
-A valid `admit` verdict replaces only the installed checks the candidate reports.
+A valid `admit` verdict replaces only the candidate-owned checks it reports.
+Installed Node preflight always runs for package updates, including selection or
+private provisioning of a compatible runtime after an informational Node warning.
 A valid `refuse` verdict reports the candidate's reason and next action through
 the usual pre-mutation error and JSON output. History records the checks in a
 `candidate-admission` step. The installed updater continues to own the update
@@ -203,7 +205,8 @@ Git/source updates keep their existing flow.
 sets `OPENCLAW_UPDATE_ADMISSION_CONTEXT` to a private context file; this path is
 the sole signal for the admission child mode. The command emits
 one JSON document with `protocol`, `verdict`, `reasons`, `warnings`, and `facts`
-containing candidate/installed versions and named check results. It exits `0`
+containing candidate/installed versions, the candidate's `nodeEngines` requirement
+when declared, and named check results. It exits `0`
 for admission, `3` for refusal, or `2` for an internal error without a valid
 verdict. It rejects inherited update authority variables with exit `2`, allowing
 the supervisor to fall back. It does not perform managed-service ancestry checks.
