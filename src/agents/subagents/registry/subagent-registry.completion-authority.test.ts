@@ -1,12 +1,15 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as config from "../../../config/config.js";
 import { resolvePhysicalSessionStorePath } from "../../../config/sessions/session-store-path.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { callGateway } from "../../../gateway/call.js";
 import * as operatorCapture from "../../../gateway/operator-run-authority.js";
 import {
   createContext,
   createOperatorClient,
 } from "../../../gateway/server-plugin-in-process-dispatch.test-support.js";
-import { rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
+import { bindGatewayLifecycleRequest } from "../../../gateway/server-recovery-runtime-context.js";
+import { onAgentEvent, rotateAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import {
   getGatewayContextLifetime,
   getPluginRuntimeGatewayRequestScope,
@@ -17,29 +20,48 @@ import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.j
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { persistSubagentRunsToDiskOrThrow } from "./subagent-registry-state.js";
 import { registerSubagentRun, replaceSubagentRunAfterSteerCore } from "./subagent-registry.js";
+import { saveSubagentRegistryChangesToSqlite } from "./subagent-registry.store.sqlite.js";
 import {
   releaseSubagentRun,
   resetSubagentRegistryForTests,
-  testing,
 } from "./subagent-registry.test-helpers.js";
 
-const callGateway = vi.fn().mockResolvedValue({ status: "pending" });
+vi.mock("../../../config/config.js", { spy: true });
+vi.mock("../../../gateway/call.js", { spy: true });
+vi.mock("../../../gateway/server-recovery-runtime-context.js", { spy: true });
+vi.mock("../../../infra/agent-events.js", { spy: true });
+vi.mock("./subagent-registry.store.sqlite.js", { spy: true });
+
+beforeEach(() => {
+  vi.mocked(callGateway).mockResolvedValue({ status: "pending" });
+  vi.mocked(bindGatewayLifecycleRequest).mockReturnValue(callGateway);
+  vi.mocked(onAgentEvent).mockReturnValue(() => {});
+});
+
 afterEach(() => {
   resetSubagentRegistryForTests({ persist: false });
-  testing.setDepsForTest();
+  vi.mocked(callGateway).mockReset();
+  vi.mocked(bindGatewayLifecycleRequest).mockReset();
+  vi.mocked(onAgentEvent).mockReset();
+  vi.mocked(saveSubagentRegistryChangesToSqlite).mockReset();
 });
 
 describe("registered completion source custody", () => {
-  it.each(["admission", "lifecycle", "replacement", "store", "source callback"] as const)(
+  it.each([
+    "admission",
+    "lifecycle",
+    "replacement",
+    "child replacement",
+    "retired child replacement",
+    "failed child replacement",
+    "unrelated child",
+    "store",
+    "source callback",
+  ] as const)(
     "preserves the selected registration owner when %s changes during preparation",
     async (changed) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         let cfg: OpenClawConfig = { session: { store: state.path("original.sqlite") } };
-        testing.setDepsForTest({
-          callGateway,
-          onAgentEvent: () => () => {},
-          getRuntimeConfig: () => cfg,
-        });
         const context = createContext();
         context.getRuntimeConfig = () => cfg;
         context.resolveGatewayContext = () => context;
@@ -74,6 +96,7 @@ describe("registered completion source custody", () => {
           });
         const runId = "prepared-child";
         const childSessionKey = "agent:main:subagent:prepared-child";
+        const runtimeConfig = vi.mocked(config.getRuntimeConfig).mockImplementation(() => cfg);
         const pending = withPluginRuntimeGatewayRequestScope(
           { client, context, isWebchatConnect: () => false },
           () =>
@@ -119,6 +142,37 @@ describe("registered completion source custody", () => {
             });
             replacement = subagentRuns.get(runId);
             expect(replacement).toBeDefined();
+          } else if (
+            changed === "child replacement" ||
+            changed === "retired child replacement" ||
+            changed === "failed child replacement" ||
+            changed === "unrelated child"
+          ) {
+            const registerNewChild = async () => {
+              await registerSubagentRun({
+                runId: "newer-child",
+                childSessionKey:
+                  changed === "unrelated child" ? "agent:main:subagent:unrelated" : childSessionKey,
+                requesterSessionKey,
+                requesterDisplayKey: "main",
+                task: "newer child",
+                cleanup: "keep",
+                expectsCompletionMessage: false,
+              });
+            };
+            if (changed === "failed child replacement") {
+              vi.mocked(saveSubagentRegistryChangesToSqlite).mockImplementationOnce(() => {
+                throw new Error("replacement write refused");
+              });
+              await expect(registerNewChild()).rejects.toThrow("replacement write refused");
+              expect(subagentRuns.has("newer-child")).toBe(false);
+            } else {
+              await registerNewChild();
+              expect(subagentRuns.get("newer-child")).toBeDefined();
+              if (changed === "retired child replacement") {
+                releaseSubagentRun("newer-child");
+              }
+            }
           } else if (changed === "store") {
             cfg = { session: { store: state.path("replacement.sqlite") } };
             expect(
@@ -129,7 +183,11 @@ describe("registered completion source custody", () => {
             ).not.toBe(originalPath);
           }
           resume.resolve();
-          if (changed === "store") {
+          if (
+            changed === "store" ||
+            changed === "unrelated child" ||
+            changed === "failed child replacement"
+          ) {
             await pending;
             expect(subagentRuns.get(runId)?.requesterStorePath).toBe(originalPath);
             expect(subagentRuns.get(runId)?.controllerStorePath).toBe(originalPath);
@@ -145,6 +203,7 @@ describe("registered completion source custody", () => {
           resume.resolve();
           await settled;
           held.mockRestore();
+          runtimeConfig.mockReset();
           resetSubagentRegistryForTests({ persist: false });
         }
       });
@@ -167,7 +226,6 @@ describe("registered completion source custody", () => {
     "stale-batch-member",
   ] as const)("outlives execution and closes on %s", async (ending) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      testing.setDepsForTest({ callGateway, onAgentEvent: () => () => {} });
       const context = createContext();
       const resolveGatewayContext = () => context;
       context.resolveGatewayContext = resolveGatewayContext;
@@ -208,11 +266,8 @@ describe("registered completion source custody", () => {
               }),
           );
         if (ending === "registration-rejected") {
-          testing.setDepsForTest({
-            callGateway,
-            persistSubagentRunsToDiskOrThrow: () => {
-              throw new Error("write refused");
-            },
+          vi.mocked(saveSubagentRegistryChangesToSqlite).mockImplementationOnce(() => {
+            throw new Error("write refused");
           });
           await expect(register()).rejects.toThrow("write refused");
           source.release();
@@ -326,15 +381,11 @@ describe("registered completion source custody", () => {
           );
           releaseSubagentRun("successor");
         } else if (ending === "release-rejected") {
-          testing.setDepsForTest({
-            callGateway,
-            persistSubagentRunsToDiskOrThrow: () => {
-              throw new Error("write refused");
-            },
+          vi.mocked(saveSubagentRegistryChangesToSqlite).mockImplementationOnce(() => {
+            throw new Error("write refused");
           });
           expect(() => releaseSubagentRun(entry.runId)).toThrow("write refused");
           expect(source.authority.assertCurrent).not.toThrow();
-          testing.setDepsForTest({ callGateway, onAgentEvent: () => () => {} });
           releaseSubagentRun(entry.runId);
         } else {
           revoked.abort(new Error("operator revoked"));

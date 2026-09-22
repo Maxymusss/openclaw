@@ -9,6 +9,7 @@ import { testing as schedulerTesting } from "../../agents/subagents/swarm/swarm-
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
 import { LegacyContextEngine } from "../../context-engine/legacy.js";
 import { resetTaskFlowRegistryForTests } from "../../tasks/task-flow-registry.test-support.js";
+import { captureTaskDeliveryWork } from "../../tasks/task-registry-delivery.test-support.js";
 import { resetTaskRegistryForTests } from "../../tasks/task-registry.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
@@ -39,7 +40,10 @@ vi.mock("../../context-engine/registry.js", async (importOriginal) => ({
 export function useChatAbortRegistryFixture() {
   const env = captureEnv(["OPENCLAW_STATE_DIR", "OPENCLAW_CONFIG_PATH"]);
   let stateDir = "";
+  let deliveries: ReturnType<typeof captureTaskDeliveryWork> | undefined;
+  const settle = () => settleSubagentRegistryPersistenceWork(deliveries);
   beforeEach(async () => {
+    deliveries = captureTaskDeliveryWork();
     stateDir = await realpath(await mkdtemp(path.join(os.tmpdir(), "openclaw-abort-errors-")));
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
     setTestEnvValue("OPENCLAW_CONFIG_PATH", path.join(stateDir, "openclaw.json"));
@@ -55,7 +59,7 @@ export function useChatAbortRegistryFixture() {
   });
   afterEach(async () => {
     try {
-      await settleSubagentRegistryPersistenceWork();
+      await settle();
       resetSubagentRegistryForTests({ persist: false });
       resetTaskRegistryForTests({ persist: false });
       resetTaskFlowRegistryForTests({ persist: false });
@@ -65,11 +69,14 @@ export function useChatAbortRegistryFixture() {
       clearRuntimeConfigSnapshot();
       await rm(stateDir, { recursive: true, force: true });
     } finally {
+      deliveries?.[Symbol.dispose]();
+      deliveries = undefined;
       env.restore();
     }
   });
 
   return {
+    settle,
     get stateDir() {
       return stateDir;
     },
