@@ -293,7 +293,20 @@ final class NativeActionRouter: OpenClawNativeActionHost {
             session: session,
             message: message,
             lease: lease,
-            presentationIsCurrent: { [weak self] in self?.isCurrent(presented) == true })
+            accountIsCurrent: { [binding = presented.binding] in await binding.isCurrent() },
+            presentationIsCurrent: { [
+                weak self,
+                weak chat = presented.chat,
+                binding = presented.binding,
+                authority = presented.accountAuthority,
+                rootID = presented.presentationID,
+                selectionID = presented.selectionID,
+            ] in
+                guard let self, let chat else { return false }
+                return self.isCurrent(
+                    chat: chat, binding: binding, accountAuthority: authority,
+                    presentationID: rootID, selectionID: selectionID)
+            })
         return (send, continuationID)
     }
 
@@ -620,13 +633,22 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     }
 
     private func isCurrent(_ presented: PresentedChat) -> Bool {
-        self.currentAccountAuthority == presented.accountAuthority &&
-            self.presentation?.id == presented.presentationID &&
-            self.selectionID == presented.selectionID &&
-            self.chatPresentationID == presented.presentationID &&
-            self.matches(presented.chat, session: presented.binding.session) &&
-            self.chatTransport?.nativeBinding?.canReuse(presented.binding) == true &&
-            !presented.chat.isLoading && presented.chat.healthOK && presented.chat.errorText == nil
+        self.isCurrent(
+            chat: presented.chat, binding: presented.binding, accountAuthority: presented.accountAuthority,
+            presentationID: presented.presentationID, selectionID: presented.selectionID)
+    }
+
+    private func isCurrent(
+        chat: OpenClawChatViewModel, binding: IOSNativeActionBinding, accountAuthority: AccountAuthority,
+        presentationID: UUID, selectionID: UUID) -> Bool
+    {
+        self.currentAccountAuthority == accountAuthority &&
+            self.presentation?.id == presentationID &&
+            self.selectionID == selectionID &&
+            self.chatPresentationID == presentationID &&
+            self.matches(chat, session: binding.session) &&
+            self.chatTransport?.nativeBinding?.canReuse(binding) == true &&
+            !chat.isLoading && chat.healthOK && chat.errorText == nil
     }
 
     private func matches(_ chat: OpenClawChatViewModel, session: OpenClawNativeSessionRef) -> Bool {

@@ -310,6 +310,42 @@ final class NativeActionVisualProofTests: XCTestCase {
                 owner: .init(gatewayID: gatewayID, profileID: "demo-account"),
                 agentID: "main", sessionKey: "global")
             let run = OpenClawNativeRunRef(session: session, runID: "visual-run-a")
+            var lifetimeRows: [String] = []
+            var lifetimeTotal = 0
+            var lifetimePhase = "setup"
+            var lifetimeReported = false
+            var lifetimeRootID: UUID?
+            weak var lifetimeModel = model
+            weak var lifetimeRouter = router
+            @MainActor func observeLifetime(_ tag: String) {
+                lifetimeTotal += 1
+                guard lifetimeRows.count < 32 else { return }
+                if lifetimeRootID == nil { lifetimeRootID = lifetimeRouter?.presentationRegistrationID }
+                let published = lifetimeModel?.chatPresentation.viewModel
+                lifetimeRows.append(
+                    "order=\(lifetimeTotal) phase=\(lifetimePhase) event=\(tag) " +
+                        "root=\(lifetimeRouter?.presentationRegistrationID != nil) " +
+                        "sameRoot=\(lifetimeRootID != nil && lifetimeRouter?.presentationRegistrationID == lifetimeRootID) " +
+                        "chat=\(lifetimeRouter?.chatRegistrationID != nil) " +
+                        "model=\(published != nil) detached=\(published?.isTransportDetached == true) " +
+                        "creating=\(published?.isCreatingSession == true) " +
+                        "target=\(published?.sessionKey == session.sessionKey && published?.activeAgentId == session.agentID)")
+            }
+            @MainActor func reportLifetime() {
+                guard !lifetimeReported else { return }
+                lifetimeReported = true
+                print(
+                    "native-visual-lifetime total=\(lifetimeTotal) truncated=\(lifetimeTotal > 32) \(lifetimeRows.joined(separator: " | "))")
+            }
+            let originalSelectionDidChange = model.chatSelectionDidChange
+            model.chatSelectionDidChange = {
+                observeLifetime("selection-before")
+                originalSelectionDidChange?()
+                observeLifetime("selection-after")
+            }
+            // The model and callback are fixture-owned; restore even when cleanup
+            // retains a failed fixture after its existing join attempts.
+            defer { model.chatSelectionDidChange = originalSelectionDidChange }
             var sends = 0
             var permitsModalSend = false
             var preparingModal: Task<OpenClawNativePreparedSend, Error>?
@@ -363,6 +399,15 @@ final class NativeActionVisualProofTests: XCTestCase {
                     // inputRunIds request below must still carry its exact account binding.
                     XCTAssertTrue(profile == nil || profile == session.owner.profileID)
                     switch method {
+                    case "config.get":
+                        return .success([
+                            "config": ["session": ["mainKey": "main", "scope": "per-sender"]],
+                            "runtimeConfig": ["session": ["mainKey": "main", "scope": "per-sender"]],
+                        ])
+                    case "users.prefs.get":
+                        return .success(["status": "ok", "entries": [:]])
+                    case "exec.approval.list", "plugin.approval.list", "openclaw.approval.list":
+                        return .failure(code: "UNAVAILABLE", message: "Optional fixture capability unavailable")
                     case "users.self":
                         XCTAssertEqual(profile, session.owner.profileID)
                         return .success(["profile": ["id": session.owner.profileID]])
@@ -592,6 +637,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                     model: model, gatewayID: gatewayID, deviceID: approvalDeviceID, bridgeState: previousBridgeState))
             }
             let cleanup: () async -> Void = {
+                lifetimePhase = "cleanup"
+                observeLifetime("fixture-cleanup")
                 approvalRelease.continuation.finish()
                 await approvalEventTask?.value
                 // The event is joined; its scheduled refresh has no public join handle.
@@ -775,10 +822,19 @@ final class NativeActionVisualProofTests: XCTestCase {
                     try await self.waitUntil { model.chatPresentation.viewModel != nil }
                     XCTAssertNil(model.chatPresentation.transport?.nativeBinding)
                 } else {
+                    lifetimePhase = "initial-open"
+                    observeLifetime("initial-open-start")
                     let opened = await router.open(.session(session))
+                    switch opened {
+                    case .opened: observeLifetime("initial-open-opened")
+                    case .cancelled: observeLifetime("initial-open-cancelled")
+                    case .unavailable: observeLifetime("initial-open-unavailable")
+                    }
+                    if opened != .opened { reportLifetime() }
                     XCTAssertEqual(opened, .opened)
                     guard opened == .opened else { throw OpenClawNativeActionError("Visual chat did not open") }
                 }
+                lifetimePhase = "scenario"
                 XCTAssertEqual(model.chatSessionKey, session.sessionKey)
                 XCTAssertEqual(model.chatDeliveryAgentId, session.agentID)
                 try await self.waitForComposer(in: ownedWindow)
@@ -2062,6 +2118,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                 XCTAssertEqual(sends, 0)
                 await cleanup()
             } catch {
+                reportLifetime()
                 await cleanup()
                 throw error
             }

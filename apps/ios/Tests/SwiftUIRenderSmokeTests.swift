@@ -858,6 +858,26 @@ struct SwiftUIRenderSmokeTests {
                     "created=\(model.map { createdKeys.contains($0.sessionKey) } == true)," +
                     "agent=\(model?.activeAgentId == session.agentID)"
             }
+            var lifetimeRows: [String] = []
+            var lifetimeTotal = 0
+            var lifetimeOrigin = "unobserved"
+            weak var diagnosticRouter: NativeActionRouter?
+            var diagnosticRootID: UUID?
+            @MainActor func observeLifetime(_ tag: String) {
+                lifetimeTotal += 1
+                guard lifetimeRows.count < 32 else { return }
+                let published = diagnosticAppModel?.chatPresentation.viewModel
+                lifetimeRows.append(
+                    "order=\(lifetimeTotal) phase=\(phase) origin=\(lifetimeOrigin) event=\(tag) " +
+                        "root=\(diagnosticRouter?.presentationRegistrationID != nil) " +
+                        "sameRoot=\(diagnosticRootID != nil && diagnosticRouter?.presentationRegistrationID == diagnosticRootID) " +
+                        "chat=\(diagnosticRouter?.chatRegistrationID != nil) " +
+                        "sameModel=\(diagnosticCreatingModel != nil && diagnosticCreatingModel === published) " +
+                        "published[\(modelFacts(published))] creating[\(modelFacts(diagnosticCreatingModel))]")
+            }
+            @MainActor func lifetimeSummary() -> String {
+                "lifetime total=\(lifetimeTotal) truncated=\(lifetimeTotal > 32) \(lifetimeRows.joined(separator: " | "))"
+            }
             @MainActor func observeCallback(
                 _ condition: Bool,
                 rule: String,
@@ -903,7 +923,7 @@ struct SwiftUIRenderSmokeTests {
                     let methodLabel: String = switch method {
                     case "users.self", "agents.list", "chat.history", "sessions.messages.subscribe", "health",
                          "sessions.list", "chat.send", "models.list", "commands.list", "chat.metadata", "tasks.list",
-                         "sessions.create", "agent.wait": method
+                         "sessions.create", "agent.wait", "config.get": method
                     default: "unknown"
                     }
                     var ordinaryReplacementBootstrap = false
@@ -986,6 +1006,11 @@ struct SwiftUIRenderSmokeTests {
                             params: params)
                     }
                     switch method {
+                    case "config.get":
+                        return .success([
+                            "config": ["session": ["mainKey": "main", "scope": "per-sender"]],
+                            "runtimeConfig": ["session": ["mainKey": "main", "scope": "per-sender"]],
+                        ])
                     case "users.self":
                         return .success(["profile": ["id": session.owner.profileID]])
                     case "agents.list":
@@ -1095,10 +1120,31 @@ struct SwiftUIRenderSmokeTests {
             let gatewayController = GatewayConnectionController(appModel: appModel, startDiscovery: false)
             let router = NativeActionRouter(appModel: appModel, gatewayController: gatewayController)
             routerLifetime = router
+            diagnosticRouter = router
+            let originalSelectionDidChange = appModel.chatSelectionDidChange
+            appModel.chatSelectionDidChange = {
+                let previousOrigin = lifetimeOrigin
+                lifetimeOrigin = "selection-callback"
+                defer { lifetimeOrigin = previousOrigin }
+                observeLifetime("selection-before")
+                originalSelectionDidChange?()
+                observeLifetime("selection-after")
+            }
+            // This fixture is the only callback installer after its Router. Restore
+            // on every exit, after the existing transport/UI join attempts below.
+            defer { appModel.chatSelectionDidChange = originalSelectionDidChange }
             let presentation = NativeChatPresentation()
             let presentationID = router
                 .registerPresentation(
-                    onRetire: { _ in presentation.binding = nil },
+                    onRetire: { disposition in
+                        let tag = switch disposition {
+                        case .departure: "retire-departure"
+                        case .chatModal: "retire-modal"
+                        case .chatSessionTransition: "retire-session"
+                        }
+                        observeLifetime(tag)
+                        presentation.binding = nil
+                    },
                     onSessionAdopted: { previous, binding in
                         guard presentation.binding == nil || presentation.binding?.canReuse(previous) == true
                         else { return }
@@ -1108,6 +1154,7 @@ struct SwiftUIRenderSmokeTests {
                         appModel.focusChatSession(request.session.sessionKey)
                         presentation.binding = binding
                 }
+            diagnosticRootID = presentationID
             var releaseRestore: CheckedContinuation<Void, Never>?
             var restoreReturned = false
             var restoreWaiters: [(requestID: Int, continuation: CheckedContinuation<Void, Never>)] = []
@@ -1163,7 +1210,13 @@ struct SwiftUIRenderSmokeTests {
                     beforeCreateResponse = nil
                     releaseCreates()
                     releaseWindow()
-                    router.unregisterPresentation(presentationID)
+                    do {
+                        let previousOrigin = lifetimeOrigin
+                        lifetimeOrigin = "fixture-unregister"
+                        defer { lifetimeOrigin = previousOrigin }
+                        observeLifetime("fixture-unregister")
+                        router.unregisterPresentation(presentationID)
+                    }
                     appModel.setOperatorConnected(false)
                     appModel.activeGatewayConnectConfig = nil
                     appModel.voiceWake.stop()
@@ -1207,7 +1260,14 @@ struct SwiftUIRenderSmokeTests {
                         phase = "opening"
                         let opening: OpenClawNativeOpenRequest = (action == "reopen" || action == "profile-reopen")
                             ? .compose(session, draft: "retained idle text") : .session(session)
-                        #expect(await router.open(opening) == .opened)
+                        observeLifetime("initial-open-start")
+                        let opened = await router.open(opening)
+                        switch opened {
+                        case .opened: observeLifetime("initial-open-opened")
+                        case .cancelled: observeLifetime("initial-open-cancelled")
+                        case .unavailable: observeLifetime("initial-open-unavailable")
+                        }
+                        #expect(opened == .opened, "\(lifetimeSummary())")
                         #expect(presentation.binding?.session == session)
                     } else {
                         #expect(presentation.binding == nil)
@@ -1229,7 +1289,15 @@ struct SwiftUIRenderSmokeTests {
                         .init(binding: presentation.binding, router: router, id: presentationID)
                     }
                     @MainActor func queueNewChat() throws -> Int {
-                        try #require(router.userNavigationDidChange(presentationID: presentationID))
+                        do {
+                            let previousOrigin = lifetimeOrigin
+                            lifetimeOrigin = "fixture-user-navigation"
+                            defer { lifetimeOrigin = previousOrigin }
+                            observeLifetime("fixture-user-navigation")
+                            try #require(
+                                router.userNavigationDidChange(presentationID: presentationID),
+                                "\(lifetimeSummary())")
+                        }
                         owner.requestNewChat(appModel: appModel, presentation: current())
                         return appModel.newChatRequestID
                     }
@@ -1293,7 +1361,9 @@ struct SwiftUIRenderSmokeTests {
                         try await Task.sleep(for: .milliseconds(10))
                     }
                     try #require(!createWaiters.isEmpty)
-                    let request = try #require(owner.currentNewChatRequest(appModel: appModel, presentation: current()))
+                    let request = try #require(
+                        owner.currentNewChatRequest(appModel: appModel, presentation: current()),
+                        "\(lifetimeSummary())")
                     #expect(request.id == latest)
                     let invocations = presentation.startedNewChats.filter { $0.value.requestID == latest }
                     try #require(invocations.count == 1)
@@ -1316,7 +1386,8 @@ struct SwiftUIRenderSmokeTests {
                     #expect(appModel.chatSessionRoutingContract == cachedRouting.contract)
                     #expect(appModel.chatDeliveryAgentId == "main")
                     let restoredTarget = try #require(owner.transport).sessionTarget(for: cachedRouting.mainSessionKey)
-                    #expect(restoredTarget.agentID == cachedRouting.defaultAgentID)
+                    #expect(restoredTarget.sessionKey == "agent:main:restored-main")
+                    #expect(restoredTarget.agentID == nil)
                     #expect(createdAgentIDs == [restoredTarget.agentID])
                     #expect(createdParentKeys == [restoredTarget.sessionKey])
                     let creating = try #require(owner.viewModel)
@@ -1347,7 +1418,15 @@ struct SwiftUIRenderSmokeTests {
                         try await Task.sleep(for: .milliseconds(10))
                     }
                     try #require(router.chatRegistrationID != nil)
-                    try #require(router.userNavigationDidChange(presentationID: presentationID))
+                    do {
+                        let previousOrigin = lifetimeOrigin
+                        lifetimeOrigin = "fixture-user-navigation"
+                        defer { lifetimeOrigin = previousOrigin }
+                        observeLifetime("fixture-user-navigation")
+                        try #require(
+                            router.userNavigationDidChange(presentationID: presentationID),
+                            "\(lifetimeSummary())")
+                    }
                     owner.requestNewChat(
                         appModel: appModel,
                         presentation: .init(binding: presentation.binding, router: router, id: presentationID))
@@ -1360,7 +1439,9 @@ struct SwiftUIRenderSmokeTests {
                     let current: @MainActor () -> IOSChatViewModelOwner.Presentation = {
                         .init(binding: presentation.binding, router: router, id: presentationID)
                     }
-                    let request = try #require(owner.currentNewChatRequest(appModel: appModel, presentation: current()))
+                    let request = try #require(
+                        owner.currentNewChatRequest(appModel: appModel, presentation: current()),
+                        "\(lifetimeSummary())")
                     #expect(request.id == requestID)
                     let invocations = presentation.startedNewChats.filter { $0.value.requestID == requestID }
                     try #require(invocations.count == 1)
@@ -1385,7 +1466,13 @@ struct SwiftUIRenderSmokeTests {
                     #expect(owner.currentNewChatRequest(appModel: appModel, presentation: current()) === request)
                     #expect(presentation.completedNewChats[invocationID] == nil)
                     if action.hasSuffix("-departure") {
-                        router.unregisterPresentation(presentationID)
+                        do {
+                            let previousOrigin = lifetimeOrigin
+                            lifetimeOrigin = "fixture-unregister"
+                            defer { lifetimeOrigin = previousOrigin }
+                            observeLifetime("fixture-unregister")
+                            router.unregisterPresentation(presentationID)
+                        }
                         releaseWindow()
                         // Join actual task cancellation before releasing the server reply.
                         // Ordinary chat deliberately has no synchronous native-authority fence.
@@ -1464,7 +1551,15 @@ struct SwiftUIRenderSmokeTests {
                         #expect(createdKeys.isEmpty)
                     }
                     if action == "sidebar-queued-retired" {
-                        try #require(router.userNavigationDidChange(presentationID: presentationID))
+                        do {
+                            let previousOrigin = lifetimeOrigin
+                            lifetimeOrigin = "fixture-user-navigation"
+                            defer { lifetimeOrigin = previousOrigin }
+                            observeLifetime("fixture-user-navigation")
+                            try #require(
+                                router.userNavigationDidChange(presentationID: presentationID),
+                                "\(lifetimeSummary())")
+                        }
                     }
                     presentation.isVisible = true
                     if !action.hasPrefix("sidebar-queued") {
@@ -1502,7 +1597,15 @@ struct SwiftUIRenderSmokeTests {
                         #expect(appModel.chatPresentation.currentNewChatRequest(
                             appModel: appModel,
                             presentation: .init(binding: nil, router: router, id: presentationID)) == nil)
-                        try #require(router.userNavigationDidChange(presentationID: presentationID))
+                        do {
+                            let previousOrigin = lifetimeOrigin
+                            lifetimeOrigin = "fixture-user-navigation"
+                            defer { lifetimeOrigin = previousOrigin }
+                            observeLifetime("fixture-user-navigation")
+                            try #require(
+                                router.userNavigationDidChange(presentationID: presentationID),
+                                "\(lifetimeSummary())")
+                        }
                         appModel.chatPresentation.requestNewChat(
                             appModel: appModel,
                             presentation: .init(binding: nil, router: router, id: presentationID))
@@ -1536,7 +1639,13 @@ struct SwiftUIRenderSmokeTests {
                             creatingAtResponse = creatingModel.isCreatingSession
                             phase = "retiring"
                             // Retire while sessions.create is in flight, before the fixture sends its reply.
-                            router.unregisterPresentation(presentationID)
+                            do {
+                                let previousOrigin = lifetimeOrigin
+                                lifetimeOrigin = "fixture-unregister"
+                                defer { lifetimeOrigin = previousOrigin }
+                                observeLifetime("fixture-unregister")
+                                router.unregisterPresentation(presentationID)
+                            }
                             releaseWindow()
                             phase = "retired"
                         }
@@ -1659,7 +1768,7 @@ struct SwiftUIRenderSmokeTests {
                                 try await Task.sleep(for: .milliseconds(10))
                             }
                             try #require(input.text == "")
-                            #expect(presentation.binding === reused)
+                            #expect(presentation.binding === reused, "\(lifetimeSummary())")
                             #expect(await reused.isCurrent() == false)
                             #expect(rpcCount == countBeforeSync)
                         } else {
@@ -1672,7 +1781,14 @@ struct SwiftUIRenderSmokeTests {
                         let reopening: OpenClawNativeOpenRequest = action == "profile-reopen"
                             ? .compose(session, draft: "retained idle text") : .session(session)
                         phase = "reopening"
-                        #expect(await router.open(reopening) == .opened)
+                        observeLifetime("reopen-start")
+                        let reopened = await router.open(reopening)
+                        switch reopened {
+                        case .opened: observeLifetime("reopen-opened")
+                        case .cancelled: observeLifetime("reopen-cancelled")
+                        case .unavailable: observeLifetime("reopen-unavailable")
+                        }
+                        #expect(reopened == .opened, "\(lifetimeSummary())")
                         #expect(presentation.binding !== oldBinding)
                         #expect((presentation.binding?.route == oldBinding.route) == (action == "profile-reopen"))
                         #expect(await oldBinding.isCurrent() == false)
@@ -1735,6 +1851,8 @@ struct SwiftUIRenderSmokeTests {
                 callbackViolationCount == 0,
                 "count=\(callbackViolationCount) overflow=\(callbackViolationCount > 16) \(callbackViolations.joined(separator: " | "))")
             if let creatingAtResponse { #expect(creatingAtResponse) }
+            if case .failure = outcome { print(lifetimeSummary()) }
+            if case .failure = completion { print(lifetimeSummary()) }
             try outcome.get()
             try completion.get()
         }

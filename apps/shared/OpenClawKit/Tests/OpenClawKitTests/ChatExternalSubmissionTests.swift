@@ -67,6 +67,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
     let validationGate: NativeSubmissionGate?
     let settingsPatchGate: NativeSubmissionGate?
     let resetGate: NativeSubmissionGate?
+    let completionGate: NativeSubmissionGate?
     let response: Response
     let ackStatus: String
     let ackRunID: String?
@@ -102,6 +103,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         validationGate: NativeSubmissionGate? = nil,
         settingsPatchGate: NativeSubmissionGate? = nil,
         resetGate: NativeSubmissionGate? = nil,
+        completionGate: NativeSubmissionGate? = nil,
         validationGateCall: Int = 1,
         supportsComposerCapabilities: Bool = false,
         supportsSessionSettingsCAS: Bool = true,
@@ -118,6 +120,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         self.validationGate = validationGate
         self.settingsPatchGate = settingsPatchGate
         self.resetGate = resetGate
+        self.completionGate = completionGate
         self.validationGateCall = validationGateCall
         self.supportsComposerCapabilities = supportsComposerCapabilities
         self.supportsSessionSettingsCAS = supportsSessionSettingsCAS
@@ -210,7 +213,8 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
                 },
                 sessionRoutingContract: Self.contract,
                 supportsSessionSettingsCAS: self.supportsSessionSettingsCAS),
-            isCurrent: { await self.validate(generation: generation) })
+            accountIsCurrent: { await self.validate(generation: generation) },
+            presentationIsCurrent: { true })
     }
 
     private func validate(generation: Int) async -> Bool {
@@ -317,6 +321,12 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         throw NSError(domain: "SettingsTest", code: 1, userInfo: [NSLocalizedDescriptionKey: "Settings rejected"])
     }
 
+    func waitForRunCompletion(runId _: String, timeoutMs _: Int) async -> OpenClawChatRunObservation {
+        guard let completionGate else { return .unavailable }
+        await completionGate.wait()
+        return .terminal(.completed)
+    }
+
     func release() async {
         await self.sendGate?.open()
         await self.historyGate?.open()
@@ -324,6 +334,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         await self.validationGate?.open()
         await self.settingsPatchGate?.open()
         await self.resetGate?.open()
+        await self.completionGate?.open()
     }
 }
 
@@ -994,6 +1005,196 @@ private struct ChatExternalSubmissionTests {
         await fixture.close()
     }
 
+    @Test(arguments: [false, true])
+    func `visible ACK keeps the surviving canonical user scope before history`(reusedScope: Bool) async throws {
+        let historyGate = NativeSubmissionGate()
+        let runID = "canonical-run"
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            ackStatus: "started", ackRunID: runID))
+        await fixture.prepare()
+        let vm = fixture.vm
+        if reusedScope {
+            let canonical = try JSONDecoder().decode(OpenClawChatMessage.self, from: Data("""
+            {"role":"user","content":[{"type":"text","text":"canonical request"}],
+             "timestamp":1,"idempotencyKey":"canonical-run:user"}
+            """.utf8))
+            vm.messages = [canonical]
+            vm.runMessageScopesByRunID[runID] = vm.currentRunMessageScope()
+            let newer = try JSONDecoder().decode(OpenClawChatMessage.self, from: Data("""
+            {"role":"user","content":[{"type":"text","text":"newer request"}],
+             "timestamp":2,"idempotencyKey":"newer-run:user"}
+            """.utf8))
+            vm.messages.append(newer)
+        }
+        let payload = OpenClawChatHistoryPayload(
+            sessionKey: fixture.target.sessionKey, sessionId: "session-a", messages: [], thinkingLevel: nil)
+        await fixture.transport.setTargetedHistoryReplies([.snapshot, .held(payload, historyGate)])
+        let invocation = fixture.request()
+        let route = await fixture.transport.route(fixture.target)
+        let submitting = Task { await vm.submit(invocation, using: route) }
+        var ownedTasks: [Task<Void, Never>] = []
+        func closeOwnedWork() async {
+            ownedTasks += Array(vm.pendingRunOwnerTasks.values)
+            vm.detachTransport()
+            await historyGate.open()
+            await fixture.transport.release()
+            _ = await submitting.value
+            for task in ownedTasks {
+                await task.value
+            }
+            await fixture.close()
+        }
+        do {
+            // Hold the actual post-ACK read so history cannot repair a bad scope.
+            try await waitUntil("canonical scope held before post-ACK history") { await historyGate.entered }
+            #expect(await submitting.value == .accepted(runID: runID))
+            #expect(await fixture.transport.targetedHistoryReturns == [1])
+            let surviving = vm.messages.filter { $0.idempotencyKey == "\(runID):user" }
+            try #require(surviving.count == 1)
+            let scope = try #require(vm.runMessageScopesByRunID[runID])
+            #expect(scope.session == vm.currentSessionSnapshot())
+            #expect(scope.latestUserTurn?.idempotencyKey == "\(runID):user")
+            #expect(scope.latestUserTurn?.timestamp == surviving[0].timestamp)
+            #expect(!vm.messages.contains { $0.idempotencyKey == "\(invocation.operationID.uuidString):user" })
+            if reusedScope {
+                #expect(scope.latestUserTurn?.timestamp == 1)
+                #expect(vm.messages.contains { $0.idempotencyKey == "newer-run:user" })
+            }
+            #expect(vm.pendingRuns == [runID])
+            #expect(vm.pendingRunOwnerTasks[runID] != nil)
+        } catch {
+            await closeOwnedWork()
+            throw error
+        }
+        await closeOwnedWork()
+    }
+
+    @Test(arguments: ["ok", "aborted", "started", "in_flight"])
+    func `retired presentation keeps accepted run ownership without projecting effects`(status: String) async throws {
+        let sendGate = NativeSubmissionGate()
+        let completionGate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            ackStatus: status == "aborted" ? "timeout" : status, ackRunID: "accepted-run",
+            ackSummary: status == "aborted" ? "aborted" : nil,
+            sendGate: sendGate, completionGate: completionGate))
+        await fixture.prepare()
+        let presentation = NativeSubmissionPresentation()
+        let physical = await fixture.transport.route(fixture.target)
+        let route = OpenClawChatExternalSubmissionRoute(
+            target: fixture.target, lease: physical.lease, accountIsCurrent: physical.accountIsCurrent,
+            presentationIsCurrent: { presentation.isCurrent })
+        let invocation = fixture.request()
+        let vm = fixture.vm
+        let submitting = Task { await vm.submit(invocation, using: route) }
+        var ownedTasks: [Task<Void, Never>] = []
+        func closeOwnedWork() async {
+            ownedTasks += Array(vm.pendingRunOwnerTasks.values)
+            vm.detachTransport()
+            await fixture.transport.release()
+            _ = await submitting.value
+            for task in ownedTasks {
+                await task.value
+            }
+            await fixture.close()
+        }
+        do {
+            try await waitUntil("send held before ACK") { await sendGate.entered }
+            presentation.isCurrent = false
+            vm.input = "retained draft"
+            vm.errorText = "retained error"
+            let messages = vm.messages
+            let stream = vm.streamingAssistantText
+            let tools = vm.turnToolCallsById
+            await sendGate.open()
+            #expect(await submitting.value == .accepted(runID: "accepted-run"))
+            #expect(!vm.pendingRuns.contains(invocation.operationID.uuidString))
+            #expect(vm.messages == messages)
+            #expect(vm.input == "retained draft")
+            #expect(vm.errorText == "retained error")
+            #expect(vm.streamingAssistantText == stream)
+            #expect(vm.turnToolCallsById == tools)
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            if status == "started" || status == "in_flight" {
+                #expect(vm.pendingRuns == ["accepted-run"])
+                #expect(vm.runMessageScopesByRunID["accepted-run"]?.session == vm.currentSessionSnapshot())
+                let owner = try #require(vm.pendingRunOwnerTasks["accepted-run"])
+                ownedTasks.append(owner)
+                try await waitUntil("captured run completion wait entered") { await completionGate.entered }
+                await completionGate.open()
+                try await waitUntil("terminal observation released hidden run") {
+                    await MainActor.run { vm.pendingRunCount == 0 }
+                }
+                await owner.value
+            }
+            #expect(vm.pendingRuns.isEmpty)
+            #expect(vm.pendingRunOwnerTasks["accepted-run"] == nil)
+            #expect(vm.liveRunStateByRunID["accepted-run"]?.terminal == true)
+            #expect(vm.messages == messages)
+            #expect(vm.input == "retained draft")
+            #expect(vm.errorText == "retained error")
+            #expect(vm.streamingAssistantText == stream)
+            #expect(vm.turnToolCallsById == tools)
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            if case .uncertain = await vm.submit(invocation, using: route) {} else {
+                Issue.record("Retired presentation cannot read the original accepted receipt")
+            }
+            #expect(await fixture.transport.sent.count == 1)
+        } catch {
+            await closeOwnedWork()
+            throw error
+        }
+        await closeOwnedWork()
+    }
+
+    @Test func `presentation retirement during terminal ACK history still releases its run`() async throws {
+        let historyGate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(ackStatus: "ok"))
+        await fixture.prepare()
+        let presentation = NativeSubmissionPresentation()
+        let physical = await fixture.transport.route(fixture.target)
+        let route = OpenClawChatExternalSubmissionRoute(
+            target: fixture.target, lease: physical.lease, accountIsCurrent: physical.accountIsCurrent,
+            presentationIsCurrent: { presentation.isCurrent })
+        let payload = OpenClawChatHistoryPayload(
+            sessionKey: fixture.target.sessionKey, sessionId: "session-a", messages: [], thinkingLevel: nil)
+        await fixture.transport.setTargetedHistoryReplies([.snapshot, .held(payload, historyGate)])
+        let invocation = fixture.request()
+        let vm = fixture.vm
+        let submitting = Task { await vm.submit(invocation, using: route) }
+        var ownedTasks: [Task<Void, Never>] = []
+        func closeOwnedWork() async {
+            ownedTasks += Array(vm.pendingRunOwnerTasks.values)
+            vm.detachTransport()
+            await historyGate.open()
+            await fixture.transport.release()
+            _ = await submitting.value
+            for task in ownedTasks {
+                await task.value
+            }
+            await fixture.close()
+        }
+        do {
+            try await waitUntil("post-ACK history held") { await historyGate.entered }
+            let runID = "remote-\(invocation.operationID.uuidString)"
+            #expect(await submitting.value == .accepted(runID: runID))
+            ownedTasks += Array(vm.pendingRunOwnerTasks.values)
+            presentation.isCurrent = false
+            vm.errorText = "retained error"
+            let messages = vm.messages
+            await historyGate.open()
+            try await waitUntil("retired terminal ACK settled") { await MainActor.run { vm.pendingRuns.isEmpty } }
+            #expect(vm.messages == messages)
+            #expect(vm.errorText == "retained error")
+            #expect(vm.liveRunStateByRunID[runID]?.terminal == true)
+            #expect(await fixture.transport.targetedHistoryRequests.count == 2)
+            #expect(await fixture.transport.sent.count == 1)
+        } catch {
+            await closeOwnedWork()
+            throw error
+        }
+        await closeOwnedWork()
+    }
+
     @Test(arguments: ["aborted", "ok"], [false, true])
     func `terminal receipt retires only its selected run after history reconciliation`(
         outcome: String, successor: Bool) async throws
@@ -1003,8 +1204,7 @@ private struct ChatExternalSubmissionTests {
         let ackRunID = "receipt-run"
         let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
             ackStatus: outcome == "aborted" ? "timeout" : "ok", ackRunID: ackRunID,
-            ackSummary: outcome == "aborted" ? "aborted" : nil,
-            validationGate: routeGate, validationGateCall: 9))
+            ackSummary: outcome == "aborted" ? "aborted" : nil))
         await fixture.prepare()
         let vm = fixture.vm
         let runID = successor ? "successor-run" : ackRunID
@@ -1019,14 +1219,26 @@ private struct ChatExternalSubmissionTests {
         await fixture.transport.setTargetedHistoryReplies([.snapshot, .held(payload, historyGate)])
         vm.input = "preserved composer draft"
         let session = vm.currentSessionSnapshot()
+        let initialHistoryRequest = vm.latestAppliedHistoryRequestID
         let invocation = fixture.request()
-        let route = await fixture.transport.route(fixture.target)
+        let physical = await fixture.transport.route(fixture.target)
+        let route = OpenClawChatExternalSubmissionRoute(
+            target: fixture.target, lease: physical.lease,
+            accountIsCurrent: {
+                let current = await physical.accountIsCurrent()
+                if await MainActor.run(body: { vm.latestAppliedHistoryRequestID > initialHistoryRequest }) {
+                    await routeGate.wait()
+                }
+                return current
+            },
+            presentationIsCurrent: { true })
         let submitting = Task { await vm.submit(invocation, using: route) }
         var ownedRuns: [Task<Void, Never>] = []
         func closeOwnedWork() async {
             let currentOwners = Array(vm.pendingRunOwnerTasks.values)
             vm.detachTransport()
             await historyGate.open()
+            await routeGate.open()
             await fixture.transport.release()
             _ = await submitting.value
             for owner in ownedRuns + currentOwners {
@@ -1048,7 +1260,7 @@ private struct ChatExternalSubmissionTests {
             await historyGate.open()
 
             try await waitUntil("reconciled run installed before terminal admission") { await routeGate.entered }
-            #expect(await fixture.transport.validationCalls == 9)
+            #expect(vm.latestAppliedHistoryRequestID > initialHistoryRequest)
             #expect(await fixture.transport.targetedHistoryReturns == [1, 2])
             #expect(vm.currentSessionSnapshot() == session)
             #expect(vm.pendingRuns == [runID])
@@ -1226,10 +1438,10 @@ private struct ChatExternalSubmissionTests {
         fixture.vm.selectComposerPermissionMode(.readOnly)
         let presentation = NativeSubmissionPresentation()
         let physicalRoute = await fixture.transport.route(fixture.target)
-        let route = OpenClawChatExternalSubmissionRoute(target: fixture.target, lease: physicalRoute.lease) {
-            guard await physicalRoute.isCurrent() else { return false }
-            return await presentation.isCurrent
-        }
+        let route = OpenClawChatExternalSubmissionRoute(
+            target: fixture.target, lease: physicalRoute.lease,
+            accountIsCurrent: physicalRoute.accountIsCurrent,
+            presentationIsCurrent: { presentation.isCurrent })
         var submissionTask: Task<OpenClawChatSubmissionOutcome, Never>?
         do {
             try await waitUntil("actual settings patch entered") { await patchGate.entered }
@@ -1716,10 +1928,10 @@ private struct ChatExternalSubmissionTests {
             validationGateCall: 3))
         let presentation = NativeSubmissionPresentation()
         let physical = await fixture.transport.route(fixture.target)
-        let route = OpenClawChatExternalSubmissionRoute(target: fixture.target, lease: physical.lease) {
-            guard await physical.isCurrent() else { return false }
-            return await presentation.isCurrent
-        }
+        let route = OpenClawChatExternalSubmissionRoute(
+            target: fixture.target, lease: physical.lease,
+            accountIsCurrent: physical.accountIsCurrent,
+            presentationIsCurrent: { presentation.isCurrent })
         let target = fixture.vm.currentModelPatchTarget()
         fixture.vm.input = "preserved draft"
         let invocation = fixture.request()

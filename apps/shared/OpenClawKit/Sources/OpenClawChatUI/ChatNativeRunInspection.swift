@@ -185,6 +185,7 @@ public struct OpenClawChatNativeActionGateway: Sendable {
         session: OpenClawNativeSessionRef,
         message: String,
         lease: OpenClawChatTransportRouteLease,
+        accountIsCurrent: @escaping @Sendable () async -> Bool,
         presentationIsCurrent: @escaping @MainActor @Sendable () -> Bool) async throws -> OpenClawNativePreparedSend
     {
         guard !message.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
@@ -195,10 +196,10 @@ public struct OpenClawChatNativeActionGateway: Sendable {
             throw OpenClawNativeActionError("The selected chat is not ready. Open it and try again.")
         }
         let invocation = OpenClawChatExternalSubmission(target: session, message: message)
-        let route = OpenClawChatExternalSubmissionRoute(target: session, lease: lease) {
-            guard await self.isCurrent() else { return false }
-            return await presentationIsCurrent()
-        }
+        let route = OpenClawChatExternalSubmissionRoute(
+            target: session, lease: lease,
+            accountIsCurrent: accountIsCurrent,
+            presentationIsCurrent: presentationIsCurrent)
         return OpenClawNativePreparedSend(session: session, message: invocation.message) {
             // Confirmation can outlive the connection, account, or visible chat.
             // Revalidate the captured owner; never acquire a successor lease.

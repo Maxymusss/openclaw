@@ -171,6 +171,7 @@ final class IOSChatViewModelOwner {
               request.generation == appModel.gatewayConnectGeneration,
               request.accountGeneration == appModel.operatorAuthorityGeneration,
               self.transport?.gateway === request.gateway, self.transport?.nativeBinding === request.binding,
+              self.matchesBinding(request.binding),
               scope == self.taskIdentity(
                   appModel: appModel,
                   nativeBinding: presentation.binding,

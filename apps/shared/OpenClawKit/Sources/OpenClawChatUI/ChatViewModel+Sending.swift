@@ -43,21 +43,29 @@ public enum OpenClawChatSubmissionOutcome: Equatable, Sendable {
     case uncertain(reason: String)
 }
 
-/// Capture before confirmation. The platform adapter binds both closures to
-/// the same authenticated physical connection, not a lookup of "current".
+/// Capture before confirmation. Account authority follows the authenticated
+/// connection; presentation authority only admits effects on the captured screen.
 public struct OpenClawChatExternalSubmissionRoute: Sendable {
     public let target: OpenClawNativeSessionRef
     public let lease: OpenClawChatTransportRouteLease
-    public let isCurrent: @Sendable () async -> Bool
+    public let accountIsCurrent: @Sendable () async -> Bool
+    public let presentationIsCurrent: @MainActor @Sendable () -> Bool
 
     public init(
         target: OpenClawNativeSessionRef,
         lease: OpenClawChatTransportRouteLease,
-        isCurrent: @escaping @Sendable () async -> Bool)
+        accountIsCurrent: @escaping @Sendable () async -> Bool,
+        presentationIsCurrent: @escaping @MainActor @Sendable () -> Bool)
     {
         self.target = target
         self.lease = lease
-        self.isCurrent = isCurrent
+        self.accountIsCurrent = accountIsCurrent
+        self.presentationIsCurrent = presentationIsCurrent
+    }
+
+    public func isCurrent() async -> Bool {
+        guard await self.accountIsCurrent() else { return false }
+        return await self.presentationIsCurrent()
     }
 }
 
@@ -74,7 +82,7 @@ extension OpenClawChatViewModel {
         switch submission.state {
         case .idle:
             submission.owner = self
-            submission.isCurrent = route.isCurrent
+            submission.isCurrent = { await route.isCurrent() }
             let session = self.currentSessionSnapshot()
             let branchGeneration = self.nextSessionBranchSwitchGeneration
             // Bind and reserve before suspension. Only the first caller owns
@@ -1078,48 +1086,82 @@ extension OpenClawChatViewModel {
         _ response: OpenClawChatSendResponse,
         attempt: LiveSendAttempt) async
     {
-        guard await self.canPresentLiveSend(attempt) else {
-            if response.status != "error", response.status != "timeout" {
-                self.finishAcceptedComposerSend(attempt.draft)
+        let canPresent: Bool
+        if let route = attempt.draft.externalRoute {
+            guard await route.accountIsCurrent() else { return }
+            canPresent = await route.presentationIsCurrent()
+            // The ACK may outlive its screen, but it cannot adopt a successor's
+            // reservation after route validation suspended.
+            guard self.isCurrentSession(attempt.draft.session),
+                  self.pendingRuns.contains(attempt.runId),
+                  self.pendingLocalUserEchoMessageIDsByRunID[attempt.runId] == attempt.userMessageID,
+                  self.runMessageScopesByRunID[attempt.runId]?.session == attempt.draft.session
+            else { return }
+        } else {
+            canPresent = await self.canPresentLiveSend(attempt)
+            guard canPresent else {
+                if response.status != "error", response.status != "timeout" {
+                    self.finishAcceptedComposerSend(attempt.draft)
+                }
+                return
             }
-            return
         }
-        let sessionKey = attempt.draft.session.key
         logDiagnostic(
-            "chat.ui transport send accepted sessionKey=\(sessionKey) "
+            "chat.ui transport send accepted sessionKey=\(attempt.draft.session.key) "
                 + "localRunId=\(attempt.runId) remoteRunId=\(response.runId)")
-        if response.status != "error", response.status != "timeout" {
+        if canPresent, response.status != "error", response.status != "timeout" {
             haptics.perform(.messageSent)
             self.finishAcceptedComposerSend(attempt.draft)
         }
         let reusedRunAlreadyFinal = response.runId == attempt.runId
             ? false
-            : self.adoptRemoteRunID(response.runId, replacing: attempt.runId)
+            : self.adoptRemoteRunID(response.runId, replacing: attempt.runId, canPresent: canPresent)
 
+        // Acceptance and completion belong to this captured run even when its
+        // presentation retired. This path changes no transcript or screen effects.
+        if !canPresent, response.status == "ok" || response.isAbortedRun {
+            self.retirePendingRun(response.runId)
+            return
+        }
+        if !reusedRunAlreadyFinal, self.pendingRunOwnerTasks[response.runId] == nil,
+           response.runId != attempt
+               .runId || (!attempt.draft.isComposer && response.status != "ok" && !response.isAbortedRun)
+        {
+            armPendingRunOwner(
+                runId: response.runId,
+                sessionSnapshot: attempt.draft.session,
+                userMessageTimestamp: attempt.userMessageTimestamp,
+                externalRoute: attempt.draft.externalRoute)
+        }
         if attempt.draft.isComposer {
             await self.reconcileLiveSendResponse(
-                response,
-                attempt: attempt,
-                reusedRunAlreadyFinal: reusedRunAlreadyFinal)
+                response, attempt: attempt, reusedRunAlreadyFinal: reusedRunAlreadyFinal)
         } else {
             // Native actions return the ACK without waiting for history or run
             // completion. The existing chat owner keeps following the run.
-            if response.status != "ok", response.status != "error", response.status != "timeout",
-               !reusedRunAlreadyFinal
-            {
-                armPendingRunOwner(
-                    runId: response.runId,
-                    sessionSnapshot: attempt.draft.session,
-                    userMessageTimestamp: attempt.userMessageTimestamp)
-            }
             Task {
-                guard await self.canPresentLiveSend(attempt) else { return }
                 await self.reconcileLiveSendResponse(
-                    response,
-                    attempt: attempt,
-                    reusedRunAlreadyFinal: reusedRunAlreadyFinal)
+                    response, attempt: attempt, reusedRunAlreadyFinal: reusedRunAlreadyFinal)
             }
         }
+    }
+
+    private func canReconcileLiveSend(
+        _ response: OpenClawChatSendResponse,
+        attempt: LiveSendAttempt) async -> Bool
+    {
+        guard let route = attempt.draft.externalRoute else {
+            return self.isCurrentSession(attempt.draft.session)
+        }
+        guard await route.accountIsCurrent() else { return false }
+        let canPresent = await route.presentationIsCurrent()
+        guard self.isCurrentSession(attempt.draft.session) else { return false }
+        if !canPresent, response.status == "ok" || response.isAbortedRun,
+           self.runMessageScopesByRunID[response.runId]?.session == attempt.draft.session
+        {
+            self.retirePendingRun(response.runId)
+        }
+        return canPresent
     }
 
     private func reconcileLiveSendResponse(
@@ -1127,7 +1169,7 @@ extension OpenClawChatViewModel {
         attempt: LiveSendAttempt,
         reusedRunAlreadyFinal: Bool) async
     {
-        guard await self.canPresentLiveSend(attempt) else { return }
+        guard await self.canReconcileLiveSend(response, attempt: attempt) else { return }
         if response.status == "ok" || response.isAbortedRun {
             // A cached abort can precede the user transcript commit. Remove the
             // optimistic row first; only authoritative history may put it back.
@@ -1136,7 +1178,7 @@ extension OpenClawChatViewModel {
             await refreshHistoryAfterRun(
                 historyRequest: historyContext,
                 externalRoute: attempt.draft.externalRoute)
-            guard await self.canPresentLiveSend(attempt) else { return }
+            guard await self.canReconcileLiveSend(response, attempt: attempt) else { return }
             if !finishPendingRunIfTerminalSendAck(response) {
                 finishPendingRunAfterTerminalOkSendAck(response)
             }
@@ -1152,44 +1194,54 @@ extension OpenClawChatViewModel {
         let refresh = await refreshHistoryAfterRun(
             historyRequest: historyContext,
             externalRoute: attempt.draft.externalRoute)
-        guard await self.canPresentLiveSend(attempt) else { return }
+        guard await self.canReconcileLiveSend(response, attempt: attempt) else { return }
         if refresh.hasInFlightRun || (refresh.applied && !refresh.runSnapshotApplied) ||
             !clearPendingRunIfAssistantMessagePresent(
                 runId: response.runId,
                 after: attempt.userMessageTimestamp)
         {
-            armPendingRunOwner(
-                runId: response.runId,
-                sessionSnapshot: attempt.draft.session,
-                userMessageTimestamp: attempt.userMessageTimestamp)
+            if self.pendingRunOwnerTasks[response.runId] == nil {
+                armPendingRunOwner(
+                    runId: response.runId,
+                    sessionSnapshot: attempt.draft.session,
+                    userMessageTimestamp: attempt.userMessageTimestamp,
+                    externalRoute: attempt.draft.externalRoute)
+            }
         }
     }
 
-    private func adoptRemoteRunID(_ remoteRunId: String, replacing localRunId: String) -> Bool {
+    private func adoptRemoteRunID(_ remoteRunId: String, replacing localRunId: String, canPresent: Bool) -> Bool {
         let pendingUserMessageID = pendingLocalUserEchoMessageIDsByRunID.removeValue(forKey: localRunId)
         let localRunScope = runMessageScopesByRunID.removeValue(forKey: localRunId)
+        let existingRemoteEcho = pendingLocalUserEchoMessageIDsByRunID[remoteRunId]
+        let existingRemoteScope = runMessageScopesByRunID[remoteRunId]
         clearPendingRun(localRunId)
         pendingRuns.insert(remoteRunId)
-        // The gateway can reuse an identical active run without writing this
-        // second turn. Move the optimistic row onto that durable identity,
-        // collapsing it if the canonical row is already here.
-        let rekeyedUserEcho = rekeyLocalUserEcho(
-            messageID: pendingUserMessageID,
-            runId: remoteRunId)
-        pendingLocalUserEchoMessageIDsByRunID[remoteRunId] = rekeyedUserEcho?.pendingMessageID
-        let remoteRunScope = rekeyedUserEcho?.scope ?? localRunScope ?? currentRunMessageScope()
-        runMessageScopesByRunID[remoteRunId] = remoteRunScope
-        rescopeProvisionalFinalMessages(runId: remoteRunId, scope: remoteRunScope)
-        let reusedRunAlreadyFinal = hasRecordedFinalMessage(runId: remoteRunId)
+        // Reusing a remote run must not replace its existing owner or message.
+        // A retired presentation transfers only the captured reservation facts.
+        if pendingLocalUserEchoMessageIDsByRunID[remoteRunId] == nil {
+            pendingLocalUserEchoMessageIDsByRunID[remoteRunId] = pendingUserMessageID
+        }
+        if runMessageScopesByRunID[remoteRunId] == nil {
+            runMessageScopesByRunID[remoteRunId] = localRunScope
+        }
+        if canPresent {
+            let rekeyedUserEcho = rekeyLocalUserEcho(messageID: pendingUserMessageID, runId: remoteRunId)
+            pendingLocalUserEchoMessageIDsByRunID[remoteRunId] = existingRemoteEcho ?? rekeyedUserEcho?.pendingMessageID
+            let remoteRunScope = existingRemoteScope
+                ?? rekeyedUserEcho?.scope ?? localRunScope ?? currentRunMessageScope()
+            runMessageScopesByRunID[remoteRunId] = remoteRunScope
+            rescopeProvisionalFinalMessages(runId: remoteRunId, scope: remoteRunScope)
+        }
+        let reusedRunAlreadyFinal = liveRunStateByRunID[remoteRunId]?.terminal == true ||
+            (canPresent && hasRecordedFinalMessage(runId: remoteRunId))
         if reusedRunAlreadyFinal {
-            clearPendingRun(remoteRunId, hapticEvent: .runCompleted)
-            turnToolCallsById = [:]
-            updateStreamingAssistantText(nil)
-        } else {
-            armPendingRunOwner(
-                runId: remoteRunId,
-                sessionSnapshot: remoteRunScope.session,
-                userMessageTimestamp: remoteRunScope.latestUserTurn?.timestamp)
+            let wasSelectedRun = self.liveUsageRunID == remoteRunId
+            retirePendingRun(remoteRunId, hapticEvent: canPresent ? .runCompleted : nil)
+            if canPresent, wasSelectedRun {
+                turnToolCallsById = [:]
+                updateStreamingAssistantText(nil)
+            }
         }
         return reusedRunAlreadyFinal
     }

@@ -795,11 +795,15 @@ struct NativeActionRouterTests {
         }
     }
 
-    private func withHost(sessionBox: WebSocketSessionBox? = nil, _ run: (Host) async throws -> Void) async throws {
+    private func withHost(
+        sessionBox: WebSocketSessionBox? = nil, foreground: Bool = false,
+        _ run: (Host) async throws -> Void) async throws
+    {
         try await withUserDefaults([
             "talk.enabled": false, "talk.background.enabled": false, VoiceWakePreferences.enabledKey: false,
         ]) {
             let host = Host()
+            if foreground { host.model.setScenePhase(.active) }
             let outcome: Result<Void, Error>
             do {
                 try await host.connect(sessionBox: sessionBox)
@@ -1108,7 +1112,7 @@ struct NativeActionRouterTests {
         defer { try? FileManager.default.removeItem(at: stateDirectory) }
         try await DeviceIdentityStore.withStateDirectory(stateDirectory) {
             try await withUserDefaults(["push.apns.deviceTokenHex": nil, "gateway.autoconnect": false]) {
-                try await self.withHost { host in
+                try await self.withHost(foreground: true) { host in
                     let registry = GatewayRegistryTestIsolation()
                     defer { registry.restore() }
                     let destination = Host()
@@ -1763,11 +1767,18 @@ struct NativeActionRouterTests {
             let prepared = try await host.prepare()
             let chat = try #require(host.chat)
             let unchanged = host.retired
+            let originalBinding = try #require(host.binding)
+            let originalAuthority = try #require(host.router.capturePresentationAuthority(host.presentationID))
             host.model.focusChatSession(chat.currentSessionTarget)
             #expect(host.retired == unchanged)
             chat.switchSession(to: "global", agentID: "research")
             #expect(host.model.chatDeliveryAgentId == "research")
-            #expect(host.binding == nil)
+            let successorBinding = try #require(host.binding)
+            #expect(successorBinding.session == host.session("research"))
+            #expect(successorBinding !== originalBinding)
+            #expect(!host.router.isCurrentPresentation(originalAuthority))
+            #expect(chat.currentSessionTarget == OpenClawChatSessionTarget(sessionKey: "global", agentID: "research"))
+            #expect(host.retired > unchanged)
             chat.switchSession(to: "global", agentID: "main")
             #expect(host.model.chatDeliveryAgentId == "main")
             await #expect(throws: Error.self) { _ = try await prepared.submit() }
