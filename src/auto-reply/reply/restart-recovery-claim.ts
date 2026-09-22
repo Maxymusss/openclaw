@@ -7,10 +7,10 @@ import {
 } from "../../config/sessions/restart-recovery-state.js";
 import type { RestartRecoveryBeforeAgentReplyState } from "../../config/sessions/restart-recovery-types.js";
 import {
-  loadSessionEntry,
   patchSessionEntryCore,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import type { SessionTranscriptTurnLifecyclePatch } from "../../config/sessions/session-transcript-turn-lifecycle.types.js";
 import {
   buildRestartRecoveryExpectedState,
@@ -42,7 +42,7 @@ type ReplyRestartRecoveryClaimController = {
     };
   }) => Promise<void>;
   clear: () => Promise<void>;
-  isArmed: () => boolean;
+  isArmed: () => Promise<boolean>;
 };
 
 /** Provider redelivery guard shared by ingress and the agent admission boundary. */
@@ -118,6 +118,11 @@ export function createReplyRestartRecoveryClaimController(params: {
   let recoveryRunId: string = randomUUID();
   let recoverySourceRunId: string | undefined;
   let tracked = false;
+  const assertReadCurrent = () => {
+    if (params.lifecycleGeneration) {
+      assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
+    }
+  };
 
   const persistAdmissionPatch = async (options: {
     entry: SessionEntry;
@@ -194,14 +199,12 @@ export function createReplyRestartRecoveryClaimController(params: {
     }
     const sessionId = params.getSessionId();
     const entry =
-      loadSessionEntry({
-        agentId: params.agentId,
-        storePath: params.storePath,
-        sessionKey: params.sessionKey,
-        clone: false,
-        hydrateSkillPromptRefs: false,
-      }) ?? params.getEntry();
-    if (!entry || entry.sessionId !== sessionId) {
+      (await readSessionEntryInWorker(
+        { agentId: params.agentId, storePath: params.storePath, sessionKey: params.sessionKey },
+        assertReadCurrent,
+      )) ?? params.getEntry();
+    assertReadCurrent();
+    if (!entry || entry.sessionId !== sessionId || params.getSessionId() !== sessionId) {
       throw new Error("session changed before durable user-turn admission");
     }
     const admissionRunId = normalizeOptionalString(params.admissionRunId);
@@ -514,17 +517,15 @@ export function createReplyRestartRecoveryClaimController(params: {
     }
   };
 
-  const isArmed = (): boolean => {
+  const isArmed = async (): Promise<boolean> => {
     if (!tracked || !params.sessionKey || !params.storePath) {
       return false;
     }
-    const persisted = loadSessionEntry({
-      agentId: params.agentId,
-      sessionKey: params.sessionKey,
-      storePath: params.storePath,
-      clone: false,
-      hydrateSkillPromptRefs: false,
-    });
+    const persisted = await readSessionEntryInWorker(
+      { agentId: params.agentId, sessionKey: params.sessionKey, storePath: params.storePath },
+      assertReadCurrent,
+    );
+    assertReadCurrent();
     return persisted?.abortedLastRun === true || params.getEntry()?.abortedLastRun === true;
   };
 

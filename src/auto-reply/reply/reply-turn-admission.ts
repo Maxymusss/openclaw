@@ -482,6 +482,8 @@ export async function admitReplyTurn(
               });
             }
             recoveryOwnerLease = ownerClaim.kind === "claimed" ? ownerClaim.lease : undefined;
+            // Recovery may claim or clear fields after the admission read.
+            admittedSessionEntry = ownerClaim.entry;
           }
           if (interruptedBeforeOperation || isAbortSignalAborted(params.upstreamAbortSignal)) {
             rejectLifecycleInvalidatedWork({

@@ -34,7 +34,8 @@ import {
 import { isPerAgentSessionStoreConfig, listConfiguredSessionStoreAgentIds } from "./targets.js";
 
 export type SessionStoreTargetReadRequest = {
-  agentId: string;
+  agentId?: string;
+  defaultAgentId?: string;
   storePath: string;
   env: NodeJS.ProcessEnv;
   candidates: SessionStoreReadCandidate[];
@@ -46,6 +47,7 @@ export type SessionStoreTargetReadResult =
   | {
       kind: "session-store-target";
       sourcePath: string;
+      logicalAgentId: string;
       database: { agentId: string; path: string };
     };
 
@@ -56,6 +58,7 @@ export function readSessionStoreTarget(
   try {
     const target = resolveSqliteTargetFromSessionStorePath(request.storePath, {
       agentId: request.agentId,
+      defaultAgentId: request.defaultAgentId,
       env: request.env,
       registeredDatabases: request.registeredDatabases,
       readCandidates: request.candidates,
@@ -65,9 +68,13 @@ export function readSessionStoreTarget(
       storeAgentId: target.agentId ?? request.agentId,
       storeShared: target.shared,
     });
+    if (!agentId) {
+      throw new Error("Cannot resolve SQLite session scope without an agent id");
+    }
     return {
       kind: "session-store-target",
       sourcePath: target.path,
+      logicalAgentId: agentId,
       database: {
         agentId: target.shared ? (target.agentId ?? agentId) : agentId,
         path: assertSessionStoreReadCandidate(target.path, request.candidates),

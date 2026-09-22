@@ -57,7 +57,9 @@ export function openExistingSqliteWorkerBackend(
   admitOpen();
   const options = { agentId: input.agentId, path: input.databasePath, env: input.environment };
   let admittedFileIdentity =
-    opening.existingIdentity ?? readDatabasePathIdentitySync(input.databasePath).key;
+    input.creatingIdentity?.key ??
+    opening.existingIdentity ??
+    readDatabasePathIdentitySync(input.databasePath).key;
   const assertFileIdentity = () => {
     if (input.expectedIdentity) {
       assertExistingDatabaseIdentity(
@@ -65,7 +67,15 @@ export function openExistingSqliteWorkerBackend(
         `file:${input.expectedIdentity.physicalIdentity}`,
       );
     }
-    if (admittedFileIdentity) {
+    if (admittedFileIdentity?.startsWith("path:")) {
+      const current = readDatabasePathIdentitySync(input.databasePath);
+      if (
+        current.key !== admittedFileIdentity ||
+        current.canonicalPath !== input.creatingIdentity?.canonicalPath
+      ) {
+        throw new Error("Agent database target changed before creating open");
+      }
+    } else if (admittedFileIdentity) {
       assertExistingDatabaseIdentity(input.databasePath, admittedFileIdentity);
     }
   };
@@ -155,7 +165,10 @@ export function openExistingSqliteWorkerBackend(
         throw new Error("Disk agent execution requires its canonical file identity");
       }
       const openedFileIdentity = `file:${nativeIdentity.identity}`;
-      if (admittedFileIdentity && openedFileIdentity !== admittedFileIdentity) {
+      if (
+        admittedFileIdentity?.startsWith("file:") &&
+        openedFileIdentity !== admittedFileIdentity
+      ) {
         throw new Error("Agent writer differs from its admitted physical file");
       }
       if (
@@ -189,6 +202,9 @@ export function openExistingSqliteWorkerBackend(
   let providerReview:
     | typeof import("../config/sessions/provider-review-store.worker.js")
     | undefined;
+  let entryReader:
+    | typeof import("../config/sessions/session-accessor.sqlite-entry-read.js")
+    | undefined;
   const domain = createAgentDatabaseDomainOwner({
     databasePath: input.databasePath,
     assertCurrent() {
@@ -207,6 +223,11 @@ export function openExistingSqliteWorkerBackend(
   };
   return {
     prepare(command) {
+      if (command.type === "session.entry.read") {
+        return import("../config/sessions/session-accessor.sqlite-entry-read.js").then((module) => {
+          entryReader = module;
+        });
+      }
       if (command.type === "session.providerReview.compare") {
         return import("../config/sessions/provider-review-store.worker.js").then((module) => {
           providerReview = module;
@@ -247,6 +268,9 @@ export function openExistingSqliteWorkerBackend(
         openWriter();
         return undefined;
       }
+      if (command.type === "session.entry.read" && entryReader) {
+        return entryReader.readSessionEntryRow(openWriter(), command.input.sessionKey)?.entry;
+      }
       if (command.type === "session.providerReview.compare" && providerReview) {
         return providerReview.compareSessionProviderReviewInWorker(
           openWriter(),
@@ -284,4 +308,28 @@ export function openExistingSqliteWorkerBackend(
       }
     },
   };
+}
+
+/** Creating admission must establish the file before the broker publishes its physical owner. */
+export async function createSqliteWorkerBackend(
+  input: AgentDatabaseExecutionOpen,
+  opening: { databasePath: string },
+): Promise<SqliteWorkerBackend<AgentDatabaseOperations>> {
+  const backend = openExistingSqliteWorkerBackend(input, opening);
+  try {
+    await backend.execute({ type: "database.prepareWrite", input: undefined });
+    backend.assertSettled?.();
+    return backend;
+  } catch (error) {
+    try {
+      await backend.close();
+    } catch (cleanupError) {
+      throw createSqliteLifecycleAggregateError(
+        [error, cleanupError],
+        "Agent creation and native cleanup failed",
+        error,
+      );
+    }
+    throw error;
+  }
 }

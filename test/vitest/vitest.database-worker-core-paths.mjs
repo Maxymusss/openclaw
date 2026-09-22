@@ -1,6 +1,7 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
   "src/config/sessions/disk-budget.physical-usage.test.ts",
+  "src/config/sessions/session-logical-entry-read.worker.test.ts",
   "src/agents/agent-bundle-mcp-requester-connect.read.test.ts",
   "src/agents/mcp-oauth-provider.read.test.ts",
   "src/agents/mcp-oauth-store.test.ts",
@@ -76,6 +77,8 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/embedded-agent-runner/run.shared-integration.test.ts",
   "src/auto-reply/dispatch.block-streaming-recovery.test.ts",
   "src/auto-reply/reply/agent-runner-execution-cli-commentary.test.ts",
+  "src/auto-reply/reply/body.test.ts",
+  "src/auto-reply/reply/restart-recovery-claim.test.ts",
   "src/auto-reply/reply/agent-runner-memory.private-transcript.test.ts",
   "src/auto-reply/reply/agent-runner-required-maintenance.pending-input.test.ts",
   "src/auto-reply/reply/abort.acp-boundary.test.ts",
@@ -346,6 +349,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/state/user-profiles.test.ts",
   "src/commands/agents.commands.list.worker.test.ts",
   "src/state/openclaw-agent-worker-store.test.ts",
+  "src/state/openclaw-agent-execution.create.test.ts",
   "src/state/openclaw-agent-execution.integrity.test.ts",
   "src/state/openclaw-agent-execution-cleanup.test.ts",
   "src/sessions/session-state-events.test.ts",
@@ -630,6 +634,7 @@ export const databaseWorkerCoreFormerFastKinds = new Map([
   ["src/node-host/invoke-system-run.test.ts", "unitFastIsolated"],
   ["src/state/openclaw-agent-execution-cleanup.test.ts", "unitFastIsolated"],
   ["src/auto-reply/reply/agent-runner-memory.private-transcript.test.ts", "unitFast"],
+  ["src/auto-reply/reply/body.test.ts", "unitFast"],
   ["src/agents/embedded-agent-runner/run/model-setup.selected-model.test.ts", "unitFast"],
   ["src/infra/device-pairing.test.ts", "unitFast"],
   ["src/logging/diagnostic-stuck-session-recovery.runtime.test.ts", "unitFast"],

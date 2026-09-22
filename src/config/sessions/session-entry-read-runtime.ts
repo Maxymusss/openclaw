@@ -1,20 +1,216 @@
+import path from "node:path";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
-import { normalizeAgentId } from "../../routing/session-key.js";
-import { prepareOpenClawAgentDatabaseRegistrySnapshotRead } from "../../state/openclaw-agent-db-registry-listing.js";
-import { retainOpenClawAgentDatabaseReadCandidates } from "../../state/openclaw-agent-db.js";
+import { createSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
+import {
+  isIncognitoSessionKey,
+  LEGACY_IMPLICIT_AGENT_ID,
+  normalizeAgentId,
+  parseAgentSessionKey,
+} from "../../routing/session-key.js";
+import {
+  prepareOpenClawAgentDatabaseRegistrySnapshotRead,
+  type AgentDatabaseRegistryChange,
+} from "../../state/openclaw-agent-db-registry-listing.js";
+import {
+  listOpenIncognitoAgentDatabases,
+  retainOpenClawAgentDatabaseReadCandidates,
+} from "../../state/openclaw-agent-db.js";
+import {
+  isIncognitoOpenClawAgentSqlitePath,
+  resolveOpenClawAgentSqlitePath,
+} from "../../state/openclaw-agent-db.paths.js";
+import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
+import { runOpenClawAgentWorkerWrite } from "../../state/openclaw-agent-write-admission.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../state-dir.js";
-import { resolveSqliteAgentId } from "./session-accessor.sqlite-scope.js";
+import { loadSessionEntry } from "./session-accessor.sqlite-entry.js";
+import { resolveSqliteAgentId, resolveSqliteSessionKey } from "./session-accessor.sqlite-scope.js";
+import type { SessionAccessScope } from "./session-accessor.types.js";
 import { captureCanonicalSessionReaderContinuation } from "./session-canonical-key.js";
 import { resolveUnsuffixedSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import {
   assertSessionStoreReadCandidate,
   captureSessionStoreReadCandidate,
 } from "./session-store-read-candidates.js";
-import { captureSessionStoreReadCandidates } from "./session-store-target-inventory.js";
+import {
+  captureSessionStoreReadCandidates,
+  type SessionStoreTargetReadRequest,
+  type SessionStoreTargetReadResult,
+} from "./session-store-target-inventory.js";
 import { withSessionHistoryWorkerReadCandidates } from "./session-transcript-worker-resources.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import type { SessionExactEntriesWorkerResult } from "./session-transcript-worker.types.js";
+import type { SessionEntry } from "./types.js";
+
+type PreparedStoreTarget = Extract<SessionStoreTargetReadResult, { kind: "session-store-target" }>;
+type StoreTargetReadOwner = {
+  assertCurrent: () => void;
+  onRegistryChange: (change: AgentDatabaseRegistryChange) => void;
+  revalidateTarget: () => Promise<void>;
+};
+
+async function withSessionStoreTarget<T>(
+  request: Omit<SessionStoreTargetReadRequest, "registeredDatabases">,
+  operation: (target: PreparedStoreTarget, owner: StoreTargetReadOwner) => Promise<T>,
+  assertCallerCurrent?: () => void,
+): Promise<T> {
+  assertCallerCurrent?.();
+  const registryRead = prepareOpenClawAgentDatabaseRegistrySnapshotRead({ env: request.env });
+  return withSessionHistoryWorkerReadCandidates(request.candidates, async (discovery) => {
+    let resolved = await discovery.readStoreTarget({
+      ...request,
+      registeredDatabases: { status: "deferred" },
+    });
+    let registry: Awaited<ReturnType<typeof registryRead.read>> | undefined;
+    if (resolved.kind === "session-target-registry-required") {
+      registry = await registryRead.read();
+      registry.assertCurrent();
+      discovery.assertCurrent();
+      assertCallerCurrent?.();
+      resolved = await discovery.readStoreTarget({
+        ...request,
+        registeredDatabases:
+          registry.result.status === "available"
+            ? registry.result.entries
+            : { status: "unavailable" },
+      });
+      if (resolved.kind === "session-target-registry-required") {
+        throw new Error("Session store target requested registry rows twice");
+      }
+    }
+    registry?.assertCurrent();
+    const target = resolved;
+    const assertCurrent = () => {
+      registry?.assertCurrent();
+      discovery.assertCurrent();
+      assertSessionStoreReadCandidate(target.sourcePath, request.candidates);
+      assertCallerCurrent?.();
+    };
+    let registrationChanged = false;
+    assertCurrent();
+    // A synchronous consumer may already publish; its operation owns the final currentness check.
+    const result = await operation(target, {
+      assertCurrent,
+      onRegistryChange(change) {
+        if (registry) {
+          registry.followRegistration(change);
+          registrationChanged = true;
+        }
+      },
+      async revalidateTarget() {
+        assertCurrent();
+        if (!registrationChanged) {
+          return;
+        }
+        const currentRegistry = await registryRead.read();
+        assertCurrent();
+        currentRegistry.assertCurrent();
+        const current = await discovery.readStoreTarget({
+          ...request,
+          registeredDatabases:
+            currentRegistry.result.status === "available"
+              ? currentRegistry.result.entries
+              : { status: "unavailable" },
+        });
+        assertCurrent();
+        currentRegistry.assertCurrent();
+        if (
+          current.kind !== "session-store-target" ||
+          current.logicalAgentId !== target.logicalAgentId ||
+          current.sourcePath !== target.sourcePath ||
+          current.database.agentId !== target.database.agentId ||
+          current.database.path !== target.database.path
+        ) {
+          throw new Error("Session store registration changed its selected target");
+        }
+        registrationChanged = false;
+      },
+    });
+    if (registrationChanged) {
+      throw new Error("Session read released its owner before confirming registration");
+    }
+    return result;
+  });
+}
+
+/** Preserve logical lookup and writable open semantics on the canonical file-backed actor. */
+export async function readSessionEntryInWorker(
+  input: SessionAccessScope,
+  assertCallerCurrent: () => void,
+) {
+  const env = cloneEnvWithPlatformSemantics(input.env ?? process.env);
+  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  const scope = { ...input, env };
+  assertCallerCurrent();
+  const agentId = scope.agentId
+    ? normalizeAgentId(scope.agentId)
+    : parseAgentSessionKey(scope.sessionKey)?.agentId;
+  let storePath = scope.storePath ? path.resolve(scope.storePath) : undefined;
+  // Incognito still belongs to its process-held native owner until that owner's complete cutover.
+  if (
+    isIncognitoSessionKey(scope.sessionKey) ||
+    (storePath &&
+      (isIncognitoOpenClawAgentSqlitePath(storePath, {
+        agentId: agentId ?? scope.defaultAgentId ?? LEGACY_IMPLICIT_AGENT_ID,
+        env,
+      }) ||
+        listOpenIncognitoAgentDatabases().some((owner) => owner.storePath === storePath)))
+  ) {
+    return loadSessionEntry(scope);
+  }
+  if (!storePath) {
+    if (!agentId) {
+      throw new Error("Cannot resolve SQLite session scope without an agent id");
+    }
+    storePath = resolveOpenClawAgentSqlitePath({ agentId, env });
+  }
+  const candidates = captureSessionStoreReadCandidates(storePath);
+  const loadedEntry = await withSessionStoreTarget(
+    { agentId, defaultAgentId: scope.defaultAgentId, storePath, env, candidates },
+    async (target, owner) => {
+      const sessionKey = resolveSqliteSessionKey(scope.sessionKey, target.logicalAgentId);
+      const options = { ...target.database, env };
+      const execution = captureOpenClawAgentDatabaseExecution(options);
+      const assertCurrent = () => {
+        execution.assertCurrent();
+        owner.assertCurrent();
+      };
+      let entry: SessionEntry | undefined;
+      try {
+        entry = await runOpenClawAgentWorkerWrite(options, () =>
+          execution.runCreate(
+            {
+              assertCurrent,
+              onRegistryChange: owner.onRegistryChange,
+              createAdmission(binding) {
+                return () => ({
+                  nativeLocations: binding.nativeLocations,
+                  admission: createSqliteWorkerOperationAdmission((request, grant) => {
+                    binding.authorize(request);
+                    assertCurrent();
+                    if (!grant()) {
+                      throw new Error("Session read authority expired");
+                    }
+                  }),
+                });
+              },
+            },
+            (worker) => worker.execute({ type: "session.entry.read", input: { sessionKey } }),
+          ),
+        );
+        await owner.revalidateTarget();
+        assertCurrent();
+      } finally {
+        await execution.release();
+      }
+      owner.assertCurrent();
+      return entry;
+    },
+    assertCallerCurrent,
+  );
+  assertCallerCurrent();
+  return loadedEntry;
+}
 
 type SessionEntryWorkerRead = {
   agentId: string;
@@ -162,39 +358,10 @@ async function withSessionEntriesFromStoreInWorker<T>(
         assertSessionStoreReadCandidate(target.path, [captured]),
       );
     }
-    const registryRead = prepareOpenClawAgentDatabaseRegistrySnapshotRead({ env });
-    return await withSessionHistoryWorkerReadCandidates(candidates, async (discovery) => {
-      const request = { agentId, storePath, env, candidates };
-      let resolved = await discovery.readStoreTarget({
-        ...request,
-        registeredDatabases: { status: "deferred" },
-      });
-      let assertRegistryCurrent: (() => void) | undefined;
-      if (resolved.kind === "session-target-registry-required") {
-        const registry = await registryRead.read();
-        assertRegistryCurrent = registry.assertCurrent;
-        registry.assertCurrent();
-        discovery.assertCurrent();
-        resolved = await discovery.readStoreTarget({
-          ...request,
-          registeredDatabases:
-            registry.result.status === "available"
-              ? registry.result.entries
-              : { status: "unavailable" },
-        });
-        if (resolved.kind === "session-target-registry-required") {
-          throw new Error("Session store target requested registry rows twice");
-        }
-      }
-      assertRegistryCurrent?.();
-      discovery.assertCurrent();
-      const selected = resolved;
-      return await readDatabase(selected.database, () => {
-        assertRegistryCurrent?.();
-        discovery.assertCurrent();
-        assertSessionStoreReadCandidate(selected.sourcePath, candidates);
-      });
-    });
+    return await withSessionStoreTarget(
+      { agentId, storePath, env, candidates },
+      (resolvedTarget, owner) => readDatabase(resolvedTarget.database, owner.assertCurrent),
+    );
   } finally {
     for (const { owner } of continuations.toReversed()) {
       owner.release();

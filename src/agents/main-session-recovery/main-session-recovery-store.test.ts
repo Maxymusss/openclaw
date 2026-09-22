@@ -487,7 +487,8 @@ describe("main session recovery store", () => {
       }),
     );
 
-    await expect(claimRecovery()).resolves.toEqual({ kind: "not_required" });
+    const claim = await claimRecovery();
+    expect(claim).toEqual({ kind: "not_required", entry: read(), sessionKey });
     expect(read()).toMatchObject({
       sessionId: "session-1",
       status: "running",
@@ -506,7 +507,8 @@ describe("main session recovery store", () => {
       }),
     );
 
-    await expect(claimRecovery()).resolves.toEqual({ kind: "not_required" });
+    const claim = await claimRecovery();
+    expect(claim).toEqual({ kind: "not_required", entry: read(), sessionKey });
     expect(read()).toMatchObject({
       sessionId: "session-1",
       status: "failed",
@@ -539,7 +541,8 @@ describe("main session recovery store", () => {
     });
     expect(read().mainRestartRecovery).toBeUndefined();
 
-    await expect(claimRecovery()).resolves.toEqual({ kind: "not_required" });
+    const claim = await claimRecovery();
+    expect(claim).toEqual({ kind: "not_required", entry: read(), sessionKey });
     expect(read()).toMatchObject({ status: "done", abortedLastRun: false });
     expect(read().restartRecoveryRuns).toBeUndefined();
   });
@@ -634,7 +637,11 @@ describe("main session recovery store", () => {
       target: { sessionKey: subagentKey, storePath },
     });
 
-    expect(claim).toEqual({ kind: "not_required" });
+    expect(claim).toEqual({
+      kind: "not_required",
+      entry: readStore()[subagentKey],
+      sessionKey: subagentKey,
+    });
     expect(readStore()[subagentKey]?.mainRestartRecovery?.foregroundClaims).toBeUndefined();
   });
 

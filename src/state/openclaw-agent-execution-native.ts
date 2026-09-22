@@ -6,7 +6,10 @@ import type { Result } from "@openclaw/normalization-core/result";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
-import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
+import {
+  assertExistingDatabaseIdentity,
+  type DatabasePathIdentity,
+} from "../infra/sqlite-worker-identity.js";
 import type {
   SqliteWorkerAdmissionFactory,
   SqliteWorkerAdmissionRequest,
@@ -75,6 +78,12 @@ export type AgentDatabaseNativeGeneration = {
     operation: (scope: AgentDatabaseExecutionScope) => Promise<T>,
     assertCallerCurrent?: () => void,
   ): Promise<T | undefined>;
+  runCreate<T>(
+    source: AgentDatabaseRequestExecutionSource,
+    operation: (scope: AgentDatabaseExecutionScope) => Promise<T>,
+    creatingIdentity: DatabasePathIdentity,
+    assertCallerCurrent?: () => void,
+  ): Promise<T>;
   close(): Promise<void>;
 };
 
@@ -88,7 +97,7 @@ export function createAgentDatabaseNativeGeneration(
   expectedIdentity: AgentDatabaseExecutionFileIdentity | undefined,
   acceptFileIdentity: (identity: AgentDatabaseExecutionFileIdentity) => void,
 ): AgentDatabaseNativeGeneration {
-  const input: AgentDatabaseExecutionOpen = {
+  let input: AgentDatabaseExecutionOpen = {
     leaseId: randomUUID(),
     agentId,
     databasePath: pathname,
@@ -98,6 +107,7 @@ export function createAgentDatabaseNativeGeneration(
   };
   let retiring = false;
   let opening: Promise<Store | undefined> | undefined;
+  let openingCreates = false;
   let openedStore: Store | undefined;
   let openingFailed = false;
   let closing: Promise<void> | undefined;
@@ -281,23 +291,49 @@ export function createAgentDatabaseNativeGeneration(
   const open = (
     source: AgentDatabaseRequestExecutionSource,
     assertCallerCurrent?: () => void,
+    creatingIdentity?: DatabasePathIdentity,
   ): Promise<Store | undefined> => {
     assertCurrent();
     source.assertCurrent();
     assertCallerCurrent?.();
-    opening ??= (async () => {
+    if (creatingIdentity && opening && !openingCreates) {
+      const existingAttempt = opening;
+      return existingAttempt.then((store) => {
+        if (store) {
+          return store;
+        }
+        if (opening === existingAttempt) {
+          opening = undefined;
+        }
+        return open(source, assertCallerCurrent, creatingIdentity);
+      });
+    }
+    if (!opening) {
+      openingCreates = creatingIdentity !== undefined;
+      input = { ...input, ...(creatingIdentity ? { creatingIdentity } : {}) };
+    }
+    const registration =
+      !opening && creatingIdentity
+        ? captureOpenClawAgentDatabaseRegistration({
+            agentId,
+            agentPath: pathname,
+            admission: context.admission,
+            onRegistryChange: source.onRegistryChange,
+          })
+        : undefined;
+    const openStore = async () => {
       const store = await openAgentDatabaseSqliteWorkerStore<AgentDatabaseOperations>(
         {
           moduleUrl: resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.agentDatabaseExecution),
           databasePath: pathname,
           input,
-          existingOnly: true,
+          existingOnly: !creatingIdentity,
         },
         {
           stateContext: context,
           stateDatabasePath: context.admission.databasePath,
           assertCurrent,
-          createAdmission: admission(source, undefined, assertCallerCurrent),
+          createAdmission: admission(source, registration, assertCallerCurrent),
           onNativeStopped: (stopped) => {
             nativeStopped = stopped;
           },
@@ -320,7 +356,10 @@ export function createAgentDatabaseNativeGeneration(
         }
         throw error;
       }
-    })().catch((error: unknown) => {
+    };
+    opening ??= (
+      registration ? settleAgentRegistration(registration, openStore) : openStore()
+    ).catch((error: unknown) => {
       openingFailed = true;
       throw error;
     });
@@ -332,23 +371,21 @@ export function createAgentDatabaseNativeGeneration(
       return store;
     });
   };
-  async function runExisting<T>(
+  async function runAdmitted<T>(
+    store: Store,
     source: AgentDatabaseRequestExecutionSource,
     operation: (scope: AgentDatabaseExecutionScope) => Promise<T>,
     assertCallerCurrent?: () => void,
-  ): Promise<T | undefined> {
-    const store = await open(source, assertCallerCurrent);
+  ): Promise<T> {
     assertCurrent();
     assertCallerCurrent?.();
     source.assertCurrent();
-    if (!store) {
-      return undefined;
-    }
     if (!nativeIdentity) {
       const registration = captureOpenClawAgentDatabaseRegistration({
         agentId,
         agentPath: pathname,
         admission: context.admission,
+        onRegistryChange: source.onRegistryChange,
       });
       await settleAgentRegistration(registration, async () => {
         await runSqliteWorkerStoreOperation(
@@ -361,10 +398,10 @@ export function createAgentDatabaseNativeGeneration(
         assertCurrent();
         source.assertCurrent();
       });
-      if (quickCheckPending) {
-        quickCheckPending = false;
-        requestOpenClawAgentDatabaseQuickCheck({ path: pathname, env: input.environment });
-      }
+    }
+    if (quickCheckPending) {
+      quickCheckPending = false;
+      requestOpenClawAgentDatabaseQuickCheck({ path: pathname, env: input.environment });
     }
     return runSqliteWorkerStoreOperation(
       store,
@@ -377,8 +414,17 @@ export function createAgentDatabaseNativeGeneration(
   return {
     failed: () =>
       openingFailed || Boolean(openedStore && !isSqliteWorkerStoreAvailable(openedStore)),
-    runExisting: (source, operation, assertCallerCurrent) =>
-      runExisting(source, operation, assertCallerCurrent),
+    async runExisting(source, operation, assertCallerCurrent) {
+      const store = await open(source, assertCallerCurrent);
+      return store ? runAdmitted(store, source, operation, assertCallerCurrent) : undefined;
+    },
+    async runCreate(source, operation, creatingIdentity, assertCallerCurrent) {
+      const store = await open(source, assertCallerCurrent, creatingIdentity);
+      if (!store) {
+        throw new Error("Agent creating admission returned no native store");
+      }
+      return runAdmitted(store, source, operation, assertCallerCurrent);
+    },
     close() {
       retiring = true;
       closing ??= (async () => {
@@ -387,7 +433,10 @@ export function createAgentDatabaseNativeGeneration(
           try {
             await opening.then(
               (store) => store?.close(),
-              () => closeUnclaimedSharedStateSqliteWorkers(pathname),
+              () =>
+                openedStore
+                  ? openedStore.close()
+                  : closeUnclaimedSharedStateSqliteWorkers(pathname),
             );
           } catch (error) {
             errors.push(error);

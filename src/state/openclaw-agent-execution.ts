@@ -1,13 +1,17 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { formatErrorMessage } from "../infra/errors.js";
 import { retainSqliteWorkerErrorCode } from "../infra/sqlite-worker-contract.js";
-import { assertExistingDatabaseIdentity } from "../infra/sqlite-worker-identity.js";
+import {
+  assertExistingDatabaseIdentity,
+  readDatabasePathIdentitySync,
+} from "../infra/sqlite-worker-identity.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { assertAgentDatabaseAdmitted } from "./agent-database-admission.js";
 import { getAgentDeletionDatabaseCleanup } from "./agent-deletion-cleanup.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
+import { readOpenClawAgentDatabaseIdentity } from "./openclaw-agent-db-identity.js";
 import { hasAgentDatabaseMaintenanceAuthority } from "./openclaw-agent-db-lease.js";
 import { agentDatabaseLifecycle } from "./openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "./openclaw-agent-db-resources.js";
@@ -41,6 +45,12 @@ export type OpenClawAgentDatabaseExecution = {
     operation: (scope: AgentDatabaseExecutionScope) => Promise<T>,
     options?: { retireNativeOnFailure: true },
   ): Promise<T | undefined>;
+  /** Retain canonical writable creation and migration admission for a logical read. */
+  runCreate<T>(
+    source: AgentDatabaseRequestExecutionSource,
+    operation: (scope: AgentDatabaseExecutionScope) => Promise<T>,
+    options?: { retireNativeOnFailure: true },
+  ): Promise<T>;
   /**
    * Join this reference's work; native cleanup failures remain with its resource owner.
    * The owner may retain one bounded idle generation.
@@ -190,7 +200,9 @@ export function captureOpenClawAgentDatabaseExecution(
     assertCallerCurrent?: () => void,
     expectedIdentity?: AgentDatabaseExecutionFileIdentity,
     retireNativeOnFailure = false,
-  ): Promise<T | undefined> {
+    create = false,
+  ): Promise<{ value: T } | undefined> {
+    let creatingIdentity = create ? readDatabasePathIdentitySync(pathname) : undefined;
     assertCurrent();
     assertCallerCurrent?.();
     const pending = agentDatabaseLifecycle.pending.get(pathname);
@@ -198,9 +210,28 @@ export function captureOpenClawAgentDatabaseExecution(
       if (pending.agentId !== agentId) {
         throw new Error(`Agent database ${pathname} is opening for ${pending.agentId}`);
       }
-      await pending.promise;
+      const opened = await pending.promise;
       pending.controller.signal.throwIfAborted();
       assertCurrent();
+      source.assertCurrent();
+      if (creatingIdentity?.key.startsWith("path:") && !fileIdentity && !expectedIdentity) {
+        if (agentDatabaseLifecycle.databases.get(pathname) !== opened || !opened.db.isOpen) {
+          throw new Error("Pending agent creation lost its original native owner");
+        }
+        const identity = readOpenClawAgentDatabaseIdentity(opened);
+        if (typeof identity.identity !== "string") {
+          throw new Error("Pending file creation returned a non-file database owner");
+        }
+        const key = `file:${identity.identity}`;
+        assertExistingDatabaseIdentity(pathname, key);
+        if (
+          readDatabasePathIdentitySync(pathname).canonicalPath !== creatingIdentity.canonicalPath
+        ) {
+          throw new Error("Pending agent creation changed its captured target");
+        }
+        // Only this captured opener may turn the originally absent target into its recorded file.
+        creatingIdentity = { ...creatingIdentity, key };
+      }
     }
     if (nativeClosing) {
       await nativeClosing;
@@ -240,7 +271,16 @@ export function captureOpenClawAgentDatabaseExecution(
     }
     const current = generation;
     try {
-      return await current.runExisting(source, operation, assertCallerCurrent);
+      if (creatingIdentity) {
+        return {
+          value: await current.runCreate(source, operation, creatingIdentity, assertCallerCurrent),
+        };
+      }
+      return await current.runExisting(
+        source,
+        async (scope) => ({ value: await operation(scope) }),
+        assertCallerCurrent,
+      );
     } catch (error) {
       const nativeFailed = current.failed();
       if (generation === current && (nativeFailed || retireNativeOnFailure)) {
@@ -317,7 +357,25 @@ export function captureOpenClawAgentDatabaseExecution(
           );
           pending.add(result);
           void result.finally(() => pending.delete(result)).catch(() => undefined);
-          return result;
+          return (await result)?.value;
+        },
+        async runCreate(source, operation, runOptions) {
+          assertBorrowed();
+          const result = run(
+            source,
+            operation,
+            assertReferenceCurrent,
+            expectedIdentity,
+            runOptions?.retireNativeOnFailure,
+            true,
+          );
+          pending.add(result);
+          void result.finally(() => pending.delete(result)).catch(() => undefined);
+          const created = await result;
+          if (!created) {
+            throw new Error("Agent creating admission returned no database owner");
+          }
+          return created.value;
         },
         release() {
           released = true;
