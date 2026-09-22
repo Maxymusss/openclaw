@@ -1,6 +1,8 @@
+import { statSync } from "node:fs";
 import fs from "node:fs/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect } from "vitest";
+import { createJsonlRequestTailer } from "../../../../scripts/e2e/lib/codex-media-path/jsonl-request-tail.mts";
 import { loadPersistedSharedAuthProfileStore } from "../../../../src/agents/auth-profiles/persisted.js";
 import type { OpenClawTestInstance } from "../../../helpers/openclaw-test-instance.js";
 
@@ -179,6 +181,9 @@ export async function captureCodexAuthFailure(params: {
   sessionKey: string;
   runId: string;
   configuredProfileId: string;
+  requestLog: string;
+  readAppServerLog: () => readonly unknown[];
+  failureRequestCursor: { index: number; prefix: string } | undefined;
   recoveryText: string;
   fixtureSecrets: readonly string[];
 }) {
@@ -281,8 +286,12 @@ export async function captureCodexAuthFailure(params: {
     const observe = <T>(read: () => T) => {
       try {
         return { status: "observed" as const, value: read() };
-      } catch {
-        return { status: "unobserved" as const };
+      } catch (error) {
+        return {
+          status: "unobserved" as const,
+          errorName: error instanceof Error ? error.name : null,
+          errorCode: scalar(isRecord(error) ? error.code : undefined),
+        };
       }
     };
     // Own only scalar projections before any import/RPC; later diagnostics cannot rewrite chronology.
@@ -344,6 +353,100 @@ export async function captureCodexAuthFailure(params: {
             errorText: textFacts(isRecord(params.terminal) ? params.terminal.error : undefined),
           }));
     const logs = observe(() => params.instance.logs());
+    const requestCursor = observe(() => {
+      const entries = params.readAppServerLog();
+      const cursor = params.failureRequestCursor;
+      const fileBytes = statSync(params.requestLog).size;
+      return {
+        retainedRecords: entries.length,
+        fileBytes,
+        recordCapReached: entries.length >= 1024,
+        byteCapReached: fileBytes >= 2 * 1024 * 1024,
+        beforeFailedTurn: cursor?.index ?? null,
+        prefixUnchanged: cursor
+          ? JSON.stringify(entries.slice(0, cursor.index)) === cursor.prefix
+          : null,
+        coverage: "original request-log cursor integrity only; no cross-client RPC attribution",
+      };
+    });
+    const fixtureRpc = observe(() => {
+      const diagnosticPath = `${params.requestLog}.diagnostic.jsonl`;
+      const fileBytes = statSync(diagnosticPath).size;
+      const byteLimit = 64 * 1024;
+      const recordLimit = 128;
+      const entries = createJsonlRequestTailer<unknown>(diagnosticPath, {
+        maxReadBytes: byteLimit,
+        historyLimit: recordLimit,
+      }).read();
+      const records = entries.map((entry) =>
+        pick(isRecord(entry) ? entry.fixtureRpcObservation : undefined, [
+          "instanceId",
+          "pid",
+          "sequence",
+          "at",
+          "method",
+          "direction",
+          "rpcId",
+        ]),
+      );
+      return {
+        fileBytes,
+        byteLimit,
+        recordLimit,
+        byteTruncated: fileBytes > byteLimit,
+        recordLimitReached: entries.length === recordLimit,
+        omittedRecords: fileBytes > byteLimit || entries.length === recordLimit ? null : 0,
+        incompleteTrailingRecord: "unobserved by line tailer",
+        producerCapReached: records.some((record) => record.direction === "producer-cap-reached"),
+        records,
+        coverage:
+          "explicit fixture handlers only; default handlers and failed diagnostic writes are unobserved",
+        identity:
+          "fixture UUID and PID; correlate only with an observed owned client transport PID",
+        absence: "does not prove no RPC; producer count beyond its 256-record cap is unobserved",
+      };
+    });
+    const catalogRpc = observe(() => {
+      if (logs.status !== "observed") {
+        return { status: "unobserved" as const };
+      }
+      const marker = "[codex-model-catalog-trace] ";
+      const lines = logs.value.split("\n").filter((line) => line.includes(marker));
+      return {
+        status: "observed" as const,
+        observedTraceCount: lines.length,
+        omittedTraces: Math.max(0, lines.length - 4),
+        traces: lines.slice(-4).map((line) =>
+          observe(() => {
+            const json = line.slice(line.indexOf(marker) + marker.length);
+            const trace: unknown = JSON.parse(json.slice(0, json.lastIndexOf("}") + 1));
+            const records = isRecord(trace) && Array.isArray(trace.records) ? trace.records : [];
+            return {
+              ...pick(trace, ["traceId", "observedRecords", "omittedRecords"]),
+              captureOmittedRecords: Math.max(0, records.length - 64),
+              records: records
+                .slice(-64)
+                .map((record) =>
+                  pick(record, [
+                    "sequence",
+                    "at",
+                    "event",
+                    "clientInstanceId",
+                    "transportPid",
+                    "requestOrdinal",
+                    "activeMethod",
+                    "phase",
+                    "category",
+                  ]),
+                ),
+            };
+          }),
+        ),
+        coverage: "failed catalog operations in the existing bounded Gateway log buffer",
+        rpcIds: "unobserved by scoped request API",
+        foregroundJoin: "unobserved",
+      };
+    });
     const primaryError = observe(() =>
       scalar(params.error instanceof Error ? params.error.message : params.error),
     );
@@ -382,7 +485,15 @@ export async function captureCodexAuthFailure(params: {
           return redacted.slice(0, 512);
         }),
       ) as T;
-    const captured = sanitizeFacts({ snapshotAt, chronology, terminal, primaryError });
+    const captured = sanitizeFacts({
+      snapshotAt,
+      chronology,
+      terminal,
+      primaryError,
+      requestCursor,
+      fixtureRpc,
+      catalogRpc,
+    });
     if (captured.chronology.status === "observed") {
       const value = captured.chronology.value;
       for (const frame of value.frames) {

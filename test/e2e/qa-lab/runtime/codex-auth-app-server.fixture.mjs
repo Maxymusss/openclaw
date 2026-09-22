@@ -19,6 +19,69 @@ if (!appServerVersion) {
 const fixtureInstanceId = randomUUID();
 let fixtureSequence = 0;
 let activeAccount = null;
+let rpcObservationSequence = 0;
+const observeRpc =
+  process.env.OPENCLAW_DIAGNOSTICS?.split(/[,\s]+/u).includes("codex.model-catalog");
+
+function recordRpcObservation(method, direction, id) {
+  if (!observeRpc) {
+    return;
+  }
+  try {
+    const sequence = ++rpcObservationSequence;
+    if (sequence > 257) {
+      return;
+    }
+    fs.appendFileSync(
+      `${requestLog}.diagnostic.jsonl`,
+      `${JSON.stringify({
+        fixtureRpcObservation: {
+          instanceId: fixtureInstanceId,
+          pid: process.pid,
+          sequence,
+          at: Date.now(),
+          method: sequence === 257 ? null : method.slice(0, 96),
+          direction: sequence === 257 ? "producer-cap-reached" : direction,
+          rpcId:
+            sequence === 257
+              ? null
+              : typeof id === "number" && Number.isFinite(id)
+                ? id
+                : typeof id === "string"
+                  ? id.slice(0, 64)
+                  : null,
+        },
+      })}\n`,
+    );
+  } catch {
+    // Diagnostics neither change the RPC response nor mask the fixture's original error.
+  }
+}
+
+function observeHandlers(handlers) {
+  if (!observeRpc) {
+    return handlers;
+  }
+  return Object.fromEntries(
+    Object.entries(handlers).map(([method, handler]) => [
+      method,
+      (context) => {
+        recordRpcObservation(method, "request", context.id);
+        return handler({
+          ...context,
+          sendResult(result) {
+            recordRpcObservation(method, "response", context.id);
+            return context.sendResult(result);
+          },
+          notify(notificationMethod, params) {
+            recordRpcObservation(notificationMethod, "notification", null);
+            return context.notify(notificationMethod, params);
+          },
+        });
+      },
+    ]),
+  );
+}
 
 function recordAuthOperation(operation, { threadId, turnId } = {}, account = activeAccount) {
   fs.appendFileSync(
@@ -95,7 +158,7 @@ const getThread = (threadId) => threads.get(threadId) ?? restoreThread(threadId)
 runFakeCodexAppServer({
   requestLog,
   logMode: "messages",
-  handlers: {
+  handlers: observeHandlers({
     initialize: ({ sendResult }) =>
       sendResult(
         createFakeInitializeResponse({
@@ -283,5 +346,5 @@ runFakeCodexAppServer({
         notify("turn/completed", { threadId, turn });
       });
     },
-  },
+  }),
 });

@@ -399,6 +399,7 @@ describe("Codex auth product proof", () => {
       instance = await createOpenClawTestInstance({
         name: "qa-codex-missing-auth-profile",
         env: {
+          OPENCLAW_DIAGNOSTICS: "codex.model-catalog",
           OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
           OPENCLAW_QA_CODEX_APP_SERVER_VERSION: CODEX_APP_SERVER_VERSION,
           OPENCLAW_SKIP_PROVIDERS: undefined,
@@ -462,6 +463,7 @@ describe("Codex auth product proof", () => {
       let runId = "";
       let terminal: unknown;
       let failedHistory: GatewayHistory | undefined;
+      let failureRequestCursor: { index: number; prefix: string } | undefined;
       try {
         const testInstance = instance;
         const nativeLifecycleForRun = (targetRunId: string) =>
@@ -718,6 +720,7 @@ describe("Codex auth product proof", () => {
         const beforeFailedTurnPrefix = JSON.stringify(
           appServerLog.read().slice(0, beforeFailedTurn),
         );
+        failureRequestCursor = { index: beforeFailedTurn, prefix: beforeFailedTurnPrefix };
         expect(beforeFailedTurn, "app-server history reached the tailer cap").toBeLessThan(1024);
         expect(
           (await fs.stat(requestLog)).size,
@@ -785,23 +788,6 @@ describe("Codex auth product proof", () => {
             expectBoundedMissingProfileRecovery(lifecyclePayload?.lastRunError, {
               allowSessionTruncation: true,
             });
-            // Transcript and session-state events cover separate projections of the same failure.
-            const transcriptEvent = events.find(
-              (event) =>
-                event.event === "session.message" &&
-                event.payload !== null &&
-                typeof event.payload === "object" &&
-                (event.payload as { sessionKey?: unknown }).sessionKey === sessionKey &&
-                (event.payload as { session?: { lastRunId?: unknown } }).session?.lastRunId ===
-                  runId &&
-                (event.payload as { session?: { status?: unknown } }).session?.status === "failed",
-            );
-            expect(transcriptEvent).toBeDefined();
-            expectBoundedMissingProfileRecovery(
-              (transcriptEvent?.payload as { session?: { lastRunError?: unknown } } | undefined)
-                ?.session?.lastRunError,
-              { allowSessionTruncation: true },
-            );
             return lifecyclePayload;
           },
           { interval: 20, timeout: 5_000 },
@@ -830,6 +816,17 @@ describe("Codex auth product proof", () => {
           { agentId: "main", sessionKey, limit: 50 },
           { timeoutMs: 5_000 },
         );
+        // Failed-run notices promise durable history; append and live publication are separate.
+        const failureNotice = failedHistory.messages?.find(
+          (message) =>
+            isRecord(message) &&
+            message.role === "custom" &&
+            message.customType === "run-failed-before-reply" &&
+            isRecord(message["__openclaw"]) &&
+            message["__openclaw"].runId === runId,
+        );
+        expect(failureNotice).toMatchObject({ display: true });
+        expectBoundedMissingProfileRecovery(failureNotice);
         const readOriginalSession = () =>
           loadSessionEntryReadOnly({
             agentId: "main",
@@ -1011,6 +1008,9 @@ describe("Codex auth product proof", () => {
           sessionKey,
           runId,
           configuredProfileId,
+          requestLog,
+          readAppServerLog: () => appServerLog.read(),
+          failureRequestCursor,
           recoveryText: SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT,
           fixtureSecrets: [
             oauthAccess,
