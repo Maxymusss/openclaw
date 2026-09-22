@@ -186,7 +186,7 @@ final class InstalledShortcutsUITests: XCTestCase {
         self.assertHiddenParameters(in: shortcuts)
         // Explicitly select the earlier Send output, never the immediately prior
         // HTTP response. Inspect returns text, so its explicit control uses its catalog Run.
-        let run = shortcuts.buttons["Run"].allElementsBoundByIndex.last
+        let run = shortcuts.buttons.matching(identifier: "Run").allElementsBoundByIndex.last
         try XCTUnwrap(run).tap()
         if scenario.sends {
             self.choose("Select Variable", in: shortcuts)
@@ -198,8 +198,11 @@ final class InstalledShortcutsUITests: XCTestCase {
     }
 
     private func verifyExplicitDefaults(
-        _ fixture: Fixture, runID: String, scenario: Scenario,
-        in shortcuts: XCUIApplication, app: XCUIApplication) async throws
+        _ fixture: Fixture,
+        runID: String,
+        scenario: Scenario,
+        in shortcuts: XCUIApplication,
+        app: XCUIApplication) async throws
     {
         let name = scenario.shortcutName + " Explicit"
         for id in ["explicit-fresh", "explicit-saved"] {
@@ -321,7 +324,8 @@ final class InstalledShortcutsUITests: XCTestCase {
     }
 
     private func confirm(_ scenario: Scenario, fixture: Fixture, in app: XCUIApplication) throws {
-        let text = "Send to \(scenario.sessionKey) with qa as \(fixture.profileID) on \(fixture.gatewayID)?\n\n\(scenario.question)"
+        let text = "Send to \(scenario.sessionKey) with qa as \(fixture.profileID) on \(fixture.gatewayID)?"
+            + "\n\n\(scenario.question)"
         let containers = app.descendants(matching: .any).matching(NSPredicate(
             format: "elementType IN %@", [
                 XCUIElement.ElementType.alert.rawValue,
