@@ -1,26 +1,23 @@
 # Temporary exact-source package producer. Close unmerged after native proof custody.
 name: Temporary FreeBSD integrated package proof
 on:
-  pull_request:
-    types: [opened]
-    branches: [main]
+  push:
+    branches: [test/freebsd-integrated-package-proof]
     paths: [.github/workflows/freebsd-integrated-package-proof.yml]
 permissions:
   contents: read
+  pull-requests: read
 concurrency:
-  group: freebsd-integrated-package-${{ github.event.pull_request.number }}
+  group: freebsd-integrated-package-155851
   cancel-in-progress: false
 jobs:
   candidate-package:
     if: >-
       github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
-      github.event_name == 'pull_request' && github.event.action == 'opened' &&
-      github.actor == 'vincentkoc' && github.event.pull_request.user.login == 'vincentkoc' &&
-      github.event.pull_request.state == 'open' && github.event.pull_request.draft &&
-      github.event.pull_request.base.ref == 'main' &&
-      github.event.pull_request.base.repo.full_name == 'openclaw/openclaw' &&
-      github.event.pull_request.head.repo.full_name == 'openclaw/openclaw' &&
-      github.event.pull_request.head.ref == 'test/freebsd-integrated-package-proof'
+      github.event_name == 'push' && github.actor == 'vincentkoc' &&
+      github.ref == 'refs/heads/test/freebsd-integrated-package-proof' &&
+      github.event.before == '9c74eab79b2b0227fe1912e135b673d0c5cd9011' &&
+      github.event.after == github.sha && !github.event.deleted && !github.event.forced
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 120
     defaults:
@@ -33,21 +30,25 @@ jobs:
       OPENCLAW_VITEST_MAX_WORKERS: "2"
       CANDIDATE_SHA: 1c0c6449c1efb8e742304385aa2de3597bc15281
       CANDIDATE_TREE: 1bec5b9b3940f4eccbb3e56121f9e4f8aafc1a30
-      CARRIER_SHA: ${{ github.event.pull_request.head.sha }}
+      CARRIER_SHA: ${{ github.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 3
+          ref: ${{ github.sha }}
+          fetch-depth: 4
           persist-credentials: false
-      - name: Bind the sole workflow child to the reviewed source
+      - name: Bind the workflow-only successor and live draft to the reviewed source
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
-          test "$(git show -s --format=%P HEAD)" = "$CANDIDATE_SHA"
+          test "$(git show -s --format=%P HEAD)" = 9c74eab79b2b0227fe1912e135b673d0c5cd9011
+          test "$(git show -s --format=%P 9c74eab79b2b0227fe1912e135b673d0c5cd9011)" = "$CANDIDATE_SHA"
+          test "$(git rev-parse 9c74eab79b2b0227fe1912e135b673d0c5cd9011^{tree})" = 8e2e864600aabeba5c8d1a4ac4fbd06daeaa1460
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
           test "$(git show -s --format=%P "$CANDIDATE_SHA")" = '1ad805569f24651a03e30740201eb88f220457ea e7d11b01a90ec0537cfa960be06434d925ed0d2f'
           test "$(git diff --name-only "$CANDIDATE_SHA" HEAD)" = .github/workflows/freebsd-integrated-package-proof.yml
@@ -58,11 +59,16 @@ jobs:
           python3 -I -S - <<'PYTHON'
           import hashlib,json,os,subprocess
           from pathlib import Path
+          pr=json.loads(subprocess.check_output(['gh','api','repos/openclaw/openclaw/pulls/155851']))
+          assert pr['state']=='open' and pr['draft'] and pr['auto_merge'] is None and pr['number']==155851
+          assert pr['user']['login']=='vincentkoc' and pr['base']['ref']=='main'
+          assert pr['head']['sha']==os.environ['CARRIER_SHA'] and pr['head']['ref']=='test/freebsd-integrated-package-proof'
+          assert pr['head']['repo']['full_name']==pr['base']['repo']['full_name']=='openclaw/openclaw'
           workflow='.github/workflows/freebsd-integrated-package-proof.yml'
           data=subprocess.check_output(['git','show',os.environ['CARRIER_SHA']+':'+workflow])
           receipt=dict(source=os.environ['CANDIDATE_SHA'],tree=os.environ['CANDIDATE_TREE'],carrier=os.environ['CARRIER_SHA'],workflow=os.environ['WORKFLOW_SHA'],workflowSha256=hashlib.sha256(data).hexdigest(),
             sourceParents=subprocess.check_output(['git','show','-s','--format=%P',os.environ['CANDIDATE_SHA']],text=True).strip().split(),
-            eventMerge=os.environ['GITHUB_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],scope='one canonical package build; native and released-updater proof remain separate')
+            eventSha=os.environ['GITHUB_SHA'],event='push',previousCarrier='9c74eab79b2b0227fe1912e135b673d0c5cd9011',pullRequest=155851,run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],scope='one canonical package build; native and released-updater proof remain separate')
           Path(os.environ['RUNNER_TEMP'],'freebsd-integrated-proof','source-binding.json').write_text(json.dumps(receipt,indent=2)+'\n')
           print(json.dumps(receipt))
           PYTHON
