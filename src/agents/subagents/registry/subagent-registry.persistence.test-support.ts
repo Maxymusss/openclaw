@@ -20,6 +20,7 @@ import {
 } from "../../../process/gateway-work-admission.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
 import { getDetachedTaskLifecycleRuntime } from "../../../tasks/detached-task-runtime.js";
+import type { captureTaskDeliveryWork } from "../../../tasks/task-registry-delivery.test-support.js";
 import { captureTaskRegistryReadFence } from "../../../tasks/task-registry-listener-state.js";
 import { setDetachedTaskLifecycleRuntime } from "../../../tasks/task-runtime.test-helpers.js";
 import { findTaskByRunIdForStatus } from "../../../tasks/task-status-access.js";
@@ -71,17 +72,40 @@ export function gateSubagentRequesterSettlement(
 }
 
 /** Gates owned by a test must be released before waiting for imports and detached tails. */
-export async function settleSubagentRegistryPersistenceWork() {
+export async function settleSubagentRegistryPersistenceWork(
+  deliveries?: ReturnType<typeof captureTaskDeliveryWork>,
+) {
   await vi.dynamicImportSettled();
   // Accepted task events can outlive both reset and synchronous task reads.
-  await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
-  await vi.waitFor(() => {
-    const holders = getActiveGatewayRootWorkHolders();
-    expect(
-      getActiveGatewayRootWorkCount(),
-      `residual registry roots: ${holders.join(", ") || "unattributed"}`,
-    ).toBe(0);
-  });
+  const failures: unknown[] = [];
+  try {
+    await captureTaskRegistryReadFence(captureOpenClawStateWorkerContext().admission);
+  } catch (error) {
+    failures.push(error);
+  }
+  // A committed event can publish delivery even when its own cleanup failed.
+  try {
+    await deliveries?.settle();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await vi.waitFor(() => {
+      const holders = getActiveGatewayRootWorkHolders();
+      expect(
+        getActiveGatewayRootWorkCount(),
+        `residual registry roots: ${holders.join(", ") || "unattributed"}`,
+      ).toBe(0);
+    });
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length > 1) {
+    throw new AggregateError(failures, "Subagent registry fixture work failed");
+  }
 }
 
 type PersistenceCleanup = {
