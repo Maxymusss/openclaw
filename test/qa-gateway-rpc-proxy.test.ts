@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { subscribe, unsubscribe } from "node:diagnostics_channel";
 import { type EventEmitter, once } from "node:events";
 import {
@@ -31,6 +32,17 @@ async function fixtureControl(proxy: Proxy, action: string, method?: string) {
   });
   expect(response.status).toBe(200);
   return (await response.json()) as ReturnType<Proxy["snapshot"]>;
+}
+
+async function expectFixtureControlRejected(proxy: Proxy, action: string, method?: string) {
+  const response = await fetch(proxy.controlUrl, {
+    method: "POST",
+    headers: { "x-qa-fixture-token": "proxy-control-fixture" },
+    body: JSON.stringify({ action, method }),
+  });
+  const body = await response.text();
+  expect(response.status).toBe(500);
+  expect(body).toBe("fixture control failed");
 }
 
 async function withProxy(
@@ -154,7 +166,11 @@ function expectTraceOrder(trace: ReturnType<Proxy["snapshot"]>["firstConnection"
   }
 }
 
-function holdCloseNotification(owner: EventEmitter, order: string[]) {
+function holdCloseNotification(
+  owner: EventEmitter,
+  order: string[],
+  tag = "outbound-close",
+) {
   const entered = createDeferred<void>();
   const delivered = createDeferred<void>();
   const originalEmit = owner.emit;
@@ -168,7 +184,7 @@ function holdCloseNotification(owner: EventEmitter, order: string[]) {
     }
     const notify = () => {
       const result = Reflect.apply(originalEmit, owner, [event, ...args]);
-      order.push("outbound-close");
+      order.push(tag);
       delivered.resolve();
       return result;
     };
@@ -189,6 +205,30 @@ function holdCloseNotification(owner: EventEmitter, order: string[]) {
       notify?.();
     },
     restore: () => emit.mockRestore(),
+  };
+}
+
+function observeProxyOutboundClose(server: Server) {
+  const backendURL = `ws://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+  const closed = createDeferred<void>();
+  let outbound: WebSocket | undefined;
+  const onClose = () => closed.resolve();
+  const originalTerminate = WebSocket.prototype.terminate;
+  const terminate = vi
+    .spyOn(WebSocket.prototype, "terminate")
+    .mockImplementation(function (this: WebSocket) {
+      if (!outbound && this.url === backendURL) {
+        outbound = this;
+        this.once("close", onClose);
+      }
+      originalTerminate.call(this);
+    });
+  return {
+    closed: closed.promise,
+    dispose() {
+      terminate.mockRestore();
+      outbound?.off("close", onClose);
+    },
   };
 }
 
@@ -443,105 +483,129 @@ describe("QA Gateway proxy first-connection diagnostics", () => {
     },
   );
 
-  it("closes admission while an aborted media iterator is still settling", async () => {
-    const firstChunk = createDeferred<void>();
-    const abortEntered = createDeferred<void>();
-    const releaseAbort = createDeferred<void>();
-    const originalIterator = IncomingMessage.prototype[Symbol.asyncIterator];
-    const iteratorSpy = vi
-      .spyOn(IncomingMessage.prototype, Symbol.asyncIterator)
-      .mockImplementation(function (this: IncomingMessage) {
-        const iterator = originalIterator.call(this);
-        if (this.headers["x-qa-stop-media"] !== "held") {
-          return iterator;
-        }
-        const next = iterator.next.bind(iterator);
-        iterator.next = async () => {
-          try {
-            const result = await next();
-            if (!result.done) {
-              firstChunk.resolve();
-            }
-            return result;
-          } catch (error) {
-            abortEntered.resolve();
-            await releaseAbort.promise;
-            throw error;
+  it.each([false, true])(
+    "closes admission while an aborted media iterator is still settling (overlap=%s)",
+    async (overlap) => {
+      const firstChunk = createDeferred<void>();
+      const abortEntered = createDeferred<void>();
+      const releaseAbort = createDeferred<void>();
+      const originalIterator = IncomingMessage.prototype[Symbol.asyncIterator];
+      const iteratorSpy = vi
+        .spyOn(IncomingMessage.prototype, Symbol.asyncIterator)
+        .mockImplementation(function (this: IncomingMessage) {
+          const iterator = originalIterator.call(this);
+          if (this.headers["x-qa-stop-media"] !== "held") {
+            return iterator;
           }
-        };
-        return iterator;
-      });
-    await runQaGatewayFixture(
-      () =>
-        withProxy(
-          false,
-          async ({ proxy, upstream, server, backendConnections }) => {
-            await upstream;
-            server.on("request", (_request, response) => {
-              response.writeHead(200, { "x-qa-stop-media": "held" });
-              response.write("partial media");
-            });
-            await fixtureControl(proxy, "hold-response", "media.get");
-            const media = fetch(new URL("/held-media", proxy.controlUrl))
-              .then((response) => response.arrayBuffer())
-              .catch(() => undefined);
-            let attempted: WebSocket | undefined;
-            let stop: Promise<void> | undefined;
-            await runQaGatewayFixture(
-              async () => {
-                await withTestTimeout(
-                  firstChunk.promise,
-                  5000,
-                  "media iterator did not receive a chunk",
-                );
-                const connections = backendConnections();
-                stop = proxy.stop();
-                expect(proxy.stop()).toBe(stop);
-                let stopped = false;
-                void stop.then(
-                  () => {
-                    stopped = true;
-                  },
-                  () => {
-                    stopped = true;
-                  },
-                );
-                await withTestTimeout(
-                  abortEntered.promise,
-                  5000,
-                  "media abort did not reach the iterator",
-                );
-                expect(stopped).toBe(false);
-                attempted = new WebSocket(proxy.url);
-                await expect(acquireGatewayTestWebSocket(attempted, 5000)).rejects.toMatchObject({
-                  code: "ECONNREFUSED",
-                });
-                expect(backendConnections()).toBe(connections);
-                releaseAbort.resolve();
-                await stop;
-                expect(proxy.stop()).toBe(stop);
-              },
-              async () => {
-                releaseAbort.resolve();
-                if (attempted) {
-                  await closeGatewayTestWebSocket(attempted);
+          const next = iterator.next.bind(iterator);
+          iterator.next = async () => {
+            try {
+              const result = await next();
+              if (!result.done) {
+                firstChunk.resolve();
+              }
+              return result;
+            } catch (error) {
+              abortEntered.resolve();
+              await releaseAbort.promise;
+              throw error;
+            }
+          };
+          return iterator;
+        });
+      await runQaGatewayFixture(
+        () =>
+          withProxy(
+            false,
+            async ({ proxy, upstream, server, backendConnections }) => {
+              await upstream;
+              server.on("request", (request, response) => {
+                if (request.url === "/ordinary-media") {
+                  response.writeHead(200).end("ordinary media");
+                  return;
                 }
-                stop ??= proxy.stop();
-                await media;
-                await stop;
-              },
-            );
-          },
-          false,
-          false,
-          new Set(["/held-media"]),
-        ),
-      () => {
-        releaseAbort.resolve();
-        iteratorSpy.mockRestore();
-      },
-    );
-  });
+                response.writeHead(200, { "x-qa-stop-media": "held" });
+                response.write("partial media");
+              });
+              await fixtureControl(proxy, "hold-response", "media.get");
+              const media = fetch(new URL("/held-media", proxy.controlUrl))
+                .then((response) => response.arrayBuffer())
+                .catch(() => undefined);
+              let attempted: WebSocket | undefined;
+              let stop: Promise<void> | undefined;
+              const ordinaryAbort = new AbortController();
+              let ordinary: Promise<string> | undefined;
+              await runQaGatewayFixture(
+                async () => {
+                  await withTestTimeout(
+                    firstChunk.promise,
+                    5000,
+                    "media iterator did not receive a chunk",
+                  );
+                  if (overlap) {
+                    ordinary = fetch(new URL("/ordinary-media", proxy.controlUrl), {
+                      signal: ordinaryAbort.signal,
+                    }).then((response) => response.text());
+                    expect(
+                      await withTestTimeout(ordinary, 5000, "overlapping media was held"),
+                    ).toBe("ordinary media");
+                  }
+                  const connections = backendConnections();
+                  stop = proxy.stop();
+                  expect(proxy.stop()).toBe(stop);
+                  let stopped = false;
+                  void stop.then(
+                    () => {
+                      stopped = true;
+                    },
+                    () => {
+                      stopped = true;
+                    },
+                  );
+                  await withTestTimeout(
+                    abortEntered.promise,
+                    5000,
+                    "media abort did not reach the iterator",
+                  );
+                  expect(stopped).toBe(false);
+                  attempted = new WebSocket(proxy.url);
+                  await expect(acquireGatewayTestWebSocket(attempted, 5000)).rejects.toMatchObject({
+                    code: "ECONNREFUSED",
+                  });
+                  expect(backendConnections()).toBe(connections);
+                  expect(stopped).toBe(false);
+                  releaseAbort.resolve();
+                  await stop;
+                  expect(proxy.stop()).toBe(stop);
+                },
+                () => {
+                  releaseAbort.resolve();
+                  ordinaryAbort.abort();
+                  stop ??= proxy.stop();
+                  void stop.catch(() => undefined);
+                },
+                async () => {
+                  if (attempted) {
+                    await closeGatewayTestWebSocket(attempted);
+                  }
+                },
+                async () => {
+                  await Promise.allSettled([media, ordinary]);
+                  await stop;
+                },
+              );
+            },
+            false,
+            false,
+            new Set(["/held-media", "/ordinary-media"]),
+          ),
+        () => {
+          releaseAbort.resolve();
+          iteratorSpy.mockRestore();
+        },
+      );
+    },
+  );
 
   it("relays challenge and connect bytes unchanged", async () => {
     await withProxy(false, async ({ proxy, front, upstream }) => {
@@ -1079,19 +1143,332 @@ describe("QA Gateway proxy readiness diagnostics", () => {
 });
 
 describe("QA Gateway proxy held responses", () => {
-  it.each([
-    { method: "users.self", captureReadiness: true, writeFails: false },
-    { method: "users.self", captureReadiness: true, writeFails: true },
-    { method: "chat.send", captureReadiness: true, writeFails: false },
-    { method: "chat.send", captureReadiness: true, writeFails: true },
-    { method: "users.self", captureReadiness: false, writeFails: false },
-    { method: "users.self", captureReadiness: false, writeFails: true },
-  ])(
-    "waits for $method write completion (capture=$captureReadiness, failure=$writeFails)",
-    async ({ method, captureReadiness, writeFails }) => {
+  it("keeps the first media response reserved while another response completes", async () => {
+    const firstChunk = createDeferred<void>();
+    const firstBody = Buffer.from("first media response");
+    const ordinaryBody = "ordinary media response";
+    const originalIterator = IncomingMessage.prototype[Symbol.asyncIterator];
+    const iteratorSpy = vi
+      .spyOn(IncomingMessage.prototype, Symbol.asyncIterator)
+      .mockImplementation(function (this: IncomingMessage) {
+        const iterator = originalIterator.call(this);
+        if (this.headers["x-qa-overlap-media"] === "first") {
+          const next = iterator.next.bind(iterator);
+          iterator.next = async () => {
+            const result = await next();
+            if (!result.done) {
+              firstChunk.resolve();
+            }
+            return result;
+          };
+        }
+        return iterator;
+      });
+    await runQaGatewayFixture(
+      () =>
+        withProxy(
+          false,
+          async ({ proxy, upstream, server }) => {
+            await upstream;
+            let firstResponse: ServerResponse | undefined;
+            server.on("request", (request, response) => {
+              if (request.url === "/first-media") {
+                firstResponse = response;
+                response.writeHead(200, { "x-qa-overlap-media": "first" });
+                response.write(firstBody.subarray(0, 1));
+              } else {
+                response.writeHead(200).end(ordinaryBody);
+              }
+            });
+            const abort = new AbortController();
+            const clients: Promise<unknown>[] = [];
+            const readMedia = (path: string) => {
+              const reading = fetch(new URL(path, proxy.controlUrl), { signal: abort.signal }).then(
+                async (response) => Buffer.from(await response.arrayBuffer()),
+              );
+              clients.push(reading);
+              void reading.catch(() => undefined);
+              return reading;
+            };
+            await runQaGatewayFixture(
+              async () => {
+                await fixtureControl(proxy, "hold-response", "media.get");
+                const first = readMedia("/first-media");
+                await withTestTimeout(
+                  firstChunk.promise,
+                  5000,
+                  "first media body did not enter the collector",
+                );
+                const held = fixtureControl(proxy, "wait-held");
+                clients.push(held);
+                void held.catch(() => undefined);
+                const overlapping = await fetch(proxy.controlUrl, {
+                  method: "POST",
+                  headers: { "x-qa-fixture-token": "proxy-control-fixture" },
+                  body: JSON.stringify({ action: "hold-response", method: "media.get" }),
+                  signal: abort.signal,
+                });
+                expect(overlapping.status).toBe(500);
+                await overlapping.text();
+                const ordinary = readMedia("/ordinary-media");
+                expect(
+                  await withTestTimeout(
+                    Promise.race([
+                      ordinary,
+                      held.then(() => {
+                        throw new Error("another response replaced the buffering media hold");
+                      }),
+                    ]),
+                    5000,
+                    "overlapping media response did not complete",
+                  ),
+                ).toEqual(Buffer.from(ordinaryBody));
+                expect(proxy.snapshot().heldResponse).toBeUndefined();
+                assert(firstResponse);
+                firstResponse.end(firstBody.subarray(1));
+                const expected = {
+                  method: "media.get",
+                  ok: true,
+                  sizeBytes: firstBody.length,
+                  sha256: createHash("sha256").update(firstBody).digest("hex"),
+                };
+                expect((await held).heldResponse).toEqual(expected);
+                const released = await fixtureControl(proxy, "release-response");
+                expect(await first).toEqual(firstBody);
+                expect(released.events.filter(({ kind }) => kind === "response-held")).toEqual([
+                  expect.objectContaining(expected),
+                ]);
+                expect(released.events.filter(({ kind }) => kind === "response-released")).toEqual([
+                  expect.objectContaining({ ...expected, delivered: true }),
+                ]);
+
+                await fixtureControl(proxy, "hold-response", "media.get");
+                const rearmed = readMedia("/ordinary-media");
+                expect((await fixtureControl(proxy, "wait-held")).heldResponse).toEqual({
+                  method: "media.get",
+                  ok: true,
+                  sizeBytes: Buffer.byteLength(ordinaryBody),
+                  sha256: createHash("sha256").update(ordinaryBody).digest("hex"),
+                });
+                await fixtureControl(proxy, "release-response");
+                expect(await rearmed).toEqual(Buffer.from(ordinaryBody));
+              },
+              async () => {
+                if (firstResponse && !firstResponse.writableEnded && !firstResponse.destroyed) {
+                  firstResponse.end();
+                }
+                abort.abort();
+                const stopped = proxy.stop();
+                await Promise.allSettled([...clients, stopped]);
+                await stopped;
+              },
+            );
+          },
+          false,
+          false,
+          new Set(["/first-media", "/ordinary-media"]),
+        ),
+      () => iteratorSpy.mockRestore(),
+    );
+  });
+
+  it.each(["success", "error", "close", "stop"] as const)(
+    "reserves a media release until HTTP %s settles",
+    async (outcome) => {
       await withProxy(
         false,
-        async ({ proxy, front, upstream }) => {
+        async ({ proxy, front, upstream, server }) => {
+          const back = await upstream;
+          const body = Buffer.from("held media release");
+          server.on("request", (request, response) => {
+            response.writeHead(200, { "content-type": "application/octet-stream" });
+            response.end(request.url === "/held-release-media" ? body : "ordinary media");
+          });
+          const port = Number(new URL(proxy.url).port);
+          const endEntered = createDeferred<void>();
+          const responseClosed = createDeferred<void>();
+          const order: string[] = [];
+          let response: ServerResponse | undefined;
+          let endSpy: { mockRestore(): void } | undefined;
+          let resumeEnd: (() => void) | undefined;
+          let closeGate: ReturnType<typeof holdCloseNotification> | undefined;
+          const onRequest = (message: unknown) => {
+            const event = message as {
+              server: Server;
+              request: IncomingMessage;
+              response: ServerResponse;
+            };
+            const address = event.server.address();
+            if (
+              response ||
+              !address ||
+              typeof address === "string" ||
+              address.port !== port ||
+              event.request.method !== "GET" ||
+              event.request.url !== "/held-release-media"
+            ) {
+              return;
+            }
+            response = event.response;
+            response.once("close", () => responseClosed.resolve());
+            if (outcome === "stop") {
+              closeGate = holdCloseNotification(response, order, "response-close");
+            }
+            const originalEnd = response.end;
+            endSpy = vi.spyOn(response, "end").mockImplementation(function (
+              this: ServerResponse,
+              ...args: Parameters<ServerResponse["end"]>
+            ) {
+              const current = this;
+              resumeEnd = () => {
+                if (!current.destroyed) {
+                  Reflect.apply(originalEnd, current, args);
+                }
+              };
+              endEntered.resolve();
+              return this;
+            });
+          };
+          subscribe("http.server.request.start", onRequest);
+          const observer = observeProxyServerClose(proxy.url);
+          const outbound = observeProxyOutboundClose(server);
+          const abort = new AbortController();
+          let media: Promise<string> | undefined;
+          let releasing: ReturnType<typeof fixtureControl> | undefined;
+          let stopped: Promise<void> | undefined;
+          let backendClosing: Promise<void> | undefined;
+          const closeBackend = () => (backendClosing ??= closeBackendServer(server));
+          await runQaGatewayFixture(
+            async () => {
+              await fixtureControl(proxy, "hold-response", "media.get");
+              media = fetch(new URL("/held-release-media", proxy.controlUrl), {
+                signal: abort.signal,
+              }).then((result) => result.text());
+              void media.catch(() => {});
+              const held = await fixtureControl(proxy, "wait-held");
+              expect(held.heldResponse).toEqual({
+                method: "media.get",
+                ok: true,
+                sizeBytes: body.length,
+                sha256: createHash("sha256").update(body).digest("hex"),
+              });
+              releasing = fixtureControl(proxy, "release-response");
+              void releasing.catch(() => {});
+              await withTestTimeout(
+                Promise.race([
+                  endEntered.promise,
+                  releasing.then(() => {
+                    throw new Error("media release completed before HTTP end");
+                  }),
+                ]),
+                5000,
+                "held media response did not reach HTTP end",
+              );
+              assert(response);
+              expect(proxy.snapshot().heldResponse).toBeUndefined();
+              expect(proxy.snapshot().events.filter(({ kind }) => kind === "response-released")).toEqual([]);
+              await expectFixtureControlRejected(proxy, "hold-response", "users.self");
+              await expectFixtureControlRejected(proxy, "release-response");
+              expect(
+                await fetch(new URL("/ordinary-media", proxy.controlUrl)).then((result) => result.text()),
+              ).toBe("ordinary media");
+
+              if (outcome === "stop") {
+                assert(closeGate);
+                const backendClosed = new Promise<void>((resolve) => back.once("close", resolve));
+                stopped = proxy.stop();
+                void stopped.then(
+                  () => order.push("stop"),
+                  () => order.push("stop-error"),
+                );
+                expect(proxy.stop()).toBe(stopped);
+                await withTestTimeout(
+                  Promise.all([closeGate.entered, observer.closed, backendClosed, outbound.closed]),
+                  5000,
+                  "media sockets and proxy listener did not close",
+                );
+                await closeGatewayTestWebSocket(front);
+                await withTestTimeout(closeBackend(), 5000, "backend listener did not close");
+                // The socket is gone, but finished(response) still owns the held
+                // close notification. Listener closure cannot settle this release.
+                expect(response.destroyed).toBe(true);
+                expect(proxy.snapshot().firstConnection.some(({ tag }) => tag === "front-close")).toBe(true);
+                expect(order).toEqual([]);
+                closeGate.release();
+                await closeGate.delivered;
+                await stopped;
+                expect(order).toEqual(["response-close", "stop"]);
+                await Promise.allSettled([media, releasing]);
+              } else {
+                if (outcome === "success") {
+                  const finish = resumeEnd;
+                  resumeEnd = undefined;
+                  assert(finish);
+                  finish();
+                  expect(await media).toBe(body.toString());
+                } else {
+                  if (outcome === "error") {
+                    response.destroy(new Error("fixture media write failed"));
+                  } else {
+                    abort.abort();
+                  }
+                  await withTestTimeout(responseClosed.promise, 5000, "media response did not close");
+                  await expect(media).rejects.toThrow();
+                }
+                await releasing;
+                // Success and failed delivery both retire the same reservation.
+                await fixtureControl(proxy, "hold-response", "users.self");
+              }
+              expect(proxy.snapshot().events.filter(({ kind }) => kind === "response-released")).toEqual([
+                expect.objectContaining({ method: "media.get", delivered: outcome === "success" }),
+              ]);
+            },
+            () => {
+              unsubscribe("http.server.request.start", onRequest);
+              const finish = resumeEnd;
+              resumeEnd = undefined;
+              finish?.();
+              closeGate?.release();
+              abort.abort();
+            },
+            async () => {
+              stopped ??= proxy.stop();
+              await Promise.all([
+                media?.catch(() => {}),
+                releasing?.catch(() => {}),
+                stopped,
+              ]);
+            },
+            () => {
+              endSpy?.mockRestore();
+              closeGate?.restore();
+              observer.dispose();
+              outbound.dispose();
+            },
+            () => backendClosing,
+          );
+        },
+        false,
+        false,
+        new Set(["/held-release-media"]),
+      );
+    },
+  );
+
+  it.each([
+    { method: "users.self", captureReadiness: true, writeFails: false, stopBeforeWrite: false },
+    { method: "users.self", captureReadiness: true, writeFails: true, stopBeforeWrite: false },
+    { method: "chat.send", captureReadiness: true, writeFails: false, stopBeforeWrite: false },
+    { method: "chat.send", captureReadiness: true, writeFails: true, stopBeforeWrite: false },
+    { method: "users.self", captureReadiness: false, writeFails: false, stopBeforeWrite: false },
+    { method: "users.self", captureReadiness: false, writeFails: true, stopBeforeWrite: false },
+    { method: "chat.send", captureReadiness: true, writeFails: true, stopBeforeWrite: true },
+  ])(
+    "waits for $method write completion (capture=$captureReadiness, failure=$writeFails, stop=$stopBeforeWrite)",
+    async ({ method, captureReadiness, writeFails, stopBeforeWrite }) => {
+      await withProxy(
+        false,
+        async ({ proxy, front, upstream, server }) => {
           const back = await upstream;
           await fixtureControl(proxy, "hold-response", method);
           const request = Buffer.from(JSON.stringify({ type: "req", id: "held-write", method }));
@@ -1109,6 +1486,12 @@ describe("QA Gateway proxy held responses", () => {
           let complete: ((error?: Error) => void) | undefined;
           let releasing: ReturnType<typeof fixtureControl> | undefined;
           let writeSocket: WebSocket | undefined;
+          let stopped: Promise<void> | undefined;
+          let backendClosing: Promise<void> | undefined;
+          const closeBackend = () => (backendClosing ??= closeBackendServer(server));
+          const order: string[] = [];
+          const observer = observeProxyServerClose(proxy.url);
+          const outbound = observeProxyOutboundClose(server);
           const send = vi.spyOn(WebSocket.prototype, "send").mockImplementation(function (
             this: WebSocket,
             data: Parameters<WebSocket["send"]>[0],
@@ -1126,6 +1509,7 @@ describe("QA Gateway proxy held responses", () => {
           await runQaGatewayFixture(
             async () => {
               releasing = fixtureControl(proxy, "release-response");
+              void releasing.catch(() => {});
               await withTestTimeout(
                 Promise.race([
                   sendEntered.promise,
@@ -1141,10 +1525,34 @@ describe("QA Gateway proxy held responses", () => {
                   ({ kind }) => kind === "response-released",
                 ),
               ).toBe(false);
+              await expectFixtureControlRejected(proxy, "hold-response", "media.get");
+              await expectFixtureControlRejected(proxy, "release-response");
+              if (stopBeforeWrite) {
+                assert(writeSocket);
+                const frontend = writeSocket;
+                expect(frontend.readyState).toBe(WebSocket.OPEN);
+                const frontendClosed = new Promise<void>((resolve) => frontend.once("close", resolve));
+                const backendClosed = new Promise<void>((resolve) => back.once("close", resolve));
+                stopped = proxy.stop();
+                void stopped.then(
+                  () => order.push("stop"),
+                  () => order.push("stop-error"),
+                );
+                expect(proxy.stop()).toBe(stopped);
+                await withTestTimeout(
+                  Promise.all([observer.closed, backendClosed, outbound.closed, frontendClosed]),
+                  5000,
+                  "WebSocket sockets and proxy listener did not close",
+                );
+                await closeGatewayTestWebSocket(front);
+                await withTestTimeout(closeBackend(), 5000, "backend listener did not close");
+                expect(order).toEqual([]);
+              }
               assert(complete);
               assert(writeSocket);
               const callback = complete;
               complete = undefined;
+              order.push("write-callback");
               if (writeFails) {
                 callback(new Error("fixture write failed"));
               } else {
@@ -1152,7 +1560,15 @@ describe("QA Gateway proxy held responses", () => {
                 originalSend.call(writeSocket, response, {}, callback);
                 expect((await returned)[0]).toEqual(response);
               }
-              const released = await releasing;
+              if (stopBeforeWrite) {
+                await stopped;
+                await Promise.allSettled([releasing]);
+                expect(order).toEqual(["write-callback", "stop"]);
+              } else {
+                await releasing;
+                await fixtureControl(proxy, "hold-response", "media.get");
+              }
+              const released = proxy.snapshot();
               expect(released.events.filter(({ kind }) => kind === "response-released")).toEqual([
                 expect.objectContaining({ method, delivered: !writeFails }),
               ]);
@@ -1174,8 +1590,17 @@ describe("QA Gateway proxy held responses", () => {
               complete = undefined;
             },
             async () => {
-              await releasing;
+              if (stopBeforeWrite) {
+                await Promise.all([releasing?.catch(() => {}), stopped]);
+              } else {
+                await releasing;
+              }
             },
+            () => {
+              observer.dispose();
+              outbound.dispose();
+            },
+            () => backendClosing,
           );
         },
         captureReadiness,

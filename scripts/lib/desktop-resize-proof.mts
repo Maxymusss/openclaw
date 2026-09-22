@@ -4,6 +4,7 @@ import { lstat, mkdir, open, readFile, readdir, stat as fsStat, writeFile } from
 import path from "node:path";
 import { stripVTControlCharacters } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { desktopGatewayReadiness } from "./desktop-readiness-proof.mts";
 
 export const desktopResizeStages = [
   "02-panel",
@@ -953,6 +954,11 @@ export function desktopProofTestReport(value: unknown) {
                 }
               : null,
             failures: test.failureMessages.map(publicTestFailure),
+            ...(meta.desktopGatewayReadiness === undefined
+              ? {}
+              : {
+                  gatewayReadiness: desktopGatewayReadiness(meta.desktopGatewayReadiness),
+                }),
             ...(test.status === "failed" && meta.desktopViewerResizeFailure !== undefined
               ? { viewerResize: desktopViewerResizeFailure(meta.desktopViewerResizeFailure) }
               : {}),
@@ -965,7 +971,8 @@ export function desktopProofTestReport(value: unknown) {
 
 export async function readDesktopProofTestReport(file: string) {
   const stat = await lstat(file);
-  if (!stat.isFile() || stat.size > 1024 * 1024) {
+  // Includes both bounded readiness histories and private Vitest failure logs before projection.
+  if (!stat.isFile() || stat.size > 8 * 1024 * 1024) {
     throw new Error("Desktop test report must be a bounded regular file");
   }
   return desktopProofTestReport(JSON.parse(await readFile(file, "utf8")));
@@ -1104,7 +1111,9 @@ export async function withDesktopProofCleanup<T>(
     errors.push(error);
   }
   if (errors.length > 0) {
-    throw new AggregateError(errors, "Desktop proof operation or cleanup failed");
+    throw new AggregateError(errors, "Desktop proof operation or cleanup failed", {
+      cause: errors[0],
+    });
   }
   return result as T;
 }

@@ -96,6 +96,15 @@ describe.concurrent("fresh compiled subprocess invocation", () => {
               await scoped.create('created.txt','create proof');
               assert.equal(fs.readFileSync(path.join(rootDir,'proof.txt'),'utf8'),'native proof');
               assert.equal(fs.readFileSync(path.join(rootDir,'created.txt'),'utf8'),'create proof');
+              if (outcome === 'native') {
+                await scoped.move('created.txt','moved.txt');
+                assert.equal(fs.existsSync(path.join(rootDir,'created.txt')),false);
+                assert.equal(fs.readFileSync(path.join(rootDir,'moved.txt'),'utf8'),'create proof');
+              } else {
+                await assert.rejects(scoped.move('created.txt','moved.txt'),{code:'helper-unavailable'});
+                assert.equal(fs.readFileSync(path.join(rootDir,'created.txt'),'utf8'),'create proof');
+                assert.equal(fs.existsSync(path.join(rootDir,'moved.txt')),false);
+              }
             }
             const loaded = Object.keys(createRequire(import.meta.url).cache).filter(file=>file.endsWith('fs-safe-native.node'));
             assert.equal(loaded.length,outcome === 'native' ? 1 : 0);
@@ -133,7 +142,7 @@ describe.concurrent("fresh compiled subprocess invocation", () => {
           }
         };
         await joinProbes([
-          probe("default", undefined, "fallback"),
+          probe("default", undefined, "native"),
           ...["off", "auto", "require"].map((mode) =>
             probe(mode, mode, mode === "off" ? "fallback" : "native"),
           ),
@@ -520,16 +529,17 @@ describe.concurrent("fresh compiled subprocess invocation", () => {
       );
     }));
 
-  it.each(["src/infra/runtime-process-entrypoints.ts", "src/tui/tui-pty-runtime-test-support.ts"])(
-    "recognizes native and Windows-normalized declaration IDs for %s",
-    (source) => {
-      const declaration = path.join(root, source);
-      expect(isVitestWorkerDeclaration(declaration)).toBe(true);
-      expect(isVitestWorkerDeclaration(declaration.replaceAll("\\", "/"))).toBe(true);
-      expect(isVitestWorkerDeclaration(declaration.replaceAll("/", "\\"))).toBe(true);
-      expect(isVitestWorkerDeclaration(`${declaration}.unrelated`)).toBe(false);
-    },
-  );
+  it.each([
+    "src/infra/runtime-process-entrypoints.ts",
+    "src/tui/tui-pty-runtime-test-support.ts",
+    "src/plugins/runtime-retention-entrypoint.test-support.ts",
+  ])("recognizes native and Windows-normalized declaration IDs for %s", (source) => {
+    const declaration = path.join(root, source);
+    expect(isVitestWorkerDeclaration(declaration)).toBe(true);
+    expect(isVitestWorkerDeclaration(declaration.replaceAll("\\", "/"))).toBe(true);
+    expect(isVitestWorkerDeclaration(declaration.replaceAll("/", "\\"))).toBe(true);
+    expect(isVitestWorkerDeclaration(`${declaration}.unrelated`)).toBe(false);
+  });
 
   it("uses the prepared Anthropic failover hook in a fresh process without global activation", ({
     workerArtifacts,
@@ -1279,21 +1289,74 @@ export default class {
       const initialDirectory = initial.descriptor.directory;
       try {
         const manifest = await prepareWorkers(initial);
+        expect(Object.keys(manifest.inputs)).toEqual(
+          expect.arrayContaining([
+            path.join(root, "src/plugins/runtime-retention-entrypoint.test-support.ts"),
+            path.join(root, "src/plugins/runtime.retention.test-support.ts"),
+          ]),
+        );
         expect(fs.existsSync(path.join(initialDirectory, "dist/native"))).toBe(false);
         expect(Object.keys(manifest.outputs).some((name) => name.endsWith(".node"))).toBe(false);
-        // Observe the installed config before/after a real compiled parent import.
-        // A bundled second fs-safe instance would leave this observer at "auto".
+        const cli = await node(
+          [path.join(initialDirectory, "dist/entry.js"), "--version"],
+          fixture,
+          {
+            PATH: process.env.PATH,
+            SystemRoot: process.env.SystemRoot,
+            WINDIR: process.env.WINDIR,
+            HOME: fixture,
+            USERPROFILE: fixture,
+            TMPDIR: fixture,
+            TMP: fixture,
+            TEMP: fixture,
+            OPENCLAW_NO_RESPAWN: "1",
+          },
+        );
+        expect(cli.code, cli.stderr + cli.stdout).toBe(0);
+        expect(cli.stdout).toContain(
+          `OpenClaw ${JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version}`,
+        );
+        const launcher = path.join(initialDirectory, "node-host-launcher.mjs");
+        const capturedLauncher = fs.readFileSync(launcher);
+        try {
+          fs.appendFileSync(launcher, "\n// altered after capture\n");
+          await expect(verifyVitestWorkerArtifacts(initialDirectory)).rejects.toThrow(
+            "Compiled subprocess artifact changed: ../node-host-launcher.mjs",
+          );
+        } finally {
+          fs.writeFileSync(launcher, capturedLauncher);
+        }
+        // The compiled graph shares installed configuration. Explicitly start
+        // without native code, then enable it on the same retained Root.
         const policy = await node(
           [
             "--input-type=module",
             "--eval",
             `import assert from 'node:assert/strict';
+             import fs from 'node:fs';
+             import path from 'node:path';
+             import {createRequire} from 'node:module';
              import {pathToFileURL} from 'node:url';
-             import {getFsSafeNativeConfig} from '@openclaw/fs-safe/config';
+             import {configureFsSafeNative,getFsSafeNativeConfig} from '@openclaw/fs-safe/config';
              assert.equal(getFsSafeNativeConfig().mode,'auto');
              await import(pathToFileURL(process.argv[1]));
-             assert.equal(getFsSafeNativeConfig().mode,'off');`,
+             assert.equal(getFsSafeNativeConfig().mode,'auto');
+             const {root} = await import(pathToFileURL(process.argv[2]));
+             const loadedNative = () => Object.keys(createRequire(import.meta.url).cache)
+               .filter(file => file.endsWith('fs-safe-native.node'));
+             const directory = path.join(process.cwd(),'config-proof');
+             fs.mkdirSync(directory);
+             configureFsSafeNative({mode:'off'});
+             const scoped = await root(directory);
+             await scoped.write('fallback.txt','shared fallback config');
+             assert.equal(fs.readFileSync(path.join(directory,'fallback.txt'),'utf8'),'shared fallback config');
+             assert.equal(loadedNative().length,0);
+             configureFsSafeNative({mode:'require'});
+             await scoped.write('native.txt','shared native config');
+             assert.equal(fs.readFileSync(path.join(directory,'native.txt'),'utf8'),'shared native config');
+             assert.equal(loadedNative().length,1);`,
             path.join(initialDirectory, "dist/infra/sqlite-snapshot-source.js"),
+            path.join(initialDirectory, "dist/plugin-sdk/file-access-runtime.js"),
           ],
           fixture,
           {
@@ -1323,9 +1386,10 @@ export default class {
         }
         // This is a synthetic source checkout. Its dist is valid old code, not an
         // invalid sentinel that could fail even if stale-artifact fallback regressed.
-        fs.cpSync(path.join(initialDirectory, "dist"), path.join(fixture, "dist"), {
-          recursive: true,
-        });
+        const staleWorkerPath = "infra/sqlite-readonly-location.worker.js";
+        const staleWorker = path.join(fixture, "dist", staleWorkerPath);
+        fs.mkdirSync(path.dirname(staleWorker), { recursive: true });
+        fs.copyFileSync(path.join(initialDirectory, "dist", staleWorkerPath), staleWorker);
         // This checkout exercises source freshness, not the full runtime inventory.
         // Keep real compiler phases while avoiding repeated unrelated application builds.
         writeFixture(
@@ -1343,10 +1407,7 @@ export default class {
         database.exec("CREATE TABLE probe(value TEXT); INSERT INTO probe VALUES ('native work');");
         database.close();
         const childArgs = ["--openclaw-sqlite-readonly-child", "async", databasePath];
-        const stale = await node([
-          path.join(fixture, "dist/infra/sqlite-readonly-location.worker.js"),
-          ...childArgs,
-        ]);
+        const stale = await node([staleWorker, ...childArgs]);
         expect(stale.code, stale.stderr).toBe(0);
         fs.rmSync(path.dirname(JSON.parse(stale.stdout).location), { recursive: true });
 
@@ -1426,13 +1487,24 @@ export default class {
           "Source changed during compiled subprocess invocation",
         );
         fs.writeFileSync(dependency, changedSource);
-        const tuiDeclaration = path.join(fixture, "src/tui/tui-pty-runtime-test-support.ts");
-        const originalDeclaration = fs.readFileSync(tuiDeclaration, "utf8");
-        fs.appendFileSync(tuiDeclaration, "\n// declaration changed after preparation\n");
-        await expect(verifyVitestWorkerArtifacts(directory)).rejects.toThrow(
-          "Source changed during compiled subprocess invocation",
-        );
-        fs.writeFileSync(tuiDeclaration, originalDeclaration);
+        for (const input of [
+          "node-host-launcher.mjs",
+          "src/tui/tui-pty-runtime-test-support.ts",
+          "src/plugins/runtime-retention-entrypoint.test-support.ts",
+          "scripts/lib/managed-windows-job-entrypoint.mts",
+          "scripts/lib/managed-windows-job.mts",
+        ]) {
+          const filename = path.join(fixture, input);
+          const original = fs.readFileSync(filename, "utf8");
+          try {
+            fs.appendFileSync(filename, "\n// source changed after preparation\n");
+            await expect(verifyVitestWorkerArtifacts(directory)).rejects.toThrow(
+              `Source changed during compiled subprocess invocation: ${filename}`,
+            );
+          } finally {
+            fs.writeFileSync(filename, original);
+          }
+        }
         const parent = path.join(fixture, ".artifacts/vitest-workers");
         const before = fs.readdirSync(parent).toSorted();
         writeFixture(fixture, "dist/source-input.js", changedSource);

@@ -751,6 +751,10 @@ extension OpenClawChatViewModel {
 
     private func externalSubmissionReadiness(_ draft: SendDraft) -> OpenClawChatSubmissionOutcome? {
         guard case let .external(_, route) = draft.source else { return nil }
+        // Reset keeps the target and metadata valid while its RPC is still pending.
+        guard !self.isLoading else {
+            return .notDispatched(reason: "Wait for this chat to finish loading, then try this action again.")
+        }
         guard self.matchesExternalTarget(route.target, session: draft.session),
               !self.isSwitchingSessionBranch,
               self.nextSessionBranchSwitchGeneration == draft.branchGeneration,
@@ -758,8 +762,7 @@ extension OpenClawChatViewModel {
               let selectedContract = draft.session.sessionRoutingContract,
               capturedContract.utf8.elementsEqual(selectedContract.utf8),
               route.lease.supportsSessionSettingsCAS,
-              self.verifiedSessionSettingsExpectation(
-                  sessionKey: route.target.sessionKey, agentID: route.target.agentID) != nil
+              self.hasCurrentSessionMetadata
         else {
             return .notDispatched(reason: "Reconnect to verify this action's session and permissions.")
         }
@@ -820,7 +823,7 @@ extension OpenClawChatViewModel {
         logDiagnostic(
             "chat.ui send queued sessionKey=\(draft.session.key) "
                 + "localRunId=\(runId) pending=\(pendingRunCount)")
-        pendingToolCallsById = [:]
+        turnToolCallsById = [:]
         updateStreamingAssistantText(nil)
 
         // Production attachment sends enter the durable outbox above. Fixture,
@@ -923,16 +926,51 @@ extension OpenClawChatViewModel {
             }
             let sendSessionSettingsExpectation: OpenClawChatSessionSettingsExpectation?
             if case let .external(_, route) = attempt.draft.source {
+                guard await route.isCurrent() else { throw OpenClawChatTransportSendError.notDispatched }
+                try Task.checkCancellation()
+                if let outcome = self.externalSubmissionReadiness(attempt.draft) { return outcome }
+                let metadataGeneration = self.sessionMetadataGeneration
                 let settingsTarget = self.currentModelPatchTarget()
                 let settingsRevision = self.settingsPatchRevisionsByTarget[settingsTarget, default: 0]
-                guard await route.isCurrent(),
-                      self.settingsPatchRevisionsByTarget[settingsTarget, default: 0] == settingsRevision,
-                      self.inFlightSettingsPatchCountsByTarget[settingsTarget] == nil,
-                      self.externalSubmissionReadiness(attempt.draft) == nil,
-                      let expectation = self.verifiedSessionSettingsExpectation(
-                          sessionKey: route.target.sessionKey, agentID: route.target.agentID)
-                else { throw OpenClawChatTransportSendError.notDispatched }
+                let changedSettings = OpenClawChatSubmissionOutcome.notDispatched(
+                    reason: "Session settings changed before sending. Refresh this chat and try again.")
+                guard self.inFlightSettingsPatchCountsByTarget[settingsTarget] == nil else {
+                    return changedSettings
+                }
+                // The bounded sidebar roster can omit this exact target. Read both
+                // settings from one full row on the captured route after local patches settle.
+                let unverifiedSettings = OpenClawChatSubmissionOutcome.notDispatched(
+                    reason: "Could not verify this session's permissions. Refresh the chat and try again.")
+                let history: OpenClawChatHistoryPayload
+                do {
+                    history = try await route.lease.requestHistory(
+                        sessionKey: route.target.sessionKey, agentID: route.target.agentID)
+                    try OpenClawChatNativeRunInspection.requireSession(history, session: route.target)
+                } catch {
+                    return Task.isCancelled ? .cancelled : unverifiedSettings
+                }
+                guard history.sessionKey.utf8.elementsEqual(route.target.sessionKey.utf8),
+                      let info = history.sessionInfo
+                else { return unverifiedSettings }
+                if let sessionID = history.sessionId {
+                    guard !sessionID.isEmpty, info.sessionId?.utf8.elementsEqual(sessionID.utf8) == true else {
+                        return unverifiedSettings
+                    }
+                } else if info.sessionId != nil {
+                    return unverifiedSettings
+                }
+                let expectation = OpenClawChatSessionSettingsExpectation(
+                    permissionMode: info.permissionMode, toolOverrides: info.toolOverrides)
+                guard await route.isCurrent() else { throw OpenClawChatTransportSendError.notDispatched }
                 try Task.checkCancellation()
+                if let outcome = self.externalSubmissionReadiness(attempt.draft) { return outcome }
+                // A read or route check may straddle metadata renewal or another patch.
+                // Never dispatch the sampled settings after either owner has moved.
+                guard self.sessionMetadataGeneration == metadataGeneration,
+                      self.currentModelPatchTarget() == settingsTarget,
+                      self.settingsPatchRevisionsByTarget[settingsTarget, default: 0] == settingsRevision,
+                      self.inFlightSettingsPatchCountsByTarget[settingsTarget] == nil
+                else { return changedSettings }
                 sendSessionSettingsExpectation = expectation
             } else {
                 sendSessionSettingsExpectation = self.composerSessionSettingsExpectation()
@@ -1000,18 +1038,17 @@ extension OpenClawChatViewModel {
                 return Task.isCancelled ? .cancelled : .notDispatched(
                     reason: "The action route changed before sending. Select the session again.")
             }
-            if let responseError = error as? GatewayResponseError {
-                if responseError.detailsReason == "EXPECTED_PROFILE_MISMATCH" {
-                    // Only explicit admission evidence proves this attempt had no
-                    // effect. A handler may have accepted work before losing its owner.
-                    guard responseError.details["execution"]?.stringValue == "not_started" else {
-                        return .uncertain(
-                            reason: "The selected account changed. "
-                                + "Delivery is unconfirmed; check the chat before retrying.")
-                    }
-                    return .notDispatched(reason: responseError.localizedDescription)
+            if let responseError = error as? GatewayResponseError,
+               responseError.detailsReason == "EXPECTED_PROFILE_MISMATCH"
+            {
+                // Only explicit admission evidence proves this attempt had no
+                // effect. A handler may have accepted work before losing its owner.
+                guard responseError.details["execution"]?.stringValue == "not_started" else {
+                    return .uncertain(
+                        reason: "The selected account changed. "
+                            + "Delivery is unconfirmed; check the chat before retrying.")
                 }
-                return .rejected(reason: error.localizedDescription)
+                return .notDispatched(reason: responseError.localizedDescription)
             }
             return .uncertain(reason: "Delivery is unconfirmed. Check the selected chat before sending again.")
         }
@@ -1132,7 +1169,7 @@ extension OpenClawChatViewModel {
         let reusedRunAlreadyFinal = hasRecordedFinalMessage(runId: remoteRunId)
         if reusedRunAlreadyFinal {
             clearPendingRun(remoteRunId, hapticEvent: .runCompleted)
-            pendingToolCallsById = [:]
+            turnToolCallsById = [:]
             updateStreamingAssistantText(nil)
         } else {
             armPendingRunOwner(

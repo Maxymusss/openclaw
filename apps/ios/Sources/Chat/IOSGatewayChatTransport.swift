@@ -37,7 +37,7 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
     private let widgetGateway: GatewayNodeSession?
     private(set) var globalAgentId: String?
     let outboxGatewayID: String?
-    let nativeBinding: IOSNativeActionBinding?
+    private(set) var nativeBinding: IOSNativeActionBinding?
     private let mediaArtifactLoader: IOSMediaArtifactLoader?
     private let sourceResourceLoader: IOSSourceResourceLoader?
 
@@ -51,6 +51,20 @@ struct IOSGatewayChatTransport: OpenClawChatGatewayTransport {
         var scoped = self
         let normalized = agentID.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         scoped.globalAgentId = normalized.isEmpty ? nil : normalized
+        return scoped
+    }
+
+    func scoped(toSessionTarget target: OpenClawChatSessionTarget) -> (any OpenClawChatTransport)? {
+        guard let nativeBinding else {
+            if OpenClawChatSessionKey.agentID(from: target.sessionKey) == nil, let agentID = target.agentID {
+                return self.scoped(toAgentID: agentID)
+            }
+            return self
+        }
+        guard let binding = nativeBinding.scoped(to: target) else { return nil }
+        var scoped = self
+        scoped.nativeBinding = binding
+        scoped.globalAgentId = binding.session.agentID
         return scoped
     }
 

@@ -5087,6 +5087,44 @@ struct ChatViewModelTests {
         ])
     }
 
+    @Test func `prepared item-only completion settles notifications before the run ends`() async throws {
+        let sessionId = "sess-main"
+        let recorder = await MainActor.run { ToolActivityRecorder() }
+        let (transport, vm) = await makeViewModel(
+            historyResponses: [historyPayload(sessionId: sessionId)],
+            sendMessageStatus: "pending",
+            onToolActivity: { id, name, isActive, sessionKey in
+                recorder.record(id: id, name: name, isActive: isActive, sessionKey: sessionKey)
+            })
+        try await loadAndWaitBootstrap(vm: vm, sessionId: sessionId)
+        await sendUserMessage(vm)
+        let runId = try await waitForLastSentRunId(transport)
+        for (seq, id, phase, status, hidden) in [
+            (2, "wait", "start", "running", true),
+            (3, "work", "start", "running", false),
+            (4, "work", "end", "completed", false),
+        ] {
+            transport.emit(.agent(OpenClawAgentEventPayload(
+                runId: runId, seq: seq, stream: "item", ts: 10,
+                data: [
+                    "itemId": AnyCodable(id), "kind": AnyCodable("tool"),
+                    "phase": AnyCodable(phase), "status": AnyCodable(status),
+                    "title": AnyCodable("Check samples"),
+                    "hideFromChannelProgress": AnyCodable(hidden),
+                ])))
+        }
+        try await waitUntil("prepared activity settles") {
+            await MainActor.run { recorder.events.count == 2 }
+        }
+        #expect(await MainActor.run { recorder.events } == [
+            ToolActivityEvent(id: "work", name: "Check samples", isActive: true, sessionKey: "main"),
+            ToolActivityEvent(id: "work", name: "Check samples", isActive: false, sessionKey: "main"),
+        ])
+        #expect(await MainActor.run { vm.pendingRunCount } == 1)
+        #expect(await MainActor.run { vm.pendingToolCalls.map(\.toolCallId) } == ["wait"])
+        #expect(await MainActor.run { vm.toolActivities.map(\.toolCallId) } == ["wait", "work"])
+    }
+
     @Test func `session switch ends tool activity under its original session`() async throws {
         let recorder = await MainActor.run { ToolActivityRecorder() }
         let (transport, vm) = await makeViewModel(
@@ -5592,16 +5630,16 @@ struct ChatViewModelTests {
 
     @Test @MainActor func `route loss during bootstrap ends loading without adopting late history`() async throws {
         let gate = SessionSubscribeGate()
-        let completed = AsyncCounter()
         let (transport, vm) = await makeViewModel(
             historyResponses: [],
             historyResponseHook: { _, _, _ in
                 await gate.wait()
-                _ = await completed.increment()
                 return historyPayload(inFlightRun: .init(runId: "late-run", text: "late history"))
             })
+        defer { vm.detachTransport() }
         vm.input = "preserved draft"
         vm.load()
+        let bootstrap = try #require(vm.bootstrapTask)
         await gate.waitUntilBlocked()
         #expect(vm.isLoading)
         let reason = "The selected connection was replaced."
@@ -5610,8 +5648,8 @@ struct ChatViewModelTests {
         #expect(!vm.healthOK)
         #expect(vm.errorText == reason)
         await gate.release()
-        try await waitUntil("retired bootstrap history returned") { await completed.current() == 1 }
-        await Task { @MainActor in }.value
+        // Join the consumer after the held history producer returns.
+        await bootstrap.value
         vm.handleTransportEvent(.health(ok: true))
         vm.load()
         #expect(vm.errorText == reason)

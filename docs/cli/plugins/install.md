@@ -76,6 +76,8 @@ Default `--limit` is 20, capped at 100. It only reads the remote catalog: no
 local state inspection, config mutation, package install, or plugin runtime
 load. Results include the ClawHub package name, family, channel, version,
 summary, and an install hint such as `openclaw plugins install clawhub:<package>`.
+Human output adds `v` only to numeric version labels, preserving existing prefixes
+and build names. JSON output keeps the original version values.
 
 <Note>
 Default official installs follow the catalog's declared source order.
@@ -300,6 +302,10 @@ Each plugin keeps its own policy and capability-consent checks. The command stop
 at the first failure; earlier successful enables remain committed, and later IDs
 are not processed. With a local Gateway running, it applies each change through
 that Gateway. Otherwise, changes are saved for the next Gateway start.
+
+`openclaw plugins disable <ids...>` follows the same input order and stops at
+the first failure, keeping earlier changes. Both commands preserve repeated IDs;
+each operation sees the config committed by the previous one.
 
 `plugins enable` respects global disablement, the denylist, and restrictive
 allowlists whether the Gateway is running or stopped. Policy rejection happens

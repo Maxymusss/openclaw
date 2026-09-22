@@ -47,6 +47,7 @@ struct RootTabs: View {
     @State private var voiceWakeToastText: String?
     @State private var toastDismissGate = DelayedActionGate()
     @State private var presentedSheet: PresentedSheet?
+    @State private var pagesEditor: SidebarPagesPresentation?
     @State private var showGatewayProblemDetails: Bool = false
     @State private var gatewayToastDragOffset: CGFloat = 0
     @State private var gatewayRetryFailure: String?
@@ -62,6 +63,20 @@ struct RootTabs: View {
     @State private var nativeRunInspection: NativeActionRouter.RunPresentation?
     @State private var nativeChatBinding: IOSNativeActionBinding?
     @State private var nativePresentationID: UUID?
+    @State private var nativeLifetime = IOSNativePresentationLifetime()
+    @State private var chatModals = OpenClawChatModalPresentations()
+    @State private var chatModalScope: ChatModalScope?
+    @State private var transcriptExportError: OpenClawChatModalPresentations.Receipt?
+
+    private struct ChatModalScope: Equatable {
+        let origin: OpenClawChatModalOrigin
+        let shellID: String
+        let ownerID: String
+        let sessionKey: String
+        let agentID: String?
+        let accountGeneration: UInt64
+        let inputs: GatewayConnectConfig.ControlUIInputs?
+    }
 
     init(initialSidebarVisibility: Bool? = nil) {
         let resolvedVisibility = initialSidebarVisibility ?? Self.initialSidebarVisibility
@@ -114,10 +129,38 @@ struct RootTabs: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private enum PresentedSheet: Identifiable, Equatable {
+    struct SidebarPagesPresentation: Identifiable, Equatable {
+        let id = UUID()
+    }
+
+    enum PresentedSheet: Identifiable, Equatable {
         case quickSetup
         case notificationSettings(path: String)
         case sessionDashboard(sessionKey: String, agentId: String?)
+        case backgroundTasks(agentID: String, receipt: OpenClawChatModalPresentations.Receipt)
+        case newSessionOptions(OpenClawChatViewModel, receipt: OpenClawChatModalPresentations.Receipt)
+        case transcriptShare(URL, receipt: OpenClawChatModalPresentations.Receipt)
+
+        var chatReceipt: OpenClawChatModalPresentations.Receipt? {
+            switch self {
+            case let .backgroundTasks(_, receipt), let .newSessionOptions(_, receipt),
+                 let .transcriptShare(_, receipt): receipt
+            default: nil
+            }
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            switch (lhs, rhs) {
+            case (.quickSetup, .quickSetup): true
+            case let (.notificationSettings(left), .notificationSettings(right)): left == right
+            case let (.sessionDashboard(leftKey, leftAgent), .sessionDashboard(rightKey, rightAgent)):
+                leftKey == rightKey && leftAgent == rightAgent
+            case let (.backgroundTasks(_, left), .backgroundTasks(_, right)),
+                 let (.newSessionOptions(_, left), .newSessionOptions(_, right)),
+                 let (.transcriptShare(_, left), .transcriptShare(_, right)): left.id == right.id
+            default: false
+            }
+        }
 
         var id: String {
             switch self {
@@ -125,6 +168,8 @@ struct RootTabs: View {
             case .notificationSettings: "notification-settings"
             case let .sessionDashboard(sessionKey, agentId):
                 "session-dashboard:\(agentId ?? ""):\(sessionKey)"
+            case let .backgroundTasks(_, receipt), let .newSessionOptions(_, receipt),
+                 let .transcriptShare(_, receipt): receipt.id.uuidString
             }
         }
     }
@@ -142,6 +187,10 @@ struct RootTabs: View {
                     self.sidebarSplitContent
                         .tint(OpenClawBrand.accent))))
             .environment(\.userNavigationAction, navigationAction())
+            .background(IOSNativePresentationAnchor(lifetime: self.nativeLifetime).frame(width: 0, height: 0))
+            .onChange(of: self.currentChatModalScope, initial: true) { _, _ in
+                self.synchronizeChatModalScope()
+            }
             .overlay(alignment: .topLeading) {
                 self.uiTestReadinessMarker
             }
@@ -305,9 +354,11 @@ struct RootTabs: View {
         let action = navigationAction()
         return RootSidebar(
             model: self.sidebarModel,
+            pagesEditor: self.userModalBinding(self.$pagesEditor),
             selectedDestination: self.selectedSidebarDestination,
             isDrawerLayout: self.isSidebarDrawerLayout,
             isDismissButtonEnabled: self.isSidebarVisible,
+            isPagesEditorRootCurrent: self.navigationContext(),
             selectDestination: { destination in
                 guard action() else { return }
                 self.selectSidebarDestination(destination)
@@ -317,7 +368,7 @@ struct RootTabs: View {
                 self.selectSidebarSession(session)
             },
             openChat: openChatAction(),
-            requestNewChat: userAction {
+            requestNewChat: userAction(disposition: .chatSessionTransition) {
                 self.appModel.chatPresentation.requestNewChat(
                     appModel: self.appModel, presentation: self.chatPresentation)
                 self.selectSidebarDestination(.chat)
@@ -348,7 +399,13 @@ struct RootTabs: View {
                 headerSidebarAction: self.sidebarHeaderAction,
                 nativeBinding: self.nativeChatBinding,
                 nativePresentationID: self.nativePresentationID,
-                openSettings: userDestinationAction(.gateway))
+                openSettings: userDestinationAction(.gateway),
+                prepareModal: self.prepareChatModal,
+                retainModalPresentation: self.retainChatModalPresentation)
+                .openClawChatModalPresentations(
+                    self.chatModals,
+                    origin: self.currentChatModalScope?.origin ?? self.chatModals.standaloneOrigin,
+                    actions: self.chatModalActions)
         case .overview:
             CommandCenterTab(
                 headerTitle: "Overview",
@@ -655,12 +712,26 @@ struct RootTabs: View {
                 if self.appModel.consumeDashboardNavigationRequest(self.appModel.dashboardNavigationRequestID) {
                     self.selectSidebarDestination(.overview)
                 }
-                self.nativePresentationID = self.nativeActions?.registerPresentation(onRetire: {
-                    self.nativeChatBinding = nil
+                if self.nativeActions?.capturePresentationAuthority(self.nativePresentationID) != nil { return }
+                self.nativePresentationID = self.nativeActions?.registerPresentation(onRetire: { disposition in
+                    // Modal interactions and in-place session creation retire old
+                    // native operations while retaining their current UI transport.
+                    if case .departure = disposition { self.nativeChatBinding = nil }
                     self.nativeRunInspection = nil
+                }, onSessionAdopted: { previous, binding in
+                    guard self.nativeChatBinding == nil ||
+                        self.nativeChatBinding?.canReuse(previous) == true else { return }
+                    self.nativeChatBinding = binding
                 }, { request, binding, receipt in
-                    guard UIApplication.shared.applicationState == .active,
-                          !self.showOnboarding, self.presentedSheet == nil
+                    self.synchronizeChatModalScope()
+                    guard !self.chatModals.hasActivePresentation, self.transcriptExportError == nil,
+                          UIApplication.shared.applicationState == .active,
+                          !self.showOnboarding, !self.showGatewayProblemDetails, self.presentedSheet == nil,
+                          self.pagesEditor == nil,
+                          self.appModel.pendingExecApprovalPrompt == nil,
+                          self.appModel.pendingNotificationPermissionGuidancePrompt == nil,
+                          self.appModel.pendingAgentDeepLinkPrompt == nil,
+                          self.gatewayController.pendingTrustPrompt == nil
                     else {
                         throw OpenClawNativeActionError("Finish the current screen in OpenClaw, then try again.")
                     }
@@ -676,6 +747,15 @@ struct RootTabs: View {
                     self.selectSidebarDestination(.chat)
                     self.nativeRunInspection = receipt
                 })
+                if let id = self.nativePresentationID {
+                    self.nativeLifetime.own(id) {
+                        self.nativeActions?.unregisterPresentation(id)
+                        guard self.nativePresentationID == id else { return }
+                        self.nativePresentationID = nil
+                        self.pagesEditor = nil
+                        self.clearChatModalScope()
+                    }
+                }
             }
             .sheet(item: inspections) { presentation in
                 NavigationStack {
@@ -747,9 +827,17 @@ struct RootTabs: View {
                 }
             }
             .onDisappear {
-                if let id = self.nativePresentationID {
-                    self.nativeActions?.unregisterPresentation(id)
-                    self.nativePresentationID = nil
+                if self.pagesEditor != nil {
+                    // Pages owns this cover, but never retains a native chat binding.
+                    // The exact-ID lifetime anchor still releases actual Root removal.
+                    _ = self.nativeActions?.userNavigationDidChange(
+                        presentationID: self.nativePresentationID, disposition: .departure)
+                } else if self.retainChatModalPresentation() {
+                    _ = self.nativeActions?.userNavigationDidChange(
+                        presentationID: self.nativePresentationID, disposition: .chatModal)
+                } else {
+                    self.nativeLifetime.release()
+                    self.clearChatModalScope()
                 }
                 UIApplication.shared.isIdleTimerDisabled = false
                 self.clearVoiceWakeToast()
@@ -835,7 +923,7 @@ struct RootTabs: View {
 
     private func rootPresentation(_ content: some View) -> some View {
         let action = navigationAction()
-        let sheets = userModalBinding($presentedSheet)
+        let sheets = self.chatSheetBinding
         return content
             .sheet(isPresented: userModalBinding(self.$showGatewayProblemDetails)) {
                 if let gatewayProblem = self.appModel.lastGatewayProblem {
@@ -849,7 +937,11 @@ struct RootTabs: View {
             }
             .sheet(item: sheets) { sheet in
                 let sheetAction: @MainActor @Sendable () -> Bool = {
-                    self.presentedSheet == sheet && action()
+                    guard self.presentedSheet == sheet else { return false }
+                    if let receipt = sheet.chatReceipt {
+                        return receipt.retireIfCurrent()
+                    }
+                    return action()
                 }
                 Group {
                     switch sheet {
@@ -871,9 +963,34 @@ struct RootTabs: View {
                         NavigationStack {
                             SessionDashboardScreen(sessionKey: sessionKey, agentId: agentId)
                         }
+                    case let .backgroundTasks(agentID, receipt):
+                        self.chatModalContent(receipt) { BackgroundTasksScreen(agentID: agentID) }
+                    case let .newSessionOptions(viewModel, receipt):
+                        self.chatModalContent(receipt) {
+                            ChatNewSessionOptionsPopover(viewModel: viewModel) {
+                                self.dismissChatModal(receipt)
+                            }
+                            .presentationDetents([.medium])
+                            .presentationDragIndicator(.visible)
+                        }
+                    case let .transcriptShare(fileURL, receipt):
+                        self.chatModalContent(receipt) { ChatTranscriptShareSheet(fileURL: fileURL) }
                     }
                 }
                 .environment(\.userNavigationAction, sheetAction)
+            }
+            .alert(
+                String(localized: "Unable to Export Transcript"),
+                isPresented: self.transcriptExportErrorBinding)
+            {
+                let receipt = self.transcriptExportError
+                Button(role: .cancel) {
+                    if let receipt { self.dismissChatModal(receipt) }
+                } label: {
+                    Text("OK").font(OpenClawType.body)
+                }
+            } message: {
+                Text("OpenClaw could not prepare the Markdown file.").font(OpenClawType.body)
             }
             .fullScreenCover(isPresented: self.$showOnboarding) {
                 OnboardingWizardView(
@@ -906,6 +1023,155 @@ struct RootTabs: View {
 }
 
 extension RootTabs {
+    private var currentChatModalScope: ChatModalScope? {
+        guard self.selectedSidebarDestination == .chat,
+              let viewModel = self.appModel.chatPresentation.viewModel else { return nil }
+        return ChatModalScope(
+            origin: .init(viewModel: viewModel), shellID: self.sidebarDetailShellID,
+            ownerID: self.appModel.chatViewModelOwnerID,
+            sessionKey: self.appModel.chatSessionKey, agentID: self.appModel.chatDeliveryAgentId,
+            accountGeneration: self.appModel.operatorAuthorityGeneration,
+            inputs: self.appModel.activeGatewayConnectConfig?.controlUIInputs)
+    }
+
+    private func clearChatModalScope() {
+        if let scope = self.chatModalScope { self.chatModals.invalidate(origin: scope.origin) }
+        if self.presentedSheet?.chatReceipt != nil { self.presentedSheet = nil }
+        self.transcriptExportError = nil
+        self.chatModalScope = nil
+    }
+
+    private func synchronizeChatModalScope() {
+        let current = self.currentChatModalScope
+        guard self.chatModalScope != current else { return }
+        self.clearChatModalScope()
+        self.chatModalScope = current
+        if let current { self.chatModals.synchronize(origin: current.origin) }
+    }
+
+    private var chatModalActions: OpenClawChatModalActions {
+        let scope = self.currentChatModalScope
+        let contextIsCurrent = self.navigationContext(detail: true)
+        let container = self.presentedSheet
+        let inspection = self.nativeRunInspection
+        return Self.makeChatModalActions(
+            origin: scope?.origin, router: self.nativeActions, rootID: self.nativePresentationID,
+            isCurrentScope: { scope == self.currentChatModalScope && contextIsCurrent() },
+            isCurrentContainer: {
+                self.presentedSheet == container && self.nativeRunInspection == inspection &&
+                    self.transcriptExportError == nil && !self.showOnboarding &&
+                    !self.showGatewayProblemDetails && self.appModel.pendingExecApprovalPrompt == nil &&
+                    self.appModel.pendingNotificationPermissionGuidancePrompt == nil &&
+                    self.appModel.pendingAgentDeepLinkPrompt == nil &&
+                    self.gatewayController.pendingTrustPrompt == nil
+            })
+    }
+
+    /// Shared sheets carry this frozen root context through async publication and
+    /// dismissal. A retained callback can never borrow a replacement registration.
+    static func makeChatModalActions(
+        origin: OpenClawChatModalOrigin?, router: NativeActionRouter?, rootID: UUID?,
+        isCurrentScope: @escaping @MainActor () -> Bool,
+        isCurrentContainer: @escaping @MainActor () -> Bool) -> OpenClawChatModalActions
+    {
+        let isCurrent: @MainActor (OpenClawChatModalOrigin) -> Bool = {
+            origin == $0 && isCurrentScope() &&
+                (router == nil || router?.capturePresentationAuthority(rootID) != nil)
+        }
+        return OpenClawChatModalActions(
+            capture: { requested in
+                guard isCurrent(requested), isCurrentContainer() else { return nil }
+                let authority = router?.capturePresentationAuthority(rootID)
+                let permitIsCurrent: @MainActor () -> Bool = {
+                    isCurrent(requested) && isCurrentContainer() &&
+                        (router == nil || authority.map { router?.isCurrentPresentation($0) == true } == true)
+                }
+                return .init(isCurrent: permitIsCurrent, accept: {
+                    guard permitIsCurrent() else { return false }
+                    return router?.userNavigationDidChange(
+                        presentationID: rootID, disposition: .chatModal) ?? true
+                })
+            },
+            dismiss: { requested in
+                guard isCurrent(requested) else { return }
+                _ = router?.userNavigationDidChange(presentationID: rootID, disposition: .chatModal)
+            },
+            isCurrent: isCurrent)
+    }
+
+    private func retainChatModalPresentation() -> Bool {
+        // Reset actual target/account departure before treating disappearance as cover.
+        self.synchronizeChatModalScope()
+        guard let scope = self.chatModalScope else { return false }
+        return self.chatModals.hasActivePresentation(for: scope.origin) ||
+            self.presentedSheet?.chatReceipt?.origin == scope.origin ||
+            self.transcriptExportError?.origin == scope.origin
+    }
+
+    private func prepareChatModal(_ viewModel: OpenClawChatViewModel) -> IOSChatModalPublication? {
+        self.synchronizeChatModalScope()
+        guard self.appModel.chatPresentation.viewModel === viewModel,
+              let scope = self.chatModalScope, self.presentedSheet == nil,
+              self.transcriptExportError == nil, !self.chatModals.hasActivePresentation,
+              let capture = self.chatModals.capture(
+                  origin: scope.origin, producerID: UUID(), actions: self.chatModalActions)
+        else { return nil }
+        return IOSChatModalPublication(
+            isCurrent: { capture.isCurrent },
+            present: { request in
+                guard self.presentedSheet == nil, self.transcriptExportError == nil,
+                      capture.accept() else { return }
+                let receipt = capture.receipt
+                switch request {
+                case let .backgroundTasks(agentID):
+                    self.presentedSheet = .backgroundTasks(agentID: agentID, receipt: receipt)
+                case let .newSessionOptions(viewModel):
+                    self.presentedSheet = .newSessionOptions(viewModel, receipt: receipt)
+                case let .transcriptShare(fileURL):
+                    self.presentedSheet = .transcriptShare(fileURL, receipt: receipt)
+                case .transcriptExportError:
+                    self.transcriptExportError = receipt
+                }
+            })
+    }
+
+    private func dismissChatModal(_ receipt: OpenClawChatModalPresentations.Receipt) {
+        guard self.presentedSheet?.chatReceipt?.id == receipt.id ||
+            self.transcriptExportError?.id == receipt.id else { return }
+        receipt.retireIfCurrent()
+        self.chatModals.removeDescendants(of: receipt)
+        if self.presentedSheet?.chatReceipt?.id == receipt.id { self.presentedSheet = nil }
+        if self.transcriptExportError?.id == receipt.id { self.transcriptExportError = nil }
+    }
+
+    private var chatSheetBinding: Binding<PresentedSheet?> {
+        let expected = self.presentedSheet
+        let ordinary = self.userModalBinding(self.$presentedSheet)
+        return Binding(get: { self.presentedSheet }, set: { value in
+            guard self.presentedSheet == expected else { return }
+            if let receipt = expected?.chatReceipt, value == nil {
+                self.dismissChatModal(receipt)
+            } else {
+                ordinary.wrappedValue = value
+            }
+        })
+    }
+
+    private var transcriptExportErrorBinding: Binding<Bool> {
+        let receipt = self.transcriptExportError
+        return Binding(get: { self.transcriptExportError != nil }, set: { value in
+            if !value, let receipt { self.dismissChatModal(receipt) }
+        })
+    }
+
+    private func chatModalContent(
+        _ receipt: OpenClawChatModalPresentations.Receipt, @ViewBuilder content: () -> some View) -> some View
+    {
+        content().openClawChatModalPresentations(
+            self.chatModals, origin: receipt.origin, actions: self.chatModalActions, parent: receipt,
+            parentIsCurrent: { self.presentedSheet?.chatReceipt?.id == receipt.id })
+    }
+
     /// Freeze the root and (for detail callbacks) stack that produced this action.
     /// A callback retained by a departed view cannot act for a replacement root.
     private func navigationContext(detail: Bool = false) -> @MainActor @Sendable () -> Bool {
@@ -918,18 +1184,24 @@ extension RootTabs {
         }
     }
 
-    private func navigationAction(detail: Bool = false) -> @MainActor @Sendable () -> Bool {
+    private func navigationAction(
+        detail: Bool = false, disposition: NativeActionRouter.RetirementDisposition = .departure)
+        -> @MainActor @Sendable () -> Bool
+    {
         let isCurrent = self.navigationContext(detail: detail)
         let router = self.nativeActions
         let rootID = self.nativePresentationID
         return {
             guard isCurrent() else { return false }
-            return router?.userNavigationDidChange(presentationID: rootID) ?? true
+            return router?.userNavigationDidChange(presentationID: rootID, disposition: disposition) ?? true
         }
     }
 
-    private func userAction(detail: Bool = false, _ perform: @escaping @MainActor () -> Void) -> () -> Void {
-        let action = self.navigationAction(detail: detail)
+    private func userAction(
+        detail: Bool = false, disposition: NativeActionRouter.RetirementDisposition = .departure,
+        _ perform: @escaping @MainActor () -> Void) -> () -> Void
+    {
+        let action = self.navigationAction(detail: detail, disposition: disposition)
         return {
             guard action() else { return }
             perform()
@@ -949,10 +1221,15 @@ extension RootTabs {
     }
 
     private func userModalBinding<Value: Equatable>(_ binding: Binding<Value>) -> Binding<Value> {
+        Self.matchedModalBinding(binding, admit: self.navigationAction())
+    }
+
+    static func matchedModalBinding<Value: Equatable>(
+        _ binding: Binding<Value>, admit: @escaping @MainActor () -> Bool) -> Binding<Value>
+    {
         let expected = binding.wrappedValue
-        let action = self.navigationAction()
         return Binding(get: { binding.wrappedValue }, set: { value in
-            guard value != binding.wrappedValue, binding.wrappedValue == expected, action() else { return }
+            guard value != binding.wrappedValue, binding.wrappedValue == expected, admit() else { return }
             binding.wrappedValue = value
         })
     }

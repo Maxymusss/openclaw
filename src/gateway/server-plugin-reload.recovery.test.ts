@@ -5,7 +5,7 @@ import { createTranscriptsTool } from "../agents/tools/transcripts-tool.js";
 import { clearRuntimeConfigSnapshot } from "../config/io.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { CronService } from "../cron/service.js";
-import type { PluginHookGatewayContext } from "../plugins/hook-types.js";
+import type { PluginHookGatewayContext } from "../plugins/hook-gateway.types.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
@@ -147,8 +147,16 @@ it("flushes failed candidate services before closing their shared resources", ()
 it("closes resources opened by a recovery that fails before publication", () =>
   verifyFailedRecoveryCleanup(createRecoveryFixture));
 
-it("rejects reload from its own retained consumer before stopping any plugin", () =>
-  verifySelfConsumerReload(createRecoveryFixture));
+it.each([
+  "own invocation",
+  "between invocations",
+  "pending cleanup",
+  "final checkpoint",
+  "later replacement target",
+] as const)(
+  "rejects reload with a retained consumer during %s before invalidating or stopping runtime",
+  (caller) => verifySelfConsumerReload(createRecoveryFixture, caller),
+);
 
 it.each(["commit", "rollback"] as const)(
   "keeps service and lifecycle Cron getters current after %s",
@@ -268,11 +276,15 @@ it.each(["lookup", "replacement"] as const)(
     ),
 );
 
-it("reports call drain timeout, releases the lease, and rejects new calls to the retired instance", () =>
-  verifyActiveCallDrainLease(
-    createRecoveryFixture,
-    makeTrackedTempDir("gateway-active-call-drain", tempDirs),
-  ));
+it.each([5_000, 15_000, 70_000])(
+  "recovers channels after an admitted write outlives the drain deadline (%i ms)",
+  (holdMs) =>
+    verifyActiveCallDrainLease(
+      createRecoveryFixture,
+      makeTrackedTempDir("gateway-active-call-drain", tempDirs),
+      holdMs,
+    ),
+);
 
 it("keeps old cleanup owned when the Gateway closes before replacement publication", () =>
   verifyPreCommitRetirementOwnership(createRecoveryFixture));
@@ -362,7 +374,7 @@ it.each([false, true])(
   (withChannels) => verifyGatewayCleanupRefusal(createRecoveryFixture, withChannels),
 );
 
-it("waits for pending service cleanup and keeps retired dispatch fenced across retry", () =>
+it("refuses replacement during service startup and keeps retired dispatch fenced across retry", () =>
   verifyPendingServiceCleanupRetry(createRecoveryFixture));
 
 it("retains unrelated discovery after the selected service refuses cleanup", async () => {

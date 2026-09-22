@@ -25,7 +25,7 @@ type ErrorValue =
   | { undefined: true };
 
 type ErrorIdentity =
-  | { type: "error" | "aggregate" | "ownership" | "newer-schema" }
+  | { type: "error" | "aggregate" | "ownership" | "newer-schema" | "range-error" }
   | { type: "ownership-metadata"; databasePath: string }
   | { type: "external-ownership"; databasePath: string; managerId: string }
   | { type: "state-lease"; leaseCode: OpenClawStateLeaseErrorCode }
@@ -82,6 +82,9 @@ function identifyError(error: Error): ErrorIdentity {
   }
   if (error instanceof StartupMaintenanceRequiredError) {
     return { type: "maintenance", kind: error.kind };
+  }
+  if (error instanceof RangeError) {
+    return { type: "range-error" };
   }
   return { type: error instanceof AggregateError ? "aggregate" : "error" };
 }
@@ -151,6 +154,7 @@ function isMaintenanceKind(kind: unknown): kind is MaintenanceKind {
     kind === "agent-media" ||
     kind === "agent-databases-composite-primary-key" ||
     kind === "audit-events-v2" ||
+    kind === "legacy-cron-run-logs" ||
     kind === "legacy-workshop-review-index" ||
     kind === "legacy-workspace" ||
     kind === "legacy-session-store"
@@ -163,6 +167,7 @@ function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined
     case "aggregate":
     case "ownership":
     case "newer-schema":
+    case "range-error":
       return { type: node.type };
     case "ownership-metadata":
       return typeof node.databasePath === "string"
@@ -181,6 +186,7 @@ function parseIdentity(node: Record<string, unknown>): ErrorIdentity | undefined
     case "state-migration":
       return (node.kind === "agent-databases-composite-primary-key" ||
         node.kind === "audit-events-v2" ||
+        node.kind === "legacy-cron-run-logs" ||
         node.kind === "legacy-workshop-review-index") &&
         typeof node.pathname === "string"
         ? { type: node.type, kind: node.kind, pathname: node.pathname }
@@ -263,6 +269,8 @@ function createError(node: ErrorNode): Error {
   switch (node.type) {
     case "error":
       return new Error(node.message);
+    case "range-error":
+      return new RangeError(node.message);
     case "aggregate":
       return new AggregateError([], node.message);
     case "ownership":

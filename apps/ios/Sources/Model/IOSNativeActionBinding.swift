@@ -43,10 +43,11 @@ final class IOSNativeActionBinding: Sendable {
     private init(
         capture: IOSNativeActionBinding,
         retirement: RetirementOwner,
+        session: OpenClawNativeSessionRef? = nil,
         sessionRoutingContract: String? = nil,
         httpContext: GatewayAdmittedHTTPContext? = nil)
     {
-        self.session = capture.session
+        self.session = session ?? capture.session
         self.gateway = capture.gateway
         self.route = capture.route
         self.sessionRoutingContract = sessionRoutingContract
@@ -79,6 +80,25 @@ final class IOSNativeActionBinding: Sendable {
             retirement: binding.retirement,
             sessionRoutingContract: routing.contract,
             httpContext: context)
+    }
+
+    func scoped(to target: OpenClawChatSessionTarget) -> IOSNativeActionBinding? {
+        let key = target.sessionKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        let encodedAgent = OpenClawChatSessionKey.agentID(from: key)?.lowercased()
+        let explicitAgent = target.agentID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !self.isRetired, !key.isEmpty,
+              explicitAgent != "",
+              encodedAgent == nil || explicitAgent == nil || encodedAgent == explicitAgent
+        else { return nil }
+        let session = OpenClawNativeSessionRef(
+            owner: self.session.owner,
+            agentID: encodedAgent ?? explicitAgent ?? self.session.agentID,
+            sessionKey: key)
+        // Logical adoption retires presentation, not the captured account lifetime.
+        // Old requests and the new target must observe the same profile retirement.
+        return IOSNativeActionBinding(
+            capture: self, retirement: self.retirement, session: session,
+            sessionRoutingContract: self.sessionRoutingContract, httpContext: self.httpContext)
     }
 
     var mediaConnection: IOSMediaArtifactLoader.Connection? {

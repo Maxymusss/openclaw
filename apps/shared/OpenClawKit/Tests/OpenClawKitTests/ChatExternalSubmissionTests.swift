@@ -47,13 +47,26 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         let attachments: [OpenClawChatAttachmentPayload]
     }
 
+    enum TargetedHistoryReply: Sendable {
+        case snapshot
+        case reconciliation
+        case held(OpenClawChatHistoryPayload, NativeSubmissionGate)
+    }
+
+    struct HistoryRequest: Sendable {
+        let key: String
+        let agent: String?
+    }
+
     static let contract = "per-sender|main|agent-a"
     nonisolated let supportsComposerCapabilities: Bool
     let supportsSessionSettingsCAS: Bool
     let sendGate: NativeSubmissionGate?
     let historyGate: NativeSubmissionGate?
+    let snapshotGate: NativeSubmissionGate?
     let validationGate: NativeSubmissionGate?
     let settingsPatchGate: NativeSubmissionGate?
+    let resetGate: NativeSubmissionGate?
     let response: Response
     let ackStatus: String
     let ackRunID: String?
@@ -68,6 +81,15 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
     private(set) var historyCalls = 0
     private(set) var historyReturns = 0
     private var historyPayload: OpenClawChatHistoryPayload?
+    private var sessionsPayload: OpenClawChatSessionsListResponse?
+    private(set) var sessionListCalls = 0
+    private(set) var resetKeys: [String] = []
+    private var snapshotData: Data?
+    private var snapshotUnavailable = false
+    private var targetedHistoryReplies: [TargetedHistoryReply] = []
+    private(set) var targetedHistoryRequests: [HistoryRequest] = []
+    private(set) var targetedHistoryReturns: [Int] = []
+    private(set) var wireEvents: [String] = []
 
     init(
         response: Response = .accepted,
@@ -76,8 +98,10 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         ackSummary: String? = nil,
         sendGate: NativeSubmissionGate? = nil,
         historyGate: NativeSubmissionGate? = nil,
+        snapshotGate: NativeSubmissionGate? = nil,
         validationGate: NativeSubmissionGate? = nil,
         settingsPatchGate: NativeSubmissionGate? = nil,
+        resetGate: NativeSubmissionGate? = nil,
         validationGateCall: Int = 1,
         supportsComposerCapabilities: Bool = false,
         supportsSessionSettingsCAS: Bool = true,
@@ -90,8 +114,10 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         self.ackSummary = ackSummary
         self.sendGate = sendGate
         self.historyGate = historyGate
+        self.snapshotGate = snapshotGate
         self.validationGate = validationGate
         self.settingsPatchGate = settingsPatchGate
+        self.resetGate = resetGate
         self.validationGateCall = validationGateCall
         self.supportsComposerCapabilities = supportsComposerCapabilities
         self.supportsSessionSettingsCAS = supportsSessionSettingsCAS
@@ -111,6 +137,57 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         self.historyPayload = payload
     }
 
+    func setSessionsPayload(_ payload: OpenClawChatSessionsListResponse) {
+        self.sessionsPayload = payload
+    }
+
+    func setSnapshotData(_ data: Data) {
+        self.snapshotData = data
+    }
+
+    func setSnapshotUnavailable() {
+        self.snapshotUnavailable = true
+    }
+
+    func setTargetedHistoryReplies(_ replies: [TargetedHistoryReply]) {
+        self.targetedHistoryReplies = replies
+    }
+
+    private func requestTargetedHistory(
+        sessionKey: String,
+        agentID: String?) async throws -> OpenClawChatHistoryPayload
+    {
+        // Reserve the scripted reply before suspension. The wire ledger, not the
+        // reply label, proves whether this read preceded or followed actual dispatch.
+        self.targetedHistoryRequests.append(HistoryRequest(key: sessionKey, agent: agentID))
+        let ordinal = self.targetedHistoryRequests.count
+        let reply = self.targetedHistoryReplies.isEmpty ? .snapshot : self.targetedHistoryReplies.removeFirst()
+        self.wireEvents.append("history:\(ordinal):started")
+        let result: OpenClawChatHistoryPayload
+        switch reply {
+        case .snapshot:
+            await self.snapshotGate?.wait()
+            if self.snapshotUnavailable { throw URLError(.notConnectedToInternet) }
+            if let snapshotData {
+                result = try JSONDecoder().decode(OpenClawChatHistoryPayload.self, from: snapshotData)
+            } else {
+                result = OpenClawChatHistoryPayload(
+                    sessionKey: sessionKey, sessionId: "session-a", messages: [], thinkingLevel: nil,
+                    sessionInfo: OpenClawChatSessionInfo(
+                        hasActiveRun: false, key: sessionKey, agentId: agentID, sessionId: "session-a",
+                        permissionMode: .guarded, toolOverrides: .init(webSearch: false)))
+            }
+        case .reconciliation:
+            result = try await self.requestHistory(sessionKey: sessionKey)
+        case let .held(payload, gate):
+            await gate.wait()
+            result = payload
+        }
+        self.targetedHistoryReturns.append(ordinal)
+        self.wireEvents.append("history:\(ordinal):returned")
+        return result
+    }
+
     func route(
         _ target: OpenClawNativeSessionRef,
         sendLifetime: NativeSubmissionLifetime? = nil) -> OpenClawChatExternalSubmissionRoute
@@ -128,7 +205,9 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
                         Sent(key: key, agent: agent, settings: settings, text: text, id: id, attachments: attachments),
                         generation: generation)
                 },
-                requestTargetedHistory: { key, _ in try await self.requestHistory(sessionKey: key) },
+                requestTargetedHistory: { key, agent in
+                    try await self.requestTargetedHistory(sessionKey: key, agentID: agent)
+                },
                 sessionRoutingContract: Self.contract,
                 supportsSessionSettingsCAS: self.supportsSessionSettingsCAS),
             isCurrent: { await self.validate(generation: generation) })
@@ -143,6 +222,7 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
     }
 
     private func deliver(_ message: Sent, generation: Int) async throws -> OpenClawChatSendResponse {
+        self.wireEvents.append("send:\(message.id)")
         self.sent.append(message)
         await self.sendGate?.wait()
         guard self.generation == generation else { throw CancellationError() }
@@ -189,6 +269,26 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
         throw URLError(.notConnectedToInternet)
     }
 
+    func listSessions(
+        limit _: Int?, search _: String?, archived _: Bool) async throws -> OpenClawChatSessionsListResponse
+    {
+        self.sessionListCalls += 1
+        if let sessionsPayload { return sessionsPayload }
+        throw NSError(
+            domain: "OpenClawChatTransport", code: 0,
+            userInfo: [NSLocalizedDescriptionKey: "sessions.list not supported by this transport"])
+    }
+
+    func resetSession(sessionKey: String) async throws {
+        guard let resetGate else {
+            throw NSError(
+                domain: "OpenClawChatTransport", code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "sessions.reset not supported by this transport"])
+        }
+        self.resetKeys.append(sessionKey)
+        await resetGate.wait()
+    }
+
     func requestHealth(timeoutMs _: Int) async throws -> Bool {
         true
     }
@@ -220,8 +320,10 @@ private actor NativeSubmissionTransport: OpenClawChatTransport {
     func release() async {
         await self.sendGate?.open()
         await self.historyGate?.open()
+        await self.snapshotGate?.open()
         await self.validationGate?.open()
         await self.settingsPatchGate?.open()
+        await self.resetGate?.open()
     }
 }
 
@@ -341,6 +443,71 @@ private struct ChatExternalSubmissionTests {
         await fixture.close()
     }
 
+    @Test(arguments: ["UNAVAILABLE", "NEW_GATEWAY_ERROR"], [false, true])
+    func `post-dispatch RPC errors retain uncertainty across duplicate waiters and replay`(
+        code: String, claimsNotStarted: Bool) async throws
+    {
+        let gate = NativeSubmissionGate()
+        let error = GatewayResponseError(
+            method: "chat.send", code: code, message: "The Gateway response was unavailable.",
+            details: claimsNotStarted ? ["execution": AnyCodable("not_started")] : [:])
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            sendGate: gate, responseError: error))
+        await fixture.prepare()
+        let vm = fixture.vm
+        vm.input = "preserved composer draft"
+        vm.setReplyTarget(messageID: UUID(), text: "preserved reply", senderLabel: "User")
+        let reply = vm.replyTarget
+        let attachment = OpenClawPendingAttachment(
+            url: nil, data: Data([1, 2, 3]), fileName: "draft.png", mimeType: "image/png", preview: nil)
+        vm.attachments = [attachment]
+        let revision = vm.composerRevision(for: vm.sessionKey)
+        let invocation = fixture.request()
+        let route = await fixture.transport.route(fixture.target)
+        let first = Task { await vm.submit(invocation, using: route) }
+        var duplicate: Task<OpenClawChatSubmissionOutcome, Never>?
+        do {
+            try await waitUntil("native send entered before RPC error") { await gate.entered }
+            let events = [
+                "history:1:started", "history:1:returned", "send:\(invocation.operationID.uuidString)",
+            ]
+            #expect(await fixture.transport.wireEvents == events)
+            #expect(await fixture.transport.targetedHistoryReturns == [1])
+            #expect(await fixture.transport.sent.count == 1)
+            let validations = await fixture.transport.validationCalls
+            let waiter = Task { await vm.submit(invocation, using: route) }
+            duplicate = waiter
+            try await waitUntil("duplicate joined the dispatched invocation") {
+                await fixture.transport.validationCalls > validations
+            }
+            await gate.open()
+            let expected = OpenClawChatSubmissionOutcome.uncertain(
+                reason: "Delivery is unconfirmed. Check the selected chat before sending again.")
+            #expect(await first.value == expected)
+            #expect(await waiter.value == expected)
+            #expect(await vm.submit(invocation, using: route) == expected)
+            #expect(await fixture.transport.wireEvents == events)
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            #expect(await fixture.transport.targetedHistoryReturns == [1])
+            #expect(await fixture.transport.sent.count == 1)
+            #expect(vm.input == "preserved composer draft")
+            #expect(vm.replyTarget == reply)
+            #expect(vm.attachments.map(\.id) == [attachment.id])
+            #expect(vm.composerRevision(for: vm.sessionKey) == revision)
+            #expect(vm.pendingRunCount == 0)
+            #expect(vm.messages.isEmpty)
+            #expect(vm.runMessageScopesByRunID[invocation.operationID.uuidString] == nil)
+            #expect(!vm.isSending && !vm.isSubmittingDraft)
+        } catch {
+            await gate.open()
+            _ = await first.value
+            _ = await duplicate?.value
+            await fixture.close()
+            throw error
+        }
+        await fixture.close()
+    }
+
     @Test func `proven non dispatch releases only the detached attempt`() async throws {
         let gate = NativeSubmissionGate()
         let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
@@ -382,7 +549,7 @@ private struct ChatExternalSubmissionTests {
     func `final route refusal releases the reserved local attempt`(cancel: Bool) async throws {
         let gate = NativeSubmissionGate()
         let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
-            validationGate: gate, validationGateCall: 2))
+            validationGate: gate, validationGateCall: 3))
         await fixture.prepare()
         fixture.vm.input = "preserved draft"
         let route = await fixture.transport.route(fixture.target)
@@ -390,6 +557,9 @@ private struct ChatExternalSubmissionTests {
         let task = Task { await fixture.vm.submit(invocation, using: route) }
         do {
             try await waitUntil("final route validation entered") { await gate.entered }
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            #expect(await fixture.transport.targetedHistoryReturns == [1])
+            #expect(await fixture.transport.sent.isEmpty)
             #expect(fixture.vm.pendingRunCount == 1)
             await fixture.transport.invalidate()
             fixture.vm.errorText = "Retained presentation"
@@ -555,79 +725,158 @@ private struct ChatExternalSubmissionTests {
         await fixture.close()
     }
 
-    @Test(arguments: ["capability", "stale", "missing", "wrong agent", "missing agent", "placeholder", "alias"])
-    func `external send requires verified selected metadata`(failure: String) async throws {
+    private func settingsHistory(_ target: OpenClawNativeSessionRef) -> [String: Any] {
+        [
+            "sessionKey": target.sessionKey, "sessionId": "session-a", "messages": [],
+            "sessionInfo": [
+                "key": target.sessionKey, "agentId": target.agentID, "sessionId": "session-a",
+                "permissionMode": "guarded", "toolOverrides": ["webSearch": false],
+            ],
+        ]
+    }
+
+    @Test(arguments: ["capability", "stale"])
+    func `external send requires current metadata and negotiated settings CAS`(failure: String) async throws {
         let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
             supportsSessionSettingsCAS: failure != "capability"))
         await fixture.prepare()
-        switch failure {
-        case "stale":
-            fixture.vm.invalidateSessionMetadataReadiness()
-        case "missing":
-            fixture.vm.sessions = []
-        case "wrong agent":
-            fixture.vm.sessions[0].agentId = "agent-b"
-        case "missing agent":
-            fixture.vm.sessions[0].agentId = nil
-        case "placeholder":
-            fixture.vm.sessions = [.placeholder(key: fixture.target.sessionKey)]
-        case "alias":
-            var alias = OpenClawChatSessionEntry.placeholder(key: "main")
-            alias.agentId = fixture.target.agentID
-            fixture.vm.sessions = [alias]
-        default:
-            break
-        }
+        if failure == "stale" { fixture.vm.invalidateSessionMetadataReadiness() }
         fixture.vm.input = "keep draft"
         let route = await fixture.transport.route(fixture.target)
         let result = await fixture.vm.submit(fixture.request(), using: route)
-        if case .notDispatched = result {} else { Issue.record("Unverified settings must prevent dispatch") }
+        if case .notDispatched = result {} else { Issue.record("Unverified capability must prevent dispatch") }
         #expect(await fixture.transport.sent.isEmpty)
+        #expect(await fixture.transport.targetedHistoryRequests.isEmpty)
         #expect(await fixture.transport.catalogLoads == 0)
         #expect(fixture.vm.input == "keep draft")
         await fixture.close()
     }
 
-    @Test(arguments: [false, true])
-    func `global session settings belong to the explicit agent`(includeSelected: Bool) async throws {
+    @Test(arguments: ["populated", "unset", "first-use", "new-incarnation"])
+    func `exact history supplies settings outside the roster without pinning an old incarnation`(
+        state: String) async throws
+    {
         let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(), sessionKey: "global")
-        let selected = fixture.vm.sessions[0]
-        var other = selected
-        other.agentId = "agent-b"
-        other.permissionMode = .full
-        other.toolOverrides = nil
-        fixture.vm.sessions = includeSelected ? [other, selected] : [other]
-        let request = fixture.request()
-        let route = await fixture.transport.route(fixture.target)
-        let result = await fixture.vm.submit(request, using: route)
-        let sent = await fixture.transport.sent
-        if includeSelected {
-            #expect(result == .accepted(runID: "remote-\(request.operationID.uuidString)"))
+        do {
+            var other = fixture.vm.sessions[0]
+            other.agentId = "agent-b"
+            other.permissionMode = .full
+            other.toolOverrides = nil
+            fixture.vm.sessions = [other]
+            fixture.vm.sessionId = "previous-incarnation"
+            var history = self.settingsHistory(fixture.target)
+            var row = try #require(history["sessionInfo"] as? [String: Any])
+            let unset = state == "unset" || state == "first-use"
+            if unset {
+                row.removeValue(forKey: "permissionMode")
+                row["toolOverrides"] = NSNull()
+            }
+            if state == "first-use" {
+                history["sessionId"] = NSNull()
+                row.removeValue(forKey: "sessionId")
+            } else if state == "new-incarnation" {
+                history["sessionId"] = "replacement-incarnation"
+                row["sessionId"] = "replacement-incarnation"
+            }
+            history["sessionInfo"] = row
+            history["toolOverrides"] = ["webSearch": true]
+            try await fixture.transport.setSnapshotData(JSONSerialization.data(withJSONObject: history))
+            let request = fixture.request()
+            let route = await fixture.transport.route(fixture.target)
+            #expect(await fixture.vm.submit(request, using: route) ==
+                .accepted(runID: "remote-\(request.operationID.uuidString)"))
+            let sent = await fixture.transport.sent
             #expect(sent.count == 1)
             #expect(sent.first?.key == "global")
             #expect(sent.first?.agent == fixture.target.agentID)
             #expect(sent.first?.settings == OpenClawChatSessionSettingsExpectation(
-                permissionMode: .guarded, toolOverrides: .init(webSearch: false)))
-        } else {
-            if case .notDispatched = result {} else { Issue.record("Another global owner supplied settings") }
-            #expect(sent.isEmpty)
+                permissionMode: unset ? nil : .guarded,
+                toolOverrides: unset ? nil : .init(webSearch: false)))
+            #expect(!fixture.vm.sessions.contains { $0.agentId == fixture.target.agentID })
+            #expect(await fixture.transport.wireEvents.prefix(3) == [
+                "history:1:started", "history:1:returned", "send:\(request.operationID.uuidString)",
+            ])
+        } catch {
+            await fixture.close()
+            throw error
+        }
+        await fixture.close()
+    }
+
+    @Test(arguments: [
+        "missing row", "missing key", "wrong key", "missing agent", "wrong agent", "header key",
+        "header id", "missing header id", "row id", "row id type", "empty id",
+        "permission type", "unknown permission", "tools type", "unavailable",
+    ])
+    func `unverified exact history refuses before dispatch and releases only its attempt`(failure: String) async throws {
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport())
+        do {
+            var history = self.settingsHistory(fixture.target)
+            var row = try #require(history["sessionInfo"] as? [String: Any])
+            switch failure {
+            case "missing key": row.removeValue(forKey: "key")
+            case "wrong key": row["key"] = "agent:agent-a:other"
+            case "missing agent": row.removeValue(forKey: "agentId")
+            case "wrong agent": row["agentId"] = "agent-b"
+            case "header key": history["sessionKey"] = "other"
+            case "header id": history["sessionId"] = "different"
+            case "missing header id": history.removeValue(forKey: "sessionId")
+            case "row id type": row["sessionId"] = 17
+            case "row id": row.removeValue(forKey: "sessionId")
+            case "empty id":
+                history["sessionId"] = ""
+                row["sessionId"] = ""
+            case "permission type": row["permissionMode"] = 17
+            case "unknown permission": row["permissionMode"] = "unknown"
+            case "tools type": row["toolOverrides"] = ["webSearch": "false"]
+            default: break
+            }
+            if failure == "missing row" { history["sessionInfo"] = NSNull() } else { history["sessionInfo"] = row }
+            try await fixture.transport.setSnapshotData(JSONSerialization.data(withJSONObject: history))
+            if failure == "unavailable" { await fixture.transport.setSnapshotUnavailable() }
+            fixture.vm.input = "keep draft"
+            fixture.vm.setReplyTarget(messageID: UUID(), text: "keep reply", senderLabel: "User")
+            let reply = fixture.vm.replyTarget
+            let request = fixture.request()
+            let route = await fixture.transport.route(fixture.target)
+            let result = await fixture.vm.submit(request, using: route)
+            #expect(result == .notDispatched(
+                reason: "Could not verify this session's permissions. Refresh the chat and try again."))
+            #expect(await fixture.transport.sent.isEmpty)
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            #expect(fixture.vm.pendingRunCount == 0)
+            #expect(fixture.vm.messages.isEmpty)
+            #expect(fixture.vm.runMessageScopesByRunID[request.operationID.uuidString] == nil)
+            #expect(fixture.vm.input == "keep draft")
+            #expect(fixture.vm.replyTarget == reply)
+            #expect(!fixture.vm.isSending && !fixture.vm.isSubmittingDraft)
+            #expect(await fixture.vm.submit(request, using: route) == result)
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+        } catch {
+            await fixture.close()
+            throw error
         }
         await fixture.close()
     }
 
     @Test(arguments: [false, true])
-    func `canonically equivalent owner spelling cannot supply settings`(changeAgent: Bool) async throws {
+    func `canonically equivalent history owner spelling cannot supply settings`(changeAgent: Bool) async throws {
         let fixture = try NativeSubmissionFixture(
             transport: NativeSubmissionTransport(), sessionKey: "global-\u{e9}", agentID: "agent-\u{e9}")
-        if changeAgent {
-            fixture.vm.sessions[0].agentId = "agent-e\u{301}"
-        } else {
-            fixture.vm.sessions[0].key = "global-e\u{301}"
+        do {
+            var history = self.settingsHistory(fixture.target)
+            var row = try #require(history["sessionInfo"] as? [String: Any])
+            row[changeAgent ? "agentId" : "key"] = changeAgent ? "agent-e\u{301}" : "global-e\u{301}"
+            history["sessionInfo"] = row
+            try await fixture.transport.setSnapshotData(JSONSerialization.data(withJSONObject: history))
+            let route = await fixture.transport.route(fixture.target)
+            let result = await fixture.vm.submit(fixture.request(), using: route)
+            if case .notDispatched = result {} else { Issue.record("History ownership requires exact UTF8") }
+            #expect(await fixture.transport.sent.isEmpty)
+        } catch {
+            await fixture.close()
+            throw error
         }
-        let route = await fixture.transport.route(fixture.target)
-        let result = await fixture.vm.submit(fixture.request(), using: route)
-        if case .notDispatched = result {} else { Issue.record("Selected metadata requires exact UTF8") }
-        #expect(await fixture.transport.sent.isEmpty)
         await fixture.close()
     }
 
@@ -681,6 +930,7 @@ private struct ChatExternalSubmissionTests {
     func `acceptance does not wait for history or terminal run`() async throws {
         let gate = NativeSubmissionGate()
         let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(historyGate: gate))
+        await fixture.transport.setTargetedHistoryReplies([.snapshot, .reconciliation])
         await fixture.prepare()
         let request = fixture.request()
         let route = await fixture.transport.route(fixture.target)
@@ -688,6 +938,17 @@ private struct ChatExternalSubmissionTests {
         #expect(result == .accepted(runID: "remote-\(request.operationID.uuidString)"))
         #expect(fixture.vm.pendingRunCount == 1)
         #expect(!fixture.vm.isSending)
+        do {
+            try await waitUntil("post-dispatch history entered") { await gate.entered }
+            #expect(await fixture.transport.wireEvents == [
+                "history:1:started", "history:1:returned", "send:\(request.operationID.uuidString)",
+                "history:2:started",
+            ])
+            #expect(await fixture.transport.targetedHistoryReturns == [1])
+        } catch {
+            await fixture.close()
+            throw error
+        }
         await fixture.close()
     }
 
@@ -698,13 +959,18 @@ private struct ChatExternalSubmissionTests {
         let emptyRunID = scenario == "empty-run"
         let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
             ackStatus: "timeout", ackRunID: emptyRunID ? "" : "admitted-run", ackSummary: "aborted"))
+        await fixture.transport.setTargetedHistoryReplies([.snapshot, .reconciliation])
         await fixture.prepare()
         let messages = scenario == "committed"
             ? #"[{"role":"user","content":[{"type":"text","text":"external text"}],"idempotencyKey":"admitted-run:user"}]"#
             : "[]"
         try await fixture.transport.setHistoryPayload(JSONDecoder().decode(
             OpenClawChatHistoryPayload.self,
-            from: Data(#"{"sessionKey":"\#(fixture.target.sessionKey)","messages":\#(messages)}"#.utf8)))
+            from: Data("""
+            {"sessionKey":"\(fixture.target.sessionKey)","sessionId":"session-a","messages":\(messages),
+             "sessionInfo":{"key":"\(fixture.target.sessionKey)","agentId":"\(fixture.target.agentID)",
+                            "sessionId":"session-a","permissionMode":"guarded","toolOverrides":{"webSearch":false}}}
+            """.utf8)))
         let invocation = fixture.request()
         let route = await fixture.transport.route(fixture.target)
         let result = await fixture.vm.submit(invocation, using: route)
@@ -728,6 +994,126 @@ private struct ChatExternalSubmissionTests {
         await fixture.close()
     }
 
+    @Test(arguments: ["aborted", "ok"], [false, true])
+    func `terminal receipt retires only its selected run after history reconciliation`(
+        outcome: String, successor: Bool) async throws
+    {
+        let historyGate = NativeSubmissionGate()
+        let routeGate = NativeSubmissionGate()
+        let ackRunID = "receipt-run"
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            ackStatus: outcome == "aborted" ? "timeout" : "ok", ackRunID: ackRunID,
+            ackSummary: outcome == "aborted" ? "aborted" : nil,
+            validationGate: routeGate, validationGateCall: 9))
+        await fixture.prepare()
+        let vm = fixture.vm
+        let runID = successor ? "successor-run" : ackRunID
+        let payload = OpenClawChatHistoryPayload(
+            sessionKey: fixture.target.sessionKey, sessionId: "session-a", messages: [], thinkingLevel: nil,
+            sessionInfo: OpenClawChatSessionInfo(
+                hasActiveRun: successor, activeRunIds: successor ? [runID] : [], key: fixture.target.sessionKey,
+                agentId: fixture.target.agentID, sessionId: "session-a"),
+            inFlightRun: successor ? OpenClawChatInFlightRun(runId: runID, text: "successor run text") : nil)
+        // Only this captured reconciliation can install the snapshot. Ordinary
+        // owner polling keeps the fixture's default unavailable-history result.
+        await fixture.transport.setTargetedHistoryReplies([.snapshot, .held(payload, historyGate)])
+        vm.input = "preserved composer draft"
+        let session = vm.currentSessionSnapshot()
+        let invocation = fixture.request()
+        let route = await fixture.transport.route(fixture.target)
+        let submitting = Task { await vm.submit(invocation, using: route) }
+        var ownedRuns: [Task<Void, Never>] = []
+        func closeOwnedWork() async {
+            let currentOwners = Array(vm.pendingRunOwnerTasks.values)
+            vm.detachTransport()
+            await historyGate.open()
+            await fixture.transport.release()
+            _ = await submitting.value
+            for owner in ownedRuns + currentOwners { await owner.value }
+            await fixture.close()
+        }
+        do {
+            try await waitUntil("terminal receipt history suspended") { await historyGate.entered }
+            #expect(await submitting.value == .accepted(runID: ackRunID))
+            #expect(await fixture.transport.wireEvents == [
+                "history:1:started", "history:1:returned", "send:\(invocation.operationID.uuidString)",
+                "history:2:started",
+            ])
+            #expect(await fixture.transport.targetedHistoryReturns == [1])
+            #expect(vm.pendingRuns == [ackRunID])
+            #expect(vm.liveUsageRunID == ackRunID)
+            ownedRuns.append(try #require(vm.pendingRunOwnerTasks[ackRunID]))
+            await historyGate.open()
+
+            try await waitUntil("reconciled run installed before terminal admission") { await routeGate.entered }
+            #expect(await fixture.transport.validationCalls == 9)
+            #expect(await fixture.transport.targetedHistoryReturns == [1, 2])
+            #expect(vm.currentSessionSnapshot() == session)
+            #expect(vm.pendingRuns == [runID])
+            #expect(vm.liveUsageRunID == runID)
+            try #require(vm.liveRunStateByRunID[ackRunID]?.terminal != true)
+            if successor {
+                #expect(vm.streamingAssistantText == "successor run text")
+            } else {
+                let assistant = try JSONDecoder().decode(OpenClawAgentEventPayload.self, from: Data("""
+                {"runId":"\(ackRunID)","seq":1,"stream":"assistant","data":{"text":"receipt run text"}}
+                """.utf8))
+                vm.handleTransportEvent(.agent(assistant))
+                #expect(vm.streamingAssistantText == "receipt run text")
+            }
+            let selectedOwner = try #require(vm.pendingRunOwnerTasks[runID])
+            let selectedArm = try #require(vm.pendingRunOwnerArmIDs[runID])
+            ownedRuns.append(selectedOwner)
+            let tool = try JSONDecoder().decode(OpenClawAgentEventPayload.self, from: Data("""
+            {"runId":"\(runID)","seq":2,"stream":"tool","ts":1,
+             "data":{"phase":"start","name":"read","toolCallId":"selected-tool","args":{"path":"README.md"}}}
+            """.utf8))
+            vm.handleTransportEvent(.agent(tool))
+            let selectedTools = vm.turnToolCallsById
+            #expect(selectedTools["selected-tool"]?.name == "read")
+            #expect(!selectedOwner.isCancelled)
+            await routeGate.open()
+
+            try await waitUntil("terminal receipt retired") {
+                await MainActor.run { vm.liveRunStateByRunID[ackRunID]?.terminal == true }
+            }
+            #expect(vm.pendingLocalUserEchoMessageIDsByRunID[ackRunID] == nil)
+            #expect(vm.pendingRunOwnerTasks[ackRunID] == nil)
+            #expect(vm.pendingRunOwnerArmIDs[ackRunID] == nil)
+            #expect(!vm.pendingRuns.contains(ackRunID))
+            if successor {
+                #expect(vm.pendingRuns == [runID])
+                #expect(vm.liveUsageRunID == runID)
+                #expect(vm.streamingAssistantText == "successor run text")
+                #expect(vm.turnToolCallsById == selectedTools)
+                #expect(vm.pendingRunOwnerArmIDs[runID] == selectedArm)
+                #expect(vm.pendingRunOwnerTasks[runID] != nil)
+                #expect(!selectedOwner.isCancelled)
+                #expect(vm.runMessageScopesByRunID[runID]?.session == session)
+            } else {
+                #expect(vm.pendingRunCount == 0)
+                #expect(vm.liveUsageRunID == nil)
+                #expect(vm.streamingAssistantText == nil)
+                #expect(vm.turnToolCallsById.isEmpty)
+                #expect(selectedOwner.isCancelled)
+            }
+            #expect(vm.input == "preserved composer draft")
+            #expect(vm.errorText == nil)
+            let wire = await fixture.transport.wireEvents
+            #expect(await vm.submit(invocation, using: route) == .accepted(runID: ackRunID))
+            #expect(await fixture.transport.wireEvents == wire)
+            #expect(await fixture.transport.targetedHistoryRequests.count == 2)
+            #expect(await fixture.transport.sent.count == 1)
+            #expect(vm.pendingRuns == (successor ? [runID] : []))
+            #expect(vm.streamingAssistantText == (successor ? "successor run text" : nil))
+            #expect(vm.turnToolCallsById == (successor ? selectedTools : [:]))
+        } catch {
+            await closeOwnedWork()
+            throw error
+        }
+        await closeOwnedWork()
+    }
+
     @Test(arguments: [false, true])
     func `retired native reconciliation cannot change the retained presentation`(duringHistory: Bool) async throws {
         let gate = NativeSubmissionGate()
@@ -735,15 +1121,17 @@ private struct ChatExternalSubmissionTests {
             ackStatus: "ok",
             historyGate: duringHistory ? gate : nil,
             validationGate: duringHistory ? nil : gate,
-            validationGateCall: 4)
+            validationGateCall: 5)
         let fixture = try NativeSubmissionFixture(transport: transport)
+        await transport.setTargetedHistoryReplies([.snapshot, .reconciliation])
         await fixture.prepare()
         try await transport.setHistoryPayload(JSONDecoder().decode(
             OpenClawChatHistoryPayload.self,
             from: Data("""
-            {"sessionKey":"\(fixture.target.sessionKey)","messages":[
+            {"sessionKey":"\(fixture.target.sessionKey)","sessionId":"session-a","messages":[
               {"role":"assistant","content":[{"type":"text","text":"stale history"}],"timestamp":1}
-            ]}
+            ],"sessionInfo":{"key":"\(fixture.target.sessionKey)","agentId":"\(fixture.target.agentID)",
+                             "sessionId":"session-a","permissionMode":"guarded","toolOverrides":{"webSearch":false}}}
             """.utf8)))
         let invocation = fixture.request()
         let route = await transport.route(fixture.target)
@@ -751,6 +1139,11 @@ private struct ChatExternalSubmissionTests {
             .accepted(runID: "remote-\(invocation.operationID.uuidString)"))
         do {
             try await waitUntil("reconciliation suspended") { await gate.entered }
+            #expect(await transport.wireEvents.prefix(3) == [
+                "history:1:started", "history:1:returned", "send:\(invocation.operationID.uuidString)",
+            ])
+            #expect(await transport.targetedHistoryRequests.count == (duringHistory ? 2 : 1))
+            #expect(await transport.targetedHistoryReturns == [1])
             let messages = fixture.vm.messages.map(\.id)
             let pending = fixture.vm.pendingRuns
             let validations = await transport.validationCalls
@@ -909,6 +1302,19 @@ private struct ChatExternalSubmissionTests {
         let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport())
         await fixture.prepare()
         let target = fixture.vm.currentModelPatchTarget()
+        var history = self.settingsHistory(fixture.target)
+        history["sessionInfo"] = [
+            "key": fixture.target.sessionKey,
+            "agentId": completion == "wrong agent" ? "agent-b" : fixture.target.agentID,
+            "sessionId": "session-a", "permissionMode": "full", "toolOverrides": NSNull(),
+        ]
+        let updatedHistory: Data
+        do {
+            updatedHistory = try JSONSerialization.data(withJSONObject: history)
+        } catch {
+            await fixture.close()
+            throw error
+        }
         let patchID = fixture.vm.reserveSessionSettingsRequest(for: target)
         fixture.vm.enqueueSessionSettingsPatch(requestID: patchID, target: target) { _ in
             await gate.wait()
@@ -924,6 +1330,7 @@ private struct ChatExternalSubmissionTests {
             } else {
                 fixture.vm.sessions[0].permissionMode = .full
                 fixture.vm.sessions[0].toolOverrides = nil
+                await fixture.transport.setSnapshotData(updatedHistory)
             }
         }
         let route = await fixture.transport.route(fixture.target)
@@ -932,10 +1339,10 @@ private struct ChatExternalSubmissionTests {
         do {
             try await waitUntil("submission waits for settings") { await MainActor.run { fixture.vm.isSending } }
             #expect(await fixture.transport.sent.isEmpty)
+            #expect(await fixture.transport.targetedHistoryRequests.isEmpty)
             switch completion {
             case "changed lease": await fixture.transport.invalidate()
             case "stale metadata": fixture.vm.invalidateSessionMetadataReadiness()
-            case "wrong agent": fixture.vm.sessions[0].agentId = "agent-b"
             default: break
             }
             await gate.open()
@@ -1147,13 +1554,16 @@ private struct ChatExternalSubmissionTests {
         let patch = NativeSubmissionGate()
         let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
             validationGate: validation,
-            validationGateCall: 2))
+            validationGateCall: 3))
         await fixture.prepare()
         let route = await fixture.transport.route(fixture.target)
         let request = fixture.request()
         let task = Task { await fixture.vm.submit(request, using: route) }
         do {
             try await waitUntil("final route validation entered") { await validation.entered }
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            #expect(await fixture.transport.targetedHistoryReturns == [1])
+            #expect(await fixture.transport.sent.isEmpty)
             let target = fixture.vm.currentModelPatchTarget()
             let patchID = fixture.vm.reserveSessionSettingsRequest(for: target)
             fixture.vm.enqueueSessionSettingsPatch(requestID: patchID, target: target) { _ in await patch.wait() }
@@ -1168,6 +1578,246 @@ private struct ChatExternalSubmissionTests {
             throw error
         }
         await patch.open()
+        await fixture.close()
+    }
+
+    @Test(arguments: ["before-confirmation", "history", "final-route"])
+    func `native send waits for a real reset across every admission boundary without replay`(
+        phase: String) async throws
+    {
+        let resetGate = NativeSubmissionGate()
+        let admissionGate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            snapshotGate: phase == "history" ? admissionGate : nil,
+            validationGate: phase == "final-route" ? admissionGate : nil,
+            resetGate: resetGate,
+            validationGateCall: 3))
+        await fixture.prepare()
+        let vm = fixture.vm
+        await fixture.transport.setHistoryPayload(OpenClawChatHistoryPayload(
+            sessionKey: fixture.target.sessionKey, sessionId: "session-a", messages: [], thinkingLevel: nil,
+            sessionInfo: OpenClawChatSessionInfo(
+                hasActiveRun: false, key: fixture.target.sessionKey, agentId: fixture.target.agentID,
+                sessionId: "session-a", permissionMode: .guarded, toolOverrides: .init(webSearch: false))))
+        await fixture.transport.setSessionsPayload(OpenClawChatSessionsListResponse(
+            ts: nil, path: nil, count: vm.sessions.count, defaults: nil, sessions: vm.sessions))
+        let route = await fixture.transport.route(fixture.target)
+        let invocation = fixture.request()
+        let session = vm.currentSessionSnapshot()
+        let target = vm.currentSessionTarget
+        let metadataGeneration = vm.sessionMetadataGeneration
+        let branchGeneration = vm.nextSessionBranchSwitchGeneration
+        vm.input = "preserved reset draft"
+        var submitting: Task<OpenClawChatSubmissionOutcome, Never>?
+        var resetting: Task<Void, Never>?
+        do {
+            if phase != "before-confirmation" {
+                submitting = Task { await vm.submit(invocation, using: route) }
+                try await waitUntil("native admission suspended before reset") { await admissionGate.entered }
+                #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+                #expect(await fixture.transport.targetedHistoryReturns == (phase == "history" ? [] : [1]))
+                #expect(vm.pendingRunCount == 1)
+            }
+            resetting = Task { await vm.performReset(presentationIsCurrent: { true }) }
+            try await waitUntil("reset RPC entered") { await resetGate.entered }
+            #expect(await fixture.transport.resetKeys == [fixture.target.sessionKey])
+            #expect(vm.isLoading)
+            #expect(vm.isCurrentSession(session))
+            #expect(vm.currentSessionTarget == target)
+            #expect(vm.nextSessionBranchSwitchGeneration == branchGeneration)
+            #expect(vm.sessionMetadataGeneration == metadataGeneration)
+            #expect(vm.hasCurrentSessionMetadata)
+            #expect(vm.healthOK)
+            #expect(await fixture.transport.sent.isEmpty)
+            if phase == "before-confirmation" {
+                submitting = Task { await vm.submit(invocation, using: route) }
+            }
+            await admissionGate.open()
+            let submission = try #require(submitting)
+            let result = await submission.value
+            #expect(result == .notDispatched(
+                reason: "Wait for this chat to finish loading, then try this action again."))
+            // Keep reset suspended: route, metadata and target still authorize the
+            // same session, so only the loading owner can explain this refusal.
+            #expect(await route.isCurrent())
+            #expect(vm.isLoading && vm.hasCurrentSessionMetadata)
+            #expect(vm.isCurrentSession(session))
+            #expect(vm.sessionMetadataGeneration == metadataGeneration)
+            #expect(await fixture.transport.sent.isEmpty)
+            #expect(vm.pendingRunCount == 0)
+            #expect(vm.pendingLocalUserEchoMessageIDsByRunID[invocation.operationID.uuidString] == nil)
+            #expect(vm.runMessageScopesByRunID[invocation.operationID.uuidString] == nil)
+            #expect(vm.messages.isEmpty)
+            #expect(vm.input == "preserved reset draft")
+            #expect(!vm.isSending && !vm.isSubmittingDraft)
+            let admissionReads = phase == "before-confirmation" ? 0 : 1
+            #expect(await fixture.transport.targetedHistoryRequests.count == admissionReads)
+            #expect(await vm.submit(invocation, using: route) == result)
+            #expect(await fixture.transport.targetedHistoryRequests.count == admissionReads)
+            #expect(await fixture.transport.sent.isEmpty)
+
+            await resetGate.open()
+            await resetting?.value
+            try await waitUntil("successful reset bootstrap restored readiness") {
+                await MainActor.run { !vm.isLoading && vm.hasCurrentSessionMetadata && vm.healthOK }
+            }
+            #expect(await fixture.transport.historyReturns == 1)
+            #expect(await fixture.transport.sessionListCalls == 1)
+            #expect(vm.hasAppliedLiveHistory)
+            #expect(vm.currentSessionTarget == target)
+            #expect(vm.input == "preserved reset draft")
+            #expect(await vm.submit(invocation, using: route) == result)
+            #expect(await fixture.transport.targetedHistoryRequests.count == admissionReads)
+            #expect(await fixture.transport.sent.isEmpty)
+
+            let fresh = fixture.request("fresh intentional send")
+            #expect(fresh.operationID != invocation.operationID)
+            submitting = Task { await vm.submit(fresh, using: route) }
+            let freshSubmission = try #require(submitting)
+            #expect(await freshSubmission.value == .accepted(runID: "remote-\(fresh.operationID.uuidString)"))
+            let sent = await fixture.transport.sent
+            #expect(sent.count == 1)
+            #expect(sent.first?.id == fresh.operationID.uuidString)
+            #expect(sent.first?.text == "fresh intentional send")
+            let wire = await fixture.transport.wireEvents
+            let read = try #require(wire.firstIndex(of: "history:\(admissionReads + 1):returned"))
+            let send = try #require(wire.firstIndex(of: "send:\(fresh.operationID.uuidString)"))
+            #expect(read < send)
+            #expect(vm.input == "preserved reset draft")
+        } catch {
+            await fixture.transport.release()
+            _ = await submitting?.value
+            await resetting?.value
+            await fixture.close()
+            throw error
+        }
+        await fixture.transport.release()
+        _ = await submitting?.value
+        await resetting?.value
+        await fixture.close()
+    }
+
+    @Test(arguments: ["history", "final-route"], [
+        "metadata", "renewed metadata", "patch", "completed patch", "branch", "session", "route", "presentation",
+        "cancel",
+    ])
+    func `exact settings admission rejects retirement across either suspension`(
+        phase: String, change: String) async throws
+    {
+        let gate = NativeSubmissionGate()
+        let patchGate = NativeSubmissionGate()
+        let bootstrapGate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            historyGate: bootstrapGate,
+            snapshotGate: phase == "history" ? gate : nil,
+            validationGate: phase == "final-route" ? gate : nil,
+            validationGateCall: 3))
+        let presentation = NativeSubmissionPresentation()
+        let physical = await fixture.transport.route(fixture.target)
+        let route = OpenClawChatExternalSubmissionRoute(target: fixture.target, lease: physical.lease) {
+            guard await physical.isCurrent() else { return false }
+            return await presentation.isCurrent
+        }
+        let target = fixture.vm.currentModelPatchTarget()
+        fixture.vm.input = "preserved draft"
+        let invocation = fixture.request()
+        let task = Task { await fixture.vm.submit(invocation, using: route) }
+        do {
+            try await waitUntil("exact settings admission suspended") { await gate.entered }
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            #expect(await fixture.transport.targetedHistoryReturns == (phase == "history" ? [] : [1]))
+            #expect(await fixture.transport.sent.isEmpty)
+            #expect(fixture.vm.pendingRunCount == 1)
+            switch change {
+            case "metadata", "renewed metadata":
+                fixture.vm.invalidateSessionMetadataReadiness()
+                if change == "renewed metadata" {
+                    fixture.vm.readySessionMetadataGeneration = fixture.vm.sessionMetadataGeneration
+                }
+            case "patch", "completed patch":
+                let requestID = fixture.vm.reserveSessionSettingsRequest(for: target)
+                fixture.vm.enqueueSessionSettingsPatch(requestID: requestID, target: target) { _ in
+                    await patchGate.wait()
+                }
+                if change == "completed patch" {
+                    await patchGate.open()
+                    await fixture.vm.waitForPendingSessionSettings(for: target)
+                }
+            case "branch": fixture.vm.nextSessionBranchSwitchGeneration &+= 1
+            case "session":
+                fixture.vm.switchSession(to: "agent:agent-a:other", agentID: fixture.target.agentID)
+                fixture.vm.detachTransport()
+            case "route": await fixture.transport.invalidate()
+            case "presentation": presentation.isCurrent = false
+            default: task.cancel()
+            }
+            await gate.open()
+            let result = await task.value
+            if change == "cancel" {
+                #expect(result == .cancelled)
+            } else if case .notDispatched = result {} else {
+                Issue.record("A retired settings snapshot cannot authorize a send")
+            }
+            #expect(await fixture.transport.sent.isEmpty)
+            #expect(fixture.vm.pendingRunCount == 0)
+            #expect(fixture.vm.pendingLocalUserEchoMessageIDsByRunID[invocation.operationID.uuidString] == nil)
+            #expect(fixture.vm.runMessageScopesByRunID[invocation.operationID.uuidString] == nil)
+            if change != "session" { #expect(fixture.vm.input == "preserved draft") }
+            #expect(!fixture.vm.isSending && !fixture.vm.isSubmittingDraft)
+            _ = await fixture.vm.submit(invocation, using: route)
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            #expect(await fixture.transport.sent.isEmpty)
+        } catch {
+            await gate.open()
+            await patchGate.open()
+            await fixture.transport.release()
+            _ = await task.value
+            await fixture.vm.waitForPendingSessionSettings(for: target)
+            await fixture.close()
+            throw error
+        }
+        await patchGate.open()
+        await fixture.vm.waitForPendingSessionSettings(for: target)
+        await fixture.close()
+    }
+
+    @Test
+    func `duplicate confirmation joins the same exact settings read and never rereads on replay`() async throws {
+        let gate = NativeSubmissionGate()
+        let fixture = try NativeSubmissionFixture(transport: NativeSubmissionTransport(
+            response: .rejected, snapshotGate: gate))
+        let route = await fixture.transport.route(fixture.target)
+        let invocation = fixture.request()
+        let first = Task { await fixture.vm.submit(invocation, using: route) }
+        var duplicate: Task<OpenClawChatSubmissionOutcome, Never>?
+        do {
+            try await waitUntil("exact settings read entered") { await gate.entered }
+            let validations = await fixture.transport.validationCalls
+            let joined = Task { await fixture.vm.submit(invocation, using: route) }
+            duplicate = joined
+            try await waitUntil("duplicate joined settings owner") {
+                await fixture.transport.validationCalls > validations
+            }
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            #expect(await fixture.transport.sent.isEmpty)
+            await gate.open()
+            let result = await first.value
+            if case .rejected = result {} else { Issue.record("Expected the single admitted send's rejection") }
+            #expect(await joined.value == result)
+            #expect(await fixture.vm.submit(invocation, using: route) == result)
+            #expect(await fixture.transport.wireEvents == [
+                "history:1:started", "history:1:returned", "send:\(invocation.operationID.uuidString)",
+            ])
+            #expect(await fixture.transport.targetedHistoryRequests.count == 1)
+            #expect(await fixture.transport.targetedHistoryReturns == [1])
+            #expect(await fixture.transport.sent.count == 1)
+        } catch {
+            await gate.open()
+            _ = await first.value
+            _ = await duplicate?.value
+            await fixture.close()
+            throw error
+        }
         await fixture.close()
     }
 

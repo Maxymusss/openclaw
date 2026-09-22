@@ -15,18 +15,20 @@ private struct ChatScrollEdgeTreatment: ViewModifier {
     }
 }
 
-struct ChatProTab: View {
-    private struct TranscriptShareItem: Identifiable {
-        let id = UUID()
-        let fileURL: URL
-    }
+enum IOSChatModalRequest {
+    case backgroundTasks(agentID: String)
+    case newSessionOptions(OpenClawChatViewModel)
+    case transcriptShare(URL)
+    case transcriptExportError
+}
 
-    private enum PendingChatAction {
-        case backgroundTasks
-        case exportTranscript
-        case gatewaySettings
-        case newSessionOptions
-    }
+@MainActor
+struct IOSChatModalPublication {
+    let isCurrent: () -> Bool
+    let present: (IOSChatModalRequest) -> Void
+}
+
+struct ChatProTab: View {
 
     private struct VisibleChatIdentity: Equatable {
         let model: ObjectIdentifier?
@@ -44,12 +46,10 @@ struct ChatProTab: View {
     }
 
     @State private var chatRegistrationID: UUID?
-    @State private var transcriptShareItem: TranscriptShareItem?
-    @State private var showsTranscriptExportError = false
-    @State private var showsBackgroundTasks = false
-    @State private var showsNewSessionOptions = false
+    @State private var registeredChatIdentity: VisibleChatIdentity?
+    @State private var lifetime = IOSNativePresentationLifetime()
     @State private var showsChatActions = false
-    @State private var pendingChatAction: PendingChatAction?
+    @State private var pendingChatAction: (@MainActor () -> Void)?
     @State private var speech: OpenClawChatSpeechController?
     @State private var isGatewayStatusManuallyExpanded = false
     let headerSidebarAction: OpenClawSidebarHeaderAction?
@@ -58,6 +58,8 @@ struct ChatProTab: View {
     let nativeBinding: IOSNativeActionBinding?
     let nativePresentationID: UUID?
     let openSettings: (() -> Void)?
+    let prepareModal: ((OpenClawChatViewModel) -> IOSChatModalPublication?)?
+    let retainModalPresentation: @MainActor () -> Bool
 
     init(
         headerSidebarAction: OpenClawSidebarHeaderAction? = nil,
@@ -65,7 +67,9 @@ struct ChatProTab: View {
         showsAgentBadge: Bool = true,
         nativeBinding: IOSNativeActionBinding? = nil,
         nativePresentationID: UUID? = nil,
-        openSettings: (() -> Void)? = nil)
+        openSettings: (() -> Void)? = nil,
+        prepareModal: ((OpenClawChatViewModel) -> IOSChatModalPublication?)? = nil,
+        retainModalPresentation: @escaping @MainActor () -> Bool = { false })
     {
         self.headerSidebarAction = headerSidebarAction
         self.headerTitle = headerTitle
@@ -73,6 +77,8 @@ struct ChatProTab: View {
         self.nativeBinding = nativeBinding
         self.nativePresentationID = nativePresentationID
         self.openSettings = openSettings
+        self.prepareModal = prepareModal
+        self.retainModalPresentation = retainModalPresentation
     }
 
     var body: some View {
@@ -82,9 +88,14 @@ struct ChatProTab: View {
                 guard !Task.isCancelled else { return }
                 await self.registerVisibleChat()
             }
+            .background(IOSNativePresentationAnchor(lifetime: self.lifetime).frame(width: 0, height: 0))
             .onDisappear {
-                self.nativeActions?.unregisterChat(self.chatRegistrationID)
-                self.chatRegistrationID = nil
+                if self.retainModalPresentation() {
+                    _ = self.nativeActions?.userNavigationDidChange(
+                        presentationID: self.nativePresentationID, disposition: .chatModal)
+                } else {
+                    self.lifetime.release()
+                }
             }
     }
 
@@ -102,10 +113,28 @@ struct ChatProTab: View {
             nativeActions: self.nativeActions, presentationID: self.nativePresentationID), !Task.isCancelled
         else { return }
         let viewModel = context.viewModel
+        // A covering modal retains the exact registration. Returning visibility
+        // does not issue new custody for an unchanged model, binding and root.
+        if let id = self.chatRegistrationID, self.nativeActions?.chatRegistrationID == id,
+           self.registeredChatIdentity == self.visibleChatIdentity
+        {
+            return
+        }
         // RootTabs owns the model; registration only attests this visible chat.
         self.chatRegistrationID = self.nativeActions?.registerChat(
             viewModel, ownerID: context.ownerID, agentID: context.agentID,
             transport: context.transport, presentationID: self.nativePresentationID)
+        if let id = self.chatRegistrationID {
+            self.registeredChatIdentity = self.visibleChatIdentity
+            let router = self.nativeActions
+            self.lifetime.own(id) {
+                router?.unregisterChat(id)
+                if self.chatRegistrationID == id {
+                    self.chatRegistrationID = nil
+                    self.registeredChatIdentity = nil
+                }
+            }
+        }
         self.speech?.stop()
         let binding = context.transport?.nativeBinding
         let gateway = self.appModel.operatorSession
@@ -172,33 +201,7 @@ struct ChatProTab: View {
                     }
                 }
             }
-            .sheet(item: self.$transcriptShareItem) { item in
-                ChatTranscriptShareSheet(fileURL: item.fileURL)
-            }
-            .sheet(isPresented: self.$showsBackgroundTasks) {
-                BackgroundTasksScreen(agentID: self.currentAgentID)
-            }
-            .sheet(isPresented: self.$showsNewSessionOptions) {
-                if let viewModel {
-                    ChatNewSessionOptionsPopover(viewModel: viewModel) {
-                        self.showsNewSessionOptions = false
-                    }
-                    .presentationDetents([.medium])
-                    .presentationDragIndicator(.visible)
-                }
-            }
-            .alert(
-                String(localized: "Unable to Export Transcript"),
-                isPresented: self.$showsTranscriptExportError)
-            {
-                Button(role: .cancel) {} label: {
-                    Text("OK")
-                        .font(OpenClawType.body)
-                }
-            } message: {
-                Text("OpenClaw could not prepare the Markdown file.")
-                    .font(OpenClawType.body)
-            }
+
     }
 
     @ViewBuilder
@@ -490,8 +493,10 @@ struct ChatProTab: View {
 
     private var dictationControl: OpenClawChatDictationControl {
         OpenClawChatDictationControl(
-            isActive: self.appModel.isChatDictationActive,
-            isAvailable: !self.appModel.isTalkCaptureActive || self.appModel.isChatDictationActive,
+            phase: self.appModel.chatDictationPhase,
+            isAvailable: !self.appModel.isTalkCaptureActive || self.appModel.chatDictationPhase != .idle,
+            partialTranscript: self.appModel.chatDictationPartialTranscript,
+            level: self.appModel.chatDictationLevel,
             start: {
                 try await self.appModel.transcribeChatDraft()
             },
@@ -557,7 +562,11 @@ struct ChatProTab: View {
                     systemImage: "slider.horizontal.3",
                     disabled: self.viewModel == nil || !self.gatewayConnected || self.isAttachmentOwnerPinned)
                 {
-                    self.pendingChatAction = .newSessionOptions
+                    guard let viewModel, let publication = self.prepareModal?(viewModel) else { return }
+                    self.pendingChatAction = {
+                        guard publication.isCurrent() else { return }
+                        publication.present(.newSessionOptions(viewModel))
+                    }
                 }
                 if let viewModel {
                     ChatModelControlsMenuItems(
@@ -585,19 +594,28 @@ struct ChatProTab: View {
                     systemImage: "clock.arrow.circlepath",
                     disabled: !self.appModel.isOperatorGatewayConnected)
                 {
-                    self.pendingChatAction = .backgroundTasks
+                    guard let viewModel, let publication = self.prepareModal?(viewModel) else { return }
+                    let agentID = self.currentAgentID
+                    self.pendingChatAction = {
+                        guard publication.isCurrent() else { return }
+                        publication.present(.backgroundTasks(agentID: agentID))
+                    }
                 }
                 self.chatActionButton(
                     title: "Export transcript",
                     systemImage: "square.and.arrow.up",
                     disabled: self.viewModel == nil)
                 {
-                    self.pendingChatAction = .exportTranscript
+                    guard let viewModel, let publication = self.prepareModal?(viewModel) else { return }
+                    self.pendingChatAction = {
+                        guard publication.isCurrent() else { return }
+                        self.exportTranscript(viewModel: viewModel, publication: publication)
+                    }
                 }
 
                 if self.openSettings != nil {
                     self.chatActionButton(title: "Gateway settings", systemImage: "network") {
-                        self.pendingChatAction = .gatewaySettings
+                        self.pendingChatAction = self.openSettings
                     }
                     .accessibilityIdentifier("chat-gateway-settings")
                 }
@@ -625,22 +643,14 @@ struct ChatProTab: View {
     }
 
     private func performPendingChatAction() {
-        guard let pendingChatAction = self.pendingChatAction else { return }
+        let action = self.pendingChatAction
         self.pendingChatAction = nil
-        switch pendingChatAction {
-        case .backgroundTasks:
-            self.showsBackgroundTasks = true
-        case .exportTranscript:
-            self.exportTranscript()
-        case .gatewaySettings:
-            self.openSettings?()
-        case .newSessionOptions:
-            self.showsNewSessionOptions = true
-        }
+        action?()
     }
 
-    private func exportTranscript() {
-        guard let viewModel else { return }
+    private func exportTranscript(
+        viewModel: OpenClawChatViewModel, publication: IOSChatModalPublication)
+    {
         let title = viewModel.sessions.first { $0.key == viewModel.sessionKey }?.displayName
         let filename = ChatTranscriptExporter.filename(
             sessionTitle: title,
@@ -652,9 +662,9 @@ struct ChatProTab: View {
         do {
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try viewModel.exportTranscriptMarkdown().write(to: fileURL, atomically: true, encoding: .utf8)
-            self.transcriptShareItem = TranscriptShareItem(fileURL: fileURL)
+            publication.present(.transcriptShare(fileURL))
         } catch {
-            self.showsTranscriptExportError = true
+            publication.present(.transcriptExportError)
         }
     }
 

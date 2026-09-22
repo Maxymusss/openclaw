@@ -80,6 +80,7 @@ export async function startQaGatewayRpcProxy({
   /** @type {((error?: Error) => void) | undefined} */
   let heldWaiter;
   let mediaTask;
+  let responseReleaseTask;
   // This public failure projection is separate from private assertion evidence.
   // Saturation stops recording, never forwarding; raw correlation IDs stay private.
   const readiness = [];
@@ -324,7 +325,9 @@ export async function startQaGatewayRpcProxy({
               input.method,
             ) ||
             holdMethod ||
-            heldResponse
+            heldResponse ||
+            mediaTask ||
+            responseReleaseTask
           ) {
             throw new Error("invalid or overlapping response hold");
           }
@@ -356,8 +359,15 @@ export async function startQaGatewayRpcProxy({
           }
           const releasing = heldResponse;
           heldResponse = undefined;
-          const delivered = await releasing.release();
-          record("response-released", { ...releasing.summary, delivered });
+          // Consume once, but reserve the hold until HTTP completion or the
+          // WebSocket callback settles so controls cannot rearm during delivery.
+          responseReleaseTask = (async () => {
+            const delivered = await releasing.release();
+            record("response-released", { ...releasing.summary, delivered });
+          })().finally(() => {
+            responseReleaseTask = undefined;
+          });
+          await responseReleaseTask;
         } else if (action === "drop-response") {
           dropResponse = true;
         } else if (action === "hold-reconnect") {
@@ -407,7 +417,9 @@ export async function startQaGatewayRpcProxy({
             }
           });
         }
-        if (observedMedia && holdMethod === "media.get") {
+        if (observedMedia && holdMethod === "media.get" && !mediaTask) {
+          // Reserve collection before the first body read yields. Later matching
+          // responses must not replace this hold or the task that stop joins.
           mediaTask = (async () => {
             const chunks = [];
             let sizeBytes = 0;
@@ -444,11 +456,15 @@ export async function startQaGatewayRpcProxy({
             };
             record("response-held", heldResponse.summary);
             heldWaiter?.();
-          })().catch(() => {
-            holdMethod = undefined;
-            heldWaiter?.(new Error("held media response failed"));
-            res.destroy();
-          });
+          })()
+            .catch(() => {
+              holdMethod = undefined;
+              heldWaiter?.(new Error("held media response failed"));
+              res.destroy();
+            })
+            .finally(() => {
+              mediaTask = undefined;
+            });
           return;
         }
         res.writeHead(response.statusCode ?? 503, response.headers);
@@ -840,6 +856,7 @@ export async function startQaGatewayRpcProxy({
       server.closeAllConnections();
       const results = await Promise.allSettled([
         mediaTask,
+        responseReleaseTask,
         websocketClosed,
         serverClosed,
         ...closingPeers.map((peer) => peer.closed),

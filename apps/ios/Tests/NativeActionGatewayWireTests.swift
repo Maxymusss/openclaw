@@ -86,8 +86,13 @@ struct NativeActionGatewayWireTests {
         var presentationID: UUID?
         var chatRegistrationID: UUID?
         var binding: IOSNativeActionBinding?
-        var chat: OpenClawChatViewModel?
-        var transport: IOSGatewayChatTransport?
+        var chat: OpenClawChatViewModel? {
+            self.model.chatPresentation.viewModel
+        }
+
+        var transport: IOSGatewayChatTransport? {
+            self.model.chatPresentation.transport
+        }
 
         init(fixture: Fixture, signInGatewayURL: URL? = nil) {
             self.fixture = fixture
@@ -99,36 +104,26 @@ struct NativeActionGatewayWireTests {
             let controller = GatewayConnectionController(appModel: model, startDiscovery: false)
             self.controller = controller
             self.router = NativeActionRouter(appModel: model, gatewayController: controller)
-            self.presentationID = self.router.registerPresentation(onRetire: { [weak self] in
+            self.presentationID = self.router.registerPresentation(onRetire: { [weak self] _ in
                 self?.binding = nil
+            }, onSessionAdopted: { [weak self] previous, binding in
+                guard let self, self.binding == nil || self.binding?.canReuse(previous) == true else { return }
+                self.binding = binding
             }) { [weak self] request, binding, _ in
                 guard let self else { throw CancellationError() }
                 self.model.setSelectedAgentId(request.session.agentID)
                 self.model.focusChatSession(request.session.sessionKey)
-                if self.binding?.canReuse(binding) == true { return }
-                self.chat?.detachTransport()
-                let transport = try #require(
-                    self.model.makeChatTransport(nativeBinding: binding) as? IOSGatewayChatTransport)
-                let relay = IOSChatSessionTargetRelay { [weak self] chat in
-                    self?.router.chatSessionChanged(chat, binding: binding, presentationID: self?.presentationID)
-                }
-                let chat = OpenClawChatViewModel(
-                    sessionKey: request.session.sessionKey,
-                    transport: transport,
-                    activeAgentId: request.session.agentID,
-                    sessionRoutingContract: binding.sessionRoutingContract,
-                    onSessionChanged: { _ in relay.sessionChanged() })
-                relay.viewModel = chat
+                let owner = self.model.chatPresentation
+                owner.sync(
+                    appModel: self.model, nativeBinding: binding,
+                    nativeActions: self.router, presentationID: self.presentationID)
                 self.binding = binding
-                self.chat = chat
-                self.transport = transport
+                let chat = try #require(owner.viewModel)
+                let transport = try #require(owner.transport)
+                try #require(transport.nativeBinding?.canReuse(binding) == true)
                 self.chatRegistrationID = self.router.registerChat(
-                    chat,
-                    ownerID: self.model.chatViewModelOwnerID,
-                    agentID: request.session.agentID,
-                    transport: transport,
-                    presentationID: self.presentationID)
-                chat.load()
+                    chat, ownerID: owner.ownerID, agentID: owner.transportAgentID,
+                    transport: transport, presentationID: self.presentationID)
             }
         }
 
@@ -220,10 +215,44 @@ struct NativeActionGatewayWireTests {
             }
         }
 
+        func requireSettled(_ run: OpenClawNativeRunRef, before nextID: String? = nil) async throws {
+            let chat = try #require(self.chat)
+            let target = chat.currentSessionTarget
+            let binding = try #require(self.binding)
+            try #require(binding.session == run.session)
+            try #require(target.sessionKey == run.session.sessionKey)
+            try #require(
+                (OpenClawChatSessionKey.agentID(from: target.sessionKey) ?? target.agentID) == run.session.agentID)
+            // Server verification does not settle the client's live-run owner.
+            // Observe its actual readiness before asking it to adopt another target.
+            try await AsyncTimeout.withTimeout(seconds: 2, onTimeout: { URLError(.timedOut) }) { @MainActor in
+                while !(chat.pendingRunCount == 0 && !chat.isLoading && !chat.isSending &&
+                    chat.canPreserveIdleTextDraft)
+                {
+                    try await Task.sleep(for: .milliseconds(1))
+                }
+            }
+            let current = await binding.isCurrent()
+            try #require(current)
+            try #require(self.chat === chat && chat.currentSessionTarget == target)
+            try #require(self.binding?.canReuse(binding) == true)
+            try #require(self.transport?.nativeBinding?.canReuse(binding) == true)
+            try #require(chat.pendingRunCount == 0 && !chat.isLoading && !chat.isSending)
+            try #require(chat.canPreserveIdleTextDraft && chat.healthOK && chat.errorText == nil)
+            let owner = self.model.chatPresentation
+            try #require(!owner.hasProtectedComposer(appModel: self.model))
+            if let nextID {
+                let spec = try #require(self.fixture.cases[nextID])
+                let next = OpenClawNativeSessionRef(
+                    owner: run.session.owner, agentID: run.session.agentID, sessionKey: spec.sessionKey)
+                try #require(owner.canPresentNativeSession(next, appModel: self.model))
+            }
+        }
+
         func disconnect() async {
             self.chat?.detachTransport()
-            self.chat = nil
-            self.transport = nil
+            self.router.unregisterChat(self.chatRegistrationID)
+            self.chatRegistrationID = nil
             self.binding = nil
             self.model.setOperatorConnected(false)
             await self.model.operatorSession.disconnect()
@@ -249,7 +278,7 @@ struct NativeActionGatewayWireTests {
         try #require(fixture.gatewayURL.scheme == "ws" && fixture.gatewayURL.host == "127.0.0.1")
         try #require(fixture.controlURL.scheme == "http" && fixture.controlURL.host == "127.0.0.1")
         try #require(!fixture.controlToken.isEmpty && fixture.aliceProfileID != fixture.bobProfileID)
-        let presentation = Presentation(fixture: fixture)
+        var presentation = Presentation(fixture: fixture)
         let signInConfig = try await fixture.control("signin-config")
         let signInURL = try #require(signInConfig.signInGatewayURL)
         try #require(signInURL.scheme == "ws" && signInURL.host == "127.0.0.1")
@@ -260,8 +289,31 @@ struct NativeActionGatewayWireTests {
             let retired = try await presentation.prepare("allowed")
             let oldChat = try #require(presentation.chat)
             let originalKey = retired.session.sessionKey
-            oldChat.switchSession(to: "agent:qa:native-navigation-away")
-            oldChat.switchSession(to: originalKey)
+            let originalBinding = try #require(presentation.binding)
+            let originalTransport = try #require(presentation.transport)
+            for key in ["agent:qa:native-navigation-away", originalKey] {
+                try #require(oldChat.switchSession(to: key))
+                let binding = try #require(presentation.binding)
+                let transport = try #require(presentation.transport)
+                let session = OpenClawNativeSessionRef(
+                    owner: retired.session.owner, agentID: retired.session.agentID, sessionKey: key)
+                try #require(presentation.chat === oldChat)
+                try #require(oldChat.currentSessionTarget == OpenClawChatSessionTarget(
+                    sessionKey: key,
+                    agentID: OpenClawChatSessionKey.agentID(from: key) == nil ? session.agentID : nil))
+                try #require(presentation.model.chatSessionKey == key)
+                try #require(presentation.model.chatDeliveryAgentId == session.agentID)
+                try #require(binding.session == session)
+                try #require(transport.nativeBinding?.session == session)
+                try #require(transport.nativeBinding?.canReuse(binding) == true)
+                try #require(transport.gateway === originalTransport.gateway)
+                try #require(binding.route == originalBinding.route)
+                try #require(binding.profileObservationID == originalBinding.profileObservationID)
+            }
+            try #require(originalTransport.nativeBinding?.session == retired.session)
+            let currentRoute = await originalBinding.gateway.currentRoute(
+                ifGatewayID: retired.session.owner.gatewayID)
+            try #require(currentRoute == originalBinding.route)
             await #expect(throws: Error.self) { _ = try await retired.submit() }
             // The unchanged fixture's final one-admission/provider/sentinel count
             // proves this retired confirmation added no work before the fresh send.
@@ -271,10 +323,12 @@ struct NativeActionGatewayWireTests {
             let replay = try await prepared.submit()
             try #require(replay == accepted)
             try await fixture.verify("allowed", runID: replay.runID)
+            try await presentation.requireSettled(accepted, before: "distinct")
 
             let distinct = try await presentation.prepare("distinct").submit()
             try #require(distinct.runID != accepted.runID)
             try await fixture.verify("distinct", runID: distinct.runID)
+            try await presentation.requireSettled(distinct, before: "aclSuspended")
             await #expect(throws: Error.self) {
                 _ = try await presentation.prepare("foreign", profileID: fixture.bobProfileID)
             }
@@ -284,10 +338,16 @@ struct NativeActionGatewayWireTests {
                 presentation, first: "aclSuspended", second: "acl", mutation: "revoke-acl")
             let aclControl = try await presentation.prepare("controlACL").submit()
             try await fixture.verify("controlACL", runID: aclControl.runID)
+            try await presentation.requireSettled(aclControl, before: "accepted")
             try await Self.verifyMedia(presentation, id: "controlACL", session: "controlACL", allowed: true)
             try await Self.retireMediaResult(presentation)
 
             try await Self.retireAcceptedSubmission(presentation)
+            // The held ACK intentionally retired a live owner. Its replay is now
+            // proven; later cases get a new UI lifetime, not cleared pending facts.
+            await presentation.close()
+            presentation = Presentation(fixture: fixture)
+            try await presentation.connect()
             let widget = try await Self.verifyWidgetRetirement(presentation)
             try await signIn.connect()
             _ = try await signIn.prepare("controlACL")
@@ -306,6 +366,7 @@ struct NativeActionGatewayWireTests {
             let profileControl = try await presentation.prepare(
                 "controlProfile", profileID: fixture.bobProfileID).submit()
             try await fixture.verify("controlProfile", runID: profileControl.runID)
+            try await presentation.requireSettled(profileControl)
             let freshBinding = try #require(presentation.binding)
             try await Self.requireProfileRejection(profileCapture.prepared)
             try #require(await freshBinding.isCurrent())
@@ -750,14 +811,21 @@ struct NativeActionGatewayWireTests {
     private static func retireAcceptedSubmission(_ presentation: Presentation) async throws {
         let fixture = presentation.fixture
         let prepared = try await presentation.prepare("accepted")
+        let binding = try #require(presentation.binding)
+        let transport = try #require(presentation.transport)
+        try #require(transport.nativeBinding?.canReuse(binding) == true)
         _ = try await fixture.control("hold-response", fields: ["method": "chat.send"])
+        var holding = true
         let submission = Task { @MainActor in try await prepared.submit() }
         do {
             let held = try #require(try await fixture.control("wait-held").heldResponse)
             try #require(held.method == "chat.send" && held.ok)
             let runID = try #require(held.runId)
             await presentation.disconnect()
+            let disconnectedRoute = await binding.gateway.currentRoute(ifGatewayID: fixture.gatewayID)
+            try #require(disconnectedRoute == nil)
             _ = try await fixture.control("release-response")
+            holding = false
             switch await submission.result {
             case let .success(receipt):
                 try #require(receipt.runID == runID)
@@ -767,10 +835,16 @@ struct NativeActionGatewayWireTests {
             }
             try await fixture.verify("accepted", runID: runID, complete: false)
             try await presentation.connect()
+            let successorRoute = try #require(await binding.gateway.currentRoute(ifGatewayID: fixture.gatewayID))
+            try #require(successorRoute != binding.route)
+            try #require(transport.nativeBinding?.route == binding.route)
+            try #require(transport.nativeBinding?.session == binding.session)
+            try #require(await binding.isCurrent() == false)
             let replay = Task { @MainActor in try await prepared.submit() }
             try await Self.requireRejection(replay.result)
             try await fixture.verify("accepted", runID: runID)
         } catch {
+            if holding { _ = try? await fixture.control("release-response") }
             await presentation.disconnect()
             submission.cancel()
             _ = await submission.result

@@ -292,11 +292,16 @@ final class ChatModelSignInModel {
 
 @MainActor
 struct OpenClawChatModelSignInSheet: View {
-    @Environment(\.dismiss) private var dismiss
+    let onClose: @MainActor () -> Void
     @State private var model: ChatModelSignInModel
 
-    init(context: OpenClawChatModelSignInContext, onAuthChanged: @escaping @MainActor () async -> Void) {
+    init(
+        context: OpenClawChatModelSignInContext,
+        onAuthChanged: @escaping @MainActor () async -> Void,
+        onClose: @escaping @MainActor () -> Void)
+    {
         self._model = State(initialValue: ChatModelSignInModel(context: context, onAuthChanged: onAuthChanged))
+        self.onClose = onClose
     }
 
     var body: some View {
@@ -317,7 +322,7 @@ struct OpenClawChatModelSignInSheet: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack {
-                Button { self.dismiss() } label: {
+                Button { self.onClose() } label: {
                     Text("Close").font(OpenClawChatTypography.body)
                 }
                 if self.model.sessionID != nil {

@@ -368,9 +368,20 @@ final class IOSChatViewModelOwner {
         self.transport = transport as? IOSGatewayChatTransport
         let relay = IOSChatSessionTargetRelay { [weak self, weak appModel] viewModel in
             guard let self, self.viewModel === viewModel else { return }
-            if let nativeBinding {
-                self.nativeActions?.chatSessionChanged(
-                    viewModel, binding: nativeBinding, presentationID: self.presentationID)
+            if nativeBinding != nil {
+                guard let appModel, self.isCurrent(appModel: appModel),
+                      let previous = self.transport?.nativeBinding,
+                      let transport = self.transport?.scoped(toSessionTarget: viewModel.currentSessionTarget)
+                      as? IOSGatewayChatTransport,
+                      let next = transport.nativeBinding,
+                      self.nativeActions?.chatSessionChanged(
+                          viewModel, binding: previous, transport: transport,
+                          presentationID: self.presentationID) == true
+                else { return }
+                self.transport = transport
+                self.transportAgentID = next.session.agentID
+                self.routingContract = next.sessionRoutingContract ?? ""
+                self.capturePresentationIdentity(appModel: appModel, nativeBinding: next)
             } else {
                 appModel?.focusChatSession(viewModel.currentSessionTarget)
             }
@@ -387,11 +398,16 @@ final class IOSChatViewModelOwner {
             outbox: offlineStore,
             onSessionChanged: { _ in relay.sessionChanged() },
             captureSessionTransitionAuthority: { [weak self, weak relay] in
-                guard let nativeBinding else { return { true } }
-                guard let self, let viewModel = relay?.viewModel, self.viewModel === viewModel,
+                guard let self, let viewModel = relay?.viewModel, self.viewModel === viewModel else {
+                    return { false }
+                }
+                guard nativeBinding != nil else { return { true } }
+                guard let binding = self.transport?.nativeBinding,
                       let nativeActions = self.nativeActions else { return { false } }
+                // Capture the current logical target once for this operation. A later
+                // adoption must not change the authority of an already-running fork.
                 return nativeActions.captureSessionTransitionAuthority(
-                    viewModel, binding: nativeBinding, presentationID: self.presentationID)
+                    viewModel, binding: binding, presentationID: self.presentationID)
             },
             onToolActivity: { id, name, isActive, toolSessionKey in
                 if isActive {

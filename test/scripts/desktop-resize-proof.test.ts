@@ -627,7 +627,7 @@ describe("desktop proof identity and public evidence", () => {
     await result;
   });
 
-  it("bounds RFB events without suppressing callback exceptions or inferring a completed handshake", () => {
+  it("bounds RFB events without suppressing callback exceptions or inferring a completed handshake", async () => {
     vi.stubGlobal("window", {
       desktopProofSockets: [],
       location: { href: "https://fixture.invalid" },
@@ -647,7 +647,7 @@ describe("desktop proof identity and public evidence", () => {
     const callback = vi.fn(() => {
       throw failure;
     });
-    panel.desktopClientFactory().connect({
+    await panel.desktopClientFactory().connect({
       target: {} as HTMLElement,
       viewOnly: true,
       isCurrent: () => true,
@@ -699,9 +699,9 @@ describe("desktop proof identity and public evidence", () => {
         client.destroy();
         upstream.destroy();
         await tap.close();
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve())),
-        );
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
       }
     },
   );
@@ -758,9 +758,9 @@ describe("desktop proof identity and public evidence", () => {
     if (!address || typeof address === "string") {
       throw new Error("missing fixture address");
     }
-    await new Promise<void>((resolve, reject) =>
-      server.close((error) => (error ? reject(error) : resolve())),
-    );
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
     const tap = await observeDesktopEndpointPackets(address.port, new AbortController().signal);
     const clients: net.Socket[] = [];
     try {
@@ -1354,7 +1354,7 @@ describe("desktop proof identity and public evidence", () => {
     await expect(readDesktopProofTestReport(link)).rejects.toThrow("regular file");
     await writeFile(file, "{");
     await expect(readDesktopProofTestReport(file)).rejects.toThrow();
-    await writeFile(file, Buffer.alloc(1024 * 1024 + 1));
+    await writeFile(file, Buffer.alloc(8 * 1024 * 1024 + 1));
     await expect(readDesktopProofTestReport(file)).rejects.toThrow("bounded");
   });
 

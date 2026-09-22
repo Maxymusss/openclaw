@@ -13,10 +13,22 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         let inspection: OpenClawNativeRunInspection
     }
 
+    enum RetirementDisposition: Sendable {
+        case departure
+        case chatModal
+        case chatSessionTransition
+    }
+
+    private enum Preparation {
+        case waitingForRoot
+        case registeredRoot(id: UUID, navigationRevision: UInt64)
+    }
+
     typealias PresentationHandler = @MainActor (
         OpenClawNativeOpenRequest, IOSNativeActionBinding, RunPresentation?) throws -> Void
     @ObservationIgnored private var presentation: (
-        id: UUID, open: PresentationHandler, retire: @MainActor () -> Void)?
+        id: UUID, open: PresentationHandler, retire: @MainActor (RetirementDisposition) -> Void,
+        adopt: @MainActor (IOSNativeActionBinding, IOSNativeActionBinding) -> Void)?
     private var inspectionPresentation: RunPresentation?
     @ObservationIgnored private var presentedInspectionID: UUID?
     private var selectionID = UUID()
@@ -32,7 +44,9 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     @ObservationIgnored private var accountBinding: IOSNativeActionBinding?
     @ObservationIgnored private var chatPresentationID: UUID?
     private(set) var chatRegistrationID: UUID?
-    @ObservationIgnored private var preparing = false
+    @ObservationIgnored private var preparation: Preparation?
+
+    var presentationRegistrationID: UUID? { self.presentation?.id }
 
     init(appModel: NodeAppModel, gatewayController: GatewayConnectionController) {
         self.appModel = appModel
@@ -45,11 +59,17 @@ final class NativeActionRouter: OpenClawNativeActionHost {
 
     @discardableResult
     func registerPresentation(
-        onRetire: @escaping @MainActor () -> Void,
+        onRetire: @escaping @MainActor (RetirementDisposition) -> Void,
+        onSessionAdopted: @escaping @MainActor (IOSNativeActionBinding, IOSNativeActionBinding) -> Void = { _, _ in },
         _ handler: @escaping PresentationHandler) -> UUID
     {
         let id = UUID()
-        self.presentation = (id, handler, onRetire)
+        self.presentation = (id, handler, onRetire, onSessionAdopted)
+        // A cold action belongs to the first Root that becomes ready, even if
+        // navigation replaces that Root before its suspended preparation resumes.
+        if case .waitingForRoot? = self.preparation {
+            self.preparation = .registeredRoot(id: id, navigationRevision: self.navigationRevision)
+        }
         return id
     }
 
@@ -126,9 +146,11 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         presentationID: UUID?) -> @MainActor () -> Bool
     {
         let selectionID = self.selectionID
+        let accountAuthority = self.currentAccountAuthority
         return { [weak self, weak chat] in
             guard let self, let chat, let presentationID else { return false }
             return self.presentation?.id == presentationID && self.selectionID == selectionID &&
+                self.currentAccountAuthority == accountAuthority &&
                 self.chatPresentationID == presentationID && self.matches(chat, session: binding.session) &&
                 self.chatTransport?.nativeBinding?.canReuse(binding) == true
         }
@@ -137,15 +159,35 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     func chatSessionChanged(
         _ chat: OpenClawChatViewModel,
         binding: IOSNativeActionBinding,
-        presentationID: UUID?)
+        transport: IOSGatewayChatTransport,
+        presentationID: UUID?) -> Bool
     {
-        // Adoption already changed the full target. Only its current model may
-        // publish that selection; an old presentation cannot retire a successor.
-        guard let presentationID, self.presentation?.id == presentationID,
+        // The shared owner already admitted this synchronous adoption. Keep its
+        // model, retire parent confirmations, then publish the exact child binding.
+        let target = chat.currentSessionTarget
+        guard let presentationID, let presentation, presentation.id == presentationID,
+              let registrationID = self.chatRegistrationID,
               self.chatPresentationID == presentationID, self.chat === chat,
-              self.chatTransport?.nativeBinding?.canReuse(binding) == true
-        else { return }
-        self.appModel.focusChatSession(chat.currentSessionTarget)
+              self.chatOwnerID == self.appModel.chatViewModelOwnerID,
+              self.chatTransport?.nativeBinding?.canReuse(binding) == true,
+              let next = transport.nativeBinding,
+              binding.scoped(to: target)?.canReuse(next) == true,
+              self.appModel.chatSessionKey.utf8.elementsEqual(binding.session.sessionKey.utf8),
+              self.appModel.chatDeliveryAgentId?.utf8.elementsEqual(binding.session.agentID.utf8) == true
+        else { return false }
+        self.appModel.focusChatSession(target)
+        // Focus clears Root's old binding, but does not unregister this visible model.
+        guard self.presentation?.id == presentationID, self.chatRegistrationID == registrationID,
+              self.chat === chat, self.chatOwnerID == self.appModel.chatViewModelOwnerID,
+              binding.scoped(to: target)?.canReuse(next) == true,
+              self.appModel.chatSessionKey.utf8.elementsEqual(next.session.sessionKey.utf8),
+              self.appModel.chatDeliveryAgentId?.utf8.elementsEqual(next.session.agentID.utf8) == true
+        else { return false }
+        self.chatTransport = transport
+        self.chatAgentID = next.session.agentID
+        self.accountBinding = next
+        presentation.adopt(binding, next)
+        return true
     }
 
     func retireChatSelection(presentationID: UUID?) {
@@ -154,22 +196,24 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     }
 
     @discardableResult
-    func userNavigationDidChange(presentationID: UUID?) -> Bool {
+    func userNavigationDidChange(
+        presentationID: UUID?, disposition: RetirementDisposition = .departure) -> Bool
+    {
         guard let presentationID, presentation?.id == presentationID else { return false }
         // User navigation can supersede preparation while Chat is already hidden,
         // when neither view departure nor a model target change records the choice.
         self.navigationRevision &+= 1
-        self.retireChatSelection()
+        self.retireChatSelection(disposition)
         return true
     }
 
-    private func retireChatSelection() {
+    private func retireChatSelection(_ disposition: RetirementDisposition = .departure) {
         // Record departure synchronously: returning to the same target must not
         // revive a confirmation or an inspection waiting for visible appearance.
         self.selectionID = UUID()
         self.inspectionPresentation = nil
         self.presentedInspectionID = nil
-        self.presentation?.retire()
+        self.presentation?.retire(disposition)
     }
 
     func acknowledgeInspection(_ receipt: RunPresentation, presentationID: UUID?) {
@@ -255,6 +299,17 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         let bindingGateway: @Sendable (IOSNativeActionBinding) -> OpenClawChatNativeActionGateway
     }
 
+    private struct AccountAuthority: Equatable {
+        let generation: UInt64
+        let inputs: GatewayConnectConfig.ControlUIInputs?
+    }
+
+    private var currentAccountAuthority: AccountAuthority {
+        AccountAuthority(
+            generation: self.appModel.operatorAuthorityGeneration,
+            inputs: self.appModel.activeGatewayConnectConfig?.controlUIInputs)
+    }
+
     private struct PresentedChat {
         let gateway: OpenClawChatNativeActionGateway
         let binding: IOSNativeActionBinding
@@ -262,6 +317,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         let transport: IOSGatewayChatTransport
         let presentationID: UUID
         let selectionID: UUID
+        let accountAuthority: AccountAuthority
     }
 
     private func captureCurrentGateway() async throws -> CapturedGateway {
@@ -315,28 +371,30 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         _ request: OpenClawNativeOpenRequest) async throws -> PresentedChat
     {
         let session = request.session
-        guard !self.preparing else {
+        guard self.preparation == nil else {
             throw OpenClawNativeActionError("Another native action is opening a chat. Try again when it finishes.")
         }
-        self.preparing = true
-        defer { self.preparing = false }
+        self.preparation = self.presentation.map {
+            .registeredRoot(id: $0.id, navigationRevision: self.navigationRevision)
+        } ?? .waitingForRoot
+        defer { self.preparation = nil }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(10))
-        while self.presentation == nil, clock.now < deadline {
+        while case .waitingForRoot? = self.preparation, clock.now < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
-        guard let rootID = self.presentation?.id else {
+        guard case let .registeredRoot(rootID, navigationRevision)? = self.preparation else {
             throw OpenClawNativeActionError("Open OpenClaw before running this action.")
         }
         // Connection-owned target projection can retire a binding while switching
         // Gateways. Explicit navigation and actual host departure cannot be adopted.
-        let navigationRevision = self.navigationRevision
         func requireOrigin() throws {
             try Task.checkCancellation()
             guard self.presentation?.id == rootID, self.navigationRevision == navigationRevision else {
                 throw CancellationError()
             }
         }
+        try requireOrigin()
         try self.requirePreservedDraft(session)
         if self.appModel.activeGatewayConnectConfig?.effectiveStableID.utf8
             .elementsEqual(session.owner.gatewayID.utf8) != true
@@ -376,18 +434,23 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         guard !self.appModel.isScreenshotFixtureModeEnabled, !self.appModel.isAppleReviewDemoModeEnabled,
               let requestedRoute
         else { throw OpenClawNativeActionError("Open OpenClaw and connect the selected Gateway, then try again.") }
+        // Capture after the authorized Gateway handoff. Equal restored credentials
+        // must not revive a request whose account lifetime changed during a read.
+        let accountAuthority = self.currentAccountAuthority
         let captured = self.captureGateway(gatewayID: session.owner.gatewayID, route: requestedRoute)
         let run: OpenClawNativeRunRef? = if case let .inspect(run) = request {
             run
         } else { nil }
         let history = try await captured.gateway.history(session: session, runID: run?.runID)
         try requireOrigin()
+        guard self.currentAccountAuthority == accountAuthority else { throw CancellationError() }
         let binding = try await IOSNativeActionBinding.capture(
             session: session,
             gateway: self.appModel.operatorSession,
             route: captured.route,
             reservation: captured.retirementReservation)
-        guard await binding.isCurrent(), generation == self.appModel.gatewayConnectGeneration
+        guard await binding.isCurrent(), generation == self.appModel.gatewayConnectGeneration,
+              self.currentAccountAuthority == accountAuthority
         else { throw CancellationError() }
         // The old Gateway's delayed projection may retire selection during reads.
         // Only the initiating navigation/root authority governs this pre-adoption phase.
@@ -410,6 +473,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         let presentationDeadline = clock.now.advanced(by: .seconds(10))
         while clock.now < presentationDeadline {
             guard await binding.isCurrent(), generation == self.appModel.gatewayConnectGeneration,
+                  self.currentAccountAuthority == accountAuthority,
                   self.presentation?.id == presentation.id,
                   self.selectionID == selectionID else { throw CancellationError() }
             if let chat, let transport = self.chatTransport,
@@ -421,7 +485,8 @@ final class NativeActionRouter: OpenClawNativeActionHost {
                     chat: chat,
                     transport: transport,
                     presentationID: presentation.id,
-                    selectionID: selectionID)
+                    selectionID: selectionID,
+                    accountAuthority: accountAuthority)
                 if self.isCurrent(presented), receipt.map(self.isInspectionPresented) ?? true {
                     return presented
                 }
@@ -444,7 +509,8 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     }
 
     private func isCurrent(_ presented: PresentedChat) -> Bool {
-        self.presentation?.id == presented.presentationID &&
+        self.currentAccountAuthority == presented.accountAuthority &&
+            self.presentation?.id == presented.presentationID &&
             self.selectionID == presented.selectionID &&
             self.chatPresentationID == presented.presentationID &&
             self.matches(presented.chat, session: presented.binding.session) &&

@@ -9,7 +9,7 @@ struct RootSidebar: View {
     @Bindable var model: RootSidebarModel
     @State private var searchText = ""
     @State private var isSearchActive = false
-    @State private var showsPagesEditor = false
+    @Binding var pagesEditor: RootTabs.SidebarPagesPresentation?
     @State private var presentedAttention: OpenClawChatAttentionPresentation?
     @FocusState private var isSearchFocused: Bool
     @AppStorage("sidebar.pinnedPages") private var pinnedPagesStorage: String = ""
@@ -17,6 +17,7 @@ struct RootSidebar: View {
     let selectedDestination: RootTabs.SidebarDestination
     let isDrawerLayout: Bool
     let isDismissButtonEnabled: Bool
+    let isPagesEditorRootCurrent: @MainActor () -> Bool
     let selectDestination: (RootTabs.SidebarDestination) -> Void
     let selectSession: (OpenClawChatSessionEntry) -> Void
     let openChat: (OpenClawChatSessionTarget) -> Void
@@ -51,16 +52,37 @@ struct RootSidebar: View {
         .onChange(of: self.isDismissButtonEnabled) { _, isVisible in
             if !isVisible { self.presentedAttention = nil }
         }
-        .sheet(isPresented: self.$showsPagesEditor) {
+        .sheet(item: self.$pagesEditor) { receipt in
             RootSidebarPagesEditor(
                 destinations: RootTabs.pinnableSidebarPages.filter(self.isDestinationAvailable),
                 pinnedPages: self.storedPinnedPages,
                 onSelect: { destination in
-                    self.showsPagesEditor = false
-                    self.selectSidebarDestination(destination)
+                    Self.performPagesEditorAction(
+                        receipt, presentation: self.$pagesEditor, isCurrentRoot: self.isPagesEditorRootCurrent)
+                    {
+                        self.pagesEditor = nil
+                        self.selectSidebarDestination(destination)
+                    }
                 },
-                onTogglePin: self.togglePinnedPage)
+                onTogglePin: { destination in
+                    Self.performPagesEditorAction(
+                        receipt, presentation: self.$pagesEditor, isCurrentRoot: self.isPagesEditorRootCurrent)
+                    {
+                        self.togglePinnedPage(destination)
+                    }
+                })
         }
+    }
+
+    static func performPagesEditorAction(
+        _ receipt: RootTabs.SidebarPagesPresentation,
+        presentation: Binding<RootTabs.SidebarPagesPresentation?>,
+        isCurrentRoot: @MainActor () -> Bool,
+        perform: @MainActor () -> Void)
+    {
+        // A retained editor callback must not change a replacement sheet or Root.
+        guard presentation.wrappedValue == receipt, isCurrentRoot() else { return }
+        perform()
     }
 
     private var storedPinnedPages: [RootTabs.SidebarDestination] {
@@ -428,7 +450,7 @@ struct RootSidebar: View {
                 self.sectionTitle(String(localized: "Pages"))
                 Spacer(minLength: 4)
                 Button {
-                    self.showsPagesEditor = true
+                    self.pagesEditor = .init()
                 } label: {
                     Image(systemName: "square.and.pencil")
                         .font(OpenClawType.captionSemiBold)
@@ -937,6 +959,7 @@ struct RootSidebarPagesEditor: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("RootTabs.Sidebar.Pages.Select.\(destination.rawValue)")
 
             Button {
                 self.onTogglePin(destination)
@@ -948,6 +971,7 @@ struct RootSidebarPagesEditor: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .accessibilityIdentifier("RootTabs.Sidebar.Pages.Pin.\(destination.rawValue)")
             .accessibilityLabel(destination.sidebarTitle)
             .accessibilityValue(
                 isPinned

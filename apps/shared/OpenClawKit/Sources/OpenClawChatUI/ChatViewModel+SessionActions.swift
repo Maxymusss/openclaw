@@ -176,8 +176,7 @@ extension OpenClawChatViewModel {
             if !self.sessions.contains(where: { $0.key == next }) { self.refreshSessions() }
             return false
         }
-        self.adoptCreatedSession(next)
-        return true
+        return self.adoptCreatedSession(next, agentID: requestedAgentID ?? currentAgentID)
     }
 
     static func isUnsupportedCreateSessionError(_ error: Error) -> Bool {
@@ -507,7 +506,10 @@ extension OpenClawChatViewModel {
                 self.refreshSessions(limit: Self.sessionListFetchLimit)
                 return
             }
-            self.switchSession(to: createdKey)
+            self.switchSession(
+                to: createdKey,
+                agentID: OpenClawChatSessionKey.agentID(from: target.sessionKey) ??
+                    target.agentID ?? initiatingSession.deliveryAgentID)
         } catch {
             guard presentationIsCurrent() else { return }
             self.errorText = error.localizedDescription
@@ -789,8 +791,7 @@ extension OpenClawChatViewModel {
                 self.refreshSessions(limit: Self.sessionListFetchLimit)
                 return
             }
-            self.switchSession(to: createdKey)
-            guard self.sessionKey == createdKey else { return }
+            guard self.switchSession(to: createdKey, agentID: initiatingSession.deliveryAgentID) else { return }
             self.input = result.editorText ?? ""
             self.restoreEditorAttachments(result.editorAttachments)
         } catch {

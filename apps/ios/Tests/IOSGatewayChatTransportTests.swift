@@ -156,6 +156,7 @@ struct IOSGatewayChatTransportTests {
     }
 
     private func withSessionTransport(
+        gateway: GatewayNodeSession? = nil,
         unreadAckAdvertisement: Bool? = true,
         nativeSocket: Bool = false,
         upgradeRedirect: NativeGatewayWebSocketFixture.UpgradeRedirect? = nil,
@@ -174,7 +175,7 @@ struct IOSGatewayChatTransportTests {
         _ run: (IOSGatewayChatTransport, RequestRecorder) async throws -> Void) async throws
     {
         let recorder = RequestRecorder()
-        let gateway = GatewayNodeSession()
+        let gateway = gateway ?? GatewayNodeSession()
         let respond: @Sendable (RecordedRequest) async throws -> Data = { request in
             let payload = switch request.method {
             case "agents.list": GatewayWebSocketTestSupport.agentCatalogPayload
@@ -413,6 +414,58 @@ struct IOSGatewayChatTransportTests {
                     throw error
                 }
             }
+    }
+
+    @Test(arguments: ["explicit target", "implicit target", "string focus"])
+    @MainActor func `full target focus supplies the stored owner used by ordinary history`(selection: String) async throws {
+        let model = NodeAppModel()
+        model.gatewayDefaultAgentId = "main"
+        model.setSelectedAgentId("main")
+        model.openChat(sessionKey: "agent:research:existing")
+        #expect(model.selectedAgentId == "main")
+        #expect(model.chatDeliveryAgentId == "research")
+
+        let requestID = model.openChatRequestID
+        if selection == "explicit target" {
+            let target = IOSGatewayChatTransport.sessionTarget(
+                for: "global", selectedAgentID: model.chatDeliveryAgentId, overrideAgentID: " Research ")
+            #expect(target == OpenClawChatSessionTarget(sessionKey: "global", agentID: "research"))
+            model.focusChatSession(target)
+        } else if selection == "implicit target" {
+            model.focusChatSession(OpenClawChatSessionTarget(sessionKey: "global", agentID: nil))
+        } else {
+            model.openChat(sessionKey: "global")
+        }
+        let expectedAgentID = selection == "explicit target" ? "research" : "main"
+        #expect(model.selectedAgentId == expectedAgentID)
+        #expect(model.chatSessionKey == "global")
+        #expect(model.chatDeliveryAgentId == expectedAgentID)
+        #expect(model.openChatRequestID == requestID + (selection == "string focus" ? 1 : 0))
+
+        try await self.withSessionTransport(
+            gateway: model.operatorSession, resolvesRequestedHistory: true)
+        { _, recorder in
+            let transport = try #require(model.makeChatTransport() as? IOSGatewayChatTransport)
+            #expect(transport.gateway === model.operatorSession)
+            #expect(transport.nativeBinding == nil)
+            #expect(transport.chatGatewayAgentID == expectedAgentID)
+            let history = try await transport.requestHistory(sessionKey: model.chatSessionKey)
+            #expect(history.sessionKey == "global")
+            #expect(history.sessionInfo?.key == "global")
+            #expect(history.sessionInfo?.agentId == expectedAgentID)
+            let requests = await recorder.all()
+            #expect(requests.map(\.method) == ["chat.history"])
+            let request = try #require(requests.first)
+            #expect(request.params["sessionKey"]?.value as? String == "global")
+            #expect(request.params["agentId"]?.value as? String == expectedAgentID)
+        }
+
+        var changes = 0
+        model.chatSelectionDidChange = { changes += 1 }
+        model.focusChatSession(OpenClawChatSessionTarget(sessionKey: "global", agentID: expectedAgentID))
+        #expect(changes == 0)
+        #expect(model.chatSessionKey == "global")
+        model.chatSelectionDidChange = nil
     }
 
     @Test(arguments: ["global", "Matrix:Channel:Room"])

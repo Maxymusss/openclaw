@@ -8,6 +8,331 @@ import UIKit
 @testable import OpenClawChatUI
 
 struct SwiftUIRenderSmokeTests {
+
+    @MainActor private static func modalModel() -> OpenClawChatViewModel {
+        OpenClawChatViewModel(
+            sessionKey: "agent:main:modal", transport: LocalFixtureChatTransport(fixture: .appleReviewDemo))
+    }
+
+    @MainActor private static func modalMessage() -> OpenClawChatMessage {
+        OpenClawChatMessage(
+            role: "assistant", content: [.init(type: "text", text: "A captured answer.",
+                mimeType: nil, fileName: nil, content: nil)], timestamp: 1)
+    }
+
+    @MainActor private static func modalSource() -> ChatSourcePreview {
+        ChatSourcePreview(
+            url: URL(string: "https://example.com/recorded")!, title: "Recorded source",
+            domain: "example.com", excerpt: "Captured excerpt", excerptKind: .page)
+    }
+
+    @MainActor private static func presentModal(
+        _ kind: String, owner: OpenClawChatModalPresentations, model: OpenClawChatViewModel,
+        capture: OpenClawChatModalPresentations.Capture?) -> OpenClawChatModalPresentations.Receipt?
+    {
+        switch kind {
+        case "full":
+            owner.present(.init(request: .init(viewModel: model, messageID: "captured-message"),
+                markdownVariant: .standard), at: \.fullMessage, capture: capture)?.receipt
+        case "text":
+            owner.present(Self.modalMessage(), at: \.selectText, capture: capture)?.receipt
+        case "image":
+            owner.present(UIImage(), at: \.image, capture: capture)?.receipt
+        case "source":
+            owner.present(Self.modalSource(), at: \.source, capture: capture)?.receipt
+        case "diagram":
+            owner.present(.init(svg: "<svg/>", background: "#fff"), at: \.mermaid, capture: capture)?.receipt
+        case "widget-share":
+            owner.present(UIImage(), at: \.widgetImage, capture: capture)?.receipt
+        case "widget-error":
+            owner.present("Captured export error", at: \.widgetError, capture: capture)?.receipt
+        case "sign-in":
+            owner.present(.init(context: .init(
+                agentID: "main", request: { _, _ in throw CancellationError() },
+                closeWizard: { _ in throw CancellationError() }, isCurrent: { true }),
+                refresh: {}), at: \.signIn, capture: capture)?.receipt
+        case "photo": owner.presentAttachment(.photo, viewModel: model, capture: capture)?.receipt
+        case "file": owner.presentAttachment(.file, viewModel: model, capture: capture)?.receipt
+        case "camera": owner.presentAttachment(.camera, viewModel: model, capture: capture)?.receipt
+        default: nil
+        }
+    }
+
+    @Test(arguments: [
+        "full", "text", "image", "source", "diagram", "widget-share", "widget-error", "sign-in",
+        "photo", "file", "camera",
+    ])
+    @MainActor func chatModalSlotsOwnAdmissionAndExactDismissal(kind: String) throws {
+        let model = Self.modalModel()
+        let owner = OpenClawChatModalPresentations()
+        let origin = OpenClawChatModalOrigin(viewModel: model)
+        owner.synchronize(origin: origin)
+        defer {
+            owner.invalidate(origin: origin)
+            model.detachTransport()
+        }
+        var accepted = 0
+        var dismissed = 0
+        let actions = OpenClawChatModalActions(
+            capture: { _ in .init(isCurrent: { true }, accept: {
+                #expect(!owner.hasActivePresentation)
+                accepted += 1
+                return true
+            }) }, dismiss: { _ in dismissed += 1 }, isCurrent: { _ in true })
+        let first = try #require(Self.presentModal(kind, owner: owner, model: model,
+            capture: owner.capture(origin: origin, producerID: UUID(), actions: actions)))
+        #expect(accepted == 1)
+        #expect(owner.hasActivePresentation(for: origin))
+        #expect(owner.isPresented(first))
+        owner.dismiss(first)
+        #expect(dismissed == 1)
+        #expect(!owner.hasActivePresentation)
+
+        let second = try #require(Self.presentModal(kind, owner: owner, model: model,
+            capture: owner.capture(origin: origin, producerID: UUID(), actions: actions)))
+        #expect(second.id != first.id)
+        owner.dismiss(first)
+        #expect(owner.isPresented(second))
+        #expect(dismissed == 1)
+        owner.dismiss(second)
+        #expect(dismissed == 2)
+        #expect(!owner.hasActivePresentation)
+    }
+
+    @Test(arguments: ["image", "source", "diagram"])
+    @MainActor func nestedChatReaderKeepsParentAndRejectsStaleDescendants(kind: String) throws {
+        let model = Self.modalModel()
+        let owner = OpenClawChatModalPresentations()
+        let otherWindow = OpenClawChatModalPresentations()
+        let origin = OpenClawChatModalOrigin(viewModel: model)
+        owner.synchronize(origin: origin)
+        otherWindow.synchronize(origin: origin)
+        defer {
+            owner.invalidate(origin: origin)
+            otherWindow.invalidate(origin: origin)
+            model.detachTransport()
+        }
+        let parent = try #require(Self.presentModal("full", owner: owner, model: model,
+            capture: owner.capture(origin: origin, producerID: UUID(), actions: .local)))
+        let childCapture = owner.capture(
+            origin: origin, producerID: UUID(), ancestors: [parent.id],
+            parentIsCurrent: { owner.isPresented(parent) }, actions: .local)
+        let child = try #require(Self.presentModal(kind, owner: owner, model: model, capture: childCapture))
+        owner.dismiss(child)
+        #expect(owner.isPresented(parent))
+        #expect(owner.hasActivePresentation)
+
+        let replacement = try #require(Self.presentModal(kind, owner: owner, model: model,
+            capture: owner.capture(origin: origin, producerID: UUID(), ancestors: [parent.id],
+                parentIsCurrent: { owner.isPresented(parent) }, actions: .local)))
+        let independent = try #require(Self.presentModal(kind, owner: otherWindow, model: model,
+            capture: otherWindow.capture(origin: origin, producerID: UUID(), actions: .local)))
+        owner.dismiss(child)
+        #expect(owner.isPresented(replacement))
+        owner.dismiss(parent)
+        #expect(!owner.hasActivePresentation)
+        #expect(otherWindow.isPresented(independent))
+        #expect(childCapture?.isCurrent == false)
+        let nextParent = try #require(Self.presentModal("full", owner: owner, model: model,
+            capture: owner.capture(origin: origin, producerID: UUID(), actions: .local)))
+        let nextChild = try #require(Self.presentModal(kind, owner: owner, model: model,
+            capture: owner.capture(origin: origin, producerID: UUID(), ancestors: [nextParent.id],
+                parentIsCurrent: { owner.isPresented(nextParent) }, actions: .local)))
+        owner.dismiss(parent)
+        owner.dismiss(replacement)
+        #expect(owner.isPresented(nextParent))
+        #expect(owner.isPresented(nextChild))
+        #expect(otherWindow.isPresented(independent))
+    }
+
+    @Test(arguments: ["text", "file"])
+    @MainActor func modalCaptureCannotPublishIntoAnotherOwner(kind: String) throws {
+        let model = Self.modalModel()
+        let first = OpenClawChatModalPresentations()
+        let second = OpenClawChatModalPresentations()
+        let origin = OpenClawChatModalOrigin(viewModel: model)
+        first.synchronize(origin: origin)
+        second.synchronize(origin: origin)
+        defer {
+            first.invalidate(origin: origin)
+            second.invalidate(origin: origin)
+            model.detachTransport()
+        }
+        var retirements = 0
+        let actions = OpenClawChatModalActions(
+            capture: { _ in .init(isCurrent: { true }, accept: { retirements += 1; return true }) },
+            dismiss: { _ in }, isCurrent: { _ in true })
+        let capture = try #require(first.capture(origin: origin, producerID: UUID(), actions: actions))
+        #expect(Self.presentModal(kind, owner: second, model: model, capture: capture) == nil)
+        #expect(retirements == 0)
+        #expect(!first.hasActivePresentation && !second.hasActivePresentation)
+        #expect(Self.presentModal(kind, owner: first, model: model, capture: capture) != nil)
+        #expect(retirements == 1)
+    }
+
+    @Test @MainActor func filePickerDismissalKeepsOnlyItsCapturedCompletionOwner() throws {
+        let model = Self.modalModel()
+        model.input = "Keep this picker draft"
+        let owner = OpenClawChatModalPresentations()
+        let origin = OpenClawChatModalOrigin(viewModel: model)
+        owner.synchronize(origin: origin)
+        defer { owner.invalidate(origin: origin); model.detachTransport() }
+        let context = ChatModalContext(
+            owner: owner, origin: origin, producerID: UUID(), ancestors: [],
+            parentIsCurrent: { true }, actions: .local)
+        owner.attachmentBinding(.file, context: context, viewModel: model, enabled: true).wrappedValue = true
+        let first = try #require(owner.fileResult)
+        let firstBinding = owner.attachmentBinding(.file, context: context, viewModel: model, enabled: true)
+        // fileImporter sets false before completion; cancel also sets false with no completion.
+        firstBinding.wrappedValue = false
+        #expect(!owner.hasActivePresentation)
+        #expect(owner.fileResult?.id == first.id)
+        first.value.file(.failure(NSError(domain: "fixture", code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "First captured result"])))
+        #expect(model.errorText == "First captured result")
+        #expect(model.input == "Keep this picker draft")
+        #expect(owner.fileResult == nil)
+
+        owner.attachmentBinding(.file, context: context, viewModel: model, enabled: true).wrappedValue = true
+        let second = try #require(owner.fileResult)
+        firstBinding.wrappedValue = false
+        first.value.file(.failure(NSError(domain: "fixture", code: 2)))
+        #expect(owner.fileImporter?.id == second.id)
+        #expect(owner.fileResult?.id == second.id)
+        #expect(model.errorText == "First captured result")
+        owner.dismiss(second.receipt)
+        #expect(!owner.hasActivePresentation)
+        #expect(owner.fileResult?.id == second.id)
+        owner.attachmentBinding(.file, context: context, viewModel: model, enabled: true).wrappedValue = true
+        let third = try #require(owner.fileResult)
+        second.value.file(.failure(NSError(domain: "fixture", code: 3)))
+        #expect(owner.fileImporter?.id == third.id)
+        #expect(owner.fileResult?.id == third.id)
+        #expect(model.errorText == "First captured result")
+        owner.dismiss(third.receipt)
+        owner.invalidate(origin: origin)
+        #expect(owner.fileResult == nil)
+        third.value.file(.failure(NSError(domain: "fixture", code: 4)))
+        #expect(model.errorText == "First captured result")
+        #expect(model.input == "Keep this picker draft")
+    }
+
+    @Test @MainActor func pickerSessionIsCapturedBeforeAdmissionCanChangeTheModel() async throws {
+        let model = Self.modalModel()
+        let owner = OpenClawChatModalPresentations()
+        let origin = OpenClawChatModalOrigin(viewModel: model)
+        let original = model.currentSessionSnapshot()
+        owner.synchronize(origin: origin)
+        defer { owner.invalidate(origin: origin); model.detachTransport() }
+        let actions = OpenClawChatModalActions(
+            capture: { _ in .init(isCurrent: { true }, accept: {
+                #expect(model.switchSession(to: "agent:main:replacement"))
+                return true
+            }) }, dismiss: { _ in }, isCurrent: { _ in true })
+        let published = owner.presentAttachment(.file, viewModel: model,
+            capture: owner.capture(origin: origin, producerID: UUID(), actions: actions))
+        // The accepted bootstrap-join repair exposes this existing task's getter.
+        let bootstrap = model.bootstrapTask
+        if let bootstrap { await bootstrap.value }
+        let request = try #require(published)
+        #expect(request.value.session == original)
+        #expect(!model.isCurrentSession(original))
+        model.errorText = "Successor state"
+        request.value.file(.failure(NSError(domain: "fixture", code: 1)))
+        #expect(model.errorText == "Successor state")
+        #expect(model.attachments.isEmpty)
+        #expect(owner.fileResult == nil)
+    }
+
+    @Test @MainActor func cameraResultUsesCapturedSessionAndJoinsItsEncodingOwner() async throws {
+        let model = Self.modalModel()
+        let owner = OpenClawChatModalPresentations()
+        let origin = OpenClawChatModalOrigin(viewModel: model)
+        owner.synchronize(origin: origin)
+        defer { owner.invalidate(origin: origin); model.detachTransport() }
+        let request = try #require(owner.presentAttachment(.camera, viewModel: model,
+            capture: owner.capture(origin: origin, producerID: UUID(), actions: .local)))
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 2, height: 2)).image { context in
+            UIColor.red.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+        }
+        owner.dismiss(request.receipt)
+        #expect(!owner.hasActivePresentation)
+        request.value.camera(image)
+        let encoding = try #require(request.value.task)
+        await encoding.value
+        #expect(request.value.task == nil)
+        #expect(owner.cameraResult == nil)
+        #expect(model.attachments.count == 1)
+        #expect(model.attachments.first?.mimeType == "image/jpeg")
+        let attachmentIDs = model.attachments.map(\.id)
+        request.value.camera(image)
+        #expect(model.attachments.map(\.id) == attachmentIDs)
+    }
+
+
+    @Test(arguments: ["sign-in", "widget-share", "widget-error"])
+    @MainActor func delayedModalPublicationCannotSurviveOpenCloseABA(kind: String) async throws {
+        let model = Self.modalModel()
+        let appModel = NodeAppModel(audioAdmissionInitiallyAllowed: false)
+        let controller = GatewayConnectionController(appModel: appModel, startDiscovery: false)
+        let router = NativeActionRouter(appModel: appModel, gatewayController: controller)
+        let rootID = router.registerPresentation(onRetire: { _ in }, { _, _, _ in })
+        let owner = OpenClawChatModalPresentations()
+        let origin = OpenClawChatModalOrigin(viewModel: model)
+        owner.synchronize(origin: origin)
+        defer {
+            owner.invalidate(origin: origin)
+            router.unregisterPresentation(rootID)
+            model.detachTransport()
+        }
+        let actions = RootTabs.makeChatModalActions(
+            origin: origin, router: router, rootID: rootID,
+            isCurrentScope: { true }, isCurrentContainer: { true })
+        let captured = try #require(owner.capture(origin: origin, producerID: UUID(), actions: actions))
+        let release = AsyncStream<Void>.makeStream()
+        var published = false
+        let publication = Task { @MainActor in
+            for await _ in release.stream { break }
+            published = Self.presentModal(kind, owner: owner, model: model, capture: captured) != nil
+        }
+        do {
+            let intervening = try #require(Self.presentModal("text", owner: owner, model: model,
+                capture: owner.capture(origin: origin, producerID: UUID(), actions: actions)))
+            owner.dismiss(intervening)
+            #expect(!owner.hasActivePresentation)
+            release.continuation.finish()
+            await publication.value
+            #expect(!published)
+            #expect(!owner.hasActivePresentation)
+            let fresh = try #require(Self.presentModal(kind, owner: owner, model: model,
+                capture: owner.capture(origin: origin, producerID: UUID(), actions: actions)))
+            #expect(owner.isPresented(fresh))
+        } catch {
+            release.continuation.finish()
+            await publication.value
+            throw error
+        }
+    }
+
+    @Test @MainActor func oldNotificationSheetBindingCannotDismissAnotherPath() {
+        var sheet: RootTabs.PresentedSheet? = .notificationSettings(path: "first")
+        var admissions = 0
+        let source = Binding(get: { sheet }, set: { sheet = $0 })
+        let old = RootTabs.matchedModalBinding(source, admit: { admissions += 1; return true })
+        sheet = .notificationSettings(path: "second")
+        #expect(sheet?.id == RootTabs.PresentedSheet.notificationSettings(path: "first").id)
+        old.wrappedValue = nil
+        #expect(sheet == .notificationSettings(path: "second"))
+        #expect(admissions == 0)
+        let current = RootTabs.matchedModalBinding(source, admit: { admissions += 1; return true })
+        current.wrappedValue = nil
+        #expect(sheet == nil)
+        #expect(admissions == 1)
+        #expect(RootTabs.PresentedSheet.sessionDashboard(sessionKey: "x:y", agentId: "a") !=
+            .sessionDashboard(sessionKey: "y", agentId: "a:x"))
+    }
+
     @MainActor @Observable
     fileprivate final class NativeChatPresentation {
         var binding: IOSNativeActionBinding?
@@ -589,7 +914,7 @@ struct SwiftUIRenderSmokeTests {
                             return .failure(code: "INVALID_REQUEST", message: "Missing session key")
                         }
                         return .success([
-                            "sessionKey": key, "messages": [],
+                            "sessionKey": key, "sessionId": "native-session", "messages": [],
                             "sessionInfo": [
                                 "key": key, "agentId": session.agentID, "sessionId": "native-session",
                                 "permissionMode": "guarded", "toolOverrides": [:],
@@ -681,7 +1006,11 @@ struct SwiftUIRenderSmokeTests {
             routerLifetime = router
             let presentation = NativeChatPresentation()
             let presentationID = router
-                .registerPresentation(onRetire: { presentation.binding = nil }) { request, binding, _ in
+                .registerPresentation(onRetire: { _ in presentation.binding = nil }, onSessionAdopted: { previous, binding in
+                    guard presentation.binding == nil || presentation.binding?.canReuse(previous) == true
+                    else { return }
+                    presentation.binding = binding
+                }) { request, binding, _ in
                     appModel.setSelectedAgentId(request.session.agentID)
                     appModel.focusChatSession(request.session.sessionKey)
                     presentation.binding = binding
@@ -1092,6 +1421,11 @@ struct SwiftUIRenderSmokeTests {
                     #expect(createdKeys.count == 1)
                     #expect(createdProfiles == [expectedProfile])
                     #expect(appModel.chatSessionKey == createdKeys.first)
+                    #expect(appModel.chatPresentation.viewModel === chat)
+                    let adoptedBinding = try #require(presentation.binding)
+                    #expect(adoptedBinding.session.sessionKey == createdKeys.first)
+                    #expect(appModel.chatPresentation.transport?.nativeBinding?.canReuse(adoptedBinding) == true)
+                    #expect(chat.captureSessionTransitionAuthority()())
                     #expect(!oldAuthority())
                     #expect(sentParams.isEmpty)
                 } else if action == "new-chat" || isUnbound || retiresDuringCreate {

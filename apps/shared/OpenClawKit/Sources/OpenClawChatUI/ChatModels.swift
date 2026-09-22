@@ -463,6 +463,7 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
 
     public var id: UUID = .init()
     public var transcriptMessageID: String?
+    public var activity: [OpenClawAgentActivityItem]?
     public let transcriptRunID: String?
     public var isTruncated = false
     public let role: String
@@ -535,7 +536,8 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
         phase: String? = nil,
         turnBoundary: Bool? = nil,
         steerTargetRunID: String? = nil,
-        streamFallback: OpenClawChatStreamFallback? = nil)
+        streamFallback: OpenClawChatStreamFallback? = nil,
+        activity: [OpenClawAgentActivityItem]? = nil)
     {
         self.id = id
         self.transcriptMessageID = transcriptMessageID
@@ -546,6 +548,7 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
         self.turnBoundary = turnBoundary
         self.steerTargetRunID = steerTargetRunID
         self.streamFallback = streamFallback
+        self.activity = activity
         self.content = content
         self.timestamp = timestamp
         self.idempotencyKey = idempotencyKey
@@ -747,6 +750,9 @@ public struct OpenClawChatInFlightRun: Codable, Sendable {
 public struct OpenClawChatSessionInfo: Codable, Sendable {
     public let key: String?
     public let agentId: String?
+    public let sessionId: String?
+    public let permissionMode: OpenClawChatPermissionMode?
+    public let toolOverrides: OpenClawChatSessionToolOverrides?
     public let hasActiveRun: Bool?
     public let activeRunIds: [String]?
     public let lastRunId: String?
@@ -761,16 +767,43 @@ public struct OpenClawChatSessionInfo: Codable, Sendable {
         agentId: String? = nil,
         lastRunId: String? = nil,
         status: String? = nil,
-        lastRunError: String? = nil)
+        lastRunError: String? = nil,
+        sessionId: String? = nil,
+        permissionMode: OpenClawChatPermissionMode? = nil,
+        toolOverrides: OpenClawChatSessionToolOverrides? = nil)
     {
         self.key = key
         self.agentId = agentId
+        self.sessionId = sessionId
+        self.permissionMode = permissionMode
+        self.toolOverrides = toolOverrides
         self.hasActiveRun = hasActiveRun
         self.activeRunIds = activeRunIds
         self.lastRunId = lastRunId
         self.status = status
         self.lastRunError = lastRunError
     }
+}
+
+public struct OpenClawAgentActivityItem: Codable, Hashable, Sendable {
+    public let itemId: String
+    public let toolCallId: String?
+    public let kind: String
+    public let phase: String
+    public let title: String
+    public let name: String?
+    public let status: String?
+    public let hideFromChannelProgress: Bool?
+    public let suppressChannelProgress: Bool?
+
+    var isVisible: Bool {
+        self.hideFromChannelProgress != true && self.suppressChannelProgress != true
+    }
+}
+
+public struct OpenClawChatHistoryActivity: Codable, Sendable {
+    public let messageId: String
+    public let items: [OpenClawAgentActivityItem]
 }
 
 public struct OpenClawChatHistoryPayload: Codable, Sendable {
@@ -792,6 +825,7 @@ public struct OpenClawChatHistoryPayload: Codable, Sendable {
     public let inFlightRun: OpenClawChatInFlightRun?
     public let inputConsumptions: [InputConsumption]?
     public let inputReceipts: [InputReceipt]?
+    public let activity: [OpenClawChatHistoryActivity]?
 
     public init(
         sessionKey: String,
@@ -801,7 +835,8 @@ public struct OpenClawChatHistoryPayload: Codable, Sendable {
         sessionInfo: OpenClawChatSessionInfo? = nil,
         inFlightRun: OpenClawChatInFlightRun? = nil,
         inputConsumptions: [InputConsumption]? = nil,
-        inputReceipts: [InputReceipt]? = nil)
+        inputReceipts: [InputReceipt]? = nil,
+        activity: [OpenClawChatHistoryActivity]? = nil)
     {
         self.sessionKey = sessionKey
         self.sessionId = sessionId
@@ -811,6 +846,7 @@ public struct OpenClawChatHistoryPayload: Codable, Sendable {
         self.inFlightRun = inFlightRun
         self.inputConsumptions = inputConsumptions
         self.inputReceipts = inputReceipts
+        self.activity = activity
     }
 }
 
@@ -1039,6 +1075,8 @@ public struct OpenClawChatPendingToolCall: Identifiable, Hashable, Sendable {
     public let startedAt: Double?
     public let isError: Bool?
     let diffStat: ChatToolDiffStat?
+    var activity: OpenClawAgentActivityItem?
+    var isComplete: Bool = false
 }
 
 public struct OpenClawGatewayHealthOK: Codable, Sendable {

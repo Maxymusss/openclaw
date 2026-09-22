@@ -150,7 +150,7 @@ suite.define(() => {
                   frame.method === "sessions.catalog.list" &&
                   typeof frame.id === "string" &&
                   params?.agentId === "main" &&
-                  params.limitPerHost === 1 &&
+                  params.metadataOnly === true &&
                   Object.keys(params).length === 2
                 ) {
                   latestCatalogRead = { id: frame.id, succeeded: false };

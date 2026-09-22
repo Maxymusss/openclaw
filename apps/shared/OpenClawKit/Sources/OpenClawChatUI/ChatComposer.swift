@@ -8,41 +8,8 @@ import UniformTypeIdentifiers
 import AppKit
 #endif
 
-#if !os(macOS)
-import PhotosUI
 #if canImport(UIKit)
 import UIKit
-
-/// The camera hands us an immutable snapshot, but UIKit does not expose it as
-/// Sendable. This wrapper is only used for one detached JPEG encoding pass.
-private struct OpenClawSendableCameraImage: @unchecked Sendable {
-    let value: UIImage
-}
-
-private struct OpenClawVideoTransfer: Sendable, Transferable {
-    let url: URL
-
-    static var transferRepresentation: some TransferRepresentation {
-        FileRepresentation(contentType: .movie) { video in
-            SentTransferredFile(video.url)
-        } importing: { received in
-            let fileExtension = received.file.pathExtension
-            let destination = FileManager.default.temporaryDirectory
-                .appendingPathComponent("openclaw-picker-video-\(UUID().uuidString)")
-                .appendingPathExtension(fileExtension.isEmpty ? "mov" : fileExtension)
-            try FileManager.default.copyItem(at: received.file, to: destination)
-            return OpenClawVideoTransfer(url: destination)
-        }
-    }
-}
-#endif
-
-@MainActor
-private struct OpenClawChatAttachmentCaptureOwner {
-    let viewModel: OpenClawChatViewModel
-    let session: OpenClawChatViewModel.SessionSnapshot
-}
-
 #endif
 
 private struct SlashPanelHeightKey: PreferenceKey {
@@ -99,21 +66,10 @@ struct OpenClawChatComposer: View {
     @State private var slashPanelHeight: CGFloat = 0
     @State private var slashHighlightIndex = 0
     @State var dictationTask: Task<Void, Never>?
-    @State private var signInContext: OpenClawChatModelSignInContext?
+    @ChatModalState private var modals
     @State private var modelSignInRequest: ModelSignInRequest?
     @State private var modelSignInTask: Task<Void, Never>?
     #if !os(macOS)
-    @State private var pickerItems: [PhotosPickerItem] = []
-    @State private var showsPhotoPicker = false
-    @State private var showsFileImporter = false
-    @State private var showsCameraPicker = false
-    @State private var photoPickerOwner: OpenClawChatAttachmentCaptureOwner?
-    @State private var fileImporterOwner: OpenClawChatAttachmentCaptureOwner?
-    #if canImport(UIKit)
-    @State private var cameraEncodingTask: Task<Void, Never>?
-    @State private var cameraEncodingGeneration = UUID()
-    @State private var cameraCaptureOwner: OpenClawChatAttachmentCaptureOwner?
-    #endif
     @FocusState private var isFocused: Bool
     #else
     @State private var shouldFocusTextView = false
@@ -172,14 +128,7 @@ struct OpenClawChatComposer: View {
                 .foregroundStyle(.secondary)
             }
         }
-        .sheet(isPresented: Binding(
-            get: { self.signInContext != nil },
-            set: { if !$0 { self.signInContext = nil } }))
-        {
-            if let context = self.signInContext {
-                OpenClawChatModelSignInSheet(context: context) { await self.viewModel.refreshModelSignIn() }
-            }
-        }
+        .modifier(self.$modals.originating(in: self.viewModel))
         .onChange(of: self.presentationOwner) { _, _ in
                 self.invalidateModelSignIn()
             }
@@ -212,6 +161,8 @@ struct OpenClawChatComposer: View {
     private func performModelSignInAction(_ action: ModelSignInAction) {
         guard self.modelSignInAction == nil else { return }
         let owner = self.presentationOwner
+        let capture = action == .open ? self.modals.capture() : nil
+        if action == .open, capture == nil { return }
         let request = ModelSignInRequest(action: action)
         self.modelSignInRequest = request
         self.modelSignInTask = Task {
@@ -232,7 +183,12 @@ struct OpenClawChatComposer: View {
                       self.modelSignInRequest?.id == request.id,
                       self.presentationOwner == owner
                 else { return }
-                self.signInContext = context
+                if let context {
+                    let viewModel = self.viewModel
+                    self.modals.owner.present(
+                        .init(context: context, refresh: { await viewModel.refreshModelSignIn() }),
+                        at: \.signIn, capture: capture)
+                }
             case .refresh:
                 await self.viewModel.refreshModelSignIn()
             }
@@ -247,7 +203,6 @@ struct OpenClawChatComposer: View {
         self.modelSignInRequest = nil
         self.modelSignInTask?.cancel()
         self.modelSignInTask = nil
-        self.signInContext = nil
     }
 
     private var styledComposer: some View {
@@ -281,53 +236,14 @@ struct OpenClawChatComposer: View {
             }
             .onChange(of: self.isAttachmentInputEnabled) { _, isEnabled in
                 if !isEnabled {
-                    self.showsPhotoPicker = false
-                    self.showsFileImporter = false
-                    self.showsCameraPicker = false
-                    self.photoPickerOwner = nil
-                    self.fileImporterOwner = nil
                     #if canImport(UIKit)
-                    self.cameraCaptureOwner = nil
+                    self.modals.owner.cancelAttachments(context: self.modals)
                     #endif
-                    self.cancelActiveCameraEncoding()
                 }
             }
             .onAppear {
                 self.viewModel.loadSlashCommandsIfNeeded()
             }
-            .fileImporter(
-                isPresented: self.fileImporterPresentation,
-                allowedContentTypes: OpenClawChatPickerAttachmentMetadata.allowedFileContentTypes,
-                allowsMultipleSelection: true,
-                onCompletion: { result in
-                    let owner = self.fileImporterOwner
-                    self.fileImporterOwner = nil
-                    self.handleFileImport(result, owner: owner)
-                })
-            .photosPicker(
-                isPresented: self.photoPickerPresentation,
-                selection: self.$pickerItems,
-                maxSelectionCount: 8,
-                matching: .any(of: [.images, .videos]))
-            .onChange(of: self.pickerItems) { _, items in
-                guard !items.isEmpty else { return }
-                let owner = self.photoPickerOwner
-                self.photoPickerOwner = nil
-                self.stagePhotosPickerItems(items, owner: owner)
-            }
-            #if canImport(UIKit)
-            .fullScreenCover(
-                isPresented: self.cameraPickerPresentation,
-                onDismiss: { self.cameraCaptureOwner = nil },
-                content: {
-                    let owner = self.cameraCaptureOwner
-                    OpenClawChatCameraPicker { image in
-                        guard let owner else { return }
-                        self.addCameraImage(image, owner: owner)
-                    }
-                    .ignoresSafeArea()
-                })
-            #endif
     }
     #endif
 
@@ -349,19 +265,9 @@ struct OpenClawChatComposer: View {
 
     private var lifecycleComposer: some View {
         self.recorderLifecycleComposer
-            .onChange(of: self.presentationOwner) { _, _ in
+            .onChange(of: self.presentationOwner) { previous, _ in
                 ChatDictationActions.cancel(task: self.$dictationTask, control: self.dictationControl)
-                #if !os(macOS)
-                self.showsPhotoPicker = false
-                self.showsFileImporter = false
-                self.showsCameraPicker = false
-                self.photoPickerOwner = nil
-                self.fileImporterOwner = nil
-                #if canImport(UIKit)
-                self.cameraCaptureOwner = nil
-                #endif
-                self.cancelActiveCameraEncoding()
-                #endif
+                self.modals.owner.invalidate(origin: OpenClawChatModalOrigin(owner: previous))
             }
             .onAppear {
                 self.viewModel.attachmentOwnerActivityChanged()
@@ -369,17 +275,8 @@ struct OpenClawChatComposer: View {
             }
             .onDisappear {
                 ChatDictationActions.cancel(task: self.$dictationTask, control: self.dictationControl)
-                #if !os(macOS)
-                self.showsPhotoPicker = false
-                self.showsFileImporter = false
-                self.showsCameraPicker = false
-                self.photoPickerOwner = nil
-                self.fileImporterOwner = nil
-                #if canImport(UIKit)
-                self.cameraCaptureOwner = nil
-                #endif
-                self.cancelActiveCameraEncoding()
-                #endif
+                // The stable modal host owns capture results through cover-only
+                // disappearance. Real scope removal cancels them at that owner.
                 self.cancelActiveVoiceNoteIfNeeded()
                 self.viewModel.attachmentOwnerActivityChanged()
             }
@@ -422,6 +319,24 @@ struct OpenClawChatComposer: View {
             ChatTalkActivityStrip(control: talkControl)
         }
 
+        if let dictationControl, self.dictationTask != nil || dictationControl.isActive {
+            ChatDictationActivityRow(
+                control: dictationControl,
+                onCancel: {
+                    ChatDictationActions.cancel(task: self.$dictationTask, control: dictationControl)
+                })
+        }
+
+        #if os(iOS)
+        if self.viewModel.attachmentStagingCount > 0 {
+            ChatAttachmentActivityRow(title: "Preparing attachments…")
+        } else if self.viewModel.isSendingAttachmentDraft {
+            ChatAttachmentActivityRow(title: "Sending attachments…")
+        } else if self.viewModel.isSubmittingDraft, !self.viewModel.attachments.isEmpty {
+            ChatAttachmentActivityRow(title: "Preparing message…")
+        }
+        #endif
+
         if self.composerChrome == .clean {
             self.composerCapabilityNoticeRow
         }
@@ -432,55 +347,23 @@ struct OpenClawChatComposer: View {
     }
 
     #if !os(macOS)
-    private func attachmentCaptureOwner() -> OpenClawChatAttachmentCaptureOwner {
-        OpenClawChatAttachmentCaptureOwner(
-            viewModel: self.viewModel,
-            session: self.viewModel.currentSessionSnapshot())
-    }
-
     var photoPickerPresentation: Binding<Bool> {
-        Binding(
-            get: { self.showsPhotoPicker },
-            set: { isPresented in
-                if isPresented {
-                    self.photoPickerOwner = self.attachmentCaptureOwner()
-                }
-                self.showsPhotoPicker = isPresented
-            })
+        self.modals.owner.attachmentBinding(
+            .photo, context: self.modals, viewModel: self.viewModel, enabled: self.isAttachmentInputEnabled)
     }
 
     private func presentPhotoPicker() {
-        self.photoPickerOwner = self.attachmentCaptureOwner()
-        self.showsPhotoPicker = true
+        self.photoPickerPresentation.wrappedValue = true
     }
 
     var fileImporterPresentation: Binding<Bool> {
-        Binding(
-            get: { self.showsFileImporter },
-            set: { isPresented in
-                if isPresented {
-                    self.fileImporterOwner = self.attachmentCaptureOwner()
-                }
-                self.showsFileImporter = isPresented
-            })
+        self.modals.owner.attachmentBinding(
+            .file, context: self.modals, viewModel: self.viewModel, enabled: self.isAttachmentInputEnabled)
     }
 
     var cameraPickerPresentation: Binding<Bool> {
-        Binding(
-            get: { self.showsCameraPicker },
-            set: { isPresented in
-                #if canImport(UIKit)
-                if isPresented {
-                    self.cameraCaptureOwner = self.attachmentCaptureOwner()
-                }
-                #endif
-                self.showsCameraPicker = isPresented
-                #if canImport(UIKit)
-                if !isPresented {
-                    self.cameraCaptureOwner = nil
-                }
-                #endif
-            })
+        self.modals.owner.attachmentBinding(
+            .camera, context: self.modals, viewModel: self.viewModel, enabled: self.isAttachmentInputEnabled)
     }
     #endif
 
@@ -1436,141 +1319,6 @@ extension OpenClawChatComposer {
             }
         }
         return true
-    }
-    #else
-    private func handleFileImport(
-        _ result: Result<[URL], Error>,
-        owner: OpenClawChatAttachmentCaptureOwner?)
-    {
-        guard self.isAttachmentInputEnabled else { return }
-        guard let owner,
-              self.viewModel === owner.viewModel,
-              owner.viewModel.isCurrentSession(owner.session)
-        else { return }
-        switch result {
-        case let .success(urls):
-            owner.viewModel.addAttachments(urls: urls, for: owner.session)
-        case let .failure(error):
-            if !(error is CancellationError) {
-                owner.viewModel.errorText = error.localizedDescription
-            }
-        }
-    }
-
-    #if canImport(UIKit)
-    private func addCameraImage(_ image: UIImage, owner: OpenClawChatAttachmentCaptureOwner) {
-        guard self.isAttachmentInputEnabled else { return }
-        guard self.viewModel === owner.viewModel,
-              owner.viewModel.isCurrentSession(owner.session)
-        else { return }
-        self.cancelActiveCameraEncoding()
-        let sendableImage = OpenClawSendableCameraImage(value: image)
-        let fileName = "camera-\(UUID().uuidString.prefix(8)).jpg"
-        let viewModel = owner.viewModel
-        let session = owner.session
-        let generation = UUID()
-        self.cameraEncodingGeneration = generation
-        // Pin routing before JPEG encoding suspends so an external agent or
-        // session update cannot adopt this camera result under a new owner.
-        viewModel.beginAttachmentStaging()
-        self.cameraEncodingTask = Task { @MainActor in
-            defer { viewModel.endAttachmentStaging() }
-            let data = await Task.detached(priority: .userInitiated) {
-                sendableImage.value.jpegData(compressionQuality: 0.92)
-            }.value
-            guard !Task.isCancelled,
-                  self.cameraEncodingGeneration == generation,
-                  self.viewModel === viewModel,
-                  viewModel.isCurrentSession(session),
-                  self.isAttachmentInputEnabled,
-                  let data
-            else { return }
-            await viewModel.addImageAttachment(
-                data: data,
-                fileName: fileName,
-                mimeType: "image/jpeg",
-                for: session)
-        }
-    }
-    #endif
-
-    private func cancelActiveCameraEncoding() {
-        #if canImport(UIKit)
-        self.cameraEncodingGeneration = UUID()
-        self.cameraEncodingTask?.cancel()
-        self.cameraEncodingTask = nil
-        #endif
-    }
-
-    private func stagePhotosPickerItems(
-        _ items: [PhotosPickerItem],
-        owner: OpenClawChatAttachmentCaptureOwner?)
-    {
-        guard self.isAttachmentInputEnabled else {
-            self.pickerItems = []
-            return
-        }
-        guard let owner,
-              self.viewModel === owner.viewModel,
-              owner.viewModel.isCurrentSession(owner.session)
-        else {
-            self.pickerItems = []
-            return
-        }
-        owner.viewModel.beginAttachmentStaging()
-        Task { @MainActor in
-            defer { owner.viewModel.endAttachmentStaging() }
-            await self.loadPhotosPickerItems(items, owner: owner)
-        }
-    }
-
-    private func loadPhotosPickerItems(
-        _ items: [PhotosPickerItem],
-        owner: OpenClawChatAttachmentCaptureOwner) async
-    {
-        guard self.isAttachmentInputEnabled else {
-            self.pickerItems = []
-            return
-        }
-        for item in items {
-            do {
-                guard self.viewModel === owner.viewModel,
-                      owner.viewModel.isCurrentSession(owner.session)
-                else { break }
-                let type = item.supportedContentTypes.first(where: {
-                    $0.conforms(to: .movie) || $0.conforms(to: .image)
-                }) ?? item.supportedContentTypes.first ?? .image
-                if type.conforms(to: .movie) {
-                    guard let transfer = try await item.loadTransferable(type: OpenClawVideoTransfer.self)
-                    else { continue }
-                    defer { try? FileManager.default.removeItem(at: transfer.url) }
-                    let metadata = OpenClawChatPickerAttachmentMetadata.resolve(
-                        contentType: type,
-                        transferredFileURL: transfer.url)
-                    let name = "video-\(UUID().uuidString.prefix(8)).\(metadata.fileExtension)"
-                    await owner.viewModel.addVideoAttachment(
-                        url: transfer.url,
-                        fileName: name,
-                        mimeType: metadata.mimeType,
-                        expectedSession: owner.session)
-                } else {
-                    guard let data = try await item.loadTransferable(type: Data.self) else { continue }
-                    let metadata = OpenClawChatPickerAttachmentMetadata.resolve(contentType: type)
-                    let name = "photo-\(UUID().uuidString.prefix(8)).\(metadata.fileExtension)"
-                    await owner.viewModel.addImageAttachment(
-                        data: data,
-                        fileName: name,
-                        mimeType: metadata.mimeType,
-                        for: owner.session)
-                }
-            } catch {
-                guard self.viewModel === owner.viewModel,
-                      owner.viewModel.isCurrentSession(owner.session)
-                else { break }
-                owner.viewModel.errorText = error.localizedDescription
-            }
-        }
-        self.pickerItems = []
     }
     #endif
 

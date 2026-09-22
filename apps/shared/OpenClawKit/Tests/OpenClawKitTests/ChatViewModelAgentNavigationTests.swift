@@ -26,11 +26,15 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
     let sendGate: AgentNavigationGate?
     let supportsAgentScopes: Bool
     let firstAbortGate: AgentNavigationGate?
+    let createdResponseKey: String?
+    let forkedResponseKey: String?
+    private(set) var forkedTargets: [OpenClawChatSessionTarget] = []
     private(set) var catalogRequests = 0
     private(set) var sentKeys: [String] = []
     private(set) var createdKeys: [String] = []
     private(set) var listedAgentIDs: [String?] = []
     private(set) var historyTargets: [OpenClawChatSessionTarget] = []
+    private(set) var historyRequests: [OpenClawChatSessionTarget] = []
     private(set) var subscriptionTargets: [OpenClawChatSessionTarget] = []
     private(set) var sentTargets: [OpenClawChatSessionTarget] = []
     private(set) var mutationRequests: [OpenClawChatGatewayRequest] = []
@@ -44,6 +48,8 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
         sendGate: AgentNavigationGate? = nil,
         supportsAgentScopes: Bool = true,
         firstAbortGate: AgentNavigationGate? = nil,
+        createdResponseKey: String? = nil,
+        forkedResponseKey: String? = nil,
         sessionsByAgentID: [String: [OpenClawChatSessionEntry]] = [:])
     {
         self.catalogs = catalogs
@@ -51,6 +57,8 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
         self.sendGate = sendGate
         self.supportsAgentScopes = supportsAgentScopes
         self.firstAbortGate = firstAbortGate
+        self.createdResponseKey = createdResponseKey
+        self.forkedResponseKey = forkedResponseKey
         self.sessionsByAgentID = sessionsByAgentID
     }
 
@@ -60,6 +68,7 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
 
     func recordHistory(_ target: OpenClawChatSessionTarget) -> OpenClawChatHistoryPayload {
         self.historyTargets.append(target)
+        self.historyRequests.append(target)
         return OpenClawChatHistoryPayload(
             sessionKey: target.sessionKey,
             sessionId: nil,
@@ -117,7 +126,8 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
     }
 
     func requestHistory(sessionKey: String) async throws -> OpenClawChatHistoryPayload {
-        OpenClawChatHistoryPayload(sessionKey: sessionKey, sessionId: nil, messages: [], thinkingLevel: "off")
+        self.historyRequests.append(.init(sessionKey: sessionKey, agentID: nil))
+        return OpenClawChatHistoryPayload(sessionKey: sessionKey, sessionId: nil, messages: [], thinkingLevel: "off")
     }
 
     func listSessions(
@@ -151,7 +161,13 @@ private actor AgentNavigationTransport: OpenClawChatTransport {
         worktree _: Bool?) async throws -> OpenClawChatCreateSessionResponse
     {
         self.createdKeys.append(key)
-        return OpenClawChatCreateSessionResponse(ok: true, key: key, sessionId: nil)
+        return OpenClawChatCreateSessionResponse(ok: true, key: self.createdResponseKey ?? key, sessionId: nil)
+    }
+
+    func forkSession(parentKey: String, fromLastCompleted _: Bool, agentID: String?) async throws -> String {
+        self.forkedTargets.append(.init(sessionKey: parentKey, agentID: agentID))
+        guard let forkedResponseKey else { throw Failure.offline }
+        return forkedResponseKey
     }
 
     func requestHealth(timeoutMs _: Int) async throws -> Bool {
@@ -266,6 +282,83 @@ struct ChatViewModelAgentNavigationTests {
             defaultId: "main",
             agents: [.init(id: "main", name: "Assistant"), .init(id: "research", name: "Research")],
             sessionRoutingContract: contract)
+    }
+
+    @Test(arguments: [false, true])
+    func `opaque create either scopes its owner or refuses adoption without losing the composer`(
+        supportsAgentScopes: Bool) async throws
+    {
+        let child = "opaque-created-session"
+        let transport = AgentNavigationTransport(
+            catalogs: [.success(self.catalog())], supportsAgentScopes: supportsAgentScopes,
+            createdResponseKey: child)
+        let fixture = AgentNavigationFixture(transport: transport)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        vm.load()
+        try await waitUntil("initial conversation loaded") {
+            await MainActor.run { !vm.isLoading && vm.hasCurrentSessionMetadata }
+        }
+        let original = vm.currentSessionTarget
+        let generation = vm.currentSessionSnapshot()
+        let historyBeforeCreate = await transport.historyRequests
+        vm.input = "keep this draft"
+        let adopted = await vm.startNewSession()
+        #expect(adopted == supportsAgentScopes)
+        #expect(await transport.createdKeys.count == 1)
+        if supportsAgentScopes {
+            #expect(vm.input.isEmpty)
+            let target = OpenClawChatSessionTarget(sessionKey: child, agentID: "main")
+            #expect(vm.currentSessionTarget == target)
+            try await waitUntil("opaque child history loaded on its owner") {
+                await transport.historyTargets.contains(target)
+            }
+            #expect(await transport.subscriptionTargets.contains(target))
+            try await waitUntil("opaque child bootstrap settled") {
+                await MainActor.run { !vm.isLoading && vm.hasCurrentSessionMetadata }
+            }
+            #expect(vm.switchSession(to: original.sessionKey, agentID: original.agentID))
+            let returned = vm.currentSessionSnapshot()
+            try await waitUntil("original conversation bootstrap settled") {
+                await MainActor.run {
+                    vm.isCurrentSession(returned) && !vm.isLoading && vm.hasCurrentSessionMetadata
+                }
+            }
+            #expect(vm.currentSessionTarget == original)
+            #expect(vm.input == "keep this draft")
+        } else {
+            #expect(vm.currentSessionTarget == original)
+            #expect(vm.isCurrentSession(generation))
+            #expect(vm.input == "keep this draft")
+            #expect(!vm.isCreatingSession)
+            #expect(await transport.historyRequests == historyBeforeCreate)
+            #expect(vm.errorText == "This connection cannot open that agent's conversation. Reconnect and try again.")
+        }
+    }
+
+    @Test(arguments: ["agent:research:source", "global"])
+    func `opaque row fork keeps the source row agent rather than the visible chat agent`(
+        parentKey: String) async throws
+    {
+        let child = "opaque-forked-session"
+        let transport = AgentNavigationTransport(
+            catalogs: [.success(self.catalog())], forkedResponseKey: child)
+        let fixture = AgentNavigationFixture(transport: transport)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        vm.load()
+        try await waitUntil("main conversation loaded") { await MainActor.run { !vm.isLoading } }
+        #expect(vm.selectedAgentID == "main")
+        await vm.forkSession(key: parentKey, agentID: "research")
+        let target = OpenClawChatSessionTarget(sessionKey: child, agentID: "research")
+        #expect(vm.currentSessionTarget == target)
+        #expect(vm.selectedAgentID == "research")
+        #expect(await transport.forkedTargets == [.init(
+            sessionKey: parentKey, agentID: parentKey == "global" ? "research" : nil)])
+        try await waitUntil("opaque row-fork history loaded on research") {
+            await transport.historyTargets.contains(target)
+        }
+        #expect(await transport.subscriptionTargets.contains(target))
     }
 
     @Test func `sequential global activations acknowledge their owners and preserve manual unread marks`() async throws {

@@ -746,8 +746,9 @@ export async function withNativeActionGateway(
       await runQaGatewayFixture(
         async () => {
           for (const id of caseKeys) {
-            const group =
-              id === "aclSuspended" ? "acl" : id === "profileSuspended" ? "profile" : id;
+            // ACL readers share the session revoked by one visibility change.
+            // Profile readers need distinct targets to prove cross-reader retirement.
+            const group = id === "aclSuspended" ? "acl" : id;
             let sessionKey = groups.get(group);
             if (!sessionKey) {
               sessionKey = await fixture.createSession(

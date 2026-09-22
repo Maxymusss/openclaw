@@ -17,7 +17,9 @@ import type {
   OpenClawStateDatabase,
   OpenClawStateSchemaReadAdmission,
 } from "./openclaw-state-db-contract.js";
+import { assertExistingOpenClawStateRuntimeSchema } from "./openclaw-state-db-existing-schema.js";
 import { openOpenClawStateReadConnection } from "./openclaw-state-db-read-connection.js";
+import { isExistingOpenClawStateSchema } from "./openclaw-state-db-schema-policy.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 
@@ -41,6 +43,16 @@ const stateSnapshotReads = resolveGlobalSingleton(
       active: boolean;
     }>(),
 );
+
+/** Opaque identity for derived facts scoped to these owned private database bytes. */
+export function getActiveOpenClawStateDatabaseReadSnapshot(
+  options: OpenClawStateDatabaseOptions = {},
+): object | undefined {
+  const current = stateSnapshotReads.getStore();
+  return current?.active === true && current.path === resolveReadOnlyPath(options)
+    ? current
+    : undefined;
+}
 
 /** Resolve a composite read from one online snapshot without redirecting live writers. */
 export async function withOpenClawStateDatabaseReadSnapshot<T>(
@@ -180,7 +192,19 @@ export function hasOpenClawStateTablesBeyondStartupCheckpoint(db: DatabaseSync):
 }
 
 function resolveReadOnlyPath(options: OpenClawStateDatabaseOptions): string {
-  return path.resolve(options.path ?? resolveOpenClawStateSqlitePath(options.env ?? process.env));
+  const pathname = path.resolve(
+    options.path ?? resolveOpenClawStateSqlitePath(options.env ?? process.env),
+  );
+  isExistingOpenClawStateSchema(pathname);
+  return pathname;
+}
+
+function assertStateReadSchema(database: DatabaseSync, pathname: string): void {
+  if (isExistingOpenClawStateSchema(pathname, database)) {
+    assertExistingOpenClawStateRuntimeSchema(database, pathname);
+  } else {
+    assertSupportedStateSchemaVersion(database, pathname);
+  }
 }
 
 function existingPathOrUndefined(pathname: string): string | undefined {
@@ -219,7 +243,7 @@ function withOpenClawStateDatabaseReadOnlyIfOpen<T>(
     // is checked on the next physical open so hot reads do not poll metadata.
     // A newer build can migrate this file while the handle stays open, so the
     // forward-compatibility gate still runs before any reused read.
-    assertSupportedStateSchemaVersion(opened.db, pathname);
+    assertStateReadSchema(opened.db, pathname);
     observeOpenClawDatabaseMaintenanceResource(opened.db);
     return { reused: true, value: operation(opened) };
   } catch (error) {
@@ -249,7 +273,7 @@ function withFreshOpenClawStateDatabaseReadOnly<T>(
       );
       readers.set(pathname, opened);
     }
-    assertSupportedStateSchemaVersion(opened.database.db, pathname);
+    assertStateReadSchema(opened.database.db, pathname);
     const result = operation(opened.database);
     if (isPromiseLike(result)) {
       throw new SqliteCoordinatorError("SQLite metadata snapshot read must remain synchronous");
@@ -268,7 +292,7 @@ function openOpenClawStateReadOnlyLocation(
 ) {
   const connection = openOpenClawStateReadConnection(pathname, source);
   try {
-    assertSupportedStateSchemaVersion(connection.database.db, pathname);
+    assertStateReadSchema(connection.database.db, pathname);
   } catch (error) {
     connection.close();
     throw error;
@@ -286,7 +310,7 @@ function withOpenClawStateReadOnlyLocation<T>(
   let closeAdmission: (() => void) | undefined;
   try {
     closeAdmission = openStateSchemaReadAdmission?.(opened.database.db);
-    assertSupportedStateSchemaVersion(opened.database.db, pathname);
+    assertStateReadSchema(opened.database.db, pathname);
     const result = operation(opened.database);
     const location = typeof source === "string" ? source : source.location;
     if (location === pathname && isPromiseLike(result)) {

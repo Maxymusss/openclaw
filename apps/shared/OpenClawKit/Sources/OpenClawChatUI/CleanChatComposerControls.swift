@@ -247,7 +247,7 @@ struct OpenClawChatAttachmentMenu<ExtraItems: View>: View {
 #if canImport(UIKit)
 struct OpenClawChatCameraPicker: UIViewControllerRepresentable {
     let onImage: @MainActor (UIImage) -> Void
-    @Environment(\.dismiss) private var dismiss
+    let onDismiss: @MainActor () -> Void
 
     func makeCoordinator() -> Coordinator {
         Coordinator(parent: self)
@@ -276,11 +276,11 @@ struct OpenClawChatCameraPicker: UIViewControllerRepresentable {
             if let image = info[.originalImage] as? UIImage {
                 self.parent.onImage(image)
             }
-            self.parent.dismiss()
+            self.parent.onDismiss()
         }
 
         func imagePickerControllerDidCancel(_: UIImagePickerController) {
-            self.parent.dismiss()
+            self.parent.onDismiss()
         }
     }
 }
@@ -356,8 +356,8 @@ struct OpenClawChatMicButton: View {
     private func performDictationAction() {
         guard let dictationControl else { return }
         switch Self.dictationPrimaryAction(
-            isPending: self.isDictationPending,
-            isActive: dictationControl.isActive)
+            isPending: self.isDictationPending || dictationControl.isActive,
+            isActive: dictationControl.phase == .listening)
         {
         case .finish:
             dictationControl.finish()
@@ -451,19 +451,20 @@ private struct UnifiedChatMicMetadata: ViewModifier {
     }
 
     private var accessibilityLabel: Text {
-        if self.control.isActive { return Text("Finish dictation") }
-        if self.isPending { return Text("Cancel") }
+        if self.control.phase == .listening { return Text("Finish dictation") }
+        if self.isPending || self.control.isActive { return Text("Cancel dictation") }
         return Text("Dictate message")
     }
 
     private var accessibilityValue: Text {
-        if self.control.isActive { return Text("Listening") }
-        return Text("Not listening")
+        Text((self.isPending && self.control.phase == .idle
+                ? OpenClawChatDictationControl.Phase.starting
+                : self.control.phase).statusText)
     }
 
     private var helpText: Text {
-        if self.control.isActive { return Text("Finish dictation") }
-        if self.isPending { return Text("Cancel") }
+        if self.control.phase == .listening { return Text("Finish dictation") }
+        if self.isPending || self.control.isActive { return Text("Cancel dictation") }
         return Text("Transcribe speech into the message")
     }
 }
