@@ -67,7 +67,7 @@ export type EmbeddedAttemptExecutionPhaseInput = {
     applyPermissionMode?: (
       mode: NonNullable<EmbeddedRunAttemptParams["permissionMode"]> | null,
       revokeApprovals: () => void,
-    ) => void;
+    ) => void | Promise<void>;
     readYieldState: () => {
       yieldAbortSettled: Promise<void> | null;
       yieldDetected: boolean;

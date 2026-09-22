@@ -12,11 +12,11 @@ import { logWarn } from "../logger.js";
 import type { PluginHookToolRequesterContext } from "../plugins/hook-types.js";
 import { appendRuntimePluginToolGrant } from "../plugins/tool-grant-allowlist.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
-import { getProcessSupervisor } from "../process/supervisor/index.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
 import { GATEWAY_OWNER_ONLY_CORE_TOOLS } from "../security/dangerous-tools.js";
 import type { SkillSnapshot } from "../skills/types.js";
 import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
 import {
   bindAssembledAgentToolActionDescriptor,
@@ -37,8 +37,8 @@ import {
 } from "./agent-tools.ring-zero-context.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { resolveConfiguredApplyPatchPolicy } from "./apply-patch-policy.js";
-import { waitForExecScope } from "./bash-process-registry.js";
 import { resolveProcessToolScopeKey } from "./bash-process-scope.js";
+import { acquireExecScopeCleanup } from "./bash-tools.exec-cleanup.js";
 import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
 import { listChannelAgentTools } from "./channel-tools.js";
 import { resolveConversationCapabilityProfile } from "./conversation-capability-profile.js";
@@ -96,6 +96,7 @@ export { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js"
 export function createOpenClawCodingToolsInternal(
   options?: OpenClawCodingToolsOptions,
   skillReadResources?: SkillSnapshot["resolvedSkills"],
+  operatorAuthority?: AdmittedRunOperatorAuthority,
 ): AnyAgentTool[] {
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
   const isMemoryFlushRun = options?.trigger === "memory";
@@ -214,19 +215,9 @@ export function createOpenClawCodingToolsInternal(
     agentId: executionAgentId,
   });
   if (options?.oneShotCliRun && scopeKey && options.registerRunCleanup) {
-    const supervisor = getProcessSupervisor();
     // Sandbox runtimes retain their configured lifetime; host commands still
     // need tree cleanup, including elevated commands from sandboxed sessions.
-    const cleanupScope = supervisor.acquireScopeCleanup(scopeKey, { processTree: "owned-only" });
-    options.registerRunCleanup(async () => {
-      // Transport closure can precede backend finalization. Join both owners
-      // before their local artifacts or the invocation state can be released.
-      const settled = await Promise.allSettled([cleanupScope(), waitForExecScope(scopeKey)]);
-      const failed = settled.find((result) => result.status === "rejected");
-      if (failed) {
-        throw failed.reason;
-      }
-    });
+    options.registerRunCleanup(acquireExecScopeCleanup(scopeKey, "owned-only"));
   }
   options?.recordToolPrepStage?.("tool-policy");
   const execConfig = resolveExecToolConfig({ cfg: options?.config, agentId });
@@ -335,6 +326,7 @@ export function createOpenClawCodingToolsInternal(
     modelHasVision: options?.modelHasVision,
     memoryWriteProvenance,
     ...applyPatchPolicy,
+    operatorAuthority,
     execDefaults: {
       ...execDefaults,
       ...effectiveExecPolicy,

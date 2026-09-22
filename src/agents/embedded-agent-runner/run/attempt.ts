@@ -5,7 +5,10 @@ import {
 import { resolveContextEngineOwnerPluginId } from "../../../context-engine/registry.js";
 import { runWithAsyncWorkResources } from "../../../shared/async-work-resources.js";
 import { getAsyncWorkSignal } from "../../../shared/async-work-scope.js";
-import { resolveAdmittedRunActiveAssertion } from "../../admitted-run-context.js";
+import {
+  readAdmittedRunOperatorAuthority,
+  resolveAdmittedRunActiveAssertion,
+} from "../../admitted-run-context.js";
 import { createBundleLspToolRuntime } from "../../agent-bundle-lsp-runtime.js";
 import { materializeBundleMcpToolsForRun } from "../../agent-bundle-mcp-tools.js";
 import { AgentRunTerminalOutcomeError } from "../../agent-run-terminal-error.js";
@@ -49,6 +52,7 @@ import { prepareEmbeddedAttemptSystemPrompt } from "./attempt-system-prompt-prep
 import { prepareEmbeddedAttemptToolCatalog } from "./attempt-tool-catalog.js";
 import { prepareEmbeddedAttemptToolBase } from "./attempt-tool-prepare.js";
 import { prepareEmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle-prepare.js";
+import { prepareEmbeddedPermissionPublication } from "./permission-change.js";
 import { measureEmbeddedAgentPreparation } from "./preparation-timing.js";
 import { clearToolActivityRun } from "./tool-activity-heartbeat.js";
 import type {
@@ -420,21 +424,40 @@ async function runEmbeddedAttemptOwned(
         state: executionState,
         lifecycle: {
           applyPermissionMode: (mode, revokeApprovals) => {
-            preparedToolBase.refreshPermissionMode(mode, revokeApprovals);
-            preparedBundleTools.refreshTools();
-            preparedToolCatalog.refreshTools();
-            preparedSessionRuntime.agentSession.refreshTools();
-            promptToolPolicy.refresh();
-            const prepareToolPrompt = preparedSystemPrompt.prepareToolPrompt;
-            preparedSessionRuntime.agentSession.setPermissionPromptPreparation(
-              prepareToolPrompt
-                ? () =>
-                    prepareToolPrompt(promptToolPolicy.current.effectiveTools, {
-                      permissionChanged: true,
-                    })
-                : undefined,
-            );
-            params.permissionChange?.recordApplied(mode);
+            const publish = () => {
+              preparedBundleTools.refreshTools();
+              preparedToolCatalog.refreshTools();
+              preparedSessionRuntime.agentSession.refreshTools();
+              promptToolPolicy.refresh();
+              const prepareToolPrompt = preparedSystemPrompt.prepareToolPrompt;
+              preparedSessionRuntime.agentSession.setPermissionPromptPreparation(
+                prepareToolPrompt
+                  ? () =>
+                      prepareToolPrompt(promptToolPolicy.current.effectiveTools, {
+                        permissionChanged: true,
+                      })
+                  : undefined,
+              );
+            };
+            const operatorAuthority = readAdmittedRunOperatorAuthority(params.admittedRunContext);
+            const complete =
+              params.permissionChange && operatorAuthority?.executionPolicy === "foreground-only"
+                ? prepareEmbeddedPermissionPublication(params.permissionChange, mode, {
+                    operatorAuthority,
+                    runAbortSignal: runAbortController.signal,
+                    assertActiveRun,
+                    publish,
+                  })
+                : () => {
+                    publish();
+                    params.permissionChange?.recordApplied(mode);
+                  };
+            const refreshed = preparedToolBase.refreshPermissionMode(mode, revokeApprovals);
+            if (refreshed) {
+              return refreshed.then(complete);
+            }
+            complete();
+            return undefined;
           },
           readYieldState: () => ({
             yieldAbortSettled,

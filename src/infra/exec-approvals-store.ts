@@ -48,6 +48,7 @@ import {
   snapshotFromExecApprovalsRow,
   writeExecApprovalsConfigRow,
 } from "./exec-approvals-sqlite.js";
+import { createSqliteWorkerWriteAdmission } from "./sqlite-worker-store.js";
 
 const log = createSubsystemLogger("infra/exec-approvals");
 const WARN_INTERVAL_MS = 60_000;
@@ -289,6 +290,7 @@ type CommittedExecAuthorization = {
 type PendingAuthorization = {
   input: ExecAuthorizationCommitInput;
   context: OpenClawStateWorkerContext;
+  assertSourceCurrent?: () => void;
   resolve: (result: CommittedExecAuthorization) => void;
   reject: (error: unknown) => void;
 };
@@ -297,30 +299,37 @@ const pendingAuthorizationBatches: [PendingAuthorization, ...PendingAuthorizatio
 /** Coalesce this turn's authorizations; the shared-state actor owns ordered settlement. */
 export function commitExecAuthorizations(
   input: ExecAuthorizationCommitInput,
+  assertSourceCurrent?: () => void,
 ): Promise<CommittedExecAuthorization> {
   const maintenance = getOpenClawDatabaseMaintenanceScope();
   return maintenance
-    ? maintenance.run(() => enqueueExecAuthorization(input))
-    : enqueueExecAuthorization(input);
+    ? maintenance.run(() => enqueueExecAuthorization(input, assertSourceCurrent))
+    : enqueueExecAuthorization(input, assertSourceCurrent);
 }
 
 function enqueueExecAuthorization(
   input: ExecAuthorizationCommitInput,
+  assertSourceCurrent?: () => void,
 ): Promise<CommittedExecAuthorization> {
+  assertSourceCurrent?.();
   const context = captureOpenClawStateWorkerContext();
   assertNoPendingLegacyExecApprovals({ env: context.environment });
   const completion = createDeferredCore<CommittedExecAuthorization>();
   const request: PendingAuthorization = {
     input: structuredClone(input),
     context,
+    assertSourceCurrent,
     resolve: completion.resolve,
     reject: completion.reject,
   };
   let batch = pendingAuthorizationBatches.at(-1);
   if (batch) {
     const owner = batch[0].context;
+    // One source refusal must not poison another person's or staff's batch.
+    // The function identity stays host-local; only policy input crosses the worker.
     if (
       batch.length >= 64 ||
+      batch[0].assertSourceCurrent !== assertSourceCurrent ||
       owner.admission.identity.key !== context.admission.identity.key ||
       owner.maintenanceScope !== context.maintenanceScope ||
       owner.existingSchemaPath !== context.existingSchemaPath ||
@@ -337,6 +346,11 @@ function enqueueExecAuthorization(
     const pending = batch;
     queueMicrotask(() => {
       pendingAuthorizationBatches.splice(pendingAuthorizationBatches.indexOf(pending), 1);
+      const assertCurrent = () =>
+        pending.forEach((item) => {
+          item.context.admission.assertCurrent();
+          item.assertSourceCurrent?.();
+        });
       void runOpenClawStateWorkerOperation(
         context,
         (scope) =>
@@ -344,10 +358,23 @@ function enqueueExecAuthorization(
             type: "execApprovals.commitAuthorizations",
             input: { items: pending.map((item) => item.input) },
           }),
-        { assertCurrent: () => pending.forEach((item) => item.context.admission.assertCurrent()) },
+        {
+          assertCurrent,
+          createAdmission: createSqliteWorkerWriteAdmission(assertCurrent, [
+            context.admission.databasePath,
+          ]),
+        },
       ).then(
         (results) => {
           for (const [index, item] of pending.entries()) {
+            try {
+              // Unchanged policy takes the no-transaction path but still needs
+              // its original source when accepting the worker result.
+              item.assertSourceCurrent?.();
+            } catch (error) {
+              item.reject(error);
+              continue;
+            }
             const result = results[index];
             if (!result?.ok) {
               item.reject(new Error(result?.message ?? "Missing exec authorization result"));
@@ -357,6 +384,7 @@ function enqueueExecAuthorization(
               snapshot: result.snapshot,
               readCurrent: () => {
                 item.context.admission.assertCurrent();
+                item.assertSourceCurrent?.();
                 return loadExecApprovalsReadOnlyWithOptions({
                   path: item.context.admission.databasePath,
                   env: item.context.environment,

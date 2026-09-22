@@ -64,6 +64,21 @@ UI's draining indication still needs qualification. Detached plugin callbacks
 and external runtimes also need proof that they retain the original caller and
 stop their work. An absent request context is not evidence of system authority.
 
+The local POSIX builtin exec draft gives each restricted tool generation its own
+process scope. Stop, deadline expiry and permission changes retain that scope
+through descendant and backend cleanup. Staff background processes keep their
+separate scope. Restricted commands cannot request background execution, yield
+to a later turn, detach approval, or fall back from required sandbox isolation.
+Node, Windows and external sandbox execution remain unqualified.
+
+If cleanup cannot confirm extinction, the Gateway refuses new work for that
+exact thread with `UNAVAILABLE`, including after promotion to a staff role.
+The original turn keeps its terminal outcome. The operator must reconcile the
+remaining processes, then replace the Gateway process before continuing. An
+in-process Gateway restart does not clear this refusal, and process replacement
+alone does not prove that the remaining processes stopped. No durable
+grant, database change, global setting or support acknowledgement is added.
+
 The draft lifecycle accepts one fresh Control UI turn in an existing local
 thread, with an absolute deadline from an explicitly configured positive
 `agents.defaults.timeoutSeconds`. It does not change that setting or staff

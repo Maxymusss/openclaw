@@ -58,9 +58,12 @@ export function recordAllowlistMatchesUse(params: {
 
 export async function commitExecAuthorizationLocked(
   input: ExecAuthorizationCommitInput,
+  assertCurrent?: () => void,
 ): Promise<() => void> {
+  assertCurrent?.();
   const params = structuredClone(input);
-  const { snapshot, readCurrent } = await commitExecAuthorizations(params);
+  const { snapshot, readCurrent } = await commitExecAuthorizations(params, assertCurrent);
+  assertCurrent?.();
   const matchKeys = new Set(
     params.matches.filter((entry) => entry.pattern).map(buildAllowlistEntryMatchKey),
   );

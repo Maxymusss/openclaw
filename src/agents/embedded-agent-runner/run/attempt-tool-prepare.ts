@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { SessionPermissionMode } from "../../../../packages/gateway-protocol/src/schema/sessions-row.js";
 import { messageToolOwnsVisibleReply } from "../../../auto-reply/source-reply-delivery-mode.js";
 import type { DiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
@@ -11,11 +12,13 @@ import { extractModelCompat } from "../../../plugins/provider-model-compat.js";
 import { getPluginToolMeta } from "../../../plugins/tool-metadata.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import type { NestedToolActivity } from "../../../sessions/nested-tool-activity.js";
+import { readAdmittedRunOperatorAuthority } from "../../admitted-run-context.js";
 import {
   createOpenClawCodingToolsInternal,
   resolveToolLoopDetectionConfig,
 } from "../../agent-tools.js";
 import { createSkillInstructionDeliveryCache } from "../../agent-tools.read.js";
+import { acquireExecScopeCleanup } from "../../bash-tools.exec-cleanup.js";
 import { getChannelAgentToolMeta } from "../../channel-tools.js";
 import { createCodeModePermissionChangeReason } from "../../code-mode-permission-change.js";
 import type { CodeModeSkill } from "../../code-mode-skills.js";
@@ -77,6 +80,8 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor;
 }) {
   const { attempt } = params;
+  const operatorAuthority = readAdmittedRunOperatorAuthority(attempt.admittedRunContext);
+  const foregroundOnly = operatorAuthority?.executionPolicy === "foreground-only";
   const requireExplicitMessageTarget =
     attempt.requireExplicitMessageTarget ?? isSubagentSessionKey(attempt.sessionKey);
   const forceDirectMessageTool = messageToolOwnsVisibleReply(attempt);
@@ -163,17 +168,23 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   const generationCleanups: Array<(reason: string) => Promise<void>> = [];
   const retiringGenerations = new Set<Promise<void>>();
   let retiredCleanupFailed = false;
+  let retiredCleanupError: unknown;
   const retireToolGeneration = (reason: string) => {
     const cleanups = generationCleanups.splice(0);
     const settled = Promise.allSettled(cleanups.map(async (cleanup) => await cleanup(reason))).then(
       (results) => {
-        if (results.some((result) => result.status === "rejected")) {
+        const failure = results.find((result) => result.status === "rejected");
+        if (failure) {
+          if (!retiredCleanupFailed) {
+            retiredCleanupError = failure.reason;
+          }
           retiredCleanupFailed = true;
         }
       },
     );
     retiringGenerations.add(settled);
     void settled.then(() => retiringGenerations.delete(settled));
+    return settled;
   };
   const spawnWorkspaceDir =
     params.setup.effectiveCwd !== params.setup.effectiveWorkspace
@@ -273,11 +284,21 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     const constructedToolsRaw = !shouldConstructTools
       ? []
       : (() => {
+          operatorAuthority?.assertCurrent();
+          const scopeKey = foregroundOnly
+            ? `foreground:${attempt.runId}:${randomUUID()}`
+            : undefined;
+          if (scopeKey) {
+            // Acquire before tools can spawn. A generation must never cancel the
+            // session-wide scope, which can contain independently owned staff work.
+            generationCleanups.push(acquireExecScopeCleanup(scopeKey, "required-all"));
+          }
           const codingToolOptions: OpenClawCodingToolsOptions = {
             agentId: params.setup.sessionAgentId,
             ...buildConversationContext(),
             exec: {
               ...attempt.execOverrides,
+              ...(scopeKey ? { scopeKey, allowBackground: false } : {}),
               ...(sessionPermissionPolicy
                 ? { mode: resolveSessionPermissionExecMode(sessionPermissionPolicy) }
                 : {}),
@@ -346,6 +367,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
           const allTools = createOpenClawCodingToolsInternal(
             codingToolOptions,
             params.skillReadResources,
+            operatorAuthority,
           );
           // The built-in harness retains its existing authoritative wrappers.
           // Only plugin harnesses receive and require the projected host capability.
@@ -377,15 +399,23 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   const baseExecOverrides = {
     ...(attempt.permissionChange?.baseExecOverrides ?? attempt.execOverrides),
   };
-  const toolsRaw = constructTools(params.setup.sessionPermissionPolicy, toolAbortSignal);
-  runCleanups.push(async (reason) => {
+  const releaseToolGeneration = async (reason: string) => {
     toolAbortController.abort();
-    retireToolGeneration(reason);
+    // Retirement synchronously registers this exact promise in the joined set.
+    void retireToolGeneration(reason);
     await Promise.all(retiringGenerations);
     if (retiredCleanupFailed) {
       recordAgentCleanupFailure();
     }
-  });
+  };
+  runCleanups.push(releaseToolGeneration);
+  let toolsRaw: ReturnType<typeof constructTools>;
+  try {
+    toolsRaw = constructTools(params.setup.sessionPermissionPolicy, toolAbortSignal);
+  } catch (error) {
+    await releaseToolGeneration("error");
+    throw error;
+  }
 
   return {
     toolHookContext: {
@@ -413,18 +443,31 @@ export async function prepareEmbeddedAttemptToolBase(params: {
       // signal must already be closed when an allowed decision wakes them.
       toolAbortController.abort(createCodeModePermissionChangeReason());
       revokeApprovals();
-      retireToolGeneration("cancel");
-      params.runAbortController.signal.throwIfAborted();
-      toolAbortController = new AbortController();
-      toolAbortSignal = AbortSignal.any([
-        params.runAbortController.signal,
-        toolAbortController.signal,
-      ]);
-      attempt.permissionMode = mode ?? undefined;
-      attempt.execOverrides = { ...baseExecOverrides };
-      const policy = mode ? { root: params.setup.sessionPermissionRoot, mode } : undefined;
-      const nextTools = constructTools(policy, toolAbortSignal);
-      toolsRaw.splice(0, toolsRaw.length, ...nextTools);
+      const retired = retireToolGeneration("cancel");
+      const replace = () => {
+        params.runAbortController.signal.throwIfAborted();
+        toolAbortController = new AbortController();
+        toolAbortSignal = AbortSignal.any([
+          params.runAbortController.signal,
+          toolAbortController.signal,
+        ]);
+        attempt.permissionMode = mode ?? undefined;
+        attempt.execOverrides = { ...baseExecOverrides };
+        const policy = mode ? { root: params.setup.sessionPermissionRoot, mode } : undefined;
+        const nextTools = constructTools(policy, toolAbortSignal);
+        toolsRaw.splice(0, toolsRaw.length, ...nextTools);
+      };
+      if (foregroundOnly) {
+        return retired.then(() => {
+          if (retiredCleanupFailed) {
+            recordAgentCleanupFailure();
+            throw retiredCleanupError;
+          }
+          replace();
+        });
+      }
+      replace();
+      return undefined;
     },
     codeModeControlsEnabledForRun,
     codeModeSkills,

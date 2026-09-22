@@ -87,7 +87,7 @@ export function prepareEmbeddedAttemptStream(input: {
   applyPermissionMode?: (
     mode: NonNullable<EmbeddedRunAttemptParams["permissionMode"]> | null,
     revokeApprovals: () => void,
-  ) => void;
+  ) => void | Promise<void>;
   activeSession: AgentSession;
   onModelUsage?: Parameters<typeof subscribeEmbeddedAgentSession>[0]["onModelUsage"];
   runtimeChannel?: string;
@@ -509,7 +509,10 @@ export function prepareEmbeddedAttemptStream(input: {
             return true;
           }
           try {
-            applyPermissionMode(mode, revokeApprovals);
+            const applied = applyPermissionMode(mode, revokeApprovals);
+            if (applied) {
+              await applied;
+            }
             return true;
           } catch (error) {
             // A partially rebuilt surface must never resume its revoked tools.

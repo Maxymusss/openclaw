@@ -25,9 +25,11 @@ import { isSecretEgressProxyActive } from "../secrets/egress-proxy/registry.js";
 import type { SecretStoreExecEnvironment } from "../secrets/store/secret-store.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { normalizeDeliveryContext } from "../utils/delivery-context.shared.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import { captureAgentToolSourceExecutionGuard } from "./agent-tool-source-execution-guard.js";
 import { markBackgrounded } from "./bash-process-registry.js";
 import { describeExecTool } from "./bash-tools.descriptions.js";
+import { captureForegroundExecPolicy } from "./bash-tools.exec-foreground.js";
 import { processGatewayAllowlist } from "./bash-tools.exec-host-gateway.js";
 import { executeNodeHostCommand } from "./bash-tools.exec-host-node.js";
 import {
@@ -46,7 +48,6 @@ import {
   normalizePathPrepend,
   resolveExecTarget,
   resolveApprovalRunningNoticeMs,
-  buildExecRuntimeErrorOutcome,
   runExecProcess,
   execSchema,
 } from "./bash-tools.exec-runtime.js";
@@ -57,6 +58,7 @@ import {
 import {
   attachExecApprovalReview,
   buildExecForegroundResult,
+  buildUnavailableWorkdirResult,
   createExecHostResolver,
   createExecProcessSettlement,
   resolveExecElevatedMode,
@@ -68,7 +70,7 @@ import type {
   ExecToolDefaults,
   ExecToolDetails,
 } from "./bash-tools.exec-types.js";
-import { formatUnavailableWorkdirFailure, resolveExecWorkdir } from "./bash-tools.exec-workdir.js";
+import { resolveExecWorkdir } from "./bash-tools.exec-workdir.js";
 import { clampWithDefault, readEnvInt, truncateMiddle } from "./bash-tools.shared.js";
 import {
   createExecToolExecutionTimeoutResolver,
@@ -87,7 +89,9 @@ const BACKGROUND_EXEC_FOLLOW_UP =
 /** Creates an exec tool instance with runtime defaults and approval policy wiring. */
 export function createExecTool(
   defaults?: ExecToolDefaults,
+  operatorAuthority?: AdmittedRunOperatorAuthority,
 ): AgentToolWithMeta<typeof execSchema, ExecToolDetails> {
+  const foregroundPolicy = captureForegroundExecPolicy(operatorAuthority);
   const secretEgressEnabled = isSecretEgressProxyActive();
   const cleanupMs = defaults?.cleanupMs;
   const preparedRunEnvironment = resolveExecPreparedRunEnvironment(defaults);
@@ -112,7 +116,8 @@ export function createExecTool(
     120_000,
   );
   const allowBackground =
-    defaults?.processToolAvailabilityRef?.value ?? defaults?.allowBackground ?? true;
+    !foregroundPolicy &&
+    (defaults?.processToolAvailabilityRef?.value ?? defaults?.allowBackground ?? true);
   const defaultTimeoutSec = resolveExecDefaultTimeoutSec(defaults?.timeoutSec);
   const defaultPathPrepend = normalizePathPrepend(defaults?.pathPrepend);
   const {
@@ -157,25 +162,17 @@ export function createExecTool(
     defaults?.agentId ??
     (parsedAgentSession ? resolveAgentIdFromSessionKey(defaults?.sessionKey) : undefined);
   const resolveHostForParams = createExecHostResolver(defaults);
-  const buildUnavailableWorkdirResult = (params: {
-    cwd: string;
-    startedAt?: number;
-    warningText?: string;
-  }) =>
-    buildExecForegroundResult({
-      outcome: buildExecRuntimeErrorOutcome({
-        error: formatUnavailableWorkdirFailure(params.cwd),
-        aggregated: "",
-        durationMs: params.startedAt ? Date.now() - params.startedAt : 0,
-      }),
-      cwd: params.cwd,
-      warningText: params.warningText,
-    });
   const requestPreparation = createExecRequestPreparation({
     defaults,
     agentId,
     resolveHostForParams,
   });
+  const assertForegroundRequest = (args: unknown) => {
+    if (foregroundPolicy) {
+      const params = requestPreparation.normalizeParams(args);
+      foregroundPolicy.assertAllowed(params, resolveHostForParams(params), defaults);
+    }
+  };
   return {
     name: "exec",
     label: "exec",
@@ -188,12 +185,16 @@ export function createExecTool(
     },
     parameters: execSchema,
     getExecutionTimeoutMs: createExecToolExecutionTimeoutResolver(defaults),
-    prepareBeforeToolCallParams: requestPreparation.prepareBeforeToolCallParams,
+    prepareBeforeToolCallParams: (args, context) => {
+      assertForegroundRequest(args);
+      return requestPreparation.prepareBeforeToolCallParams(args, context);
+    },
     finalizeBeforeToolCallParams: requestPreparation.finalizeBeforeToolCallParams,
     execute: async (toolCallId, args, signal, onUpdate) => {
       signal?.throwIfAborted();
       const assertSourceActive = captureAgentToolSourceExecutionGuard(signal);
       assertSupportedExecParams(args);
+      assertForegroundRequest(args);
       // Capture settings and cancellation per execution; unused reviewers must not load model runtime.
       let autoReviewer: ExecAutoReviewer | undefined = defaults?.autoReviewer;
       if (!autoReviewer) {
@@ -492,8 +493,10 @@ export function createExecTool(
             ? preparedRunEnvironment.localIdentityEnv.GH_CONFIG_DIR
             : undefined;
 
+        foregroundPolicy?.assertCurrent();
         if (host === "gateway" && !bypassApprovals) {
           const gatewayResult = await processGatewayAllowlist({
+            operatorAuthority,
             command: params.command,
             workdir,
             env,
@@ -571,6 +574,9 @@ export function createExecTool(
           });
         }
 
+        // Process reservation is synchronous; retain the original source across
+        // preparation awaits and recheck it again at the actual spawn boundary.
+        foregroundPolicy?.assertCurrent();
         run = await runExecProcess({
           command: params.command,
           execCommand: execCommandOverride,
@@ -598,7 +604,12 @@ export function createExecTool(
           startupSignal: signal,
           onUpdate,
           beforeSpawn: gatewayApproval?.revalidateBeforeExecution,
-          assertCurrent: gatewayApproval?.assertCurrent,
+          assertCurrent: foregroundPolicy
+            ? () => {
+                foregroundPolicy.assertCurrent();
+                gatewayApproval?.assertCurrent?.();
+              }
+            : gatewayApproval?.assertCurrent,
           onSettledBeforeNotify: settlement.settle,
           onActivity: settlement.activity,
         });

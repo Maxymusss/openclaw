@@ -1,11 +1,15 @@
-import type { ExecHost } from "../infra/exec-approvals.js";
+import type { ExecHost, ExecSecurity } from "../infra/exec-approvals.js";
 import { requireValidExecTarget } from "../infra/exec-approvals.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { invalidateTaskActivity } from "../tasks/task-registry-activity.js";
 import { resolveAgentConfig } from "./agent-scope-config.js";
 import { EXEC_RETENTION_CAP_NOTE, renderExecOutputText } from "./bash-tools.exec-output.js";
 import type { ExecToolArgs } from "./bash-tools.exec-request-preparation.js";
-import { type ExecProcessOutcome, resolveExecTarget } from "./bash-tools.exec-runtime.js";
+import {
+  type ExecProcessOutcome,
+  resolveExecTarget,
+  buildExecRuntimeErrorOutcome,
+} from "./bash-tools.exec-runtime.js";
 import {
   type BackgroundExecTaskHandle,
   finalizeBackgroundExecTask,
@@ -15,6 +19,7 @@ import type {
   ExecToolDefaults,
   ExecToolDetails,
 } from "./bash-tools.exec-types.js";
+import { formatUnavailableWorkdirFailure } from "./bash-tools.exec-workdir.js";
 import type { AgentToolResult } from "./runtime/index.js";
 import { failedTextResult, textResult } from "./tools/common.js";
 
@@ -140,3 +145,31 @@ export function createExecHostResolver(defaults?: ExecToolDefaults) {
     }).effectiveHost;
   };
 }
+
+export function hasGatewayAllowlistMiss(params: {
+  hostSecurity: ExecSecurity;
+  analysisOk: boolean;
+  allowlistSatisfied: boolean;
+  durableApprovalSatisfied: boolean;
+}): boolean {
+  return (
+    params.hostSecurity === "allowlist" &&
+    (!params.analysisOk || !params.allowlistSatisfied) &&
+    !params.durableApprovalSatisfied
+  );
+}
+
+export const buildUnavailableWorkdirResult = (params: {
+  cwd: string;
+  startedAt?: number;
+  warningText?: string;
+}) =>
+  buildExecForegroundResult({
+    outcome: buildExecRuntimeErrorOutcome({
+      error: formatUnavailableWorkdirFailure(params.cwd),
+      aggregated: "",
+      durationMs: params.startedAt ? Date.now() - params.startedAt : 0,
+    }),
+    cwd: params.cwd,
+    warningText: params.warningText,
+  });

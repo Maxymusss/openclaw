@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { root as fsRoot } from "../infra/fs-safe.js";
 import type { SkillSnapshot } from "../skills/types.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import { bindAgentToolActionDescriptor } from "./agent-tool-metadata.js";
 import { getToolParamsRecord, normalizeFileToolPathParam } from "./agent-tools.params.js";
 import {
@@ -144,6 +145,7 @@ function guardHostWorkspaceTool(
 }
 
 type CoreCodingToolsOptions = {
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   abortSignal?: AbortSignal;
   attachmentReadRoot?: string;
   codingRoot: string;
@@ -403,28 +405,32 @@ export function createCoreCodingTools(options: CoreCodingToolsOptions): AnyAgent
   }
   if (options.shellTools === "full") {
     shell.push(
-      createLazyExecTool({
-        ...options.execDefaults,
-        ...(sandbox?.required ? { sandboxRequired: true } : {}),
-        cwd: options.codingRoot,
-        sandbox: sandbox
-          ? {
-              containerName: sandbox.containerName,
-              workspaceDir: sandbox.workspaceDir,
-              containerWorkdir: sandbox.containerWorkdir,
-              workdirValidation: sandbox.backend?.workdirValidation,
-              validateWorkdir: sandbox.backend?.validateWorkdir?.bind(sandbox.backend),
-              discardPreparedWorkdir: sandbox.backend?.discardPreparedWorkdir?.bind(
-                sandbox.backend,
-              ),
-              workdirRoots: sandbox.backend?.workdirRoots,
-              readOnlyWorkspaceSkillMounts,
-              env: sandbox.backend?.env ?? sandbox.docker.env,
-              buildExecSpec: sandbox.backend?.buildExecSpec.bind(sandbox.backend),
-              finalizeExec: sandbox.backend?.finalizeExec?.bind(sandbox.backend),
-            }
-          : undefined,
-      }),
+      createLazyExecTool(
+        {
+          ...options.execDefaults,
+          ...(sandbox?.required ? { sandboxRequired: true } : {}),
+          cwd: options.codingRoot,
+          sandbox: sandbox
+            ? {
+                containerName: sandbox.containerName,
+                workspaceDir: sandbox.workspaceDir,
+                containerWorkdir: sandbox.containerWorkdir,
+                workdirValidation: sandbox.backend?.workdirValidation,
+                validateWorkdir: sandbox.backend?.validateWorkdir?.bind(sandbox.backend),
+                discardPreparedWorkdir: sandbox.backend?.discardPreparedWorkdir?.bind(
+                  sandbox.backend,
+                ),
+                workdirRoots: sandbox.backend?.workdirRoots,
+                readOnlyWorkspaceSkillMounts,
+                env: sandbox.backend?.env ?? sandbox.docker.env,
+                buildExecSpec: sandbox.backend?.buildExecSpec.bind(sandbox.backend),
+                finalizeExec: sandbox.backend?.finalizeExec?.bind(sandbox.backend),
+              }
+            : undefined,
+        },
+        undefined,
+        options.operatorAuthority,
+      ),
       createLazyProcessTool(options.processDefaults),
     );
   }

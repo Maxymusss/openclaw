@@ -1,10 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { isFutureDateTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
-import {
-  createAgentRunRestartAbortError,
-  isAgentRunDirectAbortReason,
-} from "../../agents/run-termination.js";
 import type { ReplySessionBinding } from "../../auto-reply/reply/get-reply.types.js";
 import {
   interruptReplyRunTarget,
@@ -65,6 +61,7 @@ import { prepareChatSendSessionEntry, type PreparedChatSendSession } from "./cha
 import {
   assertChatSendExclusiveAdmission,
   createChatSendWorkAdmission,
+  createChatSendAdmissionInterrupt,
 } from "./chat-send-work-admission.js";
 import { normalizeOptionalChatText, normalizeUnknownChatText } from "./chat-text-normalization.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
@@ -387,27 +384,12 @@ export async function admitChatSend(params: {
           : undefined,
       assertAllowed: () => assertChatWorkAdmissionAllowed(false),
       revalidateAllowed: () => assertChatWorkAdmissionAllowed(true),
-      onInterrupt: (reason) => {
-        const stopReason = isAgentRunDirectAbortReason(reason) ? "rpc" : "restart";
-        if (!admittedRunAbort) {
-          if (!context.chatRunState.hasAbortMarker(clientRunId)) {
-            writePreRegisteredChatAbort({
-              context,
-              runId: clientRunId,
-              stopReason,
-              attemptId: pendingAttemptId,
-            });
-          }
-        } else if (!admittedRunAbort.controller.signal.aborted) {
-          // A later lifecycle drain must not overwrite the first abort reason.
-          if (admittedRunAbort.entry) {
-            admittedRunAbort.entry.abortStopReason = stopReason;
-          }
-          admittedRunAbort.controller.abort(
-            stopReason === "rpc" ? reason : createAgentRunRestartAbortError(),
-          );
-        }
-      },
+      onInterrupt: createChatSendAdmissionInterrupt({
+        context,
+        runId: clientRunId,
+        attemptId: pendingAttemptId,
+        getAdmittedRunAbort: () => admittedRunAbort,
+      }),
     });
     params.assertCurrent?.();
   } catch (err) {

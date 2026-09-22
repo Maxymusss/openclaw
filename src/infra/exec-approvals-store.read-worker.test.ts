@@ -15,16 +15,25 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
+import { createExecApprovalPolicySnapshot } from "./exec-approvals-allow-always.js";
 import { commitExecAuthorizationLocked } from "./exec-approvals-authorization.js";
+import type { ExecAuthorizationCommitInput } from "./exec-approvals-contracts.js";
+import type { ExecApprovalsFile } from "./exec-approvals-core.js";
 import { loadMcpToolGrants } from "./exec-approvals-mcp.js";
 import { ExecApprovalsMigrationRequiredError } from "./exec-approvals-migration-gate.js";
-import { writeExecApprovalsConfigRow } from "./exec-approvals-sqlite.js";
+import {
+  readExecApprovalsConfigRow,
+  writeExecApprovalsConfigRow,
+} from "./exec-approvals-sqlite.js";
+import * as approvalsStore from "./exec-approvals-store.js";
 import {
   loadExecApprovalsReadOnlyAsync,
   readExecApprovalsPolicyReadOnlyAsync,
 } from "./exec-approvals-store.js";
 import { testing } from "./exec-approvals-store.test-support.js";
 import { requireNodeSqlite } from "./node-sqlite.js";
+import * as workerAdmission from "./sqlite-worker-operation-admission.js";
+import * as workerStore from "./sqlite-worker-store.js";
 
 const loggerWarn = vi.hoisted(() => vi.fn());
 vi.mock("../logging/subsystem.js", () => ({
@@ -88,6 +97,206 @@ function watchNativeSql() {
     ),
   ];
 }
+
+const usageEntry = { id: "fixture-echo", pattern: "/usr/bin/echo" };
+function usageInput(agentId = "main", command = "echo authorized"): ExecAuthorizationCommitInput {
+  return {
+    agentId,
+    matches: [usageEntry],
+    command,
+    authorization: {
+      source: "current-policy",
+      security: "allowlist",
+      ask: "on-miss",
+      allowlistSatisfied: true,
+    },
+  };
+}
+
+function durableApprovalInput(file: ExecApprovalsFile): ExecAuthorizationCommitInput {
+  return {
+    agentId: "main",
+    matches: [],
+    command: "/usr/bin/printf durable-proof",
+    authorization: {
+      source: "explicit-approval",
+      security: "allowlist",
+      ask: "on-miss",
+      allowlistSatisfied: false,
+      policySnapshot: createExecApprovalPolicySnapshot({ file, agentId: "main" }),
+    },
+    allowAlwaysDecision: {
+      kind: "patterns",
+      patterns: [{ pattern: "/usr/bin/printf", argPattern: "^durable-proof$" }],
+    },
+  };
+}
+
+it.each([
+  { mutation: "usage", stage: "transaction" },
+  { mutation: "usage", stage: "commit" },
+  { mutation: "allow-always", stage: "transaction" },
+  { mutation: "allow-always", stage: "commit" },
+] as const)(
+  "rolls back the exact $mutation row when the original source expires at worker $stage admission",
+  async ({ mutation, stage }) => {
+    const { root, env } = fixture();
+    const database = seed(env);
+    const file: ExecApprovalsFile = { version: 1, agents: { main: { allowlist: [usageEntry] } } };
+    writeExecApprovalsConfigRow({
+      db: database.db,
+      file,
+    });
+    const previous = readExecApprovalsConfigRow(database.db);
+    vi.stubEnv("OPENCLAW_STATE_DIR", root);
+    const source = new AbortController();
+    const failure = new Error(`original source revoked before ${stage}`);
+    const requests: workerAdmission.SqliteWorkerAdmissionRequest["stage"][] = [];
+    const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
+    vi.spyOn(workerAdmission, "createSqliteWorkerOperationAdmission").mockImplementation((admit) =>
+      createAdmission((request, grantAdmission) => {
+        requests.push(request.stage);
+        if (request.stage === stage) {
+          source.abort(failure);
+        }
+        admit(request, grantAdmission);
+      }),
+    );
+    const input = mutation === "usage" ? usageInput() : durableApprovalInput(file);
+    await expect(
+      commitExecAuthorizationLocked(input, () => source.signal.throwIfAborted()),
+    ).rejects.toBe(failure);
+    expect(requests.filter((value) => value === "transaction" || value === "commit")).toEqual(
+      stage === "transaction" ? ["transaction"] : ["transaction", "commit"],
+    );
+    expect(readExecApprovalsConfigRow(database.db)).toEqual(previous);
+    expect(database.db.isTransaction).toBe(false);
+  },
+);
+
+it("commits the same durable approval when its original source remains current", async () => {
+  const { root, env } = fixture();
+  const database = seed(env);
+  const file: ExecApprovalsFile = { version: 1, agents: { main: { allowlist: [usageEntry] } } };
+  writeExecApprovalsConfigRow({ db: database.db, file });
+  const previous = readExecApprovalsConfigRow(database.db);
+  vi.stubEnv("OPENCLAW_STATE_DIR", root);
+  const source = new AbortController();
+  const assertCurrent = await commitExecAuthorizationLocked(durableApprovalInput(file), () =>
+    source.signal.throwIfAborted(),
+  );
+  expect(assertCurrent).not.toThrow();
+  expect(readExecApprovalsConfigRow(database.db)).not.toEqual(previous);
+  const stored = await loadExecApprovalsReadOnlyAsync({ env });
+  expect(stored.agents?.main?.allowlist).toEqual([
+    usageEntry,
+    expect.objectContaining({
+      id: expect.any(String),
+      pattern: "/usr/bin/printf",
+      argPattern: "^durable-proof$",
+      source: "allow-always",
+      lastUsedAt: expect.any(Number),
+    }),
+  ]);
+});
+
+it("isolates revoked source batches from another source and unrestricted staff", async () => {
+  const { root, env } = fixture();
+  const database = seed(env);
+  writeExecApprovalsConfigRow({
+    db: database.db,
+    file: {
+      version: 1,
+      agents: {
+        a: { allowlist: [usageEntry] },
+        b: { allowlist: [usageEntry] },
+        staff: { allowlist: [usageEntry] },
+      },
+    },
+  });
+  vi.stubEnv("OPENCLAW_STATE_DIR", root);
+  const sourceA = new AbortController();
+  const sourceB = new AbortController();
+  const assertA = () => sourceA.signal.throwIfAborted();
+  const assertB = () => sourceB.signal.throwIfAborted();
+  const failure = new Error("source A revoked while native batches are pending");
+  const factories = vi.spyOn(workerStore, "createSqliteWorkerWriteAdmission");
+  const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
+  vi.spyOn(workerAdmission, "createSqliteWorkerOperationAdmission").mockImplementation((admit) =>
+    createAdmission((request, grantAdmission) => {
+      if (request.stage === "transaction") {
+        sourceA.abort(failure);
+      }
+      admit(request, grantAdmission);
+    }),
+  );
+  const results = await Promise.allSettled([
+    commitExecAuthorizationLocked(usageInput("a", "echo a-first"), assertA),
+    commitExecAuthorizationLocked(usageInput("a", "echo a-last"), assertA),
+    commitExecAuthorizationLocked(usageInput("b", "echo b-first"), assertB),
+    commitExecAuthorizationLocked(usageInput("b", "echo b-last"), assertB),
+    commitExecAuthorizationLocked(usageInput("staff", "echo staff-first")),
+    commitExecAuthorizationLocked(usageInput("staff", "echo staff-last")),
+  ]);
+  expect(factories).toHaveBeenCalledTimes(3);
+  expect(results.map((result) => result.status)).toEqual([
+    "rejected",
+    "rejected",
+    "fulfilled",
+    "fulfilled",
+    "fulfilled",
+    "fulfilled",
+  ]);
+  expect(results.slice(0, 2)).toEqual([
+    { status: "rejected", reason: failure },
+    { status: "rejected", reason: failure },
+  ]);
+  const stored = await loadExecApprovalsReadOnlyAsync({ env });
+  expect(stored.agents?.a?.allowlist).toEqual([usageEntry]);
+  expect(stored.agents?.b?.allowlist).toEqual([
+    expect.objectContaining({ ...usageEntry, lastUsedCommand: "echo b-last" }),
+  ]);
+  expect(stored.agents?.staff?.allowlist).toEqual([
+    expect.objectContaining({ ...usageEntry, lastUsedCommand: "echo staff-last" }),
+  ]);
+  for (const result of results) {
+    if (result.status === "fulfilled") {
+      expect(result.value).not.toThrow();
+    }
+  }
+});
+
+it.each(["result", "closure"] as const)(
+  "rechecks the original source for an unchanged authorization %s",
+  async (boundary) => {
+    const { root, env } = fixture();
+    const database = seed(env);
+    vi.stubEnv("OPENCLAW_STATE_DIR", root);
+    const previous = readExecApprovalsConfigRow(database.db);
+    const source = new AbortController();
+    const failure = new Error(`source revoked before unchanged ${boundary}`);
+    if (boundary === "result") {
+      const commit = approvalsStore.commitExecAuthorizations;
+      vi.spyOn(approvalsStore, "commitExecAuthorizations").mockImplementation(async (...args) => {
+        const result = await commit(...args);
+        source.abort(failure);
+        return result;
+      });
+    }
+    const pending = commitExecAuthorizationLocked({ ...usageInput(), matches: [] }, () =>
+      source.signal.throwIfAborted(),
+    );
+    if (boundary === "result") {
+      await expect(pending).rejects.toBe(failure);
+    } else {
+      const assertCurrent = await pending;
+      expect(assertCurrent).not.toThrow();
+      source.abort(failure);
+      expect(assertCurrent).toThrow(failure);
+    }
+    expect(readExecApprovalsConfigRow(database.db)).toEqual(previous);
+  },
+);
 
 it("commits unchanged authorization without main-thread SQLite and keeps its captured policy owner", async () => {
   const { root, env } = fixture();

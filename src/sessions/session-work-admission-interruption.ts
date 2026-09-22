@@ -4,6 +4,15 @@ export type SessionWorkAdmissionInterrupt = (
   reason?: Error,
 ) => SessionWorkAdmissionInterruptionReceipt | void;
 
+export class SessionWorkCleanupUnconfirmedError extends Error {
+  constructor() {
+    super(
+      "Cleanup of the previous turn could not be confirmed. This thread is blocked for safety; ask the operator to reconcile the remaining processes, then replace the Gateway process before continuing.",
+    );
+    this.name = "SessionWorkCleanupUnconfirmedError";
+  }
+}
+
 export async function waitForSessionWorkAdmissionRelease(
   released: Promise<void>,
   timeoutMs?: number,

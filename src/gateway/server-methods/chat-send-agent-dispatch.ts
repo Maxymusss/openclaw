@@ -14,7 +14,6 @@ import { isInternalSourceReplyChannel } from "../../auto-reply/reply/source-repl
 import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
-import { runWithAsyncWorkResources } from "../../shared/async-work-resources.js";
 import { isOperatorUiClient } from "../../utils/message-channel.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { updateChatRunProvider } from "../chat-abort.js";
@@ -45,6 +44,7 @@ import {
 import { finalizeChatSendSourceReplies } from "./chat-send-source-finalization.js";
 import { createChatSendTurnAdoptionLifecycle } from "./chat-send-turn-adoption.js";
 import { applyChatSendManagedMedia } from "./chat-send-user-turn.js";
+import { runWithForegroundChatCleanup } from "./chat-send-work-admission.js";
 import {
   emitOperatorChatSendServerTiming,
   roundedChatSendTimingMs,
@@ -243,22 +243,17 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
         if (admission.operatorAuthority?.executionPolicy !== "foreground-only") {
           return run();
         }
-        return runWithAsyncWorkResources(async (onAcquired) => {
-          const release = retainGatewayWorkAdmission();
-          // Logical cancellation can precede provider/tool cleanup. Keep the same
-          // session admission until those actual tails drain, then publish liveness.
-          onAcquired({
-            releaseBeforeResultWhenIdle: true,
-            release: () => {
-              release();
-              emitSessionsChanged(
-                context,
-                { sessionKey, agentId, reason: "agent.input.settled" },
-                { accessChanged: false },
-              );
-            },
-          });
-          return await run();
+        return runWithForegroundChatCleanup({
+          admission: gatewayWorkAdmission,
+          retain: retainGatewayWorkAdmission,
+          logGateway: context.logGateway,
+          publishReleased: () =>
+            emitSessionsChanged(
+              context,
+              { sessionKey, agentId, reason: "agent.input.settled" },
+              { accessChanged: false },
+            ),
+          run,
         });
       }),
   };

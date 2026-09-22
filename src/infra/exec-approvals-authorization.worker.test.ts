@@ -5,6 +5,7 @@ import * as stateDatabase from "../state/openclaw-state-db.js";
 import { commitExecAuthorizationsInWorker } from "./exec-approvals-authorization.worker.js";
 import type { ExecAuthorizationCommitInput } from "./exec-approvals-contracts.js";
 import { writeExecApprovalsConfigRow } from "./exec-approvals-sqlite.js";
+import * as workerAdmission from "./sqlite-worker-operation-admission.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
   afterEach(() => {
@@ -36,19 +37,27 @@ function fixture() {
     db: database.db,
     file: { version: 1, agents: { main: { allowlist: [entry] } } },
   });
-  return { options, database };
+  // These direct kernel tests stand in for the mandatory host port. Real
+  // transaction/commit revocation is exercised by the read-worker suite.
+  const admissions = vi
+    .spyOn(workerAdmission, "requestSqliteWorkerOperationAdmission")
+    .mockImplementation(() => {
+      expect(database.db.isTransaction).toBe(true);
+    });
+  return { options, database, admissions };
 }
 
 it("does not acquire writer admission for an unchanged authorization batch", () => {
-  const { options } = fixture();
+  const { options, admissions } = fixture();
   const writes = vi.spyOn(stateDatabase, "runOpenClawStateWriteTransaction");
   const outcomes = commitExecAuthorizationsInWorker({ items: [input, input] }, options);
   expect(outcomes.map((outcome) => outcome.ok)).toEqual([true, true]);
   expect(writes).not.toHaveBeenCalled();
+  expect(admissions).not.toHaveBeenCalled();
 });
 
 it("coalesces usage writes and rereads policy after writer admission", () => {
-  const { options, database } = fixture();
+  const { options, database, admissions } = fixture();
   const write = stateDatabase.runOpenClawStateWriteTransaction;
   const writes = vi
     .spyOn(stateDatabase, "runOpenClawStateWriteTransaction")
@@ -69,6 +78,10 @@ it("coalesces usage writes and rereads policy after writer admission", () => {
     options,
   );
   expect(writes).toHaveBeenCalledTimes(1);
+  expect(admissions.mock.calls.map(([request]) => request.stage)).toEqual([
+    "transaction",
+    "commit",
+  ]);
   expect(outcomes).toEqual([
     { ok: false, message: "Exec approval changed before execution" },
     { ok: false, message: "Exec approval changed before execution" },
@@ -76,7 +89,7 @@ it("coalesces usage writes and rereads policy after writer admission", () => {
 });
 
 it("commits accepted usage once and preserves the agent deletion fence", () => {
-  const { options, database } = fixture();
+  const { options, database, admissions } = fixture();
   writeExecApprovalsConfigRow({
     db: database.db,
     file: { version: 1, agents: { main: { allowlist: [entry] }, deleted: { allowlist: [entry] } } },
@@ -98,6 +111,10 @@ it("commits accepted usage once and preserves the agent deletion fence", () => {
     options,
   );
   expect(writes).toHaveBeenCalledTimes(1);
+  expect(admissions.mock.calls.map(([request]) => request.stage)).toEqual([
+    "transaction",
+    "commit",
+  ]);
   expect(outcomes.map((outcome) => outcome.ok)).toEqual([true, false, true]);
   expect(outcomes[2]).toMatchObject({
     ok: true,
