@@ -440,6 +440,81 @@ describe("diagnostic Gateway readiness", () => {
     },
   );
 
+  it.each([400, 1_500])(
+    "charges a %d ms initial owner read before service discovery",
+    async (ownerElapsedMs) => {
+      readGatewayOwnerLease.mockImplementationOnce(() => {
+        monotonicClock.nowMs += ownerElapsedMs;
+        return undefined;
+      });
+      isAbsent.mockImplementation(async (options) => {
+        monotonicClock.nowMs += options?.timeoutMs ?? 0;
+        return true;
+      });
+
+      const result = await waitForGatewayDiagnosticReadiness({
+        config: { gateway: { auth: { mode: "none" } } },
+        timeoutMs: 1_250,
+      });
+
+      expect(result).toMatchObject({
+        waitOutcome: "timeout",
+        elapsedMs: Math.max(1_250, ownerElapsedMs),
+      });
+      expect(readActiveGatewayLockIdentity).not.toHaveBeenCalled();
+      if (ownerElapsedMs >= 1_250) {
+        expect(isAbsent).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it("reports timeout after the final owner read consumes the remaining allowance", async () => {
+    isAbsent.mockResolvedValue(true);
+    readGatewayOwnerLease.mockReturnValueOnce(undefined).mockImplementationOnce(() => {
+      monotonicClock.nowMs += 1_500;
+      return undefined;
+    });
+
+    await expect(
+      waitForGatewayDiagnosticReadiness({
+        config: { gateway: { auth: { mode: "none" } } },
+        timeoutMs: 1_250,
+      }),
+    ).resolves.toMatchObject({ waitOutcome: "timeout", elapsedMs: 1_500 });
+  });
+
+  it.each(["initial", "late"])(
+    "passes the remaining allowance to the %s native lock inspection",
+    async (phase) => {
+      isAbsent.mockResolvedValue(true);
+      if (phase === "initial") {
+        isAbsent.mockImplementation(async () => {
+          monotonicClock.nowMs += 1_125;
+          return true;
+        });
+      } else {
+        readActiveGatewayLockIdentity.mockImplementationOnce(async () => {
+          monotonicClock.nowMs += 1_125;
+          return undefined;
+        });
+      }
+      readActiveGatewayLockIdentity.mockImplementationOnce(
+        async (options?: { timeoutMs?: number }) => {
+          monotonicClock.nowMs += options?.timeoutMs ?? 1_000;
+          return undefined;
+        },
+      );
+
+      await expect(
+        waitForGatewayDiagnosticReadiness({
+          config: { gateway: { auth: { mode: "none" } } },
+          timeoutMs: 1_250,
+          deadlineMs: 60_000,
+        }),
+      ).resolves.toMatchObject({ waitOutcome: "timeout", elapsedMs: 1_250 });
+    },
+  );
+
   it.each(["initial", "late"])(
     "bounds the %s legacy lookup through the numeric diagnostic budget",
     async (phase) => {
@@ -447,14 +522,19 @@ describe("diagnostic Gateway readiness", () => {
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const entered = createDeferred();
       const released = createDeferred();
+      let nativeInspections = 0;
       if (phase === "late") {
         readActiveGatewayLockIdentity.mockResolvedValueOnce(undefined);
       }
-      readActiveGatewayLockIdentity.mockImplementationOnce(async () => {
-        entered.resolve();
-        await released.promise;
-        return undefined;
-      });
+      readActiveGatewayLockIdentity.mockImplementationOnce(
+        async (options?: { signal?: AbortSignal }) => {
+          entered.resolve();
+          await released.promise;
+          options?.signal?.throwIfAborted();
+          nativeInspections += 1;
+          return undefined;
+        },
+      );
       let outcome:
         | { value?: Awaited<ReturnType<typeof waitForGatewayDiagnosticReadiness>>; error?: unknown }
         | undefined;
@@ -474,6 +554,7 @@ describe("diagnostic Gateway readiness", () => {
         readRuntime.mock.calls.length,
         inspectPortUsage.mock.calls.length,
         readGatewayOwnerLease.mock.calls.length,
+        nativeInspections,
       ];
       try {
         await entered.promise;

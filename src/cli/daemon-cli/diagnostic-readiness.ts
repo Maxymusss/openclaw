@@ -81,28 +81,30 @@ export async function waitForGatewayDiagnosticReadiness(opts: {
           service: {
             readCommand: async () => null,
             readRuntime: async (env, options) => {
-              const owner = readGatewayOwnerLease({ env, port });
+              const owner = await deadline.read("diagnostic:owner", async () =>
+                readGatewayOwnerLease({ env, port }),
+              );
               if (
                 owner?.state === "live" &&
                 (owner.mode === "foreground" || owner.supervisor?.kind === "external")
               ) {
                 return { status: "running", pid: owner.pid };
               }
-              const startedAt = performance.now();
               const remainingReadOptions = () => ({
                 ...options,
-                ...(options?.timeoutMs === undefined
-                  ? {}
-                  : {
-                      timeoutMs: Math.max(1, options.timeoutMs - (performance.now() - startedAt)),
-                    }),
+                timeoutMs: Math.max(
+                  1,
+                  Math.min(options?.timeoutMs ?? Infinity, deadline.remainingMs()),
+                ),
               });
               const command = await (nativeCommand ??= (async () => {
                 nativeServiceAbsent =
-                  (await nativeService.isAbsent?.({
-                    env,
-                    timeoutMs: remainingReadOptions().timeoutMs,
-                  })) === true;
+                  (await deadline.read("diagnostic:service-absence", async () =>
+                    nativeService.isAbsent?.({
+                      env,
+                      timeoutMs: remainingReadOptions().timeoutMs,
+                    }),
+                  )) === true;
                 deadline.signal.throwIfAborted();
                 return nativeServiceAbsent
                   ? null
@@ -130,7 +132,12 @@ export async function waitForGatewayDiagnosticReadiness(opts: {
               ) {
                 // Published Gateways before owner leases still record their verified process lock.
                 const legacyOwner = await deadline.read("diagnostic:legacy-owner", () =>
-                  readActiveGatewayLockIdentity({ env, requireInspection: true }),
+                  readActiveGatewayLockIdentity({
+                    env,
+                    requireInspection: true,
+                    timeoutMs: deadline.remainingMs(),
+                    signal: deadline.signal,
+                  }),
                 );
                 if (legacyOwner?.port === port) {
                   return { status: "running", pid: legacyOwner.pid };

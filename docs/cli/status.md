@@ -38,7 +38,10 @@ Status starts one monotonic probe deadline when the command begins. Local readin
 
 When no matching Gateway service or live foreground owner exists and its port is
 free, status probes directly instead of waiting for a Gateway startup. Local-only
-agent environments therefore report an unavailable Gateway promptly.
+agent environments therefore report an unavailable Gateway promptly. Observed startup
+migrations retain startup grace across the handoff to Gateway ownership; unverifiable
+ownership also retains that grace. Lock and native process inspection consume the
+same remaining probe allowance.
 
 Channels without a probe, such as WhatsApp, report lifecycle health instead.
 In the Health table, `healthy` is `OK`; degraded lifecycle states and failed

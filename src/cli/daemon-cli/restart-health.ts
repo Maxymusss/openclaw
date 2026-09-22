@@ -360,7 +360,12 @@ export async function waitForGatewayHealthyRestart(
       if (missingServiceFree) {
         try {
           const legacyOwner = await read("legacy-owner", () =>
-            readActiveGatewayLockIdentity({ env: params.env, requireInspection: true }),
+            readActiveGatewayLockIdentity({
+              env: params.env,
+              requireInspection: true,
+              timeoutMs: params.deadline?.remainingMs() ?? probeTimeoutMs(),
+              signal,
+            }),
           );
           missingLegacyOwner = legacyOwner?.port !== params.port;
           // Lease release can precede Gateway ownership; keep observed startup for this wait.
@@ -381,8 +386,11 @@ export async function waitForGatewayHealthyRestart(
       }
       const owner =
         stoppedFree || missingServiceFree
-          ? readGatewayOwnerLease({ env: params.env, port: params.port })
+          ? await read("owner", async () =>
+              readGatewayOwnerLease({ env: params.env, port: params.port }),
+            )
           : undefined;
+      elapsedMs = Math.max(0, performance.now() - startedAtMs);
       if (owner && owner.state !== "dead") {
         observedOwner = owner.owner;
       } else if (
