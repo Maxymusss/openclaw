@@ -19,6 +19,7 @@ import {
   type OpenClawTestInstance,
 } from "../../../helpers/openclaw-test-instance.js";
 import {
+  captureCodexAuthFailure,
   findCodexFixtureTurnAccountEvidence,
   runCodexAuthDoctorMigrationProof,
 } from "./codex-auth-product-proof.test-support.js";
@@ -1000,6 +1001,24 @@ describe("Codex auth product proof", () => {
             observedAppServerMethods: failureMethods,
           })}`,
         );
+      } catch (error) {
+        await captureCodexAuthFailure({
+          instance,
+          client,
+          events,
+          terminal,
+          error,
+          sessionKey,
+          runId,
+          configuredProfileId,
+          recoveryText: SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT,
+          fixtureSecrets: [
+            oauthAccess,
+            chatgptAccessToken(ACCOUNT_ID),
+            chatgptAccessToken(configuredAccountId),
+          ],
+        });
+        throw error;
       } finally {
         client.stop();
       }
