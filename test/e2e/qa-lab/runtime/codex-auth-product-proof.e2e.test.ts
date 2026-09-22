@@ -444,13 +444,11 @@ describe("Codex auth product proof", () => {
             type: "token",
             provider: "openai",
             token: chatgptAccessToken(configuredAccountId),
-            accountId: configuredAccountId,
           },
           [MISSING_PROFILE_ID]: {
             type: "token",
             provider: "openai",
             token: chatgptAccessToken(ACCOUNT_ID),
-            accountId: ACCOUNT_ID,
           },
         },
       });

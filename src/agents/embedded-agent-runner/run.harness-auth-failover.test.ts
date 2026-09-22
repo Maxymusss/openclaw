@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import { resolveOpenAICodexAuthIdentity } from "../../plugin-sdk/provider-openai-chatgpt-auth.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createApiKeyCredential } from "../auth-profiles/credential-fixtures.test-support.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
@@ -28,6 +29,13 @@ const failedProfile = "openai:failed";
 const backupProfile = "openai:backup";
 const tokenProfileA = "openai:configured";
 const tokenProfileB = "openai:missing";
+
+function chatgptAccessToken(accountId: string): string {
+  const payload = Buffer.from(
+    JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: accountId } }),
+  ).toString("base64url");
+  return `e30.${payload}.test-signature`;
+}
 
 function permanentAuthFailure(): Error {
   return Object.assign(new Error("API key has been revoked"), {
@@ -140,8 +148,7 @@ describe("native harness auth failover", () => {
         [tokenProfileA]: {
           type: "token",
           provider: "openai",
-          token: "test-token-account-a",
-          accountId: "qa-codex-configured-account",
+          token: chatgptAccessToken("qa-codex-configured-account"),
         },
       },
       order: { openai: [tokenProfileA] },
@@ -150,8 +157,7 @@ describe("native harness auth failover", () => {
       store.profiles[tokenProfileB] = {
         type: "token",
         provider: "openai",
-        token: "test-token-account-b",
-        accountId: "qa-codex-account",
+        token: chatgptAccessToken("qa-codex-account"),
       };
       store.order!.openai!.push(tokenProfileB);
     }
@@ -161,7 +167,9 @@ describe("native harness auth failover", () => {
       ...(includeSelectedB ? [tokenProfileB] : []),
     ]);
     mockedGetApiKeyForModel.mockImplementation(async ({ profileId } = {}) => ({
-      apiKey: profileId === tokenProfileB ? "test-token-account-b" : "test-token-account-a",
+      apiKey: chatgptAccessToken(
+        profileId === tokenProfileB ? "qa-codex-account" : "qa-codex-configured-account",
+      ),
       profileId: profileId ?? tokenProfileA,
       source: "test",
       mode: "token",
@@ -223,11 +231,18 @@ describe("native harness auth failover", () => {
           [tokenProfileB]: {
             type: "token",
             provider: "openai",
-            token: "test-token-account-b",
-            accountId: "qa-codex-account",
+            token: chatgptAccessToken("qa-codex-account"),
           },
         },
       },
+    });
+    const credential =
+      mockedRunEmbeddedAttempt.mock.calls[0]?.[0].authProfileStore?.profiles[tokenProfileB];
+    if (credential?.type !== "token" || typeof credential.token !== "string") {
+      throw new Error("expected forwarded token B");
+    }
+    expect(resolveOpenAICodexAuthIdentity({ access: credential.token })).toEqual({
+      accountId: "qa-codex-account",
     });
     expect(mockedGetApiKeyForModel).not.toHaveBeenCalled();
     expect(mockedMarkAuthProfileFailure).not.toHaveBeenCalled();
@@ -263,11 +278,18 @@ describe("native harness auth failover", () => {
           [tokenProfileA]: {
             type: "token",
             provider: "openai",
-            token: "test-token-account-a",
-            accountId: "qa-codex-configured-account",
+            token: chatgptAccessToken("qa-codex-configured-account"),
           },
         },
       },
+    });
+    const credential =
+      mockedRunEmbeddedAttempt.mock.calls[0]?.[0].authProfileStore?.profiles[tokenProfileA];
+    if (credential?.type !== "token" || typeof credential.token !== "string") {
+      throw new Error("expected forwarded token A");
+    }
+    expect(resolveOpenAICodexAuthIdentity({ access: credential.token })).toEqual({
+      accountId: "qa-codex-configured-account",
     });
     expect(mockedGetApiKeyForModel).not.toHaveBeenCalled();
     expect(mockedMarkAuthProfileFailure).not.toHaveBeenCalled();
