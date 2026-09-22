@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { repoInstallSpec } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { replaceOpenClawProcessTitleName } from "../../infra/openclaw-installation-id.js";
 import { loggingState } from "../../logging/state.js";
 import { isConfigSetJsonParseOnly } from "../config-output-mode.js";
 import { setCommandJsonMode } from "./json-mode.js";
@@ -218,7 +219,9 @@ describe("registerPreActionHooks", () => {
     expect(setVerboseMock).toHaveBeenCalledWith(true);
     expect(ensureConfigReadyMock).not.toHaveBeenCalled();
     expect(ensurePluginRegistryLoadedMock).not.toHaveBeenCalled();
-    expect(processTitleSetSpy).toHaveBeenCalledWith("openclaw-status");
+    expect(processTitleSetSpy).toHaveBeenCalledWith(
+      replaceOpenClawProcessTitleName(originalProcessTitle, "openclaw-status"),
+    );
 
     vi.clearAllMocks();
     await runPreAction({
@@ -231,6 +234,17 @@ describe("registerPreActionHooks", () => {
     expect(ensureConfigReadyMock).not.toHaveBeenCalled();
     expect(ensurePluginRegistryLoadedMock).not.toHaveBeenCalled();
     processTitleSetSpy.mockRestore();
+  });
+
+  it("does not announce an update before activation begins", async () => {
+    observedProcessTitle = "openclaw-cli@0123456789abcdef";
+
+    await runPreAction({
+      parseArgv: ["update", "status"],
+      processArgv: ["node", "openclaw", "update", "status"],
+    });
+
+    expect(observedProcessTitle).toBe("openclaw-cli@0123456789abcdef");
   });
 
   it.each([

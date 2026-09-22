@@ -6,7 +6,10 @@ import { tryReadJson } from "../../infra/json-files.js";
 import type { PackageUpdateTransaction } from "../../infra/package-update-steps.js";
 import { validateUpdateCandidateCanary } from "../../infra/update-candidate-canary.js";
 import type { UpdateStateSchemaVersion } from "../../infra/update-candidate-state.js";
-import type { UpdateDoctorConfigChange } from "../../infra/update-doctor-config.js";
+import {
+  createUpdateDoctorConfigWarningStep,
+  type UpdateDoctorConfigChange,
+} from "../../infra/update-doctor-config.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import {
   canResolveRegistryVersionForPackageTarget,
@@ -17,6 +20,7 @@ import { isFailedUpdateStep } from "../../infra/update-run-step.js";
 import { readCurrentGitUpdateRecovery } from "../../infra/update-runner-git-recovery.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
+import { defaultRuntime } from "../../runtime.js";
 import {
   parsePackageOpenClawSchemaVersions,
   type OpenClawSchemaVersions,
@@ -51,7 +55,6 @@ import {
   type OwnedManagedUpdateContext,
 } from "./update-command-managed-context.js";
 import { observeOriginalManagedServiceRuntime } from "./update-command-original-service.js";
-import { appendUpdateDoctorConfigWarning, logUpdateWarnings } from "./update-command-output.js";
 import {
   runPackageInstallUpdate,
   preparePackageDoctorContext,
@@ -147,7 +150,9 @@ export async function executeMutableUpdate(
       timeoutMs: params.updateStepTimeoutMs,
     });
     await recheckSchemas(admittedTargetSchemaVersions);
-    logUpdateWarnings(warnings, Boolean(opts.json));
+    for (const warning of warnings) {
+      defaultRuntime[opts.json ? "error" : "log"](warning.message);
+    }
   };
   let recoveryEnv: NodeJS.ProcessEnv | undefined;
   let packageTransaction: PackageUpdateTransaction | undefined;
@@ -429,7 +434,9 @@ export async function executeMutableUpdate(
     const validation = await validate();
     candidateFailureReason = validation.status === "error" ? validation.reason : undefined;
     if (validation.status === "ok" && !doctorConfigWrites && doctorConfigChanges.length) {
-      appendUpdateDoctorConfigWarning(root, doctorConfigChanges, validation.steps, params.progress);
+      const warning = createUpdateDoctorConfigWarningStep(root, doctorConfigChanges);
+      validation.steps.push(warning);
+      params.progress?.onStepComplete?.({ ...warning, index: 0, total: 0 });
     }
     return validation.steps;
   };
@@ -506,7 +513,7 @@ export async function executeMutableUpdate(
     }
     if (!releaseLocalTuiGate) {
       releaseLocalTuiGate = await acquireUpdateLocalTuiGate(
-        params.root,
+        roots,
         Boolean(opts.json),
         assertExecutionCurrent,
       );

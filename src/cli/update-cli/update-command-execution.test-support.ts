@@ -5,6 +5,7 @@ import type { executeMutableUpdate } from "./update-command-execution.js";
 import type { PreManagedServiceStop } from "./update-command-service.js";
 
 const mocks = vi.hoisted(() => ({
+  announceLocalTui: vi.fn(),
   captureManagedContext: vi.fn(),
   captureManagedPreflight:
     vi.fn<
@@ -56,6 +57,7 @@ vi.mock("../../infra/update-global.js", async (importOriginal) => ({
 }));
 vi.mock("../../infra/local-tui-processes.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/local-tui-processes.js")>()),
+  announceLocalTuiUpdate: mocks.announceLocalTui,
   quiesceLocalTuiProcessesBeforeUpdate: mocks.quiesceLocalTui,
 }));
 vi.mock("../../infra/update-candidate-canary.js", () => ({
@@ -236,9 +238,11 @@ beforeEach(() => {
   mocks.maybeStopService.mockImplementation(async ({ phase }) => inspectOrStopService(phase));
   mocks.prepareMutableUpdate.mockResolvedValue(undefined);
   mocks.pluginPreflight.mockResolvedValue([]);
+  mocks.announceLocalTui.mockResolvedValue({ pid: 99, release: vi.fn() });
   mocks.quiesceLocalTui.mockResolvedValue({
     lockPath: "/tmp/openclaw-local-tui-update.lock",
     stopped: [],
+    warnings: [],
     release: vi.fn(),
   });
   mocks.readGitRecovery.mockResolvedValue({ serviceRestartSafe: true });

@@ -72,6 +72,15 @@ vi.mock("../../daemon/service.js", async (original) => ({
     readRuntime: async () => ({ status: mocks.running ? "running" : "stopped" }),
   }),
 }));
+vi.mock("../../infra/local-tui-processes.js", async (original) => ({
+  ...(await original<typeof import("../../infra/local-tui-processes.js")>()),
+  quiesceLocalTuiProcessesBeforeUpdate: async () => ({
+    lockPath: "test-local-tui-update-gate",
+    stopped: [],
+    warnings: [],
+    release: async () => {},
+  }),
+}));
 vi.mock("./update-command-service.js", async (original) => ({
   ...(await original<typeof import("./update-command-service.js")>()),
   maybeStopManagedServiceBeforeMutableUpdate: mocks.stop,

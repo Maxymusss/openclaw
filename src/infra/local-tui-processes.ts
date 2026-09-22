@@ -1,26 +1,29 @@
-import { spawnSync, type SpawnSyncOptionsWithStringEncoding } from "node:child_process";
-import { createHash } from "node:crypto";
+import {
+  spawn,
+  spawnSync,
+  type ChildProcess,
+  type SpawnSyncOptionsWithStringEncoding,
+} from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { parseCmdScriptCommandLine } from "../daemon/cmd-argv.js";
+import { LOCAL_RUN_SHUTDOWN_GRACE_MS } from "../tui/local-run-shutdown.js";
 import { sleep } from "../utils/sleep.js";
 import { getCommandPositionalsWithRootOptions } from "./cli-root-options.js";
 import { extractErrorCode } from "./errors.js";
 import { acquireFileLock, type FileLockHandle } from "./file-lock.js";
 import {
-  createOpenClawInstallationId,
+  formatOpenClawProcessTitleForRoots,
   parseOpenClawProcessTitle,
+  resolveOpenClawInstallationId,
 } from "./openclaw-installation-id.js";
+import { resolveSecureTempRoot } from "./secure-temp-root.js";
 import { getWindowsPowerShellExePath } from "./windows-install-roots.js";
-import { readWindowsProcessStartTimeSync } from "./windows-process-start.js";
 
 export type LocalTuiProcess = {
   pid: number;
   command: string;
-  instanceId?: string;
-  instanceIdentity?: "coarse" | "strong";
-  ownership: "target" | "ambiguous";
+  ownership: "target" | "ambiguous" | "foreign-user" | "companion";
 };
 
 export type LocalTuiProcessDiscovery =
@@ -28,18 +31,27 @@ export type LocalTuiProcessDiscovery =
   | { ok: false; error: string };
 
 type ProcessSignal = "SIGTERM" | "SIGKILL";
-
-type ProcessController = {
-  kill: (pid: number, signal: ProcessSignal | 0) => boolean;
-};
-
-type PsResult = {
-  error?: Error;
-  status: number | null;
-  stdout?: string;
+type ProcessController = { kill: (pid: number, signal: ProcessSignal | 0) => boolean };
+type PsResult = { error?: Error; status: number | null; stdout?: string };
+type CurrentTarget = "target" | "gone" | "unknown";
+type LocalOpenClawProcessKind = "tui" | "update";
+export type LocalProcessDiscoveryParams = {
+  processKind?: "tui" | "update";
+  targetRoot?: string;
+  platform?: NodeJS.Platform;
+  currentUid?: number;
+  currentPid?: number;
+  spawnSync?: (
+    command: string,
+    args: string[],
+    options: SpawnSyncOptionsWithStringEncoding,
+  ) => PsResult;
 };
 
 const LOCAL_TUI_SUBCOMMANDS = new Set(["chat", "resume", "terminal", "tui"]);
+const LEGACY_LOCAL_TUI_PROCESS_TITLES = new Set(
+  [...LOCAL_TUI_SUBCOMMANDS].map((command) => `openclaw-${command}`),
+);
 const NODE_OPTIONS_WITH_SEPARATE_VALUE = new Set([
   "--conditions",
   "--env-file",
@@ -54,21 +66,25 @@ const NODE_OPTIONS_WITH_SEPARATE_VALUE = new Set([
 ]);
 const LOCAL_TUI_PROCESS_PROBE_TIMEOUT_MS = 1_000;
 const WINDOWS_LOCAL_TUI_PROCESS_PROBE_TIMEOUT_MS = 5_000;
+const LOCAL_TUI_UPDATE_ANNOUNCEMENT_TIMEOUT_MS = 5_000;
+const LOCAL_PROCESS_ANNOUNCEMENT_MARKER = "openclaw-process-announcement";
 const LOCAL_TUI_UPDATE_LOCK_OPTIONS = {
   stale: 30_000,
   retries: { retries: 100, factor: 1, minTimeout: 50, maxTimeout: 250 },
   staleRecovery: "remove-if-unchanged" as const,
 };
+const LOCAL_TUI_STARTUP_LOCK_OPTIONS = {
+  ...LOCAL_TUI_UPDATE_LOCK_OPTIONS,
+  retries: { ...LOCAL_TUI_UPDATE_LOCK_OPTIONS.retries, retries: 0 },
+};
 
 function resolveLocalTuiUpdateLockPath(targetRoot: string): string {
-  let canonicalRoot: string;
-  try {
-    canonicalRoot = fs.realpathSync.native(targetRoot);
-  } catch {
-    canonicalRoot = path.resolve(targetRoot);
-  }
-  const installId = createHash("sha256").update(canonicalRoot).digest("hex").slice(0, 24);
-  return path.join(os.tmpdir(), "openclaw-local-tui-update", installId);
+  // File sidecars cannot be both cross-account and safely recoverable in a sticky temp
+  // directory. Keep this owner-scoped; process-title discovery coordinates other accounts.
+  return path.join(
+    resolveSecureTempRoot({ fallbackPrefix: "openclaw-local-tui-update" }),
+    resolveOpenClawInstallationId(targetRoot),
+  );
 }
 
 function tokenizeCommandLine(command: string): string[] {
@@ -82,6 +98,14 @@ function normalizeExecutableName(value: string | undefined): string {
       .at(-1)
       ?.replace(/\.exe$/iu, "") ?? ""
   );
+}
+
+function resolveOpenClawCommand(args: readonly string[]): string | null | undefined {
+  const positionals = getCommandPositionalsWithRootOptions(["node", "openclaw", ...args], {
+    commandPath: [],
+    maxPositionals: 1,
+  });
+  return positionals === null ? null : positionals[0];
 }
 
 function isLocalTuiSubcommand(command: string | null | undefined): boolean {
@@ -98,17 +122,14 @@ function findNodeOpenClawEntrypoint(argv: readonly string[]): number | undefined
       return index;
     }
     if (argument === "--") {
-      const entrypointIndex = index + 1;
-      return normalizeExecutableName(argv[entrypointIndex]) === "openclaw.mjs"
-        ? entrypointIndex
-        : undefined;
+      return normalizeExecutableName(argv[index + 1]) === "openclaw.mjs" ? index + 1 : undefined;
     }
     if (NODE_OPTIONS_WITH_SEPARATE_VALUE.has(argument)) {
       index += 1;
       continue;
     }
     // The respawn owner preserves valid single-token Node flags before argv[1].
-    // Refuse the candidate as soon as a non-option appears before the entrypoint.
+    // A non-option before the entrypoint belongs to another Node program.
     if (!argument.startsWith("-")) {
       return undefined;
     }
@@ -116,148 +137,119 @@ function findNodeOpenClawEntrypoint(argv: readonly string[]): number | undefined
   return undefined;
 }
 
-function classifyLocalTuiCommand(
+function classifyLocalOpenClawCommand(
   command: string,
   platform: NodeJS.Platform,
   targetRoot: string | undefined,
   realpath: (value: string) => string,
+  kind: LocalOpenClawProcessKind,
 ): LocalTuiProcess["ownership"] | "other" | undefined {
   const argv =
     platform === "win32" ? parseCmdScriptCommandLine(command) : tokenizeCommandLine(command);
   const processTitle = parseOpenClawProcessTitle(argv[0] ?? "");
+  // Windows CIM preserves the marker child's launch command rather than its
+  // process.title. Match only that node -e argument shape; POSIX exposes the title in argv[0].
+  const announcedTitle =
+    platform === "win32" &&
+    normalizeExecutableName(argv[0]) === "node" &&
+    argv[1] === "-e" &&
+    argv.at(-3) === LOCAL_PROCESS_ANNOUNCEMENT_MARKER &&
+    /^\d+$/u.test(argv.at(-2) ?? "")
+      ? parseOpenClawProcessTitle(argv.at(-1) ?? "")
+      : undefined;
+  const announcedTui = announcedTitle?.name === "openclaw-tui" ? announcedTitle : undefined;
+  const announcedUpdate = announcedTitle?.name === "openclaw-update" ? announcedTitle : undefined;
   const executable = processTitle?.name ?? normalizeExecutableName(argv[0]);
-  const nodeEntrypointIndex = executable === "node" ? findNodeOpenClawEntrypoint(argv) : undefined;
-  const isNodeLaunch = nodeEntrypointIndex !== undefined;
-  const isTui =
-    executable === "openclaw-tui" ||
-    (executable === "openclaw" && isLocalTuiSubcommand(resolveOpenClawCommand(argv.slice(1)))) ||
-    (isNodeLaunch &&
-      isLocalTuiSubcommand(resolveOpenClawCommand(argv.slice(nodeEntrypointIndex + 1))));
-  if (!isTui) {
+  const entryIndex = executable === "node" ? findNodeOpenClawEntrypoint(argv) : undefined;
+  const isNodeLaunch = entryIndex !== undefined;
+  const directCommand = executable === "openclaw" ? resolveOpenClawCommand(argv.slice(1)) : null;
+  const nodeCommand = isNodeLaunch ? resolveOpenClawCommand(argv.slice(entryIndex + 1)) : null;
+  const matches =
+    kind === "tui"
+      ? announcedTui !== undefined ||
+        LEGACY_LOCAL_TUI_PROCESS_TITLES.has(executable) ||
+        (executable === "openclaw" && isLocalTuiSubcommand(directCommand)) ||
+        (isNodeLaunch && isLocalTuiSubcommand(nodeCommand))
+      : processTitle?.name === "openclaw-update" || announcedUpdate !== undefined;
+  if (!matches) {
     return undefined;
   }
   if (!targetRoot) {
     return "ambiguous";
   }
-  if (processTitle) {
-    let resolvedTarget: string;
+  const installationTitle =
+    kind === "update" ? (announcedUpdate ?? processTitle) : (announcedTui ?? processTitle);
+  if (installationTitle) {
     try {
-      resolvedTarget = realpath(targetRoot);
+      const matchesInstallation = installationTitle.installationIds.includes(
+        resolveOpenClawInstallationId(targetRoot),
+      );
+      return matchesInstallation ? (announcedTui ? "companion" : "target") : "other";
     } catch {
       return "ambiguous";
     }
-    return processTitle.installationId === createOpenClawInstallationId(resolvedTarget)
-      ? "target"
-      : "other";
   }
-  const entrypoint = isNodeLaunch ? argv[nodeEntrypointIndex] : argv[0];
+  const entrypoint = isNodeLaunch ? argv[entryIndex] : argv[0];
   const pathApi = platform === "win32" ? path.win32 : path;
   if (!entrypoint || !pathApi.isAbsolute(entrypoint)) {
     return "ambiguous";
   }
-  let resolvedEntrypoint: string;
-  let resolvedTarget: string;
   try {
-    resolvedEntrypoint = realpath(entrypoint);
-    resolvedTarget = realpath(targetRoot);
+    const relative = pathApi.relative(realpath(targetRoot), realpath(entrypoint));
+    return relative === "" ||
+      (!relative.startsWith(`..${pathApi.sep}`) &&
+        relative !== ".." &&
+        !pathApi.isAbsolute(relative))
+      ? "target"
+      : "other";
   } catch {
     return "ambiguous";
   }
-  const relative = pathApi.relative(resolvedTarget, resolvedEntrypoint);
-  return relative === "" ||
-    (!relative.startsWith(`..${pathApi.sep}`) && relative !== ".." && !pathApi.isAbsolute(relative))
-    ? "target"
-    : "other";
 }
 
-function resolveOpenClawCommand(args: readonly string[]): string | null | undefined {
-  const positionals = getCommandPositionalsWithRootOptions(["node", "openclaw", ...args], {
-    commandPath: [],
-    maxPositionals: 1,
-  });
-  return positionals === null ? null : positionals[0];
-}
-
-function parseLocalTuiProcessLine(
+function parseLocalOpenClawProcessLine(
   line: string,
   currentUid: number,
   currentPid: number,
   platform: NodeJS.Platform,
   targetRoot: string | undefined,
   realpath: (value: string) => string,
-  readPosixInstanceId: (pid: number, platform: NodeJS.Platform) => string | undefined,
+  kind: LocalOpenClawProcessKind,
 ): LocalTuiProcess | null {
-  const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+\s+\S+\s+\d+\s+\d+:\d+:\d+\s+\d+)\s+(.+)$/);
+  const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+)$/);
   if (!match) {
     return null;
   }
-  const uid = Number(match[1]);
   const pid = Number(match[2]);
-  if (uid !== currentUid) {
-    return null;
-  }
   if (!Number.isFinite(pid) || pid <= 0 || pid === currentPid) {
     return null;
   }
-  const command = match[4]?.trim() ?? "";
-  const ownership = classifyLocalTuiCommand(command, platform, targetRoot, realpath);
+  const command = match[3]?.trim() ?? "";
+  const ownership = classifyLocalOpenClawCommand(command, platform, targetRoot, realpath, kind);
   if (!ownership || ownership === "other") {
     return null;
   }
-  const kernelInstanceId = readPosixInstanceId(pid, platform);
-  const instanceId = kernelInstanceId ?? match[3]?.trim();
-  return {
-    pid,
-    command,
-    ownership,
-    ...(instanceId ? { instanceId } : {}),
-    ...(instanceId ? { instanceIdentity: kernelInstanceId ? "strong" : "coarse" } : {}),
-  };
+  if (Number(match[1]) !== currentUid) {
+    return ownership === "target"
+      ? { pid, command, ownership: "foreign-user" }
+      : { pid, command, ownership: "ambiguous" };
+  }
+  return { pid, command, ownership };
 }
 
-function readPosixProcessInstanceId(pid: number, platform: NodeJS.Platform): string | undefined {
-  if (platform !== "linux") {
-    return undefined;
-  }
-  try {
-    const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
-    const fields = stat
-      .slice(stat.lastIndexOf(")") + 2)
-      .trim()
-      .split(/\s+/u);
-    // Linux starttime is field 22 and cannot collide when a PID is reused.
-    // Other POSIX platforms fail closed because their ps timestamps are second-granularity.
-    const startTicks = fields[19];
-    return startTicks ? `${pid}:${startTicks}` : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Lists local OpenClaw TUI processes whose in-memory chunk graph may outlive an update. */
-export function discoverLocalTuiProcesses(
-  params: {
-    targetRoot?: string;
-    platform?: NodeJS.Platform;
-    currentUid?: number;
-    currentPid?: number;
-    spawnSync?: (
-      command: string,
-      args: string[],
-      options: SpawnSyncOptionsWithStringEncoding,
-    ) => PsResult;
-    readWindowsStartTime?: (pid: number) => number | null;
-    readPosixInstanceId?: (pid: number, platform: NodeJS.Platform) => string | undefined;
-  } = {},
+function discoverLocalOpenClawProcesses(
+  params: LocalProcessDiscoveryParams,
+  kind: LocalOpenClawProcessKind,
 ): LocalTuiProcessDiscovery {
+  const platform = params.platform ?? process.platform;
   const realpath = fs.realpathSync.native;
-  if ((params.platform ?? process.platform) === "win32") {
+  if (platform === "win32") {
     const result = (params.spawnSync ?? spawnSync)(
       getWindowsPowerShellExePath(),
       [
         "-NoProfile",
         "-Command",
-        "$currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match '(?i)openclaw' } | ForEach-Object { $ownerSid=(Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid; [pscustomobject]@{ProcessId=$_.ProcessId;CommandLine=$_.CommandLine;OwnerSid=$ownerSid;CurrentSid=$currentSid} } | ConvertTo-Json -Compress",
+        "$currentSid=[Security.Principal.WindowsIdentity]::GetCurrent().User.Value; Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and $_.CommandLine -match '(?i)openclaw' } | ForEach-Object { $ownerSid=(Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid -ErrorAction SilentlyContinue).Sid; [pscustomobject]@{ProcessId=$_.ProcessId;CommandLine=$_.CommandLine;OwnerSid=$ownerSid;CurrentSid=$currentSid} } | ConvertTo-Json -Compress",
       ],
       {
         encoding: "utf8",
@@ -278,33 +270,34 @@ export function discoverLocalTuiProcesses(
         const commandValue = Reflect.get(entry, "CommandLine");
         const ownerSidValue = Reflect.get(entry, "OwnerSid");
         const currentSidValue = Reflect.get(entry, "CurrentSid");
+        const pid = typeof pidValue === "number" ? pidValue : undefined;
+        const command = typeof commandValue === "string" ? commandValue.trim() : undefined;
+        const ownership = command
+          ? classifyLocalOpenClawCommand(command, platform, params.targetRoot, realpath, kind)
+          : undefined;
         if (
-          typeof pidValue !== "number" ||
-          pidValue === (params.currentPid ?? process.pid) ||
-          typeof ownerSidValue !== "string" ||
-          ownerSidValue !== currentSidValue ||
-          typeof commandValue !== "string"
+          !pid ||
+          pid === (params.currentPid ?? process.pid) ||
+          !command ||
+          !ownership ||
+          ownership === "other"
         ) {
           return [];
         }
-        const command = commandValue.trim();
-        const ownership = classifyLocalTuiCommand(command, "win32", params.targetRoot, realpath);
-        if (!command || !ownership || ownership === "other") {
-          return [];
+        if (
+          typeof ownerSidValue !== "string" ||
+          typeof currentSidValue !== "string" ||
+          ownerSidValue !== currentSidValue
+        ) {
+          return [
+            {
+              pid,
+              command,
+              ownership: ownership === "target" ? ("foreign-user" as const) : ownership,
+            },
+          ];
         }
-        const startTime = (params.readWindowsStartTime ?? readWindowsProcessStartTimeSync)(
-          pidValue,
-        );
-        return [
-          {
-            pid: pidValue,
-            command,
-            ownership,
-            ...(startTime === null
-              ? {}
-              : { instanceId: String(startTime), instanceIdentity: "strong" as const }),
-          },
-        ];
+        return [{ pid, command, ownership }];
       });
       return { ok: true, processes };
     } catch {
@@ -315,8 +308,7 @@ export function discoverLocalTuiProcesses(
   if (currentUid === undefined) {
     return { ok: false, error: "The current user id is unavailable for process discovery." };
   }
-  const spawnSyncImpl = params.spawnSync ?? spawnSync;
-  const ps = spawnSyncImpl("ps", ["-axo", "uid=,pid=,lstart=,command="], {
+  const ps = (params.spawnSync ?? spawnSync)("ps", ["-axo", "uid=,pid=,command="], {
     encoding: "utf8",
     killSignal: "SIGKILL",
     timeout: LOCAL_TUI_PROCESS_PROBE_TIMEOUT_MS,
@@ -326,16 +318,15 @@ export function discoverLocalTuiProcesses(
   }
   const seen = new Set<number>();
   const processes: LocalTuiProcess[] = [];
-  const platform = params.platform ?? process.platform;
   for (const line of ps.stdout.split(/\r?\n/)) {
-    const proc = parseLocalTuiProcessLine(
+    const proc = parseLocalOpenClawProcessLine(
       line,
       currentUid,
       params.currentPid ?? process.pid,
       platform,
       params.targetRoot,
       realpath,
-      params.readPosixInstanceId ?? readPosixProcessInstanceId,
+      kind,
     );
     if (!proc || seen.has(proc.pid)) {
       continue;
@@ -346,12 +337,11 @@ export function discoverLocalTuiProcesses(
   return { ok: true, processes };
 }
 
-/** Best-effort advisory view; mutation owners must use the discovery result. */
-export function listLocalTuiProcesses(
-  params: Parameters<typeof discoverLocalTuiProcesses>[0] = {},
-): LocalTuiProcess[] {
-  const discovery = discoverLocalTuiProcesses(params);
-  return discovery.ok ? discovery.processes : [];
+/** Lists local TUI clients, or updater announcements used by the startup handshake. */
+export function discoverLocalTuiProcesses(
+  params: LocalProcessDiscoveryParams = {},
+): LocalTuiProcessDiscovery {
+  return discoverLocalOpenClawProcesses(params, params.processKind ?? "tui");
 }
 
 function isProcessAlive(controller: ProcessController, pid: number): boolean {
@@ -363,113 +353,208 @@ function isProcessAlive(controller: ProcessController, pid: number): boolean {
   }
 }
 
-/** Terminates local TUI processes with SIGTERM, then SIGKILL for remaining pids. */
+function readCurrentLocalTuiTarget(
+  pid: number,
+  targetRoot: string,
+  discover: typeof discoverLocalTuiProcesses = discoverLocalTuiProcesses,
+): CurrentTarget {
+  const discovery = discover({ targetRoot });
+  if (!discovery.ok) {
+    return "unknown";
+  }
+  const current = discovery.processes.find((process) => process.pid === pid);
+  return current ? (current.ownership === "target" ? "target" : "unknown") : "gone";
+}
+
+/** Terminates verified local TUI processes, rechecking ownership before each signal. */
 export async function terminateLocalTuiProcesses(params: {
   processes: LocalTuiProcess[];
   targetRoot: string;
   controller?: ProcessController;
   graceMs?: number;
   killGraceMs?: number;
-  readCurrentProcess?: (pid: number, targetRoot: string) => LocalTuiProcess | undefined;
+  readCurrentTarget?: (pid: number, targetRoot: string) => CurrentTarget;
+  discover?: typeof discoverLocalTuiProcesses;
   assertCurrent?: () => void;
 }): Promise<{ stopped: number[]; failed: number[] }> {
   const controller = params.controller ?? process;
-  const graceMs = Math.max(0, params.graceMs ?? 500);
+  const graceMs = Math.max(0, params.graceMs ?? LOCAL_RUN_SHUTDOWN_GRACE_MS);
   const killGraceMs = Math.max(0, params.killGraceMs ?? 250);
-  const readCurrentProcess =
-    params.readCurrentProcess ??
+  const inspect =
+    params.readCurrentTarget ??
     ((pid: number, targetRoot: string) =>
-      listLocalTuiProcesses({ targetRoot }).find((process) => process.pid === pid));
+      readCurrentLocalTuiTarget(pid, targetRoot, params.discover));
   const stopped: number[] = [];
   const failed: number[] = [];
 
   for (const proc of params.processes) {
-    const current = readCurrentProcess(proc.pid, params.targetRoot);
-    const originalIdentity = proc.instanceIdentity ?? "strong";
-    const currentIdentity = current?.instanceIdentity ?? "strong";
-    if (
-      proc.ownership !== "target" ||
-      !proc.instanceId ||
-      originalIdentity !== "strong" ||
-      current?.ownership !== "target" ||
-      current.instanceId !== proc.instanceId ||
-      currentIdentity !== "strong"
-    ) {
+    if (proc.ownership !== "target") {
+      continue;
+    }
+    const current = inspect(proc.pid, params.targetRoot);
+    if (current === "gone" || !isProcessAlive(controller, proc.pid)) {
+      stopped.push(proc.pid);
+      continue;
+    }
+    if (current === "unknown") {
       failed.push(proc.pid);
       continue;
     }
     params.assertCurrent?.();
     try {
       controller.kill(proc.pid, "SIGTERM");
-    } catch {
-      // Already gone is success for this repair.
+    } catch (error) {
+      if (extractErrorCode(error) === "ESRCH") {
+        stopped.push(proc.pid);
+      } else {
+        failed.push(proc.pid);
+      }
     }
   }
   if (graceMs > 0) {
     await sleep(graceMs);
   }
-  const killFallback: LocalTuiProcess[] = [];
+  const escalated: number[] = [];
   for (const proc of params.processes) {
-    if (stopped.includes(proc.pid) || failed.includes(proc.pid)) {
+    if (proc.ownership !== "target" || stopped.includes(proc.pid) || failed.includes(proc.pid)) {
       continue;
     }
     if (!isProcessAlive(controller, proc.pid)) {
       stopped.push(proc.pid);
       continue;
     }
-    const current = readCurrentProcess(proc.pid, params.targetRoot);
-    if (
-      current?.ownership !== "target" ||
-      current.instanceId !== proc.instanceId ||
-      (proc.instanceIdentity ?? "strong") !== "strong" ||
-      (current.instanceIdentity ?? "strong") !== "strong"
-    ) {
+    const current = inspect(proc.pid, params.targetRoot);
+    if (current === "gone") {
+      stopped.push(proc.pid);
+      continue;
+    }
+    if (current === "unknown") {
       failed.push(proc.pid);
       continue;
     }
     params.assertCurrent?.();
     try {
       controller.kill(proc.pid, "SIGKILL");
-    } catch {
-      // Already gone is still success.
+      escalated.push(proc.pid);
+    } catch (error) {
+      if (extractErrorCode(error) === "ESRCH") {
+        stopped.push(proc.pid);
+      } else {
+        failed.push(proc.pid);
+      }
     }
-    killFallback.push(proc);
   }
-  if (killFallback.length > 0 && killGraceMs > 0) {
+  if (escalated.length > 0 && killGraceMs > 0) {
     await sleep(killGraceMs);
   }
-  for (const proc of killFallback) {
-    if (isProcessAlive(controller, proc.pid)) {
-      failed.push(proc.pid);
-    } else {
-      stopped.push(proc.pid);
-    }
+  for (const pid of escalated) {
+    (isProcessAlive(controller, pid) ? failed : stopped).push(pid);
   }
   return { stopped, failed };
 }
 
-export function formatLocalTuiPidList(processes: readonly LocalTuiProcess[]) {
+function formatLocalTuiPidList(processes: readonly LocalTuiProcess[]): string {
   return processes.map((proc) => String(proc.pid)).join(", ");
+}
+
+export type LocalTuiUpdateGate = FileLockHandle & { stopped: number[]; warnings: string[] };
+
+export type LocalTuiUpdateAnnouncement = {
+  pid: number;
+  release: () => Promise<void>;
+};
+
+const UPDATE_ANNOUNCEMENT_SCRIPT =
+  "const parent=Number(process.argv[2]);process.title=process.argv[3];process.stdout.write('ready\\n');setInterval(()=>{try{process.kill(parent,0)}catch{process.exit(0)}},250)";
+
+async function announceLocalOpenClawProcess(
+  name: "openclaw-tui" | "openclaw-update",
+  roots: readonly string[],
+): Promise<LocalTuiUpdateAnnouncement> {
+  const title = formatOpenClawProcessTitleForRoots(name, roots);
+  const child = spawn(
+    process.execPath,
+    [
+      "-e",
+      UPDATE_ANNOUNCEMENT_SCRIPT,
+      LOCAL_PROCESS_ANNOUNCEMENT_MARKER,
+      String(process.pid),
+      title,
+    ],
+    {
+      stdio: ["ignore", "pipe", "ignore"],
+      windowsHide: true,
+    },
+  );
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error("Timed out publishing the local TUI update announcement."));
+    }, LOCAL_TUI_UPDATE_ANNOUNCEMENT_TIMEOUT_MS);
+    const settle = (operation: () => void) => {
+      clearTimeout(timeout);
+      child.off("error", onError);
+      child.off("exit", onExit);
+      operation();
+    };
+    const onError = (error: Error) => settle(() => reject(error));
+    const onExit = (code: number | null, signal: NodeJS.Signals | null) =>
+      settle(() =>
+        reject(
+          new Error(
+            `Local TUI update announcement exited before readiness (${signal ?? code ?? "unknown"}).`,
+          ),
+        ),
+      );
+    child.once("error", onError);
+    child.once("exit", onExit);
+    child.stdout?.once("data", () => settle(resolve));
+  }).catch((error: unknown) => {
+    child.kill();
+    throw error;
+  });
+  return {
+    pid: child.pid!,
+    release: async () => await stopUpdateAnnouncement(child),
+  };
+}
+
+/** Publishes activation through a small runtime-independent child process. */
+export async function announceLocalTuiUpdate(
+  roots: readonly string[],
+): Promise<LocalTuiUpdateAnnouncement> {
+  return await announceLocalOpenClawProcess("openclaw-update", roots);
+}
+
+/** Makes an internal Windows TUI visible to updater process discovery. */
+export async function announceLocalTuiClient(root: string): Promise<LocalTuiUpdateAnnouncement> {
+  return await announceLocalOpenClawProcess("openclaw-tui", [root]);
+}
+
+async function stopUpdateAnnouncement(child: ChildProcess): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  const exited = new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", () => resolve());
+  });
+  if (!child.kill()) {
+    throw new Error(`Could not stop local TUI update announcement ${child.pid ?? "unknown"}.`);
+  }
+  await exited;
 }
 
 /** Quiesces clients at the shared update mutation boundary. */
 export async function quiesceLocalTuiProcessesBeforeUpdate(
   targetRoot: string,
   overrides: {
-    list?: typeof listLocalTuiProcesses;
     discover?: typeof discoverLocalTuiProcesses;
+    discoverUpdates?: typeof discoverLocalTuiProcesses;
     terminate?: typeof terminateLocalTuiProcesses;
     acquireLock?: typeof acquireFileLock;
     assertCurrent?: () => void;
   } = {},
-): Promise<(FileLockHandle & { stopped: number[] }) | undefined> {
-  if (
-    !overrides.list &&
-    !overrides.discover &&
-    (process.env.VITEST || process.env.NODE_ENV === "test")
-  ) {
-    return undefined;
-  }
+): Promise<LocalTuiUpdateGate> {
   // Keep startup and discovery in one interprocess order. The updater retains
   // this gate until mutation ends, so a newly launched TUI cannot enter stale code.
   const updateLock = await (overrides.acquireLock ?? acquireFileLock)(
@@ -478,36 +563,77 @@ export async function quiesceLocalTuiProcessesBeforeUpdate(
   );
   try {
     overrides.assertCurrent?.();
-    const discovery = overrides.list
-      ? { ok: true as const, processes: overrides.list({ targetRoot }) }
-      : (overrides.discover ?? discoverLocalTuiProcesses)({ targetRoot });
+    const updaterDiscovery = (overrides.discoverUpdates ?? discoverLocalTuiProcesses)({
+      targetRoot,
+      processKind: "update",
+    });
+    if (!updaterDiscovery.ok) {
+      throw new Error(
+        `Update refused: could not inspect concurrent OpenClaw updates before activation: ${updaterDiscovery.error} Retry after confirming that no other update is running.`,
+      );
+    }
+    // The account-local lock serializes same-owner waiters. A foreign announcement
+    // means that updater already owns or is seeking activation, so fail closed.
+    const competingUpdater = updaterDiscovery.processes.find(
+      (candidate) => candidate.ownership !== "target",
+    );
+    if (competingUpdater) {
+      throw new Error(
+        `Update refused: another OpenClaw update (${competingUpdater.pid}) is already active for this installation. Wait for it to finish, then retry.`,
+      );
+    }
+    const discovery = (overrides.discover ?? discoverLocalTuiProcesses)({ targetRoot });
     if (!discovery.ok) {
       throw new Error(
-        `Update refused: could not inspect local TUI clients. ${discovery.error} Retry the update after process inspection is available.`,
+        `Update refused: could not inspect local TUI clients before activation: ${discovery.error} Close any local TUI clients, then retry the update.`,
+      );
+    }
+    const companionClients = discovery.processes.filter(
+      (candidate) => candidate.ownership === "companion",
+    );
+    if (companionClients.length > 0) {
+      throw new Error(
+        `Update refused: Windows TUI clients (${formatLocalTuiPidList(companionClients)}) are using this installation and cannot be stopped safely from their launch command. Close them, then retry.`,
+      );
+    }
+    const foreignUsers = discovery.processes.filter((proc) => proc.ownership === "foreign-user");
+    if (foreignUsers.length > 0) {
+      throw new Error(
+        `Update refused: local TUI clients ${formatLocalTuiPidList(foreignUsers)} not owned by the current user are using this installation. Ask their owners to close them, then retry the update.`,
       );
     }
     const ambiguous = discovery.processes.filter((proc) => proc.ownership === "ambiguous");
     if (ambiguous.length > 0) {
       throw new Error(
-        `Update refused: could not bind local TUI clients ${formatLocalTuiPidList(ambiguous)} to this installation. Close them and retry the update.`,
+        `Update refused: local TUI clients ${formatLocalTuiPidList(ambiguous)} could not be bound to an installation. Close them, then retry the update.`,
       );
     }
-    if (discovery.processes.length === 0) {
-      return Object.assign(updateLock, { stopped: [] });
+    const targets = discovery.processes.filter((proc) => proc.ownership === "target");
+    const warnings: string[] = [];
+    if (targets.length === 0) {
+      return Object.assign(updateLock, { stopped: [], warnings });
     }
     const stopped = await (overrides.terminate ?? terminateLocalTuiProcesses)({
-      processes: discovery.processes,
+      processes: targets,
       targetRoot,
       assertCurrent: overrides.assertCurrent,
     });
     if (stopped.failed.length > 0) {
       throw new Error(
-        `Update refused: could not stop local TUI clients ${stopped.failed.join(", ")}. Close them and retry the update.`,
+        `Update refused: local TUI clients ${stopped.failed.join(", ")} could not be stopped. Close them, then retry the update.`,
       );
     }
-    return Object.assign(updateLock, { stopped: stopped.stopped });
+    return Object.assign(updateLock, { stopped: stopped.stopped, warnings });
   } catch (error) {
-    await updateLock.release();
+    try {
+      await updateLock.release();
+    } catch (releaseError) {
+      throw new AggregateError(
+        [error, releaseError],
+        "Local TUI update gate acquisition failed and its lock could not be released",
+        { cause: releaseError },
+      );
+    }
     throw error;
   }
 }
@@ -516,19 +642,34 @@ export async function quiesceLocalTuiProcessesBeforeUpdate(
 export async function waitForLocalTuiUpdate(
   targetRoot: string,
   acquireLock: typeof acquireFileLock = acquireFileLock,
-): Promise<void> {
+  discoverUpdates: (targetRoot: string) => LocalTuiProcessDiscovery = (root) =>
+    discoverLocalTuiProcesses({ targetRoot: root, processKind: "update" }),
+): Promise<{ waitedForUpdate: boolean }> {
+  let waitedForUpdate = false;
   for (;;) {
     try {
       const lock = await acquireLock(
         resolveLocalTuiUpdateLockPath(targetRoot),
-        LOCAL_TUI_UPDATE_LOCK_OPTIONS,
+        LOCAL_TUI_STARTUP_LOCK_OPTIONS,
       );
       await lock.release();
-      return;
+      const updates = discoverUpdates(targetRoot);
+      if (!updates.ok) {
+        throw new Error(
+          `Unable to inspect local OpenClaw updates before TUI startup: ${updates.error}`,
+        );
+      }
+      if (updates.processes.length === 0) {
+        return { waitedForUpdate };
+      }
+      waitedForUpdate = true;
+      await sleep(100);
     } catch (error) {
       if (extractErrorCode(error) !== "file_lock_timeout") {
         throw error;
       }
+      waitedForUpdate = true;
+      await sleep(100);
     }
   }
 }

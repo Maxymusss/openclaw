@@ -35,6 +35,7 @@ describe("mutable update execution", () => {
     mocks.quiesceLocalTui.mockResolvedValue({
       lockPath: "/tmp/openclaw-local-tui-update.lock",
       stopped: [101],
+      warnings: [],
       release,
     });
     mocks.runPackageUpdate.mockImplementation(async ({ beforeActivate }) => {

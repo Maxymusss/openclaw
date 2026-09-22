@@ -205,13 +205,11 @@ if (
     if (!(await ensureCliRespawnReady())) {
       // Only the final child emits the diagnostic warning; parents still enforce admission.
       await assertSupportedRuntime(undefined, undefined, process.argv, true, inheritedRuntimeEnv);
-      // Idle respawn parents retain argv so offline maintenance can identify its launchers.
-      // Keep a process-stable installation identity after Node rewrites argv.
-      // Update coordination uses this marker to avoid signaling another install.
-      process.title = formatOpenClawProcessTitle(
-        isTerminalInteractiveRespawnArgv(process.argv) ? "openclaw-tui" : "openclaw-cli",
-        installRoot,
-      );
+      // Only TUI identity belongs here. Other commands retain the established title
+      // contract so Gateway discovery can recognize both fast and Commander paths.
+      if (isTerminalInteractiveRespawnArgv(process.argv)) {
+        process.title = formatOpenClawProcessTitle("openclaw-tui", installRoot);
+      }
       const parsedContainer = parseCliContainerArgs(process.argv);
       if (!parsedContainer.ok) {
         await writeCapturedCliArgumentError(parsedContainer.error);

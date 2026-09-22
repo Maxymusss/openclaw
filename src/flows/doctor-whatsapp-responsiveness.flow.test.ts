@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => ({
   ps: vi.fn(),
   checkGatewayHealth: vi.fn(),
   probeGatewayMemoryStatus: vi.fn(),
-  readWindowsProcessStartTimeSync: vi.fn(),
 }));
 vi.mock("../../packages/terminal-core/src/note.js", () => ({ note: mocks.note }));
 vi.mock("./doctor-gateway-exec-credential.js", () => ({
@@ -20,9 +19,6 @@ vi.mock("./doctor-gateway-exec-credential.js", () => ({
 vi.mock("../commands/doctor-gateway-health.js", () => ({
   checkGatewayHealth: mocks.checkGatewayHealth,
   probeGatewayMemoryStatus: mocks.probeGatewayMemoryStatus,
-}));
-vi.mock("../infra/windows-process-start.js", () => ({
-  readWindowsProcessStartTimeSync: mocks.readWindowsProcessStartTimeSync,
 }));
 vi.mock("node:child_process", async () => {
   const { mockNodeChildProcessSpawnSync } = await import("openclaw/plugin-sdk/test-node-mocks");
@@ -36,7 +32,6 @@ vi.mock("node:child_process", async () => {
 describe("Doctor responsiveness contribution flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.readWindowsProcessStartTimeSync.mockReturnValue(123);
   });
 
   it.each([false, true])("keeps CPU advice observational (maintenance=%s)", async (maintenance) => {
@@ -56,15 +51,7 @@ describe("Doctor responsiveness contribution flow", () => {
     const fakePid = process.pid + 1_000_000;
     mocks.ps.mockReturnValue({
       status: 0,
-      stdout:
-        process.platform === "win32"
-          ? JSON.stringify({
-              ProcessId: fakePid,
-              CommandLine: "C:\\OpenClaw\\openclaw.exe tui",
-              OwnerSid: "S-1-fixture",
-              CurrentSid: "S-1-fixture",
-            })
-          : `${process.getuid?.() ?? 0} ${fakePid} Thu Aug 20 19:00:00 2026 openclaw-tui --profile unrelated\n`,
+      stdout: `${fakePid} openclaw-tui --profile unrelated\n`,
     });
     mocks.checkGatewayHealth.mockResolvedValue({ healthOk: true, authenticated: false, status });
     const ctx = createDoctorHealthFlowContext({
@@ -95,24 +82,16 @@ describe("Doctor responsiveness contribution flow", () => {
       const notes = mocks.note.mock.calls.filter(
         ([, title]) => title === "WhatsApp responsiveness",
       );
-      if (maintenance) {
+      if (maintenance || process.platform === "win32") {
         expect(mocks.ps).not.toHaveBeenCalled();
         expect(notes).toEqual([]);
       } else {
         expect(mocks.ps).toHaveBeenCalledTimes(1);
-        if (process.platform === "win32") {
-          expect(mocks.ps).toHaveBeenCalledWith(
-            expect.stringMatching(/powershell(?:\.exe)?$/iu),
-            expect.arrayContaining(["-NoProfile", "-Command"]),
-            { encoding: "utf8", killSignal: "SIGKILL", timeout: 5_000 },
-          );
-        } else {
-          expect(mocks.ps).toHaveBeenCalledWith("ps", ["-axo", "uid=,pid=,lstart=,command="], {
-            encoding: "utf8",
-            killSignal: "SIGKILL",
-            timeout: 1_000,
-          });
-        }
+        expect(mocks.ps).toHaveBeenCalledWith("ps", ["-axo", "pid=,command="], {
+          encoding: "utf8",
+          killSignal: "SIGKILL",
+          timeout: 1_000,
+        });
         expect(notes).toEqual([
           [
             "Gateway reports pressure, and local TUI clients were detected. This snapshot does not identify the source of the pressure.\n" +

@@ -5,7 +5,7 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 
 // Local TUI runs get extra shutdown time because embedded agents/providers may still be closing.
-const LOCAL_RUN_SHUTDOWN_GRACE_MS = 120_000;
+export const LOCAL_RUN_SHUTDOWN_GRACE_MS = 120_000;
 
 /** Resolves the hard-exit grace period for local TUI shutdown. */
 export function resolveLocalRunShutdownGraceMs(): number {

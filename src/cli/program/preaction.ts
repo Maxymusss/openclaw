@@ -31,7 +31,9 @@ function setProcessTitleForCommand(actionCommand: Command) {
     current = current.parent;
   }
   const name = current.name();
-  if (!name || name === CLI_NAME) {
+  // Updates announce only once activation begins. Advertising an interactive
+  // wizard as active would block unrelated TUI startup indefinitely.
+  if (!name || name === CLI_NAME || name === "update") {
     return;
   }
   process.title = replaceOpenClawProcessTitleName(process.title, `${CLI_NAME}-${name}`);

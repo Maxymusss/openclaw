@@ -446,7 +446,7 @@ async function updateCommandInternal(
   };
 
   let releaseLocalTuiGate: (() => Promise<void>) | undefined;
-  try {
+  const runUpdate = async (): Promise<void> => {
     const execution = await executeMutableUpdate({
       ...target,
       installKind,
@@ -552,7 +552,35 @@ async function updateCommandInternal(
     progress.flushLedgerWrites();
     presentation.resume();
     await finishUpdate(finalization);
-  } finally {
+  };
+
+  let updateError: unknown;
+  let updateFailed = false;
+  try {
+    await runUpdate();
+  } catch (error) {
+    updateError = error;
+    updateFailed = true;
+  }
+  let releaseError: unknown;
+  let releaseFailed = false;
+  try {
     await releaseLocalTuiGate?.();
+  } catch (error) {
+    releaseError = error;
+    releaseFailed = true;
+  }
+  if (updateFailed && releaseFailed) {
+    throw new AggregateError(
+      [updateError, releaseError],
+      "Update failed and local TUI gate release is unresolved",
+      { cause: releaseError },
+    );
+  }
+  if (updateFailed) {
+    throw updateError;
+  }
+  if (releaseFailed) {
+    throw releaseError;
   }
 }
