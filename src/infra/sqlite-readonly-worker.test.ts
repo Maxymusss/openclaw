@@ -20,6 +20,10 @@ import { prepareSqliteReadOnlyLocation } from "./sqlite-snapshot-source.js";
 import { acquireStateDatabaseHandleExclusion } from "./state-database-coordinator.js";
 
 const logs = vi.hoisted(() => ({ debug: vi.fn() }));
+const compileCacheEnv = vi.hoisted(() => ({
+  resolve: vi.fn(),
+  actual: undefined as ((env?: NodeJS.ProcessEnv) => NodeJS.ProcessEnv) | undefined,
+}));
 vi.mock("../logging/subsystem.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../logging/subsystem.js")>();
   return {
@@ -29,6 +33,13 @@ vi.mock("../logging/subsystem.js", async (importOriginal) => {
       debug: logs.debug,
     }),
   };
+});
+
+vi.mock("./node-compile-cache-env.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./node-compile-cache-env.js")>();
+  compileCacheEnv.actual = actual.resolveNodeCompileCacheEnv;
+  compileCacheEnv.resolve.mockImplementation(compileCacheEnv.actual);
+  return { ...actual, resolveNodeCompileCacheEnv: compileCacheEnv.resolve };
 });
 
 vi.mock("node:child_process", async (importOriginal) => {
@@ -50,10 +61,12 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 beforeEach(() => {
+  compileCacheEnv.resolve.mockImplementation(compileCacheEnv.actual!);
   vi.mocked(execFile).mockReset();
   vi.mocked(spawn).mockClear();
   vi.mocked(spawnSync).mockClear();
   logs.debug.mockClear();
+  compileCacheEnv.resolve.mockClear();
 });
 
 it("keeps execFile resettable while preserving promisified stdout and stderr", async () => {
@@ -65,6 +78,16 @@ it("keeps execFile resettable while preserving promisified stdout and stderr", a
       'process.stdout.write("synthetic stdout"); process.stderr.write("synthetic stderr");',
     ]),
   ).resolves.toEqual({ stdout: "synthetic stdout", stderr: "synthetic stderr" });
+});
+
+it("delegates read-only worker launch env to the compile-cache owner", () => {
+  const env = { FIXTURE_ONLY: "preserved" };
+  const expected = compileCacheEnv.actual!(env);
+  const launch = captureSqliteReadOnlyWorkerLaunch(env);
+
+  expect(compileCacheEnv.resolve).toHaveBeenCalledExactlyOnceWith(env);
+  expect(launch.env).toEqual(expected);
+  expect(launch.env).not.toBe(env);
 });
 
 function createDatabase(paddingBytes: number | null): string {
