@@ -1,5 +1,6 @@
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createUpdateErrorFact } from "../../infra/update-failure-facts.js";
+import { assertUpdateWriteAuthority } from "../../infra/update-freebsd-write-admission.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import { UpdateRecoveryRequiredError } from "../../infra/update-run-recovery.js";
 import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
@@ -47,8 +48,7 @@ export async function withUpdateCommandRecoveryUnwind(
   let failure: { error: unknown } | undefined;
   try {
     await withCommandProcessScope(operation);
-    run.freebsdRootAdmission?.assertCurrent();
-    run.executorFence?.assertCurrent();
+    assertUpdateWriteAuthority(run.freebsdWriteAdmission, () => run.executorFence?.assertCurrent());
   } catch (error) {
     if (hasCommandProcessCleanupError(error)) {
       throw new UpdateCommandPendingRecoveryFailure(
@@ -58,8 +58,9 @@ export async function withUpdateCommandRecoveryUnwind(
       );
     }
     try {
-      run.freebsdRootAdmission?.assertCurrent();
-      run.executorFence?.assertCurrent();
+      assertUpdateWriteAuthority(run.freebsdWriteAdmission, () =>
+        run.executorFence?.assertCurrent(),
+      );
     } catch (cause) {
       throw new UpdateCommandPendingRecoveryFailure(
         primaryResult(error),

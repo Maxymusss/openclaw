@@ -2,11 +2,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { expect, it, vi } from "vitest";
 import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
-import { admitFreeBsdUpdateRootOwnership } from "../../infra/update-freebsd-root-ownership.js";
-import {
-  nativeFreeBsdRoot,
-  withFreeBsdRootFixture,
-} from "../../infra/update-freebsd-root-ownership.test-support.js";
+import { createFreeBsdUpdateWriteAdmission } from "../../infra/update-freebsd-write-admission.js";
+import { nativeFreeBsd, withFreeBsdFixture } from "../../infra/update-freebsd.test-support.js";
 import * as updateGlobal from "../../infra/update-global.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
@@ -32,10 +29,10 @@ import { updateCommand } from "./update-command.js";
 
 const { fixture } = installFreshUpdateFixture();
 
-it.skipIf(!nativeFreeBsdRoot).each(["execution", "staged cleanup"])(
+it.skipIf(!nativeFreeBsd).each(["execution", "staged cleanup"])(
   "keeps history pending after native rejection during %s and still releases the stage and executor",
   async (boundary) => {
-    await withFreeBsdRootFixture(async ({ home, root, env }) => {
+    await withFreeBsdFixture(async ({ home, root, env }) => {
       fixture.root = root;
       fixture.databasePath = resolveOpenClawStateSqlitePath(env);
       for (const name of ["OPENCLAW_HOME", "OPENCLAW_PROFILE", "OPENCLAW_SUPERVISOR_MODE"]) {
@@ -63,10 +60,7 @@ it.skipIf(!nativeFreeBsdRoot).each(["execution", "staged cleanup"])(
       const prepare = vi.mocked(commandRun.prepareUpdateCommand).getMockImplementation()!;
       vi.mocked(commandRun.prepareUpdateCommand).mockImplementation(async (opts) => ({
         ...(await prepare(opts)),
-        freebsdRootAdmission: await admitFreeBsdUpdateRootOwnership({
-          roots: [root, process.cwd()],
-          env,
-        }),
+        freebsdWriteAdmission: createFreeBsdUpdateWriteAdmission(),
       }));
       vi.spyOn(servicePlan, "resolvePackageRuntimePreflight").mockResolvedValue({
         ok: true,
@@ -82,15 +76,10 @@ it.skipIf(!nativeFreeBsdRoot).each(["execution", "staged cleanup"])(
       let run: NonNullable<UpdateCommandOptions["run"]> | undefined;
       let before: ReturnType<typeof getUpdateRun>;
       const revoke = async () => {
-        if (!run?.freebsdRootAdmission || !run.executorFence) {
+        if (!run?.freebsdWriteAdmission || !run.executorFence) {
           throw new Error("admitted executor missing");
         }
-        await fs.chmod(root, 0o777);
-        await run.freebsdRootAdmission.revalidate(
-          { roots: [root], env },
-          run.executorFence.assertCurrent,
-        );
-        throw new Error("unsafe installation was admitted");
+        throw run.freebsdWriteAdmission.revoke(new Error("fixture executor authority revoked"));
       };
       let stageSettled = false;
       const observations: { stageSettled: boolean; lease: string }[] = [];
@@ -143,7 +132,7 @@ it.skipIf(!nativeFreeBsdRoot).each(["execution", "staged cleanup"])(
       expect(staged.close).toHaveBeenCalledOnce();
       expect(createManagedHandoffLeaseStore().read(root)).toEqual({ kind: "absent" });
       expect(publish).not.toHaveBeenCalled();
-      expect(run?.freebsdRootAdmission?.canWrite).toBe(false);
+      expect(run?.freebsdWriteAdmission?.canWrite).toBe(false);
       expect(before?.status).toBe("running");
       expect(getUpdateRun(run!.runId, { env: run!.env })).toEqual(before);
       expect(observations).toEqual([{ stageSettled: true, lease: "absent" }]);

@@ -9,10 +9,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import { cronOwnerHardeningEntrypoints } from "../../cron/owner-hardening-runtime.test-support.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
 import { triageTestRuntimeEntrypoints } from "../../infra/triage-runtime.test-support.js";
-import {
-  nativeFreeBsdRoot,
-  withFreeBsdRootFixture,
-} from "../../infra/update-freebsd-root-ownership.test-support.js";
+import { nativeFreeBsd, withFreeBsdFixture } from "../../infra/update-freebsd.test-support.js";
 import { getUpdateRun, type createUpdateRun } from "../../infra/update-run-ledger.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { updateExecutorNativeEntrypoints } from "./update-command-executor-native-runtime.test-support.js";
@@ -41,23 +38,25 @@ it.skipIf(process.platform === "win32").each([
   { signal: "SIGINT", mode: "missing" },
   { signal: "SIGINT", mode: "completed" },
   { signal: "SIGINT", mode: "no-owner" },
+  { signal: "SIGINT", mode: "state-refusal-drain" },
+  { signal: "SIGINT", mode: "preview-refusal-drain" },
 ] as const)(
   "settles only the local pre-activation diagnostic under its real executor: $signal/$mode",
   ({ signal, mode }) =>
-    nativeFreeBsdRoot
-      ? withFreeBsdRootFixture(({ home }) => assertOwnedSignal(home, signal, mode))
+    nativeFreeBsd
+      ? withFreeBsdFixture(({ home }) => assertOwnedSignal(home, signal, mode))
       : assertOwnedSignal(dirs.make("update-owned-signal-"), signal, mode),
   60000,
 );
 
-it.skipIf(!nativeFreeBsdRoot).each([
+it.skipIf(!nativeFreeBsd).each([
   { signal: "SIGINT", mode: "root-pending" },
   { signal: "SIGTERM", mode: "root-pending" },
   { signal: "SIGINT", mode: "root-rejected" },
   { signal: "SIGTERM", mode: "root-rejected" },
 ] as const)(
   "preserves pending history after native ownership refusal: $signal/$mode",
-  ({ signal, mode }) => withFreeBsdRootFixture(({ home }) => assertOwnedSignal(home, signal, mode)),
+  ({ signal, mode }) => withFreeBsdFixture(({ home }) => assertOwnedSignal(home, signal, mode)),
   60000,
 );
 
@@ -71,20 +70,39 @@ async function assertOwnedSignal(
     script,
     `
     import fs from 'node:fs';
+    import assert from 'node:assert/strict';
+    import { createHash } from 'node:crypto';
+    import { once } from 'node:events';
     import { createUpdateRun, finishUpdateRun, getUpdateRun, recordUpdateRunPhase } from ${JSON.stringify(resolveRuntimeWorkerUrl(triageTestRuntimeEntrypoints.updateRunLedger).href)};
     import { createRetainedUpdateRecovery } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.retainedRecovery).href)};
     import { closeOpenClawStateDatabaseForTest } from ${JSON.stringify(resolveRuntimeWorkerUrl(cronOwnerHardeningEntrypoints.stateDatabase).href)};
-    import { admitUpdateCommandRun, createUpdateRunProgress, withUpdatePreviewSignals } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.commandRun).href)};
+    import { admitUpdateCommandRun, createUpdateRunProgress, completeUpdateCommandRun, withUpdatePreviewSignals } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.commandRun).href)};
     import { withUpdateCommandExecutor } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.executor).href)};
+    import { registerSignalExitBarrier } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.signalExitBarrier).href)};
+    import { createFreeBsdUpdateWriteAdmission } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.freebsdWriteAdmission).href)};
+    import { writeControlPlaneUpdateRestartSentinelBestEffort } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.commandResult).href)};
+    import { withUpdateCommandTerminalResult, deferUpdateCommandTerminalResult } from ${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.commandTerminal).href)};
     const root = ${JSON.stringify(root)};
     const mode = ${JSON.stringify(mode)};
-    const opts = { restart: false };
+    const controlled = mode === 'state-refusal-drain' || mode === 'preview-refusal-drain';
+    const opts = { restart: false, dryRun: mode === 'preview-refusal-drain' };
     if (mode === 'inherited') process.env.OPENCLAW_UPDATE_RUN_ID = createUpdateRun({trigger:'cli'}).runId;
     const run = await admitUpdateCommandRun({opts, root});
+    if (controlled && !run.freebsdWriteAdmission) {
+      // Exercise only the optional diagnostic latch on this host. Native lease
+      // and filesystem owners keep their actual platform implementations.
+      const descriptor = Object.getOwnPropertyDescriptor(process, 'platform');
+      try {
+        Object.defineProperty(process, 'platform', {value:'freebsd'});
+        run.freebsdWriteAdmission = createFreeBsdUpdateWriteAdmission();
+      } finally { Object.defineProperty(process, 'platform', descriptor); }
+      await run.freebsdWriteAdmission.revalidate(() => {});
+    }
+
     await withUpdatePreviewSignals({...opts, run}, async () => {
       const sibling = createUpdateRun({trigger:'cli'});
       const hold = async () => {
-        recordUpdateRunPhase(run.runId, 'validating');
+        if (mode !== 'preview-refusal-drain') recordUpdateRunPhase(run.runId, 'validating');
         if (mode === 'handoff') process.env.OPENCLAW_UPDATE_RUN_HANDOFF = '1';
         if (mode === 'activating') recordUpdateRunPhase(run.runId, 'activating');
         if (mode === 'completed') finishUpdateRun(run.runId, {status:'skipped',reason:'already-current'});
@@ -107,32 +125,75 @@ async function assertOwnedSignal(
           fs.renameSync(root + '/state/openclaw.sqlite',root + '/state/.openclaw-restore-00000000-0000-4000-8000-000000000001-0/displaced');
         }
         if (mode === 'root-pending') {
-          if (!run.freebsdRootAdmission) throw new Error('native admission missing');
+          if (!run.freebsdWriteAdmission) throw new Error('native admission missing');
           const entered = Promise.withResolvers();
-          const original = fs.promises.lstat;
-          // Pause the next existing filesystem probe only after real initial admission.
-          fs.promises.lstat = (...args) => {
-            fs.promises.lstat = original;
+          void run.freebsdWriteAdmission.revalidate(run.executorFence.assertCurrent, async () => {
             entered.resolve();
-            return new Promise(() => {});
-          };
-          void run.freebsdRootAdmission.revalidate({roots:[root],env:run.env},run.executorFence.assertCurrent).catch(() => {});
+            await new Promise(() => {});
+          }).catch(() => {});
           await entered.promise;
-          if (run.freebsdRootAdmission.canWrite) throw new Error('pending inspection admitted writes');
+          if (run.freebsdWriteAdmission.canWrite) throw new Error('pending admission allowed writes');
         }
         if (mode === 'root-rejected') {
-          if (!run.freebsdRootAdmission) throw new Error('native admission missing');
-          fs.chmodSync(root,0o777);
-          let rejected = false;
-          try {
-            await run.freebsdRootAdmission.revalidate({roots:[root],env:run.env},run.executorFence.assertCurrent);
-          } catch (error) {
-            if (error.reason !== 'freebsd-update-ownership') throw error;
-            rejected = true;
-          } finally {
-            fs.chmodSync(root,0o700);
-          }
-          if (!rejected || run.freebsdRootAdmission.canWrite) throw new Error('failed inspection admitted writes');
+          if (!run.freebsdWriteAdmission) throw new Error('native admission missing');
+          const failure = new Error('fixture authority refused');
+          run.freebsdWriteAdmission.revoke(failure);
+          if (run.freebsdWriteAdmission.canWrite) throw new Error('revoked admission allowed writes');
+        }
+        if (controlled) {
+          const admission = run.freebsdWriteAdmission;
+          const refused = Promise.withResolvers();
+          const originalRevoke = admission.revoke;
+          admission.revoke = (error) => {
+            const first = originalRevoke(error);
+            refused.resolve(first);
+            return first;
+          };
+          const progress = createUpdateRunProgress(run, {});
+          closeOpenClawStateDatabaseForTest();
+          const pathname = root + '/state/openclaw.sqlite';
+          const displaced = pathname + '.displaced';
+          const replacement = pathname + '.replacement';
+          fs.renameSync(pathname, displaced);
+          fs.copyFileSync(displaced, pathname);
+          const hash = (file) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+          const selectedBefore = hash(pathname);
+          const originalBefore = hash(displaced);
+          const marker = root + '/state/.openclaw-restore-signal-fixture';
+          if (mode === 'preview-refusal-drain') fs.mkdirSync(marker);
+          registerSignalExitBarrier(async () => {
+            // Mutable signal entry follows its synchronous guard even when latching regresses.
+            const first = mode === 'preview-refusal-drain' ? await refused.promise : admission.failure;
+            const release = once(process,'message');
+            process.send({kind:'barrier-entered',canWrite:admission.canWrite,refused:first instanceof Error});
+            try {
+            assert.equal(admission.canWrite, false);
+            assert.equal(admission.failure, first);
+            if (mode === 'preview-refusal-drain') fs.rmdirSync(marker);
+            fs.renameSync(pathname, replacement);
+            fs.renameSync(displaced, pathname);
+            progress.onHeartbeat();
+            progress.onRollbackOutcome({status:'failed',reason:'late callback'});
+            progress.onStepStart({name:'late step',command:'fixture',index:0,total:1});
+            progress.onStepComplete({name:'late step',command:'fixture',durationMs:1,exitCode:0,output:''});
+            progress.flushLedgerWrites();
+            assert.equal(completeUpdateCommandRun({status:'ok',mode:'npm',steps:[],durationMs:1},run).status,'error');
+            await assert.rejects(writeControlPlaneUpdateRestartSentinelBestEffort({
+              meta:{runId:run.runId,handoffId:'signal-fixture'},result:{status:'ok',mode:'npm',steps:[],durationMs:1},jsonMode:true,env:run.env,run,
+            }), error => error === first);
+            let published = false;
+            await assert.rejects(withUpdateCommandTerminalResult(async (register) => {
+              register(run);
+              assert.equal(deferUpdateCommandTerminalResult(run, () => { published = true; }), true);
+            }), {name:'UpdateCommandPendingRecoveryFailure'});
+            assert.equal(published,false);
+            assert.equal(admission.revoke(new Error('later refusal')), first);
+            assert.equal(admission.canWrite,false);
+            assert.equal(hash(pathname),originalBefore);
+            assert.equal(hash(replacement),selectedBefore);
+            process.send({kind:'refusal-drain',message:first.message,canWrite:admission.canWrite,firstStable:admission.failure===first,originalUnchanged:true,selectedUnchanged:true,published});
+            } finally { await release; }
+          });
         }
         process.send({runId:run.runId,expected,sibling});
         await new Promise(() => setInterval(() => {},1000));
@@ -187,9 +248,48 @@ async function assertOwnedSignal(
         throw new Error(`Update process exited before ready: ${stderr}`);
       }),
     ]);
+    const controlled = mode === "state-refusal-drain" || mode === "preview-refusal-drain";
+    const proof = controlled
+      ? Promise.race([
+          new Promise<{ entry: unknown; receipt: Promise<unknown[]> }>((resolve) => {
+            child.once("message", (entry) => {
+              resolve({ entry, receipt: once(child, "message") });
+            });
+          }).then(async ({ entry, receipt }) => {
+            expect(entry).toMatchObject({
+              kind: "barrier-entered",
+              canWrite: false,
+              refused: true,
+            });
+            return (await receipt)[0];
+          }),
+          closed.then(() => {
+            throw new Error(`Signal drain exited before proof: ${stderr}`);
+          }),
+        ])
+      : undefined;
     expect(child.kill(signal)).toBe(true);
+    if (proof) {
+      const receipt = await proof;
+      expect(receipt).toMatchObject({
+        kind: "refusal-drain",
+        canWrite: false,
+        firstStable: true,
+        originalUnchanged: true,
+        selectedUnchanged: true,
+        published: false,
+      });
+      expect(receipt.message).toContain(
+        mode === "state-refusal-drain"
+          ? "canonical state generation changed"
+          : "Interrupted shared-database publication",
+      );
+      expect(child.exitCode).toBeNull();
+      expect(child.connected).toBe(true);
+      child.send("release drain");
+    }
     const [code, exitSignal] = await closed;
-    if (mode === "root-pending" || mode === "root-rejected" || code !== null) {
+    if (controlled || mode === "root-pending" || mode === "root-rejected" || code !== null) {
       expect(code).toBe(signal === "SIGINT" ? 130 : 143);
       expect(exitSignal).toBeNull();
     } else {
@@ -249,6 +349,7 @@ async function assertOwnedSignal(
       }
     }
   } finally {
+    if (child.connected) child.send("release drain", () => {});
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");
     }

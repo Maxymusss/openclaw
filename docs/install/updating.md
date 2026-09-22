@@ -441,33 +441,30 @@ This is a diagnostic observation. It does not establish process or package
 ownership, authorize an update, or enable CLI-managed rc.d service updates.
 Continue to use the installation owner's update procedure above.
 
-## Foreground FreeBSD updates without an rc.d service
+## Foreground FreeBSD updates
 
-Once the installed updater contains this support, a root-owned installation that
-is not managed by pkg can use `openclaw update --no-restart` from its existing
-root shell. Invoke the trusted installed CLI with the same installation prefix,
-state, and configuration. Stop any foreground Gateway through its process owner
-first. This does not elevate an unprivileged account or transfer another
-account's installation or state to root.
+Run `openclaw update` or `openclaw update --dry-run` from the installation's
+owning account with its existing installation prefix, state, and configuration.
+`--no-restart` is optional; it does not grant update or service authority. Stop
+any foreground Gateway through its process owner first. Installations managed
+by pkg must continue to use their package owner's update procedure.
 
-The updater performs fresh native discovery under its existing update owner.
-Only verified absence of every `openclaw` rc.d definition can use this path;
-disabled, non-executable, custom, or unreadable definitions do not qualify.
-Existing package-ownership checks, Gateway locks, listener checks, and state
-coordinators still apply. A saved diagnostic result cannot authorize an update.
+FreeBSD service discovery is advisory. An absent, present, or unknown rc.d
+result does not grant permission to install, start, stop, or restart a service,
+and does not redirect the selected installation, Node runtime, or state.
+Doctor reports the owning package or foreground procedure. Gateway/state
+coordinators and active agent-database leases still exclude live writers.
 
-The CLI does not install, start, stop, or restart FreeBSD rc.d services. Doctor
-reports the owning package or foreground procedure instead of offering a native
-service installation. Present or unknown rc.d discovery blocks this foreground
-update path. Doctor may continue maintenance of its selected state with an
-unavailable-inspection warning. Gateway/state coordinators and active
-agent-database lease checks still exclude live writers; unavailable inspection
-grants no authority to manage an external service.
+Update processes authenticate their private lease database and live parent,
+receiver, and retained installation before acting. A changed selected state or
+revoked owner stops writes, including late history and failure-report writes.
+These checks apply to the invoking account; the updater does not require root
+or change ordinary installation or home-directory ownership.
 
-Older installed updaters need the
+Older installed updaters with a FreeBSD admission refusal need the
 [manual package-manager procedure](/install/updating/update-methods#alternative-manual-npm-pnpm-or-bun)
-before they can use this path; selecting a newer target alone does not replace
-their admission logic.
+before retrying; selecting a newer target alone does not replace their installed
+admission logic.
 
 ## Stale update history
 

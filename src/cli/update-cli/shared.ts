@@ -20,7 +20,7 @@ import {
   createFreeBsdPkgOwnershipInspection,
   type FreeBsdPkgOwnershipInspection,
 } from "../../infra/update-freebsd-pkg-ownership.js";
-import type { FreeBsdUpdateRootAdmission } from "../../infra/update-freebsd-root-ownership.js";
+import type { FreeBsdUpdateWriteAdmission } from "../../infra/update-freebsd-write-admission.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   createGlobalInstallEnv,
@@ -78,7 +78,7 @@ export type UpdateCommandOptions = {
     /** Live local executor only. A child must independently acquire its owner. */
     executorFence?: UpdateRecoveryFence;
     /** Local filesystem admission, retained through failure and terminal reporting. */
-    freebsdRootAdmission?: FreeBsdUpdateRootAdmission;
+    freebsdWriteAdmission?: FreeBsdUpdateWriteAdmission;
   };
   acceptCapabilities?: boolean;
   json?: boolean;

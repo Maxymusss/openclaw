@@ -392,7 +392,7 @@ export async function continuePostCoreUpdateInFreshProcess(params: {
   let tentativePluginIndex:
     | Awaited<ReturnType<typeof writePersistedInstalledPluginIndexInstallRecordsWithLease>>
     | undefined;
-  const admission = params.opts.run?.freebsdRootAdmission;
+  const admission = params.opts.run?.freebsdWriteAdmission;
   const lifecycleOptions = admission ? { assertCurrent: admission.assertCurrent } : {};
   const restoreTentativePluginIndex = async () => {
     const tentative = tentativePluginIndex;

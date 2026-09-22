@@ -5,11 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as snapshot from "../../infra/sqlite-snapshot-source.js";
-import { admitFreeBsdUpdateRootOwnership } from "../../infra/update-freebsd-root-ownership.js";
-import {
-  nativeFreeBsdRoot,
-  withFreeBsdRootFixture,
-} from "../../infra/update-freebsd-root-ownership.test-support.js";
+import { createFreeBsdUpdateWriteAdmission } from "../../infra/update-freebsd-write-admission.js";
+import { nativeFreeBsd, withFreeBsdFixture } from "../../infra/update-freebsd.test-support.js";
 import { normalizeControlPlaneUpdateResult } from "../../infra/update-restart-sentinel-payload.js";
 import { createRetainedCheckpointFixture } from "../../infra/update-retained-checkpoint.test-support.js";
 import {
@@ -315,10 +312,10 @@ describe("owned completed update publication", () => {
     ).rejects.toBeInstanceOf(UpdateCommandPendingRecoveryFailure);
   });
 
-  it.skipIf(!nativeFreeBsdRoot)(
+  it.skipIf(!nativeFreeBsd)(
     "refuses captured success while FreeBSD admission is pending and after it is revoked",
     async () => {
-      await withFreeBsdRootFixture(async ({ root: installedRoot, env }) => {
+      await withFreeBsdFixture(async ({ root: installedRoot, env }) => {
         root = installedRoot;
         for (const name of ["OPENCLAW_HOME", "OPENCLAW_PROFILE", "OPENCLAW_SUPERVISOR_MODE"]) {
           vi.stubEnv(name, undefined);
@@ -326,11 +323,11 @@ describe("owned completed update publication", () => {
         for (const [key, value] of Object.entries(env)) {
           vi.stubEnv(key, value);
         }
-        const input = { roots: [root], env };
-        const admission = await admitFreeBsdUpdateRootOwnership(input);
+        const admission = createFreeBsdUpdateWriteAdmission();
+        await admission?.revalidate(() => {});
         expect(admission).toBeDefined();
         const f = fixture();
-        f.params.opts.run.freebsdRootAdmission = admission;
+        f.params.opts.run.freebsdWriteAdmission = admission;
         const captured = await captureUpdateCommandTerminalRecord(
           f.params,
           f.result,
@@ -369,26 +366,23 @@ describe("owned completed update publication", () => {
         };
         const entered = createDeferred();
         const resume = createDeferred();
-        const nativeProbe = exec.runCommandBuffered;
-        vi.spyOn(exec, "runCommandBuffered").mockImplementationOnce(async (...args) => {
-          entered.resolve();
-          await resume.promise;
-          return await nativeProbe(...args);
-        });
-        const settled = admission!.revalidate(input, f.assertCurrent).then(
-          () => undefined,
-          (error: unknown) => error,
-        );
+        const settled = admission!
+          .revalidate(f.assertCurrent, async () => {
+            entered.resolve();
+            await resume.promise;
+          })
+          .then(
+            () => undefined,
+            (error: unknown) => error,
+          );
         try {
           await entered.promise;
           expect(admission!.failure).toBeUndefined();
           f.release();
           await refused();
-          fs.chmodSync(root, 0o777);
         } finally {
           resume.resolve();
           await settled;
-          fs.chmodSync(root, 0o700);
         }
         expect(await settled).toMatchObject({ reason: "freebsd-update-ownership" });
         expect(admission!.canWrite).toBe(false);

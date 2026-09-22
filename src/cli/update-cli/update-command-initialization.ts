@@ -24,7 +24,7 @@ export type InitializedUpdate = {
   env: NodeJS.ProcessEnv;
   runId: string;
   executor: UpdateCommandExecutor;
-  freebsdRootFence?: UpdateRecoveryFence;
+  freebsdPreflightFence?: UpdateRecoveryFence;
   registerRun: (run: NonNullable<UpdateCommandOptions["run"]>) => Promise<void>;
   target: NonNullable<Awaited<ReturnType<typeof resolveUpdateCommandTarget>>>;
   databasePath: string;

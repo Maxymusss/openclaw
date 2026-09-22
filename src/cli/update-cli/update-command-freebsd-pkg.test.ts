@@ -9,7 +9,6 @@ import {
 import { writePackageRoot } from "../../infra/package-update-steps.test-support.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { pkgQueryResult } from "../../infra/update-freebsd-pkg-ownership.test-support.js";
-import * as rootOwnership from "../../infra/update-freebsd-root-ownership.js";
 import * as updateRunner from "../../infra/update-runner-git.js";
 import * as exec from "../../process/exec.js";
 import { withTestDir } from "../../test-helpers/temp-dir.js";
@@ -17,10 +16,7 @@ import { withEnvAsync } from "../../test-utils/env.js";
 import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import * as shared from "./shared.js";
 import { resolveUpdateCommandAdmissionEnv } from "./update-command-admission-env.js";
-import {
-  assertFreeBsdUpdateCommandMode,
-  assertFreeBsdUpdateCommandRunOrigin,
-} from "./update-command-freebsd-policy.js";
+import { assertFreeBsdUpdateCommandRunOrigin } from "./update-command-freebsd-policy.js";
 import { updateGitInstall } from "./update-command-git.js";
 import { prepareUpdateCommand } from "./update-command-run.js";
 import { resolveManagedServicePackageUpdatePlan } from "./update-command-service-plan.js";
@@ -50,15 +46,6 @@ async function withPackageRoots(
       },
       async () => {
         mockSystemAccountHome();
-        // These fixtures exercise pkg ownership, not native root/ACL admission.
-        // Keep its prerequisite explicit without pretending temporary user paths qualify.
-        vi.spyOn(rootOwnership, "assertFreeBsdForegroundUpdateAdmission").mockResolvedValue();
-        vi.spyOn(rootOwnership, "admitFreeBsdUpdateRootOwnership").mockResolvedValue({
-          canWrite: true,
-          failure: undefined,
-          assertCurrent() {},
-          async revalidate() {},
-        });
         await withMockedPlatform("freebsd", () => run(base, requested, managed));
       },
     );
@@ -326,10 +313,9 @@ describe("FreeBSD pkg update admission", () => {
 
 it("keeps Linux request modes and inherited-run selection outside FreeBSD policy", () => {
   withMockedPlatform("linux", () => {
-    for (const restart of [undefined, true, false]) {
+    {
       const env = { OPENCLAW_UPDATE_RUN_ID: "unresolved", OPENCLAW_UPDATE_RUN_HANDOFF: "1" };
-      expect(() => assertFreeBsdUpdateCommandMode({ restart }, env)).not.toThrow();
-      expect(() => assertFreeBsdUpdateCommandRunOrigin({ restart }, env)).not.toThrow();
+      expect(() => assertFreeBsdUpdateCommandRunOrigin({}, env)).not.toThrow();
     }
   });
 });

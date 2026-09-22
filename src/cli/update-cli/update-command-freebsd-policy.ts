@@ -3,25 +3,9 @@ import { POST_CORE_UPDATE_ENV } from "../../infra/update-post-core-context.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import { UpdatePreMutationError, type UpdateCommandOptions } from "./shared.js";
 
-/** Root custody does not authorize automatic or restart-bearing update requests. */
-export function assertFreeBsdUpdateCommandMode(
-  opts: Pick<UpdateCommandOptions, "restart">,
-  env: NodeJS.ProcessEnv = process.env,
-): void {
-  if (
-    process.platform === "freebsd" &&
-    (opts.restart !== false || env.OPENCLAW_UPDATE_RUN_HANDOFF === "1")
-  ) {
-    throw new UpdatePreMutationError(
-      "freebsd-update-mode",
-      "FreeBSD foreground updates require an explicit manual `openclaw update --no-restart` invocation without a managed-service handoff.",
-    );
-  }
-}
-
-/** Call only after native custody admits this exact environment for read-only inspection. */
+/** A continuation names its same CLI run; service discovery grants no authority. */
 export function assertFreeBsdUpdateCommandRunOrigin(
-  opts: Pick<UpdateCommandOptions, "restart"> & {
+  opts: {
     run?: Pick<NonNullable<UpdateCommandOptions["run"]>, "runId">;
   },
   env: NodeJS.ProcessEnv,
@@ -30,7 +14,12 @@ export function assertFreeBsdUpdateCommandRunOrigin(
   if (process.platform !== "freebsd") {
     return;
   }
-  assertFreeBsdUpdateCommandMode(opts, env);
+  if (env.OPENCLAW_UPDATE_RUN_HANDOFF === "1") {
+    throw new UpdatePreMutationError(
+      "freebsd-update-mode",
+      "FreeBSD service control is unavailable; invoke the update from its owning CLI without a managed-service handoff.",
+    );
+  }
   const runIds = [env[UPDATE_RUN_ID_ENV]?.trim(), opts.run?.runId].filter((id): id is string =>
     Boolean(id),
   );
@@ -44,7 +33,7 @@ export function assertFreeBsdUpdateCommandRunOrigin(
   ) {
     throw new UpdatePreMutationError(
       "freebsd-update-mode",
-      "FreeBSD foreground continuation requires the same existing manual CLI update run. Start `openclaw update --no-restart` without inherited update-run or handoff selectors.",
+      "FreeBSD foreground continuation requires the same existing manual CLI update run. Start `openclaw update` without inherited update-run or handoff selectors.",
     );
   }
 }

@@ -6,10 +6,7 @@ import {
   withDelegatedUpdateCommandExecutor,
   withUpdateCommandExecutor,
 } from "../cli/update-cli/update-command-executor.js";
-import {
-  assertFreeBsdUpdateCommandMode,
-  assertFreeBsdUpdateCommandRunOrigin,
-} from "../cli/update-cli/update-command-freebsd-policy.js";
+import { assertFreeBsdUpdateCommandRunOrigin } from "../cli/update-cli/update-command-freebsd-policy.js";
 import type {
   UpdateDoctorInput,
   MigratedUpdateFinalizationInput,
@@ -28,7 +25,6 @@ import { defaultRuntime } from "../runtime.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
-import { resolveOpenClawPackageRootSync } from "./openclaw-root.js";
 import { resolveEnvironmentValue } from "./process-env.js";
 import {
   UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV,
@@ -37,9 +33,10 @@ import {
 } from "./update-doctor-result.js";
 import { resolveUpdateFinalizationTimeoutMs } from "./update-finalization-budget.js";
 import {
-  admitFreeBsdUpdateRootOwnership,
-  type FreeBsdUpdateRootAdmission,
-} from "./update-freebsd-root-ownership.js";
+  createFreeBsdUpdateWriteAdmission,
+  assertUpdateWriteAuthority,
+  type FreeBsdUpdateWriteAdmission,
+} from "./update-freebsd-write-admission.js";
 import { resolveUpdateInstallRoot } from "./update-install-root.js";
 import {
   createManagedUpdateRequesterAuthority,
@@ -97,51 +94,18 @@ async function finalizeMigratedUpdate(): Promise<void> {
       "Full-state checkpoint recovery is deferred; retained state was left unchanged.",
     );
   }
-  if (process.platform === "freebsd") {
-    assertFreeBsdUpdateCommandMode(input.params.opts, input.params.opts.run?.env);
-    // The private JSON's producer type does not validate the received literal.
-    const shouldRestart: unknown = input.params.shouldRestart;
-    if (shouldRestart !== false || !input.params.opts.run?.runId) {
-      throw new UpdatePreMutationError(
-        "freebsd-update-mode",
-        "FreeBSD finalization requires the existing manual CLI update run with restart disabled.",
-      );
-    }
-  }
-  // A serialized parent Run carries no filesystem authority. Inspect the loaded
-  // candidate and selected state before budget inventory or executor admission.
-  const freebsdRootAdmission =
-    process.platform === "freebsd"
-      ? await admitFreeBsdUpdateRootOwnership({
-          roots: [
-            input.params.root,
-            input.params.result.root ?? input.params.root,
-            resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url }) ?? input.params.root,
-          ],
-          env: input.params.opts.run?.env,
-          timeoutMs: input.params.updateStepTimeoutMs,
-        })
-      : undefined;
-  if (freebsdRootAdmission && input.params.ownedManagedUpdateEnv) {
-    // The child is not an executor yet; both transported selector sets must pass
-    // before any selected-state inventory or requester policy can be read.
-    await freebsdRootAdmission.revalidate(
-      {
-        roots: [input.params.root, input.params.result.root ?? input.params.root],
-        env: input.params.ownedManagedUpdateEnv,
-        timeoutMs: input.params.updateStepTimeoutMs,
-      },
-      () => {},
+  if (process.platform === "freebsd" && !input.params.opts.run?.runId) {
+    throw new UpdatePreMutationError(
+      "freebsd-update-mode",
+      "FreeBSD finalization requires its existing update run.",
     );
   }
-  if (freebsdRootAdmission) {
-    assertFreeBsdUpdateCommandRunOrigin(input.params.opts, input.params.opts.run!.env);
-  }
+  const freebsdWriteAdmission = createFreeBsdUpdateWriteAdmission();
   const omittedOperatorTimeout = isOmittedUpdateTimeout(input.params.opts.timeout, input);
   if (omittedOperatorTimeout) {
     input.params.opts.timeout = undefined;
   }
-  const activationTimeoutMs =
+  const resolveBudget = async () =>
     input.params.opts.run?.activationTimeoutMs ??
     (omittedOperatorTimeout
       ? undefined
@@ -150,6 +114,18 @@ async function finalizeMigratedUpdate(): Promise<void> {
           databases: input.params.schemaVersions,
           pluginCount: Object.keys(input.params.preUpdatePluginInstallRecords).length,
         }));
+  // FreeBSD must authenticate the private lease and live parent/receiver before
+  // selected-state inventory. The callback is evaluated inside the native owner.
+  const activationTimeoutMs = freebsdWriteAdmission
+    ? async (fence: UpdateRecoveryFence) => {
+        let budget: number | undefined;
+        await freebsdWriteAdmission.revalidate(fence.assertCurrent, async () => {
+          assertFreeBsdUpdateCommandRunOrigin(input.params.opts, input.params.opts.run!.env);
+          budget = await resolveBudget();
+        });
+        return budget;
+      }
+    : await resolveBudget();
   let publishedRecord: UpdateRunRecord | undefined;
   const finalized = await withUpdateCommandTerminalResult(
     async (registerRun) => {
@@ -158,8 +134,8 @@ async function finalizeMigratedUpdate(): Promise<void> {
           input.executor,
           input.params.opts.run?.runId ?? "",
           input.params.result.root ?? input.params.root,
-          async (fence) => finalizeInput(input, fence, registerRun, freebsdRootAdmission),
-          activationTimeoutMs === undefined ? undefined : { activationTimeoutMs },
+          async (fence) => finalizeInput(input, fence, registerRun, freebsdWriteAdmission),
+          { activationTimeoutMs, onAuthorityFailure: freebsdWriteAdmission?.revoke },
         );
       }
       // The shipped v2026.9.3 producer overrides these selectors for worker
@@ -205,9 +181,12 @@ async function finalizeMigratedUpdate(): Promise<void> {
           const fence = await executor.enter(input.params.result.root ?? input.params.root, {
             activationTimeoutMs,
           });
-          return await finalizeInput(input, fence, registerRun, freebsdRootAdmission);
+          return await finalizeInput(input, fence, registerRun, freebsdWriteAdmission);
         },
-        legacyManagedParent ? { legacyManagedParent } : undefined,
+        {
+          ...(legacyManagedParent ? { legacyManagedParent } : {}),
+          onAuthorityFailure: freebsdWriteAdmission?.revoke,
+        },
       );
     },
     {
@@ -217,7 +196,7 @@ async function finalizeMigratedUpdate(): Promise<void> {
       },
     },
   );
-  freebsdRootAdmission?.assertCurrent();
+  freebsdWriteAdmission?.assertCurrent();
   const terminal = publishedRecord ?? getUpdateRun(finalized.run.runId, { env: finalized.run.env });
   const gatewayRestartPending =
     finalized.run.completionOwner === "gateway-restart" &&
@@ -250,15 +229,7 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
   if (!resultPath || !input.executor) {
     throw new Error("Update Doctor requires its delegated executor and result path.");
   }
-  const freebsdRootAdmission =
-    process.platform === "freebsd"
-      ? await admitFreeBsdUpdateRootOwnership({
-          roots: [
-            input.root,
-            resolveOpenClawPackageRootSync({ moduleUrl: import.meta.url }) ?? input.root,
-          ],
-        })
-      : undefined;
+  const freebsdWriteAdmission = createFreeBsdUpdateWriteAdmission();
   await withDelegatedUpdateCommandExecutor(
     input.executor,
     input.runId,
@@ -272,16 +243,17 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
         : input.requester
           ? await createManagedUpdateRequesterAuthority(input.requester)
           : undefined;
-      if (freebsdRootAdmission) {
-        await freebsdRootAdmission.revalidate({ roots: [input.root] }, fence.assertCurrent);
+      if (freebsdWriteAdmission) {
+        await freebsdWriteAdmission.revalidate(fence.assertCurrent);
       }
       const assertCurrent = () => {
         try {
-          freebsdRootAdmission?.assertCurrent();
-          fence.assertCurrent();
-          if (requester?.isCurrent() === false) {
-            throw new UpdateRequesterRevokedError();
-          }
+          assertUpdateWriteAuthority(freebsdWriteAdmission, () => {
+            fence.assertCurrent();
+            if (requester?.isCurrent() === false) {
+              throw new UpdateRequesterRevokedError();
+            }
+          });
         } catch (error) {
           recordUpdateDoctorConfigWriteRefusal({
             reason:
@@ -298,7 +270,8 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
         if (!(error instanceof UpdateRequesterRevokedError)) {
           throw error;
         }
-        freebsdRootAdmission?.assertCurrent();
+        // The private refusal response is not a write to selected config/history.
+        // Its transport still belongs to the live native parent and receiver.
         fence.assertCurrent();
         await writeUpdatePostInstallDoctorResult({
           resultPath,
@@ -336,6 +309,7 @@ async function runDelegatedDoctor(input: UpdateDoctorInput): Promise<void> {
         },
       );
     },
+    { onAuthorityFailure: freebsdWriteAdmission?.revoke },
   );
 }
 
@@ -343,13 +317,13 @@ async function finalizeInput(
   input: MigratedUpdateFinalizationInput,
   executorFence: UpdateRecoveryFence,
   registerRun: (run: NonNullable<UpdateCommandOptions["run"]>) => void,
-  freebsdRootAdmission?: FreeBsdUpdateRootAdmission,
+  freebsdWriteAdmission?: FreeBsdUpdateWriteAdmission,
 ) {
   const transferredRun = input.params.opts.run;
   if (
     !transferredRun ||
     "executorFence" in transferredRun ||
-    "freebsdRootAdmission" in transferredRun ||
+    "freebsdWriteAdmission" in transferredRun ||
     (!input.recoveryHandoff &&
       input.params.rollbackBlockedReason !== "state-migrated-no-rollback" &&
       input.params.rollbackBlockedReason !== "rollback-state-unverified")
@@ -358,7 +332,7 @@ async function finalizeInput(
   }
   const { requesterAuthority: descriptor, ...runIdentity } = transferredRun;
   executorFence?.assertCurrent();
-  if (!freebsdRootAdmission) {
+  if (!freebsdWriteAdmission) {
     adoptUpdateRun(runIdentity.runId, { env: runIdentity.env });
   }
   // Parent closures cannot cross JSON. The fresh runtime retains identity checks
@@ -366,7 +340,7 @@ async function finalizeInput(
   const run: NonNullable<UpdateCommandOptions["run"]> = {
     ...runIdentity,
     ...(executorFence ? { executorFence } : {}),
-    ...(freebsdRootAdmission ? { freebsdRootAdmission } : {}),
+    ...(freebsdWriteAdmission ? { freebsdWriteAdmission } : {}),
     ...(descriptor
       ? {
           requesterAuthority: descriptor.requester.authorizationSource?.startsWith("profile:")
@@ -379,28 +353,23 @@ async function finalizeInput(
         }
       : {}),
   };
-  if (freebsdRootAdmission) {
-    const inspection = {
-      roots: [input.params.root, input.params.result.root ?? input.params.root],
-      timeoutMs: input.params.updateStepTimeoutMs,
-    };
-    await freebsdRootAdmission.revalidate(
-      { ...inspection, env: run.env },
-      executorFence.assertCurrent,
-    );
-    if (input.params.ownedManagedUpdateEnv) {
-      await freebsdRootAdmission.revalidate(
-        { ...inspection, env: input.params.ownedManagedUpdateEnv },
-        executorFence.assertCurrent,
-      );
-    }
+  if (freebsdWriteAdmission) {
+    await freebsdWriteAdmission.revalidate(() => {
+      executorFence.assertCurrent();
+      if (run.requesterAuthority?.isCurrent() === false) {
+        throw new UpdateRequesterRevokedError();
+      }
+    });
   }
-  const assertCurrent = () => {
-    freebsdRootAdmission?.assertCurrent();
-    executorFence.assertCurrent();
-  };
+  const assertCurrent = () =>
+    assertUpdateWriteAuthority(freebsdWriteAdmission, () => {
+      executorFence.assertCurrent();
+      if (run.requesterAuthority?.isCurrent() === false) {
+        throw new UpdateRequesterRevokedError();
+      }
+    });
   assertCurrent();
-  if (freebsdRootAdmission) {
+  if (freebsdWriteAdmission) {
     adoptUpdateRun(runIdentity.runId, { env: runIdentity.env });
   }
   registerRun(run);

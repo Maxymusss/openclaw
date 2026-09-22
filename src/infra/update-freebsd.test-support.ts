@@ -1,25 +1,18 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 
-export const nativeFreeBsdRoot =
-  process.platform === "freebsd" && process.getuid?.() === 0 && process.geteuid?.() === 0;
+export const nativeFreeBsd = process.platform === "freebsd";
 
-export const freeBsdRootOwnershipEntrypoint = {
-  currentModuleUrl: import.meta.url,
-  sourceWorkerName: "update-freebsd-root-ownership",
-  distWorkerPath: "infra/update-freebsd-root-ownership.js",
-} as const;
-
-export async function withFreeBsdRootFixture(
+export async function withFreeBsdFixture(
   operation: (fixture: { home: string; root: string; env: NodeJS.ProcessEnv }) => Promise<void>,
-  parent = "/root",
+  parent = os.tmpdir(),
 ): Promise<void> {
-  if (!nativeFreeBsdRoot) {
-    throw new Error("This fixture requires native FreeBSD with real and effective root identity.");
+  if (!nativeFreeBsd) {
+    throw new Error("This fixture requires native FreeBSD.");
   }
-  // /tmp's writable ancestor must be rejected by the actual admission contract.
-  // Only this private, fixture-owned subtree is created or removed.
+  // The actual invoking account owns only this private fixture subtree.
   const home = await fs.mkdtemp(path.join(parent, "openclaw-update-admission-"));
   try {
     const root = path.join(home, "installation");

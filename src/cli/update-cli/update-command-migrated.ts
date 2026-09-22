@@ -224,7 +224,7 @@ export async function continueMigratedUpdateInFreshProcess(
     const {
       requesterAuthority,
       executorFence,
-      freebsdRootAdmission: _admission,
+      freebsdWriteAdmission: _admission,
       ...runIdentity
     } = run;
     const input: MigratedUpdateFinalizationInput = {

@@ -6,7 +6,7 @@ export async function readFreeBsdGatewayServiceDiscovery({ timeoutMs }: GatewayS
   return await discoverFreeBsdService({ timeoutMs, registerExitCleanup: onExit });
 }
 
-/** Only fresh native absence permits the existing foreground update path. */
+/** Absence inspection reports service discovery only; it grants no mutation authority. */
 export async function isFreeBsdGatewayServiceAbsent(args: GatewayServiceEnvArgs) {
   return (await readFreeBsdGatewayServiceDiscovery(args)).status === "absent";
 }

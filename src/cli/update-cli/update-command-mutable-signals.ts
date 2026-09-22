@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { assertUpdateWriteAuthority } from "../../infra/update-freebsd-write-admission.js";
 import {
   finishInterruptedUpdateBeforeActivation,
   getUpdateRun,
@@ -42,17 +43,17 @@ export async function withMutableUpdateSignals<T>(
   admission.active = true;
   const { env } = admission;
   const pathname = resolveOpenClawStateSqlitePath(env);
-  const assertCurrent = () => {
-    run.freebsdRootAdmission?.assertCurrent();
-    if (!run.executorFence) {
-      throw new Error("Interrupted update has no live installation owner.");
-    }
-    run.executorFence.assertCurrent();
-    const file = fs.lstatSync(pathname);
-    if (!file.isFile() || file.dev !== admission.dev || file.ino !== admission.ino) {
-      throw new Error("Interrupted update's canonical state generation changed.");
-    }
-  };
+  const assertCurrent = () =>
+    assertUpdateWriteAuthority(run.freebsdWriteAdmission, () => {
+      if (!run.executorFence) {
+        throw new Error("Interrupted update has no live installation owner.");
+      }
+      run.executorFence.assertCurrent();
+      const file = fs.lstatSync(pathname);
+      if (!file.isFile() || file.dev !== admission.dev || file.ino !== admission.ino) {
+        throw new Error("Interrupted update's canonical state generation changed.");
+      }
+    });
   const settle = () => {
     if (
       admissions.get(run) !== admission ||

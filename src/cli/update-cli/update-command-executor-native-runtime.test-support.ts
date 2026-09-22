@@ -2,6 +2,26 @@
 const currentModuleUrl = import.meta.url;
 
 export const updateExecutorNativeEntrypoints = {
+  activation: {
+    currentModuleUrl,
+    sourceWorkerName: "update-command-activation",
+    distWorkerPath: "cli/update-cli/update-command-activation.js",
+  },
+  freebsdWriteAdmission: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/update-freebsd-write-admission",
+    distWorkerPath: "infra/update-freebsd-write-admission.js",
+  },
+  commandResult: {
+    currentModuleUrl,
+    sourceWorkerName: "update-command-result",
+    distWorkerPath: "cli/update-cli/update-command-result.js",
+  },
+  commandTerminal: {
+    currentModuleUrl,
+    sourceWorkerName: "update-command-terminal",
+    distWorkerPath: "cli/update-cli/update-command-terminal.js",
+  },
   signalExitBarrier: {
     currentModuleUrl,
     sourceWorkerName: "../signal-exit-barrier",

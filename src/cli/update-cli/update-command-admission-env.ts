@@ -7,17 +7,9 @@ import {
   createFreeBsdPkgOwnershipInspection,
   type FreeBsdPkgOwnershipInspection,
 } from "../../infra/update-freebsd-pkg-ownership.js";
-import {
-  assertFreeBsdForegroundUpdateAdmission,
-  type FreeBsdUpdateRootAdmission,
-} from "../../infra/update-freebsd-root-ownership.js";
-import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import { UPDATE_RUNNER_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
 import type { UpdateCommandOptions } from "./shared.js";
-import {
-  assertFreeBsdUpdateCommandMode,
-  assertFreeBsdUpdateCommandRunOrigin,
-} from "./update-command-freebsd-policy.js";
+import { assertFreeBsdUpdateCommandRunOrigin } from "./update-command-freebsd-policy.js";
 import { resolveForegroundUpdateAdmission } from "./update-command-handoff.js";
 import {
   resolveOwnedManagedUpdateEnv,
@@ -47,27 +39,8 @@ export async function resolveUpdateCommandAdmissionEnv(params: {
   root: string;
   invocationCwd?: string;
   pkgOwnership?: FreeBsdPkgOwnershipInspection;
-  freebsdRootAdmission?: FreeBsdUpdateRootAdmission;
-  freebsdRootFence?: UpdateRecoveryFence;
   expectedForeground?: true;
 }): Promise<NodeJS.ProcessEnv> {
-  assertFreeBsdUpdateCommandMode(params.opts);
-  const inspectRootOwnership = async (env?: NodeJS.ProcessEnv) => {
-    const admission = params.freebsdRootAdmission ?? params.opts.run?.freebsdRootAdmission;
-    if (admission) {
-      // Before initialization there is no executor. A retained initialization or
-      // run owner must be idle across every native inspection await.
-      await admission.revalidate(
-        { roots: [params.root], env },
-        params.freebsdRootFence?.assertCurrent ??
-          params.opts.run?.executorFence?.assertCurrent ??
-          (() => {}),
-      );
-    } else {
-      await assertFreeBsdForegroundUpdateAdmission({ roots: [params.root], env });
-    }
-  };
-  await inspectRootOwnership();
   const pkgOwnership =
     params.pkgOwnership ?? createFreeBsdPkgOwnershipInspection(UPDATE_RUNNER_TIMEOUT_MS);
   await pkgOwnership.assertUnowned(params.root);
@@ -106,7 +79,6 @@ export async function resolveUpdateCommandAdmissionEnv(params: {
       }
     }
   }
-  await inspectRootOwnership(env);
   assertFreeBsdUpdateCommandRunOrigin(params.opts, env);
   return env;
 }

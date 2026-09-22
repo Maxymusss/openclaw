@@ -3,37 +3,22 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFreeBsdGatewayServiceDiscovery } from "../../daemon/freebsd-service.js";
-import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
-import * as updateCheck from "../../infra/update-check.js";
+import * as service from "../../daemon/service.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
-import {
-  nativeFreeBsdRoot,
-  withFreeBsdRootFixture,
-} from "../../infra/update-freebsd-root-ownership.test-support.js";
-import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
-import { getUpdateRun } from "../../infra/update-run-ledger.js";
-import { defaultRuntime, ExitError } from "../../runtime.js";
-import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { nativeFreeBsd, withFreeBsdFixture } from "../../infra/update-freebsd.test-support.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import * as shared from "./shared.js";
-import { withUpdateCommandExecutor } from "./update-command-executor.js";
-import * as packageUpdate from "./update-command-package.js";
-import { failUpdateCommandRun } from "./update-command-result.js";
 import {
+  prepareUpdateCommand,
   admitUpdateCommandRun,
   completeUpdateCommandRun,
-  createUpdateRunProgress,
 } from "./update-command-run.js";
-import * as servicePlan from "./update-command-service-plan.js";
-import * as target from "./update-command-target.js";
-import {
-  deferUpdateCommandTerminalResult,
-  withUpdateCommandTerminalResult,
-} from "./update-command-terminal.js";
-import { withUpdateFailureTriage } from "./update-command-triage.js";
-import { updateCommand } from "./update-command.js";
 
-const disposableGuest = nativeFreeBsdRoot && process.env.OPENCLAW_TEST_FREEBSD_DISPOSABLE === "1";
+const disposableGuest =
+  nativeFreeBsd &&
+  process.getuid?.() === 0 &&
+  process.geteuid?.() === 0 &&
+  process.env.OPENCLAW_TEST_FREEBSD_DISPOSABLE === "1";
 const reasons = {
   present: "freebsd-service-present",
   unknown: "freebsd-service-inspection-unavailable",
@@ -91,166 +76,46 @@ function isolatedEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 
 describe.skipIf(!disposableGuest)(
-  "global FreeBSD service eligibility",
+  "FreeBSD service discovery remains advisory",
   { concurrent: false },
   () => {
-    it.each(["present", "unknown"] as const)(
-      "refuses custom-state preparation and direct admission when rc state is %s",
+    it.each(["absent", "present", "unknown"] as const)(
+      "admits default update and preview without service mutation when rc state is %s",
       async (status) => {
-        await withFreeBsdRootFixture(async ({ root, env }) => {
+        await withFreeBsdFixture(async ({ root, env }) => {
           await fs.writeFile(
             path.join(root, "package.json"),
             '{"name":"openclaw","version":"1.0.0"}',
           );
           vi.spyOn(shared, "resolveUpdateRoot").mockResolvedValue(root);
-          const installProbe = vi.spyOn(updateCheck, "resolveUpdateInstallKind");
-          const serviceProbe = vi.spyOn(servicePlan, "resolveManagedServicePackageUpdatePlan");
-          const select = vi.spyOn(target, "resolveUpdateCommandTarget");
-          const initialize = vi.spyOn(packageUpdate, "runPackageUpdateDoctor");
-          const stage = vi.spyOn(packageUpdate, "stagePackageInstallUpdate");
-          const error = vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
-          const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
-          await withEnvAsync(isolatedEnv(env), async () => {
-            await withRcDefinition(status, async () => {
-              const exit = await updateCommand({ restart: false, yes: true, json: true }).catch(
-                (failure: unknown) => failure,
-              );
-              expect(exit).toBeInstanceOf(ExitError);
-              expect(exit).toMatchObject({ code: 1 });
-              expect(output).toHaveBeenCalledExactlyOnceWith(
-                expect.objectContaining({ status: "error", reason: reasons[status] }),
-              );
-              expect(error).toHaveBeenCalledWith(
-                expect.stringContaining(
-                  status === "present" ? "existing definition was found" : "unsafe-path-ownership",
-                ),
-              );
-              await expect(
-                admitUpdateCommandRun({ root, opts: { restart: false } }),
-              ).rejects.toMatchObject({ reason: reasons[status] });
-              for (const probe of [installProbe, serviceProbe, select, initialize, stage]) {
-                expect(probe).not.toHaveBeenCalled();
-              }
-              await expect(fs.stat(resolveOpenClawStateSqlitePath(env))).rejects.toMatchObject({
-                code: "ENOENT",
+          const adapter = service.resolveGatewayService();
+          const mutations = ["install", "uninstall", "stop", "restart"] as const;
+          const spies = mutations.map((key) => vi.spyOn(adapter, key));
+          vi.spyOn(service, "resolveGatewayService").mockReturnValue(adapter);
+          const prove = async () => {
+            for (const dryRun of [false, true]) {
+              const opts = { dryRun };
+              const prepared = await prepareUpdateCommand(opts);
+              expect(prepared.shouldRestart).toBe(true);
+              const run = await admitUpdateCommandRun({
+                root,
+                opts,
+                freebsdWriteAdmission: prepared.freebsdWriteAdmission,
               });
-              await expect(fs.stat(env.OPENCLAW_STATE_DIR!)).rejects.toMatchObject({
-                code: "ENOENT",
-              });
-            });
-          });
-        });
-      },
-      60_000,
-    );
-
-    it.each(["present", "unknown"] as const)(
-      "keeps the first %s refusal after an admitted executor loses global absence",
-      async (status) => {
-        await withFreeBsdRootFixture(async ({ home, root, env }) => {
-          await fs.writeFile(
-            path.join(root, "package.json"),
-            '{"name":"openclaw","version":"1.0.0"}',
+              expect(run.env.OPENCLAW_STATE_DIR).toBe(env.OPENCLAW_STATE_DIR);
+              expect(run.freebsdWriteAdmission?.canWrite).toBe(true);
+              expect(
+                completeUpdateCommandRun(
+                  { status: "ok", mode: "npm", steps: [], durationMs: 1 },
+                  run,
+                ).status,
+              ).toBe("ok");
+              for (const spy of spies) expect(spy).not.toHaveBeenCalled();
+            }
+          };
+          await withEnvAsync(isolatedEnv(env), () =>
+            status === "absent" ? prove() : withRcDefinition(status, prove),
           );
-          const control = path.join(home, "executor-control");
-          await fs.mkdir(control, { mode: 0o700 });
-          vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
-          vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
-          await withEnvAsync(isolatedEnv(env), async () => {
-            const run = await admitUpdateCommandRun({ root, opts: { restart: false } });
-            const admission = run.freebsdRootAdmission!;
-            const before = getUpdateRun(run.runId, { env: run.env });
-            expect(admission.canWrite).toBe(true);
-            const publications: string[] = [];
-            const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {
-              publications.push(createManagedHandoffLeaseStore().read(root).kind);
-            });
-            const publish = vi.fn(async () => ({
-              status: "ok" as const,
-              mode: "npm" as const,
-              root,
-              steps: [],
-              durationMs: 1,
-            }));
-            let terminalFailure: unknown;
-            const execute = () =>
-              withUpdateCommandExecutor(run.runId, async (executor) => {
-                run.executorFence = await executor.enter(root);
-                const revalidate = () =>
-                  admission.revalidate({ roots: [root], env }, run.executorFence!.assertCurrent);
-                let firstFailure: unknown;
-                await withRcDefinition(status, async () => {
-                  await expect(revalidate()).rejects.toMatchObject({ reason: reasons[status] });
-                  firstFailure = admission.failure;
-                  expect(firstFailure).toBeInstanceOf(Error);
-                  expect(admission.canWrite).toBe(false);
-                  const progress = createUpdateRunProgress(run, {});
-                  expect(() => {
-                    progress.onHeartbeat?.();
-                    progress.onStepStart?.({
-                      name: "late callback",
-                      command: "fixture",
-                      index: 0,
-                      total: 1,
-                    });
-                    progress.flushLedgerWrites();
-                    failUpdateCommandRun(new Error("later diagnostic"), run);
-                  }).not.toThrow();
-                  expect(
-                    completeUpdateCommandRun(
-                      { status: "ok", mode: "npm", root, steps: [], durationMs: 1 },
-                      run,
-                    ),
-                  ).toMatchObject({ status: "error", reason: reasons[status] });
-                  expect(defaultRuntime.error).toHaveBeenCalledWith(
-                    expect.stringContaining((firstFailure as Error).message),
-                  );
-                  expect(getUpdateRun(run.runId, { env: run.env })).toEqual(before);
-                });
-                // Restored absence cannot revive the rejected run or replace its
-                // first native refusal with the later generic ownership error.
-                await expect(revalidate()).rejects.toBe(firstFailure);
-                expect(admission.failure).toBe(firstFailure);
-              });
-            const exit = await withUpdateFailureTriage(
-              { run, json: true },
-              { env: run.env },
-              async () => {
-                try {
-                  await withUpdateCommandTerminalResult(
-                    async (register) => {
-                      register(run);
-                      expect(deferUpdateCommandTerminalResult(run, publish)).toBe(true);
-                      await execute();
-                    },
-                    { json: true },
-                  );
-                } catch (error) {
-                  terminalFailure = error;
-                  throw error;
-                }
-              },
-            ).catch((error: unknown) => error);
-            expect(exit).toBeInstanceOf(ExitError);
-            expect(exit).toMatchObject({ code: 1 });
-            expect(terminalFailure).toMatchObject({
-              result: { reason: reasons[status], runId: run.runId },
-              detail: expect.stringContaining(admission.failure!.message),
-            });
-            // Reporting must not mask an assertion or fixture cleanup failure
-            // thrown inside the executor after admission was revoked.
-            expect((terminalFailure as Error).cause).toBeUndefined();
-            expect(publish).not.toHaveBeenCalled();
-            expect(publications).toEqual(["absent"]);
-            expect(output).toHaveBeenCalledExactlyOnceWith(
-              expect.objectContaining({
-                status: "error",
-                reason: reasons[status],
-                runId: run.runId,
-              }),
-            );
-            expect(getUpdateRun(run.runId, { env: run.env })).toEqual(before);
-          });
         });
       },
       60_000,

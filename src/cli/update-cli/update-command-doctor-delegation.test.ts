@@ -13,7 +13,7 @@ import {
   writeUpdatePostInstallDoctorResult,
   type UpdatePostInstallDoctorResult,
 } from "../../infra/update-doctor-result.js";
-import { FreeBsdUpdateRootOwnershipError } from "../../infra/update-freebsd-root-ownership.js";
+import { FreeBsdUpdateWriteAdmissionError } from "../../infra/update-freebsd-write-admission.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
 import { loadUpdateRecovery } from "../../infra/update-run-recovery.js";
@@ -77,7 +77,7 @@ it.each([false, true])(
     const runUtf8 = processRunner.runUtf8CommandWithTimeout;
     let spawned = false;
     let rootState: "current" | "pending" | "revoked" = "current";
-    const rootFailure = new FreeBsdUpdateRootOwnershipError();
+    const rootFailure = new FreeBsdUpdateWriteAdmissionError();
     await withUpdateCommandExecutor(runId, async (executor) => {
       const fence = await executor.enter(root, { serviceRoot });
       const opts: UpdateCommandOptions = {
@@ -86,8 +86,8 @@ it.each([false, true])(
           env,
           executorFence: fence,
           // This controlled latch proves composition with real Doctor migration,
-          // not native FreeBSD filesystem admission.
-          freebsdRootAdmission: {
+          // not native FreeBSD owner admission.
+          freebsdWriteAdmission: {
             get canWrite() {
               return rootState === "current";
             },
@@ -98,6 +98,9 @@ it.each([false, true])(
               if (rootState !== "current") {
                 throw rootFailure;
               }
+            },
+            revoke(cause) {
+              return cause instanceof Error ? cause : new Error(String(cause));
             },
             async revalidate() {
               throw new Error("Unexpected root revalidation in Doctor fixture");

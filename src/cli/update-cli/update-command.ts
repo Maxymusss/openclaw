@@ -1,5 +1,6 @@
 import { theme } from "../../../packages/terminal-core/src/theme.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
+import { assertUpdateWriteAuthority } from "../../infra/update-freebsd-write-admission.js";
 import type { RetainUpdateRuntime } from "../../infra/update-retained-runtime.js";
 import { finishUpdateRun, recordUpdateRunPhase } from "../../infra/update-run-ledger.js";
 import { DEFAULT_UPDATE_STEP_TIMEOUT_MS } from "../../infra/update-run-timeouts.js";
@@ -8,7 +9,6 @@ import { VERSION } from "../../version.js";
 import { createUpdateProgress } from "./progress.js";
 import {
   confirmUpdateDowngrade,
-  resolveGitInstallDir,
   tryResolveInvocationCwd,
   type UpdateCommandOptions,
 } from "./shared.js";
@@ -85,7 +85,6 @@ async function updateCommandWithRuntime(
       root: resolveUpdateCommandAdmissionRoot(prepared),
       invocationCwd,
       pkgOwnership: prepared.pkgOwnership,
-      freebsdRootAdmission: prepared.freebsdRootAdmission,
       expectedForeground:
         prepared.controlPlaneUpdateSentinelMeta?.completionOwner === "gateway-restart" || undefined,
     });
@@ -135,7 +134,7 @@ async function runAdmittedUpdate(
     invocationCwd,
     initialization,
     pkgOwnership: prepared.pkgOwnership,
-    freebsdRootAdmission: prepared.freebsdRootAdmission,
+    freebsdWriteAdmission: prepared.freebsdWriteAdmission,
     expectedForeground:
       prepared.controlPlaneUpdateSentinelMeta?.completionOwner === "gateway-restart" || undefined,
     installKind: prepared.installKind,
@@ -189,7 +188,9 @@ async function runAdmittedUpdate(
             withUpdateInProgressEnv(invocationCwd, () =>
               withUpdateCommandTerminalResult((registerRun) => {
                 registerRun(run);
-                return withUpdateCommandExecutor(run.runId, executeWith);
+                return withUpdateCommandExecutor(run.runId, executeWith, {
+                  onAuthorityFailure: run.freebsdWriteAdmission?.revoke,
+                });
               }, opts),
             ),
           );
@@ -352,11 +353,8 @@ async function updateCommandInternal(
     });
     run.executorFence.assertCurrent();
     assertUpdatePackageActivationAdmission(root, { serviceRoot: managedServiceRoot });
-    if (run.freebsdRootAdmission) {
-      await run.freebsdRootAdmission.revalidate(
-        { roots: [discoveredRoot, root], env: run.env, timeoutMs: updateStepTimeoutMs },
-        run.executorFence.assertCurrent,
-      );
+    if (run.freebsdWriteAdmission) {
+      await run.freebsdWriteAdmission.revalidate(run.executorFence.assertCurrent);
     }
   };
   if (packageAlreadyCurrent) {
@@ -439,20 +437,8 @@ async function updateCommandInternal(
     admitExecutor(fence);
     run.activationTimeoutMs ??= activationTimeoutMs;
     fence.assertCurrent();
-    if (run.freebsdRootAdmission) {
-      await run.freebsdRootAdmission.revalidate(
-        {
-          roots: [
-            discoveredRoot,
-            root,
-            ...(packageInstallTarget?.packageRoot ? [packageInstallTarget.packageRoot] : []),
-            ...(switchToGit ? [resolveGitInstallDir()] : []),
-          ],
-          env: env ?? run.env,
-          timeoutMs: updateStepTimeoutMs,
-        },
-        fence.assertCurrent,
-      );
+    if (run.freebsdWriteAdmission) {
+      await run.freebsdWriteAdmission.revalidate(fence.assertCurrent);
     }
     if (mutableUpdatePrepared) {
       if (managedServiceRoot) {
@@ -462,11 +448,10 @@ async function updateCommandInternal(
     }
     const installKey = captureUpdateCommandExecutorAuthority(fence).installKey;
     assertUpdatePackageActivationAdmission(installKey, { serviceRoot: managedServiceRoot });
-    const mutableAuthority = run.freebsdRootAdmission
+    const mutableAuthority = run.freebsdWriteAdmission
       ? {
           assertCurrent() {
-            run.freebsdRootAdmission?.assertCurrent();
-            fence.assertCurrent();
+            assertUpdateWriteAuthority(run.freebsdWriteAdmission, fence.assertCurrent);
           },
         }
       : fence;
@@ -503,7 +488,7 @@ async function updateCommandInternal(
       progress.deferLedgerWrites();
     },
   });
-  run.executorFence?.assertCurrent();
+  assertUpdateWriteAuthority(run.freebsdWriteAdmission, () => run.executorFence?.assertCurrent());
   if (!execution) {
     return;
   }
@@ -561,7 +546,7 @@ async function updateCommandInternal(
         env: ownedManagedUpdateContext?.env ?? run.env,
         timeoutMs: updateStepTimeoutMs,
       });
-  run.executorFence?.assertCurrent();
+  assertUpdateWriteAuthority(run.freebsdWriteAdmission, () => run.executorFence?.assertCurrent());
   if (opts.recovery || rollbackBlockedReason) {
     // Only candidate code may reopen migrated state, including during reporting and cleanup.
     recoveryState.ledgerHandoffOwned = true;
