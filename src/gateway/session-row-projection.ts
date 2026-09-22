@@ -163,7 +163,8 @@ export async function createSessionRowProjection(params: {
       return current;
     },
   });
-  const markRelated = (row: records.Row) => archive.markRelated(row, indexes);
+  const markRelated = (row: records.Row, includeChildren = true) =>
+    archive.markRelated(row, indexes, includeChildren);
   function remove(id: string) {
     archive.forget(id);
     transcriptUpdates.remove(id);
@@ -337,15 +338,14 @@ export async function createSessionRowProjection(params: {
     } else {
       const query = { ...change, key: change.sessionKey };
       const exact = matching(query);
-      const found = new Set([...exact, ...matching(query, "id")]);
       const registryFactsReady = inOwnerContext(getSubagentSessionListReadSnapshotIdentity);
-      for (const previous of found) {
+      for (const previous of new Set([...exact, ...matching(query, "id")])) {
         if (previous.entry) {
           placementFacts.invalidate(previous.entry.sessionId);
         }
-        markRelated(previous);
         const row = inOwnerContext(() => {
           const entry = readSessionRowEntry(previous);
+          markRelated(previous, records.changesSessionRowDependents(previous.storedEntry, entry));
           if (entry?.archivedAt !== undefined && !registryFactsReady) {
             // Committed row changes must survive an unrelated compact-facts refill.
             const current = acquireEntry({ ...previous, hasBoard: undefined }, entry, true);
