@@ -10,7 +10,14 @@ import { historyPages } from "../../config/sessions/session-transcript-worker-re
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withAgentDatabaseMaintenanceLease } from "../../state/openclaw-agent-db-maintenance-lease.js";
 import { ensureOpenClawAgentDatabaseSchema } from "../../state/openclaw-agent-db-schema.js";
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabaseByPathAsync,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
+import {
+  clearOpenClawDatabaseQuarantine,
+  recordOpenClawDatabaseQuarantine,
+} from "../../state/openclaw-quarantine-store.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
@@ -93,6 +100,56 @@ function holdFirstChunk() {
       ]),
   };
 }
+
+it("rejects a persisted quarantine through the history worker without retargeting the manager", async () => {
+  await withOpenClawTestState({ label: "session-hydration-stream-quarantine" }, async (state) => {
+    const target = {
+      agentId: "main",
+      sessionId: "quarantined-hydration",
+      sessionKey: "agent:main:quarantined-hydration",
+      storePath: path.join(state.agentDir("main"), "openclaw-agent.sqlite"),
+    };
+    await upsertSessionEntryCore(target, { sessionId: target.sessionId, updatedAt: 1 });
+    SessionManager.open(target).appendMessage(makeUserMessage("quarantined history", 1));
+    await waitForSessionTranscriptProjection(target);
+    await closeOpenClawAgentDatabaseByPathAsync(target.storePath);
+    const reason = "synthetic persisted hydration quarantine";
+    expect(
+      recordOpenClawDatabaseQuarantine({
+        kind: "agent",
+        path: target.storePath,
+        env: state.env,
+        reason,
+      }),
+    ).toBe(true);
+    const manager = SessionManager.inMemory("/retained");
+    manager.appendMessage(makeUserMessage("keep the original view", 2));
+    const before = manager.getPersistedEntries();
+    const priorTarget = manager.getSessionTarget();
+    const dispatch = vi.spyOn(historyPages, "run");
+    try {
+      const failure = await manager.setSessionTargetAsync(target).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect(failure).toMatchObject({
+        name: "SqliteIntegrityError",
+        message: expect.stringContaining(reason),
+      });
+      expect(dispatch).toHaveBeenCalledOnce();
+      expect(await dispatch.mock.results[0]?.value).toMatchObject({
+        ok: false,
+        error: { kind: "read-error" },
+      });
+      expect(manager.getPersistedEntries()).toEqual(before);
+      expect(manager.getSessionTarget()).toEqual(priorTarget);
+      expect(manager.getCwd()).toBe("/retained");
+      expect(manager.isPersisted()).toBe(false);
+      expect(historyPages.getSnapshot()).toMatchObject({ activeTasks: 0, pendingTasks: 0 });
+    } finally {
+      dispatch.mockRestore();
+      expect(clearOpenClawDatabaseQuarantine(target.storePath, { env: state.env })).toBe(true);
+    }
+  });
+});
 
 it.each(["UTF-16le", "UTF-16be"] as const)(
   "hydrates canonical %s transcripts with the same Unicode content as the synchronous reader",
