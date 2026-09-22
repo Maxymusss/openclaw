@@ -150,8 +150,11 @@ Omitting `settings.inference`, or setting it to `gateway`, preserves the default
 - Azure adapters requiring ambient endpoint configuration and ambient Vertex ADC
   marker credentials are rejected. Provider plugin loading is not added.
 - Cancellation and replacement use existing worker fencing and terminate local
-  model requests. The Gateway retains transcripts, acknowledgments, and terminal
-  settlement.
+  model requests. After the first successful admission, losing the Gateway
+  connection also stops the current local turn. Reconnection can settle that
+  interrupted turn but does not resume its provider request; a fresh turn needs
+  fresh admission. Initial connection/admission retries remain supported. The
+  Gateway retains transcripts, acknowledgments, and terminal settlement.
 - The runtime guards literal credential reflection, including stream fragments
   and normalized values. This is not general data-loss prevention or an isolation
   boundary against code running as the node's operating-system user.

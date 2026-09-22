@@ -8,14 +8,6 @@ import type {
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
 import type { NativeRuntimeResolved } from "./native-runtime.js";
 
-function stringValues(value: unknown): string {
-  if (typeof value === "string") {
-    return value;
-  }
-  return value !== null && typeof value === "object"
-    ? Object.values(value).map(stringValues).join("")
-    : "";
-}
 function generatedText(message: AssistantMessage): string {
   return message.content
     .map((block) =>
@@ -23,9 +15,55 @@ function generatedText(message: AssistantMessage): string {
         ? block.text
         : block.type === "thinking"
           ? block.thinking
-          : stringValues(block.arguments),
+          : stringParts(block.arguments).join(""),
     )
     .join("");
+}
+
+function stringParts(value: unknown, includeKeys = false, strings: string[] = []): string[] {
+  if (typeof value === "string") {
+    strings.push(value);
+  } else if (Array.isArray(value)) {
+    for (const item of value) {
+      stringParts(item, includeKeys, strings);
+    }
+  } else if (value !== null && typeof value === "object") {
+    for (const [key, item] of Object.entries(value)) {
+      if (includeKeys) {
+        strings.push(key);
+      }
+      stringParts(item, includeKeys, strings);
+    }
+  }
+  return strings;
+}
+
+function generatedStrings(message: AssistantMessage): string[] {
+  // Fixed protocol/request tags are not generated output. Keep independent strings
+  // independent: a later safe argument must not conceal an earlier field's prefix.
+  const {
+    content,
+    role: _role,
+    api: _api,
+    provider: _provider,
+    model: _model,
+    usage: _usage,
+    stopReason: _stopReason,
+    timestamp: _timestamp,
+    ...metadata
+  } = message;
+  const strings: string[] = [];
+  for (const block of content) {
+    if (block.type === "toolCall") {
+      strings.push(block.id, block.name);
+      stringParts(block.arguments, true, strings);
+      stringParts(block.thoughtSignature, false, strings);
+    } else {
+      const { type: _type, ...fields } = block;
+      stringParts(fields, false, strings);
+    }
+  }
+  return stringParts(metadata, false, strings);
 }
 
 /** Guard provider output before the shared loop can publish it or execute generated tools. */
@@ -42,9 +80,12 @@ export function createNativeInferenceStreamGuard(native: NativeRuntimeResolved) 
       let currentMessage: AssistantMessage | undefined;
       try {
         const source = await start();
-        for await (const raw of source) {
+        const toolArgumentDeltas = new Map<number, string>();
+        const incompleteToolArguments = new Set<number>();
+        const publish = (raw: AssistantMessageEvent) => {
           signal?.throwIfAborted();
           const event = structuredClone(raw);
+          const terminal = event.type === "done" || event.type === "error";
           const snapshot =
             event.type === "done"
               ? event.message
@@ -62,13 +103,54 @@ export function createNativeInferenceStreamGuard(native: NativeRuntimeResolved) 
           native.assertProtocolSafe(event);
           const text = completedText + generatedText(currentMessage);
           native.assertProtocolSafe(text);
-          if (event.type !== "done" && event.type !== "error" && native.hasCredentialPrefix(text)) {
+          const strings = generatedStrings(currentMessage);
+          if ("delta" in event) {
+            strings.push(event.delta);
+          }
+          if ("content" in event) {
+            strings.push(event.content);
+          }
+          if (event.type === "toolcall_end") {
+            strings.push(...generatedStrings({ ...currentMessage, content: [event.toolCall] }));
+          }
+          if (event.type === "toolcall_delta") {
+            // Parsed argument snapshots can lag an incomplete JSON key/value.
+            const delta = (toolArgumentDeltas.get(event.contentIndex) ?? "") + event.delta;
+            if (Buffer.byteLength(delta) > WORKER_PROTOCOL_MAX_INFERENCE_PAYLOAD_BYTES) {
+              throw new Error("Native tool arguments exceeded the protocol budget");
+            }
+            toolArgumentDeltas.set(event.contentIndex, delta);
+            strings.push(delta);
+            try {
+              // JSON escape spelling is not credential spelling. Do not publish
+              // raw previews until all their strings can be checked decoded.
+              stringParts(JSON.parse(delta) as unknown, true, strings);
+              incompleteToolArguments.delete(event.contentIndex);
+            } catch (error) {
+              if (!(error instanceof SyntaxError)) {
+                throw error;
+              }
+              incompleteToolArguments.add(event.contentIndex);
+            }
+          }
+          native.assertProtocolSafe(strings);
+          if (
+            !terminal &&
+            (incompleteToolArguments.size > 0 ||
+              native.hasCredentialPrefix(text) ||
+              strings.some(native.hasCredentialPrefix))
+          ) {
             bytes += Buffer.byteLength(JSON.stringify(event));
             if (bytes > WORKER_PROTOCOL_MAX_INFERENCE_PAYLOAD_BYTES) {
               throw new Error("Native credential-prefix buffer exceeded");
             }
             pending.push(event);
-            continue;
+            return;
+          }
+          if (terminal && incompleteToolArguments.size > 0) {
+            // An interrupted/malformed preview is not certified by a later
+            // snapshot. Preserve the checked authoritative result, not raw fragments.
+            pending = [];
           }
           if (event.type === "error" && pending.length) {
             throw new Error("Native stream failed with an unresolved credential prefix");
@@ -82,11 +164,28 @@ export function createNativeInferenceStreamGuard(native: NativeRuntimeResolved) 
           if (event.type === "done") {
             completedText = text;
           }
+        };
+        let terminalSeen = false;
+        for await (const event of source) {
+          signal?.throwIfAborted();
+          if (terminalSeen) {
+            throw new Error("Native stream continued after its terminal event");
+          }
+          if (event.type === "done" || event.type === "error") {
+            native.assertProtocolSafe(event);
+            terminalSeen = true;
+          } else {
+            publish(event);
+          }
         }
-        await source.result();
-        if (pending.length) {
-          throw new Error("Native stream ended with an unresolved credential prefix");
-        }
+        // result() is authoritative, including end(result) without a terminal event.
+        // Guard it before allowing the output stream to settle or release held events.
+        const final = structuredClone(await source.result());
+        publish(
+          final.stopReason === "error" || final.stopReason === "aborted"
+            ? { type: "error", reason: final.stopReason, error: final }
+            : { type: "done", reason: final.stopReason, message: final },
+        );
       } catch {
         // Provider exceptions can contain headers/keys. Keep failures fixed and credential-free.
         const aborted = signal?.aborted === true;

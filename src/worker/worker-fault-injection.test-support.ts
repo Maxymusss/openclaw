@@ -189,6 +189,7 @@ export class ComposedGatewayHarness {
   private readonly placementLifecycle: WorkerFaultPlacementLifecycle;
   private placementGateValue: WorkerSessionPlacementGate | undefined;
   private useReplacementExecutor = false;
+  private connectionsPaused = false;
   private unsubscribeLive: (() => void) | undefined;
   private readonly restoreSessionTarget: () => void;
 
@@ -401,6 +402,14 @@ export class ComposedGatewayHarness {
     this.terminateSockets();
   }
 
+  pauseConnections(): () => void {
+    this.connectionsPaused = true;
+    this.terminateSockets();
+    return () => {
+      this.connectionsPaused = false;
+    };
+  }
+
   async reclaimWithCredential(credential: string, runId: string): Promise<number> {
     const placement = this.placementStore.get(SESSION_ID);
     const staleClaim = placement ? projectWorkerSessionTurnClaim(placement) : undefined;
@@ -606,6 +615,10 @@ export class ComposedGatewayHarness {
 
   private accept(socket: WebSocket): void {
     this.connectionCount += 1;
+    if (this.connectionsPaused) {
+      socket.terminate();
+      return;
+    }
     this.sockets.add(socket);
     const connId = `fault-connection-${this.connectionCount}`;
     let client: GatewayWsClient | null = null;

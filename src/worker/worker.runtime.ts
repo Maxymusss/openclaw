@@ -208,11 +208,19 @@ export async function runWorkerDescriptor(
     initialAckedSeq: descriptor.assignment.liveEvents.ackedSeq,
   });
   const inference = new WorkerInferenceProxyClient(connection);
+  let wasAdmitted = false;
   const unsubscribeState = connection.onStateChange((state) => {
-    if (state.kind === "fenced") {
+    if (state.kind === "ready") {
+      wasAdmitted = true;
+    } else if (state.kind === "fenced") {
       abortController.abort(new Error(`worker fenced: ${state.reason}`));
     } else if (state.kind === "failed") {
       abortController.abort(state.error);
+    } else if (wasAdmitted && descriptor.assignment.inference === "runtime-local") {
+      // Startup may retry before admission. Once admitted, any transport loss
+      // ends local provider authority, even while runtime setup is still awaited.
+      // Reconnection may settle the failed turn; it cannot revive its producer.
+      abortController.abort(new Error("Runtime-local inference lost Gateway admission"));
     }
   });
 

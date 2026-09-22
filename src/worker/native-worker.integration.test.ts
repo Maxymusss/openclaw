@@ -477,6 +477,37 @@ describe.skipIf(process.platform === "win32")(
       expectNoProxyInference();
     }, 40_000);
 
+    it("closes native provider HTTP during a held Gateway outage before revoked placement can readmit", async () => {
+      const provider = await providerFixture("pending");
+      const descriptor = await localDescriptor();
+      const worker = await launch(descriptor, startupFor(descriptor, provider.baseUrl));
+      await withTestTimeout(provider.entered, 30_000, "local provider was not reached");
+      const admitted = owner().admissions.length;
+      const before = messages();
+      const resume = owner().pauseConnections();
+      try {
+        await owner().reclaimWithCredential(
+          "synthetic-outage-replacement",
+          "replacement-outage-run",
+        );
+        // This assertion precedes reopening admission, releasing HTTP, or stopping the child.
+        await withTestTimeout(
+          provider.disconnected,
+          5_000,
+          "native HTTP survived the held Gateway outage",
+        );
+        expect(owner().admissions).toHaveLength(admitted);
+        expect(provider.requests).toHaveLength(1);
+        expect(messages()).toEqual(before);
+        expectNoProxyInference();
+      } finally {
+        resume();
+      }
+      const outcome = await worker.finish();
+      expect(outcome.code).toBe(1);
+      expect(provider.requests).toHaveLength(1);
+    }, 40_000);
+
     it("fences a pending local producer after placement replacement without committing stale output", async () => {
       const provider = await providerFixture("pending");
       const descriptor = await localDescriptor();
@@ -490,9 +521,9 @@ describe.skipIf(process.platform === "win32")(
       expect(epoch).toBeGreaterThan(descriptor.admission.ownerEpoch);
       owner().partition();
       const outcome = await worker.finish();
-      // Reconnection uses public admission, which intentionally makes stale credentials opaque.
+      // Native authority ends on transport loss, before readmission can reject the stale credential.
       expect(outcome.code).toBe(1);
-      expect(outcome.stderr).toContain("worker admission rejected: invalid-handshake");
+      expect(outcome.stderr).toContain("Runtime-local inference lost Gateway admission");
       expect(outcome.stdout).toBe("");
       await withTestTimeout(provider.disconnected, 5_000, "fenced producer retained provider HTTP");
       provider.release();
