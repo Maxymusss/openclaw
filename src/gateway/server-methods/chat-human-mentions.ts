@@ -65,7 +65,14 @@ export function normalizeChatHumanMentions(
     }
     const start = prefix.message.length - leadingSpace;
     const end = throughToken.message.length - leadingSpace;
-    if (start < 0 || end > trimmed.length || trimmed[start] !== "@") {
+    if (
+      start < 0 ||
+      end > trimmed.length ||
+      trimmed[start] !== "@" ||
+      ("kind" in mention &&
+        (/(?:\p{L}|\p{N}|\p{M}|[_@.%+-])$/u.test(trimmed.slice(0, start)) ||
+          /^[\p{L}\p{N}\p{M}_-]/u.test(trimmed.slice(end))))
+    ) {
       return { ok: false, error: INVALID_MENTIONS };
     }
     normalized.push(

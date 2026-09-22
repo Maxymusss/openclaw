@@ -6,6 +6,8 @@ import type {
   SessionUsageTimeSeries as SharedSessionUsageTimeSeries,
 } from "../shared/session-usage-timeseries-types.js";
 
+export type CostBreakdown = Partial<Usage["cost"]>;
+
 export type UsageCostTranscriptFile = {
   filePath: string;
   /** Durable identity when filePath is a transient archive materialization. */
@@ -19,8 +21,6 @@ export type UsageCostTranscriptFile = {
   eventCount?: number;
   maxSeq?: number;
 };
-
-export type CostBreakdown = Partial<Usage["cost"]>;
 
 export type ParsedTranscriptEntry = {
   message: Record<string, unknown>;

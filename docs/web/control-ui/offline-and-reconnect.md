@@ -55,6 +55,9 @@ attention keep their explanation and recovery action. The same status appears in
 embedded dashboard. Connection status does not replace the Gateway name in the account menu.
 
 The client retries ordinary connection loss automatically with backoff (800 ms up to 15 s).
+If the browser provides no reason for the disconnect, the connection tooltip explains that
+the connection was interrupted and whether automatic reconnection is underway. It retains
+the WebSocket close code for troubleshooting; specific Gateway errors keep their explanation.
 Open the account menu and use **Retry now** to request an immediate attempt when offered.
 Sign-in failures use the sign-in flow, and a required dashboard refresh uses its reload flow;
 retrying the connection does not replace either action. Live updates and realtime/session actions pause until the connection
@@ -64,10 +67,19 @@ global connection warning.
 Ordinary text and attachment sends require successful admission to the current tab's
 Gateway/session-scoped browser outbox. Eligible messages resume automatically after connection
 and account recovery, but an active run, an open queued-message edit, or uncertain previous
-delivery can keep them waiting. The footer's outbox count includes unresolved messages across
-conversations for the current Gateway, including failed messages and messages needing review;
-the composer count covers only its conversation. Neither count promises that every message will
-send automatically. Draft text and saved messages awaiting destination recovery are separate.
+delivery can keep them waiting. **Inbox → System** shows local submissions that failed or
+need delivery review, with **Review** opening their conversation and its existing recovery
+controls. Ordinary queued messages stay in the chat queue; they do not raise Inbox attention.
+The account and connection indicators describe identity and connectivity, not message delivery.
+The composer count covers only its conversation and does not promise automatic sending.
+Draft text and saved messages awaiting destination recovery are separate.
+
+These Inbox entries are a read-only view of the existing browser-tab/Gateway outbox, not a new
+per-person or cross-device inbox. They show available conversation labels, not message text,
+attachment names, or private error details. Review does not retry or discard anything, and
+entries cannot be dismissed independently of their pending copy. Local review remains available
+while disconnected; server-dependent Inbox actions remain unavailable. Return from Settings
+to the workspace to open Inbox.
 If storage fails, the composer keeps the unsent input and shows recovery guidance.
 
 Controls that need a live connection stay unavailable while offline. **Stop** can queue an exact
@@ -121,6 +133,11 @@ reload, follow the displayed save or cancel guidance, then try again.
 
 If chat history times out, its **Retry** action reloads the saved conversation and restores
 its live session subscription, including approval updates.
+
+When the Gateway confirms that it holds the same pending input, the Control UI clears the
+uncertain-delivery warning without sending the message again. The browser keeps its retry
+payload until consumption or cancellation is confirmed. If delivery is still unknown,
+the review warning remains.
 
 Once the Gateway confirms that a message is in the transcript, reconnecting retires its temporary browser copy even when the original message is outside the latest history page. Loading older history shows the saved message in its original position without adding a second copy.
 

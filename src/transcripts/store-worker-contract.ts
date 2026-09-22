@@ -10,12 +10,16 @@ import type {
   TranscriptReadPurpose,
 } from "./store-read.js";
 import type {
+  readTranscriptExportOwnership,
+  readTranscriptExportPathCollisions,
+  readTranscriptExportPathOwners,
   readTranscriptSessionByIdentity,
   readTranscriptSessionEntries,
   readTranscriptSessionMatches,
   readStoredTranscriptSummary,
   readTranscriptUtterances,
   readTranscriptSummarySnapshot,
+  readTranscriptJsonlDigest,
 } from "./store-sqlite-read.js";
 import type { writeMeetingTranscriptSummaryInDatabase } from "./store-sqlite-write.js";
 import type {
@@ -55,6 +59,18 @@ export type TranscriptReadRequests = {
   "transcripts.readEntries": {
     input: Parameters<typeof queryTranscriptReadEntries>[1];
     output: ReturnType<typeof queryTranscriptReadEntries>;
+  };
+  "transcripts.exportOwnership": {
+    input: { session: SessionIdentity };
+    output: ReturnType<typeof readTranscriptExportOwnership>;
+  };
+  "transcripts.exportPathCollisions": {
+    input: { exportKey: string };
+    output: ReturnType<typeof readTranscriptExportPathCollisions>;
+  };
+  "transcripts.exportPathOwners": {
+    input: { exportKey: string };
+    output: ReturnType<typeof readTranscriptExportPathOwners>;
   };
   "transcripts.summarySnapshot": {
     input: { session: SessionIdentity; maxUtterances: number };
@@ -100,6 +116,10 @@ export type TranscriptReadRequests = {
   "transcripts.summary": {
     input: { session: SessionIdentity };
     output: ReturnType<typeof readStoredTranscriptSummary>;
+  };
+  "transcripts.exportDigest": {
+    input: { session: SessionIdentity };
+    output: ReturnType<typeof readTranscriptJsonlDigest>;
   };
 };
 

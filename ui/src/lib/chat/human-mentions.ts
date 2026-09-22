@@ -49,7 +49,11 @@ export function readHumanMentions(
       }
     }
     if (entry.kind === "everyone") {
-      if (text.slice(entry.start, entry.end) !== "@everyone") {
+      if (
+        text.slice(entry.start, entry.end) !== "@everyone" ||
+        /(?:\p{L}|\p{N}|\p{M}|[_@.%+-])$/u.test(text.slice(0, entry.start)) ||
+        /^[\p{L}\p{N}\p{M}_-]/u.test(text.slice(entry.end))
+      ) {
         return undefined;
       }
       mentions.push({ kind: "everyone", start: entry.start, end: entry.end });

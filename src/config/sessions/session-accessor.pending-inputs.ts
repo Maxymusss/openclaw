@@ -60,11 +60,9 @@ import {
   resolveSqliteTranscriptScope,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
-import {
-  readMessageIdempotencyKey,
-  redactTranscriptMessageForStorage,
-} from "./session-accessor.sqlite-transcript-store.js";
+import { redactTranscriptMessageForStorage } from "./session-accessor.sqlite-transcript-store.js";
 import { captureSessionInputCustodyWorker } from "./session-input-custody-worker.js";
+import { readMessageIdempotencyKey } from "./transcript-message-identity.js";
 
 export {
   prepareSessionPendingInputDedupeRecovery,

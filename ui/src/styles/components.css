@@ -1080,8 +1080,9 @@ openclaw-session-owner-chip .viewer-avatar__initials {
 }
 
 .plugin-official-badge svg {
-  width: 15px;
-  height: 15px;
+  width: 16px;
+  height: 16px;
+  stroke-width: 1.75;
 }
 
 /* ===========================================
@@ -2769,7 +2770,7 @@ select.input {
     transform var(--duration-fast) var(--ease-out);
 }
 
-.chip:hover {
+.chip:is(button, a, label):hover {
   border-color: var(--border-strong);
   transform: translateY(-1px);
 }

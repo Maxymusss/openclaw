@@ -44,6 +44,7 @@ import {
 import { SessionPendingInputCustodyError } from "./session-pending-input-custody-error.js";
 import { waitForSessionTranscriptProjection } from "./session-transcript-reconcile.js";
 import { useTempSessionsFixture } from "./test-helpers.js";
+import { prepareTranscriptPayload } from "./transcript-payload.js";
 
 describe("accepted input custody", () => {
   const fixture = useTempSessionsFixture("openclaw-pending-inputs-");
@@ -52,6 +53,14 @@ describe("accepted input custody", () => {
   const receipts: SessionPendingInputReceipt[] = [];
   const scope = () => ({ agentId: "main", sessionKey, sessionId, storePath: fixture.storePath() });
   const database = () => openOpenClawAgentDatabase(toDatabaseOptions(resolveSqliteScope(scope())));
+  const readStoredInputs = (db: ReturnType<typeof database>["db"]) =>
+    db.prepare("SELECT * FROM session_pending_inputs ORDER BY seq").all();
+  const trackPendingReads = (db: ReturnType<typeof database>["db"]) =>
+    trackSqliteStatementExecutions(db, ["pending"], (sqlText) =>
+      sqlText.startsWith("select ") && sqlText.includes('from "session_pending_inputs"')
+        ? "pending"
+        : null,
+    );
   const message = (runId: string, content = "Continue the task"): PersistedUserTurnMessage => ({
     role: "user",
     content,
@@ -844,9 +853,7 @@ describe("accepted input custody", () => {
     await upsertSessionEntryCore(scope(), { sessionId: "replacement-session", updatedAt: 2 });
     await expect(promote(receipt)).rejects.toThrow("session changed");
     const current = database();
-    const storedBefore = current.db
-      .prepare("SELECT * FROM session_pending_inputs ORDER BY seq")
-      .all();
+    const storedBefore = readStoredInputs(current.db);
     expect(storedBefore.map((row) => row.state)).toEqual(["queued", "queued"]);
     current.db.exec(
       "CREATE TRIGGER reject_pending_interruption BEFORE UPDATE OF state ON session_pending_inputs WHEN OLD.run_id = 'reset-second' AND NEW.state = 'interrupted' BEGIN SELECT RAISE(ABORT, 'interruption failed'); END",
@@ -856,14 +863,8 @@ describe("accepted input custody", () => {
     } finally {
       current.db.exec("DROP TRIGGER reject_pending_interruption");
     }
-    expect(current.db.prepare("SELECT * FROM session_pending_inputs ORDER BY seq").all()).toEqual(
-      storedBefore,
-    );
-    const counter = trackSqliteStatementExecutions(current.db, ["pending"], (sqlText) =>
-      sqlText.startsWith("select ") && sqlText.includes('from "session_pending_inputs"')
-        ? "pending"
-        : null,
-    );
+    expect(readStoredInputs(current.db)).toEqual(storedBefore);
+    const counter = trackPendingReads(current.db);
     try {
       expect(listSessionPendingInputs(scope())).toMatchObject({
         total: 2,
@@ -878,7 +879,7 @@ describe("accepted input custody", () => {
     } finally {
       counter.restore();
     }
-    expect(current.db.prepare("SELECT * FROM session_pending_inputs ORDER BY seq").all()).toEqual(
+    expect(readStoredInputs(current.db)).toEqual(
       storedBefore.map((row) => Object.assign({}, row, { state: "interrupted" })),
     );
     await deleteSessionEntryLifecycle({
@@ -897,14 +898,8 @@ describe("accepted input custody", () => {
     const second = await stage("second");
     const third = await stage("third");
     const current = database();
-    const storedBefore = current.db
-      .prepare("SELECT * FROM session_pending_inputs ORDER BY seq")
-      .all();
-    const counter = trackSqliteStatementExecutions(current.db, ["pending"], (sqlText) =>
-      sqlText.startsWith("select ") && sqlText.includes('from "session_pending_inputs"')
-        ? "pending"
-        : null,
-    );
+    const storedBefore = readStoredInputs(current.db);
+    const counter = trackPendingReads(current.db);
     try {
       expect(readSessionPendingInput(scope(), first.inputId)).toMatchObject({
         id: first.inputId,
@@ -922,9 +917,7 @@ describe("accepted input custody", () => {
     } finally {
       counter.restore();
     }
-    expect(current.db.prepare("SELECT * FROM session_pending_inputs ORDER BY seq").all()).toEqual(
-      storedBefore,
-    );
+    expect(readStoredInputs(current.db)).toEqual(storedBefore);
     const page = listSessionPendingInputs(scope(), { limit: 2 });
     expect(page.items.map((input) => input.id)).toEqual([second.inputId, third.inputId]);
     expect(page.total).toBe(3);
@@ -974,9 +967,18 @@ describe("accepted input custody", () => {
             receipt.inputId,
           );
         } else {
+          const payload = prepareTranscriptPayload(db, `{"message":${messageJson}}`);
           db.prepare(
-            "UPDATE transcript_events SET event_json = ? WHERE session_id = ? AND seq = (SELECT seq FROM transcript_event_identities WHERE session_id = ? AND event_id = ?)",
-          ).run(`{"message":${messageJson}}`, sessionId, sessionId, receipt.inputId);
+            "UPDATE transcript_events SET event_json = ?, event_zstd = ?, event_utf8_bytes = ?, navigation_json = ? WHERE session_id = ? AND seq = (SELECT seq FROM transcript_event_identities WHERE session_id = ? AND event_id = ?)",
+          ).run(
+            payload.event_json,
+            payload.event_zstd,
+            payload.event_utf8_bytes,
+            payload.navigation_json,
+            sessionId,
+            sessionId,
+            receipt.inputId,
+          );
         }
         db.exec("PRAGMA query_only = ON");
         try {

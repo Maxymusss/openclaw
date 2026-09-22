@@ -1,6 +1,7 @@
 // Public process helpers for plugins that spawn or probe local commands.
 
 export { SUPERVISOR_HINT_ENV_VARS } from "../infra/supervisor-markers.js";
+export { resolveNodeRuntimeExecutable } from "../infra/node-runtime-executable.js";
 export { splitCommandArgs } from "../utils/shell-argv.js";
 export {
   type CommandOptions,
@@ -22,6 +23,7 @@ export { WorkerTaskError, WorkerTaskPool } from "../infra/worker-task-pool.js";
 // provide worker-task-server; bundled workers use that narrower entrypoint.
 export { serveWorkerTasks } from "../infra/worker-task-server.js";
 export type { WorkerTaskControl } from "../infra/worker-task-native-sections.js";
+export type { WorkerTaskResponse } from "../infra/worker-task-pool.js";
 export { killProcessTree, signalProcessTree } from "../process/kill-tree.js";
 export {
   spawnTerminalPty,

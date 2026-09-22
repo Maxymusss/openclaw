@@ -6,7 +6,6 @@ import {
   isAgentRunDirectAbortReason,
 } from "../../agents/run-termination.js";
 import type { ReplySessionBinding } from "../../auto-reply/reply/get-reply.types.js";
-import { hasPendingFollowupQueueWork } from "../../auto-reply/reply/queue/state.js";
 import {
   interruptReplyRunTarget,
   isReplyRunAbortableForSignal,
@@ -26,6 +25,7 @@ import {
   isProgressCardRefreshInputProvenance,
   progressCardRefreshRunProjection,
 } from "../../sessions/input-provenance.js";
+import { retireProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
 import {
   beginSessionWorkAdmission,
   interruptSessionWorkAdmissions,
@@ -37,8 +37,8 @@ import {
   registerChatAbortController,
   resolveChatRunExpiresAtMs,
 } from "../chat-abort.js";
-import { retainGatewayDeviceRevocation } from "../device-revocation.js";
 import { ExpectedProfileMismatchError } from "../expected-profile.js";
+import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX, type DedupeEntry } from "../server-shared.js";
 import { loadSessionEntry } from "../session-utils.js";
 import {
@@ -65,7 +65,10 @@ import {
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
 import { prepareChatSendSessionEntry, type PreparedChatSendSession } from "./chat-send-session.js";
-import { createChatSendWorkAdmission } from "./chat-send-work-admission.js";
+import {
+  assertChatSendExclusiveAdmission,
+  createChatSendWorkAdmission,
+} from "./chat-send-work-admission.js";
 import { normalizeOptionalChatText, normalizeUnknownChatText } from "./chat-text-normalization.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
@@ -107,6 +110,7 @@ export async function admitChatSend(params: {
     restartSafeRequest,
     expectedLeafEntryId,
   } = session;
+  const cachedResponseMeta = { cached: true, runId: clientRunId };
   const chatSendTraceAttributes = {
     runId: clientRunId,
     sessionKey,
@@ -137,10 +141,7 @@ export async function admitChatSend(params: {
   const goalRetry = inspectGoalChatSendRetry(params);
   if (goalRetry.kind !== "new") {
     if (goalRetry.kind === "replay") {
-      respond(true, { ...goalRetry.receipt, replayed: true }, undefined, {
-        cached: true,
-        runId: clientRunId,
-      });
+      respond(true, { ...goalRetry.receipt, replayed: true }, undefined, cachedResponseMeta);
     }
     return { ok: false as const };
   }
@@ -169,6 +170,7 @@ export async function admitChatSend(params: {
       attemptId: pendingAttemptId,
       status: "accepted" as const,
       sessionKey,
+      ...(backingSessionId ? { sessionId: backingSessionId } : {}),
       ...(rawSessionKey === sessionKey ? {} : { sessionKeyAliases: [rawSessionKey] }),
       ...(selectedAgent.agentId ? { agentId: selectedAgent.agentId } : {}),
       ownerConnId: normalizeOptionalChatText(client?.connId),
@@ -275,14 +277,7 @@ export async function admitChatSend(params: {
       expectedPermissionMode: p.expectedPermissionMode,
       expectedToolOverrides: p.expectedToolOverrides,
     });
-    if (
-      request.goalOperation &&
-      (isCompetingSessionWorkAdmissionActive(storePath, [sessionKey, backingSessionId]) ||
-        hasPendingFollowupQueueWork([sessionKey, backingSessionId, activeRunScopeKey]) ||
-        replyRunRegistry.isActive(activeRunScopeKey))
-    ) {
-      throw new Error("goal-session-busy");
-    }
+    assertChatSendExclusiveAdmission(request, session);
     if (entry && !latestEntry) {
       throw new Error(`Session "${sessionKey}" was deleted while starting work. Retry.`);
     }
@@ -337,6 +332,8 @@ export async function admitChatSend(params: {
     }
     const archivedError = resolveSessionWorkStartError(sessionKey, latestEntry, {
       allowPendingWorkspace: true,
+      providerReviewAcknowledgment: request.providerReviewAcknowledgment,
+      runId: clientRunId,
     });
     if (archivedError) {
       throw new Error(archivedError);
@@ -374,7 +371,7 @@ export async function admitChatSend(params: {
     });
     if (request.goalOperation && !restartSafeAdmission) {
       throw new Error(
-        "Goal start or resume requires an idle local session with recoverable history. Finish current work or start a fresh session, then retry.",
+        "Goal start or resume requires the built-in OpenClaw runtime and an idle local session with recoverable history. This action is unavailable for native Codex and other external runtimes.",
       );
     }
     if (retryableClaim && !restartSafeAdmission) {
@@ -447,7 +444,7 @@ export async function admitChatSend(params: {
       context.chatRunState.hasAbortMarker(clientRunId) &&
       readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (aborted) {
-      respond(aborted.ok, aborted.payload, aborted.error, { cached: true, runId: clientRunId });
+      respond(aborted.ok, aborted.payload, aborted.error, cachedResponseMeta);
       return { ok: false as const };
     }
     respondChatSendAdmissionError(err, respond);
@@ -482,16 +479,20 @@ export async function admitChatSend(params: {
     const supersedingCached =
       supersedingResult ?? readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (supersedingCached) {
-      respond(supersedingCached.ok, supersedingCached.payload, supersedingCached.error, {
-        cached: true,
-        runId: clientRunId,
-      });
+      respond(
+        supersedingCached.ok,
+        supersedingCached.payload,
+        supersedingCached.error,
+        cachedResponseMeta,
+      );
       return { ok: false as const };
     }
-    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
-      cached: true,
-      runId: clientRunId,
-    });
+    respond(
+      true,
+      { runId: clientRunId, status: "in_flight" as const },
+      undefined,
+      cachedResponseMeta,
+    );
     return { ok: false as const };
   }
   if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
@@ -512,20 +513,14 @@ export async function admitChatSend(params: {
       });
     }
     const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
-    respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, {
-      cached: true,
-      runId: clientRunId,
-    });
+    respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, cachedResponseMeta);
     return { ok: false as const };
   }
   if (!activeRunAbort) {
     gatewayWorkAdmission.release();
     const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (aborted) {
-      respond(aborted.ok, aborted.payload, aborted.error, {
-        cached: true,
-        runId: clientRunId,
-      });
+      respond(aborted.ok, aborted.payload, aborted.error, cachedResponseMeta);
       return { ok: false as const };
     }
     respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, "chat run admission failed"));
@@ -533,14 +528,17 @@ export async function admitChatSend(params: {
   }
   if (!activeRunAbort.registered) {
     gatewayWorkAdmission.release();
-    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, {
-      cached: true,
-      runId: clientRunId,
-    });
+    respond(
+      true,
+      { runId: clientRunId, status: "in_flight" as const },
+      undefined,
+      cachedResponseMeta,
+    );
     return { ok: false as const };
   }
   let releaseGatewayRootContinuation = () => {};
   let releaseCallerAuthority: (() => void) | undefined;
+  let capturedOperator: ReturnType<typeof retainGatewayOperatorRun>;
   // Until dispatch takes custody, interruption and callback failures release every admission hold.
   const cleanupPreDispatchAdmission = () => {
     try {
@@ -554,7 +552,20 @@ export async function admitChatSend(params: {
   };
   let interruptedActiveRun = false;
   try {
-    releaseCallerAuthority = retainGatewayDeviceRevocation(params.hasCurrentClientAuthority);
+    capturedOperator = retainGatewayOperatorRun({
+      ...params,
+      runId: clientRunId,
+      entry: activeRunAbort.entry,
+    });
+    releaseCallerAuthority = () => {
+      try {
+        capturedOperator.release?.();
+      } finally {
+        if (request.providerReviewAcknowledgment) {
+          retireProviderReviewAcknowledgment(request.providerReviewAcknowledgment);
+        }
+      }
+    };
     let interruptionSettled = true;
     if (runInterruptTarget) {
       interruptedActiveRun = true;
@@ -680,6 +691,9 @@ export async function admitChatSend(params: {
     ok: true as const,
     value: {
       activeRunAbort,
+      operatorAuthority: capturedOperator.authority,
+      armOperatorRunCancellation: capturedOperator.armCancellation,
+      retireOperatorRunCancellation: capturedOperator.retireCancellation,
       admittedSessionSettings,
       admittedSessionId,
       ...(expectedActiveReplyOperation ? { expectedActiveReplyOperation } : {}),

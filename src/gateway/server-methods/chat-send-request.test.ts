@@ -202,6 +202,27 @@ describe("normalizeChatSendRequest", () => {
         }).ok,
       ).toBe(false);
     }
+    for (const [message, accepted] of [
+      ["x@everyone", false],
+      ["@everyoneelse", false],
+      ["𐐀@everyone", false],
+      ["@everyone𐐀", false],
+      ["x\u0001@everyone", false],
+      ["@everyone\u0001else", false],
+      ["@everyone!", true],
+      ["(@everyone)", true],
+    ] as const) {
+      const start = message.indexOf("@everyone");
+      expect(
+        normalizeChatSendRequest({
+          params: validParams({
+            message,
+            mentions: [{ kind: "everyone", start, end: start + 9 }],
+          }),
+          client: humanClient(),
+        }).ok,
+      ).toBe(accepted);
+    }
     expect(
       normalize([
         { kind: "everyone", start: 2, end: 11 },

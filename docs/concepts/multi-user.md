@@ -114,6 +114,8 @@ Administrators can still create shared profiles through the CLI (`openclaw model
 
 ### Pin and default rules
 
+Creating your own session with `operator.sessions.write` applies your saved new-chat default when available, or uses the Gateway's configured selection otherwise. Explicit personal account selection and changes to your new-chat default still require `operator.write`. Both creation paths retain the current connection, profile, and role checks.
+
 When a linked person creates a session, OpenClaw captures their default as that session's auth selection. The selection has the same strength as a `/model ...@profile` pin. This happens before an initial message is dispatched, including when creation and the first message are separate requests. Sessions first created by turn admission capture the default at that admission. The pin is **session-sticky**: other people steering into that session use its selected account, and forks inherit it. An explicit `/model ...@profile -s` pin outranks the link. A fresh personal selection must belong to the authenticated human making it. Knowing another person's account id is not permission to select it. Agent- and channel-originated turns do not create personal links. For runtimes using OpenClaw's auth fallback planner, the ordered shared profiles for the same provider remain failover candidates if the pinned account fails. This matches the behavior of an explicit pin. Claude CLI requires its selected account and does not substitute shared profiles or its native login when that account cannot be used.
 
 **Use Gateway defaults for new chats**, CLI `clear-default`, and API `users.unlinkAuthProfile` affect future sessions only. Changing a default does not repin existing chats, including unpinned chats using shared credentials. Adopting or forking an existing chat does not apply the current participant's default, and changing providers does not silently select their personal account. Expand the **Account** category in the model menu to make that explicit choice. Clearing a default neither deletes the saved credential nor revokes a provider token. Revoke it with the provider if existing sessions must stop using it. Links and existing session credentials follow verified profile merges, but an explicit unlink on the surviving profile is not reversed by a merge.
@@ -174,7 +176,10 @@ This is an explicit selection, not text matching: typing or pasting `@everyone` 
 ### Picker controls
 
 Use Up/Down to move through people, Home/End to jump to the first or last result,
-and Enter or Tab to insert the selected mention. Escape closes the picker. Filtering
+and Enter or Tab to insert the selected mention. Escape closes the picker. Typing a
+space immediately after `@` also closes it, so a standalone `@` and the prose after it
+stay ordinary text. Moving the cursor outside the active mention also closes the picker.
+Spaces within a typed name still search for that full name. Filtering
 keeps the selected person when they still match. The picker reuses recent results
 for the same search in the same composer, including after closing it or starting
 another mention. After five minutes, it refreshes cached results in the background

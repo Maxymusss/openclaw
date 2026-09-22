@@ -48,6 +48,21 @@ it("reads current committed metadata without SQL while presentation and catalog 
     const releaseForeground = projectionWork.retainSessionListForegroundWork();
     const catalog = createDeferredCore<[]>();
     const presentation = createDeferredCore();
+    const presentationEntered = createDeferredCore();
+    let holdPresentation = false;
+    const createDrain = projectionWork.createSessionProjectionDrain;
+    vi.spyOn(projectionWork, "createSessionProjectionDrain").mockImplementation((params) =>
+      createDrain({
+        ...params,
+        async refresh() {
+          if (holdPresentation) {
+            presentationEntered.resolve();
+            await presentation.promise;
+          }
+          await params.refresh();
+        },
+      }),
+    );
     const readCatalog = vi.fn(async () => []);
     const projection = await createSessionRowProjection({ cfg, getModelCatalog: readCatalog });
     try {
@@ -56,9 +71,7 @@ it("reads current committed metadata without SQL while presentation and catalog 
       expect(original?.entry).toMatchObject(entry);
       const materializedCount = projection.materializedCount;
       readCatalog.mockReturnValueOnce(catalog.promise);
-      const yieldWork = vi
-        .spyOn(projectionWork, "yieldSessionListWork")
-        .mockReturnValue(presentation.promise);
+      holdPresentation = true;
       sessionChanges.emit({ all: true, scope: "catalog" });
       expect(readCatalog).toHaveBeenCalledTimes(2);
       const assertCommitted = (expected: Partial<InternalSessionEntry>) => {
@@ -102,6 +115,7 @@ it("reads current committed metadata without SQL while presentation and catalog 
         visibility: "draft",
         displayName: "Current conversation",
       });
+      await presentationEntered.promise;
       expect(projection.dirtyRowCount).toBe(1);
       const current = assertCommitted({
         ...entry,
@@ -111,7 +125,7 @@ it("reads current committed metadata without SQL while presentation and catalog 
       expect(current?.generation).toBe(original?.generation);
       expect(current?.materialized).toBe(original?.materialized);
       expect(projection.materializedCount).toBe(materializedCount);
-      expect(yieldWork).toHaveBeenCalled();
+      expect(projection.needsMaterialization).toBe(true);
 
       replaceSessionEntrySync(scope, {
         ...entry,
@@ -326,13 +340,47 @@ it("refreshes profile display fields on selected live and archived rows without 
     const release = projectionWork.retainSessionListForegroundWork();
     const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
     try {
-      await listProjectedSessions({ projection, opts: { archived: "all" } });
+      await listProjectedSessions({ projection, opts: { archived: "all", includePeople: true } });
       const reads = vi.spyOn(materialization, "readSessionRowEntry");
       setDisplayName(owner.id, "Current owner");
       setDisplayName(participant.id, "Current participant");
-      const result = await listProjectedSessions({ projection, opts: { archived: "all" } });
+      const result = await listProjectedSessions({
+        projection,
+        opts: { archived: "all", includePeople: true },
+      });
       expect(result.owners?.map((actor) => actor.label)).toEqual(["Current owner"]);
+      expect(result.people).toEqual([
+        expect.objectContaining({
+          identity: { type: "profile", id: owner.id },
+          label: "Current owner",
+          sessionCount: 2,
+        }),
+        expect.objectContaining({
+          identity: { type: "profile", id: participant.id },
+          label: "Current participant",
+          sessionCount: 2,
+        }),
+      ]);
       expect(result.sessions).toHaveLength(2);
+      const originalPeople = structuredClone(result.people);
+      const live = await listProjectedSessions({
+        projection,
+        opts: { includePeople: true },
+      });
+      expect(live.people).toEqual(
+        originalPeople?.map((person) => ({ ...person, sessionCount: 1 })),
+      );
+      expect(result.people).toEqual(originalPeople);
+      for (const person of live.people ?? []) {
+        person.sessionCount = 99;
+        person.label = "Changed response";
+      }
+      const repeated = await listProjectedSessions({
+        projection,
+        opts: { archived: "all", includePeople: true },
+      });
+      expect(repeated.people).toEqual(originalPeople);
+      expect(result.people).toEqual(originalPeople);
       for (const row of result.sessions) {
         expect(row.createdActor?.label).toBe("Current owner");
         expect(row.owner?.actor.label).toBe("Current owner");
@@ -349,10 +397,18 @@ it("refreshes profile display fields on selected live and archived rows without 
         projection,
         opts: {
           archived: "all",
+          includePeople: true,
           profileRelation: { profileId: participant.id, relationship: "involving" },
         },
       });
       expect(merged.sessions).toHaveLength(2);
+      expect(merged.people).toEqual([
+        expect.objectContaining({
+          identity: { type: "profile", id: owner.id },
+          label: "Current owner",
+          sessionCount: 2,
+        }),
+      ]);
       expect(merged.sessions.every((row) => row.participants === undefined)).toBe(true);
       expect(reads).not.toHaveBeenCalled();
     } finally {

@@ -72,6 +72,19 @@ reconcile dependencies before the remote wrapper starts.
 Run the test toolchain on Node 24.16+ or Node 26.1+, matching the packaged
 runtime floor. Older Node bindings can truncate SQLite TEXT values at embedded NUL characters.
 
+To compare the same Vitest selection on Node and Bun, use the existing wrapper:
+
+```sh
+OPENCLAW_VITEST_RUNTIME=node pnpm test <path-or-filter>
+OPENCLAW_VITEST_RUNTIME=bun pnpm test <path-or-filter>
+```
+
+Install the exact Bun fork build pinned by `.github/actions/setup-test-bun/action.yml`
+for comparable results. This selects the
+actual Vitest process and workers while retaining Node for orchestration and
+compiler preparation. It does not use Bun's native test runner. `bun run` alone
+does not select Bun for tests. Node remains the local default.
+
 Test processes and their CLI fixtures keep Sparkplug baseline compilation enabled
 but run it synchronously. This avoids a Node 24 shutdown deadlock where a
 background compiler waits for main-thread garbage collection while `process.exit`
@@ -115,16 +128,23 @@ These launchers retain tsx's in-process transform cache and Node's module cache.
 They skip tsx's shared disk cache before the loader starts, and child tooling
 inherits that policy. This cache policy does not clean
 existing temporary directories, Node or Vitest caches, or other global caches. Standalone
-`pnpm ui:build` keeps native startup and applies the same preload to its post-build
-validators; it does not require `TSX_DISABLE_CACHE` in the invoking shell. Raw
-external `tsx` and `node --import tsx` invocations outside these launchers are unchanged.
+`pnpm ui:build` starts natively and runs its post-build validators directly with Node.
+Those validators do not load tsx or require `TSX_DISABLE_CACHE` in the invoking shell.
+Raw external `tsx` and `node --import tsx` invocations outside these launchers are unchanged.
 
-Parallel project runs on macOS and Linux reuse filesystem transforms within
-exclusive worker slots, with separate directories for each Vitest configuration.
-A slot stays owned through preflight, retries, and verified child/group completion;
-uncertain cleanup retires it. Explicit isolated cache paths, serial and watch runs,
-and Windows retain their existing cache ownership. Concurrent invocations still
-need separate cache roots.
+Node Vitest workers also preload `scripts/tsx.mjs` once per worker. Vitest still
+owns test module mocks, while native plugin SDK imports use Node's source module
+graph with TypeScript syntax and `.js`-to-`.ts` resolution. Bun uses its native
+TypeScript loader. This keeps source-host tests from relying on Jiti to evaluate
+another copy of the host SDK.
+
+Scheduler-owned project runs on macOS and Linux reuse filesystem transforms within
+exclusive slots, including serial runs that mix configurations. Each Vitest
+configuration keeps separate directories. A slot stays owned through preflight,
+retries, and verified child/group completion; uncertain cleanup retires it.
+Same-config serial runs without scheduler assignment, explicit isolated cache paths,
+watch runs, and Windows retain their existing cache ownership. Concurrent invocations
+still need separate cache roots.
 
 Control UI builds report size budgets without enforcing them. Run
 `pnpm ui:check-performance` after a build to enforce absolute budgets, or
