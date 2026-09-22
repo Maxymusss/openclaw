@@ -2,6 +2,67 @@ import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 
+export function registerHeartbeatAuthProfilePreservationTest({
+  authProfileStoreMock,
+  defaultProvider,
+  defaultModel,
+  sessionKey,
+  resolveStateWithOverride,
+}: {
+  authProfileStoreMock: AuthProfileSelectionTestHarness["authProfileStoreMock"];
+  defaultProvider: string;
+  defaultModel: string;
+  sessionKey: string;
+  resolveStateWithOverride: (params: {
+    providerOverride: string;
+    modelOverride: string;
+    modelOverrideSource: "auto";
+    modelOverrideFallbackOriginProvider: string;
+    modelOverrideFallbackOriginModel: string;
+    authProfileOverride: string;
+    authProfileOverrideSource: "user";
+    provider: string;
+    model: string;
+    isHeartbeat: boolean;
+  }) => Promise<{
+    state: { provider: string; model: string; resetModelOverride: boolean };
+    sessionStore: Record<string, SessionEntry>;
+  }>;
+}): void {
+  it("preserves user auth profile when clearing a stale heartbeat auto-failover override", async () => {
+    authProfileStoreMock.store = {
+      version: 1,
+      profiles: {
+        "mac-studio:local": {
+          type: "api_key",
+          provider: defaultProvider,
+          key: "test-key",
+        },
+      },
+    };
+    const { state, sessionStore } = await resolveStateWithOverride({
+      providerOverride: "openrouter",
+      modelOverride: "minimax/minimax-m2.7",
+      modelOverrideSource: "auto",
+      modelOverrideFallbackOriginProvider: "openai",
+      modelOverrideFallbackOriginModel: "gpt-5.3",
+      authProfileOverride: "mac-studio:local",
+      authProfileOverrideSource: "user",
+      provider: "openrouter",
+      model: "minimax/minimax-m2.7",
+      isHeartbeat: true,
+    });
+
+    expect(state.provider).toBe(defaultProvider);
+    expect(state.model).toBe(defaultModel);
+    expect(state.resetModelOverride).toBe(true);
+    expect(sessionStore[sessionKey]?.providerOverride).toBeUndefined();
+    expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
+    expect(sessionStore[sessionKey]?.authProfileOverride).toBe("mac-studio:local");
+    expect(sessionStore[sessionKey]?.authProfileOverrideSource).toBe("user");
+  });
+}
+
 type AuthProfileSelectionTestHarness = {
   createModelSelectionState: typeof import("./model-selection.js").createModelSelectionState;
   resolveAgentDir: typeof import("../../agents/agent-scope.js").resolveAgentDir;
@@ -11,6 +72,7 @@ type AuthProfileSelectionTestHarness = {
       profiles: Record<string, { type: "api_key"; provider: string; key: string }>;
     };
     ensureAuthProfileStore: unknown;
+    prepareAuthProfileProviderForSelection: unknown;
     resolveAuthProfileProviderForSelection: unknown;
   };
   sessionPersistenceMocks: {
@@ -155,10 +217,11 @@ export function registerModelSelectionAuthProfileTests({
         allowKeychainPrompt: false,
         profileId: selectedProfileId,
       });
-      expect(authProfileStoreMock.resolveAuthProfileProviderForSelection).toHaveBeenCalledWith({
+      expect(authProfileStoreMock.prepareAuthProfileProviderForSelection).toHaveBeenCalledExactlyOnceWith({
         agentDir,
         profileId: selectedProfileId,
       });
+      expect(authProfileStoreMock.resolveAuthProfileProviderForSelection).not.toHaveBeenCalled();
       expect(sessionPersistenceMocks.patchSessionEntryCore).not.toHaveBeenCalled();
       expect(sessionPersistenceMocks.persistReplySessionEntry).not.toHaveBeenCalled();
     });

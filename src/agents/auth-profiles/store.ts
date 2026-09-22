@@ -1400,10 +1400,15 @@ export function createAuthProfileStoreRuntime(
     return applyScopedAuthReadThrough(markRuntimePersistedProfiles(synced));
   }
 
-  const { loadAuthProfileStoreForRuntime, loadAuthProfileStoreForRuntimeAsync } =
+  const {
+    loadAuthProfileStoreForRuntime,
+    loadAuthProfileStoreForRuntimeAsync,
+    prepareAuthProfileProviderForSelection,
+  } =
     createAuthProfileStoreRuntimeReader({
       isEnvOnlyAuthProfileRuntime,
       getScopedAuthProfileEnv,
+      getScopedSharedAuthStore,
       resolveRuntimeAuthProfileAgentDir,
       resolveRuntimeAuthProfileLoadOptions,
       loadAuthProfileStoreForAgent,
@@ -2018,6 +2023,7 @@ export function createAuthProfileStoreRuntime(
     loadAuthProfileStore,
     loadAuthProfileStoreForRuntime,
     loadAuthProfileStoreForRuntimeAsync,
+    prepareAuthProfileProviderForSelection,
     loadAuthProfileStoreForSecretsRuntime,
     loadAuthProfileStoreWithoutExternalProfiles,
     ensureAuthProfileStore,

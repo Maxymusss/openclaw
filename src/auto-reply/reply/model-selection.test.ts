@@ -17,7 +17,10 @@ import * as activeThinkingPolicy from "../../plugins/provider-thinking-active.js
 import { prepareModelCatalogThinkingPolicies } from "../../plugins/provider-thinking.js";
 import { isThinkingLevelSupported } from "../thinking.js";
 import { prepareModelSelectionRuntime } from "./model-runtime-normalization.js";
-import { registerModelSelectionAuthProfileTests } from "./model-selection.auth-profile.test-support.js";
+import {
+  registerHeartbeatAuthProfilePreservationTest,
+  registerModelSelectionAuthProfileTests,
+} from "./model-selection.auth-profile.test-support.js";
 import {
   createInitialState,
   makeConfiguredModel,
@@ -92,6 +95,12 @@ const authProfileStoreMock = vi.hoisted(() => {
     profiles: Record<string, { type: "api_key"; provider: string; key: string }>;
   };
   const ensureAuthProfileStore = vi.fn(() => store);
+  const prepareAuthProfileProviderForSelection = vi.fn(
+    async ({ profileId }: { profileId: string }) => ({
+      profileId,
+      provider: store.profiles[profileId]?.provider,
+    }),
+  );
   const resolveAuthProfileProviderForSelection = vi.fn(
     ({ profileId }: { agentDir?: string; profileId: string }) =>
       store.profiles[profileId]?.provider,
@@ -104,10 +113,17 @@ const authProfileStoreMock = vi.hoisted(() => {
       store = next;
     },
     ensureAuthProfileStore,
+    prepareAuthProfileProviderForSelection,
     resolveAuthProfileProviderForSelection,
     reset() {
       store = { version: 1, profiles: {} };
       ensureAuthProfileStore.mockClear();
+      prepareAuthProfileProviderForSelection
+        .mockReset()
+        .mockImplementation(async ({ profileId }) => ({
+          profileId,
+          provider: store.profiles[profileId]?.provider,
+        }));
       resolveAuthProfileProviderForSelection.mockClear();
     },
   };
@@ -115,6 +131,11 @@ const authProfileStoreMock = vi.hoisted(() => {
 
 vi.mock("../../agents/auth-profiles.runtime.js", () => ({
   ensureAuthProfileStore: authProfileStoreMock.ensureAuthProfileStore,
+}));
+
+vi.mock("../../agents/auth-profiles/store-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/auth-profiles/store-runtime.js")>()),
+  prepareAuthProfileProviderForSelection: authProfileStoreMock.prepareAuthProfileProviderForSelection,
 }));
 
 vi.mock("../../agents/auth-profiles/store.js", async (importOriginal) => ({
@@ -1882,37 +1903,12 @@ describe("createModelSelectionState auto-failover overrides", () => {
     expect(sessionStore[sessionKey]?.modelOverrideFallbackOriginModel).toBeUndefined();
   });
 
-  it("preserves user auth profile when clearing a stale heartbeat auto-failover override", async () => {
-    authProfileStoreMock.store = {
-      version: 1,
-      profiles: {
-        "mac-studio:local": {
-          type: "api_key",
-          provider: defaultProvider,
-          key: "test-key",
-        },
-      },
-    };
-    const { state, sessionStore } = await resolveStateWithOverride({
-      providerOverride: "openrouter",
-      modelOverride: "minimax/minimax-m2.7",
-      modelOverrideSource: "auto",
-      modelOverrideFallbackOriginProvider: "openai",
-      modelOverrideFallbackOriginModel: "gpt-5.3",
-      authProfileOverride: "mac-studio:local",
-      authProfileOverrideSource: "user",
-      provider: "openrouter",
-      model: "minimax/minimax-m2.7",
-      isHeartbeat: true,
-    });
-
-    expect(state.provider).toBe(defaultProvider);
-    expect(state.model).toBe(defaultModel);
-    expect(state.resetModelOverride).toBe(true);
-    expect(sessionStore[sessionKey]?.providerOverride).toBeUndefined();
-    expect(sessionStore[sessionKey]?.modelOverride).toBeUndefined();
-    expect(sessionStore[sessionKey]?.authProfileOverride).toBe("mac-studio:local");
-    expect(sessionStore[sessionKey]?.authProfileOverrideSource).toBe("user");
+  registerHeartbeatAuthProfilePreservationTest({
+    authProfileStoreMock,
+    defaultProvider,
+    defaultModel,
+    sessionKey,
+    resolveStateWithOverride,
   });
 
   it("keeps heartbeat auto-failover override when the fallback origin still matches default", async () => {

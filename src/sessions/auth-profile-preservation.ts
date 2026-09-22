@@ -28,9 +28,70 @@ type SessionAuthProfilePreservationParams = {
   metadataSnapshot?: Pick<PluginMetadataSnapshot, "plugins">;
 };
 
+type PreparedSessionAuthProfileProvider = { profileId: string; provider: string | undefined };
+
+/** Prepare missing user intent before selection, never from a synchronous session writer. */
+export function prepareUnavailableSessionAuthProfileOverride(params: {
+  agentDir?: string;
+  entry: SessionEntry;
+  store: Pick<AuthProfileStore, "profiles">;
+  sessionStore?: Record<string, SessionEntry>;
+  sessionKey?: string;
+}): Promise<PreparedSessionAuthProfileProvider> | undefined {
+  const profileId = normalizeOptionalString(params.entry.authProfileOverride);
+  if (
+    !profileId ||
+    params.store.profiles[profileId] ||
+    resolveCollapsedSessionAuthPinSource(params.entry) !== "user"
+  ) {
+    return undefined;
+  }
+  const captureSelection = (entry: SessionEntry | undefined) => [
+    entry?.sessionId,
+    entry?.authProfileOverride,
+    entry?.authProfileOverrideSource,
+    entry?.authProfileOverrideCompactionCount,
+  ];
+  const selection = captureSelection(params.entry);
+  const storeEntry = params.sessionKey ? params.sessionStore?.[params.sessionKey] : undefined;
+  const storeSelection = captureSelection(storeEntry);
+  return (async () => {
+    const { prepareAuthProfileProviderForSelection } =
+      await import("../agents/auth-profiles/store-runtime.js");
+    const prepared = await prepareAuthProfileProviderForSelection({
+      agentDir: params.agentDir,
+      profileId,
+    });
+    // Async owner reads cannot authorize clearing a newer session or explicit selection.
+    if (
+      captureSelection(params.entry).some((value, index) => value !== selection[index]) ||
+      captureSelection(storeEntry).some((value, index) => value !== storeSelection[index]) ||
+      (params.sessionKey && params.sessionStore?.[params.sessionKey] !== storeEntry)
+    ) {
+      throw new Error("Session auth profile changed during provider preparation; retry selection");
+    }
+    return prepared;
+  })();
+}
+
 /** Checks whether a pinned session auth profile can authenticate the selected provider. */
 export function shouldPreserveSessionAuthProfileOverride(
   params: SessionAuthProfilePreservationParams,
+): boolean {
+  const profileId = normalizeOptionalString(params.entry.authProfileOverride);
+  // Public synchronous SDK/updater callers keep their existing owner-read contract.
+  if (!profileId || !normalizeOptionalLowercaseString(params.provider)) {
+    return false;
+  }
+  return shouldPreserveSessionAuthProfileOverrideWithProvider(
+    params,
+    resolveAuthProfileProviderForSelection({ agentDir: params.agentDir, profileId }),
+  );
+}
+
+function shouldPreserveSessionAuthProfileOverrideWithProvider(
+  params: SessionAuthProfilePreservationParams,
+  profileProvider: string | undefined,
 ): boolean {
   const profileOverride = normalizeOptionalString(params.entry.authProfileOverride);
   const provider = normalizeOptionalLowercaseString(params.provider);
@@ -53,10 +114,7 @@ export function shouldPreserveSessionAuthProfileOverride(
     );
   };
   const recordedProvider =
-    resolveAuthProfileProviderForSelection({
-      agentDir: params.agentDir,
-      profileId: profileOverride,
-    }) ?? params.cfg.auth?.profiles?.[profileOverride]?.provider;
+    profileProvider ?? params.cfg.auth?.profiles?.[profileOverride]?.provider;
   if (recordedProvider) {
     return resolvesToTargetProvider(recordedProvider, true);
   }
@@ -70,14 +128,21 @@ export function shouldPreserveSessionAuthProfileOverride(
 
 /** Missing credentials preserve explicit same-provider intent until authentication reports recovery. */
 export function shouldPreserveUnavailableSessionAuthProfileOverride(
-  params: SessionAuthProfilePreservationParams & { store: Pick<AuthProfileStore, "profiles"> },
+  params: SessionAuthProfilePreservationParams & {
+    store: Pick<AuthProfileStore, "profiles">;
+    preparedProfile: PreparedSessionAuthProfileProvider;
+  },
 ): boolean {
   const profileId = normalizeOptionalString(params.entry.authProfileOverride);
+  // A concurrent explicit selection must never be cleared using the previous pin's provider.
+  if (profileId !== params.preparedProfile.profileId) {
+    throw new Error("Session auth profile changed during provider preparation; retry selection");
+  }
   return Boolean(
     profileId &&
-    !params.store.profiles[profileId] &&
-    resolveCollapsedSessionAuthPinSource(params.entry) === "user" &&
-    shouldPreserveSessionAuthProfileOverride(params),
+      !params.store.profiles[profileId] &&
+      resolveCollapsedSessionAuthPinSource(params.entry) === "user" &&
+      shouldPreserveSessionAuthProfileOverrideWithProvider(params, params.preparedProfile.provider),
   );
 }
 

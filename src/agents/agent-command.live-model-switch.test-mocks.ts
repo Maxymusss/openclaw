@@ -1,5 +1,21 @@
 import { vi } from "vitest";
 
+export async function createTestAuthProfileRuntime(
+  readStore: () => { profiles: Record<string, unknown> },
+) {
+  const actual = await vi.importActual<typeof import("./auth-profiles/store-runtime.js")>(
+    "./auth-profiles/store-runtime.js",
+  );
+  return {
+    ...actual,
+    ensureAuthProfileStore: vi.fn(readStore),
+    prepareAuthProfileProviderForSelection: async ({ profileId }: { profileId: string }) => ({
+      profileId,
+      provider: (readStore().profiles[profileId] as { provider?: string } | undefined)?.provider,
+    }),
+  };
+}
+
 export function createTestThinkingPolicy(state: {
   isThinkingLevelSupportedMock: (args: unknown) => boolean;
   resolveSupportedThinkingLevelMock: (args: { level?: string }) => string | undefined;

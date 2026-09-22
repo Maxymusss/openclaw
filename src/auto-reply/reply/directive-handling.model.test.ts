@@ -74,20 +74,10 @@ vi.mock("../../agents/auth-profiles/store.js", async () => {
     hasAnyAuthProfileStoreSource: () => Object.keys(authProfilesStoreMock.profiles).length > 0,
   };
 });
-vi.mock("../../agents/auth-profiles/store-runtime.js", () => {
-  return {
-    ensureAuthProfileStore: readAuthProfileStoreForTest,
-    ensureAuthProfileStoreWithoutExternalProfiles: readAuthProfileStoreForTest,
-    ensureAuthProfileStoreForLocalUpdate: readAuthProfileStoreForTest,
-    loadAuthProfileStore: readAuthProfileStoreForTest,
-    loadAuthProfileStoreForRuntime: readAuthProfileStoreForTest,
-    loadAuthProfileStoreForSecretsRuntime: readAuthProfileStoreForTest,
-    loadAuthProfileStoreWithoutExternalProfiles: readAuthProfileStoreForTest,
-    saveAuthProfileStore: vi.fn(),
-    updateAuthProfileStoreWithLock: vi.fn(async ({ update }) =>
-      update(readAuthProfileStoreForTest()),
-    ),
-  };
+vi.mock("../../agents/auth-profiles/store-runtime.js", async () => {
+  const { createAuthProfileStoreRuntimeMock } =
+    await import("../../agents/auth-profiles/store-selection.test-support.js");
+  return createAuthProfileStoreRuntimeMock(readAuthProfileStoreForTest);
 });
 
 vi.mock("../../channels/plugins/index.js", () => ({

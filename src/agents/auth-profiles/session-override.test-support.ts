@@ -69,6 +69,10 @@ vi.mock("./store.js", async (importOriginal) => ({
 }));
 vi.mock("./store-runtime.js", () => ({
   ensureAuthProfileStore: authStoreMocks.ensureAuthProfileStore,
+  prepareAuthProfileProviderForSelection: async ({ profileId }: { profileId: string }) => ({
+    profileId,
+    provider: authStoreMocks.state.store.profiles[profileId]?.provider,
+  }),
 }));
 
 vi.mock("./usage.js", () => ({
