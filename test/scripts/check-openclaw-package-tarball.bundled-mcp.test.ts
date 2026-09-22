@@ -1,12 +1,24 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { cpSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  cpSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { resolveNpmRunner } from "../../scripts/npm-runner.mts";
 import { resolvePnpmRunner } from "../../scripts/pnpm-runner.mts";
-import { listFilesRecursively, withTarball } from "./package-tarball-fixture.js";
+import {
+  expectPackageCommandSuccess,
+  listFilesRecursively,
+  withTarball,
+} from "./package-tarball-fixture.js";
 
 const require = createRequire(import.meta.url);
 const CHECK_SCRIPT = resolve("scripts/check-openclaw-package-tarball.mts");
@@ -55,7 +67,7 @@ function installPatchedMcp(packageRoot: string) {
     windowsVerbatimArguments: npm.windowsVerbatimArguments,
     timeout: 30_000,
   });
-  expect(packed.status, packed.stderr).toBe(0);
+  expectPackageCommandSuccess(packed, "pack installed browser MCP");
   // A local override supplies real pnpm metadata without registry or host-cache access.
   writeFileSync(
     join(packageRoot, "pnpm-workspace.yaml"),
@@ -84,11 +96,60 @@ function installPatchedMcp(packageRoot: string) {
     windowsVerbatimArguments: pnpm.windowsVerbatimArguments,
     timeout: 30_000,
   });
-  expect(installed.status, installed.stderr || installed.stdout).toBe(0);
+  expectPackageCommandSuccess(installed, "install browser MCP fixture");
   expect(lstatSync(join(packageRoot, MCP_PREFIX)).isSymbolicLink()).toBe(true);
 }
 
 describe("bundled browser MCP package", () => {
+  it("retains native spawn failure facts and cleans the pre-pack fixture", () => {
+    let root = "";
+    let bodyRan = false;
+    expect(() =>
+      withTarball(
+        [],
+        {},
+        () => {
+          bodyRan = true;
+        },
+        undefined,
+        {
+          beforePack(packageRoot) {
+            root = dirname(packageRoot);
+            const result = spawnSync(join(packageRoot, "missing-command"), [], {
+              encoding: "utf8",
+            });
+            expectPackageCommandSuccess(result, "missing fixture command");
+          },
+        },
+      ),
+    ).toThrowError(/"status":null,"signal":null,.*"code":"ENOENT"/);
+    expect(bodyRan).toBe(false);
+    expect(root).not.toBe("");
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("keeps both streams alongside native errors without changing exit assertions", () => {
+    const result = spawnSync(process.execPath, ["-e", "process.exit(0)"], { encoding: "utf8" });
+    expect(() => expectPackageCommandSuccess(result, "successful command")).not.toThrow();
+    const failed = spawnSync(process.execPath, ["-e", "process.exit(7)"], { encoding: "utf8" });
+    expect(() => expectPackageCommandSuccess(failed, "failed command")).toThrowError(/"status":7/);
+    expect(() =>
+      expectPackageCommandSuccess(
+        {
+          ...result,
+          status: null,
+          signal: "SIGTERM",
+          error: Object.assign(new Error("spawn timed out"), { code: "ETIMEDOUT" }),
+          stderr: "captured stderr",
+          stdout: "captured stdout",
+        },
+        "fixture pack",
+      ),
+    ).toThrowError(
+      /fixture pack[\s\S]*"signal":"SIGTERM"[\s\S]*"code":"ETIMEDOUT"[\s\S]*spawn timed out[\s\S]*captured stderr[\s\S]*captured stdout/,
+    );
+  });
+
   it.each(["npm", "pnpm"] as const)(
     "retains the patched runtime through %s pack and an offline install",
     (pack) => {
@@ -98,7 +159,7 @@ describe("bundled browser MCP package", () => {
         { "dist/index.js": "export {};\n" },
         (tarball, root) => {
           const checked = check(tarball);
-          expect(checked.status, checked.stderr).toBe(0);
+          expectPackageCommandSuccess(checked, "check bundled browser MCP tarball");
           const consumer = join(root, "consumer");
           mkdirSync(consumer);
           writeFileSync(
@@ -126,7 +187,7 @@ describe("bundled browser MCP package", () => {
             windowsVerbatimArguments: npm.windowsVerbatimArguments,
             timeout: 30_000,
           });
-          expect(installed.status, installed.stderr).toBe(0);
+          expectPackageCommandSuccess(installed, "install bundled browser MCP consumer");
           const consumerRequire = createRequire(
             join(consumer, "node_modules/openclaw/package.json"),
           );
@@ -146,7 +207,7 @@ describe("bundled browser MCP package", () => {
               },
             },
           );
-          expect(cli.status, cli.stderr).toBe(0);
+          expectPackageCommandSuccess(cli, "read bundled browser MCP version");
           expect(cli.stdout.trim()).toBe("1.8.0");
         },
         undefined,
