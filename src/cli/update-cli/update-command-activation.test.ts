@@ -6,6 +6,8 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { resolveRuntimeWorkerUrl } from "../../infra/runtime-worker-url.js";
+import { closeIdleSqliteCoordinators } from "../../infra/sqlite-coordinator.js";
+import { withStateDatabaseCoordinatorRuntimeDirectory } from "../../infra/state-database-coordinator.js";
 import * as temporaryRoot from "../../infra/tmp-openclaw-dir.js";
 import {
   assertUpdateWriteAuthority,
@@ -232,150 +234,165 @@ it.each([
   "retained owner after expiry",
 ])("separates activation expiry from native diagnostic custody: %s", async (fault) => {
   const root = fs.realpathSync(dirs.make("update-timeout-custody-"));
-  const temporary = path.join(root, "private-tmp");
-  fs.mkdirSync(temporary, { mode: 0o700 });
-  vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(temporary);
-  const serviceRoot =
-    fault === "retained owner after expiry" ? path.join(root, "service") : undefined;
-  if (serviceRoot) fs.mkdirSync(serviceRoot);
-  const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
-  const admission = withMockedPlatform("freebsd", () => createFreeBsdUpdateWriteAdmission()!);
-  await admission.revalidate(() => {});
-  const created = createUpdateRun({ trigger: "cli" }, { env });
-  const run: NonNullable<UpdateCommandOptions["run"]> = {
-    runId: created.runId,
-    env,
-    freebsdWriteAdmission: admission,
-  };
-  const requesterFinalization = fault.includes("requester finalization");
-  let requesterCurrent = true;
-  if (requesterFinalization) {
-    run.requesterAuthority = { requester: {}, isCurrent: () => requesterCurrent };
-  }
-  const converge = vi.spyOn(convergence, "convergeUpdatePlugins");
-  const rollbackUpdate = vi.spyOn(rollback, "rollbackFailedUpdate");
-  const restart = vi.spyOn(service, "maybeRestartService");
-  let finalizationError: unknown;
-  let admissionAwaitObserved = false;
-  const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
-  vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
-  const refusal = vi.fn((cause: unknown) => admission.revoke(cause));
-  const replaceOwner = () => {
-    const db = new DatabaseSync(path.join(temporary, "managed-update-handoffs.sqlite"));
-    try {
-      db.prepare("UPDATE managed_update_handoffs SET owner = ? WHERE install_root = ?").run(
-        "replaced",
-        serviceRoot ?? root,
-      );
-    } finally {
-      db.close();
-    }
-  };
-  let first: unknown;
-  let timeout: unknown;
-  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
-  await withUpdateCommandTerminalResult(
-    async (registerRun) => {
-      registerRun(run);
-      await withUpdateCommandExecutor(
-        run.runId,
-        async (executor) => {
-          const fence = await executor.enter(root, { serviceRoot, activationTimeoutMs: 60_000 });
-          run.executorFence = fence;
-          if (fault === "native before expiry") {
-            replaceOwner();
-            try {
-              fence.assertCurrent();
-            } catch (error) {
-              first = error;
-            }
-            expect(first).toBeInstanceOf(Error);
-          }
-          if (fault === "package admission expiry") {
-            const lstat = fsp.lstat.bind(fsp);
-            vi.spyOn(fsp, "lstat").mockImplementation(async (...args) => {
-              const result = await lstat(...args);
-              if (
-                !admissionAwaitObserved &&
-                String(args[0]) === path.dirname(resolveOpenClawStateSqlitePath(env))
-              ) {
-                admissionAwaitObserved = true;
-                vi.setSystemTime(Date.now() + 60_001);
-              }
-              return result;
-            });
-            try {
-              await assertUpdateCommandPackageFinalization({
-                opts: { run },
-                result: { status: "ok", mode: "npm", root, steps: [], durationMs: 0 },
-              });
-            } catch (error) {
-              finalizationError = error;
-            }
-          } else {
-            if (fault === "revoked requester finalization") requesterCurrent = false;
-            vi.setSystemTime(Date.now() + 60_001);
-          }
+  const coordinatorDirectory = path.join(root, "coordinators");
+  await withStateDatabaseCoordinatorRuntimeDirectory(
+    { directory: coordinatorDirectory, keepAlive: true },
+    async () => {
+      try {
+        const temporary = path.join(root, "private-tmp");
+        fs.mkdirSync(temporary, { mode: 0o700 });
+        vi.spyOn(temporaryRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(temporary);
+        const serviceRoot =
+          fault === "retained owner after expiry" ? path.join(root, "service") : undefined;
+        if (serviceRoot) fs.mkdirSync(serviceRoot);
+        const env = { ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") };
+        const admission = withMockedPlatform("freebsd", () => createFreeBsdUpdateWriteAdmission()!);
+        await admission.revalidate(() => {});
+        const created = createUpdateRun({ trigger: "cli" }, { env });
+        const run: NonNullable<UpdateCommandOptions["run"]> = {
+          runId: created.runId,
+          env,
+          freebsdWriteAdmission: admission,
+        };
+        const requesterFinalization = fault.includes("requester finalization");
+        let requesterCurrent = true;
+        if (requesterFinalization) {
+          run.requesterAuthority = { requester: {}, isCurrent: () => requesterCurrent };
+        }
+        const converge = vi.spyOn(convergence, "convergeUpdatePlugins");
+        const rollbackUpdate = vi.spyOn(rollback, "rollbackFailedUpdate");
+        const restart = vi.spyOn(service, "maybeRestartService");
+        let finalizationError: unknown;
+        let admissionAwaitObserved = false;
+        const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
+        vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
+        const refusal = vi.fn((cause: unknown) => admission.revoke(cause));
+        const replaceOwner = () => {
+          const db = new DatabaseSync(path.join(temporary, "managed-update-handoffs.sqlite"));
           try {
-            assertUpdateWriteAuthority(admission, fence.assertCurrent);
-          } catch (error) {
-            timeout = error;
+            db.prepare("UPDATE managed_update_handoffs SET owner = ? WHERE install_root = ?").run(
+              "replaced",
+              serviceRoot ?? root,
+            );
+          } finally {
+            db.close();
           }
-          if (!first) expect(timeout).toBeInstanceOf(UpdateActivationTimeoutError);
-          else expect(timeout).toBe(first);
-          if (requesterFinalization) {
-            try {
-              await finishSuccessfulPackageSwitch({ packageRoot: root, run });
-            } catch (error) {
-              finalizationError = error;
-              if (!requesterCurrent) first = error;
-            }
-          }
-          if (fault === "native after expiry" || serviceRoot) replaceOwner();
-          if (fault === "private database after expiry") {
-            const database = path.join(temporary, "managed-update-handoffs.sqlite");
-            fs.renameSync(database, database + ".displaced");
-            fs.writeFileSync(database, "foreign generation", { mode: 0o600 });
-          }
-          // The executor must inspect custody during settlement, even though the
-          // public effect fence now throws an operation timeout.
-          throw timeout;
-        },
-        { onAuthorityFailure: refusal },
-      );
+        };
+        let first: unknown;
+        let timeout: unknown;
+        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+        await withUpdateCommandTerminalResult(
+          async (registerRun) => {
+            registerRun(run);
+            await withUpdateCommandExecutor(
+              run.runId,
+              async (executor) => {
+                const fence = await executor.enter(root, {
+                  serviceRoot,
+                  activationTimeoutMs: 60_000,
+                });
+                run.executorFence = fence;
+                if (fault === "native before expiry") {
+                  replaceOwner();
+                  try {
+                    fence.assertCurrent();
+                  } catch (error) {
+                    first = error;
+                  }
+                  expect(first).toBeInstanceOf(Error);
+                }
+                if (fault === "package admission expiry") {
+                  const lstat = fsp.lstat.bind(fsp);
+                  vi.spyOn(fsp, "lstat").mockImplementation(async (...args) => {
+                    const result = await lstat(...args);
+                    if (
+                      !admissionAwaitObserved &&
+                      String(args[0]) === path.dirname(resolveOpenClawStateSqlitePath(env))
+                    ) {
+                      admissionAwaitObserved = true;
+                      vi.setSystemTime(Date.now() + 60_001);
+                    }
+                    return result;
+                  });
+                  try {
+                    await assertUpdateCommandPackageFinalization({
+                      opts: { run },
+                      result: { status: "ok", mode: "npm", root, steps: [], durationMs: 0 },
+                    });
+                  } catch (error) {
+                    finalizationError = error;
+                  }
+                } else {
+                  if (fault === "revoked requester finalization") requesterCurrent = false;
+                  vi.setSystemTime(Date.now() + 60_001);
+                }
+                try {
+                  assertUpdateWriteAuthority(admission, fence.assertCurrent);
+                } catch (error) {
+                  timeout = error;
+                }
+                if (!first) expect(timeout).toBeInstanceOf(UpdateActivationTimeoutError);
+                else expect(timeout).toBe(first);
+                if (requesterFinalization) {
+                  try {
+                    await finishSuccessfulPackageSwitch({ packageRoot: root, run });
+                  } catch (error) {
+                    finalizationError = error;
+                    if (!requesterCurrent) first = error;
+                  }
+                }
+                if (fault === "native after expiry" || serviceRoot) replaceOwner();
+                if (fault === "private database after expiry") {
+                  const database = path.join(temporary, "managed-update-handoffs.sqlite");
+                  fs.renameSync(database, database + ".displaced");
+                  fs.writeFileSync(database, "foreign generation", { mode: 0o600 });
+                }
+                // The executor must inspect custody during settlement, even though the
+                // public effect fence now throws an operation timeout.
+                throw timeout;
+              },
+              { onAuthorityFailure: refusal },
+            );
+          },
+          { json: true },
+        ).catch(() => {});
+        if (requesterFinalization || fault === "package admission expiry") {
+          expect(finalizationError).toBe(requesterCurrent ? timeout : first);
+          expect(finalizationError).toBeInstanceOf(Error);
+          expect(converge).not.toHaveBeenCalled();
+          expect(rollbackUpdate).not.toHaveBeenCalled();
+          expect(restart).not.toHaveBeenCalled();
+          if (fault === "package admission expiry") expect(admissionAwaitObserved).toBe(true);
+          if (!requesterCurrent) expect(first).toMatchObject({ code: "requester-revoked" });
+        }
+        if (
+          fault === "clean" ||
+          fault === "requester finalization" ||
+          fault === "package admission expiry"
+        ) {
+          expect(admission.canWrite).toBe(true);
+          expect(refusal).not.toHaveBeenCalled();
+          expect(getUpdateRun(run.runId, { env })).toMatchObject({
+            status: "failed",
+            reason: "update-activation-timeout",
+          });
+          expect(output).toHaveBeenCalledTimes(1);
+          expect(createManagedHandoffLeaseStore().read(root)).toEqual({ kind: "absent" });
+        } else {
+          expect(admission.canWrite).toBe(false);
+          expect(admission.failure).toBeInstanceOf(Error);
+          expect(admission.failure).not.toBeInstanceOf(UpdateActivationTimeoutError);
+          if (first) expect(admission.failure).toBe(first);
+          expect(getUpdateRun(run.runId, { env })).toEqual(created);
+          expect(output).not.toHaveBeenCalled();
+        }
+      } finally {
+        // Terminal history releases idle pooled coordinators, not activation work.
+        // Dispose only this fixture's pool before checking for leaked deadline timers.
+        closeIdleSqliteCoordinators(coordinatorDirectory);
+      }
     },
-    { json: true },
-  ).catch(() => {});
-  if (requesterFinalization || fault === "package admission expiry") {
-    expect(finalizationError).toBe(requesterCurrent ? timeout : first);
-    expect(finalizationError).toBeInstanceOf(Error);
-    expect(converge).not.toHaveBeenCalled();
-    expect(rollbackUpdate).not.toHaveBeenCalled();
-    expect(restart).not.toHaveBeenCalled();
-    if (fault === "package admission expiry") expect(admissionAwaitObserved).toBe(true);
-    if (!requesterCurrent) expect(first).toMatchObject({ code: "requester-revoked" });
-  }
-  if (
-    fault === "clean" ||
-    fault === "requester finalization" ||
-    fault === "package admission expiry"
-  ) {
-    expect(admission.canWrite).toBe(true);
-    expect(refusal).not.toHaveBeenCalled();
-    expect(getUpdateRun(run.runId, { env })).toMatchObject({
-      status: "failed",
-      reason: "update-activation-timeout",
-    });
-    expect(output).toHaveBeenCalledTimes(1);
-    expect(createManagedHandoffLeaseStore().read(root)).toEqual({ kind: "absent" });
-  } else {
-    expect(admission.canWrite).toBe(false);
-    expect(admission.failure).toBeInstanceOf(Error);
-    expect(admission.failure).not.toBeInstanceOf(UpdateActivationTimeoutError);
-    if (first) expect(admission.failure).toBe(first);
-    expect(getUpdateRun(run.runId, { env })).toEqual(created);
-    expect(output).not.toHaveBeenCalled();
-  }
+  );
   expect(vi.getTimerCount()).toBe(0);
 });
 
