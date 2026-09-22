@@ -121,6 +121,7 @@ export async function persistPendingFinalDeliveryMarker(
             }
           : {}),
         pendingFinalDeliveryCompletion: {
+          agentId: params.agentId,
           deliveryId,
           intentId,
           ...(entry.restartRecoveryDeliveryRunId
