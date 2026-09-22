@@ -18,6 +18,8 @@ type CaptureParams = {
   stderr: string | null;
   startedAt: number;
   finishedAt: number;
+  /** Exact --logs-dir supplied to this invocation; never an inferred cache. */
+  explicitLogsDir?: string;
 };
 
 // Failure-only observation: no config loading, npm invocation, directory creation,
@@ -55,6 +57,7 @@ function capture(params: CaptureParams) {
     reported && isAbsolute(reported) && debugName.test(basename(reported)) ? reported : undefined;
   const logDirs = [
     ...new Set([
+      ...(params.explicitLogsDir ? [resolve(params.cwd, params.explicitLogsDir)] : []),
       ...(reportedFile ? [dirname(reportedFile)] : []),
       ...(configuredLogs ? [resolve(params.cwd, configuredLogs)] : []),
       ...cacheCandidates.map((cache) => join(cache, "_logs")),
@@ -136,6 +139,14 @@ function capture(params: CaptureParams) {
                 ),
               )
               .slice(-24);
+            // Fixed phase vocabulary only: never expose argv, registry/auth/config
+            // values, dependency names or raw debug lines.
+            const phases = lines.flatMap((line) => {
+              const match = line.match(
+                /^\d+ (?:silly|verbose|timing) (?:unfinished npm timer )?(idealTree|reify|loadActual|loadVirtual|build|extract|audit)(?=[:\s]|$)/,
+              );
+              return match ? [match[1]] : [];
+            });
             logs.push({
               path: file,
               realPath: realpathSync(file),
@@ -146,6 +157,7 @@ function capture(params: CaptureParams) {
               cwdMatches,
               tarballMatches,
               fields,
+              phases: [...new Set(phases)].slice(0, 7),
               sampledBytes: prefixRead + tailRead,
               sampleSha256: createHash("sha256")
                 .update(prefixBytes)

@@ -106,9 +106,16 @@ describe("bundled browser MCP package", () => {
             join(consumer, "package.json"),
             '{"name":"browser-bundle-consumer","private":true}',
           );
+          // A CLI-selected private log directory remains observable after a
+          // timeout with empty stderr; it does not retarget the npm cache.
+          const installLogsDir = join(root, "npm-install-logs");
           const npm = resolveNpmRunner({
             npmArgs: [
               "install",
+              "--logs-dir",
+              installLogsDir,
+              "--logs-max=4",
+              "--timing",
               "--offline",
               "--ignore-scripts",
               "--omit=dev",
@@ -157,6 +164,7 @@ describe("bundled browser MCP package", () => {
                       stderr: installed.stderr,
                       startedAt: installWallStartedAt,
                       finishedAt: Date.now(),
+                      explicitLogsDir: installLogsDir,
                     }),
               stdoutTail: installed.stdout?.slice(-4096),
               stderrTail: installed.stderr?.slice(-4096),
