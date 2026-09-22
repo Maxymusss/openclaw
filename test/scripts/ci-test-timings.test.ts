@@ -354,7 +354,10 @@ describe("runtime placement observations", () => {
             .spyOn(runtimePlacement, "rebalanceRuntimeTestJobs")
             .mockImplementation((jobs, policy) => {
               const donors = jobs.filter((job) =>
-                job.groups.some((group) => group.configs.includes(runtimeConfig)),
+                job.groups.some(
+                  (group) =>
+                    group.pretestBuildMode === "runtime" && group.configs.includes(runtimeConfig),
+                ),
               );
               const recipients = jobs.filter((job) =>
                 job.groups.some((group) => group.configs.includes(gatewayFixtureConfig)),
