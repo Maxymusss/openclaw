@@ -27,7 +27,7 @@ export type MigratedUpdateFinalizationInput = Partial<UpdateTimeoutHandoff> & {
     opts: Omit<FinishUpdateParams["opts"], "run" | "recovery"> & {
       run?: Omit<
         NonNullable<FinishUpdateParams["opts"]["run"]>,
-        "requesterAuthority" | "executorFence" | "freebsdWriteAdmission"
+        "requesterAuthority" | "executorFence" | "freebsdWriteAdmission" | "ledgerAdmission"
       > & {
         requesterAuthority?: Pick<UpdateRequesterAuthority, "requester">;
       };

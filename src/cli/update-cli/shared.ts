@@ -49,6 +49,8 @@ import { pathExists } from "../../utils.js";
 import { COMPLETION_SKIP_PLUGIN_COMMANDS_ENV } from "../completion-runtime.js";
 import { isJsonOutputModeActive } from "../json-output-mode.js";
 import { resolveNodeRunner } from "./node-runner.js";
+import { updateCommandLedgerOptions } from "./update-command-ledger.js";
+import type { UpdateCommandLedgerAdmission } from "./update-command-ledger.js";
 
 export { resolveNodeRunner } from "./node-runner.js";
 
@@ -79,6 +81,8 @@ export type UpdateCommandOptions = {
     executorFence?: UpdateRecoveryFence;
     /** Local filesystem admission, retained through failure and terminal reporting. */
     freebsdWriteAdmission?: FreeBsdUpdateWriteAdmission;
+    /** Invocation-owned database generation. Never serialized or reused by a receiver. */
+    ledgerAdmission?: UpdateCommandLedgerAdmission;
   };
   acceptCapabilities?: boolean;
   json?: boolean;
@@ -617,7 +621,7 @@ export async function confirmUpdateDowngrade(params: {
     finishUpdateRun(
       run.runId,
       { status: "skipped", reason: "downgrade-confirmation-required" },
-      { env: run.env },
+      updateCommandLedgerOptions(run),
     );
     defaultRuntime.error(
       "Downgrade confirmation required.\nDowngrading can break configuration. Re-run in a TTY to confirm.",
@@ -626,7 +630,11 @@ export async function confirmUpdateDowngrade(params: {
     return false;
   }
   if (decision === "cancelled") {
-    finishUpdateRun(run.runId, { status: "skipped", reason: "cancelled" }, { env: run.env });
+    finishUpdateRun(
+      run.runId,
+      { status: "skipped", reason: "cancelled" },
+      updateCommandLedgerOptions(run),
+    );
     if (!opts.json) {
       defaultRuntime.log(theme.muted("Update cancelled."));
     }

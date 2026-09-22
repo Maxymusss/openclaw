@@ -7,6 +7,10 @@ import {
   withUpdateCommandExecutor,
 } from "../cli/update-cli/update-command-executor.js";
 import { assertFreeBsdUpdateCommandRunOrigin } from "../cli/update-cli/update-command-freebsd-policy.js";
+import {
+  admitUpdateCommandLedger,
+  updateCommandLedgerOptions,
+} from "../cli/update-cli/update-command-ledger.js";
 import type {
   UpdateDoctorInput,
   MigratedUpdateFinalizationInput,
@@ -135,7 +139,11 @@ async function finalizeMigratedUpdate(): Promise<void> {
           input.params.opts.run?.runId ?? "",
           input.params.result.root ?? input.params.root,
           async (fence) => finalizeInput(input, fence, registerRun, freebsdWriteAdmission),
-          { activationTimeoutMs, onAuthorityFailure: freebsdWriteAdmission?.revoke },
+          freebsdWriteAdmission
+            ? { activationTimeoutMs, onAuthorityFailure: freebsdWriteAdmission.revoke }
+            : activationTimeoutMs === undefined
+              ? undefined
+              : { activationTimeoutMs },
         );
       }
       // The shipped v2026.9.3 producer overrides these selectors for worker
@@ -323,6 +331,7 @@ async function finalizeInput(
     !transferredRun ||
     "executorFence" in transferredRun ||
     "freebsdWriteAdmission" in transferredRun ||
+    "ledgerAdmission" in transferredRun ||
     (!input.recoveryHandoff &&
       input.params.rollbackBlockedReason !== "state-migrated-no-rollback" &&
       input.params.rollbackBlockedReason !== "rollback-state-unverified")
@@ -371,10 +380,11 @@ async function finalizeInput(
   if (freebsdWriteAdmission) {
     adoptUpdateRun(runIdentity.runId, { env: runIdentity.env });
   }
+  admitUpdateCommandLedger(run);
   registerRun(run);
   for (const step of input.bufferedSteps) {
     assertCurrent();
-    recordUpdateRunStep(run.runId, step, { env: run.env });
+    recordUpdateRunStep(run.runId, step, updateCommandLedgerOptions(run));
   }
   const stopped = input.params.preManagedServiceStop;
   if (input.windowsTaskAutoStartSuspended && !stopped?.serviceEnv) {

@@ -20,6 +20,7 @@ import { defaultRuntime } from "../../runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import { admitUpdateCommandLedger } from "./update-command-ledger.js";
 import { UpdateCommandPendingRecoveryFailure } from "./update-command-result.js";
 import { captureUpdateCommandTerminalRecord } from "./update-command-terminal-record.js";
 import {
@@ -327,6 +328,7 @@ describe("owned completed update publication", () => {
         expect(admission).toBeDefined();
         const f = fixture();
         f.params.opts.run.freebsdWriteAdmission = admission;
+        admitUpdateCommandLedger(f.params.opts.run);
         const captured = await captureUpdateCommandTerminalRecord(
           f.params,
           f.result,

@@ -32,6 +32,7 @@ import {
   withUpdateCommandExecutor,
   withUpdateCommandExecutorChild,
 } from "./update-command-executor.js";
+import { admitUpdateCommandLedger } from "./update-command-ledger.js";
 import { finishSuccessfulPackageSwitch } from "./update-command-post-update.test-support.js";
 import { assertUpdateCommandPackageFinalization } from "./update-command-recovery.js";
 import * as rollback from "./update-command-rollback.js";
@@ -70,6 +71,7 @@ it.each([
       env,
       freebsdWriteAdmission,
     };
+    admitUpdateCommandLedger(run);
     const output = vi.spyOn(defaultRuntime, "writeJson").mockImplementation(() => {});
     vi.spyOn(defaultRuntime, "log").mockImplementation(() => {});
     const entered = createDeferred();
@@ -256,6 +258,7 @@ it.each([
           env,
           freebsdWriteAdmission: admission,
         };
+        admitUpdateCommandLedger(run);
         const requesterFinalization = fault.includes("requester finalization");
         let requesterCurrent = true;
         if (requesterFinalization) {

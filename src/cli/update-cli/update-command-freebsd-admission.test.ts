@@ -12,6 +12,7 @@ import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { createUpdateCommandAuthority } from "./update-command-authority.js";
 import { createUpdateCommandExecutionGuards } from "./update-command-execution-guards.js";
+import { admitUpdateCommandLedger } from "./update-command-ledger.js";
 import {
   failUpdateCommandRun,
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
@@ -67,6 +68,7 @@ it.each([
         isCurrent: () => requesterCurrent,
       },
     };
+    admitUpdateCommandLedger(run);
     const opts: UpdateCommandOptions = { run };
     const finalizer = createUpdateCommandAuthority({ opts });
     const guards =
@@ -146,6 +148,7 @@ it.each(["write", "mark"] as const)(
         env,
         freebsdWriteAdmission: admission,
       };
+      admitUpdateCommandLedger(run);
       const meta = { runId: run.runId, handoffId: "write-admission" };
       const pending = buildUpdateRestartSentinelPayload({
         result: { status: "skipped", mode: "npm", steps: [], durationMs: 1 },

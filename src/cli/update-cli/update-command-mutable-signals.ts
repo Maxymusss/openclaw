@@ -9,6 +9,7 @@ import { defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { waitForSignalExitBarriers } from "../signal-exit-barrier.js";
 import type { UpdateCommandOptions } from "./shared.js";
+import { updateCommandLedgerOptions } from "./update-command-ledger.js";
 
 type Run = NonNullable<UpdateCommandOptions["run"]>;
 // Only the object minted by this local admission participates. A saved run ID,
@@ -76,7 +77,11 @@ export async function withMutableUpdateSignals<T>(
     assertCurrent();
     // This non-creating transaction cannot migrate or reopen a displaced family.
     // Pending operational recovery keeps exclusive ownership of its outcome.
-    finishInterruptedUpdateBeforeActivation(expected, assertCurrent, { env });
+    finishInterruptedUpdateBeforeActivation(
+      expected,
+      assertCurrent,
+      run.freebsdWriteAdmission ? updateCommandLedgerOptions(run) : { env },
+    );
   };
   let shutdown: Promise<void> | undefined;
   const onSignal = (code: number) => {

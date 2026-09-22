@@ -84,6 +84,7 @@ import { suppressDeprecations } from "./suppress-deprecations.js";
 import { resolveUpdateCommandAdmissionEnv } from "./update-command-admission-env.js";
 import { assertFreeBsdUpdateCommandRunOrigin } from "./update-command-freebsd-policy.js";
 import { resolveForegroundUpdateAdmission } from "./update-command-handoff.js";
+import { admitUpdateCommandLedger, updateCommandLedgerOptions } from "./update-command-ledger.js";
 import { revalidateUpdateDatabaseContext } from "./update-command-managed-context.js";
 import {
   admitMutableUpdateSignalRun,
@@ -118,7 +119,7 @@ export function recordUpdateCommandTarget(
     run.runId,
     "requested",
     patch,
-    { env: run.env },
+    updateCommandLedgerOptions(run),
     (record) => {
       before = record;
     },
@@ -266,6 +267,18 @@ export async function admitUpdateCommandRun(params: {
     );
     const record = adoptUpdateRun(created.runId, ledgerOptions);
     const requester = resolveManagedUpdateRequester(record.origin.requester);
+    const run: NonNullable<UpdateCommandOptions["run"]> = {
+      runId: record.runId,
+      defaultStepTimeoutMs: record.trigger === "campaign" ? AUTO_UPDATE_STEP_TIMEOUT_MS : undefined,
+      env,
+      ...(freebsdWriteAdmission ? { freebsdWriteAdmission } : {}),
+      ...(record.trigger !== "cli" &&
+      meta?.runId === record.runId &&
+      meta.completionOwner === "gateway-restart"
+        ? { completionOwner: "gateway-restart" as const }
+        : {}),
+    };
+    admitUpdateCommandLedger(run);
     const requesterAuthority = requester?.authorizationSource?.startsWith("profile:")
       ? Object.freeze({
           requester: Object.freeze({ ...requester }),
@@ -276,18 +289,9 @@ export async function admitUpdateCommandRun(params: {
       : requester
         ? await createManagedUpdateRequesterAuthority(requester, env)
         : undefined;
-    const run = {
-      runId: record.runId,
-      defaultStepTimeoutMs: record.trigger === "campaign" ? AUTO_UPDATE_STEP_TIMEOUT_MS : undefined,
-      env,
-      ...(freebsdWriteAdmission ? { freebsdWriteAdmission } : {}),
-      ...(record.trigger !== "cli" &&
-      meta?.runId === record.runId &&
-      meta.completionOwner === "gateway-restart"
-        ? { completionOwner: "gateway-restart" as const }
-        : {}),
-      ...(requesterAuthority ? { requesterAuthority } : {}),
-    };
+    if (requesterAuthority) {
+      run.requesterAuthority = requesterAuthority;
+    }
     if (
       !env[UPDATE_RUN_ID_ENV] &&
       env.OPENCLAW_UPDATE_RUN_HANDOFF !== "1" &&
@@ -315,6 +319,7 @@ export async function withUpdatePreviewSignals<T>(
     return await withMutableUpdateSignals(opts, operation);
   }
   admission.active = true;
+  const run = opts.run;
   const { env } = admission;
   let interrupted = false;
   let shutdown: Promise<void> | undefined;
@@ -338,7 +343,10 @@ export async function withUpdatePreviewSignals<T>(
     if (!isDeepStrictEqual(getUpdateRun(admission.record.runId, { env }), admission.record)) {
       return;
     }
-    finishInterruptedUpdatePreview(admission.record, { env });
+    finishInterruptedUpdatePreview(
+      admission.record,
+      run.freebsdWriteAdmission ? updateCommandLedgerOptions(run) : { env },
+    );
   });
   const onSignal = (code: number) => {
     interrupted = true;
@@ -382,7 +390,7 @@ export function createUpdateRunProgress(
       return undefined;
     }
     try {
-      return recordUpdateRunStep(run.runId, step, { env: run.env });
+      return recordUpdateRunStep(run.runId, step, updateCommandLedgerOptions(run));
     } catch (cause) {
       throw new Error(
         `Could not record update step "${step.step}" (${step.status}): ${formatErrorMessage(cause)}`,
@@ -394,12 +402,16 @@ export function createUpdateRunProgress(
     pendingSteps,
     onRollbackOutcome: (rollbackOutcome) => {
       if (!deferred && run.freebsdWriteAdmission?.canWrite !== false) {
-        recordUpdateRunVerification(run.runId, { rollbackOutcome }, { env: run.env });
+        recordUpdateRunVerification(
+          run.runId,
+          { rollbackOutcome },
+          updateCommandLedgerOptions(run),
+        );
       }
     },
     onHeartbeat() {
       if (!deferred && run.freebsdWriteAdmission?.canWrite !== false) {
-        heartbeatUpdateRun(run.runId, driver, { env: run.env });
+        heartbeatUpdateRun(run.runId, driver, updateCommandLedgerOptions(run));
       }
     },
     deferLedgerWrites() {
@@ -489,7 +501,10 @@ export function completeUpdateCommandRun(
       runId: run.runId,
     };
   }
-  const recordOptions = { env: run.env, redactPaths: result.root ? [result.root] : [] };
+  const recordOptions = {
+    ...updateCommandLedgerOptions(run),
+    redactPaths: result.root ? [result.root] : [],
+  };
   // Both finalization and outer CLI unwind come here. A verified restored generation
   // stays with its helper until native recovery finishes; neither caller may close it early.
   const helperRecoveryPending =
