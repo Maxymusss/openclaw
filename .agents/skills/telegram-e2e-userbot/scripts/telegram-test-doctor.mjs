@@ -8,6 +8,7 @@ import { acquireTelegramTestCredential } from "./telegram-test-credential.mjs";
 
 const SKILL_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const USER_DRIVER_PATH = path.join(SKILL_DIR, "scripts", "user-driver.py");
+const MISSING_GROUP_DIAGNOSTIC = "[credential_state_missing_group]";
 
 export async function runTelegramTestDoctor({
   acquireCredential = acquireTelegramTestCredential,
@@ -24,14 +25,38 @@ export async function runTelegramTestDoctor({
   let proxy;
   try {
     const driverEnv = { ...sanitizeChildEnvironment(), ...credential.driverEnv };
-    const status = await runCommandImpl("uv", ["run", USER_DRIVER_PATH, "status", "--json"], {
-      cwd: process.cwd(),
-      env: driverEnv,
-      leaseFailure,
-      timeoutMs: 30_000,
-    });
+    const status = await runCommandImpl(
+      "uv",
+      [
+        "run",
+        USER_DRIVER_PATH,
+        "status",
+        "--json",
+        "--timeout-ms",
+        "25000",
+        "--require-chat",
+        credential.groupId,
+      ],
+      {
+        cwd: process.cwd(),
+        env: driverEnv,
+        leaseFailure,
+        timeoutMs: 30_000,
+      },
+    );
+    if (
+      status.status !== 0 &&
+      !status.timedOut &&
+      status.stderr.includes(MISSING_GROUP_DIAGNOSTIC)
+    ) {
+      throw new Error(
+        "TDLib Test Server configured group is missing from cold-restored state. Disable and republish this credential.",
+      );
+    }
     if (status.status !== 0 || status.timedOut) {
-      throw new Error("TDLib Test Server user session is not authorized.");
+      throw new Error(
+        "TDLib readiness failed. Check the existing uv launcher and TDLib runtime before requesting session repair.",
+      );
     }
     const driver = JSON.parse(status.stdout);
     if (
@@ -42,6 +67,9 @@ export async function runTelegramTestDoctor({
       String(driver.user?.id) !== credential.testerUserId
     ) {
       throw new Error("TDLib Test Server user identity does not match the lease.");
+    }
+    if (String(driver.chatId) !== credential.groupId) {
+      throw new Error("TDLib Test Server group identity does not match the lease.");
     }
     proxy = await startProxy({
       leaseHealth: {
