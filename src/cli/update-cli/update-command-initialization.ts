@@ -5,6 +5,7 @@ import { acquireGatewayLifecycleCoordinator } from "../../infra/state-database-c
 import { compareSemverStrings } from "../../infra/update-check.js";
 import { assertUpdateRecoveryAdmission } from "../../infra/update-run-recovery-admission.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
+import { isFailedUpdateStep } from "../../infra/update-run-step.js";
 import type { OpenClawSchemaVersions } from "../../state/openclaw-schema-versions.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
@@ -160,7 +161,7 @@ export async function initializeUpdateStateFromTarget(
   const result = await runPackageUpdateDoctor({ ...params, managedServiceEnv: params.env });
   params.assertCurrent();
   await params.checkSchemas();
-  if (!result || (result.exitCode !== 0 && !result.advisory)) {
+  if (!result || isFailedUpdateStep(result)) {
     throw new UpdatePreMutationError(
       "target-state-initialization",
       result?.stderrTail ?? "The selected release could not initialize its state database.",
