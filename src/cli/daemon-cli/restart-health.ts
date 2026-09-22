@@ -403,6 +403,7 @@ export async function waitForGatewayHealthyRestart(
       // A previous crashed owner cannot describe replacement startup. Keep native
       // startup grace for it and for published 2026.9.3 processes without owner rows.
       if (
+        !missingServiceFree &&
         (!owner || owner.state === "dead") &&
         !params.supervisorKeepsAlive &&
         shouldEarlyExitStoppedFree(snapshot, attempt, minAttemptForEarlyExit)
