@@ -197,6 +197,7 @@ export async function resolveEmbeddedModelSelection(params: {
     }
     if (entryUpdated) {
       sessionEntry = await persistAgentSession({
+        agentId: params.sessionAgentId,
         sessionStore: params.sessionStore,
         sessionKey: params.sessionKey,
         storePath: params.storePath,
@@ -591,6 +592,7 @@ export async function resolveEmbeddedModelSelection(params: {
     };
     sessionEntry =
       (await persistAgentSession({
+        agentId: params.sessionAgentId,
         sessionStore: params.sessionStore,
         sessionKey: params.sessionKey,
         storePath: params.storePath,

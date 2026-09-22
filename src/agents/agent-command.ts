@@ -194,6 +194,7 @@ async function agentCommandInternal(
         const currentEntry =
           sessionStoreRuntime && storePath && sessionKey
             ? sessionStoreRuntime.loadSessionEntry({
+                agentId: sessionAgentId,
                 storePath,
                 sessionKey,
                 readConsistency: "latest",
@@ -348,6 +349,7 @@ async function agentCommandInternal(
           }),
         };
         const persisted = await persistAgentSession({
+          agentId: sessionAgentId,
           sessionStore,
           sessionKey,
           storePath,

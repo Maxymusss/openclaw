@@ -146,6 +146,7 @@ export async function prepareEmbeddedSessionState(params: {
       skillsSnapshot,
     };
     sessionEntry = await persistAgentSession({
+      agentId: params.sessionAgentId,
       sessionStore: params.sessionStore,
       sessionKey: params.sessionKey,
       storePath: params.storePath,
@@ -177,6 +178,7 @@ export async function prepareEmbeddedSessionState(params: {
     };
     applyVerboseOverride(next, params.verboseOverride);
     sessionEntry = await persistAgentSession({
+      agentId: params.sessionAgentId,
       sessionStore: params.sessionStore,
       sessionKey: params.sessionKey,
       storePath: params.storePath,

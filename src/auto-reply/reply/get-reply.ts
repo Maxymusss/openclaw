@@ -44,7 +44,6 @@ import {
   isModelSelectionLocked,
   ModelSelectionLockedError,
 } from "../../sessions/model-overrides.js";
-import { ensureSessionDiffBaseline } from "../../sessions/session-diff-baseline.js";
 import { resolveStoredModelOverride } from "../../sessions/stored-model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { readAgentDatabaseAdmissionRefusal } from "../../state/agent-database-admission.js";
@@ -102,6 +101,7 @@ import {
 } from "./reply-operation-run-state.js";
 import { createReplyTimingTracker, isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { resolveRuntimePolicySessionKey } from "./runtime-policy-session-key.js";
+import { prepareReplySessionDiffBaseline } from "./session-diff-baseline.js";
 import { SessionResetCleanupError } from "./session-reset-cleanup.js";
 import { initSessionState, resolveReplySessionPreprocessingState } from "./session.js";
 import { mergeSkillFilters } from "./skill-filter.js";
@@ -666,22 +666,13 @@ export async function getReplyFromConfig(
   }
   if (!useFastTestBootstrap) {
     try {
-      const baselineEntry = await traceGetReplyPhase("reply.capture_session_diff_baseline", () =>
-        ensureSessionDiffBaseline({
+      await traceGetReplyPhase("reply.capture_session_diff_baseline", () =>
+        prepareReplySessionDiffBaseline({
           agentId,
-          cwd:
-            normalizeOptionalString(sessionState.sessionEntry.spawnedCwd) ??
-            normalizeOptionalString(sessionState.sessionEntry.spawnedWorkspaceDir) ??
-            workspaceDir,
-          entry: sessionState.sessionEntry,
-          isNewSession: sessionState.isNewSession,
-          sessionKey: sessionState.sessionKey,
-          storePath: sessionState.storePath,
+          workspaceDir,
+          sessionState,
         }),
       );
-      sessionState.sessionEntry = baselineEntry;
-      sessionState.sessionEntryHandle.replaceCurrent(baselineEntry);
-      sessionState.sessionStore[sessionState.sessionKey] = baselineEntry;
     } catch (error) {
       if (isSessionWorkStartInvalidatedError(error)) {
         throw error;
