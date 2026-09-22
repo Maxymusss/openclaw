@@ -7,6 +7,7 @@ export type TelegramSpooledUpdatePayload = {
   receivedAt: number;
   update: unknown;
   preparedPollAnswer?: PreparedTelegramPollAnswer;
+  modelAliasOrdinary?: boolean;
 };
 
 export const TELEGRAM_SPOOLED_UPDATE_PAYLOAD_VERSION = 1;

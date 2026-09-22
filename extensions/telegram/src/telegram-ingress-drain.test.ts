@@ -288,11 +288,12 @@ describe("createTelegramIngressMonitor", () => {
       }),
     ),
     {
-      name: "configured model alias",
+      name: "configured model alias after restart",
       updateKind: "message",
       chat: { id: -1234, type: "supergroup", is_forum: true },
       topic: { message_thread_id: 42, is_topic_message: true },
       laneKey: "telegram:-1234:topic:42",
+      expectedLaneKey: "telegram:-1234:topic:42",
       modelAlias: true,
     },
     {
@@ -325,6 +326,9 @@ describe("createTelegramIngressMonitor", () => {
         updateId: update.update_id,
         receivedAt: Date.now(),
         update,
+        ...("modelAlias" in testCase && !("aliasRemoved" in testCase)
+          ? { modelAliasOrdinary: false }
+          : {}),
       };
       await createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>(queueOptions).enqueue(
         eventId,
@@ -349,6 +353,8 @@ describe("createTelegramIngressMonitor", () => {
               agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },
             }
           : cfg;
+      const prepareModelAliasOwnership =
+        "modelAlias" in testCase ? vi.fn(async () => true) : undefined;
       const monitor = createTelegramIngressMonitor({
         queue,
         getConfig: () => monitorCfg,
@@ -357,6 +363,7 @@ describe("createTelegramIngressMonitor", () => {
           ...telegramBotInfoForTest,
           has_topics_enabled: true,
         },
+        ...(prepareModelAliasOwnership ? { prepareModelAliasOwnership } : {}),
         dispatch,
       });
       try {
@@ -369,6 +376,13 @@ describe("createTelegramIngressMonitor", () => {
           expect(dispatch).not.toHaveBeenCalled();
         } else {
           expect(dispatch).toHaveBeenCalledExactlyOnceWith(update, expect.any(Object));
+          if (prepareModelAliasOwnership) {
+            expect(prepareModelAliasOwnership).toHaveBeenCalledWith(
+              update,
+              expect.any(Object),
+              monitorCfg,
+            );
+          }
           expect(await queue.listFailed?.({ limit: "all" })).toEqual([]);
           expect(await queue.enqueue(eventId, payload, { laneKey: controlLaneKey })).toMatchObject({
             kind: "completed",

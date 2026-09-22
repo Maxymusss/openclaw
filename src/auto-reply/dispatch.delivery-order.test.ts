@@ -6,6 +6,7 @@ import { resetGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { expectedNoQueuedReplyResult } from "./reply/dispatch-result-expectations.test-support.js";
 import type { ReplyDispatchBeforeDeliver } from "./reply/reply-dispatcher.js";
 import type { ReplyDispatchBeforeDeliverOptions } from "./reply/reply-dispatcher.types.js";
+import { resolveReplyOperationRunState } from "./reply/reply-operation-run-state.js";
 import { buildTestCtx } from "./reply/test-ctx.js";
 import type { FinalizedMsgContext, MsgContext } from "./templating.js";
 import type { ReplyPayload } from "./types.js";
@@ -88,6 +89,7 @@ function dispatchWithDeliveries(
   ctx: FinalizedMsgContext,
   deliveries: Delivery[],
   dispatcherOptions: {
+    cfg?: OpenClawConfig;
     beforeDeliver?: ReplyDispatchBeforeDeliver;
     beforeDeliverOptions?: ReplyDispatchBeforeDeliverOptions;
     deliver?: (payload: ReplyPayload, info: { kind: Delivery["kind"] }) => Promise<object | void>;
@@ -96,13 +98,14 @@ function dispatchWithDeliveries(
     onFreshSettledDelivery?: () => object | void | Promise<object | void>;
   } = {},
 ) {
+  const { cfg = {}, ...deliveryOptions } = dispatcherOptions;
   return dispatchInboundMessageWithBufferedDispatcher({
     ctx,
-    cfg: {} as OpenClawConfig,
+    cfg,
     dispatcherOptions: {
-      ...dispatcherOptions,
+      ...deliveryOptions,
       deliver:
-        dispatcherOptions.deliver ??
+        deliveryOptions.deliver ??
         (async (payload: ReplyPayload, info: { kind: Delivery["kind"] }) => {
           deliveries.push({ kind: info.kind, text: payload.text });
         }),
@@ -118,6 +121,61 @@ describe("foreground reply delivery order", () => {
 
   afterEach(() => {
     resetGlobalHookRunner();
+  });
+
+  it("releases an owner-free model alias after core collision resolution", async () => {
+    const deliveries: Delivery[] = [];
+    const olderHookStarted = createDeferred();
+    const releaseOlderHook = createDeferred<ReplyPayload | null>();
+
+    hoisted.dispatchReplyFromConfigMock.mockImplementation(
+      async (params: DispatchReplyFromConfigParams) => {
+        if (params.ctx.MessageSid === "older") {
+          params.dispatcher.sendFinalReply({ text: "older final" });
+          return queuedFinalResult();
+        }
+        if (params.ctx.MessageSid === "alias") {
+          resolveReplyOperationRunState(params.replyOptions)?.releaseForegroundReplyLease?.();
+          params.dispatcher.sendFinalReply({ text: "alias final" });
+          return queuedFinalResult();
+        }
+        throw new Error(`unexpected test message ${params.ctx.MessageSid ?? "<missing>"}`);
+      },
+    );
+
+    const olderDispatch = dispatchWithDeliveries(
+      buildForegroundCtx({ MessageSid: "older" }),
+      deliveries,
+      {
+        beforeDeliver: () => {
+          olderHookStarted.resolve();
+          return releaseOlderHook.promise;
+        },
+      },
+    );
+    await olderHookStarted.promise;
+
+    const aliasDispatch = dispatchWithDeliveries(
+      buildForegroundCtx({
+        MessageSid: "alias",
+        Body: "/quick",
+        RawBody: "/quick",
+        CommandBody: "/quick",
+        CommandSource: "text",
+        CommandAuthorized: true,
+      }),
+      deliveries,
+      { cfg: { agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } } } },
+    );
+    await expect(aliasDispatch).resolves.toEqual(settledFinalResult());
+    expect(deliveries).toEqual([{ kind: "final", text: "alias final" }]);
+
+    releaseOlderHook.resolve({ text: "older final" });
+    await expect(olderDispatch).resolves.toEqual(settledFinalResult());
+    expect(deliveries).toEqual([
+      { kind: "final", text: "alias final" },
+      { kind: "final", text: "older final" },
+    ]);
   });
 
   it("delivers same-target foreground finals once in inbound order", async () => {

@@ -34,7 +34,11 @@ import {
   settleTelegramPollAnswerContext,
 } from "./poll-answer-context.js";
 import { hasTelegramQuestionCallbackPrefix } from "./question-callback-data.js";
-import { getTelegramSequentialKey } from "./sequential-key.js";
+import {
+  getTelegramSequentialKey,
+  markTelegramPreparedModelAliasOwnership,
+  readTelegramPreparedModelAliasOwnership,
+} from "./sequential-key.js";
 import { normalizeTelegramStateAccountId } from "./state-account-id.js";
 import { resolveTelegramIngressNonRetryableFailure } from "./telegram-ingress-non-retryable.js";
 import { resolveTelegramUpdateId, telegramQueueEventId } from "./telegram-ingress-spool.js";
@@ -50,11 +54,11 @@ const TELEGRAM_SPOOLED_DRAIN_START_LIMIT = 100;
 const TELEGRAM_SPOOLED_DRAIN_SCAN_LIMIT = TELEGRAM_SPOOLED_DRAIN_START_LIMIT * 10;
 const TELEGRAM_SPOOLED_DRAIN_POLL_INTERVAL_MS = 500;
 
-type TelegramIngressLaneResolver = (
+type TelegramModelAliasOwnershipPreparer = (
   update: unknown,
   botInfo: TelegramBotInfo | undefined,
   cfg: OpenClawConfig,
-) => string;
+) => Promise<boolean | undefined>;
 
 export function resolveTelegramAdoptionStallTimeoutMs(params: {
   configured?: number;
@@ -77,11 +81,7 @@ function telegramSpooledLaneKey(
   update: unknown,
   botInfo?: TelegramBotInfo,
   cfg?: OpenClawConfig,
-  resolveLaneKey?: TelegramIngressLaneResolver,
 ): string {
-  if (resolveLaneKey && cfg) {
-    return resolveLaneKey(update, botInfo, cfg);
-  }
   return getTelegramSequentialKey(
     {
       update: update as Parameters<typeof getTelegramSequentialKey>[0]["update"],
@@ -96,18 +96,17 @@ function inspectTelegramSpooledUpdate(
   botInfo?: TelegramBotInfo,
   claimedLaneKey?: string,
   cfg?: OpenClawConfig,
-  resolveLaneKey?: TelegramIngressLaneResolver,
 ) {
   const updateId = resolveTelegramUpdateId(update);
   if (updateId === null) {
     throw new TelegramIngressPayloadError("Telegram spooled update is missing numeric update_id.");
   }
-  const derivedLaneKey = telegramSpooledLaneKey(update, botInfo, cfg, resolveLaneKey);
+  const derivedLaneKey = telegramSpooledLaneKey(update, botInfo, cfg);
   const preservePreIdentityControlLane =
     botInfo !== undefined &&
     claimedLaneKey?.endsWith(":control") === true &&
     claimedLaneKey !== derivedLaneKey &&
-    claimedLaneKey === telegramSpooledLaneKey(update, undefined, cfg, resolveLaneKey);
+    claimedLaneKey === telegramSpooledLaneKey(update, undefined, cfg);
   return {
     eventId: telegramQueueEventId(updateId),
     // Admission can precede getMe(). Preserve only the exact control lane that
@@ -131,7 +130,6 @@ function canReconcileTelegramLegacyLane(params: {
   accountId: string;
   botInfo?: TelegramBotInfo;
   cfg?: OpenClawConfig;
-  resolveLaneKey?: TelegramIngressLaneResolver;
 }): boolean {
   if (
     params.record.channelId !== "telegram" ||
@@ -254,8 +252,7 @@ function canReconcileTelegramLegacyLane(params: {
   if (
     callback === undefined &&
     (promotedLane || demotedModelLane) &&
-    telegramSpooledLaneKey(update, params.botInfo, params.cfg, params.resolveLaneKey) ===
-      params.derivedLaneKey
+    telegramSpooledLaneKey(update, params.botInfo, params.cfg) === params.derivedLaneKey
   ) {
     if (
       (!isPrivateChat && !isGroupChat && !(chatType === "channel" && chatId < 0)) ||
@@ -305,8 +302,7 @@ function canReconcileTelegramLegacyLane(params: {
         !hasTelegramQuestionCallbackPrefix(callbackData) &&
         params.storedLaneKey === previousLaneKey) &&
     params.derivedLaneKey === canonicalLaneKey &&
-    telegramSpooledLaneKey(update, params.botInfo, params.cfg, params.resolveLaneKey) ===
-      canonicalLaneKey
+    telegramSpooledLaneKey(update, params.botInfo, params.cfg) === canonicalLaneKey
   );
 }
 
@@ -329,7 +325,7 @@ type CreateTelegramIngressMonitorParams = {
   getConfig: () => OpenClawConfig;
   accountId: string;
   botInfo?: TelegramBotInfo;
-  resolveLaneKey?: TelegramIngressLaneResolver;
+  prepareModelAliasOwnership?: TelegramModelAliasOwnershipPreparer;
   adoptionStallTimeoutMs?: number;
   pollIntervalMs?: number;
   dispatch: TelegramIngressDrainDispatch;
@@ -367,10 +363,15 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         params.botInfo,
         context.phase === "claim" ? context.claimedLaneKey : undefined,
         params.getConfig(),
-        params.resolveLaneKey,
       );
     },
     inspectAsync: async (update, context) => {
+      if (context.phase === "claim" && typeof update === "object" && update !== null) {
+        // Command ownership can change while a row is queued. Replay aliases
+        // conservatively on the ordinary lane instead of trusting an old false fact.
+        markTelegramPreparedModelAliasOwnership(update, true);
+      }
+      await params.prepareModelAliasOwnership?.(update, params.botInfo, params.getConfig());
       if (
         context.phase === "admission" &&
         typeof update === "object" &&
@@ -384,7 +385,6 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         params.botInfo,
         context.phase === "claim" ? context.claimedLaneKey : undefined,
         params.getConfig(),
-        params.resolveLaneKey,
       );
     },
     payload: {
@@ -400,16 +400,28 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
           typeof update === "object" && update !== null
             ? getPreparedTelegramPollAnswer(update)
             : undefined;
+        const modelAliasOrdinary =
+          typeof update === "object" && update !== null
+            ? readTelegramPreparedModelAliasOwnership(update)
+            : undefined;
         return {
           version: TELEGRAM_SPOOLED_UPDATE_PAYLOAD_VERSION,
           updateId,
           receivedAt,
           update,
           ...(preparedPollAnswer ? { preparedPollAnswer } : {}),
+          ...(modelAliasOrdinary === undefined ? {} : { modelAliasOrdinary }),
         };
       },
       deserialize: (payload) => {
         const update = payload.update;
+        if (
+          typeof payload.modelAliasOrdinary === "boolean" &&
+          typeof update === "object" &&
+          update !== null
+        ) {
+          markTelegramPreparedModelAliasOwnership(update, payload.modelAliasOrdinary);
+        }
         if (payload.preparedPollAnswer && typeof update === "object" && update !== null) {
           recordPreparedTelegramPollAnswer(update, payload.preparedPollAnswer);
         }
@@ -536,20 +548,19 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         accountId: params.accountId,
         ...(params.botInfo?.username ? { botUsername: params.botInfo.username } : {}),
       }),
-      deriveLaneKey: (record) =>
-        telegramSpooledLaneKey(
-          record.payload.update,
-          params.botInfo,
-          params.getConfig(),
-          params.resolveLaneKey,
-        ),
+      deriveLaneKey: (record) => {
+        const update = record.payload.update;
+        if (typeof update === "object" && update !== null) {
+          markTelegramPreparedModelAliasOwnership(update, true);
+        }
+        return telegramSpooledLaneKey(update, params.botInfo, params.getConfig());
+      },
       reconcileStoredLaneKey: (record, storedLaneKey, derivedLaneKey) =>
         canReconcileTelegramLegacyLane({
           record,
           storedLaneKey,
           derivedLaneKey,
           cfg: params.getConfig(),
-          resolveLaneKey: params.resolveLaneKey,
           accountId: params.accountId,
           botInfo: params.botInfo,
         }),

@@ -314,6 +314,24 @@ describe("commands registry", () => {
     ).toBe(false);
   });
 
+  it("requires a verified owner-free fact before an unresolved model alias skips ordering", () => {
+    const commandTurn = createCommandTurnContext("text", {
+      authorized: true,
+      commandName: "quick",
+      body: "/quick",
+    });
+    const cfg = { agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } } };
+
+    expect(isActiveRunSafeCommandTurn({ commandTurn, cfg })).toBe(true);
+    expect(
+      isActiveRunSafeCommandTurn({
+        commandTurn,
+        cfg,
+        allowUnresolvedModelAlias: false,
+      }),
+    ).toBe(false);
+  });
+
   it("exposes /side as a BTW text and native alias", () => {
     const btw = requireChatCommand("btw");
     expect(btw.nativeName).toBe("btw");

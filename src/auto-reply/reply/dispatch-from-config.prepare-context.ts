@@ -26,6 +26,7 @@ import { resolveCommandTurnContext } from "../command-turn-context.js";
 import {
   isActiveRunSafeCommandTurn,
   isStandaloneModelCommand,
+  normalizeCommandBody,
   resolveTextCommand,
 } from "../commands-registry.js";
 import type { ReplyPayload } from "../reply-payload.js";
@@ -383,7 +384,7 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
   ) {
     // A configured model alias cannot grant concurrent execution to a plugin or
     // skill command that owns the same name. Use the directive owner's discovery.
-    const { prepareSkillCommandsForWorkspace } =
+    const { prepareSkillCommandsForWorkspace, resolveSkillCommandInvocation } =
       await import("../../skills/discovery/chat-commands.js");
     const skillCommands = await prepareSkillCommandsForWorkspace({
       cfg,
@@ -392,11 +393,18 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
       sessionEntry: sessionStoreEntry.entry,
       sessionKey,
     });
+    const normalizedCommandBody = normalizeCommandBody(commandTurn.body ?? "", {
+      preserveArguments: true,
+    });
     activeRunSafeCommandTurn =
-      !matchPluginCommand(commandTurn.body ?? "", { channel: ctx.Provider ?? ctx.Surface }) &&
-      !skillCommands.some(
-        (command) => command.name.toLowerCase() === commandTurn.commandName?.toLowerCase(),
-      );
+      !matchPluginCommand(normalizedCommandBody, { channel: ctx.Provider ?? ctx.Surface }) &&
+      !resolveSkillCommandInvocation({
+        commandBodyNormalized: normalizedCommandBody,
+        skillCommands,
+      });
+  }
+  if (activeRunSafeCommandTurn) {
+    state.replyOperationRunState.releaseForegroundReplyLease?.();
   }
   const unauthorizedTextSlashSourceReplyCtx =
     (chatType === "group" || chatType === "channel") && isUnauthorizedTextSlashCommand(ctx);

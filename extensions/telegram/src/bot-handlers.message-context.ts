@@ -80,6 +80,11 @@ export type TelegramSessionState = {
   model: string | undefined;
 };
 
+export type TelegramSessionScope = Pick<
+  TelegramSessionState,
+  "agentId" | "sessionKey" | "storePath"
+>;
+
 export type ResolveTelegramSessionStateParams = {
   chatId: number | string;
   isGroup: boolean;
@@ -189,9 +194,9 @@ export function createTelegramMessageSessionRuntime({
   "accountId" | "resolveTelegramGroupConfig" | "telegramDeps"
 >) {
   const loadSessionEntry = telegramDeps.getSessionEntry ?? getSessionEntry;
-  const resolveTelegramSessionState = (
+  const resolveTelegramSessionScope = (
     params: ResolveTelegramSessionStateParams,
-  ): TelegramSessionState => {
+  ): TelegramSessionScope => {
     const dmThreadId = params.threadSpec.scope === "dm" ? params.threadSpec.id : undefined;
     const topicThreadId = params.threadSpec.id;
     const { topicConfig } = resolveTelegramGroupConfig(
@@ -220,6 +225,13 @@ export function createTelegramMessageSessionRuntime({
     const storePath = telegramDeps.resolveStorePath(params.runtimeCfg.session?.store, {
       agentId: route.agentId,
     });
+    return { agentId: route.agentId, sessionKey, storePath };
+  };
+  const resolveTelegramSessionState = (
+    params: ResolveTelegramSessionStateParams,
+  ): TelegramSessionState => {
+    const scope = resolveTelegramSessionScope(params);
+    const { agentId, sessionKey, storePath } = scope;
     const entry = loadSessionEntry({ storePath, sessionKey });
     const storedOverride = resolveStoredModelOverride({
       sessionEntry: entry,
@@ -228,12 +240,12 @@ export function createTelegramMessageSessionRuntime({
       sessionKey,
       defaultProvider: resolveDefaultModelForAgent({
         cfg: params.runtimeCfg,
-        agentId: route.agentId,
+        agentId,
       }).provider,
     });
     if (storedOverride) {
       return {
-        agentId: route.agentId,
+        agentId,
         sessionEntry: entry,
         sessionKey,
         storePath,
@@ -246,7 +258,7 @@ export function createTelegramMessageSessionRuntime({
     const model = entry?.model?.trim();
     if (provider && model) {
       return {
-        agentId: route.agentId,
+        agentId,
         sessionEntry: entry,
         sessionKey,
         storePath,
@@ -255,7 +267,7 @@ export function createTelegramMessageSessionRuntime({
     }
     const modelCfg = params.runtimeCfg.agents?.defaults?.model;
     return {
-      agentId: route.agentId,
+      agentId,
       sessionEntry: entry,
       sessionKey,
       storePath,
@@ -284,7 +296,11 @@ export function createTelegramMessageSessionRuntime({
     });
   };
 
-  return { resolveTelegramSessionState, resolvePromptContextAmbientWatermark };
+  return {
+    resolveTelegramSessionScope,
+    resolveTelegramSessionState,
+    resolvePromptContextAmbientWatermark,
+  };
 }
 
 export function createTelegramMessageContextRuntime({

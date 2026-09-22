@@ -33,7 +33,7 @@ const { createTelegramTransportIngressMonitor } =
 type CapturedMonitor = {
   onDurableAdmission: (update: unknown, context: { isNew: boolean }) => void | Promise<void>;
   dispatch: (update: unknown) => Promise<TelegramMessageProcessingResult | void>;
-  resolveLaneKey?: (update: unknown) => string;
+  prepareModelAliasOwnership?: (update: unknown) => Promise<boolean | undefined>;
 };
 
 describe("Telegram transport ingress outcome handoff", () => {
@@ -41,20 +41,20 @@ describe("Telegram transport ingress outcome handoff", () => {
     vi.clearAllMocks();
   });
 
-  it("forwards the bot's ownership-aware durable lane resolver", () => {
-    const resolveIngressLaneKey = vi.fn(() => "telegram:7");
+  it("forwards the bot's durable alias-ownership preparer", () => {
+    const prepareIngressModelAliasOwnership = vi.fn(async () => true);
     createTelegramTransportIngressMonitor({
       spoolDir: "/tmp/telegram-ingress-proof",
       bot: {
         handleUpdate: vi.fn(async () => {}),
         api: { answerCallbackQuery: vi.fn(async () => true) },
-        resolveIngressLaneKey,
+        prepareIngressModelAliasOwnership,
       },
       accountId: "default",
     });
 
     const monitor = mocks.createTelegramIngressMonitor.mock.calls[0]?.[0] as CapturedMonitor;
-    expect(monitor.resolveLaneKey).toBe(resolveIngressLaneKey);
+    expect(monitor.prepareModelAliasOwnership).toBe(prepareIngressModelAliasOwnership);
   });
 
   it.each([

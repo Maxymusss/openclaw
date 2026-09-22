@@ -33,6 +33,8 @@ export type ReplyPreRunRejectionCode =
   | "session-directive-rejected";
 
 export type ReplyOperationRunState = {
+  /** Releases this dispatch from foreground delivery fencing after owner resolution. */
+  releaseForegroundReplyLease?: () => void;
   replyCompletion?: ReplyCompletion;
   heartbeat?: {
     prepareReply: (

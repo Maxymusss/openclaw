@@ -44,6 +44,7 @@ const TELEGRAM_READ_ONLY_COMMAND_KEYS = new Set([
 // here because the run that requested the approval is holding its own lane.
 const TELEGRAM_ACTIVE_RUN_CONTROL_COMMAND_KEYS = new Set(["approve", "queue", "steer"]);
 const ordinaryModelAliasContexts = new WeakSet<object>();
+const preparedModelAliasOwnership = new WeakMap<object, boolean>();
 
 type TelegramSequentialKeyContext = {
   chat?: { id?: number };
@@ -67,6 +68,7 @@ type TelegramSequentialKeyContext = {
 };
 
 type TelegramSequentialKeyOptions = {
+  unpreparedConfiguredAliasOrdinary?: boolean;
   modelAliasOrdinary?: boolean;
 };
 
@@ -84,6 +86,34 @@ export function resolveTelegramSequentialMessage(
     ctx.update?.edited_channel_post ??
     ctx.update?.callback_query?.message
   );
+}
+
+export function resolveTelegramSequentialThreadIdentity(ctx: TelegramSequentialKeyContext) {
+  const msg = resolveTelegramSequentialMessage(ctx);
+  const forumHint = msg?.chat
+    ? resolveTelegramMessageForumFlagHint({
+        chatType: msg.chat.type,
+        isForum: msg.chat.is_forum,
+        isTopicMessage: msg.is_topic_message,
+      })
+    : undefined;
+  const cachedForumFlag =
+    forumHint === undefined && msg?.chat?.type === "supergroup" && typeof msg.chat.id === "number"
+      ? getCachedTelegramForumFlag(msg.chat.id)
+      : undefined;
+  const threadSpec = msg?.chat
+    ? resolveTelegramMessageThreadSpec(msg, forumHint ?? cachedForumFlag)
+    : undefined;
+  const unresolvedForum =
+    msg?.chat?.type === "supergroup" && forumHint === undefined && cachedForumFlag === undefined;
+  const unresolvedBotPrivateTopic =
+    threadSpec?.scope === "dm" &&
+    threadSpec.id !== undefined &&
+    typeof ctx.me?.has_topics_enabled !== "boolean";
+  return {
+    resolved: !unresolvedForum && !unresolvedBotPrivateTopic,
+    threadSpec,
+  };
 }
 
 function getTelegramMessageReactionSequentialKey(
@@ -158,7 +188,7 @@ function isTelegramActiveRunControlLaneText(params: {
   return key !== undefined && TELEGRAM_ACTIVE_RUN_CONTROL_COMMAND_KEYS.has(key);
 }
 
-function isTelegramModelSelectionText(params: {
+export function isTelegramModelSelectionText(params: {
   rawText?: string;
   botUsername?: string;
   cfg?: OpenClawConfig;
@@ -200,6 +230,14 @@ export function markTelegramModelAliasOrdinary(ctx: object): void {
 
 export function isTelegramModelAliasOrdinary(ctx: object): boolean {
   return ordinaryModelAliasContexts.has(ctx);
+}
+
+export function markTelegramPreparedModelAliasOwnership(target: object, ordinary: boolean): void {
+  preparedModelAliasOwnership.set(target, ordinary);
+}
+
+export function readTelegramPreparedModelAliasOwnership(target: object): boolean | undefined {
+  return preparedModelAliasOwnership.get(target);
 }
 
 export function isTelegramControlLaneText(params: {
@@ -249,8 +287,19 @@ export function getTelegramSequentialKey(
   const chatId = msg?.chat?.id ?? ctx.chat?.id;
   const rawText = msg?.text ?? msg?.caption;
   const botUsername = ctx.me?.username;
+  const configuredModelAlias = resolveTelegramConfiguredModelAlias({ rawText, botUsername, cfg });
+  const preparedAliasOwnership = ctx.update
+    ? readTelegramPreparedModelAliasOwnership(ctx.update)
+    : undefined;
+  const unpreparedConfiguredAliasOrdinary =
+    options?.unpreparedConfiguredAliasOrdinary === true &&
+    preparedAliasOwnership === undefined &&
+    configuredModelAlias !== undefined;
   const modelAliasOrdinary =
-    options?.modelAliasOrdinary === true || isTelegramModelAliasOrdinary(ctx);
+    options?.modelAliasOrdinary === true ||
+    (configuredModelAlias !== undefined && preparedAliasOwnership === true) ||
+    unpreparedConfiguredAliasOrdinary ||
+    isTelegramModelAliasOrdinary(ctx);
   const modelSelectionWithMedia =
     resolveTelegramPrimaryMedia(msg) !== undefined &&
     isTelegramModelSelectionText({ rawText, botUsername, cfg });
@@ -301,20 +350,7 @@ export function getTelegramSequentialKey(
   // to the in-memory cache (populated by earlier messages or getChat calls)
   // so the lane key resolves to `telegram:${chatId}:topic:1` rather than the
   // base lane, preventing a cross-lane session-init race.
-  const forumHint = msg?.chat
-    ? resolveTelegramMessageForumFlagHint({
-        chatType: msg.chat.type,
-        isForum: msg.chat.is_forum,
-        isTopicMessage: msg.is_topic_message,
-      })
-    : undefined;
-  const cachedForumFlag =
-    forumHint === undefined && msg?.chat?.type === "supergroup" && typeof msg.chat.id === "number"
-      ? getCachedTelegramForumFlag(msg.chat.id)
-      : undefined;
-  const threadSpec = msg?.chat
-    ? resolveTelegramMessageThreadSpec(msg, forumHint ?? cachedForumFlag)
-    : undefined;
+  const threadSpec = resolveTelegramSequentialThreadIdentity(ctx).threadSpec;
   const threadId =
     threadSpec?.scope === "dm"
       ? shouldUseTelegramDmThreadSession({

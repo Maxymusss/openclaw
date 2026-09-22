@@ -115,6 +115,7 @@ function reserveForegroundReplyLease(
     isActiveRunSafeCommandTurn({
       commandTurn: resolveCommandTurnContext(finalized),
       cfg,
+      allowUnresolvedModelAlias: false,
       hasMedia: Boolean(finalized.media?.length),
       provider: finalized.Provider ?? finalized.Surface,
     })
@@ -313,9 +314,19 @@ async function dispatchInboundMessageWithBufferedDispatcherCore(
   },
 ): Promise<DispatchInboundResult> {
   const finalized = finalizeInboundContext(params.ctx);
-  const foregroundReplyLease = reserveForegroundReplyLease(finalized, params.cfg);
   const replyOperationRunState: ReplyOperationRunState =
     resolveReplyOperationRunState(params.replyOptions) ?? {};
+  const foregroundReplyLease = reserveForegroundReplyLease(finalized, params.cfg);
+  let bypassForegroundReplyLease = false;
+  const releaseForegroundReplyLease = foregroundReplyLease
+    ? () => {
+        bypassForegroundReplyLease = true;
+        foregroundReplyLease.release();
+      }
+    : undefined;
+  if (releaseForegroundReplyLease) {
+    replyOperationRunState.releaseForegroundReplyLease = releaseForegroundReplyLease;
+  }
   const silentReplyContext = resolveDispatcherSilentReplyContext(finalized, params.cfg);
   const replyPayloadRunState = {
     runId: params.replyOptions?.runId,
@@ -324,7 +335,9 @@ async function dispatchInboundMessageWithBufferedDispatcherCore(
   const settleDeliveries = () =>
     (settledDeliveries = settledDeliveries.then(() =>
       runOrderedForegroundReplySettledDeliveries(
-        replyOperationRunState.questionInputHandled ? undefined : foregroundReplyLease,
+        replyOperationRunState.questionInputHandled || bypassForegroundReplyLease
+          ? undefined
+          : foregroundReplyLease,
         params.dispatcherOptions.onSettled,
         params.dispatcherOptions.onFreshSettledDelivery,
       ),
@@ -357,7 +370,7 @@ async function dispatchInboundMessageWithBufferedDispatcherCore(
     foregroundReplyLease || configuredBeforeDeliver
       ? markReplyDispatchBeforeDeliverDeadlineOwned(async (payload, info) => {
           // A question response must not wait behind the turn waiting for that response.
-          if (!replyOperationRunState.questionInputHandled) {
+          if (!replyOperationRunState.questionInputHandled && !bypassForegroundReplyLease) {
             await foregroundReplyLease?.wait();
           }
           return configuredBeforeDeliver ? await configuredBeforeDeliver(payload, info) : payload;
@@ -400,6 +413,9 @@ async function dispatchInboundMessageWithBufferedDispatcherCore(
     try {
       await settledDeliveries;
     } finally {
+      if (replyOperationRunState.releaseForegroundReplyLease === releaseForegroundReplyLease) {
+        delete replyOperationRunState.releaseForegroundReplyLease;
+      }
       foregroundReplyLease?.release();
       markRunComplete();
       markDispatchIdle();

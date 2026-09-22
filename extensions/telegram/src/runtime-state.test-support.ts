@@ -11,6 +11,7 @@ import {
   createPluginStateKeyedStoreForTests,
   createPluginStateSyncKeyedStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { vi } from "vitest";
 import type { TelegramPollRegistryEntry } from "./poll-registry.js";
 import { setTelegramRuntime } from "./runtime.js";
 import type { TelegramRuntime } from "./runtime.types.js";
@@ -18,6 +19,7 @@ import type { TelegramRuntime } from "./runtime.types.js";
 export function setTelegramPluginStateRuntimeForTests(): void {
   setTelegramRuntime(
     createPluginRuntimeMock({
+      channel: { session: { prepareSessionEntry: vi.fn(async () => undefined) } },
       state: {
         openKeyedStore: <T>(options: OpenAsyncKeyedStoreOptions) =>
           createPluginStateKeyedStoreForTests<T>("telegram", options),

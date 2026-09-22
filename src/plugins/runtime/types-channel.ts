@@ -115,6 +115,12 @@ export type PluginRuntimeChannel = {
     /** @deprecated Prefer channel turn helpers that record inbound sessions as part of dispatch. */
     resolveStorePath: typeof import("../../config/sessions/paths.js").resolveSessionStorePathCore;
     readSessionUpdatedAt: ReadSessionUpdatedAt;
+    prepareSessionEntry?: (params: {
+      agentId: string;
+      storePath: string;
+      sessionKey: string;
+      env?: NodeJS.ProcessEnv;
+    }) => Promise<import("../../config/sessions/types.js").SessionEntry | undefined>;
     recordSessionMetaFromInbound: RecordSessionMetaFromInbound;
     /** @deprecated Prefer channel turn helpers that record inbound sessions as part of dispatch. */
     recordInboundSession: RecordInboundSession;

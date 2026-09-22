@@ -49,7 +49,11 @@ import {
 import type { TelegramContext } from "./bot/types.js";
 import { resolveTelegramCommandIngressAuthorization } from "./ingress.js";
 import type { TelegramMessageDispatchReplayClaim } from "./message-dispatch-dedupe.js";
-import { isTelegramControlLaneText, isTelegramModelAliasOrdinary } from "./sequential-key.js";
+import {
+  isTelegramControlLaneText,
+  isTelegramModelAliasOrdinary,
+  isTelegramModelSelectionText,
+} from "./sequential-key.js";
 
 export interface TelegramInboundProcessing {
   processInboundMessage: (params: TelegramInboundMessage) => Promise<TelegramInboundDisposition>;
@@ -183,8 +187,16 @@ export function createTelegramInboundProcessing({
       }).then((gate) => gate.authorized);
       return controlAuthorized;
     };
+    const modelSelectionWithMedia =
+      resolveTelegramPrimaryMedia(msg) !== undefined &&
+      isTelegramModelSelectionText({
+        rawText: messageText,
+        botUsername,
+        cfg: authorizationCfg,
+      });
     const preserveCommandOrdering =
-      isTelegramModelAliasOrdinary(ctx) && (await isAuthorizedControlMessage());
+      (isTelegramModelAliasOrdinary(ctx) || modelSelectionWithMedia) &&
+      (await isAuthorizedControlMessage());
     if (preserveCommandOrdering) {
       bypassTextBuffer = false;
     }

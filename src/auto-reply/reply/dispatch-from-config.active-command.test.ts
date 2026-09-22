@@ -118,6 +118,7 @@ describe("dispatch active command admission", () => {
       media: true,
     },
     { source: "text", body: "/quick", commandName: "quick", authorized: true },
+    { source: "text", body: "/quick:", commandName: "quick:", authorized: true },
     { source: "text", body: "/bash echo unsafe", commandName: "bash", authorized: true },
     { source: "native", body: "/compact", commandName: "compact", authorized: true },
     { source: "text", body: "/reset", commandName: "reset", authorized: false },
@@ -128,7 +129,7 @@ describe("dispatch active command admission", () => {
     "keeps $source $body (authorized=$authorized) behind active-session admission",
     async (testCase) => {
       const { source, body, commandName, authorized } = testCase;
-      if (commandName === "quick") {
+      if (commandName.startsWith("quick")) {
         vi.mocked(skillCommands.prepareSkillCommandsForWorkspace).mockResolvedValue([
           {
             name: "quick",

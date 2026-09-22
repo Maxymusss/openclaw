@@ -6,7 +6,10 @@ import {
   from,
   groupCommand,
   harness,
+  photo,
 } from "./bot.create-telegram-bot.native-pipeline.test-support.js";
+import { resolveTelegramForumFlag } from "./bot/helpers.js";
+import { getTelegramRuntime } from "./runtime.js";
 
 const DEBOUNCE_MS = 4321;
 
@@ -257,12 +260,86 @@ describe("Telegram commands during buffered message processing", () => {
         "x".repeat(4000),
         "/quick",
       ]);
-      expect(
-        bot.resolveIngressLaneKey?.({
+      await expect(
+        bot.prepareIngressModelAliasOwnership?.({
           update_id: 8000,
           message: { ...groupCommand("/quick", 99), from: guest },
         }),
-      ).toBe("telegram:-10042001:topic:99");
+      ).resolves.toBe(true);
+    } finally {
+      await lifetime.close();
+    }
+  });
+
+  it("keeps a media-bearing model selection behind pending text fragments", async (context) => {
+    const fragmentEntered = createDeferred<void>();
+    const releaseFragment = createDeferred<void>();
+    const modelEntered = createDeferred<void>();
+    const fragmentText = "x".repeat(4000);
+    harness.replySpy.mockImplementation(async (ctx) => {
+      if (ctx.RawBody === fragmentText) {
+        fragmentEntered.resolve();
+        await releaseFragment.promise;
+      } else if (ctx.RawBody === "/model fixture/next") {
+        modelEntered.resolve();
+      }
+      return undefined;
+    });
+    const bot = createDebouncedBot(false);
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    const work: Promise<unknown>[] = [];
+    const flushes: Array<() => void> = [];
+    const lifetime = createTestLifetime(context, async () => {
+      releaseFragment.resolve();
+      for (const flush of flushes) {
+        flush();
+      }
+      await Promise.allSettled(work);
+      timer.mockRestore();
+    });
+
+    try {
+      const fragmentUpdate = {
+        update_id: 8050,
+        message: ordinaryMessage(fragmentText, 99),
+      };
+      const fragmentPending = runWithTelegramSpooledReplayUpdate(fragmentUpdate, () =>
+        bot.handleUpdate(fragmentUpdate),
+      );
+      work.push(fragmentPending);
+      const fragment = (await lifetime.wait(fragmentPending)).deferredWork;
+      if (!fragment) {
+        throw new Error("Expected a durable participant for the pending fragment");
+      }
+      work.push(fragment.task);
+      flushes.push(takeDebounceFlush(1500));
+
+      const command = groupCommand("/model fixture/next", 99);
+      const { text: caption, entities: captionEntities, ...mediaCommand } = command;
+      const mediaUpdate = {
+        update_id: 8051,
+        message: {
+          ...mediaCommand,
+          caption,
+          caption_entities: captionEntities,
+          photo,
+        },
+      };
+      const mediaPending = runWithTelegramSpooledReplayUpdate(mediaUpdate, () =>
+        bot.handleUpdate(mediaUpdate),
+      );
+      work.push(mediaPending);
+
+      await expect(
+        lifetime.wait(
+          Promise.race([
+            fragmentEntered.promise.then(() => "fragment" as const),
+            modelEntered.promise.then(() => "model" as const),
+          ]),
+        ),
+      ).resolves.toBe("fragment");
+      releaseFragment.resolve();
+      await lifetime.wait(Promise.all([fragment.task, mediaPending, modelEntered.promise]));
     } finally {
       await lifetime.close();
     }
@@ -323,11 +400,91 @@ describe("Telegram commands during buffered message processing", () => {
     }
   });
 
-  it("uses the current config for durable configured-alias lanes", () => {
+  it("uses the current config for durable configured-alias ownership", async () => {
     const bot = createDebouncedBot(false);
     const update = { update_id: 9100, message: groupCommand("/quick", 99) };
-    expect(bot.resolveIngressLaneKey?.(update)).toBe("telegram:-10042001:model");
-    expect(bot.resolveIngressLaneKey?.(update, undefined, {})).toBe("telegram:-10042001:topic:99");
+    await expect(bot.prepareIngressModelAliasOwnership?.(update)).resolves.toBe(false);
+    await expect(bot.prepareIngressModelAliasOwnership?.(update, undefined, {})).resolves.toBe(
+      undefined,
+    );
+  });
+
+  it("promotes persisted owner-free aliases when a skill acquires the command", async () => {
+    const bot = createDebouncedBot(false);
+    const update = { update_id: 9150, message: groupCommand("/quick:", 99) };
+    await expect(bot.prepareIngressModelAliasOwnership?.(update)).resolves.toBe(false);
+
+    harness.listSkillCommandsForAgents.mockReturnValue([
+      {
+        name: "quick",
+        skillName: "quick",
+        description: "Tool command",
+        dispatch: { kind: "tool", toolName: "exec", argMode: "raw" },
+      },
+    ]);
+    await expect(bot.prepareIngressModelAliasOwnership?.(update)).resolves.toBe(true);
+  });
+
+  it("prepares cached General-topic alias ownership through the session read worker", async () => {
+    await resolveTelegramForumFlag({
+      chatId: -10042001,
+      chatType: "supergroup",
+      isGroup: true,
+      isForum: true,
+    });
+    const prepareSessionEntry = getTelegramRuntime().channel.session.prepareSessionEntry;
+    if (!prepareSessionEntry || !("mockClear" in prepareSessionEntry)) {
+      throw new Error("Expected the test runtime to expose the session read worker");
+    }
+    const prepareSpy = vi.mocked(prepareSessionEntry);
+    prepareSpy.mockClear();
+    const bot = createDebouncedBot(false);
+    const message = {
+      ...groupCommand("/quick", 1),
+      chat: { id: -10042001, type: "supergroup" as const, title: "Test group" },
+      message_thread_id: undefined,
+      is_topic_message: undefined,
+    };
+
+    await expect(
+      bot.prepareIngressModelAliasOwnership?.({ update_id: 9200, message }),
+    ).resolves.toBe(false);
+    expect(prepareSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionKey: expect.stringContaining("topic:1") }),
+    );
+  });
+
+  it.each([
+    {
+      label: "cold General-topic",
+      message: {
+        ...groupCommand("/quick", 1),
+        chat: { id: -10042002, type: "supergroup" as const, title: "Cold forum" },
+        message_thread_id: undefined,
+        is_topic_message: undefined,
+      },
+    },
+    {
+      label: "pre-identity bot-private topic",
+      message: {
+        ...groupCommand("/quick", 23),
+        chat: { id: 42002, type: "private" as const, first_name: "Alice" },
+        is_topic_message: undefined,
+      },
+    },
+  ])("keeps an unresolved $label alias on the ordinary lane", async ({ message }) => {
+    const prepareSessionEntry = getTelegramRuntime().channel.session.prepareSessionEntry;
+    if (!prepareSessionEntry || !("mockClear" in prepareSessionEntry)) {
+      throw new Error("Expected the test runtime to expose the session read worker");
+    }
+    const prepareSpy = vi.mocked(prepareSessionEntry);
+    prepareSpy.mockClear();
+    const bot = createDebouncedBot(false);
+
+    await expect(
+      bot.prepareIngressModelAliasOwnership?.({ update_id: 9300, message }),
+    ).resolves.toBe(true);
+    expect(prepareSpy).not.toHaveBeenCalled();
   });
 
   it("rejects unauthorized text controls without blocking an authorized stop in another topic", async (context) => {

@@ -68,6 +68,7 @@ import {
   recordInboundSessionMeta,
   updateSessionLastRoute,
 } from "../../config/sessions/session-accessor.js";
+import { readSessionEntriesFromStoreInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { getChannelActivity, recordChannelActivity } from "../../infra/channel-activity.js";
 import { readRemoteMediaBuffer, saveRemoteMedia, saveResponseMedia } from "../../media/fetch.js";
 import { saveMediaBuffer } from "../../media/store.js";
@@ -135,6 +136,18 @@ export function createRuntimeChannel(options?: {
   const sessionRuntime = {
     resolveStorePath: resolveSessionStorePathCore,
     readSessionUpdatedAt: readSessionUpdatedAtCore,
+    prepareSessionEntry: async (params: {
+      agentId: string;
+      storePath: string;
+      sessionKey: string;
+      env?: NodeJS.ProcessEnv;
+    }) => {
+      const result = await readSessionEntriesFromStoreInWorker({
+        ...params,
+        sessionKeys: [params.sessionKey],
+      });
+      return result.entries.find((entry) => entry.sessionKey === params.sessionKey)?.entry;
+    },
     // Plugin runtime property names are a shipped contract; the implementations
     // route through the session accessor boundary.
     recordSessionMetaFromInbound: recordInboundSessionMeta,
