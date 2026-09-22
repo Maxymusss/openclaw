@@ -19,10 +19,10 @@ import {
   collectSecretStoreRefKeysInSnapshot,
   getActiveSecretsRuntimeSnapshotState,
 } from "../../secrets/runtime-state.js";
+import { purgeExpiredSecretStoreEntriesAsync } from "../../secrets/store/secret-store-worker.js";
 import {
   deleteSecretStoreEntry,
   listSecretStoreEntries,
-  purgeExpiredSecretStoreEntries,
   SecretStoreValidationError,
   writeSecretStoreEntry,
 } from "../../secrets/store/secret-store.js";
@@ -78,9 +78,9 @@ export function createSecretStoreWriteService(params: {
   reloadSecrets: SecretStoreReload;
   log?: SecretStoreLogger;
 }) {
-  const purgeRetention = () => {
+  const purgeRetention = async () => {
     try {
-      purgeExpiredSecretStoreEntries();
+      await purgeExpiredSecretStoreEntriesAsync();
     } catch (error) {
       params.log?.warn?.(`secrets.store retention purge failed: ${errorMessage(error)}`);
     }
@@ -88,7 +88,7 @@ export function createSecretStoreWriteService(params: {
   const reloadReference = async (
     name: string,
   ): Promise<{ reloaded: boolean; warningCount?: number }> => {
-    purgeRetention();
+    await purgeRetention();
     const snapshot = getActiveSecretsRuntimeSnapshotState();
     const refKeys = snapshot
       ? collectSecretStoreRefKeysInSnapshot(snapshot, name)

@@ -62,37 +62,93 @@
     {
       "provider": "onnx",
       "id": "gliclass-edge-v3.0",
-      "name": "GLiClass Edge v3"
+      "name": "GLiClass Edge v3",
+      "setup": [
+        {
+          "kind": "local-model",
+          "label": "ONNX",
+          "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
+          "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
+        }
+      ]
     },
     {
       "provider": "onnx",
       "id": "gliclass-base-v3.0",
-      "name": "GLiClass Base v3"
+      "name": "GLiClass Base v3",
+      "setup": [
+        {
+          "kind": "local-model",
+          "label": "ONNX",
+          "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
+          "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
+        }
+      ]
     },
     {
       "provider": "onnx",
       "id": "gliner2.5-small-v1",
-      "name": "GLiNER 2.5 Small"
+      "name": "GLiNER 2.5 Small",
+      "setup": [
+        {
+          "kind": "local-model",
+          "label": "ONNX",
+          "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
+          "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
+        }
+      ]
     },
     {
       "provider": "onnx",
       "id": "gliner2.5-base-v1",
-      "name": "GLiNER 2.5 Base"
+      "name": "GLiNER 2.5 Base",
+      "setup": [
+        {
+          "kind": "local-model",
+          "label": "ONNX",
+          "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
+          "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
+        }
+      ]
     },
     {
       "provider": "onnx",
       "id": "deberta-v3-base-zeroshot-v2.0",
-      "name": "DeBERTa Zero-shot v2"
+      "name": "DeBERTa Zero-shot v2",
+      "setup": [
+        {
+          "kind": "local-model",
+          "label": "ONNX",
+          "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
+          "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
+        }
+      ]
     },
     {
       "provider": "onnx",
       "id": "gliclass-instruct-edge-v1.0",
-      "name": "GLiClass Instruct Edge (local export)"
+      "name": "GLiClass Instruct Edge (local export)",
+      "setup": [
+        {
+          "kind": "local-model",
+          "label": "ONNX",
+          "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
+          "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
+        }
+      ]
     },
     {
       "provider": "onnx",
       "id": "gliclass-instruct-base-v1.0",
-      "name": "GLiClass Instruct Base (local export)"
+      "name": "GLiClass Instruct Base (local export)",
+      "setup": [
+        {
+          "kind": "local-model",
+          "label": "ONNX",
+          "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
+          "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
+        }
+      ]
     }
   ]
 }

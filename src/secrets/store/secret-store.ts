@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { DatabaseSync } from "node:sqlite";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import type { Selectable } from "kysely";
 import { isRedactedSecretValue } from "../../config/redact-sentinel.js";
@@ -19,7 +20,6 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
-import { normalizeExactAllowedHost } from "../exact-hostname.js";
 import { sealSecretSentinel } from "../sentinel.js";
 import {
   classifyHiddenGitHubStoreName,
@@ -27,8 +27,9 @@ import {
   GITHUB_SETUP_HANDOFF_MAX_AGE_MS,
 } from "./secret-store-hidden-github.js";
 import {
-  SECRET_STORE_ALLOWED_HOSTS_MAX,
-  SECRET_STORE_VALUE_MAX_BYTES,
+  normalizeSecretAllowedHosts,
+  assertSecretStoreValue,
+  assertSecretStoreEnvName,
   SecretStoreValidationError,
 } from "./secret-store-validation-error.js";
 
@@ -39,6 +40,8 @@ export {
   writeHiddenGitHubSecretRecord,
 } from "./secret-store-hidden-github.js";
 export {
+  normalizeSecretAllowedHosts,
+  assertSecretStoreValue,
   SECRET_STORE_ALLOWED_HOSTS_MAX,
   SECRET_STORE_VALUE_MAX_BYTES,
   SecretStoreValidationError,
@@ -66,6 +69,14 @@ type SecretStoreWriteSnapshot = {
   kind: SecretStoreKind;
   allowedHosts: string | null;
   updatedBy: string | null;
+};
+
+/** Private compensation data; never projected onto a Gateway response. */
+export type SecretStoreWriteReceipt = {
+  scope: SecretStoreScope;
+  name: string;
+  expectedUpdatedBy: string;
+  previous: SecretStoreWriteSnapshot | undefined;
 };
 
 export type SecretStoreEntryMetadata = {
@@ -104,15 +115,6 @@ function normalizeScope(_scope: SecretStoreScope): { scopeKind: "team"; scopeId:
   return { scopeKind: "team", scopeId: "" };
 }
 
-function assertSecretStoreEnvName(name: string): void {
-  if (!ENV_SECRET_REF_ID_RE.test(name)) {
-    throw new SecretStoreValidationError(
-      "SECRET_STORE_INVALID_NAME",
-      `Secret store name must match ${String(ENV_SECRET_REF_ID_RE)}.`,
-    );
-  }
-}
-
 function assertSecretStoreMutationName(name: string): void {
   if (!ENV_SECRET_REF_ID_RE.test(name) && classifyHiddenGitHubStoreName(name) !== "setup") {
     throw new SecretStoreValidationError(
@@ -120,53 +122,6 @@ function assertSecretStoreMutationName(name: string): void {
       `Secret store name must match ${String(ENV_SECRET_REF_ID_RE)} or github-setup-<32 lowercase hex characters>.`,
     );
   }
-}
-
-export function assertSecretStoreValue(value: string, kind: SecretStoreKind, name: string): void {
-  if (isRedactedSecretValue(value)) {
-    throw new SecretStoreValidationError(
-      "SECRET_STORE_VALUE_REDACTED",
-      `Secret store entry "${name}" contains a redaction placeholder. Supply a real value or leave the field unchanged. Run openclaw doctor --fix to repair a store-backed Gateway token.`,
-    );
-  }
-  const bytes = Buffer.byteLength(value, "utf8");
-  if (bytes > SECRET_STORE_VALUE_MAX_BYTES) {
-    throw new SecretStoreValidationError(
-      "SECRET_STORE_VALUE_TOO_LARGE",
-      `Secret store value exceeds ${SECRET_STORE_VALUE_MAX_BYTES} UTF-8 bytes.`,
-    );
-  }
-  // An empty credential is never meaningful and cannot be diagnosed later: `get`
-  // refuses secret kinds and listings mask them, so a silently-empty secret (a
-  // failed `op read |` pipe, for example) would surface only as a confusing 401.
-  // Env entries may legitimately be empty.
-  if (kind === "secret" && value.length === 0) {
-    throw new SecretStoreValidationError(
-      "SECRET_STORE_VALUE_EMPTY",
-      "Secret store value is empty. Secret entries require a value; check the command that produced it.",
-    );
-  }
-}
-
-function normalizeSecretAllowedHost(raw: string): string {
-  try {
-    return normalizeExactAllowedHost(raw);
-  } catch (error) {
-    throw new SecretStoreValidationError(
-      "SECRET_STORE_INVALID_ALLOWED_HOST",
-      error instanceof Error ? error.message : `Allowed host "${raw}" is not a valid hostname.`,
-    );
-  }
-}
-
-export function normalizeSecretAllowedHosts(hosts: readonly string[]): string[] {
-  if (hosts.length > SECRET_STORE_ALLOWED_HOSTS_MAX) {
-    throw new SecretStoreValidationError(
-      "SECRET_STORE_INVALID_ALLOWED_HOST",
-      `A secret can allow at most ${SECRET_STORE_ALLOWED_HOSTS_MAX} hosts.`,
-    );
-  }
-  return [...new Set(hosts.map(normalizeSecretAllowedHost))].toSorted();
 }
 
 function parseSecretAllowedHosts(raw: string | null | undefined): string[] {
@@ -374,6 +329,46 @@ export function readSecretStoreExecEnvironment(params: {
   }
 }
 
+/** Fixed reader used by the canonical read-only worker and synchronous boot callers. */
+export function readSecretStoreValueInDatabase(
+  sqlite: DatabaseSync,
+  name: string,
+): Result<string, SecretStoreReadError> {
+  try {
+    assertSecretStoreEnvName(name);
+    const db = getNodeSqliteKysely<SecretStoreDatabase>(sqlite);
+    const row = executeSqliteQueryTakeFirstSync(
+      sqlite,
+      db
+        .selectFrom("secret_store_entries")
+        .select(["value", "kind"])
+        .where("scope_kind", "=", "team")
+        .where("scope_id", "=", "")
+        .where("name", "=", name)
+        .where("deleted_at_ms", "is", null),
+    );
+    if (!row) {
+      return err({ code: "SECRET_STORE_NOT_FOUND", message: "Secret store entry was not found." });
+    }
+    if (row.kind === "secret") {
+      registerSecretValueForRedaction(row.value);
+    }
+    return ok(row.value);
+  } catch (error) {
+    if (isMissingSecretStoreTableError(error)) {
+      return err({ code: "SECRET_STORE_NOT_FOUND", message: "Secret store entry was not found." });
+    }
+    if (error instanceof SecretStoreValidationError) {
+      return err({ code: "SECRET_STORE_INVALID_NAME", message: error.message });
+    }
+    return err({
+      code: "SECRET_STORE_UNAVAILABLE",
+      message: "Secret store database is unavailable.",
+      cause: error,
+    });
+  }
+}
+
 export function readSecretStoreValue(params: {
   scope: SecretStoreScope;
   name: string;
@@ -381,30 +376,12 @@ export function readSecretStoreValue(params: {
 }): Result<string, SecretStoreReadError> {
   try {
     assertSecretStoreEnvName(params.name);
-    const { scopeKind, scopeId } = normalizeScope(params.scope);
-    const row = withExistingOpenClawStateDatabaseReadOnly(({ db: sqlite }) => {
-      const db = getNodeSqliteKysely<SecretStoreDatabase>(sqlite);
-      return executeSqliteQueryTakeFirstSync(
-        sqlite,
-        db
-          .selectFrom("secret_store_entries")
-          .select(["value", "kind"])
-          .where("scope_kind", "=", scopeKind)
-          .where("scope_id", "=", scopeId)
-          .where("name", "=", params.name)
-          .where("deleted_at_ms", "is", null),
-      );
-    }, params.database ?? {});
-    if (!row) {
-      return err({
-        code: "SECRET_STORE_NOT_FOUND",
-        message: `Secret store entry "${params.name}" was not found.`,
-      });
-    }
-    if (row.kind === "secret") {
-      registerSecretValueForRedaction(row.value);
-    }
-    return ok(row.value);
+    return (
+      withExistingOpenClawStateDatabaseReadOnly(
+        ({ db }) => readSecretStoreValueInDatabase(db, params.name),
+        params.database ?? {},
+      ) ?? err({ code: "SECRET_STORE_NOT_FOUND", message: "Secret store entry was not found." })
+    );
   } catch (error) {
     if (isMissingSecretStoreTableError(error)) {
       return err({
@@ -514,7 +491,7 @@ export function writeSecretStoreEntry(params: SecretStoreWriteParams): void {
   writeSecretStoreEntryInternal(params, false);
 }
 
-function rollbackSecretStoreEntryWrite(params: {
+export function rollbackSecretStoreEntryWrite(params: {
   scope: SecretStoreScope;
   name: string;
   expectedUpdatedBy: string;
@@ -567,12 +544,21 @@ function rollbackSecretStoreEntryWrite(params: {
   }
 }
 
-/** Writes one entry and returns owner-checked compensation for that exact write. */
+/** Stage one write using the same transaction and conditional compensation owner. */
+export function stageSecretStoreEntryWrite(
+  params: SecretStoreWriteParams,
+): SecretStoreWriteReceipt {
+  registerSecretValueForRedaction(params.value);
+  const writer = `${params.updatedBy ?? "secret-store"}:${randomUUID()}`;
+  const previous = writeSecretStoreEntryInternal({ ...params, updatedBy: writer }, true);
+  return { scope: params.scope, name: params.name, expectedUpdatedBy: writer, previous };
+}
+
+/** Synchronous compatibility for CLI/boot owners; runtime uses the shared-state worker. */
 export function writeSecretStoreEntryWithRollback(params: SecretStoreWriteParams): {
   rollback: () => boolean;
 } {
-  const writer = `${params.updatedBy ?? "secret-store"}:${randomUUID()}`;
-  const previous = writeSecretStoreEntryInternal({ ...params, updatedBy: writer }, true);
+  const receipt = stageSecretStoreEntryWrite(params);
   let rollbackResult: boolean | undefined;
   return {
     rollback: () => {
@@ -580,10 +566,7 @@ export function writeSecretStoreEntryWithRollback(params: SecretStoreWriteParams
         return rollbackResult;
       }
       rollbackResult = rollbackSecretStoreEntryWrite({
-        scope: params.scope,
-        name: params.name,
-        expectedUpdatedBy: writer,
-        previous,
+        ...receipt,
         ...(params.database !== undefined ? { database: params.database } : {}),
       });
       return rollbackResult;

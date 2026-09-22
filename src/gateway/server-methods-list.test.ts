@@ -236,6 +236,7 @@ describe("listGatewayMethods", () => {
       "progressCard.refresh",
       "webSearch.status",
       "webSearch.test",
+      "plugins.credentials.set",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -292,6 +293,7 @@ describe("listGatewayMethods", () => {
       "progressCard.refresh",
       "webSearch.status",
       "webSearch.test",
+      "plugins.credentials.set",
     ]);
   });
 
@@ -477,6 +479,7 @@ describe("listGatewayMethods", () => {
       "progressCard.refresh",
       "webSearch.status",
       "webSearch.test",
+      "plugins.credentials.set",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));

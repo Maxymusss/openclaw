@@ -123,7 +123,20 @@ describe("models.list plugin metadata handoff", () => {
           {
             id: "decisions",
             contracts: { decisionProviders: ["fixture"] },
-            decisionModels: [{ provider: "fixture", id: "fast", name: "Fast decisions" }],
+            decisionModels: [
+              {
+                provider: "fixture",
+                id: "fast",
+                name: "Fast decisions",
+                setup: [
+                  {
+                    kind: "local-model",
+                    label: "Prepare model",
+                    help: "Download model artifacts separately.",
+                  },
+                ],
+              },
+            ],
           },
           ...(chat ? [{ id: "custom", providers: ["custom"] }] : []),
         ],
@@ -166,6 +179,12 @@ describe("models.list plugin metadata handoff", () => {
                 id: "fast",
                 name: "Fast decisions",
                 pluginId: "decisions",
+                readiness: "unknown",
+                setup: {
+                  kind: "local-model",
+                  label: "Prepare model",
+                  help: "Download model artifacts separately.",
+                },
               },
             ]
           : [],

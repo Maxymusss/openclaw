@@ -43,6 +43,7 @@ import type {
   PluginBlobReadCommand,
   PluginBlobReadReply,
 } from "../plugin-state/plugin-blob-worker-contract.js";
+import type { readSecretStoreValue } from "../secrets/store/secret-store.js";
 import type { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type { SkillLibraryReadOnlyOperations } from "../skills/library/selection-read.kernel.js";
 import type { OnboardingRecommendationsRecord } from "./onboarding-recommendations.contract.js";
@@ -66,6 +67,7 @@ export type OpenClawStateReadAuthority = {
 };
 
 export type OpenClawStateReadCommand =
+  | { type: "secrets.store.read"; name: string }
   | {
       [Kind in keyof McpOAuthReadOnlyOperations]: {
         type: Kind;
@@ -119,6 +121,12 @@ export type OpenClawStateReadRequest = {
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply = (
+  | {
+      ok: true;
+      type: "secrets.store.read";
+      sourceAdmitted: true;
+      value: ReturnType<typeof readSecretStoreValue>;
+    }
   | {
       [Kind in keyof McpOAuthReadOnlyOperations]: {
         ok: true;

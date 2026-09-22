@@ -1,11 +1,27 @@
 import type { ModelCatalogResult } from "../api/types.ts";
 import { t } from "../i18n/index.ts";
 import { registerModelControlsEnglish } from "../i18n/locales/en-model-controls.ts";
+import { registerSettingsEnglish } from "../i18n/locales/en-settings.ts";
 import { renderModelPicker, type ModelPickerOption } from "./model-picker.ts";
 
 registerModelControlsEnglish();
+registerSettingsEnglish();
 
 export type DecisionModelEntry = NonNullable<ModelCatalogResult["decisionModels"]>[number];
+export function decisionModelSetupLabel(model: DecisionModelEntry): string | undefined {
+  if (!model.readiness) {
+    return undefined;
+  }
+  const key =
+    model.readiness === "configured"
+      ? "configured"
+      : model.readiness === "auth-rejected"
+        ? "rejected"
+        : model.readiness === "setup-required"
+          ? "required"
+          : "unknown";
+  return [model.setup?.label, t(`modelProviders.decisionSetup.${key}`)].filter(Boolean).join(" · ");
+}
 const INHERIT_VALUE = "__openclaw_inherit_decision__";
 
 export function renderDecisionModelPicker(params: {
@@ -22,6 +38,7 @@ export function renderDecisionModelPicker(params: {
     value: `${model.provider}/${model.id}`,
     label: model.name,
     provider: model.provider,
+    detail: decisionModelSetupLabel(model),
   }));
   options.sort((a, b) => a.label.localeCompare(b.label));
   const selected = params.value?.trim();

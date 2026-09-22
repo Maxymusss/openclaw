@@ -166,6 +166,9 @@ function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCom
 
 function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   let bytes = Buffer.byteLength(command.type, "utf8");
+  if (command.type === "secrets.store.read") {
+    return bytes + Buffer.byteLength(command.name, "utf8");
+  }
   if (command.type === "mcpOAuth.statuses") {
     return command.input.reduce((total, key) => total + Buffer.byteLength(key, "utf8"), bytes);
   }

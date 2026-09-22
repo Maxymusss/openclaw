@@ -51,6 +51,7 @@ import type {
   ProjectRegistryInsert,
   ProjectRegistryRecord,
 } from "../projects/project-registry.kernel.js";
+import type { SecretStoreWorkerOperations } from "../secrets/store/secret-store-worker.js";
 import type {
   SessionStateEventInput,
   SessionStateNotice,
@@ -80,7 +81,8 @@ import type { UserProfileWorkerOperations } from "./user-profiles.worker.js";
 export type OpenClawStateWorkerOpenPreparation = { type: "deviceIdentity"; identityKey: string };
 
 /** Commands share one physical shared-state actor; bindings belong to commands, not open input. */
-export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
+export type OpenClawStateWorkerOperations = SecretStoreWorkerOperations &
+  McpOAuthReadOperations &
   CurrentConversationBindingWorkerOperations &
   WebPushWorkerOperations &
   ApnsRegistrationWorkerOperations &

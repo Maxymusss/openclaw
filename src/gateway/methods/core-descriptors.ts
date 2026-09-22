@@ -703,4 +703,5 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["progressCard.refresh", "progress-card", "operator.write", "2026.9"],
   ["webSearch.status", "web-search", "operator.read", "2026.9"],
   ["webSearch.test", "web-search", "operator.admin", "2026.9"],
+  ["plugins.credentials.set", null, "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

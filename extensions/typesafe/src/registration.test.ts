@@ -66,9 +66,30 @@ describe("plugin ownership and configuration", () => {
       decisionProviders: ["typesafe"],
     });
     expect(manifest.decisionModels).toEqual([
-      { provider: "typesafe", id: "jev-latest", name: "Jev" },
-      { provider: "typesafe", id: "jev-1.13.0", name: "Jev 1.13.0" },
-      { provider: "typesafe", id: "kev-latest", name: "Kev (local server)" },
+      expect.objectContaining({
+        provider: "typesafe",
+        id: "jev-latest",
+        name: "Jev",
+        setup: [
+          expect.objectContaining({ kind: "local-server" }),
+          expect.objectContaining({ kind: "api-key" }),
+        ],
+      }),
+      expect.objectContaining({
+        provider: "typesafe",
+        id: "jev-1.13.0",
+        name: "Jev 1.13.0",
+        setup: [
+          expect.objectContaining({ kind: "local-server" }),
+          expect.objectContaining({ kind: "api-key" }),
+        ],
+      }),
+      expect.objectContaining({
+        provider: "typesafe",
+        id: "kev-latest",
+        name: "Kev (local server)",
+        setup: [expect.objectContaining({ kind: "local-server" })],
+      }),
     ]);
     expect(manifest.providers).toBeUndefined();
     expect(manifest.modelCatalog).toBeUndefined();

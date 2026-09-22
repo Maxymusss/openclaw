@@ -36,6 +36,7 @@ import {
   pluginBlobEntriesInDatabase,
 } from "../plugin-state/plugin-blob-store.sqlite.js";
 import { isPluginBlobReadCommand } from "../plugin-state/plugin-blob-worker-contract.js";
+import { readSecretStoreValueInDatabase } from "../secrets/store/secret-store.js";
 import {
   selectSkillLibraryRevisionMetadataBatch,
   selectSkillLibraryRevisionManifestsBatch,
@@ -78,9 +79,10 @@ function isReadRequest(input: unknown): input is OpenClawStateReadRequest {
     isRecord(coordinatorRuntime) &&
     typeof coordinatorRuntime.directory === "string" &&
     typeof coordinatorRuntime.keepAlive === "boolean" &&
-    ((input.command.type === "mcpOAuth.statuses" &&
-      Array.isArray(input.command.input) &&
-      input.command.input.every((key) => typeof key === "string")) ||
+    ((input.command.type === "secrets.store.read" && typeof input.command.name === "string") ||
+      (input.command.type === "mcpOAuth.statuses" &&
+        Array.isArray(input.command.input) &&
+        input.command.input.every((key) => typeof key === "string")) ||
       ((input.command.type === "mcpOAuth.readOnly" ||
         input.command.type === "mcpOAuth.keys" ||
         input.command.type === "mcpOAuth.pending" ||
@@ -225,6 +227,14 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "secrets.store.read") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    value: readSecretStoreValueInDatabase(db, command.name),
+                  };
+                }
                 if (command.type === "mcpOAuth.statuses") {
                   return {
                     ok: true,

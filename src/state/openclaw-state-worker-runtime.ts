@@ -92,6 +92,7 @@ import {
   resolveProjectRegistryInDatabase,
   resolveRecordedProjectRootInDatabase,
 } from "../projects/project-registry.kernel.js";
+import { executeSecretStoreWorkerCommand } from "../secrets/store/secret-store-worker.runtime.js";
 import {
   pruneSessionStateEventsInDatabase,
   recordSessionStateEventInDatabase,
@@ -151,6 +152,17 @@ export function executeSharedStateCommand(
   open: () => OpenClawStateDatabase,
   hasNativeDatabase: boolean,
 ): Operations[keyof Operations]["output"] {
+  if (
+    command.type === "secrets.store.stage" ||
+    command.type === "secrets.store.rollback" ||
+    command.type === "secrets.store.purge"
+  ) {
+    return executeSecretStoreWorkerCommand(command, {
+      database: open(),
+      path: context.databasePath,
+      env: getSqliteWorkerStateContext().environment,
+    });
+  }
   if (command.type === "mcpOAuth.read") {
     return readMcpOAuthStoreInDatabase(open().db, command.input);
   }
