@@ -4,6 +4,7 @@ import type { DatabaseSync } from "node:sqlite";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { MemorySyncParams } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { describe, expect, it, vi } from "vitest";
+import { runMemoryIndexState } from "./manager-cpu-worker-runtime.js";
 import { createManagerIndexFixture } from "./manager-index.test-support.js";
 import type { MemoryIndexMeta } from "./manager-reindex-state.js";
 
@@ -69,6 +70,12 @@ describe("automatic candidates during provenance repair", () => {
           status: "mismatched",
           reason: "index provenance classifier changed",
         });
+        const databasePath = upgraded.status().dbPath;
+        if (!databasePath) {
+          throw new Error("Memory test manager has no database path");
+        }
+        // Prepare the real reader before timing independence from the held rebuild.
+        await runMemoryIndexState({ agentId: "main", databasePath });
         if (startupCatchup) {
           await vi.waitFor(() => expect(fixture.provider.providerRuntimeActiveBatchCalls).toBe(1), {
             timeout: 10_000,
