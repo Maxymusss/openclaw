@@ -1,13 +1,7 @@
 // Embeddings HTTP tests cover OpenAI-compatible embedding routes, provider
 // adapters, agent-scoped config, auth scopes, and disabled-surface behavior.
 import fs from "node:fs/promises";
-import {
-  createServer,
-  type IncomingMessage,
-  request as httpRequest,
-  type ServerResponse,
-} from "node:http";
-import type { AddressInfo } from "node:net";
+import { request as httpRequest } from "node:http";
 import path from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -24,6 +18,7 @@ import type { MemoryEmbeddingProviderAdapter } from "../plugins/memory-embedding
 import { createPluginRegistry } from "../plugins/registry.js";
 import type { PluginRuntime } from "../plugins/runtime/types.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
+import { startGenericEmbeddingServer } from "./embeddings-http.test-helpers.js";
 import { startOpenAiCompatGatewayServer } from "./openai-compatible-http.test-helpers.js";
 import {
   installGatewayTestHooks,
@@ -59,72 +54,10 @@ let embeddingProviderLifetime: typeof import("./embeddings-provider-lifetime.js"
 let clearEmbeddingProviders: typeof import("../plugins/embedding-providers.js").clearEmbeddingProviders;
 let registerEmbeddingProvider: typeof import("../plugins/embedding-providers.js").registerEmbeddingProvider;
 let enabledServer: Awaited<ReturnType<typeof startOpenAiCompatGatewayServer>>;
-let genericEmbeddingServer: { baseUrl: string; close: () => Promise<void> };
+let genericEmbeddingServer: Awaited<ReturnType<typeof startGenericEmbeddingServer>>;
 let enabledPort: number;
 let genericEmbeddingBaseUrl: string;
-const genericEmbeddingRequests: Array<{
-  method: string | undefined;
-  url: string | undefined;
-  body: Record<string, unknown>;
-}> = [];
-
-async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>;
-}
-
-async function startGenericEmbeddingServer(): Promise<{
-  baseUrl: string;
-  close: () => Promise<void>;
-}> {
-  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    void (async () => {
-      const body = await readJsonBody(req);
-      genericEmbeddingRequests.push({
-        method: req.method,
-        url: req.url,
-        body,
-      });
-      const input = Array.isArray(body.input) ? body.input : [body.input];
-      const inputType = body.input_type;
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(
-        JSON.stringify({
-          object: "list",
-          data: input.map((_text, index) => ({
-            object: "embedding",
-            embedding: [index + 9.1, inputType === "document" ? 9.2 : 0],
-            index,
-          })),
-          model: body.model,
-        }),
-      );
-    })().catch((error: unknown) => {
-      res.writeHead(500, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
-    });
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      server.off("error", reject);
-      resolve();
-    });
-  });
-
-  const address = server.address() as AddressInfo;
-  return {
-    baseUrl: `http://127.0.0.1:${address.port}/v1`,
-    close: () =>
-      new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      }),
-  };
-}
+const providerGateReleases = new Set<() => void>();
 
 beforeAll(async () => {
   embeddingProviderLifetime = await import("./embeddings-provider-lifetime.js");
@@ -193,7 +126,18 @@ beforeEach(() => {
   registerEmbeddingProvider(openAiAdapter);
 });
 
-afterEach(() => {
+afterEach(async () => {
+  // Vitest can finish a timed-out case while its provider is still awaiting a fixture gate.
+  for (const release of providerGateReleases) {
+    release();
+  }
+  providerGateReleases.clear();
+  await embeddingProviderLifetime.drainRetainedOpenAiEmbeddingProviders();
+  // Pending cleanup must consume its implementation before queued fixture behavior is reset.
+  createEmbeddingProviderMock.mockReset();
+  embedBatchMock.mockReset();
+  closeEmbeddingProviderMock.mockReset();
+  Reflect.set(openAiAdapter, "transport", "remote");
   clearEmbeddingProviders();
   resetTestPluginRegistry();
 });
@@ -229,6 +173,7 @@ async function withPendingProviderClose(
   const originalTransport = openAiAdapter.transport;
   const closeStarted = createDeferred();
   const gate = createDeferred();
+  providerGateReleases.add(gate.resolve);
   const requests: Promise<Response>[] = [];
   const secondAdmission = createDeferred<AbortSignal>();
   const acquire = embeddingProviderLifetime.acquireEmbeddingProviderLease;
@@ -265,6 +210,7 @@ async function withPendingProviderClose(
     try {
       await embeddingProviderLifetime.drainRetainedOpenAiEmbeddingProviders();
     } finally {
+      providerGateReleases.delete(gate.resolve);
       observeAdmission.mockRestore();
       Reflect.set(openAiAdapter, "transport", originalTransport);
     }
@@ -341,7 +287,7 @@ function latestCreateGenericEmbeddingProviderOptions(): {
   dimensions?: number;
   inputType?: string;
 } {
-  const request = genericEmbeddingRequests[genericEmbeddingRequests.length - 1];
+  const request = genericEmbeddingServer.requests.at(-1);
   if (!request) {
     throw new Error("expected generic embedding provider request");
   }
@@ -1017,6 +963,7 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
 
   it("allows providers without cleanup resources to embed concurrently", async () => {
     const { promise: firstEmbedGate, resolve: releaseFirstEmbed } = createDeferred();
+    providerGateReleases.add(releaseFirstEmbed);
     const firstEmbedStarted = createDeferred();
     const firstEmbed = vi.fn(async () => {
       firstEmbedStarted.resolve();
@@ -1065,6 +1012,7 @@ describe("OpenAI-compatible embeddings HTTP API (e2e)", () => {
     } finally {
       releaseFirstEmbed();
       await Promise.allSettled(requests);
+      providerGateReleases.delete(releaseFirstEmbed);
       createEmbeddingProviderMock.mockReset();
     }
   });

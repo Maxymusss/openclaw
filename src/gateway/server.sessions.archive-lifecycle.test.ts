@@ -49,7 +49,7 @@ afterEach(async () => {
 async function waitForArchiveEntry(
   entry: Promise<unknown>,
   request: Promise<unknown>,
-  signal: AbortSignal,
+  signal?: AbortSignal,
 ) {
   await racePromiseWithAbortSignal(
     Promise.race([
@@ -70,9 +70,10 @@ function activeRunContext(params: {
   sessionKey: string;
   persistence: ReturnType<typeof createDeferredCore<void>>;
   ownerConnId?: string;
+  terminalPersistenceError?: Error;
 }) {
   const chatAbortControllers = new Map();
-  const registration = registerChatAbortController({
+  const { entry, controller } = registerChatAbortController({
     chatAbortControllers,
     runId: params.runId,
     sessionId: params.sessionId,
@@ -80,12 +81,12 @@ function activeRunContext(params: {
     timeoutMs: 60_000,
     ownerConnId: params.ownerConnId,
   });
-  if (!registration.entry) {
+  if (!entry) {
     throw new Error("expected active run registration");
   }
-  const entry = registration.entry;
   const aborted = createDeferredCore();
-  registration.controller.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
+  const onAbort = () => aborted.resolve();
+  entry.controller.signal.addEventListener("abort", onAbort, { once: true });
   const unsubscribe = onAgentEvent((event) => {
     if (
       event.runId !== params.runId ||
@@ -107,6 +108,9 @@ function activeRunContext(params: {
         removeChatAbortControllerEntry(chatAbortControllers, params.runId, entry);
       },
     );
+    if (params.terminalPersistenceError) {
+      params.persistence.reject(params.terminalPersistenceError);
+    }
   });
   return {
     context: {
@@ -122,9 +126,12 @@ function activeRunContext(params: {
         clientRunId: params.runId,
       })),
     },
-    controller: registration.controller,
+    controller,
     aborted: aborted.promise,
-    unsubscribe,
+    unsubscribe() {
+      entry.controller.signal.removeEventListener("abort", onAbort);
+      unsubscribe();
+    },
   };
 }
 
@@ -198,8 +205,6 @@ function placementReader(current: () => WorkerSessionPlacementRecord | undefined
 async function archiveLifecycleRequestContext(
   overrides: Record<string, unknown>,
 ): Promise<GatewayRequestContext> {
-  const { getRuntimeConfig } = await getGatewayConfigModule();
-  const loadGatewayModelCatalog = async () => [];
   return {
     broadcast: vi.fn(),
     broadcastToConnIds: vi.fn(),
@@ -207,9 +212,9 @@ async function archiveLifecycleRequestContext(
     chatQueuedTurns: new Map(),
     dedupe: new Map(),
     getSessionEventSubscriberConnIds: () => new Set<string>(),
-    getRuntimeConfig,
-    loadGatewayModelCatalog,
-    readPreparedGatewayModelCatalog: async () => ({ entries: await loadGatewayModelCatalog() }),
+    getRuntimeConfig: (await getGatewayConfigModule()).getRuntimeConfig,
+    loadGatewayModelCatalog: async () => [],
+    readPreparedGatewayModelCatalog: async () => ({ entries: [] }),
     ...overrides,
   } as unknown as GatewayRequestContext;
 }
@@ -224,9 +229,7 @@ function archivePatch(key: string, expectedSessionId: string) {
   return { key, archived: true, expectedSessionId };
 }
 
-function archiveTarget(key: string, expectedSessionId: string) {
-  return { key, expectedSessionId };
-}
+const archiveTarget = (key: string, expectedSessionId: string) => ({ key, expectedSessionId });
 
 function expectArchived(storePath: string, sessionKey: string) {
   expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toEqual(expect.any(Number));
@@ -245,7 +248,8 @@ async function invokeArchiveHandler(params: {
   const respond: RespondFn = (ok, payload, error) => {
     response = { ok, payload, error };
   };
-  await (await getSessionsHandlers())["sessions.patch"]?.({
+  const handlers = await getSessionsHandlers();
+  await handlers["sessions.patch"]?.({
     req: {} as never,
     params: archivePatch(params.sessionKey, params.expectedSessionId),
     client: params.client,
@@ -270,7 +274,8 @@ async function invokeVisibilityHandler(params: {
   const respond: RespondFn = (ok, payload, error) => {
     response = { ok, payload, error };
   };
-  await (await getSessionsHandlers())["session.visibility.set"]?.({
+  const handlers = await getSessionsHandlers();
+  await handlers["session.visibility.set"]?.({
     params: { sessionKey: params.sessionKey, visibility: params.visibility },
     client: params.client,
     context: params.context,
@@ -749,27 +754,26 @@ test("sessions.patch returns UNAVAILABLE when terminal persistence fails", async
   const runId = "run-archive-persistence-failure";
   await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
   const persistence = createDeferredCore();
-  const active = activeRunContext({ runId, sessionId, sessionKey, persistence });
-  let archive: ReturnType<typeof directSessionReq> | undefined;
+  const active = activeRunContext({
+    runId,
+    sessionId,
+    sessionKey,
+    persistence,
+    terminalPersistenceError: new Error("disk full"),
+  });
   try {
-    archive = directSessionReq(
+    const archived = await directSessionReq(
       "sessions.patch",
       { key: sessionKey, archived: true, expectedSessionId: sessionId },
       {
         context: active.context,
       },
     );
-    await active.aborted;
     expect(active.controller.signal.aborted).toBe(true);
-    persistence.reject(new Error("disk full"));
-
-    const archived = await archive;
     expect(archived.ok).toBe(false);
     expect(archived.error).toMatchObject({ code: "UNAVAILABLE", retryable: true });
     expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
   } finally {
-    persistence.resolve();
-    await Promise.allSettled(archive ? [archive] : []);
     active.unsubscribe();
   }
 });
@@ -1025,20 +1029,15 @@ test("sessions.patch rejects a generation replaced after the exact preparation r
     placement = workerPlacement({ sessionId, sessionKey, state: "reclaimed" });
     return placement as Extract<WorkerSessionPlacementRecord, { state: "reclaimed" }>;
   });
-  let archive: ReturnType<typeof directSessionReq> | undefined;
+  const archive = directSessionReq("sessions.patch", archivePatch(sessionKey, sessionId), {
+    context: {
+      ...active.context,
+      workerSessionPlacementService: placementReader(() => placement),
+      workerPlacementDispatchService: { dispatch, reclaim },
+    },
+  });
   try {
-    archive = directSessionReq(
-      "sessions.patch",
-      { key: sessionKey, archived: true, expectedSessionId: sessionId },
-      {
-        context: {
-          ...active.context,
-          workerSessionPlacementService: placementReader(() => placement),
-          workerPlacementDispatchService: { dispatch, reclaim },
-        },
-      },
-    );
-    await active.aborted;
+    await waitForArchiveEntry(active.aborted, archive);
     expect(active.controller.signal.aborted).toBe(true);
     await upsertSessionEntryCore(
       { storePath, sessionKey },
@@ -1061,7 +1060,7 @@ test("sessions.patch rejects a generation replaced after the exact preparation r
     expect(dispatch).not.toHaveBeenCalled();
   } finally {
     persistence.resolve();
-    await Promise.allSettled(archive ? [archive] : []);
+    await Promise.allSettled([archive]);
     active.unsubscribe();
   }
 });

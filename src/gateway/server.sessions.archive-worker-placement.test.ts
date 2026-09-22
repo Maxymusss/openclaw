@@ -324,18 +324,30 @@ test("sessions.patch reclaims the exact active cloud placement before archive me
     },
   );
 
-  await reclaimStarted.promise;
-  expect(reclaim).toHaveBeenCalledOnce();
-  expect(reclaim).toHaveBeenCalledWith(
-    { sessionId, sessionKey, agentId: "main" },
-    expect.any(Function),
-    expect.any(Function),
-  );
-  expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
-  reclaimGate.resolve();
+  try {
+    await Promise.race([
+      reclaimStarted.promise,
+      archive.then((result) => {
+        expect(result).toMatchObject({ ok: true });
+        throw new Error("archive completed before worker reclaim");
+      }),
+    ]);
+    expect(reclaim).toHaveBeenCalledOnce();
+    expect(reclaim).toHaveBeenCalledWith(
+      { sessionId, sessionKey, agentId: "main" },
+      expect.any(Function),
+      expect.any(Function),
+    );
+    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+    reclaimGate.resolve();
 
-  await expect(archive).resolves.toMatchObject({ ok: true });
-  expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toEqual(expect.any(Number));
+    await expect(archive).resolves.toMatchObject({ ok: true });
+    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toEqual(expect.any(Number));
+  } finally {
+    // Join the held request before fixture teardown closes its databases.
+    reclaimGate.resolve();
+    await archive;
+  }
 });
 
 test.each(["rejected", "unavailable"] as const)(
@@ -468,7 +480,13 @@ test.each(["active", "failed"] as const)(
     );
 
     try {
-      await drainEntered.promise;
+      await Promise.race([
+        drainEntered.promise,
+        archive.then((result) => {
+          expect(result).toMatchObject({ ok: true });
+          throw new Error("archive completed before runtime drain");
+        }),
+      ]);
       expect(drainStarted).toHaveBeenCalledOnce();
       placement = workerPlacement({
         sessionId,
@@ -485,8 +503,9 @@ test.each(["active", "failed"] as const)(
       expect(release).toHaveBeenCalledOnce();
       expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
     } finally {
+      // Release and join even when a phase assertion fails, before fixture reset.
       drainGate.resolve();
-      await Promise.allSettled([archive]);
+      await archive;
     }
   },
 );
