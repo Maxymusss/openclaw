@@ -16,21 +16,21 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: "1c0c6449c1efb8e742304385aa2de3597bc15281"
-  SOURCE_TREE: "1bec5b9b3940f4eccbb3e56121f9e4f8aafc1a30"
-  HARNESS_SHA: "a3ad378d48eab6ca3b0a253b649e92bd5f1b83b9"
-  PRODUCER_TREE: "087c60f5954f4c78574ee3c54bd12299a4dae8aa"
+  SOURCE_SHA: "892e4e1aca46d6a5ae8ee699fd78aec606054aa3"
+  SOURCE_TREE: "7c5bc951d87e603e21ca803cc10abec122cbc987"
+  HARNESS_SHA: "82845539c110b395efdd257e5493bea532b44abd"
+  PRODUCER_TREE: "23e9edc5e2492d5474d02761a9fd32b4dd651e19"
   CONSUMER_SHA: ${{ github.sha }}
   WORKFLOW_SHA: ${{ github.workflow_sha }}
   PROOF_REPOSITORY: openclaw/openclaw
-  PROOF_RUN_ID: "35755798185"
+  PROOF_RUN_ID: "35781153292"
   PROOF_RUN_ATTEMPT: "1"
-  PROOF_JOB_ID: "106841116280"
-  PAYLOAD_ARTIFACT_ID: "10708203417"
-  PAYLOAD_ARTIFACT_DIGEST: "sha256:68cc13d5b6fb06d34597015bc6108258b688ef882a7c74c655f5768d384335f6"
-  PAYLOAD_ARTIFACT_SIZE: "262853698"
-  MANIFEST_SHA: "e371d83d1fdd89dbcb834b038620c505eb8e30590e7bf28b7845fb2b92297395"
-  ARCHIVE_SHA: "ea95180307575e5c74704a74d152a347ca04cef159053edbb1f3323d5a0fca30"
+  PROOF_JOB_ID: "106926666804"
+  PAYLOAD_ARTIFACT_ID: "10717974081"
+  PAYLOAD_ARTIFACT_DIGEST: "sha256:4d1f28bc08a4b2598f65a1093b1e926c7afa28813a8ee0e6e21dc01aa4157c04"
+  PAYLOAD_ARTIFACT_SIZE: "263497097"
+  MANIFEST_SHA: "ea1e9b7332b6947daa587badc48c0c718716035a5c34740f2edc92179cc79671"
+  ARCHIVE_SHA: "f950bf5035b1e3e2911743255421d1e9895b8e929c7f0c44a030d7011359f3e7"
   PACKAGE_VERSION: "2026.9.5"
   BASELINE_SRI: sha512-lTQpEEe1Xm3u2PCHaPEr+vP8paGk1vLdHuzdItsNToaLI6hAqRVvgJYg+GxukJhETJp4tPy/S1Gftl4KuB8n7A==
   SOURCE_PINS: '{"package.json":"daeeae9df9b29e09d88c5040f027e1b295f6a2f072887d56b39e525a860ad7ef","pnpm-lock.yaml":"3926f52636eac81ac3f5a282c2bc7b39760ea8350aadee5e681228fed3bcba91","pnpm-workspace.yaml":"12bce91e5e9e4bb52f043f60ce465191f83a2eae0ec9e7be088e5cea2e2454af",".npmrc":"f1d021e2abdf8817d83e35feb1f5d604e8c985aa0553bec3d417cf6f93e9c09c","scripts/freebsd-service-inspect.mjs":"6585523afc1b700b82b53e4b9881944a0f3d58f2dd47c5675252ec658a3a8f4d","scripts/lib/freebsd-service-discovery.mjs":"a18f1ba7022576545571ef033a0060c83343d8a047e380aec15e3dc0543e0d19","scripts/lib/freebsd-service-discovery.d.mts":"efb110b8164077569df27bb8a4ba931180d9438a6ae045cdd03752c26f75ba1f","scripts/install-smoke-candidate-payload.mts":"5f4de9d36236a4f23d769e0972a0f0904864711ff664ba3fad362137dc3902ac","packages/ai/package.json":"b0149f2738759517c06cf550a0ded043ca9fcb54024ba6ec025747b707500ca9","packages/markdown-core/package.json":"eb934f4829a87292edff90480e2c060e636afdd75d35a3ffc02a55581e37a548","packages/model-catalog-core/package.json":"4c53a2d17e2bc41f7011efff70cbd0306122af164c3df8e8e13a4e25c41cec28","packages/normalization-core/package.json":"2bfc2ae79211db8023b168e8dd6c5f378dd64e0890b32ae9a043d38c867683a5","packages/session-url-contract/package.json":"ce05f27abdafc0ff033aadf0d0944f8c48681d5eebcd5dec7485e64215abe827"}'
@@ -38,7 +38,7 @@ env:
 jobs:
   fixtures:
     # Exactly one reviewed successor push consumes the successful producer.
-    if: github.repository == 'openclaw/openclaw' && github.actor == 'vincentkoc' && github.event_name == 'push' && github.run_attempt == 1 && github.event.before == 'a3ad378d48eab6ca3b0a253b649e92bd5f1b83b9' && !github.event.forced && !github.event.deleted
+    if: github.repository == 'openclaw/openclaw' && github.actor == 'vincentkoc' && github.event_name == 'push' && github.run_attempt == 1 && github.event.before == '82845539c110b395efdd257e5493bea532b44abd' && !github.event.forced && !github.event.deleted
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -62,11 +62,11 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CONSUMER_SHA"
           test "$(git show -s --format=%P HEAD)" = "$HARNESS_SHA"
           test "$(git rev-parse "$HARNESS_SHA^{tree}")" = "$PRODUCER_TREE"
-          test "$(git show -s --format=%P "$HARNESS_SHA")" = 9c74eab79b2b0227fe1912e135b673d0c5cd9011
-          test "$(git show -s --format=%P 9c74eab79b2b0227fe1912e135b673d0c5cd9011)" = "$SOURCE_SHA"
+          test "$(git show -s --format=%P "$HARNESS_SHA")" = "5a98148a8fa573812cd0a37686518973167e061b $SOURCE_SHA"
+          test "$(git show -s --format=%P "$SOURCE_SHA")" = 43f22988f4dcd22644a056591428d5849207593c
           test "$(git rev-parse "$SOURCE_SHA^{tree}")" = "$SOURCE_TREE"
-          test "$(git diff --name-only "$HARNESS_SHA" HEAD)" = .github/workflows/freebsd-integrated-native-proof.yml
-          test "$(git diff --name-only "$SOURCE_SHA" HEAD)" = "$(printf '%s\n' .github/workflows/freebsd-integrated-native-proof.yml .github/workflows/freebsd-integrated-package-proof.yml)"
+          test "$(git diff --name-only "$HARNESS_SHA" HEAD)" = "$(printf '%s\n' .github/workflows/freebsd-integrated-native-proof.yml .github/workflows/freebsd-refreshed-proof.yml)"
+          test "$(git diff --name-only "$SOURCE_SHA" HEAD)" = "$(printf '%s\n' .github/workflows/freebsd-integrated-native-proof.yml .github/workflows/freebsd-integrated-package-proof.yml .github/workflows/freebsd-refreshed-proof.yml)"
           test -z "$(git status --porcelain)"
           test "$WORKFLOW_SHA" = "$CONSUMER_SHA"
           mkdir -p evidence
@@ -221,7 +221,7 @@ jobs:
 
   native:
     needs: [fixtures, linux]
-    if: always() && needs.fixtures.result == 'success'
+    if: ${{ !cancelled() && needs.fixtures.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     strategy:
@@ -868,7 +868,7 @@ jobs:
               fs.writeFileSync(`${process.env.PROOF_ROOT}/dist-graph.json`,JSON.stringify(entries),{flag:'wx'});
               console.log(JSON.stringify({candidateDistGraph:createHash('sha256').update(JSON.stringify(entries)).digest('hex'),files:entries.length,roots:roots.map(([,target])=>target),aiExportTargets:[...new Set(targets)].sort(),source:process.env.SOURCE_SHA,candidateRebuilt:false}));
             NODE
-              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts                 src/cli/update-cli/update-command-freebsd-admission.test.ts                 src/cli/update-cli/update-command-freebsd-finalization.test.ts                 src/cli/update-cli/update-command-freebsd-preparation.test.ts                 src/cli/update-cli/update-command-freebsd-worker.test.ts                 src/cli/update-cli/update-command-mutable-signals.test.ts                 --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts"                 --outputFile.json="$proof_root/reports/lifecycle.json"
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts                 src/cli/update-cli/update-command-freebsd-admission.test.ts                 src/cli/update-cli/update-command-freebsd-finalization.test.ts                 src/cli/update-cli/update-command-freebsd-preparation.test.ts                 src/cli/update-cli/update-command-freebsd-worker.test.ts                 src/cli/update-cli/update-command-mutable-signals.test.ts                 src/cli/update-cli/update-command-ledger.test.ts                 --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts"                 --outputFile.json="$proof_root/reports/lifecycle.json"
               node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts \
                 src/cli/update-cli/update-command-terminal-record.test.ts \
                 --testNamePattern 'refuses captured success while FreeBSD admission is pending and after it is revoked' \
@@ -905,6 +905,57 @@ jobs:
               assert.deepEqual(passed.map(t=>t.title).sort(),expected.sort());
               console.log(JSON.stringify({serviceAdvisory:4,filtered:r.numPendingTests,source:process.env.SOURCE_SHA,scope:'source-mocked package/Git admission; no installed Git upgrade claim'}));
             ADVISORY
+              # These existing rows exercise real Doctor and shared native custody.
+              # They do not inject a late fault into the finalizer executable itself.
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts \
+                src/cli/update-cli/update-command-executor.test.ts \
+                --testNamePattern 'refuses a revoked requester before delegated Doctor changes operator config \(retained service: (false|true)\)$|does not expose a grant when another owner holds the activated installation$' \
+                --passWithNoTests=false \
+                --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts" \
+                --outputFile.json="$proof_root/reports/delegated-doctor-owner.json"
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli-process.config.ts \
+                src/cli/update-cli/update-command-fresh-doctor-authority.test.ts \
+                --testNamePattern 'fresh Doctor retains update authority at final config I/O: (healthy|original-owner-replaced)$' \
+                --passWithNoTests=false \
+                --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts" \
+                --outputFile.json="$proof_root/reports/doctor-commit-authority.json"
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts \
+                src/cli/update-cli/update-command-activation.test.ts \
+                --testNamePattern 'observes delegated native custody after expiry without poisoning clean timeout: (clean|parent|receiver|retained receiver|private database)$' \
+                --passWithNoTests=false \
+                --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts" \
+                --outputFile.json="$proof_root/reports/delegated-native-custody.json"
+              node --input-type=module <<'AUTHORITY'
+              import assert from 'node:assert/strict';import fs from 'node:fs';import path from 'node:path';
+              const selections=[
+                ['delegated-doctor-owner','update-command-executor.test.ts',[
+                  ...[false,true].map(retained=>`refuses a revoked requester before delegated Doctor changes operator config (retained service: ${retained})`),
+                  'does not expose a grant when another owner holds the activated installation',
+                ]],
+                ['doctor-commit-authority','update-command-fresh-doctor-authority.test.ts',[
+                  ...['healthy','original-owner-replaced'].map(fault=>`fresh Doctor retains update authority at final config I/O: ${fault}`),
+                ]],
+                ['delegated-native-custody','update-command-activation.test.ts',[
+                  ...['clean','parent','receiver','retained receiver','private database'].map(fault=>`observes delegated native custody after expiry without poisoning clean timeout: ${fault}`),
+                ]],
+              ];
+              for(const [name,module,expected] of selections) {
+                const file=`${process.env.PROOF_ROOT}/reports/${name}.json`;
+                const report=JSON.parse(fs.readFileSync(file)),capture=JSON.parse(fs.readFileSync(`${file}.capture.json`));
+                assert.equal(report.success,true);assert.equal(report.numFailedTests,0);assert.equal(report.numTodoTests,0);
+                assert.equal(report.numPassedTests,expected.length);assert.equal(report.testResults.length,1);
+                assert.equal(path.basename(report.testResults[0].name),module);assert.equal(capture.modules.length,1);
+                assert.equal(path.basename(capture.modules[0].file),module);assert.equal(capture.passWithNoTests,false);
+                assert.equal(capture.processTimedOut,false);assert.equal(capture.ignoreUnhandledErrors,false);
+                for(const key of ['unhandledErrors','suiteErrors','failedModules']) assert.equal(capture.ended[key],0);
+                const rows=report.testResults[0].assertionResults,passed=rows.filter(row=>row.status==='passed');
+                assert.deepEqual(passed.map(row=>row.title).sort(),expected.sort());
+                const filtered=rows.filter(row=>row.status!=='passed');
+                assert(filtered.every(row=>['pending','skipped'].includes(row.status)));
+                assert.equal(report.numPendingTests,filtered.length);
+                console.log(JSON.stringify({nativeAuthority:name,passed:passed.length,filtered:filtered.length,source:process.env.SOURCE_SHA,scope:'real Doctor and exact shared native custody owner; no late-fault finalizer E2E claim'}));
+              }
+            AUTHORITY
               # Canonical schema-23 storage migration covers real schema21/22 fixtures.
               # This source-native control makes no old-CLI-created agent DB claim.
               node scripts/run-vitest.mjs run --config test/vitest/vitest.infra.config.ts \
@@ -919,7 +970,7 @@ jobs:
               import assert from 'node:assert/strict';
               import fs from 'node:fs';
               import path from 'node:path';
-              for (const [name, modules] of [['lifecycle',5],['storage-migration',1],...(process.getuid()===0?[['service',1]]:[])]) {
+              for (const [name, modules] of [['lifecycle',6],['storage-migration',1],...(process.getuid()===0?[['service',1]]:[])]) {
                 const file=`${process.env.PROOF_ROOT}/reports/${name}.json`;
                 const report=JSON.parse(fs.readFileSync(file)),capture=JSON.parse(fs.readFileSync(`${file}.capture.json`));
                 assert.equal(report.success,true);assert(report.numPassedTests>0);assert.equal(report.numFailedTests,0);
@@ -928,11 +979,20 @@ jobs:
                 for(const key of ['unhandledErrors','suiteErrors','failedModules']) assert.equal(capture.ended[key],0);
                 const rows=report.testResults.flatMap(module=>module.assertionResults);
                 if(name==='lifecycle') {
-                  assert.deepEqual(report.testResults.map(module=>path.basename(module.name)).sort(),['update-command-freebsd-admission.test.ts','update-command-freebsd-finalization.test.ts','update-command-freebsd-preparation.test.ts','update-command-freebsd-worker.test.ts','update-command-mutable-signals.test.ts'].sort());
+                  assert.deepEqual(report.testResults.map(module=>path.basename(module.name)).sort(),['update-command-freebsd-admission.test.ts','update-command-freebsd-finalization.test.ts','update-command-freebsd-preparation.test.ts','update-command-freebsd-worker.test.ts','update-command-mutable-signals.test.ts','update-command-ledger.test.ts'].sort());
                   const worker=report.testResults.find(module=>module.name.endsWith('/update-command-freebsd-worker.test.ts'));
                   assert(worker);assert(worker.assertionResults.every(test=>test.status==='passed'));
                   const positives=worker.assertionResults.filter(test=>test.title.startsWith("the real finalizer completes its owning user's run"));
                   assert.equal(positives.length,4);assert(positives.some(test=>test.title.includes('timeout=60')));
+                  const ledger=report.testResults.find(module=>module.name.endsWith('/update-command-ledger.test.ts'));
+                  assert(ledger);assert(ledger.assertionResults.every(test=>test.status==='passed'));
+                  const sentinel=ledger.assertionResults.filter(test=>test.title.startsWith('refuses the first sentinel ')||test.title.startsWith('retains admitted-generation CLI sentinel policy '));
+                  assert.deepEqual(sentinel.map(test=>test.title).sort(),[
+                    'refuses the first sentinel write after awaited preparation replaces the admitted database',
+                    'refuses the first sentinel mark after awaited preparation replaces the admitted database',
+                    'retains admitted-generation CLI sentinel policy (requested=false)',
+                    'retains admitted-generation CLI sentinel policy (requested=true)',
+                  ].sort());
                   assert(rows.every(test=>test.status==='passed'));
                 } else assert(rows.every(test=>test.status==='passed'));
                 console.log(JSON.stringify({nativeSuite:name,passed:report.numPassedTests,skipped:report.numPendingTests,modules:capture.modules.map(module=>path.relative(process.cwd(),module.file))}));

@@ -1,0 +1,294 @@
+# Copyright 2019-2026 Tauri Programme within The Commons Conservancy
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
+name: Temporary refreshed FreeBSD proof
+on:
+  push:
+    branches: [test/freebsd-integrated-package-proof]
+    paths: [.github/workflows/freebsd-refreshed-proof.yml]
+permissions:
+  contents: read
+  pull-requests: read
+concurrency:
+  group: temporary-freebsd-refreshed-proof
+  cancel-in-progress: false
+env:
+  CARGO_PROFILE_DEV_DEBUG: '0'
+  CARGO_TERM_COLOR: never
+jobs:
+  proof:
+    if: >-
+      github.repository == 'openclaw/openclaw' &&
+      github.actor == 'vincentkoc' && github.event_name == 'push' &&
+      github.run_attempt == 1 && !github.event.forced && !github.event.deleted &&
+      github.event.before == '82845539c110b395efdd257e5493bea532b44abd' &&
+      github.event.after == github.sha &&
+      github.ref == 'refs/heads/test/freebsd-integrated-package-proof'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - case: updater
+            platform: linux
+            source: 13afcab2af98b7a65cc5b9f73384541c9a9ad3f4
+            tree: 41b762ec6948f30bb41e6d13eb5572a123bc0d84
+          - case: updater
+            platform: freebsd
+            source: 13afcab2af98b7a65cc5b9f73384541c9a9ad3f4
+            tree: 41b762ec6948f30bb41e6d13eb5572a123bc0d84
+          - case: cli
+            platform: linux
+            source: 17bb3829b6d6c576e2f8c7956fb7573146d5f13a
+            tree: 97a37483c833ee9fd01b3d16dd86f834fb4166a8
+          - case: cli
+            platform: freebsd
+            source: 17bb3829b6d6c576e2f8c7956fb7573146d5f13a
+            tree: 97a37483c833ee9fd01b3d16dd86f834fb4166a8
+          - case: xdg
+            platform: linux
+            source: 4244c2e34da55dc56fb155b52bcea48ef514168f
+            tree: 98bb3e2b380efb698a31241002255183ac41e448
+          - case: xdg
+            platform: freebsd
+            source: 4244c2e34da55dc56fb155b52bcea48ef514168f
+            tree: 98bb3e2b380efb698a31241002255183ac41e448
+          - case: errors
+            platform: linux
+            source: 89545c825d433739ac905463cb4514cee0644626
+            tree: 2fd78f93eba832657ed1e10fa6e3fb357256f295
+          - case: stack
+            platform: linux
+            source: ba965506d5695149737a086596d40ab6a1a04250
+            tree: 17599c3d0c83a793b4d3be4d2afa5877ba22a25b
+          - case: stack
+            platform: freebsd
+            source: ba965506d5695149737a086596d40ab6a1a04250
+            tree: 17599c3d0c83a793b4d3be4d2afa5877ba22a25b
+    env:
+      SOURCE_SHA: ${{ matrix.source }}
+      SOURCE_TREE: ${{ matrix.tree }}
+      PROOF_CASE: ${{ matrix.case }}
+      PROOF_PLATFORM: ${{ matrix.platform }}
+      HARNESS_SHA: ${{ github.sha }}
+      PROOF_RUN_ID: ${{ github.run_id }}
+      PROOF_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 3
+          persist-credentials: false
+      - name: Authenticate single-launch carrier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$HARNESS_SHA"
+          test "$(git show -s --format=%P HEAD)" = 82845539c110b395efdd257e5493bea532b44abd
+          test "$(git rev-parse HEAD^:.)" = 23e9edc5e2492d5474d02761a9fd32b4dd651e19
+          test "$(git rev-parse 892e4e1aca46d6a5ae8ee699fd78aec606054aa3^{tree})" = 7c5bc951d87e603e21ca803cc10abec122cbc987
+          test "$PROOF_ATTEMPT" = 1
+          python3 -I -S - <<'ADMIT'
+          import json,os,subprocess
+          def git(*args): return subprocess.check_output(['git',*args],text=True).strip()
+          assert git('diff','--name-only','HEAD^','HEAD').splitlines()==[
+              '.github/workflows/freebsd-integrated-native-proof.yml',
+              '.github/workflows/freebsd-refreshed-proof.yml']
+          assert git('diff','--name-only','892e4e1aca46d6a5ae8ee699fd78aec606054aa3','HEAD').splitlines()==[
+              '.github/workflows/freebsd-integrated-native-proof.yml',
+              '.github/workflows/freebsd-integrated-package-proof.yml',
+              '.github/workflows/freebsd-refreshed-proof.yml']
+          producer='.github/workflows/freebsd-integrated-package-proof.yml'
+          assert git('rev-parse','HEAD:'+producer)==git('rev-parse','HEAD^:'+producer)
+          assert not git('status','--porcelain')
+          pr=json.loads(subprocess.check_output(['gh','api','repos/openclaw/openclaw/pulls/155851']))
+          assert pr['state']=='open' and pr['draft'] is True and pr['auto_merge'] is None
+          assert pr['head']['sha']==os.environ['HARNESS_SHA'] and pr['head']['repo']['full_name']=='openclaw/openclaw'
+          assert pr['head']['ref']=='test/freebsd-integrated-package-proof' and pr['user']['login']=='vincentkoc'
+          ADMIT
+          mkdir .proof-harness
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          repository: vincentkoc/plugins-workspace
+          ref: ${{ matrix.source }}
+          path: source
+          persist-credentials: false
+      - name: Prepare bounded original-report owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > .proof-harness/run.py <<'PYPROOF'
+          import hashlib, json, os, pathlib, platform, re, subprocess, sys, tarfile, time, traceback
+          root = pathlib.Path.cwd() / "source"
+          proof = pathlib.Path("/var/tmp/freebsd-refreshed-proof")
+          assert not proof.exists(), "proof owner already exists"
+          proof.mkdir(mode=0o700)
+          receipt = {"source": os.environ["SOURCE_SHA"], "tree": os.environ["SOURCE_TREE"],
+                     "harness": os.environ["HARNESS_SHA"], "run": os.environ["PROOF_RUN_ID"],
+                     "attempt": int(os.environ["PROOF_ATTEMPT"]), "case": os.environ["PROOF_CASE"],
+                     "platform": os.environ["PROOF_PLATFORM"], "commands": [], "errors": [],
+                     "limits": {"files": 32, "bytes": 8388608}, "cleanup": "hosted job owns VM disposal"}
+          def git(*args):
+              return subprocess.check_output(["git", "-c", "safe.directory="+str(root), *args], cwd=root).decode().strip()
+          def sha(data): return hashlib.sha256(data).hexdigest()
+          def inventory():
+              assert git("rev-parse", "HEAD") == receipt["source"]
+              assert git("rev-parse", "HEAD^{tree}") == receipt["tree"]
+              assert git("rev-parse", "HEAD:Cargo.lock") == "9ede4439e3972d85d4c7a9b43056999e758f8a42"
+              git("diff", "--exit-code"); git("diff", "--cached", "--exit-code")
+              rows = subprocess.check_output(["git", "-c", "safe.directory="+str(root), "ls-tree", "-r", "-z", "HEAD"], cwd=root)
+              digest = hashlib.sha256(); count = 0
+              for row in rows.split(b"\0"):
+                  if not row: continue
+                  meta, name = row.split(b"\t", 1); mode, kind, oid = meta.split()
+                  assert kind == b"blob" and mode in (b"100644", b"100755", b"120000")
+                  file = root / os.fsdecode(name); st = file.lstat()
+                  if mode == b"120000":
+                      assert file.is_symlink(); data = os.fsencode(os.readlink(file))
+                  else:
+                      assert file.is_file() and not file.is_symlink()
+                      assert bool(st.st_mode & 0o111) == (mode == b"100755")
+                      data = file.read_bytes()
+                  assert hashlib.sha1(b"blob "+str(len(data)).encode()+b"\0"+data).hexdigest().encode() == oid, name
+                  digest.update(row+b"\0"); count += 1
+              return {"entries": count, "sha256": digest.hexdigest(),
+                      "cargoLock": sha((root/"Cargo.lock").read_bytes()),
+                      "workspace": sha((root/"Cargo.toml").read_bytes())}
+          def command(label, args, expected=()):
+              log = proof / (label+".log"); started = time.monotonic()
+              print("[desktop proof] starting "+label, flush=True)
+              with log.open("wb") as out:
+                  proc = subprocess.run(args, cwd=root, stdout=out, stderr=subprocess.STDOUT)
+              data = log.read_bytes(); text = data.decode(errors="replace")
+              record = {"label": label, "argv": args, "exit": proc.returncode,
+                        "durationSeconds": round(time.monotonic()-started, 3),
+                        "bytes": len(data), "sha256": sha(data), "expectedTests": list(expected)}
+              receipt["commands"].append(record)
+              print(text[-18000:], flush=True)
+              assert proc.returncode == 0, label+" failed with "+str(proc.returncode)
+              for name in expected:
+                  assert re.search(r"^test "+re.escape(name)+r" \.\.\. ok$", text, re.M), "missing PASS: "+name
+              if label.startswith("ignored-"):
+                  assert re.search(r"test result: ok\. 1 passed; 0 failed; 0 ignored;", text), "ignored case did not run"
+              return record
+          try:
+              assert receipt["attempt"] == 1
+              expected_system = {"linux": "Linux", "freebsd": "FreeBSD"}[receipt["platform"]]
+              assert platform.system() == expected_system and platform.machine() in ("x86_64", "amd64")
+              receipt["runtime"] = {"system": platform.system(), "release": platform.release(),
+                                    "machine": platform.machine(), "uid": os.getuid()}
+              receipt["before"] = inventory()
+              command("runtime", ["sh", "-ec", "rustc -Vv; cargo --version; pkg-config --modversion gtk+-3.0 webkit2gtk-4.1; command -v xdg-mime; command -v update-desktop-database"])
+              package = "tauri-plugin-updater" if receipt["case"] == "updater" else "tauri-plugin-deep-link"
+              base = ["cargo", "test", "--locked", "--package", package]
+              if receipt["case"] == "updater":
+                  command("updater", base+["--lib", "--test", "bsd"], ["custom_target_checks_metadata_without_installing"])
+                  if receipt["platform"] == "linux": command("doctests", base+["--doc"])
+              else:
+                  expected = ["configured_cli_urls_update_current_and_emit_one_event", "rejected_cli_arguments_preserve_current_without_emitting", "missing_configuration_or_schemes_do_not_accept_cli_urls"] if receipt["case"] == "cli" else []
+                  command("all-targets", base+["--all-targets"], expected)
+                  targets = []
+                  if receipt["case"] in ("xdg", "stack"): targets.append(("xdg", "xdg_registration"))
+                  if receipt["case"] in ("errors", "stack"): targets.extend([("xdg_commands", "xdg_command_results"), ("xdg_unregister", "xdg_unregister")])
+                  for target, name in targets:
+                      command("ignored-"+name, ["timeout", "-k", "5s", "90s", *base, "--test", target, "--", "--ignored", "--exact", name, "--nocapture"], [name])
+          except BaseException as error:
+              receipt["errors"].append(str(error)); traceback.print_exc()
+          finally:
+              try:
+                  receipt["after"] = inventory()
+                  assert receipt["before"] == receipt["after"], "source/input changed"
+              except BaseException as error: receipt["errors"].append("source postcheck: "+str(error))
+              receipt["success"] = not receipt["errors"]
+              receipt["files"] = [{"file": f.name, "bytes": f.stat().st_size, "sha256": sha(f.read_bytes())} for f in sorted(proof.glob("*.log"))]
+              (proof/"receipt.json").write_text(json.dumps(receipt, indent=2)+"\n")
+              files = list(proof.iterdir())
+              assert len(files) <= 32 and sum(f.stat().st_size for f in files) <= 8388608, "original report budget exceeded"
+              with tarfile.open(str(proof)+".tgz", "w:gz") as archive:
+                  for file in sorted(files):
+                      assert file.is_file() and not file.is_symlink()
+                      archive.add(file, arcname=file.name, recursive=False)
+              print(json.dumps(receipt, indent=2), flush=True)
+              sys.exit(0 if receipt["success"] else 1)
+          PYPROOF
+          python3 -m py_compile .proof-harness/run.py
+      - name: Install declared Linux prerequisites
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.0-dev libwebkit2gtk-4.1-dev pkg-config dbus xdg-utils desktop-file-utils
+          rustc -Vv
+          cargo --version
+      - name: Execute exact Linux source
+        if: matrix.platform == 'linux'
+        run: python3 .proof-harness/run.py
+      - name: Execute exact native FreeBSD source
+        if: matrix.platform == 'freebsd'
+        uses: vmactions/freebsd-vm@8b0f1a8fc0ea0def307835c258940ca358fe6480 # v1.5.6
+        with:
+          release: '15.1'
+          arch: x86_64
+          sync: rsync
+          copyback: false
+          disable-cache: true
+          debug-on-error: false
+          envs: SOURCE_SHA SOURCE_TREE PROOF_CASE PROOF_PLATFORM HARNESS_SHA PROOF_RUN_ID PROOF_ATTEMPT CARGO_PROFILE_DEV_DEBUG CARGO_TERM_COLOR
+          prepare: |
+            set -eu
+            mkdir -p /usr/local/etc/pkg/repos
+            cat > /usr/local/etc/pkg/repos/FreeBSD.conf <<'REPO'
+            FreeBSD-ports: { url: "pkg+https://pkg.FreeBSD.org/${ABI}/latest" }
+            REPO
+            pkg install -y rust git pkgconf gtk3 webkit2-gtk_41 dbus xdg-utils desktop-file-utils python311
+          run: |
+            set -eu
+            freebsd-version
+            python3.11 .proof-harness/run.py
+      - name: Retain original small reports even after failure
+        if: always()
+        timeout-minutes: 3
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p retained-proof
+          if [ "$PROOF_PLATFORM" = freebsd ]; then
+            scp -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 freebsd:/var/tmp/freebsd-refreshed-proof.tgz retained-proof/original.tgz
+          else
+            cp /var/tmp/freebsd-refreshed-proof.tgz retained-proof/original.tgz
+          fi
+          python3 - <<'PYRETAIN'
+          import hashlib, json, os, pathlib, tarfile
+          out=pathlib.Path('retained-proof'); blob=out/'original.tgz'
+          assert blob.stat().st_size <= 8388608
+          with tarfile.open(blob) as archive:
+              members=archive.getmembers()
+              assert len(members)<=32 and sum(m.size for m in members)<=8388608
+              names=[m.name for m in members]
+              assert len(names)==len(set(names)) and 'receipt.json' in names
+              content={}
+              for member in members:
+                  assert member.isfile() and '/' not in member.name and member.name.endswith(('.json','.log'))
+                  content[member.name]=archive.extractfile(member).read()
+          receipt=json.loads(content['receipt.json'])
+          for field,key in [('source','SOURCE_SHA'),('tree','SOURCE_TREE'),('harness','HARNESS_SHA'),('run','PROOF_RUN_ID'),('case','PROOF_CASE'),('platform','PROOF_PLATFORM')]:
+              assert receipt[field]==os.environ[key], field
+          assert receipt['attempt']==1
+          assert set(content)=={'receipt.json'}|{f['file'] for f in receipt['files']}
+          for item in receipt['files']:
+              data=content[item['file']]
+              assert len(data)==item['bytes'] and hashlib.sha256(data).hexdigest()==item['sha256']
+          (out/'host-custody.json').write_text(json.dumps({'source':receipt['source'],'tree':receipt['tree'],'harness':receipt['harness'],'run':receipt['run'],'attempt':1,'case':receipt['case'],'platform':receipt['platform'],'archiveBytes':blob.stat().st_size,'archiveSha256':hashlib.sha256(blob.read_bytes()).hexdigest(),'memberCount':len(content),'success':receipt['success']},indent=2)+'\n')
+          assert receipt['success'], 'original source proof failed; originals retained'
+          PYRETAIN
+      - name: Upload original receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: refreshed-${{ matrix.case }}-${{ matrix.platform }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: retained-proof/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
