@@ -269,6 +269,7 @@ export async function startOrResumeThread(
     };
     const resolveRequestContext = () => {
       const startModelSelection = resolveCodexAppServerThreadModelSelection({
+        homeScope: params.appServer.start.homeScope,
         provider: params.params.provider,
         model: params.runtimeModelId ?? params.params.modelId,
         binding,

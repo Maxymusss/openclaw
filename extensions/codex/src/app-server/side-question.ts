@@ -246,29 +246,6 @@ export async function runCodexAppServerSideQuestion(
     nativeAuthProfile: preparedNativeAuthProfile,
     preparedAuth: startupPreparedAuth,
   } = authHandoff;
-  const modelProvider = supervisionModelSelection
-    ? supervisionModelSelection.modelProvider
-    : (resolveCodexAppServerModelProvider({
-        provider: params.provider,
-        authProfileId,
-        authProfileStore: preparedRuntimeAuth.authProfileStore,
-        agentDir: params.agentDir,
-        config: params.cfg,
-      }) ??
-      resolveCodexBindingModelProviderFallback({
-        provider: params.provider,
-        currentModel: params.model,
-        bindingModel: binding.model,
-        bindingModelProvider: binding.modelProvider,
-      }));
-  const modelSelection = resolveCodexAppServerRequestModelSelection({
-    model: supervisionModelSelection?.model ?? options.runtimeModelId ?? params.model,
-    modelProvider,
-    authProfileId,
-    authProfileStore: preparedRuntimeAuth.authProfileStore,
-    agentDir: params.agentDir,
-    config: params.cfg,
-  });
   const reviewerPolicyContext = resolveCodexModelBackedReviewerPolicyContext({
     provider: usesSupervisionConnection ? "codex" : params.provider,
     model: supervisionModelSelection?.model ?? params.model,
@@ -309,6 +286,32 @@ export async function runCodexAppServerSideQuestion(
     ...reviewerContext,
     provider: reviewerContext.modelProvider,
   });
+  const modelProvider = supervisionModelSelection
+    ? supervisionModelSelection.modelProvider
+    : (resolveCodexAppServerModelProvider({
+        homeScope: appServer.start.homeScope,
+        provider: params.provider,
+        authProfileId,
+        authProfileStore: preparedRuntimeAuth.authProfileStore,
+        agentDir: params.agentDir,
+        config: params.cfg,
+      }) ??
+      resolveCodexBindingModelProviderFallback({
+        provider: params.provider,
+        currentModel: params.model,
+        bindingModel: binding.model,
+        bindingModelProvider: binding.modelProvider,
+      }));
+  const modelSelection = resolveCodexAppServerRequestModelSelection({
+    homeScope: appServer.start.homeScope,
+    model: supervisionModelSelection?.model ?? options.runtimeModelId ?? params.model,
+    modelProvider,
+    authProfileId,
+    authProfileStore: preparedRuntimeAuth.authProfileStore,
+    agentDir: params.agentDir,
+    config: params.cfg,
+  });
+
   const sessionPermissionPolicy = resolveCodexEffectiveSessionPermissionPolicy({
     appServer,
     permissionMode: params.sessionEntry.permissionMode,
