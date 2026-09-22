@@ -4,16 +4,6 @@ import SwiftUI
 import UIKit
 
 struct RootTabs: View {
-    struct SessionObserverTaskIdentity: Equatable {
-        let sidebarRefreshID: String
-        let isSceneActive: Bool
-        let isSidebarVisible: Bool
-
-        var isObserverVisible: Bool {
-            self.isSceneActive && self.isSidebarVisible
-        }
-    }
-
     @Environment(NodeAppModel.self) private var appModel
     @Environment(VoiceWakeManager.self) private var voiceWake
     @Environment(GatewayConnectionController.self) private var gatewayController
@@ -91,32 +81,6 @@ struct RootTabs: View {
         initialDestination(arguments: ProcessInfo.processInfo.arguments)
     }
 
-    static func initialDestination(arguments: [String]) -> SidebarDestination {
-        if let requested = self.requestedInitialSidebarDestination(arguments: arguments) {
-            return requested
-        }
-        guard let flagIndex = arguments.firstIndex(of: "--openclaw-initial-tab") else { return .chat }
-        let valueIndex = arguments.index(after: flagIndex)
-        guard arguments.indices.contains(valueIndex) else { return .chat }
-        return switch arguments[valueIndex].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
-        case "control", "overview": .overview
-        case "chat", "talk", "voice": .chat
-        case "agent", "agents": .agents
-        case "settings": .settings
-        default: .chat
-        }
-    }
-
-    static func requestedInitialSidebarDestination(arguments: [String]) -> SidebarDestination? {
-        guard let flagIndex = arguments.firstIndex(of: "--openclaw-initial-destination") else {
-            return nil
-        }
-        let valueIndex = arguments.index(after: flagIndex)
-        guard arguments.indices.contains(valueIndex) else { return nil }
-        let requested = arguments[valueIndex].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return SidebarDestination.allCases.first { $0.rawValue.lowercased() == requested }
-    }
-
     private static var initialSidebarVisibility: Bool? {
         requestedInitialSidebarVisibility(arguments: ProcessInfo.processInfo.arguments)
     }
@@ -132,58 +96,14 @@ struct RootTabs: View {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    struct SidebarPagesPresentation: Identifiable, Equatable {
-        let id = UUID()
-    }
-
-    enum PresentedSheet: Identifiable, Equatable {
-        case quickSetup
-        case notificationSettings(path: String)
-        case sessionDashboard(sessionKey: String, agentId: String?)
-        case backgroundTasks(agentID: String, receipt: OpenClawChatModalPresentations.Receipt)
-        case newSessionOptions(OpenClawChatViewModel, receipt: OpenClawChatModalPresentations.Receipt)
-        case transcriptShare(URL, receipt: OpenClawChatModalPresentations.Receipt)
-
-        var chatReceipt: OpenClawChatModalPresentations.Receipt? {
-            switch self {
-            case let .backgroundTasks(_, receipt), let .newSessionOptions(_, receipt),
-                 let .transcriptShare(_, receipt): receipt
-            default: nil
-            }
-        }
-
-        static func == (lhs: Self, rhs: Self) -> Bool {
-            switch (lhs, rhs) {
-            case (.quickSetup, .quickSetup): true
-            case let (.notificationSettings(left), .notificationSettings(right)): left == right
-            case let (.sessionDashboard(leftKey, leftAgent), .sessionDashboard(rightKey, rightAgent)):
-                leftKey == rightKey && leftAgent == rightAgent
-            case let (.backgroundTasks(_, left), .backgroundTasks(_, right)),
-                 let (.newSessionOptions(_, left), .newSessionOptions(_, right)),
-                 let (.transcriptShare(_, left), .transcriptShare(_, right)): left.id == right.id
-            default: false
-            }
-        }
-
-        var id: String {
-            switch self {
-            case .quickSetup: "quick-setup"
-            case .notificationSettings: "notification-settings"
-            case let .sessionDashboard(sessionKey, agentId):
-                "session-dashboard:\(agentId ?? ""):\(sessionKey)"
-            case let .backgroundTasks(_, receipt), let .newSessionOptions(_, receipt),
-                 let .transcriptShare(_, receipt): receipt.id.uuidString
-            }
-        }
-    }
-
     private var chatPresentation: IOSChatViewModelOwner.Presentation {
         .init(binding: self.nativeChatBinding, router: self.nativeActions, id: self.nativePresentationID)
     }
 
     var body: some View {
         let newChat = self.appModel.chatPresentation.currentNewChatRequest(
-            appModel: self.appModel, presentation: self.chatPresentation)
+            appModel: self.appModel,
+            presentation: self.chatPresentation)
         return self.rootPresentation(
             self.rootLifecycle(
                 self.rootOverlays(
@@ -212,17 +132,21 @@ struct RootTabs: View {
                 #endif
             }
             .task(id: self.appModel.chatPresentation.taskIdentity(
-                appModel: self.appModel, nativeBinding: self.nativeChatBinding,
+                appModel: self.appModel,
+                nativeBinding: self.nativeChatBinding,
                 presentationID: self.nativePresentationID,
                 chatRegistrationID: self.nativeActions?.chatRegistrationID))
             {
                 await self.appModel.chatPresentation.synchronizePresentation(
-                    appModel: self.appModel, currentPresentation: { self.chatPresentation })
+                    appModel: self.appModel,
+                    currentPresentation: { self.chatPresentation })
             }
             .task(id: newChat.map(ObjectIdentifier.init)) {
                     guard let newChat else { return }
                     await self.appModel.chatPresentation.performNewChat(
-                        newChat, appModel: self.appModel, currentPresentation: { self.chatPresentation })
+                        newChat,
+                        appModel: self.appModel,
+                        currentPresentation: { self.chatPresentation })
                 }
     }
 
@@ -387,7 +311,8 @@ struct RootTabs: View {
             openChat: openChatAction(),
             requestNewChat: userAction(disposition: .chatSessionTransition) {
                 self.appModel.chatPresentation.requestNewChat(
-                    appModel: self.appModel, presentation: self.chatPresentation)
+                    appModel: self.appModel,
+                    presentation: self.chatPresentation)
                 self.selectSidebarDestination(.chat)
             },
             prepareFork: prepareForkAction(),
@@ -821,7 +746,8 @@ struct RootTabs: View {
                 }
                 .onAppear {
                     self.nativeActions?.acknowledgeInspection(
-                        presentation, presentationID: self.nativePresentationID)
+                        presentation,
+                        presentationID: self.nativePresentationID)
                 }
             }
             .onChange(of: self.appModel.chatSessionKey) { _, _ in self.clearChangedNativeChatSelection() }
@@ -848,10 +774,12 @@ struct RootTabs: View {
                     // Pages owns this cover, but never retains a native chat binding.
                     // The exact-ID lifetime anchor still releases actual Root removal.
                     _ = self.nativeActions?.userNavigationDidChange(
-                        presentationID: self.nativePresentationID, disposition: .departure)
+                        presentationID: self.nativePresentationID,
+                        disposition: .departure)
                 } else if self.retainChatModalPresentation() {
                     _ = self.nativeActions?.userNavigationDidChange(
-                        presentationID: self.nativePresentationID, disposition: .chatModal)
+                        presentationID: self.nativePresentationID,
+                        disposition: .chatModal)
                 } else {
                     self.nativeLifetime.release()
                     self.clearChatModalScope()
@@ -1044,9 +972,11 @@ extension RootTabs {
         guard self.selectedSidebarDestination == .chat,
               let viewModel = self.appModel.chatPresentation.viewModel else { return nil }
         return ChatModalScope(
-            origin: .init(viewModel: viewModel), shellID: self.sidebarDetailShellID,
+            origin: .init(viewModel: viewModel),
+            shellID: self.sidebarDetailShellID,
             ownerID: self.appModel.chatViewModelOwnerID,
-            sessionKey: self.appModel.chatSessionKey, agentID: self.appModel.chatDeliveryAgentId,
+            sessionKey: self.appModel.chatSessionKey,
+            agentID: self.appModel.chatDeliveryAgentId,
             accountGeneration: self.appModel.operatorAuthorityGeneration,
             inputs: self.appModel.activeGatewayConnectConfig?.controlUIInputs)
     }
@@ -1072,7 +1002,9 @@ extension RootTabs {
         let container = self.presentedSheet
         let inspection = self.nativeRunInspection
         return Self.makeChatModalActions(
-            origin: scope?.origin, router: self.nativeActions, rootID: self.nativePresentationID,
+            origin: scope?.origin,
+            router: self.nativeActions,
+            rootID: self.nativePresentationID,
             isCurrentScope: { scope == self.currentChatModalScope && contextIsCurrent() },
             isCurrentContainer: {
                 self.presentedSheet == container && self.nativeRunInspection == inspection &&
@@ -1087,7 +1019,9 @@ extension RootTabs {
     /// Shared sheets carry this frozen root context through async publication and
     /// dismissal. A retained callback can never borrow a replacement registration.
     static func makeChatModalActions(
-        origin: OpenClawChatModalOrigin?, router: NativeActionRouter?, rootID: UUID?,
+        origin: OpenClawChatModalOrigin?,
+        router: NativeActionRouter?,
+        rootID: UUID?,
         isCurrentScope: @escaping @MainActor () -> Bool,
         isCurrentContainer: @escaping @MainActor () -> Bool) -> OpenClawChatModalActions
     {
@@ -1106,7 +1040,8 @@ extension RootTabs {
                 return .init(isCurrent: permitIsCurrent, accept: {
                     guard permitIsCurrent() else { return false }
                     return router?.userNavigationDidChange(
-                        presentationID: rootID, disposition: .chatModal) ?? true
+                        presentationID: rootID,
+                        disposition: .chatModal) ?? true
                 })
             },
             dismiss: { requested in
@@ -1131,7 +1066,9 @@ extension RootTabs {
               let scope = self.chatModalScope, self.presentedSheet == nil,
               self.transcriptExportError == nil, !self.chatModals.hasActivePresentation,
               let capture = self.chatModals.capture(
-                  origin: scope.origin, producerID: UUID(), actions: self.chatModalActions)
+                  origin: scope.origin,
+                  producerID: UUID(),
+                  actions: self.chatModalActions)
         else { return nil }
         return IOSChatModalPublication(
             isCurrent: { capture.isCurrent },
@@ -1182,10 +1119,14 @@ extension RootTabs {
     }
 
     private func chatModalContent(
-        _ receipt: OpenClawChatModalPresentations.Receipt, @ViewBuilder content: () -> some View) -> some View
+        _ receipt: OpenClawChatModalPresentations.Receipt,
+        @ViewBuilder content: () -> some View) -> some View
     {
         content().openClawChatModalPresentations(
-            self.chatModals, origin: receipt.origin, actions: self.chatModalActions, parent: receipt,
+            self.chatModals,
+            origin: receipt.origin,
+            actions: self.chatModalActions,
+            parent: receipt,
             parentIsCurrent: { self.presentedSheet?.chatReceipt?.id == receipt.id })
     }
 
@@ -1202,7 +1143,8 @@ extension RootTabs {
     }
 
     private func navigationAction(
-        detail: Bool = false, disposition: NativeActionRouter.RetirementDisposition = .departure)
+        detail: Bool = false,
+        disposition: NativeActionRouter.RetirementDisposition = .departure)
         -> @MainActor @Sendable () -> Bool
     {
         let isCurrent = self.navigationContext(detail: detail)
@@ -1215,7 +1157,8 @@ extension RootTabs {
     }
 
     private func userAction(
-        detail: Bool = false, disposition: NativeActionRouter.RetirementDisposition = .departure,
+        detail: Bool = false,
+        disposition: NativeActionRouter.RetirementDisposition = .departure,
         _ perform: @escaping @MainActor () -> Void) -> () -> Void
     {
         let action = self.navigationAction(detail: detail, disposition: disposition)
@@ -1242,7 +1185,8 @@ extension RootTabs {
     }
 
     static func matchedModalBinding<Value: Equatable>(
-        _ binding: Binding<Value>, admit: @escaping @MainActor () -> Bool) -> Binding<Value>
+        _ binding: Binding<Value>,
+        admit: @escaping @MainActor () -> Bool) -> Binding<Value>
     {
         let expected = binding.wrappedValue
         return Binding(get: { binding.wrappedValue }, set: { value in
@@ -1261,7 +1205,9 @@ extension RootTabs {
 
     private func chatTarget(_ session: OpenClawChatSessionEntry) -> OpenClawChatSessionTarget {
         IOSGatewayChatTransport.sessionTarget(
-            for: session.key, selectedAgentID: self.appModel.chatDeliveryAgentId, overrideAgentID: session.agentId)
+            for: session.key,
+            selectedAgentID: self.appModel.chatDeliveryAgentId,
+            overrideAgentID: session.agentId)
     }
 
     private func commitChatNavigation(_ target: OpenClawChatSessionTarget) {
@@ -1289,8 +1235,11 @@ extension RootTabs {
         return { session in
             guard action() else { return nil }
             return PreparedChatNavigation.capture(
-                appModel: self.appModel, router: router, presentationID: rootID,
-                session: session, isCurrentContext: context,
+                appModel: self.appModel,
+                router: router,
+                presentationID: rootID,
+                session: session,
+                isCurrentContext: context,
                 currentNativeBinding: { self.nativeChatBinding },
                 open: { self.commitChatNavigation($0) })
         }
@@ -1441,7 +1390,8 @@ extension RootTabs {
     }
 
     private func handleGatewayProblemPrimaryAction(
-        _ problem: GatewayConnectionProblem, onNavigate: () -> Bool)
+        _ problem: GatewayConnectionProblem,
+        onNavigate: () -> Bool)
     {
         if problem.suggestsOnboardingReset {
             // Reset bumps onboarding.requestID, which re-presents the wizard.
@@ -1614,128 +1564,3 @@ private struct RootCameraFlashOverlay: View {
         self.dismissGate.cancel()
     }
 }
-
-#if DEBUG
-#Preview(
-    "Shell iPhone portrait",
-    traits: .fixedLayout(width: 393, height: 852),
-    .portrait)
-{
-    RootTabsPreviewHost()
-}
-
-#Preview(
-    "Shell iPhone drawer open",
-    traits: .fixedLayout(width: 393, height: 852),
-    .portrait)
-{
-    RootTabsPreviewHost(sidebarVisible: true)
-}
-
-#Preview(
-    "Shell iPhone connected",
-    traits: .fixedLayout(width: 393, height: 852),
-    .portrait)
-{
-    RootTabsPreviewHost(gatewayState: .connected)
-}
-
-#Preview(
-    "Shell iPhone gateway error",
-    traits: .fixedLayout(width: 393, height: 852),
-    .portrait)
-{
-    RootTabsPreviewHost(gatewayState: .error)
-}
-
-#Preview(
-    "Shell iPhone landscape",
-    traits: .fixedLayout(width: 852, height: 393),
-    .landscapeLeft)
-{
-    RootTabsPreviewHost()
-        .environment(\.horizontalSizeClass, .regular)
-        .environment(\.verticalSizeClass, .compact)
-}
-
-#Preview(
-    "Shell iPad portrait drawer",
-    traits: .fixedLayout(width: 1024, height: 1366),
-    .portrait)
-{
-    RootTabsPreviewHost()
-}
-
-#Preview(
-    "Shell iPad landscape split",
-    traits: .fixedLayout(width: 1366, height: 1024),
-    .landscapeLeft)
-{
-    RootTabsPreviewHost(gatewayState: .connected)
-}
-
-#Preview(
-    "Shell iPad connecting",
-    traits: .fixedLayout(width: 1366, height: 1024),
-    .landscapeLeft)
-{
-    RootTabsPreviewHost(gatewayState: .connecting)
-}
-
-#Preview(
-    "Shell iPad gateway error",
-    traits: .fixedLayout(width: 1366, height: 1024),
-    .landscapeLeft)
-{
-    RootTabsPreviewHost(gatewayState: .error)
-}
-
-private struct RootTabsPreviewHost: View {
-    @State private var appearanceModel = AppAppearanceModel()
-    @State private var appModel: NodeAppModel
-    @State private var gatewayController: GatewayConnectionController
-    private let sidebarVisible: Bool?
-
-    init(
-        gatewayState: RootTabsPreviewGatewayState = .offline,
-        sidebarVisible: Bool? = nil)
-    {
-        let appModel = NodeAppModel()
-        gatewayState.apply(to: appModel)
-        self.sidebarVisible = sidebarVisible
-        _appModel = State(initialValue: appModel)
-        _gatewayController = State(
-            initialValue: GatewayConnectionController(appModel: appModel, startDiscovery: false))
-    }
-
-    var body: some View {
-        RootTabs(initialSidebarVisibility: self.sidebarVisible)
-            .environment(self.appearanceModel)
-            .environment(self.appModel)
-            .environment(self.appModel.voiceWake)
-            .environment(self.gatewayController)
-    }
-}
-
-private enum RootTabsPreviewGatewayState {
-    case offline
-    case connecting
-    case connected
-    case error
-
-    @MainActor
-    func apply(to appModel: NodeAppModel) {
-        switch self {
-        case .offline:
-            break
-        case .connecting:
-            appModel.gatewayStatusText = "Connecting..."
-        case .connected:
-            appModel.enterAppleReviewDemoMode()
-        case .error:
-            appModel.gatewayStatusText = "Gateway error: connection refused"
-        }
-    }
-}
-
-#endif

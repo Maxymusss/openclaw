@@ -187,7 +187,8 @@ struct OpenClawChatComposer: View {
                     let viewModel = self.viewModel
                     self.modals.owner.present(
                         .init(context: context, refresh: { await viewModel.refreshModelSignIn() }),
-                        at: \.signIn, capture: capture)
+                        at: \.signIn,
+                        capture: capture)
                 }
             case .refresh:
                 await self.viewModel.refreshModelSignIn()
@@ -349,7 +350,10 @@ struct OpenClawChatComposer: View {
     #if !os(macOS)
     var photoPickerPresentation: Binding<Bool> {
         self.modals.owner.attachmentBinding(
-            .photo, context: self.modals, viewModel: self.viewModel, enabled: self.isAttachmentInputEnabled)
+            .photo,
+            context: self.modals,
+            viewModel: self.viewModel,
+            enabled: self.isAttachmentInputEnabled)
     }
 
     private func presentPhotoPicker() {
@@ -358,12 +362,18 @@ struct OpenClawChatComposer: View {
 
     var fileImporterPresentation: Binding<Bool> {
         self.modals.owner.attachmentBinding(
-            .file, context: self.modals, viewModel: self.viewModel, enabled: self.isAttachmentInputEnabled)
+            .file,
+            context: self.modals,
+            viewModel: self.viewModel,
+            enabled: self.isAttachmentInputEnabled)
     }
 
     var cameraPickerPresentation: Binding<Bool> {
         self.modals.owner.attachmentBinding(
-            .camera, context: self.modals, viewModel: self.viewModel, enabled: self.isAttachmentInputEnabled)
+            .camera,
+            context: self.modals,
+            viewModel: self.viewModel,
+            enabled: self.isAttachmentInputEnabled)
     }
     #endif
 

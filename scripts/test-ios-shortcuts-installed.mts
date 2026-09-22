@@ -100,7 +100,9 @@ export function createInstalledCommandRunner(
               child.stdout?.on("data", (bytes: Buffer) => {
                 stdoutBytes += bytes.length;
                 stdout.append(bytes);
-                if (!options.capture && !options.ui) return;
+                if (!options.capture && !options.ui) {
+                  return;
+                }
                 output += bytes.toString();
                 if (options.ui) {
                   const lines = output.split("\n");
@@ -285,7 +287,7 @@ async function main() {
         (entry) =>
           entry.isAvailable && entry.platform === "iOS" && /^27(?:\.|$)/.test(entry.version),
       )
-      .sort((a, b) => b.version.localeCompare(a.version, "en", { numeric: true }))[0];
+      .toSorted((a, b) => b.version.localeCompare(a.version, "en", { numeric: true }))[0];
     const deviceType = runtime?.supportedDeviceTypes.find(
       (entry) => entry.productFamily === "iPhone",
     );
@@ -365,8 +367,9 @@ async function main() {
     const products = (await settings(buildArgs)).filter((entry) => entry.target === "OpenClaw");
     assert.equal(products.length, 1);
     const product = products[0]!.buildSettings;
-    for (const flag of ["DEBUG", proofCondition])
+    for (const flag of ["DEBUG", proofCondition]) {
       assert(product.SWIFT_ACTIVE_COMPILATION_CONDITIONS?.split(/\s+/).includes(flag));
+    }
     receipt.proofBuildConditionVerified = true;
     const app = await fs.realpath(path.join(product.TARGET_BUILD_DIR!, product.FULL_PRODUCT_NAME!));
     assert(app.startsWith(`${await fs.realpath(derived)}/`));
@@ -517,9 +520,14 @@ async function main() {
                   event.kind === "connect-success" && event.connection === operator.connection,
               );
               assert.equal(operatorHello?.authMethod, "trusted-proxy");
+              const scopes: unknown = operatorHello?.scopes;
+              assert(
+                Array.isArray(scopes) &&
+                  scopes.every((scope: unknown): scope is string => typeof scope === "string"),
+              );
               assert.deepEqual(
-                [...operatorHello.scopes].sort(),
-                [...SKILL_LIBRARY_WRITER_SCOPES].sort(),
+                scopes.toSorted((a, b) => a.localeCompare(b)),
+                SKILL_LIBRARY_WRITER_SCOPES.toSorted((a, b) => a.localeCompare(b)),
               );
               receipt.nodeOperatorHandoffVerified = true;
               assert(
@@ -594,7 +602,9 @@ async function main() {
     receipt.simulatorRetained = Boolean(simulator && !receipt.simulatorDeleted);
     receipt.completed &&=
       failures.length === 0 && !receipt.unjoinedWork && !receipt.simulatorRetained;
-    if (!receipt.completed) receipt.failedPhase ||= "cleanup";
+    if (!receipt.completed) {
+      receipt.failedPhase ||= "cleanup";
+    }
     try {
       await receiptFile.writeFile(`${JSON.stringify(receipt, null, 2)}\n`);
     } catch (error) {
@@ -606,10 +616,11 @@ async function main() {
       failures.push(error);
     }
     try {
-      if (failures.length)
+      if (failures.length) {
         await diagnostics?.writeFile(
           JSON.stringify({ phase, errors: failures.map(privateError) }) + "\n",
         );
+      }
     } catch (error) {
       failures.push(error);
     }
@@ -619,8 +630,12 @@ async function main() {
       failures.push(error);
     }
   }
-  if (failures.length === 1) throw failures[0];
-  if (failures.length) throw new AggregateError(failures, "Installed iOS proof failed");
+  if (failures.length === 1) {
+    throw failures[0];
+  }
+  if (failures.length) {
+    throw new AggregateError(failures, "Installed iOS proof failed");
+  }
   assert(receipt.completed, "Installed iOS proof remains incomplete");
 }
 

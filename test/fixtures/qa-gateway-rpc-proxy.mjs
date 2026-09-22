@@ -565,7 +565,12 @@ export async function startQaGatewayRpcProxy({
     });
     recordFirstConnection(id, "upstream-create-return");
     const closed = Promise.all(
-      [front, back].map((socket) => new Promise((resolve) => socket.once("close", resolve))),
+      [front, back].map(
+        (socket) =>
+          new Promise((resolve) => {
+            socket.once("close", resolve);
+          }),
+      ),
     );
     const peer = { id, front, back, closed };
     peers.add(peer);
@@ -769,7 +774,7 @@ export async function startQaGatewayRpcProxy({
                   handoffRoles: handoff
                     .map((entry) => entry?.role)
                     .filter((role) => role === "node" || role === "operator")
-                    .sort(),
+                    .toSorted((a, b) => a.localeCompare(b)),
                 }
               : {}),
           });
@@ -923,14 +928,19 @@ export async function startQaGatewayRpcProxy({
       front.terminate();
     });
   });
+  /** @type {Promise<void> | undefined} */
   let stopping;
+  /** @returns {Promise<void>} */
   const stop = () =>
     (stopping ??= (async () => {
       operatorHandoffTokens.clear();
       // Close admission before draining media: an aborted body iterator can
       // settle later, after an already accepted upgrade reaches this server.
       const websocketClosed = new Promise((resolve, reject) => {
-        sockets.close((error) => (error ? reject(error) : resolve()));
+        sockets.close(
+          /** @param {Error} [error] */
+          (error) => (error ? reject(error) : resolve()),
+        );
       });
       const serverClosed = new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
@@ -940,7 +950,10 @@ export async function startQaGatewayRpcProxy({
       const closingPeers = [...peers];
       const closingRequests = [...httpRequests];
       const requestsClosed = closingRequests.map(
-        (upstream) => new Promise((resolve) => upstream.once("close", resolve)),
+        (upstream) =>
+          new Promise((resolve) => {
+            upstream.once("close", resolve);
+          }),
       );
       for (const peer of closingPeers) {
         recordFirstTermination(peer.id, "front", peer.front, "stop");

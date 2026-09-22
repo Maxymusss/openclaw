@@ -300,7 +300,7 @@ describe("iOS native action workflow", () => {
         ).toBe(phase === "tests" && compatibility === "false");
       }
     }
-    for (const outcome of ["success", "failure", "cancelled", "skipped", ""]) {
+    for (const outcome of ["success", "failure", "cancelled", "skipped", undefined] as const) {
       expect(
         evaluateWorkflowExpression(upload.if, {
           eventName: "workflow_dispatch",
@@ -308,7 +308,7 @@ describe("iOS native action workflow", () => {
           runAttempt: 1,
           steps: { ios_installed_shortcuts: { outputs: {}, outcome } },
         }),
-      ).toBe(outcome !== "skipped" && outcome !== "");
+      ).toBe(outcome !== "skipped" && outcome !== undefined);
     }
   });
   it.skipIf(process.platform === "win32").each(["smoke", "tests"])(

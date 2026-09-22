@@ -91,7 +91,8 @@ struct ChatProTab: View {
             .onDisappear {
                 if self.retainModalPresentation() {
                     _ = self.nativeActions?.userNavigationDidChange(
-                        presentationID: self.nativePresentationID, disposition: .chatModal)
+                        presentationID: self.nativePresentationID,
+                        disposition: .chatModal)
                 } else {
                     self.lifetime.release()
                 }
@@ -108,8 +109,10 @@ struct ChatProTab: View {
     private func registerVisibleChat() async {
         let owner = self.appModel.chatPresentation
         guard let context = await owner.visiblePresentation(
-            appModel: self.appModel, nativeBinding: self.nativeBinding,
-            nativeActions: self.nativeActions, presentationID: self.nativePresentationID), !Task.isCancelled
+            appModel: self.appModel,
+            nativeBinding: self.nativeBinding,
+            nativeActions: self.nativeActions,
+            presentationID: self.nativePresentationID), !Task.isCancelled
         else { return }
         let viewModel = context.viewModel
         // A covering modal retains the exact registration. Returning visibility
@@ -121,8 +124,11 @@ struct ChatProTab: View {
         }
         // RootTabs owns the model; registration only attests this visible chat.
         self.chatRegistrationID = self.nativeActions?.registerChat(
-            viewModel, ownerID: context.ownerID, agentID: context.agentID,
-            transport: context.transport, presentationID: self.nativePresentationID)
+            viewModel,
+            ownerID: context.ownerID,
+            agentID: context.agentID,
+            transport: context.transport,
+            presentationID: self.nativePresentationID)
         if let id = self.chatRegistrationID {
             self.registeredChatIdentity = self.visibleChatIdentity
             let router = self.nativeActions
@@ -647,7 +653,8 @@ struct ChatProTab: View {
     }
 
     private func exportTranscript(
-        viewModel: OpenClawChatViewModel, publication: IOSChatModalPublication)
+        viewModel: OpenClawChatViewModel,
+        publication: IOSChatModalPublication)
     {
         let title = viewModel.sessions.first { $0.key == viewModel.sessionKey }?.displayName
         let filename = ChatTranscriptExporter.filename(

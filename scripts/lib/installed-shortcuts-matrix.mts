@@ -53,7 +53,7 @@ export function assertInstalledIntentRegistration(value: unknown) {
       value.generator.name === "xcode-tools",
     "Unsupported App Intents extraction structure",
   );
-  const records = (group: unknown) => {
+  const records = (group: unknown): Record<string, unknown>[] => {
     assert(isRecord(group) || Array.isArray(group), "Missing App Intents registration group");
     const entries = Object.values(group);
     assert(entries.every(isRecord));
@@ -76,7 +76,7 @@ export function assertInstalledIntentRegistration(value: unknown) {
     assert(
       typeof entity.defaultQueryIdentifier === "string" && entity.defaultQueryIdentifier.length > 0,
     );
-    const queries = records(value.queries).filter(
+    const queries: Record<string, unknown>[] = records(value.queries).filter(
       (query) => query.fullyQualifiedIdentifier === entity.defaultQueryIdentifier,
     );
     assert.equal(queries.length, 1);
@@ -95,8 +95,13 @@ export function assertInstalledIntentRegistration(value: unknown) {
         action.isDiscoverable === true,
     );
     assert(Array.isArray(action.parameters) && action.parameters.every(isRecord));
-    assert.deepEqual(action.parameters.map((parameter) => parameter.name).sort(), parameters);
-    const parameter = action.parameters.find((parameter) => parameter.name === target)!;
+    assert.deepEqual(
+      action.parameters
+        .map((parameter) => parameter.name)
+        .toSorted((a, b) => String(a).localeCompare(String(b))),
+      parameters,
+    );
+    const parameter = action.parameters.find((entry) => entry.name === target)!;
     assert(
       isRecord(parameter.valueType) &&
         isRecord(parameter.valueType.entity) &&
@@ -205,8 +210,9 @@ export async function createInstalledShortcutsMatrix(
     const otherKey = await fixture.createSession(other);
     // The ordinary colored-session header exposes the selected session title.
     // This is an empty editor witness, not a protected draft blocking admission.
-    for (const key of [sessionKey, otherKey])
+    for (const key of [sessionKey, otherKey]) {
       await fixture.admin.request("sessions.patch", { key, color: "blue" });
+    }
     const question = `Reply exactly \`SIRI-${id}-${suffix}\`.`;
     let runID: string | undefined;
     if (id.startsWith("inspect")) {
@@ -299,7 +305,7 @@ export async function createInstalledShortcutsMatrix(
     assert.equal(history.sessionInfo.agentId, "qa");
     const admitted = history.messages.filter(
       (message) =>
-        message.role === "user" && message.__openclaw?.idempotencyKey === `${runID}:user`,
+        message.role === "user" && message["__openclaw"]?.idempotencyKey === `${runID}:user`,
     );
     assert.equal(admitted.length, 1);
     assert.equal(wireMessageText(admitted[0]), active.scenario.question);
@@ -329,7 +335,9 @@ export async function createInstalledShortcutsMatrix(
       );
       assert.equal(input.uiVerified, true);
       assert.equal(input.shortcutSucceeded, true);
-      if (explicit.id === "explicit-saved") assert(explicit.finished);
+      if (explicit.id === "explicit-saved") {
+        assert(explicit.finished);
+      }
       const events = proxy.snapshot().events.slice(explicit.cursor);
       assert(
         !events.some(
@@ -373,7 +381,9 @@ export async function createInstalledShortcutsMatrix(
       assert.equal(input.id, scenario.id, "Installed cases must execute in order");
       // Keep the canonical per-case evidence bound. Preserve initial onboarding
       // facts once, then reset only after the previous case fully completed.
-      if (receipts.length > 0) await proxyControl("reset");
+      if (receipts.length > 0) {
+        await proxyControl("reset");
+      }
       const baseline = readInstalledObservation(input.observation);
       assert(baseline.idleUnprotectedComposer, "The previous composer has not settled");
       active = {
@@ -422,8 +432,9 @@ export async function createInstalledShortcutsMatrix(
         return {};
       case "observe": {
         assert(!active.observed && !active.held);
-        if (active.scenario.id.endsWith("-off"))
+        if (active.scenario.id.endsWith("-off")) {
           assert(active.checkpoint, "The OFF producer has not returned");
+        }
         assertInstalledObservation(
           active.scenario.id,
           active.baseline,
@@ -466,7 +477,9 @@ export async function createInstalledShortcutsMatrix(
           assert.equal(event.sessionKey, active.scenario.sessionKey);
           assert.equal(event.expectedProfileId, fixture.aliceId);
         }
-        if (receipts.length === 0) bootstrapEvents = proxy.snapshot().events;
+        if (receipts.length === 0) {
+          bootstrapEvents = proxy.snapshot().events;
+        }
         receipts.push({
           id: active.scenario.id,
           automatic: !active.scenario.id.endsWith("-off"),
@@ -526,8 +539,9 @@ export async function createInstalledShortcutsMatrix(
               45_000,
             );
             response.once("close", () => {
-              if (!selected.released && !stopping)
+              if (!selected.released && !stopping) {
                 reject(new Error("Downstream checkpoint was abandoned"));
+              }
             });
           });
           assert(selected.released && !stopping);
@@ -543,8 +557,12 @@ export async function createInstalledShortcutsMatrix(
       active.finished = true;
       response.writeHead(200).end("complete");
     })().catch(() => {
-      if (!stopping) failed = true;
-      if (!response.headersSent) response.writeHead(500);
+      if (!stopping) {
+        failed = true;
+      }
+      if (!response.headersSent) {
+        response.writeHead(500);
+      }
       response.end("installed proof refused");
     });
     tasks.add(task);
@@ -563,15 +581,16 @@ export async function createInstalledShortcutsMatrix(
   assert(address && typeof address !== "string");
   const baseURL = `http://127.0.0.1:${address.port}/${token}`;
   return {
-    scenarios: scenarios.map((scenario) => ({
-      ...scenario,
-      checkpointURL: `${baseURL}/${scenario.id}/checkpoint`,
-      successURL: `${baseURL}/${scenario.id}/success`,
-    })),
+    scenarios: scenarios.map((scenario) =>
+      Object.assign({}, scenario, {
+        checkpointURL: `${baseURL}/${scenario.id}/checkpoint`,
+        successURL: `${baseURL}/${scenario.id}/success`,
+      }),
+    ),
     controlURL: `${baseURL}/control`,
     handle,
     bootstrapEvents: () => [...bootstrapEvents],
-    receipts: () => [...receipts, ...explicitReceipts].map((receipt) => ({ ...receipt })),
+    receipts: () => [...receipts, ...explicitReceipts].map((receipt) => Object.assign({}, receipt)),
     verifyComplete() {
       assert(!failed && !active && !explicit && !stopping);
       assert.deepEqual(
@@ -594,9 +613,9 @@ export async function createInstalledShortcutsMatrix(
     },
     async stop() {
       assert(stopping, "Release installed gates before dependent teardown");
-      const closed = new Promise<void>((resolve, reject) =>
-        server.close((error) => (error ? reject(error) : resolve())),
-      );
+      const closed = new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
       server.closeAllConnections();
       await Promise.all([...tasks, closed]);
     },

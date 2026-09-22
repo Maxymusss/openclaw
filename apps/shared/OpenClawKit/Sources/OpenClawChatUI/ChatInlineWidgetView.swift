@@ -418,7 +418,8 @@ struct ChatInlineWidgetView: View {
             guard let capture = self.consumeSnapshotRequest(request) else { return }
             self.modals.owner.present(
                 String(localized: "The widget image could not be captured."),
-                at: \.widgetError, capture: capture)
+                at: \.widgetError,
+                capture: capture)
         case let .success(request, image):
             guard let capture = self.consumeSnapshotRequest(request) else { return }
             switch request.action {
@@ -445,36 +446,43 @@ struct ChatInlineWidgetView: View {
 
     #if os(iOS)
     private func copySnapshot(
-        _ image: ChatInlineWidgetSnapshotImage, capture _: OpenClawChatModalPresentations.Capture)
+        _ image: ChatInlineWidgetSnapshotImage,
+        capture _: OpenClawChatModalPresentations.Capture)
     {
         UIPasteboard.general.image = image
     }
 
     private func saveSnapshot(
-        _ image: ChatInlineWidgetSnapshotImage, capture: OpenClawChatModalPresentations.Capture)
+        _ image: ChatInlineWidgetSnapshotImage,
+        capture: OpenClawChatModalPresentations.Capture)
     {
         self.modals.owner.present(image, at: \.widgetImage, capture: capture)
     }
     #elseif os(macOS)
     private func copySnapshot(
-        _ image: ChatInlineWidgetSnapshotImage, capture: OpenClawChatModalPresentations.Capture)
+        _ image: ChatInlineWidgetSnapshotImage,
+        capture: OpenClawChatModalPresentations.Capture)
     {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         guard pasteboard.writeObjects([image]) else {
             self.modals.owner.present(
-                String(localized: "The widget image could not be copied."), at: \.widgetError, capture: capture)
+                String(localized: "The widget image could not be copied."),
+                at: \.widgetError,
+                capture: capture)
             return
         }
     }
 
     private func saveSnapshot(
-        _ image: ChatInlineWidgetSnapshotImage, capture: OpenClawChatModalPresentations.Capture)
+        _ image: ChatInlineWidgetSnapshotImage,
+        capture: OpenClawChatModalPresentations.Capture)
     {
         guard let pngData = image.chatInlineWidgetPNGData else {
             self.modals.owner.present(
                 String(localized: "The widget image could not be encoded as PNG."),
-                at: \.widgetError, capture: capture)
+                at: \.widgetError,
+                capture: capture)
             return
         }
 
@@ -488,7 +496,8 @@ struct ChatInlineWidgetView: View {
             } catch {
                 self.modals.owner.present(
                     String(localized: "The widget image could not be saved."),
-                    at: \.widgetError, capture: capture)
+                    at: \.widgetError,
+                    capture: capture)
             }
         }
     }

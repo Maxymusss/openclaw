@@ -113,7 +113,8 @@ struct ChatMermaidBlockView: View {
         // Freeze the selected SVG while the inline diagram re-renders.
         self.modals.owner.present(
             .init(svg: rendered.svg, background: self.cssColor(OpenClawChatTheme.assistantBubble)),
-            at: \.mermaid, capture: self.modals.capture())
+            at: \.mermaid,
+            capture: self.modals.capture())
     }
 
     private var sourceView: some View {

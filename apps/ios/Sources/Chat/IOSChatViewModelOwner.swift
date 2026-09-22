@@ -133,9 +133,13 @@ final class IOSChatViewModelOwner {
         let binding: IOSNativeActionBinding?
 
         init(
-            id: Int, origin: NewChatOrigin, viewModel: OpenClawChatViewModel? = nil,
-            scope: TaskIdentity? = nil, transport: IOSGatewayChatTransport? = nil,
-            generation: UInt64? = nil, accountGeneration: UInt64? = nil)
+            id: Int,
+            origin: NewChatOrigin,
+            viewModel: OpenClawChatViewModel? = nil,
+            scope: TaskIdentity? = nil,
+            transport: IOSGatewayChatTransport? = nil,
+            generation: UInt64? = nil,
+            accountGeneration: UInt64? = nil)
         {
             self.id = id
             self.origin = origin
@@ -168,7 +172,9 @@ final class IOSChatViewModelOwner {
               request.accountGeneration == appModel.operatorAuthorityGeneration,
               self.transport?.gateway === request.gateway, self.transport?.nativeBinding === request.binding,
               scope == self.taskIdentity(
-                  appModel: appModel, nativeBinding: presentation.binding, presentationID: presentation.id)
+                  appModel: appModel,
+                  nativeBinding: presentation.binding,
+                  presentationID: presentation.id)
         else { return nil }
         // Consuming the counter and setting isCreatingSession do not retire this
         // identity. Registration wakes readiness but cannot cancel admitted work.
@@ -195,14 +201,18 @@ final class IOSChatViewModelOwner {
               generation == appModel.gatewayConnectGeneration,
               accountGeneration == appModel.operatorAuthorityGeneration else { return }
         self.sync(
-            appModel: appModel, nativeBinding: presentation.binding,
-            nativeActions: presentation.router, presentationID: presentation.id)
+            appModel: appModel,
+            nativeBinding: presentation.binding,
+            nativeActions: presentation.router,
+            presentationID: presentation.id)
         guard let pending, pending.scope == nil, self.newChatRequest === pending,
               pending.id == appModel.newChatRequestID,
               pending.origin.isCurrent(appModel: appModel, presentation: currentPresentation()),
               let viewModel else { return }
         let scope = self.taskIdentity(
-            appModel: appModel, nativeBinding: presentation.binding, presentationID: presentation.id)
+            appModel: appModel,
+            nativeBinding: presentation.binding,
+            presentationID: presentation.id)
         guard let context = await self.readyNewChatPresentation(appModel: appModel, presentation: presentation),
               !Task.isCancelled, context.viewModel === viewModel, self.viewModel === viewModel,
               self.newChatRequest === pending,
@@ -211,22 +221,31 @@ final class IOSChatViewModelOwner {
               origin.isCurrent(appModel: appModel, presentation: currentPresentation()),
               pending.origin.isCurrent(appModel: appModel, presentation: currentPresentation()),
               scope == self.taskIdentity(
-                  appModel: appModel, nativeBinding: currentPresentation().binding,
+                  appModel: appModel,
+                  nativeBinding: currentPresentation().binding,
                   presentationID: currentPresentation().id)
         else { return }
         // Compare-and-publish once. Obsolete attempts never clear a newer slot;
         // registration renewals never replace an already prepared request.
         self.newChatRequest = NewChatRequest(
-            id: pending.id, origin: pending.origin, viewModel: viewModel, scope: scope, transport: context.transport,
-            generation: generation, accountGeneration: accountGeneration)
+            id: pending.id,
+            origin: pending.origin,
+            viewModel: viewModel,
+            scope: scope,
+            transport: context.transport,
+            generation: generation,
+            accountGeneration: accountGeneration)
     }
 
     private func readyNewChatPresentation(
-        appModel: NodeAppModel, presentation: Presentation) async -> VisiblePresentation?
+        appModel: NodeAppModel,
+        presentation: Presentation) async -> VisiblePresentation?
     {
         guard let context = await self.visiblePresentation(
-            appModel: appModel, nativeBinding: presentation.binding,
-            nativeActions: presentation.router, presentationID: presentation.id) else { return nil }
+            appModel: appModel,
+            nativeBinding: presentation.binding,
+            nativeActions: presentation.router,
+            presentationID: presentation.id) else { return nil }
         if let binding = context.transport?.nativeBinding {
             guard let authority = context.authority,
                   presentation.router?
@@ -238,13 +257,15 @@ final class IOSChatViewModelOwner {
 
     @discardableResult
     func performNewChat(
-        _ request: NewChatRequest, appModel: NodeAppModel,
+        _ request: NewChatRequest,
+        appModel: NodeAppModel,
         currentPresentation: @MainActor () -> Presentation) async -> Bool
     {
         guard self.currentNewChatRequest(appModel: appModel, presentation: currentPresentation()) === request,
               let viewModel = request.viewModel,
               let context = await self.readyNewChatPresentation(
-                  appModel: appModel, presentation: currentPresentation()),
+                  appModel: appModel,
+                  presentation: currentPresentation()),
               !Task.isCancelled, context.viewModel === viewModel,
               self.currentNewChatRequest(appModel: appModel, presentation: currentPresentation()) === request,
               appModel.consumeNewChatRequest(request.id) else { return false }
@@ -294,8 +315,11 @@ final class IOSChatViewModelOwner {
             return nil
         }
         return VisiblePresentation(
-            viewModel: viewModel, transport: transport, ownerID: ownerID,
-            agentID: agentID, authority: authority)
+            viewModel: viewModel,
+            transport: transport,
+            ownerID: ownerID,
+            agentID: agentID,
+            authority: authority)
     }
 
     func sync(
@@ -364,7 +388,8 @@ final class IOSChatViewModelOwner {
         let agentName = self.presentationAgentName
         let agentBadge = self.presentationAgentBadge
         let transport = appModel.makeChatTransport(
-            outboxGatewayID: offlineStore?.gatewayID, nativeBinding: nativeBinding)
+            outboxGatewayID: offlineStore?.gatewayID,
+            nativeBinding: nativeBinding)
         self.transport = transport as? IOSGatewayChatTransport
         let relay = IOSChatSessionTargetRelay { [weak self, weak appModel] viewModel in
             guard let self, self.viewModel === viewModel else { return }
@@ -375,7 +400,9 @@ final class IOSChatViewModelOwner {
                       as? IOSGatewayChatTransport,
                       let next = transport.nativeBinding,
                       self.nativeActions?.chatSessionChanged(
-                          viewModel, binding: previous, transport: transport,
+                          viewModel,
+                          binding: previous,
+                          transport: transport,
                           presentationID: self.presentationID) == true
                 else { return }
                 self.transport = transport
@@ -407,7 +434,9 @@ final class IOSChatViewModelOwner {
                 // Capture the current logical target once for this operation. A later
                 // adoption must not change the authority of an already-running fork.
                 return nativeActions.captureSessionTransitionAuthority(
-                    viewModel, binding: binding, presentationID: self.presentationID)
+                    viewModel,
+                    binding: binding,
+                    presentationID: self.presentationID)
             },
             onToolActivity: { id, name, isActive, toolSessionKey in
                 if isActive {

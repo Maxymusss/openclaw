@@ -177,7 +177,13 @@ export function evaluateWorkflowExpression(
     env: context.env ?? {},
     matrix: context.matrix ?? {},
     runner: { environment: context.runnerEnvironment ?? "" },
-    steps: context.steps ?? {},
+    // GitHub evaluates a missing context property as an empty string.
+    steps: Object.fromEntries(
+      Object.entries(context.steps ?? {}).map(([name, step]) => [
+        name,
+        { ...step, outcome: step.outcome ?? "" },
+      ]),
+    ),
     needs: {
       resolve_target: { outputs: context.resolveTargetOutputs ?? {} },
       preflight: {

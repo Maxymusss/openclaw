@@ -356,7 +356,7 @@ describe("own-run question admission", () => {
           "operator.sessions.read",
         ]),
       );
-      addSessionMember(sessionScope, {
+      await addSessionMember(sessionScope, {
         identityId: peers[1]!.client.authenticatedUserProfile!.profileId,
         addedBy: f.profile.id,
         expectedSessionId: f.entry.sessionId,

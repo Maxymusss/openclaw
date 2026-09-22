@@ -87,7 +87,7 @@ final class IOSNativeActionBinding: Sendable {
         let encodedAgent = OpenClawChatSessionKey.agentID(from: key)?.lowercased()
         let explicitAgent = target.agentID?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !self.isRetired, !key.isEmpty,
-              explicitAgent != "",
+              explicitAgent?.isEmpty != true,
               encodedAgent == nil || explicitAgent == nil || encodedAgent == explicitAgent
         else { return nil }
         let session = OpenClawNativeSessionRef(
@@ -97,8 +97,11 @@ final class IOSNativeActionBinding: Sendable {
         // Logical adoption retires presentation, not the captured account lifetime.
         // Old requests and the new target must observe the same profile retirement.
         return IOSNativeActionBinding(
-            capture: self, retirement: self.retirement, session: session,
-            sessionRoutingContract: self.sessionRoutingContract, httpContext: self.httpContext)
+            capture: self,
+            retirement: self.retirement,
+            session: session,
+            sessionRoutingContract: self.sessionRoutingContract,
+            httpContext: self.httpContext)
     }
 
     var mediaConnection: IOSMediaArtifactLoader.Connection? {
@@ -145,7 +148,8 @@ final class IOSNativeActionBinding: Sendable {
                 completionPolicy: completionPolicy)
         } catch {
             if let observation = GatewayProfileBindingObservation.rejection(
-                from: error, expectedProfileID: self.expectedProfileId)
+                from: error,
+                expectedProfileID: self.expectedProfileId)
             {
                 self.observe(observation)
             }
@@ -212,6 +216,8 @@ final class IOSNativeActionBinding: Sendable {
             try JSONDecoder().decode([String: OpenClawProtocol.AnyCodable].self, from: Data($0.utf8))
         } ?? [:]
         return try await self.request(.init(
-            method: method, params: params, timeoutMs: Double(timeoutSeconds) * 1000))
+            method: method,
+            params: params,
+            timeoutMs: Double(timeoutSeconds) * 1000))
     }
 }

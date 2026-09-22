@@ -204,7 +204,7 @@ struct OpenRunIntent: OpenIntent {
     static let title: LocalizedStringResource = "Open Run"
     static let authenticationPolicy: IntentAuthenticationPolicy = .requiresLocalDeviceAuthentication
     @Parameter(title: "Run") var target: OpenClawRunEntity
-    @Parameter(title: "Automatic", default: false) var automatic: Bool
+    @Parameter(title: "Automatic", default: false) var automatic: Bool?
     @Parameter(title: "Presentation") var presentationID: String?
     static var parameterSummary: some ParameterSummary {
         Summary("Open \(\.$target)")
@@ -224,7 +224,7 @@ struct OpenRunIntent: OpenIntent {
     @MainActor
     func perform() async throws -> some IntentResult {
         try Task.checkCancellation()
-        if self.automatic {
+        if self.automatic == true {
             let outcome: OpenClawNativeRunOpenOutcome = if let presentationID,
                                                            let id = UUID(uuidString: presentationID)
             {
@@ -266,7 +266,8 @@ public struct SendMessageIntent: AppIntent {
         // perform has no OS invocation identifier. Each intentional execution
         // prepares one object; static intent identifiers must never deduplicate sends.
         let (prepared, presentationID) = try await OpenClawNativeActionServices.host().prepareSend(
-            to: self.session.session, message: self.message)
+            to: self.session.session,
+            message: self.message)
         try await self.requestConfirmation(
             actionName: .send,
             dialog: """

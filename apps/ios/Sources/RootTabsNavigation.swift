@@ -59,9 +59,13 @@ struct PreparedChatNavigation {
         }
         return Self(
             parent: IOSGatewayChatTransport.sessionTarget(
-                for: session.key, selectedAgentID: selectedAgent, overrideAgentID: session.agentId),
+                for: session.key,
+                selectedAgentID: selectedAgent,
+                overrideAgentID: session.agentId),
             transport: appModel.makeChatTransport(outboxGatewayID: gatewayID),
-            gatewayID: gatewayID, isLocalFixture: fixture, isCurrent: isCurrent,
+            gatewayID: gatewayID,
+            isLocalFixture: fixture,
+            isCurrent: isCurrent,
             open: { target in
                 guard isCurrent() else { return false }
                 open(target)
@@ -78,7 +82,9 @@ struct PreparedChatNavigation {
             // fork result. They must never fall through to a real Gateway request.
             route = nil
             key = try await self.transport.forkSession(
-                parentKey: self.parent.sessionKey, fromLastCompleted: fromLastCompleted, agentID: self.parent.agentID)
+                parentKey: self.parent.sessionKey,
+                fromLastCompleted: fromLastCompleted,
+                agentID: self.parent.agentID)
         } else {
             guard let transport = transport as? IOSGatewayChatTransport,
                   let gatewayID,
@@ -88,8 +94,10 @@ struct PreparedChatNavigation {
             route = captured
             do {
                 key = try await transport.forkSession(
-                    parentKey: self.parent.sessionKey, fromLastCompleted: fromLastCompleted,
-                    agentID: self.parent.agentID, ifCurrentRoute: captured)
+                    parentKey: self.parent.sessionKey,
+                    fromLastCompleted: fromLastCompleted,
+                    agentID: self.parent.agentID,
+                    ifCurrentRoute: captured)
             } catch {
                 guard await transport.gateway.currentRoute(ifGatewayID: gatewayID) == captured,
                       self.isCurrent(), !Task.isCancelled else { throw CancellationError() }
@@ -114,6 +122,87 @@ struct PreparedChatNavigation {
 }
 
 extension RootTabs {
+    struct SessionObserverTaskIdentity: Equatable {
+        let sidebarRefreshID: String
+        let isSceneActive: Bool
+        let isSidebarVisible: Bool
+
+        var isObserverVisible: Bool {
+            self.isSceneActive && self.isSidebarVisible
+        }
+    }
+
+    static func initialDestination(arguments: [String]) -> SidebarDestination {
+        if let requested = self.requestedInitialSidebarDestination(arguments: arguments) {
+            return requested
+        }
+        guard let flagIndex = arguments.firstIndex(of: "--openclaw-initial-tab") else { return .chat }
+        let valueIndex = arguments.index(after: flagIndex)
+        guard arguments.indices.contains(valueIndex) else { return .chat }
+        return switch arguments[valueIndex].trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "control", "overview": .overview
+        case "chat", "talk", "voice": .chat
+        case "agent", "agents": .agents
+        case "settings": .settings
+        default: .chat
+        }
+    }
+
+    static func requestedInitialSidebarDestination(arguments: [String]) -> SidebarDestination? {
+        guard let flagIndex = arguments.firstIndex(of: "--openclaw-initial-destination") else {
+            return nil
+        }
+        let valueIndex = arguments.index(after: flagIndex)
+        guard arguments.indices.contains(valueIndex) else { return nil }
+        let requested = arguments[valueIndex].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return SidebarDestination.allCases.first { $0.rawValue.lowercased() == requested }
+    }
+
+    struct SidebarPagesPresentation: Identifiable, Equatable {
+        let id = UUID()
+    }
+
+    enum PresentedSheet: Identifiable, Equatable {
+        case quickSetup
+        case notificationSettings(path: String)
+        case sessionDashboard(sessionKey: String, agentId: String?)
+        case backgroundTasks(agentID: String, receipt: OpenClawChatModalPresentations.Receipt)
+        case newSessionOptions(OpenClawChatViewModel, receipt: OpenClawChatModalPresentations.Receipt)
+        case transcriptShare(URL, receipt: OpenClawChatModalPresentations.Receipt)
+
+        var chatReceipt: OpenClawChatModalPresentations.Receipt? {
+            switch self {
+            case let .backgroundTasks(_, receipt), let .newSessionOptions(_, receipt),
+                 let .transcriptShare(_, receipt): receipt
+            default: nil
+            }
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            switch (lhs, rhs) {
+            case (.quickSetup, .quickSetup): true
+            case let (.notificationSettings(left), .notificationSettings(right)): left == right
+            case let (.sessionDashboard(leftKey, leftAgent), .sessionDashboard(rightKey, rightAgent)):
+                leftKey == rightKey && leftAgent == rightAgent
+            case let (.backgroundTasks(_, left), .backgroundTasks(_, right)),
+                 let (.newSessionOptions(_, left), .newSessionOptions(_, right)),
+                 let (.transcriptShare(_, left), .transcriptShare(_, right)): left.id == right.id
+            default: false
+            }
+        }
+
+        var id: String {
+            switch self {
+            case .quickSetup: "quick-setup"
+            case .notificationSettings: "notification-settings"
+            case let .sessionDashboard(sessionKey, agentId):
+                "session-dashboard:\(agentId ?? ""):\(sessionKey)"
+            case let .backgroundTasks(_, receipt), let .newSessionOptions(_, receipt),
+                 let .transcriptShare(_, receipt): receipt.id.uuidString
+            }
+        }
+    }
+
     private static var sidebarPersistentWidthThreshold: CGFloat {
         980
     }

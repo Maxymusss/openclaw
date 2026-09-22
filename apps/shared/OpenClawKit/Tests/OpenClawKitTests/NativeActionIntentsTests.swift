@@ -24,18 +24,25 @@ struct NativeActionIntentsTests {
             session: .init(
                 owner: .init(gatewayID: "gateway-a", profileID: "alice"),
                 agentID: "main",
-                sessionKey: "global"), runID: "accepted-run")
+                sessionKey: "global"),
+            runID: "accepted-run")
         let target = try OpenClawRunEntity(run: run)
         let host = ObservingNativeActionHost()
         OpenClawNativeActionServices.install(host: host)
         let explicit = OpenRunIntent(target: target)
-        try #require(!explicit.automatic && explicit.presentationID == nil)
+        try #require(explicit.automatic == false && explicit.presentationID == nil)
         _ = try await explicit.perform()
         try #require(host.requests == [.inspect(run)])
+        var omittedAutomatic = OpenRunIntent(target: target)
+        omittedAutomatic.automatic = nil
+        try #require(omittedAutomatic.presentationID == nil)
+        _ = try await omittedAutomatic.perform()
+        try #require(host.requests == [.inspect(run), .inspect(run)])
+        try #require(host.continuations.isEmpty)
 
         let id = UUID()
         let automatic = OpenRunIntent(target: target, continuing: id)
-        try #require(automatic.automatic && automatic.presentationID == id.uuidString)
+        try #require(automatic.automatic == true && automatic.presentationID == id.uuidString)
         // Reconstruct only real parameters, as a fresh framework consumer would.
         // Actual Shortcuts serialization and hidden editor fields need installed proof.
         var reconstructed = OpenRunIntent()
@@ -55,12 +62,16 @@ struct NativeActionIntentsTests {
             _ = try await reconstructed.perform()
         }
         try #require(host.continuations.count == 2)
-        reconstructed.automatic = false
-        for value in ["", "not-a-uuid", id.uuidString] {
-            reconstructed.presentationID = value
-            await #expect(throws: OpenClawNativeActionError.self) { _ = try await reconstructed.perform() }
+        let nonAutomaticValues: [Bool?] = [false, nil]
+        for automaticValue in nonAutomaticValues {
+            reconstructed.automatic = automaticValue
+            for value in ["", "not-a-uuid", id.uuidString] {
+                reconstructed.presentationID = value
+                await #expect(throws: OpenClawNativeActionError.self) { _ = try await reconstructed.perform() }
+                try #require(host.requests == [.inspect(run), .inspect(run)])
+                try #require(host.continuations.count == 2)
+            }
         }
-        try #require(host.requests == [.inspect(run)])
 
         host.failContinuation = true
         await #expect(throws: OpenClawNativeActionError.self) { _ = try await automatic.perform() }

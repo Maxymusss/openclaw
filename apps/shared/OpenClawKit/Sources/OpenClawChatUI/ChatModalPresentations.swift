@@ -44,14 +44,14 @@ public struct OpenClawChatModalActions {
         }
     }
 
-    public let capture: (OpenClawChatModalOrigin) -> Permit?
-    public let dismiss: (OpenClawChatModalOrigin) -> Void
-    public let isCurrent: (OpenClawChatModalOrigin) -> Bool
+    public let capture: @MainActor (OpenClawChatModalOrigin) -> Permit?
+    public let dismiss: @MainActor (OpenClawChatModalOrigin) -> Void
+    public let isCurrent: @MainActor (OpenClawChatModalOrigin) -> Bool
 
     public init(
-        capture: @escaping (OpenClawChatModalOrigin) -> Permit?,
-        dismiss: @escaping (OpenClawChatModalOrigin) -> Void,
-        isCurrent: @escaping (OpenClawChatModalOrigin) -> Bool)
+        capture: @escaping @MainActor (OpenClawChatModalOrigin) -> Permit?,
+        dismiss: @escaping @MainActor (OpenClawChatModalOrigin) -> Void,
+        isCurrent: @escaping @MainActor (OpenClawChatModalOrigin) -> Bool)
     {
         self.capture = capture
         self.dismiss = dismiss
@@ -95,7 +95,8 @@ public final class OpenClawChatModalPresentations {
         private var consumed = false
 
         fileprivate init(
-            owner: OpenClawChatModalPresentations, receipt: Receipt,
+            owner: OpenClawChatModalPresentations,
+            receipt: Receipt,
             parentIsCurrent: @escaping @MainActor () -> Bool,
             permit: OpenClawChatModalActions.Permit)
         {
@@ -175,9 +176,16 @@ public final class OpenClawChatModalPresentations {
 
     private var receipts: [Receipt] {
         var values = [
-            self.fullMessage?.receipt, self.selectText?.receipt, self.image?.receipt,
-            self.source?.receipt, self.mermaid?.receipt, self.widgetImage?.receipt,
-            self.widgetError?.receipt, self.fileExport?.receipt, self.fileError?.receipt, self.signIn?.receipt,
+            self.fullMessage?.receipt,
+            self.selectText?.receipt,
+            self.image?.receipt,
+            self.source?.receipt,
+            self.mermaid?.receipt,
+            self.widgetImage?.receipt,
+            self.widgetError?.receipt,
+            self.fileExport?.receipt,
+            self.fileError?.receipt,
+            self.signIn?.receipt,
         ].compactMap(\.self)
         #if canImport(UIKit)
         values += [self.photoPicker?.receipt, self.fileImporter?.receipt, self.cameraPicker?.receipt]
@@ -213,8 +221,10 @@ public final class OpenClawChatModalPresentations {
     }
 
     public func capture(
-        origin: OpenClawChatModalOrigin, producerID: UUID,
-        ancestors: [UUID] = [], parentIsCurrent: @escaping @MainActor () -> Bool = { true },
+        origin: OpenClawChatModalOrigin,
+        producerID: UUID,
+        ancestors: [UUID] = [],
+        parentIsCurrent: @escaping @MainActor () -> Bool = { true },
         actions: OpenClawChatModalActions) -> Capture?
     {
         guard self.origin == origin, actions.isCurrent(origin), parentIsCurrent(),
@@ -222,14 +232,19 @@ public final class OpenClawChatModalPresentations {
         return Capture(
             owner: self,
             receipt: Receipt(
-                origin: origin, producerID: producerID, ancestors: ancestors, dismiss: actions.dismiss,
+                origin: origin,
+                producerID: producerID,
+                ancestors: ancestors,
+                dismiss: actions.dismiss,
                 isCurrentScope: { actions.isCurrent(origin) && parentIsCurrent() }),
-            parentIsCurrent: parentIsCurrent, permit: permit)
+            parentIsCurrent: parentIsCurrent,
+            permit: permit)
     }
 
     @discardableResult
     func present<Value>(
-        _ value: Value, at slot: ReferenceWritableKeyPath<OpenClawChatModalPresentations, Request<Value>?>,
+        _ value: Value,
+        at slot: ReferenceWritableKeyPath<OpenClawChatModalPresentations, Request<Value>?>,
         capture: Capture?) -> Request<Value>?
     {
         guard let capture, capture.belongs(to: self), capture.accept() else { return nil }
@@ -277,7 +292,8 @@ public final class OpenClawChatModalPresentations {
     enum AttachmentKind { case photo, file, camera }
 
     private func presentationSlot(_ kind: AttachmentKind) -> ReferenceWritableKeyPath<
-        OpenClawChatModalPresentations, Request<ChatModalAttachmentCapture>?,
+        OpenClawChatModalPresentations,
+        Request<ChatModalAttachmentCapture>?,
     > {
         switch kind {
         case .photo: \.photoPicker
@@ -287,7 +303,8 @@ public final class OpenClawChatModalPresentations {
     }
 
     private func resultSlot(_ kind: AttachmentKind) -> ReferenceWritableKeyPath<
-        OpenClawChatModalPresentations, Request<ChatModalAttachmentCapture>?,
+        OpenClawChatModalPresentations,
+        Request<ChatModalAttachmentCapture>?,
     > {
         switch kind {
         case .photo: \.photoResult
@@ -298,7 +315,8 @@ public final class OpenClawChatModalPresentations {
 
     @discardableResult
     func presentAttachment(
-        _ kind: AttachmentKind, viewModel: OpenClawChatViewModel,
+        _ kind: AttachmentKind,
+        viewModel: OpenClawChatViewModel,
         capture: Capture?) -> Request<ChatModalAttachmentCapture>?
     {
         let session = viewModel.currentSessionSnapshot()
@@ -307,7 +325,8 @@ public final class OpenClawChatModalPresentations {
         let resultSlot = self.resultSlot(kind)
         self[keyPath: resultSlot]?.value.cancel()
         let value = ChatModalAttachmentCapture(
-            viewModel: viewModel, session: session,
+            viewModel: viewModel,
+            session: session,
             current: { [weak self] in
                 self?.origin == receipt.origin &&
                     self?[keyPath: resultSlot]?.id == receipt.id && receipt.isCurrentScope()
@@ -323,8 +342,10 @@ public final class OpenClawChatModalPresentations {
     }
 
     func attachmentBinding(
-        _ kind: AttachmentKind, context: ChatModalContext,
-        viewModel: OpenClawChatViewModel, enabled: Bool) -> Binding<Bool>
+        _ kind: AttachmentKind,
+        context: ChatModalContext,
+        viewModel: OpenClawChatViewModel,
+        enabled: Bool) -> Binding<Bool>
     {
         let slot = self.presentationSlot(kind)
         let expected = self[keyPath: slot]?.receipt
@@ -391,13 +412,18 @@ struct ChatModalContext {
 
     func capture() -> OpenClawChatModalPresentations.Capture? {
         self.owner.capture(
-            origin: self.origin, producerID: self.producerID,
-            ancestors: self.ancestors, parentIsCurrent: self.parentIsCurrent, actions: self.actions)
+            origin: self.origin,
+            producerID: self.producerID,
+            ancestors: self.ancestors,
+            parentIsCurrent: self.parentIsCurrent,
+            actions: self.actions)
     }
 
     func nested(_ receipt: OpenClawChatModalPresentations.Receipt) -> Self {
         Self(
-            owner: self.owner, origin: receipt.origin, producerID: self.producerID,
+            owner: self.owner,
+            origin: receipt.origin,
+            producerID: self.producerID,
             ancestors: receipt.ancestors + [receipt.id],
             parentIsCurrent: { [weak owner = self.owner] in owner?.isPresented(receipt) == true },
             actions: self.actions)
@@ -405,13 +431,17 @@ struct ChatModalContext {
 
     func producing(_ id: UUID) -> Self {
         Self(
-            owner: self.owner, origin: self.origin, producerID: id, ancestors: self.ancestors,
-            parentIsCurrent: self.parentIsCurrent, actions: self.actions)
+            owner: self.owner,
+            origin: self.origin,
+            producerID: id,
+            ancestors: self.ancestors,
+            parentIsCurrent: self.parentIsCurrent,
+            actions: self.actions)
     }
 }
 
 extension EnvironmentValues {
-    @Entry var chatModalContext: ChatModalContext? = nil
+    @Entry var chatModalContext: ChatModalContext?
 }
 
 @MainActor
@@ -423,8 +453,12 @@ struct ChatModalState: DynamicProperty {
 
     var wrappedValue: ChatModalContext {
         let context = self.inherited ?? ChatModalContext(
-            owner: self.local, origin: self.local.origin ?? self.local.standaloneOrigin,
-            producerID: self.producerID, ancestors: [], parentIsCurrent: { true }, actions: .local)
+            owner: self.local,
+            origin: self.local.origin ?? self.local.standaloneOrigin,
+            producerID: self.producerID,
+            ancestors: [],
+            parentIsCurrent: { true },
+            actions: .local)
         return context.producing(self.producerID)
     }
 
@@ -446,9 +480,12 @@ struct ChatModalFallbackHost: ViewModifier {
     func body(content: Content) -> some View {
         if self.installsHost {
             content.modifier(ChatModalHost(context: ChatModalContext(
-                owner: self.context.owner, origin: self.origin ?? self.context.origin,
-                producerID: self.context.producerID, ancestors: [],
-                parentIsCurrent: { true }, actions: .local)))
+                owner: self.context.owner,
+                origin: self.origin ?? self.context.origin,
+                producerID: self.context.producerID,
+                ancestors: [],
+                parentIsCurrent: { true },
+                actions: .local)))
         } else {
             content
         }
@@ -465,9 +502,12 @@ extension View {
         parentIsCurrent: @escaping @MainActor () -> Bool = { true }) -> some View
     {
         self.modifier(ChatModalHost(context: ChatModalContext(
-            owner: owner, origin: origin, producerID: parent?.producerID ?? UUID(),
+            owner: owner,
+            origin: origin,
+            producerID: parent?.producerID ?? UUID(),
             ancestors: parent.map { $0.ancestors + [$0.id] } ?? [],
-            parentIsCurrent: parentIsCurrent, actions: actions)))
+            parentIsCurrent: parentIsCurrent,
+            actions: actions)))
     }
 }
 
@@ -476,6 +516,11 @@ private struct ChatModalHost: ViewModifier {
     let context: ChatModalContext
     private var owner: OpenClawChatModalPresentations {
         self.context.owner
+    }
+
+    private var fileDownloadErrorMessage: some View {
+        Text("Reconnect and try again. If the file has expired or was removed, ask the assistant to send it again.")
+            .font(OpenClawChatTypography.body)
     }
 
     func body(content: Content) -> some View {
@@ -489,7 +534,8 @@ private struct ChatModalHost: ViewModifier {
             }
             .sheet(item: self.owner.binding(\.fullMessage, context: self.context)) { request in
                 self.nested(request.receipt, content: ChatFullMessageReader(
-                    request: request.value.request, markdownVariant: request.value.markdownVariant,
+                    request: request.value.request,
+                    markdownVariant: request.value.markdownVariant,
                     onClose: { self.owner.dismiss(request.receipt) }))
             }
             .sheet(item: self.owner.binding(\.image, context: self.context)) { request in
@@ -497,7 +543,8 @@ private struct ChatModalHost: ViewModifier {
             }
             .sheet(item: self.owner.binding(\.signIn, context: self.context)) { request in
                 self.nested(request.receipt, content: OpenClawChatModelSignInSheet(
-                    context: request.value.context, onAuthChanged: request.value.refresh,
+                    context: request.value.context,
+                    onAuthChanged: request.value.refresh,
                     onClose: { self.owner.dismiss(request.receipt) }))
             }
             .alert(
@@ -521,9 +568,7 @@ private struct ChatModalHost: ViewModifier {
                         Text("OK").font(OpenClawChatTypography.body)
                     }
                 } message: {
-                    Text(
-                        "Reconnect and try again. If the file has expired or was removed, ask the assistant to send it again.")
-                        .font(OpenClawChatTypography.body)
+                    self.fileDownloadErrorMessage
                 }
                 #if os(iOS)
                 .sheet(item: self.owner.binding(\.selectText, context: self.context)) { request in
@@ -547,7 +592,8 @@ private struct ChatModalHost: ViewModifier {
                     // Retain the temporary file through the system activity callback,
                     // even if the originating chat removes its presentation first.
                     self.nested(request.receipt, content: OpenClawChatFileShareSheet(
-                        fileURL: request.value.url, onCompletion: { [file = request.value] in
+                        fileURL: request.value.url,
+                        onCompletion: { [file = request.value] in
                             withExtendedLifetime(file) {}
                         }))
                 }
@@ -585,7 +631,8 @@ private struct ChatModalHost: ViewModifier {
 
     private func isPresented(
         _ slot: ReferenceWritableKeyPath<
-            OpenClawChatModalPresentations, OpenClawChatModalPresentations.Request<some Any>?,
+            OpenClawChatModalPresentations,
+            OpenClawChatModalPresentations.Request<some Any>?,
         >) -> Binding<Bool>
     {
         let binding = self.owner.binding(slot, context: self.context)
@@ -620,7 +667,8 @@ private struct ChatModalHost: ViewModifier {
         _ request: OpenClawChatModalPresentations.Request<OpenClawChatModalPresentations.MermaidPreview>) -> AnyView
     {
         self.nested(request.receipt, content: ChatMermaidPreviewView(
-            svg: request.value.svg, background: request.value.background,
+            svg: request.value.svg,
+            background: request.value.background,
             onClose: { self.owner.dismiss(request.receipt) }))
     }
     #endif
@@ -673,8 +721,10 @@ final class ChatModalAttachmentCapture {
     private(set) var task: Task<Void, Never>?
 
     init(
-        viewModel: OpenClawChatViewModel, session: OpenClawChatViewModel.SessionSnapshot,
-        current: @escaping @MainActor () -> Bool, finish: @escaping @MainActor () -> Void)
+        viewModel: OpenClawChatViewModel,
+        session: OpenClawChatViewModel.SessionSnapshot,
+        current: @escaping @MainActor () -> Bool,
+        finish: @escaping @MainActor () -> Void)
     {
         self.viewModel = viewModel
         self.session = session
@@ -724,7 +774,10 @@ final class ChatModalAttachmentCapture {
             }.value
             guard !Task.isCancelled, self.generation == generation, self.isCurrent, let data else { return }
             await self.viewModel.addImageAttachment(
-                data: data, fileName: fileName, mimeType: "image/jpeg", for: self.session)
+                data: data,
+                fileName: fileName,
+                mimeType: "image/jpeg",
+                for: self.session)
         }
     }
 
@@ -752,10 +805,13 @@ final class ChatModalAttachmentCapture {
                         defer { try? FileManager.default.removeItem(at: transfer.url) }
                         guard !Task.isCancelled, self.isCurrent else { break }
                         let metadata = OpenClawChatPickerAttachmentMetadata.resolve(
-                            contentType: type, transferredFileURL: transfer.url)
+                            contentType: type,
+                            transferredFileURL: transfer.url)
                         let name = "video-\(UUID().uuidString.prefix(8)).\(metadata.fileExtension)"
                         await self.viewModel.addVideoAttachment(
-                            url: transfer.url, fileName: name, mimeType: metadata.mimeType,
+                            url: transfer.url,
+                            fileName: name,
+                            mimeType: metadata.mimeType,
                             expectedSession: self.session)
                     } else {
                         guard let data = try await item.loadTransferable(type: Data.self)
@@ -764,7 +820,10 @@ final class ChatModalAttachmentCapture {
                         let metadata = OpenClawChatPickerAttachmentMetadata.resolve(contentType: type)
                         let name = "photo-\(UUID().uuidString.prefix(8)).\(metadata.fileExtension)"
                         await self.viewModel.addImageAttachment(
-                            data: data, fileName: name, mimeType: metadata.mimeType, for: self.session)
+                            data: data,
+                            fileName: name,
+                            mimeType: metadata.mimeType,
+                            for: self.session)
                     }
                 } catch {
                     guard !Task.isCancelled, self.isCurrent else { break }
@@ -800,8 +859,10 @@ private struct ChatModalAttachmentHost: View {
         case .photo:
             Color.clear.frame(width: 0, height: 0)
                 .photosPicker(
-                    isPresented: self.presented, selection: $capture.items,
-                    maxSelectionCount: 8, matching: .any(of: [.images, .videos]))
+                    isPresented: self.presented,
+                    selection: $capture.items,
+                    maxSelectionCount: 8,
+                    matching: .any(of: [.images, .videos]))
                 .onChange(of: capture.items) { _, items in self.request.value.photos(items) }
         case .camera:
             Color.clear.frame(width: 0, height: 0)

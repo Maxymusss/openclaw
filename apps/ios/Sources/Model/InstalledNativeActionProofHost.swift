@@ -44,7 +44,7 @@ final class InstalledNativeActionProofHost: OpenClawNativeActionHost {
         var snapshot = self.snapshot
         snapshot.idleUnprotectedComposer = idleUnprotectedComposer
         guard let data = try? JSONEncoder().encode(snapshot) else { return "invalid" }
-        return String(decoding: data, as: UTF8.self)
+        return String(data: data, encoding: .utf8) ?? "invalid"
     }
 
     func sessions(matching query: String?) async throws -> [OpenClawNativeSessionChoice] {
@@ -71,7 +71,10 @@ final class InstalledNativeActionProofHost: OpenClawNativeActionHost {
     }
 
     private func prepared(
-        ordinal: Int, id: UUID, session: OpenClawNativeSessionRef, run: OpenClawNativeRunRef? = nil)
+        ordinal: Int,
+        id: UUID,
+        session: OpenClawNativeSessionRef,
+        run: OpenClawNativeRunRef? = nil)
     {
         self.snapshot.prepared += 1
         guard ordinal == self.snapshot.producers else {
@@ -96,8 +99,10 @@ final class InstalledNativeActionProofHost: OpenClawNativeActionHost {
         let ordinal = self.begin("inspect")
         let result = try await self.router.inspect(run)
         self.prepared(
-            ordinal: ordinal, id: result.presentationContinuationID,
-            session: result.inspection.run.session, run: result.inspection.run)
+            ordinal: ordinal,
+            id: result.presentationContinuationID,
+            session: result.inspection.run.session,
+            run: result.inspection.run)
         return result
     }
 

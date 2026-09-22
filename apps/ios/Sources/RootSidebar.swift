@@ -58,7 +58,9 @@ struct RootSidebar: View {
                 pinnedPages: self.storedPinnedPages,
                 onSelect: { destination in
                     Self.performPagesEditorAction(
-                        receipt, presentation: self.$pagesEditor, isCurrentRoot: self.isPagesEditorRootCurrent)
+                        receipt,
+                        presentation: self.$pagesEditor,
+                        isCurrentRoot: self.isPagesEditorRootCurrent)
                     {
                         self.pagesEditor = nil
                         self.selectSidebarDestination(destination)
@@ -66,7 +68,9 @@ struct RootSidebar: View {
                 },
                 onTogglePin: { destination in
                     Self.performPagesEditorAction(
-                        receipt, presentation: self.$pagesEditor, isCurrentRoot: self.isPagesEditorRootCurrent)
+                        receipt,
+                        presentation: self.$pagesEditor,
+                        isCurrentRoot: self.isPagesEditorRootCurrent)
                     {
                         self.togglePinnedPage(destination)
                     }
@@ -417,7 +421,8 @@ struct RootSidebar: View {
                         self.sectionTitle(title)
                         Spacer(minLength: 0)
                         self.attentionBadges(
-                            for: Self.flattened(section.nodes).map(\.session), targetID: "section:\(section.id)")
+                            for: Self.flattened(section.nodes).map(\.session),
+                            targetID: "section:\(section.id)")
                     }
                     ForEach(self.sessionNodes(for: section)) { node in
                         self.sessionButton(node, selectedSessionKey: selectedSessionKey)
@@ -481,7 +486,8 @@ struct RootSidebar: View {
         return HStack(spacing: 0) {
             Button {
                 self.openChat(IOSGatewayChatTransport.sessionTarget(
-                    for: mainKey, selectedAgentID: self.appModel.chatDeliveryAgentId,
+                    for: mainKey,
+                    selectedAgentID: self.appModel.chatDeliveryAgentId,
                     overrideAgentID: mainSession?.agentId))
             } label: {
                 HStack(spacing: 9) {
@@ -730,7 +736,9 @@ struct RootSidebar: View {
             : []
         let scopedSessions = sessions.filter {
             ChatSessionSidebarModel.isSessionInActiveAgentScope(
-                key: $0.key, agentID: $0.agentId, activeAgentID: self.appModel.chatAgentId)
+                key: $0.key,
+                agentID: $0.agentId,
+                activeAgentID: self.appModel.chatAgentId)
         }
         let summary = ChatSessionSidebarModel.attentionSummary(
             requests: questions + self.appModel.pendingApprovalAttentionRequests,
@@ -741,7 +749,9 @@ struct RootSidebar: View {
         return HStack(spacing: 0) {
             if let summary {
                 OpenClawChatAttentionBadge(
-                    summary: summary, targetID: targetID, presentation: self.$presentedAttention)
+                    summary: summary,
+                    targetID: targetID,
+                    presentation: self.$presentedAttention)
             }
         }
     }

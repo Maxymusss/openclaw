@@ -25,9 +25,13 @@ final class NativeActionRouter: OpenClawNativeActionHost {
     }
 
     typealias PresentationHandler = @MainActor (
-        OpenClawNativeOpenRequest, IOSNativeActionBinding, RunPresentation?) throws -> Void
+        OpenClawNativeOpenRequest,
+        IOSNativeActionBinding,
+        RunPresentation?) throws -> Void
     @ObservationIgnored private var presentation: (
-        id: UUID, open: PresentationHandler, retire: @MainActor (RetirementDisposition) -> Void,
+        id: UUID,
+        open: PresentationHandler,
+        retire: @MainActor (RetirementDisposition) -> Void,
         adopt: @MainActor (IOSNativeActionBinding, IOSNativeActionBinding) -> Void)?
     private var inspectionPresentation: RunPresentation?
     @ObservationIgnored private var presentedInspectionID: UUID?
@@ -201,7 +205,8 @@ final class NativeActionRouter: OpenClawNativeActionHost {
 
     @discardableResult
     func userNavigationDidChange(
-        presentationID: UUID?, disposition: RetirementDisposition = .departure) -> Bool
+        presentationID: UUID?,
+        disposition: RetirementDisposition = .departure) -> Bool
     {
         guard let presentationID, presentation?.id == presentationID else { return false }
         // User navigation can supersede preparation while Chat is already hidden,
@@ -338,8 +343,10 @@ final class NativeActionRouter: OpenClawNativeActionHost {
             return previous.id
         }
         let continuation = RunContinuation(
-            rootID: presented.presentationID, navigationRevision: self.navigationRevision,
-            selectionID: presented.selectionID, accountAuthority: presented.accountAuthority,
+            rootID: presented.presentationID,
+            navigationRevision: self.navigationRevision,
+            selectionID: presented.selectionID,
+            accountAuthority: presented.accountAuthority,
             binding: presented.binding)
         self.runContinuation = continuation
         return continuation.id
@@ -443,7 +450,8 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         }
         if let continuation {
             self.preparation = .registeredRoot(
-                id: continuation.rootID, navigationRevision: continuation.navigationRevision)
+                id: continuation.rootID,
+                navigationRevision: continuation.navigationRevision)
         } else {
             self.preparation = self.presentation.map {
                 .registeredRoot(id: $0.id, navigationRevision: self.navigationRevision)
@@ -469,46 +477,12 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         }
         try requireOrigin()
         try self.requirePreservedDraft(session)
-        if self.appModel.activeGatewayConnectConfig?.effectiveStableID.utf8
-            .elementsEqual(session.owner.gatewayID.utf8) != true
-        {
-            if continuation != nil { throw RunContinuationRetired() }
-            let outcome = await self.gatewayController.switchToGateway(stableID: session.owner.gatewayID)
-            try requireOrigin()
-            switch outcome {
-            case .accepted: break
-            case let .failed(reason): throw OpenClawNativeActionError(reason)
-            case .superseded: throw CancellationError()
-            }
-        }
-        let generation = self.appModel.gatewayConnectGeneration
-        var requestedRoute: GatewayNodeSessionRoute?
-        if let continuation {
-            let current = await continuation.binding.isCurrent()
-            try requireOrigin()
-            guard current else { throw RunContinuationRetired() }
-            requestedRoute = continuation.binding.route
-        }
-        while requestedRoute == nil, clock.now < deadline {
-            try requireOrigin()
-            guard generation == self.appModel.gatewayConnectGeneration else { throw CancellationError() }
-            if self.appModel.isOperatorGatewayConnected,
-               self.appModel.activeGatewayConnectConfig?.effectiveStableID.utf8
-                   .elementsEqual(session.owner.gatewayID.utf8) == true
-            {
-                let route = await self.appModel.operatorSession.currentRoute(ifGatewayID: session.owner.gatewayID)
-                try requireOrigin()
-                guard generation == self.appModel.gatewayConnectGeneration else { throw CancellationError() }
-                if self.appModel.isOperatorGatewayConnected,
-                   self.appModel.activeGatewayConnectConfig?.effectiveStableID.utf8
-                       .elementsEqual(session.owner.gatewayID.utf8) == true, let route
-                {
-                    requestedRoute = route
-                    break
-                }
-            }
-            try await Task.sleep(for: .milliseconds(50))
-        }
+        let (generation, requestedRoute) = try await self.prepareRoute(
+            session: session,
+            continuation: continuation,
+            clock: clock,
+            deadline: deadline,
+            requireOrigin: requireOrigin)
         try requireOrigin()
         guard generation == self.appModel.gatewayConnectGeneration else { throw CancellationError() }
         guard !self.appModel.isScreenshotFixtureModeEnabled, !self.appModel.isAppleReviewDemoModeEnabled,
@@ -583,6 +557,57 @@ final class NativeActionRouter: OpenClawNativeActionHost {
             try await Task.sleep(for: .milliseconds(50))
         }
         throw OpenClawNativeActionError("The selected chat is not ready. Open it and try again.")
+    }
+
+    private func prepareRoute(
+        session: OpenClawNativeSessionRef,
+        continuation: RunContinuation?,
+        clock: ContinuousClock,
+        deadline: ContinuousClock.Instant,
+        requireOrigin: @MainActor () throws -> Void) async throws
+        -> (generation: UInt64, requestedRoute: GatewayNodeSessionRoute?)
+    {
+        if self.appModel.activeGatewayConnectConfig?.effectiveStableID.utf8
+            .elementsEqual(session.owner.gatewayID.utf8) != true
+        {
+            if continuation != nil { throw RunContinuationRetired() }
+            let outcome = await self.gatewayController.switchToGateway(stableID: session.owner.gatewayID)
+            try requireOrigin()
+            switch outcome {
+            case .accepted: break
+            case let .failed(reason): throw OpenClawNativeActionError(reason)
+            case .superseded: throw CancellationError()
+            }
+        }
+        let generation = self.appModel.gatewayConnectGeneration
+        var requestedRoute: GatewayNodeSessionRoute?
+        if let continuation {
+            let current = await continuation.binding.isCurrent()
+            try requireOrigin()
+            guard current else { throw RunContinuationRetired() }
+            requestedRoute = continuation.binding.route
+        }
+        while requestedRoute == nil, clock.now < deadline {
+            try requireOrigin()
+            guard generation == self.appModel.gatewayConnectGeneration else { throw CancellationError() }
+            if self.appModel.isOperatorGatewayConnected,
+               self.appModel.activeGatewayConnectConfig?.effectiveStableID.utf8
+                   .elementsEqual(session.owner.gatewayID.utf8) == true
+            {
+                let route = await self.appModel.operatorSession.currentRoute(ifGatewayID: session.owner.gatewayID)
+                try requireOrigin()
+                guard generation == self.appModel.gatewayConnectGeneration else { throw CancellationError() }
+                if self.appModel.isOperatorGatewayConnected,
+                   self.appModel.activeGatewayConnectConfig?.effectiveStableID.utf8
+                       .elementsEqual(session.owner.gatewayID.utf8) == true, let route
+                {
+                    requestedRoute = route
+                    break
+                }
+            }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        return (generation, requestedRoute)
     }
 
     private func requirePreservedDraft(

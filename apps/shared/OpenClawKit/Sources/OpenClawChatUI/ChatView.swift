@@ -835,7 +835,9 @@ public struct OpenClawChatView: View {
             case let .completedWork(work):
                 let visible = work.messages.filter(self.shouldDisplayMessage)
                 return visible.isEmpty ? nil : .completedWork(.init(
-                    anchorID: work.anchorID, messages: visible, durationMilliseconds: work.durationMilliseconds))
+                    anchorID: work.anchorID,
+                    messages: visible,
+                    durationMilliseconds: work.durationMilliseconds))
             default:
                 return row
             }
@@ -1380,7 +1382,8 @@ extension OpenClawChatView {
                     .init(
                         request: ChatFullMessageReaderRequest(viewModel: self.viewModel, messageID: messageID),
                         markdownVariant: self.markdownVariant),
-                    at: \.fullMessage, capture: self.modals.capture())
+                    at: \.fullMessage,
+                    capture: self.modals.capture())
             } label: {
                 Label {
                     Text("Open Full Message")

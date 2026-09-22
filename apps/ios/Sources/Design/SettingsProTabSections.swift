@@ -72,7 +72,8 @@ extension SettingsProTab {
                 LicenseDocumentDetailView(document: document)
             } else {
                 ContentUnavailableView(
-                    "No Licenses Bundled", systemImage: "doc.text",
+                    "No Licenses Bundled",
+                    systemImage: "doc.text",
                     description: Text("License files are not available in this build."))
                     .font(OpenClawType.body)
             }

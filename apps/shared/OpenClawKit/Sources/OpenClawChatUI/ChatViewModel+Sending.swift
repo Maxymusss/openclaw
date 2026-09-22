@@ -659,12 +659,15 @@ extension OpenClawChatViewModel {
                 return false
             }
             let canRunCommand = await prepareLiveOnlyLocalSlashCommand(
-                session: draft.session, presentationIsCurrent: presentationIsCurrent)
+                session: draft.session,
+                presentationIsCurrent: presentationIsCurrent)
             guard canRunCommand else { return false }
         }
         if case let .composer(_, composerSessionKey, revision) = draft.source,
            await self.handleLocalSlashCommandIfNeeded(
-               command, draftInput: draft.input, presentationIsCurrent: presentationIsCurrent)
+               command,
+               draftInput: draft.input,
+               presentationIsCurrent: presentationIsCurrent)
         {
             self.recordSuccessfulInput(
                 draft.trimmed,
@@ -944,23 +947,15 @@ extension OpenClawChatViewModel {
                 let history: OpenClawChatHistoryPayload
                 do {
                     history = try await route.lease.requestHistory(
-                        sessionKey: route.target.sessionKey, agentID: route.target.agentID)
+                        sessionKey: route.target.sessionKey,
+                        agentID: route.target.agentID)
                     try OpenClawChatNativeRunInspection.requireSession(history, session: route.target)
                 } catch {
                     return Task.isCancelled ? .cancelled : unverifiedSettings
                 }
-                guard history.sessionKey.utf8.elementsEqual(route.target.sessionKey.utf8),
-                      let info = history.sessionInfo
-                else { return unverifiedSettings }
-                if let sessionID = history.sessionId {
-                    guard !sessionID.isEmpty, info.sessionId?.utf8.elementsEqual(sessionID.utf8) == true else {
-                        return unverifiedSettings
-                    }
-                } else if info.sessionId != nil {
+                guard let expectation = Self.externalSessionSettingsExpectation(history, target: route.target) else {
                     return unverifiedSettings
                 }
-                let expectation = OpenClawChatSessionSettingsExpectation(
-                    permissionMode: info.permissionMode, toolOverrides: info.toolOverrides)
                 guard await route.isCurrent() else { throw OpenClawChatTransportSendError.notDispatched }
                 try Task.checkCancellation()
                 if let outcome = self.externalSubmissionReadiness(attempt.draft) { return outcome }
@@ -1052,6 +1047,25 @@ extension OpenClawChatViewModel {
             }
             return .uncertain(reason: "Delivery is unconfirmed. Check the selected chat before sending again.")
         }
+    }
+
+    private static func externalSessionSettingsExpectation(
+        _ history: OpenClawChatHistoryPayload,
+        target: OpenClawNativeSessionRef) -> OpenClawChatSessionSettingsExpectation?
+    {
+        guard history.sessionKey.utf8.elementsEqual(target.sessionKey.utf8),
+              let info = history.sessionInfo
+        else { return nil }
+        if let sessionID = history.sessionId {
+            guard !sessionID.isEmpty, info.sessionId?.utf8.elementsEqual(sessionID.utf8) == true else {
+                return nil
+            }
+        } else if info.sessionId != nil {
+            return nil
+        }
+        return OpenClawChatSessionSettingsExpectation(
+            permissionMode: info.permissionMode,
+            toolOverrides: info.toolOverrides)
     }
 
     private func canPresentLiveSend(_ attempt: LiveSendAttempt) async -> Bool {

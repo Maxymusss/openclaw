@@ -455,50 +455,6 @@ public final class OpenClawChatViewModel {
         }
     }
 
-    struct HistoryRequest {
-        var id: UInt64
-        var session: SessionSnapshot
-        var pendingRunIDs: Set<String>
-        var visibleMessagesByID: [UUID: OpenClawChatMessage]
-        var historyMutationGeneration: UInt64
-        var progressCardGeneration: UInt64
-        var runOwnershipGeneration: UInt64
-        var latestUserTurn: LatestUserTurn?
-    }
-
-    struct RunHistoryRefreshResult {
-        let applied: Bool
-        let runSnapshotApplied: Bool
-        let supportsInFlightRunState: Bool
-        let hasInFlightRun: Bool
-        let sessionHasActiveRun: Bool
-
-        static let failed = RunHistoryRefreshResult(
-            applied: false,
-            runSnapshotApplied: false,
-            supportsInFlightRunState: false,
-            hasInFlightRun: false,
-            sessionHasActiveRun: false)
-    }
-
-    struct LatestUserTurn {
-        var idempotencyKey: String?
-        var refreshKey: String?
-        var occurrence: Int
-        var timestamp: Double?
-    }
-
-    struct RunMessageScope {
-        var session: SessionSnapshot
-        var latestUserTurn: LatestUserTurn?
-    }
-
-    struct ProvisionalFinalMessage {
-        var reconciliationKey: String
-        var runId: String?
-        var scope: RunMessageScope
-    }
-
     var turnToolCallsById: [String: OpenClawChatPendingToolCall] = [:] {
         didSet {
             guard self.turnToolCallsById != oldValue else { return }
@@ -1092,7 +1048,10 @@ extension OpenClawChatViewModel {
             let res: OpenClawChatSessionsListResponse
             do {
                 res = try await self.transport.listSessions(
-                    limit: limit, search: nil, archived: false, agentID: session.deliveryAgentID)
+                    limit: limit,
+                    search: nil,
+                    archived: false,
+                    agentID: session.deliveryAgentID)
             } catch {
                 if self.outbox != nil, self.healthOK, !self.hasCurrentSessionMetadata {
                     applyTransportHealth(false)
@@ -1285,7 +1244,8 @@ extension OpenClawChatViewModel {
               let selection = self.prepareSessionTarget(next, agentID: agentID)
         else { return false }
         self.prepareComposerForSessionSwitch(
-            to: selection.target.sessionKey, agentID: selection.target.agentID)
+            to: selection.target.sessionKey,
+            agentID: selection.target.agentID)
         self.advanceSessionGeneration()
         self.clearSessionOwnedState()
         self.explicitSessionAgentID = selection.target.agentID
