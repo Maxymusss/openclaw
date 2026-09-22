@@ -7,19 +7,16 @@ import {
   resolveAgentSessionStoreTargetsSync,
   resolveAllAgentSessionStoreCandidateTargetsSync,
   resolveAllAgentSessionStoreTargetsSync,
+  resolveConfiguredAgentDatabaseTargets,
   resolveSessionStoreTargets,
   type SessionStoreTarget as ResolvedSessionStoreTarget,
 } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import type {
-  collectHistoricalArchiveSources,
-  HistoricalArchiveSources,
-} from "./doctor-session-sqlite-discovery.js";
-import {
-  canonicalMigrationFilePath,
-  type SessionSqliteMigrationTargetInput,
-} from "./doctor-session-sqlite-migration-run.js";
+import { createAgentDatabaseDeletionClassifier } from "../state/agent-deletion-discovery.js";
+import { readAgentDatabaseDeletionSnapshot } from "../state/agent-deletion-journal.read.js";
+import type { HistoricalArchiveSources } from "./doctor-session-sqlite-discovery.js";
+import { canonicalMigrationFilePath } from "./doctor-session-sqlite-migration-run.js";
 import { resolveTargetSqlitePath } from "./doctor-session-sqlite-readers.js";
 import type { DoctorSessionSqliteMode } from "./doctor-session-sqlite-types.js";
 
@@ -57,26 +54,37 @@ export function resolveDoctorSessionSqliteTargets(params: {
   }
   if (params.allAgents) {
     // Discovery must admit validated directories even before either registry exists.
-    const targets = discoversHistory
+    const candidates = discoversHistory
       ? resolveAllAgentSessionStoreCandidateTargetsSync(params.cfg, { env: params.env })
       : resolveAllAgentSessionStoreTargetsSync(params.cfg, { env: params.env });
-    if (!discoversHistory) {
-      return targets;
-    }
     const legacyStorePath = path.join(resolveStateDir(params.env), "sessions", "sessions.json");
-    if (!fs.existsSync(legacyStorePath)) {
-      return targets;
-    }
-    const legacyTargets = resolveSessionStoreTargets(
-      params.cfg,
-      { allAgents: true },
-      { env: params.env },
-    ).map((target) => ({
-      agentId: target.agentId,
-      sqlitePath: resolveTargetSqlitePath(target),
-      storePath: legacyStorePath,
-    }));
-    return [...legacyTargets, ...targets];
+    const legacyTargets =
+      discoversHistory && fs.existsSync(legacyStorePath)
+        ? resolveSessionStoreTargets(params.cfg, { allAgents: true }, { env: params.env }).map(
+            (target) => ({
+              agentId: target.agentId,
+              sqlitePath: resolveTargetSqlitePath(target, params.env),
+              storePath: legacyStorePath,
+            }),
+          )
+        : [];
+    // Legacy-only installs can predate shared state; existing history owns retained-store admission.
+    const deletionSnapshot = readAgentDatabaseDeletionSnapshot(params.env);
+    const isRetained =
+      deletionSnapshot &&
+      createAgentDatabaseDeletionClassifier({
+        env: params.env,
+        retainedDeletions: deletionSnapshot.retainedDeletions,
+        registeredAgentDatabases: deletionSnapshot.registeredAgentDatabases,
+        configuredAgentDatabaseTargets: resolveConfiguredAgentDatabaseTargets(params.cfg, {
+          env: params.env,
+        }),
+      });
+    return [...legacyTargets, ...candidates].filter(
+      (target) =>
+        !isRetained?.(target.storePath, target.agentId) &&
+        !isRetained?.(resolveTargetSqlitePath(target, params.env), target.agentId),
+    );
   }
   return resolveSessionStoreTargets(params.cfg, {}, { env: params.env });
 }
@@ -100,48 +108,4 @@ export function filterLegacySessionStoreTargets(
         (fs.existsSync(path.dirname(target.storePath)) &&
           fs.readdirSync(path.dirname(target.storePath)).some(isPrimarySessionTranscriptFileName))),
   );
-}
-
-export function createMigrationTargetInput(
-  target: SessionStoreTarget,
-): SessionSqliteMigrationTargetInput {
-  return {
-    agentId: target.agentId,
-    sqlitePath: canonicalMigrationFilePath(resolveTargetSqlitePath(target)),
-    storePath: canonicalMigrationFilePath(target.storePath),
-  };
-}
-
-export function selectDoctorSessionSqliteOperationTargets(
-  candidates: SessionStoreTarget[],
-  mode: DoctorSessionSqliteMode,
-  history?: Pick<ReturnType<typeof collectHistoricalArchiveSources>, "sources" | "claims">,
-): SessionStoreTarget[] {
-  const legacy = filterLegacySessionStoreTargets(
-    candidates,
-    mode,
-    history?.sources ?? new Map(),
-    new Set(),
-  );
-  if (mode !== "import" || !history?.claims.length) {
-    return legacy;
-  }
-  const eligible = new Set(legacy);
-  const claimedTargets = history.claims.map(([refs]) => refs![0]!.target);
-  // Acknowledged archives can still need duplicate settlement after their import
-  // sources disappear. Admit their exact destinations before any disposal starts.
-  return candidates.filter((target) => {
-    if (eligible.has(target)) {
-      return true;
-    }
-    const storePath = canonicalMigrationFilePath(target.storePath);
-    const matchingClaims = claimedTargets.filter(
-      (claim) => claim.agentId === target.agentId && claim.storePath === storePath,
-    );
-    if (matchingClaims.length === 0) {
-      return false;
-    }
-    const input = createMigrationTargetInput(target);
-    return matchingClaims.some((claim) => claim.sqlitePath === input.sqlitePath);
-  });
 }

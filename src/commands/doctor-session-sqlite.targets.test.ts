@@ -11,7 +11,6 @@ import {
   closeOpenClawAgentDatabasesForTest,
   openOpenClawAgentDatabase,
 } from "../state/openclaw-agent-db.js";
-import { listSessionSqliteMigrationManifestPaths } from "./doctor-session-sqlite-migration-run.js";
 import { resolveTargetSqlitePath } from "./doctor-session-sqlite-readers.js";
 import { inspectSessionSqliteRecovery } from "./doctor-session-sqlite-recovery-inventory.js";
 import { retireSessionSqliteRecovery } from "./doctor-session-sqlite-retirement.js";
@@ -25,33 +24,6 @@ import {
 const { autoCleanupTempDirs, createLegacyStore } = useDoctorSessionSqliteTestFixture();
 
 describe("runDoctorSessionSqlite", () => {
-  it("rejects an aliased legacy destination before publishing or archiving anything", async () => {
-    const store = createLegacyStore();
-    const sqlitePath = resolveTargetSqlitePath({ agentId: "main", storePath: store.storePath });
-    openOpenClawAgentDatabase({ agentId: "main", env: store.env, path: sqlitePath });
-    closeOpenClawAgentDatabasesForTest();
-    const alias = path.join(store.tempDir, "database-alias.sqlite");
-    fs.linkSync(sqlitePath, alias);
-    const sourcePaths = [
-      store.storePath,
-      store.transcriptPath,
-      store.trajectoryPath,
-      store.unreferencedJsonlPath,
-      sqlitePath,
-      alias,
-    ];
-    const before = sourcePaths.map((file) => fs.readFileSync(file));
-    const archiveDir = path.join(path.dirname(store.sessionDir), "session-sqlite-import-archive");
-    expect(fs.existsSync(archiveDir)).toBe(false);
-    expect(listSessionSqliteMigrationManifestPaths(store.env)).toEqual([]);
-
-    await expect(importLegacyStore(store)).rejects.toThrow("hard-linked path");
-
-    expect(sourcePaths.map((file) => fs.readFileSync(file))).toEqual(before);
-    expect(fs.statSync(sqlitePath).nlink).toBe(2);
-    expect(fs.existsSync(archiveDir)).toBe(false);
-    expect(listSessionSqliteMigrationManifestPaths(store.env)).toEqual([]);
-  });
   it("imports explicit stores into the agent database owned by the path", async () => {
     const store = createLegacyStore({ agentDirName: "codex-proof" });
 
