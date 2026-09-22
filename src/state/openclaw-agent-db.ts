@@ -546,9 +546,21 @@ function* openOpenClawAgentDatabaseSteps(
 /** Queue a non-throwing runtime publication on the outer database commit edge. */
 export function deferOpenClawAgentPostCommitPublication(
   database: OpenClawAgentDatabase,
-  publish: () => void,
+  publish: (options: OpenClawAgentDatabaseOptions) => void,
 ): boolean {
-  return deferSqlitePostCommitPublication(database.db, publish);
+  const lease = cache.leases.get(database.path);
+  if (
+    cache.databases.get(database.path) !== database ||
+    (!lease && !cache.incognito.has(database))
+  ) {
+    throw new Error("Agent post-commit publication requires its admitted database owner");
+  }
+  const options = {
+    agentId: database.agentId,
+    path: database.path,
+    ...(lease ? { env: { ...lease.env } } : {}),
+  };
+  return deferSqlitePostCommitPublication(database.db, () => publish(options));
 }
 
 export function runOpenClawAgentWriteTransaction<T>(
