@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
 import { resolveServiceManagerEnv } from "../../src/daemon/service-process-env.js";
 import {
   assertManagedHandoffTestConsumer,
@@ -37,7 +38,7 @@ function fixture() {
       "let observed;",
       "try { observed = store.read(installation); } finally { assert.equal(store.release(acquired.lease), true); }",
       "const result = store.read(installation);",
-      "process.stdout.write(JSON.stringify({ databasePath, observed, result, nodeOptions: process.env.NODE_OPTIONS ?? null }));",
+      "process.stdout.write(JSON.stringify({ pid: process.pid, databasePath, observed, result, nodeOptions: process.env.NODE_OPTIONS ?? null }));",
     ].join("\n"),
   );
   return { root, binding, program };
@@ -87,6 +88,58 @@ describe("explicit managed handoff test binding", () => {
       }
     },
   );
+
+  it("binds the actual store consumer rather than its supervising launcher", async () => {
+    const { root, binding, program } = fixture();
+    const launcher = path.join(root, "launcher.mjs");
+    fs.writeFileSync(
+      launcher,
+      [
+        'import { spawnSync } from "node:child_process";',
+        `const child = spawnSync(process.execPath, ${JSON.stringify([binding.nodeOption, program])}, { encoding: "utf8", timeout: 15_000 });`,
+        "if (child.error) throw child.error;",
+        "process.stderr.write(child.stderr);",
+        "process.stdout.write(child.stdout);",
+        "process.exitCode = child.status ?? 1;",
+      ].join("\n"),
+    );
+    let launcherPid: number | undefined;
+    let stdout = "";
+    let stderr = "";
+    const code = await runManagedCommand({
+      bin: process.execPath,
+      args: [launcher],
+      env: resolveServiceManagerEnv(),
+      stdio: ["ignore", "pipe", "pipe"],
+      timeoutMs: 15_000,
+      // Windows uses the managed launcher's native Job; POSIX verifies its group.
+      requireProcessTreeExit: process.platform !== "win32",
+      onReady(child) {
+        launcherPid = child.pid;
+        child.stdout?.on("data", (chunk) => {
+          stdout += String(chunk);
+        });
+        child.stderr?.on("data", (chunk) => {
+          stderr += String(chunk);
+        });
+      },
+    });
+    expect(code, stderr).toBe(0);
+    const result = JSON.parse(stdout);
+    expect(result).toMatchObject({
+      pid: expect.any(Number),
+      databasePath: binding.databasePath,
+      observed: { kind: "current", lease: { owner: "binding-owner" } },
+      result: { kind: "absent" },
+    });
+    expect(launcherPid).toBeGreaterThan(0);
+    expect(result.pid).not.toBe(launcherPid);
+    expect(() =>
+      assertManagedHandoffTestConsumer(binding, launcherPid, path.resolve("src")),
+    ).toThrow(/No bound handoff resolver witness/);
+    assertManagedHandoffTestConsumer(binding, result.pid, path.resolve("src"));
+    expect(binding.assertPath()).toBe(binding.databasePath);
+  });
 
   it("does not credit preload setup as target consumer use", () => {
     const { binding, program, root } = fixture();

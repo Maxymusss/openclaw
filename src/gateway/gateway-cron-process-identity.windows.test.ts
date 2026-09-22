@@ -38,7 +38,6 @@ describe.skipIf(process.platform !== "win32")("Windows cron process identity", (
           signal.throwIfAborted();
           await instance.startGateway();
           signal.throwIfAborted();
-          assertManagedHandoffTestConsumer(handoff, instance.child?.pid, path.resolve("dist"));
           try {
             client = await connectGatewayClient({
               url: instance.url,
@@ -117,6 +116,13 @@ describe.skipIf(process.platform !== "win32")("Windows cron process identity", (
             ownerStartTime: expect.any(Number),
             finishedAtMs: expect.any(Number),
           });
+          // Windows exposes the owning Job launcher as instance.child. The durable
+          // cron receipt identifies the Gateway process that actually consumed the store.
+          assertManagedHandoffTestConsumer(
+            handoff,
+            typeof receipt?.ownerPid === "number" ? receipt.ownerPid : undefined,
+            path.resolve("dist"),
+          );
         },
         async () => {
           if (jobId && client) {
