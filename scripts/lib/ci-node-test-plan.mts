@@ -3178,7 +3178,8 @@ function splitOversizedCompactGroup(
   const isCliProcess = group.shard_name === "agentic-cli-process";
   const isTooling = isParallelToolingGroup(group);
   const storageStateFileLimit =
-    runnerBackend === "github" && group.shard_name === "core-runtime-infra-storage-state"
+    usesExpandedRunnerProfile(runnerBackend) &&
+    group.shard_name === "core-runtime-infra-storage-state"
       ? COMPACT_HOSTED_STORAGE_STATE_MAX_FILES
       : undefined;
   const exceedsStorageStateFileLimit =

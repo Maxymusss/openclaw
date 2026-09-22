@@ -4,19 +4,29 @@ import {
   assertExistingDatabaseIdentity,
   readDatabasePathIdentitySync,
 } from "../../infra/sqlite-worker-identity.js";
-import { assertUpdateWriteAuthority } from "../../infra/update-freebsd-write-admission.js";
+import {
+  assertUpdateWriteAuthority,
+  type FreeBsdUpdateWriteAdmission,
+} from "../../infra/update-freebsd-write-admission.js";
 import type { UpdateRunLedgerOptions } from "../../infra/update-run-codec.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
-import type { UpdateCommandOptions } from "./shared.js";
 
-type Run = NonNullable<UpdateCommandOptions["run"]>;
-export type UpdateCommandLedgerAdmission = {
-  options: (run: Run) => UpdateRunLedgerOptions;
+export type UpdateCommandLedgerRun = {
+  runId: string;
+  env: NodeJS.ProcessEnv;
+  /** Local filesystem admission, retained through failure and terminal reporting. */
+  freebsdWriteAdmission?: FreeBsdUpdateWriteAdmission;
+  /** Invocation-owned database generation. Never serialized or reused by a receiver. */
+  ledgerAdmission?: UpdateCommandLedgerAdmission;
+};
+
+type UpdateCommandLedgerAdmission = {
+  options: (run: UpdateCommandLedgerRun) => UpdateRunLedgerOptions;
 };
 
 /** Capture this invocation's generation after adoption, before yielding to callers.
  * A fresh candidate captures its own binding; Doctor success never rebinds a parent. */
-export function admitUpdateCommandLedger(run: Run): void {
+export function admitUpdateCommandLedger(run: UpdateCommandLedgerRun): void {
   const admission = run.freebsdWriteAdmission;
   if (!admission) {
     return;
@@ -67,7 +77,7 @@ export function admitUpdateCommandLedger(run: Run): void {
 
 /** Only FreeBSD's admitted owner adds a fence; ordinary ledger callers stay unbound.
  * Keep the check in the writer as well, since prepared options can cross an await. */
-export function updateCommandLedgerOptions(run: Run): UpdateRunLedgerOptions {
+export function updateCommandLedgerOptions(run: UpdateCommandLedgerRun): UpdateRunLedgerOptions {
   if (run.ledgerAdmission) {
     return run.ledgerAdmission.options(run);
   }

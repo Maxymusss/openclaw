@@ -13,7 +13,6 @@ import {
   writeUpdatePostInstallDoctorResult,
   type UpdatePostInstallDoctorResult,
 } from "../../infra/update-doctor-result.js";
-import { FreeBsdUpdateWriteAdmissionError } from "../../infra/update-freebsd-write-admission.js";
 import { UpdateRequesterRevokedError } from "../../infra/update-requester-authority.js";
 import { createUpdateRun } from "../../infra/update-run-ledger.js";
 import { loadUpdateRecovery } from "../../infra/update-run-recovery.js";
@@ -77,7 +76,9 @@ it.each([false, true])(
     const runUtf8 = processRunner.runUtf8CommandWithTimeout;
     let spawned = false;
     let rootState: "current" | "pending" | "revoked" = "current";
-    const rootFailure = new FreeBsdUpdateWriteAdmissionError();
+    const rootFailure = Object.assign(new Error("Fixture write authority revoked"), {
+      reason: "freebsd-update-ownership",
+    });
     await withUpdateCommandExecutor(runId, async (executor) => {
       const fence = await executor.enter(root, { serviceRoot });
       const opts: UpdateCommandOptions = {
