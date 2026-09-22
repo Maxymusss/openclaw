@@ -3,6 +3,10 @@ import path from "node:path";
 import { performance } from "node:perf_hooks";
 import { describe, expect, it, vi } from "vitest";
 import {
+  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
+} from "../state/openclaw-agent-db.js";
+import {
   withOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
@@ -10,7 +14,9 @@ import {
   readMigrationArtifactIdentity,
   type MigrationArtifact,
 } from "./doctor-session-sqlite-artifact.js";
+import { collectHistoricalArchiveSources } from "./doctor-session-sqlite-discovery.js";
 import {
+  HISTORICAL_IMPORT_REASON,
   createSessionSqliteMigrationRun,
   recordCompletedMigrationMoves,
   recordPlannedMigrationMoves,
@@ -114,6 +120,59 @@ function createRetainedDuplicateArchives(state: OpenClawTestState) {
 }
 
 describe("recovery dependency inventory", () => {
+  it.each([false, true])(
+    "rejects an aliased duplicate-only destination before settlement (acknowledged=%s)",
+    async (acknowledged) => {
+      await withOpenClawTestState({ label: "doctor-duplicate-target-alias" }, async (state) => {
+        const { storePath, target, archiveDir, archives } = createRetainedDuplicateArchives(state);
+        if (acknowledged) {
+          for (const refs of collectRecoveryInventory({
+            cfg: {},
+            env: state.env,
+          }).references.values()) {
+            for (const { run, move } of refs) {
+              move.artifact!.reason = HISTORICAL_IMPORT_REASON;
+              writeSessionSqliteMigrationManifest(run);
+            }
+          }
+        }
+        const history = collectHistoricalArchiveSources({ cfg: {}, env: state.env });
+        expect(history.claims).toHaveLength(1);
+        expect(history.sources.size).toBe(acknowledged ? 0 : 1);
+        expect(fs.existsSync(storePath)).toBe(false);
+        expect(fs.readdirSync(path.dirname(storePath))).toEqual([]);
+
+        openOpenClawAgentDatabase({
+          agentId: "main",
+          env: state.env,
+          path: target.sqlitePath,
+        });
+        closeOpenClawAgentDatabasesForTest();
+        const alias = state.path("database-alias.sqlite");
+        fs.linkSync(target.sqlitePath, alias);
+        const databaseBytes = fs.readFileSync(target.sqlitePath);
+        const readArtifacts = () => ({
+          archiveEntries: fs.readdirSync(archiveDir).toSorted(),
+          archives: archives.map((file) => fs.readFileSync(file)),
+          manifests: collectRecoveryInventory({ cfg: {}, env: state.env }).manifestPaths.map(
+            (file) => [file, fs.readFileSync(file)],
+          ),
+        });
+        const before = readArtifacts();
+
+        await expect(
+          runDoctorSessionSqlite({ mode: "import", store: storePath, env: state.env }),
+        ).rejects.toThrow("hard-linked path");
+
+        expect(readArtifacts()).toEqual(before);
+        expect(fs.readFileSync(target.sqlitePath)).toEqual(databaseBytes);
+        expect(fs.readFileSync(alias)).toEqual(databaseBytes);
+        expect(fs.statSync(target.sqlitePath).nlink).toBe(2);
+        expect(fs.existsSync(storePath)).toBe(false);
+        expect(fs.readdirSync(path.dirname(storePath))).toEqual([]);
+      });
+    },
+  );
   it("preserves the latest failed run's rollback when duplicate references are coalesced", async () => {
     await withOpenClawTestState({ label: "doctor-duplicate-restore-first" }, async (state) => {
       const { storePath, target, bytes, moves } = createRetainedDuplicateArchives(state);

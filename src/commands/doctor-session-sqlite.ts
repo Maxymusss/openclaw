@@ -97,8 +97,10 @@ import {
 } from "./doctor-session-sqlite-retained.js";
 import { settleDuplicateSessionSqliteArchives } from "./doctor-session-sqlite-retirement.js";
 import {
+  createMigrationTargetInput,
   filterLegacySessionStoreTargets,
   resolveDoctorSessionSqliteTargets,
+  selectDoctorSessionSqliteOperationTargets,
 } from "./doctor-session-sqlite-targets.js";
 import {
   createDoctorSessionSqliteTargetReport,
@@ -158,11 +160,15 @@ export async function runDoctorSessionSqlite(
   const pendingPlugins = readDeferredPluginMigrations({ env });
   const verifyMissingIndex = createMissingSessionIndexVerifier({ cfg, env });
   const candidates = resolveDoctorSessionSqliteTargets({ ...options, cfg, env });
+  const history = ["import", "dry-run", "validate", "recover"].includes(options.mode)
+    ? collectHistoricalArchiveSources({ cfg, env })
+    : undefined;
+  const admitted = selectDoctorSessionSqliteOperationTargets(candidates, options.mode, history);
   if (isDestructiveDoctorSessionSqliteMode(options.mode)) {
     assertDoctorSqliteMaintenancePathsNotAliased(
       `session SQLite ${options.mode}`,
-      resolveDoctorSessionSqliteMaintenancePaths(candidates),
-      resolveDoctorSessionSqliteMaintenanceRoots(candidates, env),
+      resolveDoctorSessionSqliteMaintenancePaths(admitted),
+      resolveDoctorSessionSqliteMaintenanceRoots(admitted, env),
     );
   }
   const settlements =
@@ -170,14 +176,15 @@ export async function runDoctorSessionSqlite(
       ? await settleDuplicateSessionSqliteArchives({
           cfg,
           env,
-          targets: candidates.map(createMigrationTargetInput),
+          targets: admitted.map(createMigrationTargetInput),
         })
       : [];
-  const historicalArchives = ["import", "dry-run", "validate", "recover"].includes(options.mode)
-    ? collectHistoricalArchiveSources({ cfg, env }).sources
-    : new Map();
+  const historicalArchives =
+    (options.mode === "import" || options.mode === "recover"
+      ? collectHistoricalArchiveSources({ cfg, env }).sources
+      : history?.sources) ?? new Map();
   const targets = filterLegacySessionStoreTargets(
-    candidates,
+    admitted,
     options.mode,
     historicalArchives,
     new Set(settlements.map(({ target }) => target.storePath)),
@@ -1738,14 +1745,6 @@ function readLegacyTranscriptMtimeMs(record: LegacySessionRecord): number | unde
   } catch {
     return undefined;
   }
-}
-
-function createMigrationTargetInput(target: SessionStoreTarget): SessionSqliteMigrationTargetInput {
-  return {
-    agentId: target.agentId,
-    sqlitePath: canonicalMigrationFilePath(resolveTargetSqlitePath(target)),
-    storePath: canonicalMigrationFilePath(target.storePath),
-  };
 }
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

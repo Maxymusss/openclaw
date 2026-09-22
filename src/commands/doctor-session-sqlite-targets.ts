@@ -12,8 +12,14 @@ import {
 } from "../config/sessions/targets.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import type { HistoricalArchiveSources } from "./doctor-session-sqlite-discovery.js";
-import { canonicalMigrationFilePath } from "./doctor-session-sqlite-migration-run.js";
+import type {
+  collectHistoricalArchiveSources,
+  HistoricalArchiveSources,
+} from "./doctor-session-sqlite-discovery.js";
+import {
+  canonicalMigrationFilePath,
+  type SessionSqliteMigrationTargetInput,
+} from "./doctor-session-sqlite-migration-run.js";
 import { resolveTargetSqlitePath } from "./doctor-session-sqlite-readers.js";
 import type { DoctorSessionSqliteMode } from "./doctor-session-sqlite-types.js";
 
@@ -94,4 +100,48 @@ export function filterLegacySessionStoreTargets(
         (fs.existsSync(path.dirname(target.storePath)) &&
           fs.readdirSync(path.dirname(target.storePath)).some(isPrimarySessionTranscriptFileName))),
   );
+}
+
+export function createMigrationTargetInput(
+  target: SessionStoreTarget,
+): SessionSqliteMigrationTargetInput {
+  return {
+    agentId: target.agentId,
+    sqlitePath: canonicalMigrationFilePath(resolveTargetSqlitePath(target)),
+    storePath: canonicalMigrationFilePath(target.storePath),
+  };
+}
+
+export function selectDoctorSessionSqliteOperationTargets(
+  candidates: SessionStoreTarget[],
+  mode: DoctorSessionSqliteMode,
+  history?: Pick<ReturnType<typeof collectHistoricalArchiveSources>, "sources" | "claims">,
+): SessionStoreTarget[] {
+  const legacy = filterLegacySessionStoreTargets(
+    candidates,
+    mode,
+    history?.sources ?? new Map(),
+    new Set(),
+  );
+  if (mode !== "import" || !history?.claims.length) {
+    return legacy;
+  }
+  const eligible = new Set(legacy);
+  const claimedTargets = history.claims.map(([refs]) => refs![0]!.target);
+  // Acknowledged archives can still need duplicate settlement after their import
+  // sources disappear. Admit their exact destinations before any disposal starts.
+  return candidates.filter((target) => {
+    if (eligible.has(target)) {
+      return true;
+    }
+    const storePath = canonicalMigrationFilePath(target.storePath);
+    const matchingClaims = claimedTargets.filter(
+      (claim) => claim.agentId === target.agentId && claim.storePath === storePath,
+    );
+    if (matchingClaims.length === 0) {
+      return false;
+    }
+    const input = createMigrationTargetInput(target);
+    return matchingClaims.some((claim) => claim.sqlitePath === input.sqlitePath);
+  });
 }
