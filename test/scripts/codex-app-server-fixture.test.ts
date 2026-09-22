@@ -378,7 +378,7 @@ describe("auth fixture active-account evidence", () => {
     ).toBe(true);
     for (const row of operations) {
       expect(row.instanceId).toEqual(expect.stringMatching(/\S/));
-      expect(Object.keys(row.account ?? {}).sort()).toEqual(["accountId", "type"]);
+      expect(Object.keys(row.account ?? {}).toSorted()).toEqual(["accountId", "type"]);
     }
     const safeEvidence = JSON.stringify(operations);
     expect(safeEvidence).not.toContain(`fixture-secret-${FIXTURE_ACCOUNT_A}`);
@@ -464,7 +464,7 @@ describe("auth fixture active-account evidence", () => {
       }),
     ).toBeUndefined();
     const operations = authOperations(run.entries.slice(run.afterIndex));
-    const latestLogin = operations.filter((row) => row.operation === "auth_applied").at(-1)!;
+    const latestLogin = operations.findLast((row) => row.operation === "auth_applied")!;
     const completed = operations.find((row) => row.operation === "turn_completed")!;
     const started = operations.find((row) => row.operation === "turn_started")!;
     expect(started.instanceId).toBe(latestLogin.instanceId);

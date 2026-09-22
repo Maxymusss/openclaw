@@ -141,15 +141,13 @@ export function findCodexFixtureTurnAccountEvidence(
     return undefined;
   }
   // A warm thread can predate this control; only its new turn must follow the cursor.
-  const thread = operations
-    .filter(
-      ({ index, value }) =>
-        index < started.index &&
-        value.instanceId === started.value.instanceId &&
-        value.threadId === params.threadId &&
-        (value.operation === "thread_started" || value.operation === "thread_resumed"),
-    )
-    .at(-1)?.value;
+  const thread = operations.findLast(
+    ({ index, value }) =>
+      index < started.index &&
+      value.instanceId === started.value.instanceId &&
+      value.threadId === params.threadId &&
+      (value.operation === "thread_started" || value.operation === "thread_resumed"),
+  )?.value;
   if (
     !thread ||
     thread.version !== 1 ||

@@ -461,7 +461,6 @@ describe("Codex auth product proof", () => {
       let runId = "";
       let terminal: unknown;
       let failedHistory: GatewayHistory | undefined;
-      let failureMethods: string[] = [];
       try {
         const testInstance = instance;
         const nativeLifecycleForRun = (targetRunId: string) =>
@@ -479,6 +478,7 @@ describe("Codex auth product proof", () => {
         ) => {
           let setupRunId = "";
           let controlFailed = false;
+          let captureFailure: { error: unknown } | undefined;
           let controlCursor: { index: number; prefix: string } | undefined;
           let controlProof: unknown;
           try {
@@ -567,7 +567,6 @@ describe("Codex auth product proof", () => {
                 "app-server log reached the read cap",
               ).toBeLessThan(2 * 1024 * 1024);
             }
-            return setupRunId;
           } catch (error) {
             controlFailed = true;
             throw error;
@@ -663,11 +662,15 @@ describe("Codex auth product proof", () => {
                   })}`,
                 );
                 if (!controlFailed) {
-                  throw captureError;
+                  captureFailure = { error: captureError };
                 }
               }
             }
           }
+          if (captureFailure) {
+            throw captureFailure.error;
+          }
+          return setupRunId;
         };
         await runConfiguredTurn("qa-codex-profile-binding-setup");
         expect(
@@ -826,7 +829,7 @@ describe("Codex auth product proof", () => {
           { agentId: "main", sessionKey, limit: 50 },
           { timeoutMs: 5_000 },
         );
-        expect(
+        const readOriginalSession = () =>
           loadSessionEntryReadOnly({
             agentId: "main",
             sessionKey,
@@ -837,8 +840,9 @@ describe("Codex auth product proof", () => {
             env: testInstance.env,
             readConsistency: "latest",
             hydrateSkillPromptRefs: false,
-          }),
-        ).toMatchObject({
+          });
+        const failedSession = readOriginalSession();
+        expect(failedSession).toMatchObject({
           authProfileOverride: MISSING_PROFILE_ID,
           authProfileOverrideSource: "user",
           status: "failed",
@@ -863,13 +867,14 @@ describe("Codex auth product proof", () => {
         ).toBe(true);
         const beforeConfiguredControlPrefix = JSON.stringify(retainedFailureEntries);
         const failureEntries = retainedFailureEntries.slice(beforeFailedTurn);
-        failureMethods = failureEntries.flatMap((entry) =>
+        const failureMethods = failureEntries.flatMap((entry) =>
           typeof entry.method === "string" ? [entry.method] : [],
         );
         // The shared log includes catalog discovery; retain its methods as diagnostics
         // before a new session proves A is still usable, without attributing them to B.
+        let configuredRunId: string | undefined;
         if (configuredProfileId !== MISSING_PROFILE_ID) {
-          const configuredRunId = await runConfiguredTurn(
+          configuredRunId = await runConfiguredTurn(
             "qa-codex-configured-account-survives",
             `${sessionKey}-configured`,
             configuredAccountId,
@@ -912,12 +917,84 @@ describe("Codex auth product proof", () => {
         expect(JSON.stringify(failedHistory)).not.toContain(MISSING_PROFILE_ID);
         expect(JSON.stringify(failedHistory)).not.toContain("Codex app-server auth profile");
 
+        let recoveryRunId: string | undefined;
+        if (configuredProfileId !== MISSING_PROFILE_ID) {
+          // Recovery must repair the failed session, not succeed only in a fresh session.
+          const originalSession = readOriginalSession();
+          expect(originalSession).toMatchObject({
+            authProfileOverride: MISSING_PROFILE_ID,
+            authProfileOverrideSource: "user",
+            status: "failed",
+            lastRunId: runId,
+          });
+          const originalSessionId = originalSession?.sessionId;
+          const originalLifecycleRevision = originalSession?.lifecycleRevision;
+          expect(originalSessionId).toMatch(/\S/);
+          const recoveredSelection = {
+            sessionId: originalSessionId,
+            lifecycleRevision: originalLifecycleRevision,
+            authProfileOverride: configuredProfileId,
+            authProfileOverrideSource: "user",
+          };
+          await expect(
+            client.request("sessions.patch", {
+              key: sessionKey,
+              expectedSessionId: originalSessionId,
+              ...(originalLifecycleRevision !== undefined
+                ? { expectedLifecycleRevision: originalLifecycleRevision }
+                : {}),
+              model: `${MODEL}@${configuredProfileId}`,
+            }),
+          ).resolves.toMatchObject({ ok: true, key: sessionKey, entry: recoveredSelection });
+          expect(readOriginalSession()).toMatchObject(recoveredSelection);
+          recoveryRunId = await runConfiguredTurn(
+            "qa-codex-original-session-recovered",
+            sessionKey,
+            configuredAccountId,
+          );
+          expect(recoveryRunId).not.toBe(pinnedRunId);
+          expect(recoveryRunId).not.toBe(runId);
+          expect(recoveryRunId).not.toBe(configuredRunId);
+          await vi.waitFor(
+            () => {
+              const recoveredSession = readOriginalSession();
+              expect(recoveredSession).toMatchObject({
+                ...recoveredSelection,
+                status: "done",
+                lastRunId: recoveryRunId,
+              });
+              expect(recoveredSession?.lastRunError).toBeUndefined();
+              expect(
+                events.find(
+                  (event) =>
+                    event.event === "chat" &&
+                    isRecord(event.payload) &&
+                    event.payload.runId === recoveryRunId &&
+                    event.payload.sessionKey === sessionKey &&
+                    event.payload.state === "final",
+                ),
+              ).toBeDefined();
+            },
+            { interval: 25, timeout: REQUEST_TIMEOUT_MS },
+          );
+          console.log(
+            `[qa-codex-original-session-recovery] ${JSON.stringify({
+              sessionKey,
+              ...recoveredSelection,
+              runId: recoveryRunId,
+              accountId: configuredAccountId,
+              status: "done",
+            })}`,
+          );
+        }
+
         console.log(
           `[qa-codex-missing-auth-profile] ${JSON.stringify({
             assistantOutput: SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT,
             configuredAccountControl:
               configuredProfileId !== MISSING_PROFILE_ID ? "passed" : "same-account-removed",
             historySessionKey: sessionKey,
+            recoveryRunId: recoveryRunId ?? null,
             appServerInitialized: failureMethods.includes("initialize"),
             failedRunNativeLifecycleCount: failedRunLifecycle.length,
             observedAppServerMethods: failureMethods,

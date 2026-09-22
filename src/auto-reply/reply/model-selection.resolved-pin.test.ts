@@ -1,4 +1,5 @@
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { resolveAgentDir } from "../../agents/agent-scope.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -11,10 +12,23 @@ import { resolveDirectStoredModelOverride } from "../../sessions/stored-model-ov
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import { createModelSelectionState } from "./model-selection.js";
 
+const prepareAuthProfileProviderForSelectionMock = vi.hoisted(() =>
+  vi.fn(async ({ profileId }: { agentDir?: string; profileId: string }) => ({
+    profileId,
+    provider: undefined,
+  })),
+);
+
 vi.mock("../../agents/auth-profiles.runtime.js", () => ({
   ensureAuthProfileStore: () => ({ version: 1, profiles: {} }),
 }));
 
+vi.mock("../../agents/auth-profiles/store-runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../agents/auth-profiles/store-runtime.js")>()),
+  prepareAuthProfileProviderForSelection: prepareAuthProfileProviderForSelectionMock,
+}));
+
+beforeEach(() => prepareAuthProfileProviderForSelectionMock.mockClear());
 afterEach(() => resetPluginRuntimeStateForTest());
 
 test("keeps thinking defaults separate for distinct literal model IDs", async () => {
@@ -367,6 +381,15 @@ test.each<SelectionCase>([
           hasResolvedHeartbeatModelOverride: fixture.heartbeat,
           preparedModelCatalog,
         });
+        if (fixture.missingAuthPinSource === "user") {
+          expect(prepareAuthProfileProviderForSelectionMock).toHaveBeenCalledTimes(1);
+          expect(prepareAuthProfileProviderForSelectionMock).toHaveBeenCalledWith({
+            agentDir: resolveAgentDir(cfg, "main"),
+            profileId: "missing-test-profile",
+          });
+        } else {
+          expect(prepareAuthProfileProviderForSelectionMock).not.toHaveBeenCalled();
+        }
         expect(selection).toMatchObject({
           provider: fixture.cli ? "demo-cli" : "custom",
           model: fixture.expected,
