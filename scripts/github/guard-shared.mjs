@@ -24,6 +24,46 @@ const githubApiRetryDelaysMs = [1_000, 2_000, 4_000];
 const securityReviewBudgetMs = 65 * 60_000;
 const recoveryDeadlineEnv = "OPENCLAW_SECURITY_REVIEW_DEADLINE_MS";
 
+// Recovery can outlive the response. Retain only request diagnostics here, not
+// response bodies or arbitrary error causes that may contain private data.
+const requestDiagnostics = new WeakMap();
+
+function withRequestDiagnostic(error, method, path, response) {
+  const diagnostic = {
+    method: /^(GET|HEAD|POST|PUT|PATCH|DELETE|OPTIONS)$/u.test(method) ? method : "UNKNOWN",
+    path: sanitizeGuardDisplayValue(path.split(/[?#]/u, 1)[0]),
+  };
+  if (response) {
+    diagnostic.status = response.status;
+    const requestId = response.headers.get("x-github-request-id");
+    if (requestId && /^[A-Za-z0-9:_-]{1,128}$/u.test(requestId)) {
+      diagnostic.requestId = requestId;
+    }
+    for (const [header, field] of [
+      ["x-ratelimit-reset", "rateLimitReset"],
+      ["x-ratelimit-remaining", "rateLimitRemaining"],
+      ["retry-after", "retryAfter"],
+    ]) {
+      const value = response.headers.get(header);
+      if (value !== null && /^\d{1,16}$/u.test(value) && Number.isSafeInteger(Number(value))) {
+        diagnostic[field] = Number(value);
+      } else if (
+        header === "retry-after" &&
+        value !== null &&
+        /^[A-Za-z]{3}, \d{2} [A-Za-z]{3} \d{4} \d{2}:\d{2}:\d{2} GMT$/u.test(value) &&
+        Number.isFinite(Date.parse(value)) &&
+        new Date(value).toUTCString() === value
+      ) {
+        diagnostic.retryAfter = new Date(value).toUTCString();
+      }
+    }
+  } else if (githubApiRetryCodes.has(error.code)) {
+    diagnostic.code = error.code;
+  }
+  requestDiagnostics.set(error, JSON.stringify(diagnostic));
+  return error;
+}
+
 export class GitHubRateLimitError extends Error {
   constructor(message, response) {
     super(message);
@@ -45,6 +85,7 @@ export class GitHubRateLimitError extends Error {
 export class GitHubStatusPublicationError extends Error {
   constructor(cause) {
     super(cause.message, { cause });
+    requestDiagnostics.set(this, requestDiagnostics.get(cause));
   }
 }
 
@@ -72,14 +113,15 @@ export async function withSecurityReviewRecovery(evaluate) {
           1_000 +
           Math.floor(Math.random() * 15_000)
         : githubApiRetryDelaysMs[attempt];
+      const diagnostic = requestDiagnostics.get(error);
       if (attempt >= 3 || Date.now() + delay + GITHUB_API_REQUEST_TIMEOUT_MS > deadline) {
         throw new Error(
-          "GitHub API recovery budget exhausted; security review remains incomplete.",
+          `GitHub API recovery budget exhausted; security review remains incomplete.${diagnostic ? ` Request: ${diagnostic}` : ""}`,
           { cause: error },
         );
       }
       console.warn(
-        `${rateLimited ? `GitHub API rate limited (${error.status})` : `GitHub status publication failed (${error.message})`}; retrying the complete evaluation in ${Math.ceil(delay / 1_000)}s (attempt ${attempt + 1}/3).`,
+        `${rateLimited ? `GitHub API rate limited (${error.status})` : "GitHub status publication failed"}${diagnostic ? ` Request: ${diagnostic}` : ""}; retrying the complete evaluation in ${Math.ceil(delay / 1_000)}s (attempt ${attempt + 1}/3).`,
       );
       await wait(delay);
     }
@@ -386,7 +428,7 @@ export function createGitHubApi(token, options = {}) {
           if (!requestSignal.aborted) {
             requestError.code = code;
           }
-          throw requestError;
+          throw withRequestDiagnostic(requestError, method, path);
         }
         if (response.status === 204) {
           return null;
@@ -418,11 +460,16 @@ export function createGitHubApi(token, options = {}) {
               response.headers.has("retry-after") ||
               /(?:API rate limit exceeded|secondary rate limit)/iu.test(errorText))
           ) {
-            throw new GitHubRateLimitError(message, response);
+            throw withRequestDiagnostic(
+              new GitHubRateLimitError(message, response),
+              method,
+              path,
+              response,
+            );
           }
           const error = new Error(message);
           error.status = response.status;
-          throw error;
+          throw withRequestDiagnostic(error, method, path, response);
         }
         return await readBoundedGitHubJson(response, responseMaxBodyBytes, {
           signal: timeoutController.signal,
