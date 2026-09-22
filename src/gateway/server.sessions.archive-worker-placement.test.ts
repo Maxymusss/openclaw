@@ -447,7 +447,8 @@ test.each(["active", "failed"] as const)(
     await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
     let placement = workerPlacement({ sessionId, sessionKey, state });
     const drainGate = createDeferredCore();
-    const drainStarted = vi.fn();
+    const drainEntered = createDeferredCore();
+    const drainStarted = vi.fn(() => drainEntered.resolve());
     const release = vi.fn();
     const reclaim = vi.fn();
 
@@ -466,21 +467,27 @@ test.each(["active", "failed"] as const)(
       },
     );
 
-    await vi.waitFor(() => expect(drainStarted).toHaveBeenCalledOnce());
-    placement = workerPlacement({
-      sessionId,
-      sessionKey: "agent:main:replacement-placement",
-      state: "active",
-    });
-    drainGate.resolve();
+    try {
+      await drainEntered.promise;
+      expect(drainStarted).toHaveBeenCalledOnce();
+      placement = workerPlacement({
+        sessionId,
+        sessionKey: "agent:main:replacement-placement",
+        state: "active",
+      });
+      drainGate.resolve();
 
-    await expect(archive).resolves.toMatchObject({
-      ok: false,
-      error: { code: "UNAVAILABLE", retryable: true },
-    });
-    expect(reclaim).not.toHaveBeenCalled();
-    expect(release).toHaveBeenCalledOnce();
-    expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+      await expect(archive).resolves.toMatchObject({
+        ok: false,
+        error: { code: "UNAVAILABLE", retryable: true },
+      });
+      expect(reclaim).not.toHaveBeenCalled();
+      expect(release).toHaveBeenCalledOnce();
+      expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
+    } finally {
+      drainGate.resolve();
+      await Promise.allSettled([archive]);
+    }
   },
 );
 

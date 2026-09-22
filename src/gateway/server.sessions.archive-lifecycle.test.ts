@@ -60,6 +60,8 @@ function activeRunContext(params: {
     throw new Error("expected active run registration");
   }
   const entry = registration.entry;
+  const aborted = createDeferredCore();
+  registration.controller.signal.addEventListener("abort", () => aborted.resolve(), { once: true });
   const unsubscribe = onAgentEvent((event) => {
     if (
       event.runId !== params.runId ||
@@ -98,6 +100,7 @@ function activeRunContext(params: {
       })),
     },
     controller: registration.controller,
+    aborted: aborted.promise,
     unsubscribe,
   };
 }
@@ -304,8 +307,9 @@ test("sessions.patch cancels active work and commits only after admission and te
     persistence,
     ownerConnId: "different-connection",
   });
+  let archive: ReturnType<typeof directSessionReq> | undefined;
   try {
-    const archive = directSessionReq(
+    archive = directSessionReq(
       "sessions.patch",
       { key: sessionKey, archived: true, expectedSessionId: sessionId },
       {
@@ -345,6 +349,8 @@ test("sessions.patch cancels active work and commits only after admission and te
     expect(await replacement).toBeInstanceOf(Error);
   } finally {
     admission.release();
+    persistence.resolve();
+    await Promise.allSettled(archive ? [archive] : []);
     active.unsubscribe();
   }
 });
@@ -530,7 +536,8 @@ test.each(["owner", "viewer"] as const)(
         sessionKey,
         expectedSessionId: sessionId,
       });
-      await vi.waitFor(() => expect(active.controller.signal.aborted).toBe(true));
+      await active.aborted;
+      expect(active.controller.signal.aborted).toBe(true);
 
       sharing = invokeVisibilityHandler({
         client: owner,
@@ -742,15 +749,17 @@ test("sessions.patch returns UNAVAILABLE when terminal persistence fails", async
   await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
   const persistence = createDeferredCore();
   const active = activeRunContext({ runId, sessionId, sessionKey, persistence });
+  let archive: ReturnType<typeof directSessionReq> | undefined;
   try {
-    const archive = directSessionReq(
+    archive = directSessionReq(
       "sessions.patch",
       { key: sessionKey, archived: true, expectedSessionId: sessionId },
       {
         context: active.context,
       },
     );
-    await vi.waitFor(() => expect(active.controller.signal.aborted).toBe(true));
+    await active.aborted;
+    expect(active.controller.signal.aborted).toBe(true);
     persistence.reject(new Error("disk full"));
 
     const archived = await archive;
@@ -758,6 +767,8 @@ test("sessions.patch returns UNAVAILABLE when terminal persistence fails", async
     expect(archived.error).toMatchObject({ code: "UNAVAILABLE", retryable: true });
     expect(loadSessionEntry({ storePath, sessionKey })?.archivedAt).toBeUndefined();
   } finally {
+    persistence.resolve();
+    await Promise.allSettled(archive ? [archive] : []);
     active.unsubscribe();
   }
 });
@@ -988,8 +999,9 @@ test("sessions.patch rejects a generation replaced after the exact preparation r
     placement = workerPlacement({ sessionId, sessionKey, state: "reclaimed" });
     return placement as Extract<WorkerSessionPlacementRecord, { state: "reclaimed" }>;
   });
+  let archive: ReturnType<typeof directSessionReq> | undefined;
   try {
-    const archive = directSessionReq(
+    archive = directSessionReq(
       "sessions.patch",
       { key: sessionKey, archived: true, expectedSessionId: sessionId },
       {
@@ -1000,7 +1012,8 @@ test("sessions.patch rejects a generation replaced after the exact preparation r
         },
       },
     );
-    await vi.waitFor(() => expect(active.controller.signal.aborted).toBe(true));
+    await active.aborted;
+    expect(active.controller.signal.aborted).toBe(true);
     await upsertSessionEntryCore(
       { storePath, sessionKey },
       { sessionId: "session-archive-generation-replacement", updatedAt: 2 },
@@ -1021,6 +1034,8 @@ test("sessions.patch rejects a generation replaced after the exact preparation r
     expect(placement.state).toBe("active");
     expect(dispatch).not.toHaveBeenCalled();
   } finally {
+    persistence.resolve();
+    await Promise.allSettled(archive ? [archive] : []);
     active.unsubscribe();
   }
 });

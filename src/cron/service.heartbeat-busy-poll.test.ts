@@ -142,8 +142,13 @@ async function createPollFixture(options: { scratch?: string; isolated?: boolean
     );
     runner = startHeartbeatRunner({ cfg, runOnce });
     const events: CronEvent[] = [];
+    const firstRequested = createDeferred();
     const request = vi.fn<NonNullable<CronServiceDeps["requestHeartbeatAndWait"]>>(
-      (opts, lifecycle) => requestHeartbeatAndWait({ ...opts, coalesceMs: 250 }, lifecycle),
+      (opts, lifecycle) => {
+        const pending = requestHeartbeatAndWait({ ...opts, coalesceMs: 250 }, lifecycle);
+        firstRequested.resolve();
+        return pending;
+      },
     );
     cron = new CronService({
       storePath,
@@ -210,6 +215,7 @@ async function createPollFixture(options: { scratch?: string; isolated?: boolean
       deps,
       runOnce,
       request,
+      firstRequested: firstRequested.promise,
       finished,
       holdLane,
       close,
@@ -240,11 +246,23 @@ describe("native heartbeat busy poll settlement", () => {
     "ends a busy $label poll before its deadline and executes only the next persisted tick",
     async ({ scratch }) => {
       await withPollFixture(
-        async ({ cron, monitor, storePath, reply, runOnce, request, finished, holdLane }) => {
+        async ({
+          cron,
+          monitor,
+          storePath,
+          reply,
+          runOnce,
+          request,
+          firstRequested,
+          finished,
+          holdLane,
+        }) => {
           const releaseMain = await holdLane(CommandLane.Main);
           const firstTick = monitor.state.nextRunAtMs!;
           await vi.advanceTimersByTimeAsync(firstTick - Date.now());
-          await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+          // Do not advance the fake coalescer while real SQLite admission is pending.
+          await firstRequested;
+          expect(request).toHaveBeenCalledOnce();
           // Observe the full original watchdog window on both versions. The
           // unfixed scheduler records a timeout; the fixed poll settled promptly.
           await vi.advanceTimersByTimeAsync(600_001);
@@ -356,7 +374,16 @@ describe("native heartbeat busy poll settlement", () => {
     "retains a poll carrying a queued %s event and reports its eventual failure to the original parent",
     async (kind) => {
       await withPollFixture(
-        async ({ cron, monitor, sessionKey, reply, request, finished, holdLane }) => {
+        async ({
+          cron,
+          monitor,
+          sessionKey,
+          reply,
+          request,
+          firstRequested,
+          finished,
+          holdLane,
+        }) => {
           const releaseMain = await holdLane(CommandLane.Main);
           const text =
             kind === "cron" ? "Reminder: Check the retained reminder" : "Retained generic event";
@@ -369,7 +396,8 @@ describe("native heartbeat busy poll settlement", () => {
             return undefined;
           });
           const parent = cron.run(monitor.id, "force");
-          await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+          await firstRequested;
+          expect(request).toHaveBeenCalledOnce();
           await vi.advanceTimersByTimeAsync(250);
           expect(finished()).toHaveLength(0);
           expect(peekSystemEventEntries(sessionKey).map((entry) => entry.text)).toContain(text);
@@ -458,7 +486,17 @@ describe("native heartbeat busy poll settlement", () => {
 
   it("retains late isolated admission and a subsequent pre-execution busy retry", async () => {
     await withPollFixture(
-      async ({ cron, monitor, deps, reply, runOnce, request, finished, holdLane }) => {
+      async ({
+        cron,
+        monitor,
+        deps,
+        reply,
+        runOnce,
+        request,
+        firstRequested,
+        finished,
+        holdLane,
+      }) => {
         // The wake-stage check is clear; the second check is in preparation after
         // delivery resolution. This is the actual late admission boundary.
         deps.isReplyRunActive = vi
@@ -467,7 +505,8 @@ describe("native heartbeat busy poll settlement", () => {
           .mockReturnValueOnce(true)
           .mockReturnValue(false);
         const parent = cron.run(monitor.id, "force");
-        await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
+        await firstRequested;
+        expect(request).toHaveBeenCalledOnce();
         await vi.advanceTimersByTimeAsync(250);
         expect(deps.isReplyRunActive).toHaveBeenCalledTimes(2);
         expect(finished()).toHaveLength(0);
