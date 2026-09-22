@@ -1,8 +1,10 @@
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { onExit } from "signal-exit";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { readFreeBsdGatewayServiceDiscovery } from "../../daemon/freebsd-service.js";
+import { discoverFreeBsdService } from "../../../scripts/lib/freebsd-service-discovery.mjs";
+import { isFreeBsdGatewayServiceAbsent } from "../../daemon/freebsd-service.js";
 import * as service from "../../daemon/service.js";
 import { CONTROL_PLANE_UPDATE_SENTINEL_META_ENV } from "../../infra/update-control-plane-sentinel.js";
 import { nativeFreeBsd, withFreeBsdFixture } from "../../infra/update-freebsd.test-support.js";
@@ -30,7 +32,10 @@ async function withRcDefinition(status: keyof typeof reasons, operation: () => P
   if (!disposableGuest) {
     throw new Error("Global rc fixtures require an explicitly marked disposable FreeBSD guest.");
   }
-  expect(await readFreeBsdGatewayServiceDiscovery({})).toMatchObject({ status: "absent" });
+  expect(await discoverFreeBsdService({ registerExitCleanup: onExit })).toMatchObject({
+    status: "absent",
+  });
+  expect(await isFreeBsdGatewayServiceAbsent({})).toBe(true);
   // This suite runs alone in the disposable guest: never replace an operator's
   // definition, execute a service, or remove a file whose ownership has changed.
   const filename = "/etc/rc.d/openclaw";
@@ -42,11 +47,12 @@ async function withRcDefinition(status: keyof typeof reasons, operation: () => P
     if (status === "unknown") {
       await handle.chmod(0o666);
     }
-    expect(await readFreeBsdGatewayServiceDiscovery({})).toMatchObject(
+    expect(await discoverFreeBsdService({ registerExitCleanup: onExit })).toMatchObject(
       status === "present"
         ? { status: "present", definitions: [{ path: filename, executable: false }] }
         : { status: "unknown", reason: "unsafe-path-ownership" },
     );
+    expect(await isFreeBsdGatewayServiceAbsent({})).toBe(false);
     await operation();
   } finally {
     try {
@@ -55,7 +61,9 @@ async function withRcDefinition(status: keyof typeof reasons, operation: () => P
       expect([current.dev, current.ino, current.uid]).toEqual([owned.dev, owned.ino, 0]);
       expect(await fs.readFile(filename, "utf8")).toBe(contents);
       await fs.unlink(filename);
-      expect(await readFreeBsdGatewayServiceDiscovery({})).toMatchObject({ status: "absent" });
+      expect(await discoverFreeBsdService({ registerExitCleanup: onExit })).toMatchObject({
+        status: "absent",
+      });
     } finally {
       await handle.close();
     }

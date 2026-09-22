@@ -20,7 +20,6 @@ import {
   createFreeBsdPkgOwnershipInspection,
   type FreeBsdPkgOwnershipInspection,
 } from "../../infra/update-freebsd-pkg-ownership.js";
-import type { FreeBsdUpdateWriteAdmission } from "../../infra/update-freebsd-write-admission.js";
 import {
   canResolveRegistryVersionForPackageTarget,
   createGlobalInstallEnv,
@@ -49,8 +48,10 @@ import { pathExists } from "../../utils.js";
 import { COMPLETION_SKIP_PLUGIN_COMMANDS_ENV } from "../completion-runtime.js";
 import { isJsonOutputModeActive } from "../json-output-mode.js";
 import { resolveNodeRunner } from "./node-runner.js";
-import { updateCommandLedgerOptions } from "./update-command-ledger.js";
-import type { UpdateCommandLedgerAdmission } from "./update-command-ledger.js";
+import {
+  updateCommandLedgerOptions,
+  type UpdateCommandLedgerRun,
+} from "./update-command-ledger.js";
 
 export { resolveNodeRunner } from "./node-runner.js";
 
@@ -66,11 +67,9 @@ export type UpdateCommandOptions = {
   recovery?: unknown;
   reapplyLocalOverrides?: boolean;
   /** Internal orchestration context, shared across update phases and child processes. */
-  run?: {
-    runId: string;
+  run?: UpdateCommandLedgerRun & {
     defaultStepTimeoutMs?: number;
     activationTimeoutMs?: number;
-    env: NodeJS.ProcessEnv;
     /** Completion routing only; mutation authority remains with the live executor. */
     completionOwner?: "gateway-restart";
     /** The handoff helper acknowledged the foreground Gateway's closure. */
@@ -79,10 +78,6 @@ export type UpdateCommandOptions = {
     requesterAuthority?: UpdateRequesterAuthority;
     /** Live local executor only. A child must independently acquire its owner. */
     executorFence?: UpdateRecoveryFence;
-    /** Local filesystem admission, retained through failure and terminal reporting. */
-    freebsdWriteAdmission?: FreeBsdUpdateWriteAdmission;
-    /** Invocation-owned database generation. Never serialized or reused by a receiver. */
-    ledgerAdmission?: UpdateCommandLedgerAdmission;
   };
   acceptCapabilities?: boolean;
   json?: boolean;

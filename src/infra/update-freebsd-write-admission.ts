@@ -9,7 +9,7 @@ export type FreeBsdUpdateWriteAdmission = {
   revalidate: (assertAuthority: () => void, inspect?: () => Promise<void>) => Promise<void>;
 };
 
-export class FreeBsdUpdateWriteAdmissionError extends Error {
+class FreeBsdUpdateWriteAdmissionError extends Error {
   readonly reason = "freebsd-update-ownership";
 
   constructor() {

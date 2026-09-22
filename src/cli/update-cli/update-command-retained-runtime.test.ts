@@ -1,6 +1,5 @@
 import { expect, it, vi } from "vitest";
 import * as packageMetadata from "../../infra/update-check-package-target.js";
-import { FreeBsdUpdateWriteAdmissionError } from "../../infra/update-freebsd-write-admission.js";
 import * as retainedRuntime from "../../infra/update-retained-runtime.js";
 import { createUpdateRun, finishUpdateRun } from "../../infra/update-run-ledger.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-contract.js";
@@ -34,7 +33,9 @@ it.each(["current", "root revoked", "executor revoked"] as const)(
       ok: true,
       value: { nodeRunner: process.execPath },
     });
-    const rootFailure = new FreeBsdUpdateWriteAdmissionError();
+    const rootFailure = Object.assign(new Error("Fixture write authority revoked"), {
+      reason: "freebsd-update-ownership",
+    });
     const executorFailure = new UpdateCommandRecoveryPendingError("Executor revoked during copy");
     let rootRevoked = false;
     let revokeExecutor: () => void;
