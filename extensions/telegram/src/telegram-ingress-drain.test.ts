@@ -287,6 +287,14 @@ describe("createTelegramIngressMonitor", () => {
         reject: true,
       }),
     ),
+    {
+      name: "configured model alias",
+      updateKind: "message",
+      chat: { id: -1234, type: "supergroup", is_forum: true },
+      topic: { message_thread_id: 42, is_topic_message: true },
+      laneKey: "telegram:-1234:topic:42",
+      modelAlias: true,
+    },
   ])("replays promoted controls after restart: $name", async (testCase) => {
     await withTempState(async (stateDir) => {
       const queueOptions = { channelId: "telegram", accountId: "default", stateDir };
@@ -298,7 +306,7 @@ describe("createTelegramIngressMonitor", () => {
           from: { id: 111, is_bot: false, first_name: "Ada" },
           chat: testCase.chat,
           ...testCase.topic,
-          text: "/models@openclaw_bot",
+          text: "modelAlias" in testCase ? "/quick@openclaw_bot" : "/models@openclaw_bot",
         },
       };
       const eventId = String(update.update_id).padStart(16, "0");
@@ -316,14 +324,17 @@ describe("createTelegramIngressMonitor", () => {
       closeOpenClawStateDatabaseForTest();
 
       const queue = createChannelIngressQueueForTests<TelegramSpooledUpdatePayload>(queueOptions);
-      const controlLaneKey = `telegram:${testCase.chat.id}:control`;
+      const controlLaneKey = `telegram:${testCase.chat.id}:${"modelAlias" in testCase ? "model" : "control"}`;
       const dispatch = vi.fn(async () => {
         expect(await queue.listClaims()).toMatchObject([{ laneKey: controlLaneKey }]);
         return { kind: "completed" as const };
       });
       const monitor = createTelegramIngressMonitor({
         queue,
-        getConfig: () => cfg,
+        getConfig: () => ({
+          ...cfg,
+          agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },
+        }),
         accountId: "default",
         botInfo: {
           ...telegramBotInfoForTest,

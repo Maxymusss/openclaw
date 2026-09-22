@@ -13,6 +13,27 @@ import type {
   CommandDetection,
   CommandNormalizeOptions,
 } from "./commands-registry.types.js";
+import { extractModelDirective } from "./model.js";
+import { resolveConfiguredDirectiveAliases } from "./reply/get-reply-directive-aliases.js";
+
+/** Classify directive-only model selections without admitting accompanying agent work. */
+export function isStandaloneModelCommand(raw: string, cfg: OpenClawConfig): boolean {
+  const body = normalizeCommandBody(raw, { preserveArguments: true });
+  if (!body.startsWith("/")) {
+    return false;
+  }
+  const reservedCommands = new Set(
+    [...getCommandRegistryLookup().aliases.keys()].map((alias) => alias.slice(1)),
+  );
+  const parsed = extractModelDirective(body, {
+    aliases: resolveConfiguredDirectiveAliases({
+      cfg,
+      commandTextHasSlash: true,
+      reservedCommands,
+    }),
+  });
+  return parsed.hasDirective && !parsed.scopeConflict && parsed.cleaned.trim() === "";
+}
 
 type TextAliasSpec = {
   command: ChatCommandDefinition;

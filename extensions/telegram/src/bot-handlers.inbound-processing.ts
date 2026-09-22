@@ -158,7 +158,7 @@ export function createTelegramInboundProcessing({
     const botUsername = ctx.me?.username;
     const isAbortControlMessage = isAbortRequestText(messageText, { botUsername });
     const bypassTextBuffer =
-      isTelegramControlLaneText({ rawText: messageText, botUsername }) ||
+      isTelegramControlLaneText({ rawText: messageText, botUsername, cfg: authorizationCfg }) ||
       isBtwRequestText(messageText, { botUsername });
     let abortControlAuthorized: Promise<boolean> | undefined;
     const isAuthorizedAbortControlMessage = () => {

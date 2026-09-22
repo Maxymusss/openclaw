@@ -12,6 +12,7 @@ const DEBOUNCE_MS = 4321;
 
 function createDebouncedBot(native: boolean, commandSender = String(from.id)) {
   return createBot(native, true, {
+    agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },
     commands: { native, text: true, allowFrom: { telegram: [commandSender] } },
     messages: { inbound: { byChannel: { telegram: DEBOUNCE_MS } } },
     channels: {
@@ -73,6 +74,9 @@ function createTestLifetime(
 
 describe("Telegram commands during buffered message processing", () => {
   it.for([
+    { native: true, command: "/model fixture/next" },
+    { native: false, command: "/model fixture/next" },
+    { native: false, command: "/quick" },
     { native: true, command: "/status" },
     { native: false, command: "/status" },
     { native: true, command: "/btw check this" },

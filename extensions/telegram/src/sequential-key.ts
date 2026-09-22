@@ -9,6 +9,8 @@ import {
   isAbortRequestText,
   isBtwRequestText,
 } from "openclaw/plugin-sdk/command-primitives-runtime";
+import { isStandaloneModelCommand } from "openclaw/plugin-sdk/command-surface";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { hasTelegramApprovalCallbackPrefix } from "./approval-callback-data.js";
 import {
   getCachedTelegramForumFlag,
@@ -134,7 +136,22 @@ function isTelegramActiveRunControlLaneText(params: {
   return key !== undefined && TELEGRAM_ACTIVE_RUN_CONTROL_COMMAND_KEYS.has(key);
 }
 
+function isTelegramModelSelectionText(params: {
+  rawText?: string;
+  botUsername?: string;
+  cfg?: OpenClawConfig;
+}): boolean {
+  return isStandaloneModelCommand(
+    normalizeCommandBody(params.rawText ?? "", {
+      botUsername: params.botUsername,
+      preserveArguments: true,
+    }),
+    params.cfg ?? {},
+  );
+}
+
 export function isTelegramControlLaneText(params: {
+  cfg?: OpenClawConfig;
   rawText?: string;
   botUsername?: string;
 }): boolean {
@@ -146,13 +163,19 @@ export function isTelegramControlLaneText(params: {
   if (isAbortRequestText(params.rawText, abortCommandOptions)) {
     return true;
   }
+  if (isTelegramModelSelectionText(params)) {
+    return true;
+  }
   if (isTelegramActiveRunControlLaneText(params)) {
     return true;
   }
   return isTelegramReadOnlyControlLaneText(params);
 }
 
-export function getTelegramSequentialKey(ctx: TelegramSequentialKeyContext): string {
+export function getTelegramSequentialKey(
+  ctx: TelegramSequentialKeyContext,
+  cfg?: OpenClawConfig,
+): string {
   const reaction = ctx.update?.message_reaction;
   if (reaction?.chat?.id) {
     return `telegram:${reaction.chat.id}`;
@@ -182,7 +205,12 @@ export function getTelegramSequentialKey(ctx: TelegramSequentialKeyContext): str
   const chatId = msg?.chat?.id ?? ctx.chat?.id;
   const rawText = msg?.text ?? msg?.caption;
   const botUsername = ctx.me?.username;
-  if (isTelegramControlLaneText({ rawText, botUsername })) {
+  // Alias resolution can discover an executable skill and wait for ordinary
+  // admission. Keep that wait out of the inspection/interrupt lane.
+  if (isTelegramModelSelectionText({ rawText, botUsername, cfg })) {
+    return typeof chatId === "number" ? `telegram:${chatId}:model` : "telegram:model";
+  }
+  if (isTelegramControlLaneText({ rawText, botUsername, cfg })) {
     if (typeof chatId === "number") {
       return `telegram:${chatId}:control`;
     }
@@ -261,8 +289,9 @@ function getTelegramPollAnswerSequentialKey(entry: TelegramPollRegistryEntry): s
 
 export function getTelegramSequentialConstraints(
   ctx: TelegramSequentialKeyContext,
+  cfg?: OpenClawConfig,
 ): string | string[] {
-  const key = getTelegramSequentialKey(ctx);
+  const key = getTelegramSequentialKey(ctx, cfg);
   const messageKey = getTelegramMessageReactionSequentialKey(ctx);
   if (ctx.update?.message_reaction && messageKey) {
     return messageKey;

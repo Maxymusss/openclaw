@@ -14,7 +14,11 @@ import type { OpenClawConfig } from "../config/types.js";
 import type { SkillCommandSpec } from "../skills/types.js";
 import type { CommandTurnContext } from "./command-turn-context.js";
 import { listChatCommands, listChatCommandsForConfig } from "./commands-registry-list.js";
-import { normalizeCommandBody, resolveTextCommand } from "./commands-registry-normalize.js";
+import {
+  isStandaloneModelCommand,
+  normalizeCommandBody,
+  resolveTextCommand,
+} from "./commands-registry-normalize.js";
 import { getChatCommands } from "./commands-registry.data.js";
 import type {
   ChatCommandDefinition,
@@ -34,6 +38,7 @@ export {
 
 export {
   getCommandDetection,
+  isStandaloneModelCommand,
   maybeResolveTextAlias,
   normalizeCommandBody,
   resolveTextCommand,
@@ -234,6 +239,8 @@ export function isActiveRunSafeCommandTurn(params: {
             : null)
         )?.command;
   return (
+    ((command?.key === "model" || (commandTurn.kind === "text-slash" && !command)) &&
+      isStandaloneModelCommand(commandTurn.body ?? "", params.cfg)) ||
     command?.activeRunSafe === true ||
     (command?.key === "login" && /^\/login\s+cancel$/iu.test(commandTurn.body?.trim() ?? ""))
   );

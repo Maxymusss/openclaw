@@ -67,28 +67,36 @@ export function resolveTelegramAdoptionStallTimeoutMs(params: {
   return DEFAULT_INGRESS_ADOPTION_STALL_MS;
 }
 
-function telegramSpooledLaneKey(update: unknown, botInfo?: TelegramBotInfo): string {
-  return getTelegramSequentialKey({
-    update: update as Parameters<typeof getTelegramSequentialKey>[0]["update"],
-    ...(botInfo ? { me: botInfo } : {}),
-  });
+function telegramSpooledLaneKey(
+  update: unknown,
+  botInfo?: TelegramBotInfo,
+  cfg?: OpenClawConfig,
+): string {
+  return getTelegramSequentialKey(
+    {
+      update: update as Parameters<typeof getTelegramSequentialKey>[0]["update"],
+      ...(botInfo ? { me: botInfo } : {}),
+    },
+    cfg,
+  );
 }
 
 function inspectTelegramSpooledUpdate(
   update: unknown,
   botInfo?: TelegramBotInfo,
   claimedLaneKey?: string,
+  cfg?: OpenClawConfig,
 ) {
   const updateId = resolveTelegramUpdateId(update);
   if (updateId === null) {
     throw new TelegramIngressPayloadError("Telegram spooled update is missing numeric update_id.");
   }
-  const derivedLaneKey = telegramSpooledLaneKey(update, botInfo);
+  const derivedLaneKey = telegramSpooledLaneKey(update, botInfo, cfg);
   const preservePreIdentityControlLane =
     botInfo !== undefined &&
     claimedLaneKey?.endsWith(":control") === true &&
     claimedLaneKey !== derivedLaneKey &&
-    claimedLaneKey === telegramSpooledLaneKey(update);
+    claimedLaneKey === telegramSpooledLaneKey(update, undefined, cfg);
   return {
     eventId: telegramQueueEventId(updateId),
     // Admission can precede getMe(). Preserve only the exact control lane that
@@ -111,6 +119,7 @@ function canReconcileTelegramLegacyLane(params: {
   derivedLaneKey: string;
   accountId: string;
   botInfo?: TelegramBotInfo;
+  cfg?: OpenClawConfig;
 }): boolean {
   if (
     params.record.channelId !== "telegram" ||
@@ -226,8 +235,9 @@ function canReconcileTelegramLegacyLane(params: {
   const baseLaneKey = `telegram:${chatId}`;
   if (
     callback === undefined &&
-    params.derivedLaneKey === `${baseLaneKey}:control` &&
-    telegramSpooledLaneKey(update, params.botInfo) === params.derivedLaneKey
+    (params.derivedLaneKey === `${baseLaneKey}:control` ||
+      params.derivedLaneKey === `${baseLaneKey}:model`) &&
+    telegramSpooledLaneKey(update, params.botInfo, params.cfg) === params.derivedLaneKey
   ) {
     if (
       (!isPrivateChat && !isGroupChat && !(chatType === "channel" && chatId < 0)) ||
@@ -274,7 +284,7 @@ function canReconcileTelegramLegacyLane(params: {
         !hasTelegramQuestionCallbackPrefix(callbackData) &&
         params.storedLaneKey === previousLaneKey) &&
     params.derivedLaneKey === canonicalLaneKey &&
-    telegramSpooledLaneKey(update, params.botInfo) === canonicalLaneKey
+    telegramSpooledLaneKey(update, params.botInfo, params.cfg) === canonicalLaneKey
   );
 }
 
@@ -333,6 +343,7 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         update,
         params.botInfo,
         context.phase === "claim" ? context.claimedLaneKey : undefined,
+        params.getConfig(),
       );
     },
     inspectAsync: async (update, context) => {
@@ -348,6 +359,7 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         update,
         params.botInfo,
         context.phase === "claim" ? context.claimedLaneKey : undefined,
+        params.getConfig(),
       );
     },
     payload: {
@@ -499,12 +511,14 @@ export function createTelegramIngressMonitor(params: CreateTelegramIngressMonito
         accountId: params.accountId,
         ...(params.botInfo?.username ? { botUsername: params.botInfo.username } : {}),
       }),
-      deriveLaneKey: (record) => telegramSpooledLaneKey(record.payload.update, params.botInfo),
+      deriveLaneKey: (record) =>
+        telegramSpooledLaneKey(record.payload.update, params.botInfo, params.getConfig()),
       reconcileStoredLaneKey: (record, storedLaneKey, derivedLaneKey) =>
         canReconcileTelegramLegacyLane({
           record,
           storedLaneKey,
           derivedLaneKey,
+          cfg: params.getConfig(),
           accountId: params.accountId,
           botInfo: params.botInfo,
         }),

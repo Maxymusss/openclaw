@@ -39,6 +39,12 @@ OpenAI API-key and ChatGPT/Codex subscription credentials remain distinct. See
 [Agent runtimes](/concepts/agent-runtimes) and
 [GitHub Copilot agent runtime](/plugins/copilot).
 
+Standalone `/model` selections and configured model shortcuts can be acknowledged
+while a turn is active, including on Telegram. The existing runtime model-switch
+rules still control when the running agent adopts the selection; command admission
+does not cancel or replay its work. Messages that combine a model directive with a
+task keep ordinary message ordering.
+
 ## Selection order
 
 <Steps>

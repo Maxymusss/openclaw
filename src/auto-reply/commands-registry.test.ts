@@ -284,6 +284,22 @@ describe("commands registry", () => {
     },
   );
 
+  it.each([
+    ["/model fixture/next", "model", true],
+    ["/quick", "quick", true],
+    ["/quick do work", "quick", false],
+    ["/model fixture/next do work", "model", false],
+  ])("requires authorization for active model selection %s", (body, commandName, expected) => {
+    for (const authorized of [true, false]) {
+      expect(
+        isActiveRunSafeCommandTurn({
+          commandTurn: createCommandTurnContext("text", { authorized, commandName, body }),
+          cfg: { agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } } },
+        }),
+      ).toBe(authorized && expected);
+    }
+  });
+
   it("exposes /side as a BTW text and native alias", () => {
     const btw = requireChatCommand("btw");
     expect(btw.nativeName).toBe("btw");

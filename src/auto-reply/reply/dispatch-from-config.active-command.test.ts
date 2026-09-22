@@ -2,6 +2,7 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred, raceWithTimeoutResult } from "../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../config/config.js";
+import * as skillCommands from "../../skills/discovery/chat-commands.js";
 import { markCommandReplyForDelivery } from "../reply-payload.js";
 import {
   createDispatcher,
@@ -23,11 +24,15 @@ beforeEach(() => {
   describe0BeforeEach0();
   setDiscordTestRegistry();
   setNoAbort();
+  vi.spyOn(skillCommands, "prepareSkillCommandsForWorkspace").mockResolvedValue([]);
 });
 afterEach(() => vi.restoreAllMocks());
 
 describe("dispatch active command admission", () => {
   it.each([
+    { source: "text", body: "/model fixture/next", commandName: "model" },
+    { source: "native", body: "/model fixture/next", commandName: "model" },
+    { source: "text", body: "/quick", commandName: "quick" },
     { source: "text", body: "/think high", commandName: "think" },
     { source: "text", body: "/help", commandName: "help" },
     { source: "native", body: "/help", commandName: "help" },
@@ -75,6 +80,7 @@ describe("dispatch active command admission", () => {
           BodyForAgent: body,
         }),
         cfg: {
+          agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },
           diagnostics: { enabled: true },
           session: { sendPolicy: { default: "allow" } },
         } as OpenClawConfig,
@@ -104,6 +110,7 @@ describe("dispatch active command admission", () => {
   );
 
   it.each([
+    { source: "text", body: "/quick", commandName: "quick", authorized: true },
     { source: "text", body: "/bash echo unsafe", commandName: "bash", authorized: true },
     { source: "native", body: "/compact", commandName: "compact", authorized: true },
     { source: "text", body: "/reset", commandName: "reset", authorized: false },
@@ -113,6 +120,16 @@ describe("dispatch active command admission", () => {
   ] as const)(
     "keeps $source $body (authorized=$authorized) behind active-session admission",
     async ({ source, body, commandName, authorized }) => {
+      if (commandName === "quick") {
+        vi.mocked(skillCommands.prepareSkillCommandsForWorkspace).mockResolvedValue([
+          {
+            name: "quick",
+            skillName: "quick",
+            description: "Tool command",
+            dispatch: { kind: "tool", toolName: "exec", argMode: "raw" },
+          },
+        ]);
+      }
       const sessionKey = "agent:main:executable-command-active";
       const activeOperation = createReplyOperation({
         sessionKey,
@@ -144,6 +161,7 @@ describe("dispatch active command admission", () => {
           BodyForAgent: body,
         }),
         cfg: {
+          agents: { defaults: { models: { "fixture/next": { alias: "quick" } } } },
           diagnostics: { enabled: true },
           session: { sendPolicy: { default: "allow" } },
         } as OpenClawConfig,

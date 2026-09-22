@@ -18,6 +18,38 @@ const mockMessage = (message: Pick<Message, "chat"> & Partial<Message>): Message
 
 describe("getTelegramSequentialKey", () => {
   it.each([
+    ["/model fixture/next", true],
+    ["/quick", true],
+    ["/quick@our_bot", true],
+    ["/quick@other_bot", false],
+    ["/model fixture/next and do work", false],
+    ["/model fixture/next\ndo work", false],
+    ["/quick do work", false],
+    ["/unknown", false],
+    ["/reset", false],
+  ])("routes standalone model selection %s without admitting prose", (text, control) => {
+    const cfg = {
+      agents: {
+        defaults: {
+          models: {
+            "fixture/next": { alias: "quick" },
+            "fixture/collision": { alias: "reset" },
+          },
+        },
+      },
+    };
+    expect(
+      getTelegramSequentialKey(
+        {
+          me: { username: "our_bot" } as never,
+          message: mockMessage({ chat: mockChat({ id: 123 }), text }),
+        },
+        cfg,
+      ),
+    ).toBe(control ? "telegram:123:model" : "telegram:123");
+  });
+
+  it.each([
     [{ message: mockMessage({ chat: mockChat({ id: 123 }) }) }, "telegram:123"],
     [
       {

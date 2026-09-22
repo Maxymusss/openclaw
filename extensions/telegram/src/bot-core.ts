@@ -267,7 +267,7 @@ export function createTelegramBotCore(
     await next();
   });
 
-  bot.use(botRuntime.sequentialize(getTelegramSequentialConstraints));
+  bot.use(botRuntime.sequentialize((ctx) => getTelegramSequentialConstraints(ctx, cfg)));
 
   // A fast vote can know its route before outbound verification finishes. Hold
   // only that route's sequential lane until registration succeeds or declines it.

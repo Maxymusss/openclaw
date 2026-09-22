@@ -18,11 +18,16 @@ import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { claimSessionPendingInputDedupeRecovery } from "../../config/sessions/session-accessor.pending-inputs.js";
 import { logVerbose } from "../../globals.js";
 import { getSessionBindingService } from "../../infra/outbound/session-binding-service.js";
+import { matchPluginCommand } from "../../plugins/commands.js";
 import { toPluginConversationBinding } from "../../plugins/conversation-binding.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
 import { resolveCommandTurnContext } from "../command-turn-context.js";
-import { isActiveRunSafeCommandTurn } from "../commands-registry.js";
+import {
+  isActiveRunSafeCommandTurn,
+  isStandaloneModelCommand,
+  resolveTextCommand,
+} from "../commands-registry.js";
 import type { ReplyPayload } from "../reply-payload.js";
 import { resolveConversationBindingContextFromMessage } from "./conversation-binding-input.js";
 import { capturePendingConversationTurnReply } from "./conversation-turn-capture.js";
@@ -361,13 +366,37 @@ export async function prepareDispatchOperationContext(state: PrepareDispatchDeli
         }
       : result;
   const explicitCommandTurnCtx = isExplicitSourceReplyCommand(ctx, cfg);
-  const activeRunSafeCommandTurn =
+  const commandTurn = resolveCommandTurnContext(ctx);
+  let activeRunSafeCommandTurn =
     explicitCommandTurnCtx &&
     isActiveRunSafeCommandTurn({
-      commandTurn: resolveCommandTurnContext(ctx),
+      commandTurn,
       cfg,
       provider: ctx.Provider ?? ctx.Surface,
     });
+  if (
+    activeRunSafeCommandTurn &&
+    commandTurn.kind === "text-slash" &&
+    !resolveTextCommand(commandTurn.body ?? "", cfg) &&
+    isStandaloneModelCommand(commandTurn.body ?? "", cfg)
+  ) {
+    // A configured model alias cannot grant concurrent execution to a plugin or
+    // skill command that owns the same name. Use the directive owner's discovery.
+    const { prepareSkillCommandsForWorkspace } =
+      await import("../../skills/discovery/chat-commands.js");
+    const skillCommands = await prepareSkillCommandsForWorkspace({
+      cfg,
+      agentId: sessionAgentId,
+      workspaceDir: resolveAgentWorkspaceDir(cfg, sessionAgentId),
+      sessionEntry: sessionStoreEntry.entry,
+      sessionKey,
+    });
+    activeRunSafeCommandTurn =
+      !matchPluginCommand(commandTurn.body ?? "", { channel: ctx.Provider ?? ctx.Surface }) &&
+      !skillCommands.some(
+        (command) => command.name.toLowerCase() === commandTurn.commandName?.toLowerCase(),
+      );
+  }
   const unauthorizedTextSlashSourceReplyCtx =
     (chatType === "group" || chatType === "channel") && isUnauthorizedTextSlashCommand(ctx);
   const shouldDeliverPluginBindingReply =

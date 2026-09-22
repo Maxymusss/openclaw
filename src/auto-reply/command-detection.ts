@@ -6,7 +6,7 @@ import {
 import type { OpenClawConfig } from "../config/types.js";
 import { matchPluginCommand } from "../plugins/commands.js";
 import { listChatCommands, listChatCommandsForConfig } from "./commands-registry-list.js";
-import { normalizeCommandBody } from "./commands-registry-normalize.js";
+import { isStandaloneModelCommand, normalizeCommandBody } from "./commands-registry-normalize.js";
 import type { CommandNormalizeOptions } from "./commands-registry.types.js";
 import { isAbortTrigger } from "./reply/abort-trigger-text.js";
 import { stripInboundMetadata } from "./reply/strip-inbound-meta.js";
@@ -51,7 +51,7 @@ export function hasControlCommand(
       }
     }
   }
-  return false;
+  return cfg !== undefined && isStandaloneModelCommand(normalizedBody, cfg);
 }
 
 /** Returns true for exact control commands or abort triggers after metadata stripping. */
