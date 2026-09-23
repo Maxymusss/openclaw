@@ -328,7 +328,7 @@ describe("Activity recap lifecycle with the canonical session store", () => {
         totalMessages: 1,
       });
 
-      const published = createDeferred<void>();
+      const published = createDeferred();
       changed.mockImplementation(() => {
         if (view()?.state === "current" && view()?.text === "Completed the first turn.") {
           published.resolve();
