@@ -23,6 +23,10 @@ export function releaseGhRetryDelayMs(
   deadlineMonotonicMs?: number,
   nowMonotonicMs?: number,
 ): number;
+export function releaseStatePollIntervalMs(
+  mode: "decision" | "drain",
+  configuredValue?: string,
+): number;
 export function updateReleaseTransportEpisode(
   previous: ReleaseRecord | undefined,
   children: ReleaseRecord[],
