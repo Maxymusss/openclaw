@@ -411,7 +411,7 @@ export async function prepareVitestRuntime(
   });
 }
 
-export function isE2eBuildSkipped(env: NodeJS.ProcessEnv) {
+function isE2eBuildSkipped(env: NodeJS.ProcessEnv) {
   return env.OPENCLAW_E2E_SKIP_BUILD === "1" || env.OPENCLAW_E2E_USE_PREBUILT_DIST === "1";
 }
 
