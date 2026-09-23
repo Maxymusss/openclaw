@@ -18,47 +18,53 @@ const user = {
   role: "user",
   content: "Check the workspace.",
   timestamp: 1,
-  __openclaw: { id: "user-preamble", idempotencyKey: `${runId}:user` },
+  __openclaw: { id: "user-preamble", idempotencyKey: runId + ":user" },
 };
-const preamble = (text: string, timestamp: number, itemId: string) => ({
+const preamble = (text: string, timestamp: number, itemId: string, owner = runId) => ({
   role: "assistant",
   content: text,
   timestamp,
-  runId,
-  openclawStreamFallback: { source: "segment", itemId, runId, replacementText: text },
+  runId: owner,
+  openclawStreamFallback: { source: "segment", itemId, runId: owner, replacementText: text },
 });
 
-it("replaces the live status with the latest owned commentary without duplicating it", () => {
+it("keeps successive commentary inline and formatted across the live-to-history handoff", () => {
   const container = document.createElement("div");
   const earlier = preamble("Reading the files.", 2, "read");
+  const detail = "Checking the caller and its lifecycle. ".repeat(25);
+  const text = "**Checking** tests.\n\n" + detail + "End of the explanation.";
   const props = { runActive: true, runId, messages: [user, earlier], streamStartedAt: 1 };
   renderChatInto(container, {
     ...props,
-    streamSegments: [{ text: "**Checking** tests.", ts: 3, runId, itemId: "test" }],
+    streamSegments: [{ text, ts: 3, runId, itemId: "test" }],
   });
-  const status = () => container.querySelector(".chat-working-indicator__preamble");
-  expect(status()?.textContent).toBe("Checking tests.");
-  expect(status()?.getAttribute("title")).toBe("Checking tests.");
-  expect(container.textContent?.match(/Checking tests\./g)).toHaveLength(1);
-  expect(container.textContent).toContain("Reading the files.");
+  const narration = () => container.querySelectorAll(".chat-group.assistant .chat-text");
+  const content = () => Array.from(narration(), (element) => element.textContent?.trim());
+  expect(content()).toEqual(["Reading the files.", expect.stringContaining(detail)]);
+  expect(narration()[1]?.querySelector("strong")?.textContent).toBe("Checking");
+  expect(narration()[1]?.textContent).toContain("End of the explanation.");
+  expect(container.querySelector(".chat-working-indicator")?.textContent).not.toContain("Checking");
 
-  // Same status identity, different content: exercise the continuation render cache.
   renderChatInto(container, {
     ...props,
-    streamSegments: [
-      { text: "Checking tests.", ts: 3, runId, itemId: "test" },
-      { text: "Reviewing the result.", ts: 4, runId, itemId: "review" },
-      { text: "Another run.", ts: 5, runId: "sibling", itemId: "foreign" },
-    ],
+    messages: [...props.messages, preamble(text, 3, "test")],
+    streamSegments: [{ text: "Reviewing the result.", ts: 4, runId, itemId: "review" }],
   });
-  expect(status()?.textContent).toBe("Reviewing the result.");
-  expect(container.textContent?.match(/Reviewing the result\./g)).toHaveLength(1);
-  expect(container.querySelector("openclaw-working-phrase")).toBeNull();
+  expect(content()).toEqual([
+    "Reading the files.",
+    expect.stringContaining(detail),
+    "Reviewing the result.",
+  ]);
+  expect(container.textContent?.match(/End of the explanation\./g)).toHaveLength(1);
+  expect(container.querySelector(".chat-working-indicator")?.textContent).not.toContain(
+    "Reviewing",
+  );
 });
 
-it("keeps the latest durable preamble live with history hidden, then clears on settlement", () => {
+it("keeps only the active run's durable commentary inline when commentary retention is off", () => {
   const container = document.createElement("div");
-  const messages = [user, preamble("Checking the result.", 2, "check")];
+  const old = preamble("Older run's commentary.", 0, "old", "old-run");
+  const messages = [old, user, preamble("Checking the result.", 2, "check")];
   renderChatInto(container, {
     runActive: true,
     runId,
@@ -66,23 +72,23 @@ it("keeps the latest durable preamble live with history hidden, then clears on s
     streamStartedAt: 1,
     persistCommentary: false,
   });
-  expect(container.querySelector(".chat-working-indicator__preamble")?.textContent).toBe(
+  expect(container.querySelector(".chat-group.assistant .chat-text")?.textContent?.trim()).toBe(
     "Checking the result.",
   );
+  expect(container.textContent).not.toContain("Older run's commentary.");
   renderChatInto(container, {
     runActive: false,
     runId: null,
     messages,
     persistCommentary: false,
   });
-  expect(container.querySelector(".chat-working-indicator__preamble")).toBeNull();
   expect(container.textContent).not.toContain("Checking the result.");
   renderChatInto(container, { messages, persistCommentary: true });
   expect(container.textContent).toContain("Checking the result.");
-  expect(messages).toHaveLength(2);
+  expect(messages).toHaveLength(3);
 });
 
-it("leaves unphased answers and mixed-phase final text in the transcript", () => {
+it("leaves unphased answers and mixed-phase narration and final text in the transcript", () => {
   const container = document.createElement("div");
   renderChatInto(container, {
     runActive: true,
@@ -110,10 +116,12 @@ it("leaves unphased answers and mixed-phase final text in the transcript", () =>
       },
     ],
   });
-  expect(container.textContent).toContain("Unphased answer.");
-  expect(container.textContent).toContain("The result is ready.");
-  expect(container.querySelector(".chat-working-indicator__preamble")?.textContent).toBe(
-    "Checking once more.",
-  );
+  const narration = Array.from(
+    container.querySelectorAll(".chat-group.assistant .chat-text"),
+    (element) => element.textContent,
+  ).join("\n");
+  expect(narration).toContain("Unphased answer.");
+  expect(narration).toContain("The result is ready.");
+  expect(narration).toContain("Checking once more.");
   expect(container.textContent?.match(/Checking once more\./g)).toHaveLength(1);
 });
