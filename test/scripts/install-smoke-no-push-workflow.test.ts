@@ -121,9 +121,12 @@ describe("install smoke no-push root image transport", () => {
     });
 
     const preflight = job(workflow, "preflight");
-    expect(preflight.outputs?.workflow_repository).toBeUndefined();
-    expect(preflight.outputs?.workflow_sha).toBeUndefined();
+    expect(preflight.outputs).toMatchObject({
+      workflow_repository: "${{ steps.workflow.outputs.workflow_repository }}",
+      workflow_sha: "${{ steps.workflow.outputs.workflow_sha }}",
+    });
     const workflowIdentity = step(preflight, "Assert trusted workflow identity");
+    expect(workflowIdentity.id).toBe("workflow");
     expect(workflowIdentity.env).toEqual({
       EXPECTED_WORKFLOW_REPOSITORY: "${{ github.repository }}",
       JOB_CONTEXT: "${{ toJSON(job) }}",
@@ -141,6 +144,7 @@ describe("install smoke no-push root image transport", () => {
       "sparse-checkout": "scripts/resolve-fs-safe-native-contract.mjs",
     });
 
+    const identityOutput = path.join(tempDirs.make("install-smoke-workflow-identity-"), "output");
     const identityResult = spawnSync(
       "bash",
       ["--noprofile", "--norc", "-c", workflowIdentity.run!],
@@ -149,7 +153,7 @@ describe("install smoke no-push root image transport", () => {
         env: {
           ...process.env,
           EXPECTED_WORKFLOW_REPOSITORY: "openclaw/openclaw",
-          GITHUB_OUTPUT: "/dev/null",
+          GITHUB_OUTPUT: identityOutput,
           GITHUB_WORKFLOW_SHA: "a".repeat(40),
           JOB_CONTEXT: JSON.stringify({
             workflow_repository: "openclaw/openclaw",
@@ -159,6 +163,9 @@ describe("install smoke no-push root image transport", () => {
       },
     );
     expect(identityResult.status, identityResult.stderr).toBe(0);
+    expect(readFileSync(identityOutput, "utf8")).toBe(
+      `workflow_repository=openclaw/openclaw\nworkflow_sha=${"b".repeat(40)}\n`,
+    );
     const workflowText = JSON.stringify(workflow);
     expect(workflowText).not.toContain("${{ github.workflow_sha }}");
     expect(workflowText).not.toContain("fromJSON(toJSON(job)).workflow_");
@@ -171,6 +178,32 @@ describe("install smoke no-push root image transport", () => {
         continue;
       }
       trustedJobs.push(jobName);
+      if (jobName === "install-smoke-fast") {
+        expect(workflowJob.needs).toEqual(["preflight"]);
+        expect(trustedCheckouts.map((checkout) => checkout.name)).toEqual([
+          "Checkout trusted build warning relay",
+        ]);
+        const relay = trustedCheckouts[0]!;
+        expect(relay.if).toBeUndefined();
+        expect(relay.uses).toBe("actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1");
+        expect(relay.with).toMatchObject({
+          repository: "${{ needs.preflight.outputs.workflow_repository }}",
+          ref: "${{ needs.preflight.outputs.workflow_sha }}",
+          path: ".artifacts/build-warning-harness",
+          "persist-credentials": false,
+          "sparse-checkout-cone-mode": false,
+        });
+        expect(String(relay.with?.["sparse-checkout"]).trim().split(/\r?\n/u)).toEqual([
+          "scripts/relay-build-limit-warnings.mts",
+          "scripts/lib/check-limits.mts",
+        ]);
+        const build = step(workflowJob, "Build root Dockerfile smoke image");
+        expect(workflowJob.steps!.indexOf(relay)).toBeLessThan(workflowJob.steps!.indexOf(build));
+        expect(build.run).toContain(
+          "node .artifacts/build-warning-harness/scripts/relay-build-limit-warnings.mts",
+        );
+        continue;
+      }
       const resolver = step(workflowJob, "Restore exact trusted workflow revision");
       expect(resolver.env, jobName).toMatchObject({
         EXPECTED_WORKFLOW_REPOSITORY: "${{ github.repository }}",
@@ -199,6 +232,7 @@ describe("install smoke no-push root image transport", () => {
     expect(trustedJobs.toSorted()).toEqual(
       [
         "bun_global_install_smoke",
+        "install-smoke-fast",
         "installer_smoke_candidate_payload",
         "installer_smoke_nonroot",
         "installer_smoke_nonroot_image",
