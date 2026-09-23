@@ -155,7 +155,7 @@ describe("interactive update failure action", () => {
     [
       "duplicate fallback with a retired locator",
       { status: "duplicate", fallbackUrl: "https://github.com/openclaw/openclaw/issues/new" },
-      "Existing prefilled issue: https://github.com/openclaw/openclaw/issues/new",
+      undefined,
     ],
     ["pending", { status: "pending" }, undefined],
     ["unsaved stale", { status: "stale" }, undefined],
@@ -182,7 +182,7 @@ describe("interactive update failure action", () => {
     },
   );
 
-  it("keeps the saved report path beside an ordinary browser fallback", async () => {
+  it("returns a fallback to the action menu without opening or printing a browser link", async () => {
     const fixture = setup("report", true);
     fixture.submit.mockResolvedValue({
       status: "fallback",
@@ -193,7 +193,10 @@ describe("interactive update failure action", () => {
 
     await expect(fixture.run()).resolves.toBe("handled");
 
-    expect(fixture.runtime.log).toHaveBeenCalledWith(`Prefilled issue: ${fixture.prepared.url}`);
+    expect(fixture.chooseAction).toHaveBeenCalledTimes(2);
+    expect(fixture.runtime.log).not.toHaveBeenCalledWith(
+      `Prefilled issue: ${fixture.prepared.url}`,
+    );
     expect(fixture.runtime.log).toHaveBeenCalledWith(
       `Saved sanitized report: ${fixture.prepared.savedReportPath}`,
     );
@@ -215,7 +218,7 @@ describe("interactive update failure action", () => {
       });
 
     await expect(fixture.run()).resolves.toBe("handled");
-    expect(fixture.prepare).toHaveBeenCalledTimes(2);
+    expect(fixture.prepare).toHaveBeenCalledOnce();
     expect(fixture.submit).toHaveBeenCalledTimes(2);
     expect(fixture.chooseAction).toHaveBeenCalledTimes(2);
     expect(mocks.confirm).toHaveBeenCalledTimes(2);
@@ -223,6 +226,25 @@ describe("interactive update failure action", () => {
     expect(fixture.runtime.log).toHaveBeenCalledWith(
       "Created GitHub issue: https://github.com/openclaw/openclaw/issues/123",
     );
+  });
+
+  it("retains the reviewed report across repeated thrown uploads before success", async () => {
+    const fixture = setup(["report", "report", "report"], true);
+    fixture.submit
+      .mockRejectedValueOnce(new Error("transport failed"))
+      .mockRejectedValueOnce(new Error("still unavailable"));
+
+    await expect(fixture.run()).resolves.toBe("handled");
+
+    expect(fixture.chooseAction).toHaveBeenCalledTimes(3);
+    expect(fixture.prepare).toHaveBeenCalledOnce();
+    expect(fixture.submit).toHaveBeenCalledTimes(3);
+    expect(mocks.confirm).toHaveBeenCalledTimes(3);
+    expect(fixture.runtime.error).toHaveBeenCalledTimes(2);
+    for (const [report, digest] of fixture.submit.mock.calls) {
+      expect(report).toBe(fixture.prepared);
+      expect(digest).toBe(fixture.prepared.previewDigest);
+    }
   });
 
   it("does nothing when the action menu is dismissed", async () => {

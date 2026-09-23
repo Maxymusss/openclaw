@@ -7,6 +7,7 @@ import {
   prepareUpdateFailureReport,
   submitUpdateFailureReport,
   type UpdateFailureReportSubmitResult,
+  type PreparedUpdateFailureReport,
 } from "../../infra/update-failure-report.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
@@ -21,18 +22,13 @@ function renderSubmissionResult(result: UpdateFailureReportSubmitResult): string
   if (result.status === "fallback") {
     return [
       `GitHub issue creation was unavailable: ${result.message}`,
-      `Prefilled issue: ${result.fallbackUrl}`,
       `Saved sanitized report: ${result.savedReportPath}`,
     ];
   }
   if (result.status === "retryable") {
     return [result.message];
   }
-  return [
-    result.message,
-    ...(result.url ? [`Existing issue: ${result.url}`] : []),
-    ...(result.fallbackUrl ? [`Existing prefilled issue: ${result.fallbackUrl}`] : []),
-  ];
+  return [result.message, ...(result.url ? [`Existing issue: ${result.url}`] : [])];
 }
 
 /** Offers report as a distinct interactive action; callers retain triage ownership. */
@@ -44,6 +40,8 @@ export async function runInteractiveUpdateFailureAction(params: {
   rollbackCompleted?: boolean;
   runtime: Pick<RuntimeEnv, "error" | "log">;
 }): Promise<"triage" | "handled"> {
+  let prepared: PreparedUpdateFailureReport | undefined;
+  const stateDir = resolveStateDir(params.env);
   while (true) {
     const action = await select<UpdateFailureAction>({
       message: params.rollbackCompleted
@@ -69,24 +67,25 @@ export async function runInteractiveUpdateFailureAction(params: {
         steps: [],
         durationMs: 0,
       };
-      const stateDir = resolveStateDir(params.env);
-      let recordedRun: ReturnType<typeof getUpdateRun>;
-      try {
-        recordedRun = getUpdateRun(params.attemptId, { env: params.env });
-      } catch {
-        // A missing or locked ledger must not prevent reporting the direct failure.
+      if (!prepared) {
+        let recordedRun: ReturnType<typeof getUpdateRun>;
+        try {
+          recordedRun = getUpdateRun(params.attemptId, { env: params.env });
+        } catch {
+          // A missing or locked ledger must not prevent reporting the direct failure.
+        }
+        prepared = await prepareUpdateFailureReport(
+          {
+            attemptId: params.attemptId,
+            action: "cli",
+            ...(params.error ? { error: params.error } : {}),
+            result,
+            recordedRun,
+            ...(result.after?.upstreamRef ? { target: result.after.upstreamRef } : {}),
+          },
+          { env: params.env, stateDir },
+        );
       }
-      const prepared = await prepareUpdateFailureReport(
-        {
-          attemptId: params.attemptId,
-          action: "cli",
-          ...(params.error ? { error: params.error } : {}),
-          result,
-          recordedRun,
-          ...(result.after?.upstreamRef ? { target: result.after.upstreamRef } : {}),
-        },
-        { env: params.env, stateDir },
-      );
       params.runtime.log("Sanitized update failure report preview:");
       params.runtime.log(prepared.body);
       const confirmed = await confirm({
@@ -100,11 +99,12 @@ export async function runInteractiveUpdateFailureAction(params: {
       const submitted = await submitUpdateFailureReport(prepared, prepared.previewDigest, {
         env: params.env,
         stateDir,
+        allowBrowserFallback: false,
       });
       for (const line of renderSubmissionResult(submitted)) {
         params.runtime.log(line);
       }
-      if (submitted.status !== "retryable") {
+      if (submitted.status === "created" || (submitted.status === "duplicate" && submitted.url)) {
         return "handled";
       }
     } catch (error) {

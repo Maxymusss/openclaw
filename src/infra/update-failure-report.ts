@@ -43,6 +43,10 @@ import {
   UpdateReportPreCreateGuardError,
 } from "./update-failure-report-precreate.js";
 import type { PreparedUpdateFailureReport } from "./update-failure-report-prepare.js";
+import {
+  resultFromExistingReceipt,
+  type UpdateFailureReportSubmitResult,
+} from "./update-failure-report-result.js";
 
 export { prepareUpdateFailureReport } from "./update-failure-report-prepare.js";
 export type {
@@ -50,97 +54,7 @@ export type {
   UpdateFailureReportInput,
 } from "./update-failure-report-prepare.js";
 
-export type UpdateFailureReportSubmitResult =
-  | { message?: string; savedReportPath: string; status: "created"; url: string }
-  | {
-      fallbackUrl: string;
-      message: string;
-      savedReportPath: string;
-      status: "fallback";
-    }
-  | {
-      fallbackUrl?: string;
-      message: string;
-      savedReportPath: string;
-      status: "duplicate";
-      url?: string;
-    }
-  | {
-      fallbackUrl?: undefined;
-      message: string;
-      savedReportPath: string;
-      status: "pending";
-      url?: undefined;
-    }
-  | {
-      fallbackUrl?: undefined;
-      message: string;
-      savedReportPath: string;
-      status: "retryable";
-      url?: undefined;
-    }
-  | {
-      fallbackUrl?: undefined;
-      message: string;
-      savedReportPath: string;
-      status: "stale";
-      url?: undefined;
-    };
-
-function resultFromExistingReceipt(
-  receipt: UpdateFailureReportReceipt | null,
-  savedReportPath: string,
-  expectedPreviewDigest: string,
-  expectedFallbackUrl: string | undefined,
-): UpdateFailureReportSubmitResult {
-  if (receipt?.status === "pending") {
-    return {
-      message: "This update attempt already has a report submission in progress.",
-      savedReportPath,
-      status: "pending",
-    };
-  }
-  if (receipt?.status === "preparing") {
-    return {
-      message: "This update attempt already has a report preparation in progress.",
-      savedReportPath,
-      status: "retryable",
-    };
-  }
-  if (receipt?.status === "prepared") {
-    return {
-      message: "This update attempt already has a report publication in progress.",
-      savedReportPath,
-      status: "retryable",
-    };
-  }
-  if (receipt?.status === "retryable") {
-    return {
-      message: "No GitHub issue submission was started. This report can be retried.",
-      savedReportPath,
-      status: "retryable",
-    };
-  }
-  const previewMatches = receipt?.previewDigest === expectedPreviewDigest;
-  const matchingFallbackUrl =
-    previewMatches && receipt?.status === "fallback" && receipt.fallbackUrl === expectedFallbackUrl
-      ? receipt.fallbackUrl
-      : undefined;
-  return {
-    status: "duplicate",
-    savedReportPath,
-    ...(previewMatches && receipt?.url ? { url: receipt.url } : {}),
-    ...(matchingFallbackUrl ? { fallbackUrl: matchingFallbackUrl } : {}),
-    message:
-      receipt && !previewMatches
-        ? "This update attempt has a report result for a different reviewed preview."
-        : receipt?.status === "fallback" && !matchingFallbackUrl
-          ? "This update attempt has a report handoff for a different reviewed preview."
-          : receipt
-            ? "This update attempt was already reported."
-            : "This update attempt already has a report reservation.",
-  };
-}
+export type { UpdateFailureReportSubmitResult } from "./update-failure-report-result.js";
 
 function receiptMatches(
   receipt: UpdateFailureReportReceipt | null,
@@ -216,6 +130,8 @@ export async function submitUpdateFailureReport(
     env?: NodeJS.ProcessEnv;
     /** Browser-only callers must never use the host account, even for reconciliation. */
     publicationMode?: "host" | "browser";
+    /** Interactive CLI retries stay in the terminal instead of publishing a browser handoff. */
+    allowBrowserFallback?: boolean;
     artifactSweepHooks?: UpdateFailureReportSweepHooks;
     finalizeReceipt?: typeof finalizeUpdateFailureReportReceipt;
     hasCurrentAuthority?: () => boolean;
@@ -631,7 +547,10 @@ export async function submitUpdateFailureReport(
       status: "pending",
     };
   }
-  if (created.status === "fallback-unavailable") {
+  if (
+    created.status === "fallback-unavailable" ||
+    (created.status === "browser-fallback" && options.allowBrowserFallback === false)
+  ) {
     const receipt: UpdateFailureReportReceipt = {
       previewDigest: prepared.previewDigest,
       reservationId,
@@ -645,8 +564,16 @@ export async function submitUpdateFailureReport(
         status: "pending",
       };
     }
+    const reason = created.status === "fallback-unavailable" ? created.cause : created.reason;
+    const unavailable =
+      reason === "authentication-unavailable"
+        ? "GitHub authentication is unavailable."
+        : "GitHub submission is unavailable.";
     return {
-      message: "The sanitized report was saved, but it is too large for a browser handoff.",
+      message:
+        options.allowBrowserFallback === false
+          ? `${unavailable} No issue was submitted. Fix the problem, then choose Report update failure to retry.\nSaved sanitized report: ${ownedPrepared.savedReportPath}`
+          : "The sanitized report was saved, but it is too large for a browser handoff.",
       savedReportPath: ownedPrepared.savedReportPath,
       status: "retryable",
     };
