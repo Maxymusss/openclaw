@@ -24,6 +24,8 @@ import type { StreamFn } from "./runtime/index.js";
 
 export type { PreparedOperatorModelPolicy } from "./operator-model-policy.types.js";
 
+type ModelRequestRoute = NonNullable<ReturnType<typeof readModelRequestRoute>>["routes"][number];
+
 const operatorModelRequest = new AsyncLocalStorage<{
   authority: AdmittedRunOperatorAuthority | undefined;
   route?: NonNullable<ReturnType<typeof readModelRequestRoute>>;
@@ -329,14 +331,14 @@ export function assertOperatorModelRequestRoute(
 /** Preparation checks its own host selection; it must not borrow an outer inference route. */
 export function assertOperatorModelSelection(
   authority: AdmittedRunOperatorAuthority | undefined,
-  model: Model,
+  model: ModelRequestRoute,
 ): void {
   assertModelRequestRoute(authority, model, readModelRequestRoute(model));
 }
 
 function assertModelRequestRoute(
   authority: AdmittedRunOperatorAuthority | undefined,
-  model: Model,
+  model: ModelRequestRoute,
   selected: ReturnType<typeof readModelRequestRoute>,
 ): void {
   const original = currentOperatorModelAuthority(authority);
