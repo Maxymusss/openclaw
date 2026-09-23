@@ -55,6 +55,11 @@ Compact planning reserves the actual appended plugin rows before applying those
 Node matrix caps, allowing existing hosted tooling compaction to use the
 remaining capacity.
 
+Plugin-sensitive PRs run the complete `agentic-plugins` suite, including bundled
+metadata public-surface coverage, in both precise and fallback plans. The scope
+includes `extensions/**`, `src/plugins/**`, and the manifest/catalog generators;
+see [Node test lanes](/ci/scope-and-routing/node-test-lanes).
+
 Roomy serial Blacksmith Node jobs use [measured Vitest worker sizing](/ci/capacity#vitest-worker-sizing), with existing hosted, frozen-target, and overlapping-plan limits.
 
 Source-only Linux Node shards can reuse content-validated compiled workers from the protected warmer; [fixed preparation costs](/ci/capacity#fixed-job-preparation) remain separate from test execution and runner capacity.

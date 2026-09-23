@@ -26,6 +26,7 @@ import { listAvailableExtensionIds } from "./changed-extensions.mts";
 import { isTestOnlyPath } from "./changed-path-facts.mjs";
 import {
   createNodeTestShardBundles,
+  createPluginPolicyTestShards,
   createSelectedNodeTestShardBundles,
   isPolicyTestOwnedPath,
   nodeTestConfigRequiresCanonicalMetadata,
@@ -842,8 +843,14 @@ export function createChangedNodeTestShards(
   if (resolvedTargetPlans === null) {
     return null;
   }
+  const pluginPolicyShards = createPluginPolicyTestShards(changedPaths);
+  if (pluginPolicyShards.length > 0 && path.resolve(cwd) !== process.cwd()) {
+    return fallback("plugin policy requires canonical candidate metadata");
+  }
+  const pluginPolicyConfigs = new Set(pluginPolicyShards.flatMap((shard) => shard.configs));
   const targetPlans = resolvedTargetPlans.filter(
     ({ target, plans }) =>
+      !plans.every((plan) => pluginPolicyConfigs.has(plan.config)) &&
       (uiConsumers.has(target) ||
         options.includeReleaseOnlyToolingShards !== false ||
         (!isReleaseOnlyToolingTestFile(target) &&
@@ -931,6 +938,7 @@ export function createChangedNodeTestShards(
     .map(({ target }) => target);
 
   const shards = [
+    ...pluginPolicyShards,
     ...uiShards,
     ...canonicalShards.map((shard) => Object.assign({}, shard, { configs: [] })),
     ...packChangedExtensionConfigShards(createChangedExtensionConfigShardsForPaths(livePaths, cwd)),

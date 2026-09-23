@@ -283,6 +283,20 @@ const policyTestWatches = [
   },
 ] satisfies readonly PolicyTestWatch[];
 
+function hasPluginTestOwnerChange(changedPaths: readonly string[]): boolean {
+  return changedPaths.some((file) =>
+    [
+      "extensions/**",
+      "src/plugins/**",
+      "scripts/copy-bundled-plugin-metadata.{mjs,mts}",
+      "scripts/write-official-channel-catalog.{mjs,mts}",
+      "scripts/lib/bundled-extension-manifest.ts",
+      "scripts/lib/plugin-npm-package-manifest.{mjs,mts}",
+      "scripts/lib/official-external-plugin-catalog.json",
+    ].some((pattern) => matchesGlob(file, pattern)),
+  );
+}
+
 /** Resolve policy tests whose scanned source surface intersects this diff. */
 export function resolvePolicyTestTargets(changedPaths: readonly string[]): string[] {
   return policyTestWatches
@@ -2624,26 +2638,25 @@ export function createNodeTestShards(options: NodeTestPlanOptions = {}): NodeTes
   return createNodeTestShardsForOwners(fullSuiteVitestShards, options);
 }
 
+/** Plugin policy coverage retains its whole-config process and build contract. */
+export function createPluginPolicyTestShards(changedPaths: readonly string[]): NodeTestShard[] {
+  return hasPluginTestOwnerChange(changedPaths)
+    ? createNodeTestShards().filter((shard) => RELEASE_ONLY_PLUGIN_SHARDS.has(shard.shardName))
+    : [];
+}
+
 function createNodeTestShardsForOwners(
   owners: readonly (typeof fullSuiteVitestShards)[number][],
   options: NodeTestPlanOptions,
   toolingOnly = false,
 ): NodeTestShard[] {
-  const includeReleaseOnlyPluginShards = options.includeReleaseOnlyPluginShards ?? true;
+  const includeReleaseOnlyPluginShards =
+    options.includeReleaseOnlyPluginShards !== false ||
+    (options.compactMode !== "push" && hasPluginTestOwnerChange(options.changedPaths ?? []));
   const includeProofTests =
     options.includeProofTests ??
     (options.compactMode ?? (options.compact ? "pull-request" : undefined)) !== "pull-request";
   const includeTooling = includesReleaseOnlyTooling(options);
-  const changedTestPlans = includeReleaseOnlyPluginShards
-    ? []
-    : (options.changedPaths ?? [])
-        .filter(
-          (file) =>
-            isTestFileTarget(file) &&
-            !file.endsWith(".live.test.ts") &&
-            statSync(file, { throwIfNoEntry: false })?.isFile(),
-        )
-        .flatMap((file) => buildVitestRunPlans([file]));
 
   return owners.flatMap((shard) => {
     if (
@@ -2713,20 +2726,7 @@ function createNodeTestShardsForOwners(
           RELEASE_ONLY_PLUGIN_SHARDS.has(splitShard.shardName) &&
           !includeReleaseOnlyPluginShards
         ) {
-          // PR fallback must retain directly edited tests without enabling the
-          // release sweep or stealing files from their canonical Vitest owners.
-          includePatterns = [
-            ...new Set(
-              changedTestPlans
-                .filter((plan) => splitConfigs.includes(plan.config))
-                .flatMap((plan) => plan.includePatterns ?? []),
-            ),
-          ]
-            .filter((file) => includeProofTests || !isCiProofTestFile(file))
-            .toSorted();
-          if (includePatterns.length === 0) {
-            return [];
-          }
+          return [];
         }
 
         const pretestBuildMode = includePatterns

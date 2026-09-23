@@ -6281,7 +6281,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(owners[0]?.pretestBuildMode).toBe("runtime");
   });
 
-  it("retains the changed host plugin test when the store-alias diff forces fallback", () => {
+  it("retains the whole plugin owner when the store-alias diff forces fallback", () => {
     expect(createChangedNodeTestShards(STORE_ALIAS_CHANGED_PATHS)).toBeNull();
     const options = {
       changedPaths: STORE_ALIAS_CHANGED_PATHS,
@@ -6296,50 +6296,61 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         checkName: "checks-node-agentic-plugins",
         shardName: "agentic-plugins",
         configs: ["test/vitest/vitest.plugins.config.ts"],
-        includePatterns: ["src/plugins/tools.optional.test.ts"],
+        pretestBuildMode: "runtime",
         requiresDist: false,
         runner: DEFAULT_NODE_TEST_RUNNER,
       },
     ]);
   });
 
-  it("retains only exact changed plugin-owner tests in deterministic order", () => {
-    const options = {
+  it.each([
+    "extensions/example/openclaw.plugin.json",
+    "src/plugins/deleted-ci-routing.test.ts",
+    "scripts/copy-bundled-plugin-metadata.mjs",
+    "scripts/copy-bundled-plugin-metadata.mts",
+    "scripts/write-official-channel-catalog.mjs",
+    "scripts/write-official-channel-catalog.mts",
+    "scripts/lib/bundled-extension-manifest.ts",
+    "scripts/lib/plugin-npm-package-manifest.mjs",
+    "scripts/lib/plugin-npm-package-manifest.mts",
+    "scripts/lib/official-external-plugin-catalog.json",
+  ])("selects complete plugin fallback coverage for %s", (changedPath) => {
+    const shards = createNodeTestShards({
       includeReleaseOnlyPluginShards: false,
-      changedPaths: [
-        ...STORE_ALIAS_CHANGED_PATHS.toReversed(),
-        " src/plugins/tools.optional.test.ts",
-        String.raw`src\plugins\tools.optional.test.ts`,
-        "src/plugins/tools.optional.test.ts",
-        PLUGIN_PRERELEASE_NPM_SPEC_TEST,
-        "src/plugins/contracts/plugin-sdk-subpaths.test.ts",
-        "src/plugins/loader.test.ts",
-        "src/plugins/install.npm-spec.e2e.test.ts",
-      ],
-    };
-    const shards = createNodeTestShards(options);
-    expect(shards.find((shard) => shard.shardName === "agentic-plugins")?.includePatterns).toEqual([
-      PLUGIN_PRERELEASE_NPM_SPEC_TEST,
-      "src/plugins/tools.optional.test.ts",
-    ]);
-    expect(shards.filter((shard) => shard.shardName !== "agentic-plugins")).toEqual(
-      createNodeTestShards({ includeReleaseOnlyPluginShards: false }),
-    );
-    expect(createNodeTestShards({ ...options, includeReleaseOnlyPluginShards: true })).toEqual(
-      defaultShards,
-    );
+      changedPaths: [changedPath],
+    });
+    expect(shards.find((shard) => shard.shardName === "agentic-plugins")).toEqual({
+      checkName: "checks-node-agentic-plugins",
+      shardName: "agentic-plugins",
+      configs: ["test/vitest/vitest.plugins.config.ts"],
+      pretestBuildMode: "runtime",
+      requiresDist: false,
+      runner: DEFAULT_NODE_TEST_RUNNER,
+    });
   });
 
-  it("does not widen plugin coverage for deleted tests, sources, docs, or directories", () => {
-    const deletedTest = "src/plugins/deleted-ci-routing.test.ts";
-    expect(existsSync(deletedTest)).toBe(false);
-    const options = {
+  it("does not widen plugin coverage for unrelated paths or malformed lookalikes", () => {
+    const shards = createNodeTestShards({
       includeReleaseOnlyPluginShards: false,
-      changedPaths: [deletedTest, "src/plugins/tools.ts", "src/plugins", "docs/ci.md"],
-    };
-    expect(createNodeTestShards(options)).toEqual(
-      createNodeTestShards({ includeReleaseOnlyPluginShards: false }),
-    );
+      changedPaths: [
+        "src/plugins",
+        "src/agents/model-ref.ts",
+        "docs/ci.md",
+        " src/plugins/tools.optional.test.ts",
+        String.raw`src\plugins\tools.optional.test.ts`,
+        "scripts/copy-bundled-plugin-metadata.mjs.backup",
+      ],
+    });
+    expect(shards.some((shard) => shard.shardName === "agentic-plugins")).toBe(false);
+  });
+
+  it("keeps plugin fallback opt-in scoped away from push plans", () => {
+    const shards = createNodeTestShards({
+      includeReleaseOnlyPluginShards: false,
+      compactMode: "push",
+      changedPaths: ["extensions/copilot/openclaw.plugin.json"],
+    });
+    expect(shards.some((shard) => shard.shardName === "agentic-plugins")).toBe(false);
   });
 
   it.each(
@@ -6349,7 +6360,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       ),
     ),
   )(
-    "retains changed plugin tests once in $runnerBackend compact fallback without changing group policies ($label)",
+    "retains plugin coverage in $runnerBackend compact fallback without changing sibling policies ($label)",
     ({ runnerBackend, ...host }) => {
       pinPlannerHost(host);
       const options = {
@@ -6462,7 +6473,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         }
         hostedDeclarations.set(owner, group.env);
       }
-      // The changed-only plugin fixture is absent from the normal compact plan.
+      // The plugin owner is absent from the normal compact plan.
       for (const shard of defaultShards) {
         if (!hostedDeclarations.has(shard.shardName)) {
           hostedDeclarations.set(shard.shardName, shard.env);
@@ -6539,23 +6550,33 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         }
         return group.env;
       };
-      const expectPluginPolicy = (plan: typeof after, originals: Map<string, Group>) => {
-        expect(
-          plan
-            .flatMap((job) => job.groups)
-            .filter((group) => group.shard_name === "agentic-plugins")
-            .map((group) =>
-              Object.assign({}, group, { env: declarationEnv(group, plan, originals) }),
-            ),
-        ).toEqual([
-          {
-            shard_name: "agentic-plugins",
-            configs: ["test/vitest/vitest.plugins.config.ts"],
-            includePatterns: ["src/plugins/tools.optional.test.ts"],
-            requiresDist: false,
-            runner: expect.stringMatching(/^blacksmith-(?:4|8)vcpu-ubuntu-2404$/u),
-          },
-        ]);
+      const pluginConfig = "test/vitest/vitest.plugins.config.ts";
+      const pluginFiles = listMatchedTestFiles(createPluginsVitestConfig({})).filter(
+        (file) => !isCiProofTestFile(file),
+      );
+      const pluginRuntimeFiles = new Set(listVitestRuntimeConsumerFiles([pluginConfig]));
+      const isPluginGroup = (group: Group) => group.configs.includes(pluginConfig);
+      const expectPluginPolicy = (
+        plan: typeof after,
+        originals: Map<string, Group>,
+        expectedFiles = pluginFiles,
+      ) => {
+        const pluginGroups = plan.flatMap((job) => job.groups).filter(isPluginGroup);
+        expect(pluginGroups.length).toBeGreaterThan(0);
+        const files = pluginGroups.flatMap((group) => {
+          expect(group.configs).toEqual([pluginConfig]);
+          expect(group.requiresDist).toBe(false);
+          expect(group.runner).toMatch(/^blacksmith-(?:4|8)vcpu-ubuntu-2404$/u);
+          expect(declarationEnv(group, plan, originals)).toBeUndefined();
+          const selected = expectDefined(group.includePatterns, "plugin stripe files");
+          expect(selected.length).toBeGreaterThan(0);
+          expect(group.pretestBuildMode).toBe(
+            selected.some((file) => pluginRuntimeFiles.has(file)) ? "runtime" : undefined,
+          );
+          return selected;
+        });
+        expect(files.length).toBe(new Set(files).size);
+        expect(files.toSorted()).toEqual(expectedFiles.toSorted());
       };
       expectPluginPolicy(after, afterInherited);
       // Keep the transition controls independent of current inventory placement.
@@ -6563,8 +6584,8 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         ...expectDefined(
           afterAdmission
             .flatMap((job) => job.groups)
-            .find((group) => group.shard_name === "agentic-plugins"),
-          "declared plugin group",
+            .find((group) => isPluginGroup(group) && group.pretestBuildMode === undefined),
+          "declared source-only plugin group",
         ),
       };
       const pluginEnv = declarationEnv(pluginDeclaration, afterAdmission, afterInherited);
@@ -6587,7 +6608,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       };
       const promotedPlugin = [{ ...pluginAdmission, groups: [pinnedPlugin], planConcurrency: 1 }];
       const pluginInherited = inheritedGroupsFor([pluginAdmission]);
-      expectPluginPolicy(promotedPlugin, pluginInherited);
+      expectPluginPolicy(promotedPlugin, pluginInherited, pluginDeclaration.includePatterns);
       const invalidPluginEnvs: Array<Group["env"]> = [
         undefined,
         { OPENCLAW_VITEST_MAX_WORKERS: "1" },
@@ -6596,13 +6617,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       ];
       for (const env of invalidPluginEnvs) {
         pinnedPlugin.env = env;
-        expect(() => expectPluginPolicy(promotedPlugin, pluginInherited)).toThrow();
+        expect(() =>
+          expectPluginPolicy(promotedPlugin, pluginInherited, pluginDeclaration.includePatterns),
+        ).toThrow();
       }
       pinnedPlugin.env = { OPENCLAW_VITEST_MAX_WORKERS: "2" };
       expect(() =>
         expectPluginPolicy(
           promotedPlugin,
           inheritedGroupsFor([{ ...pluginAdmission, planConcurrency: 1 }]),
+          pluginDeclaration.includePatterns,
         ),
       ).toThrow();
       const expectedTimingKeys = (
@@ -6643,7 +6667,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       const policies = (plan: typeof before, originals: Map<string, Group>) => {
         const nonPlugin = plan
           .flatMap((shard) => shard.groups)
-          .filter((group) => group.shard_name !== "agentic-plugins");
+          .filter((group) => !isPluginGroup(group));
         return {
           descriptors: nonPlugin
             .filter((group) => !isRepartitionableTooling(group))
