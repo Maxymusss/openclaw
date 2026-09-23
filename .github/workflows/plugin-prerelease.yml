@@ -1086,3 +1086,25 @@ jobs:
           check_required "plugin-prerelease-docker" "$RUN_DOCKER" "$DOCKER_RESULT"
           echo "plugin-prerelease-inspector advisory result: ${INSPECTOR_RESULT}"
           exit "$failed"
+
+  seal_release_child_evidence:
+    name: Seal full release child evidence
+    needs:
+      - resolve_target
+      - preflight
+      - plugin-npm-security-plan
+      - plugin-npm-security-scan
+      - plugin-prerelease-static-shard
+      - plugin-prerelease-node-shard
+      - plugin-prerelease-extension-shard
+      - plugin-prerelease-inspector
+      - plugin-prerelease-docker-suite
+      - plugin-prerelease-suite
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/full-release-child-evidence.yml
+    with:
+      role: ${{ inputs.phase == 'candidate' && 'pluginPrereleaseCandidate' || 'pluginPrereleaseIndependent' }}
+      target_sha: ${{ needs.resolve_target.outputs.checkout_revision }}

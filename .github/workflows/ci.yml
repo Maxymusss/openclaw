@@ -6740,3 +6740,46 @@ jobs:
           done <<< "$JOB_RESULTS"
 
           exit "$failures"
+
+  seal_release_child_evidence:
+    name: Seal full release child evidence
+    needs:
+      - preflight
+      - security-fast
+      - build-artifacts
+      - control-ui-performance
+      - native-i18n
+      - checks-ui
+      - checks-ui-e2e
+      - checks-ui-e2e-real-gateway
+      - control-ui-i18n
+      - checks-fast-core
+      - qa-smoke-ci-profile
+      - checks-fast-plugin-contracts-shard
+      - checks-fast-channel-contracts-shard
+      - checks-node-compat
+      - checks-node-core-test-nondist-shard
+      - check-shard
+      - check-lint-hosted-core-shard
+      - check-lint-hosted-extension-shard
+      - check-test-types-hosted-core-shard
+      - check-additional-shard
+      - check-docs
+      - skills-python
+      - checks-windows
+      - macos-node
+      - macos-swift
+      - ios-build
+      - ios-screenshot-shard
+      - ios-screenshot-evidence
+      - android
+      - docker-seed-e2e
+      - ci-gate
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/full-release-child-evidence.yml
+    with:
+      role: normalCi
+      target_sha: ${{ needs.preflight.outputs.checkout_revision }}

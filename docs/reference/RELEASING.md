@@ -412,6 +412,16 @@ they do not wait for independent validation or Docker preparation. The immutable
 execution plan still binds every selected child, and publication still requires
 qualified artifacts.
 
+Validation children also upload immutable
+`full-release-child-evidence-<target-sha>-<role>-<run-id>-<attempt>` receipts.
+These retain dispatch inputs and attempt-composed job results independently of
+the parent's final manifest. `workloadConclusion` excludes the running receipt
+publisher; it does not claim that the child workflow has completed. Receipt
+collection is best effort and does not change release qualification. The current
+reuse path still requires a successful sealed parent; individual receipt reuse
+is not yet enabled. Npm, candidate, and Docker producers retain their existing
+artifact receipts.
+
 Flaky tests never block a release: rerun once, record, waive as advisory; only install smoke, upgrade-survivor proofs, pack budget and artifact children stay required.
 
 The default regular stable release is one cut, one validation parent, and one

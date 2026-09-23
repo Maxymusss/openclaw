@@ -78,6 +78,11 @@ after admission and reuse selection. Candidate consumers start as soon as the
 candidate is verified, while npm qualification and independent validation can
 continue; see the [release fast path](/reference/RELEASING#fast-path-default).
 
+Release-dispatched validation children add one best-effort hosted receipt job
+each, up to seven per full campaign and none for ordinary PR/main CI. It retains
+job results independently of parent completion. This adds no Blacksmith
+registrations and does not yet enable partial evidence reuse.
+
 Auto-reply reply tests run files in parallel with two workers per compact group. Their planner uses separate parallel timing identities; until those have measurements, serial group costs are divided by the effective worker count, with single-file groups retaining their full cost.
 
 The measured Gateway isolated/database-worker cohort uses at most eight workers

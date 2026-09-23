@@ -339,6 +339,18 @@ continues; candidate Plugin Prerelease and Release Checks start immediately
 after candidate verification without waiting for independent validation or
 Docker. Preserve the immutable execution plan and final artifact qualification.
 
+Each selected validation child uploads an immutable
+`full-release-child-evidence-<target-sha>-<role>-<run-id>-<attempt>` receipt from
+trusted workflow tooling. The receipt retains normalized dispatch inputs,
+including candidate descriptors, and composes predecessor jobs across attempts.
+Its `workloadConclusion` excludes the running publisher. Collection failure
+loses reuse metadata without changing workload qualification. These receipts
+are not yet consumed for partial reuse: the existing successful-parent manifest
+requirement still applies. Future consumers must independently verify the live
+child attempt and conclusion, main ancestry, exact inputs and artifact identity,
+and successful trusted seal/upload steps; the publisher job's best-effort result
+alone is insufficient. Artifact producers retain their existing sealed receipts.
+
 An early standalone product-performance run is optional beta confidence. If
 useful, start it against the frozen Code SHA in parallel with release work:
 

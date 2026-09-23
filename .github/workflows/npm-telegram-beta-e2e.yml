@@ -842,3 +842,16 @@ jobs:
           path: .artifacts/qa-e2e/
           retention-days: 14
           if-no-files-found: error
+
+  seal_release_child_evidence:
+    name: Seal full release child evidence
+    needs:
+      - run_package_telegram_e2e
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/full-release-child-evidence.yml
+    with:
+      role: npmTelegram
+      target_sha: ${{ inputs.harness_ref }}

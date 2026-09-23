@@ -1915,3 +1915,23 @@ jobs:
             echo "::error::vitest-pair benchmark did not succeed; got ${VITEST_PAIR_RESULT}. Inspect its uploaded terminal artifact."
             exit 1
           fi
+
+  seal_release_child_evidence:
+    name: Seal full release child evidence
+    needs:
+      - resolve_target
+      - kova
+      - source_performance
+      - publish
+      - artifact_only_guard
+      - gateway_concurrency
+      - vitest_pair
+      - vitest_pair_guard
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/full-release-child-evidence.yml
+    with:
+      role: productPerformance
+      target_sha: ${{ needs.resolve_target.outputs.tested_sha }}

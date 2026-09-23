@@ -15,20 +15,15 @@ import {
   validatePublicationSourceBinding,
 } from "./full-release-publication-contract.mjs";
 import { hasRequiredLinuxCrossOsSuites } from "./lib/cross-os-release-checks/suite-filter.mjs";
+import {
+  FULL_RELEASE_CHILD_EVIDENCE_JOB,
+  MAX_RELEASE_ARTIFACT_BYTES,
+  serializeReleaseArtifact,
+} from "./lib/full-release-evidence.mjs";
 import { changelogEntryPath, isReleaseChangelogPath } from "./lib/release-changelog.mjs";
 import { classifyReleaseTrain, parseReleaseVersion } from "./lib/release-version.mjs";
 
-// Full profiles carry over 500 job records. Keep complete evidence under one
-// shared wire budget instead of letting producers exceed smaller reader limits.
-export const MAX_RELEASE_ARTIFACT_BYTES = 1024 * 1024;
-
-export function serializeReleaseArtifact(payload) {
-  const json = `${JSON.stringify(payload)}\n`;
-  if (Buffer.byteLength(json, "utf8") > MAX_RELEASE_ARTIFACT_BYTES) {
-    throw new Error("release artifact exceeds the size limit");
-  }
-  return json;
-}
+export { MAX_RELEASE_ARTIFACT_BYTES, serializeReleaseArtifact };
 
 export function buildReleaseValidationManifest({ plan, drain, context }) {
   const childEvidence = Object.fromEntries(
@@ -1670,7 +1665,11 @@ function survivorLanesGreen(jobs) {
 }
 
 function isLaneAdvisory({ childKey, jobName, releaseProfile, workflowRef, laneWaiver, jobs }) {
-  if (isAdvisoryChild(childKey, releaseProfile)) {
+  if (
+    isAdvisoryChild(childKey, releaseProfile) ||
+    (jobName === FULL_RELEASE_CHILD_EVIDENCE_JOB &&
+      CHILD_SPECS.some((spec) => spec.key === childKey))
+  ) {
     return true;
   }
   if (

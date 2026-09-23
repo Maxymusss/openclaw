@@ -3186,3 +3186,35 @@ jobs:
             fi
           done
           exit "$failed"
+
+  seal_release_child_evidence:
+    name: Seal full release child evidence
+    needs:
+      - resolve_target
+      - prepare_release_package
+      - install_smoke_release_checks
+      - cross_os_release_checks
+      - live_repo_e2e_release_checks
+      - docker_e2e_release_checks
+      - package_acceptance_release_checks
+      - maturity_scorecard_release_checks
+      - qa_lab_parity_lane_release_checks
+      - qa_lab_parity_report_release_checks
+      - qa_lab_runtime_pair_lane_release_checks
+      - qa_lab_runtime_parity_release_checks
+      - runtime_tool_coverage_release_checks
+      - qa_live_release_checks
+      - qa_live_buzz_release_checks
+      - qa_live_telegram_release_checks
+      - qa_live_discord_release_checks
+      - qa_live_whatsapp_release_checks
+      - qa_live_slack_release_checks
+      - summary
+    if: ${{ always() && !cancelled() && github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') }}
+    permissions:
+      contents: read
+      actions: read
+    uses: ./.github/workflows/full-release-child-evidence.yml
+    with:
+      role: ${{ inputs.phase == 'candidate' && 'releaseChecksCandidate' || 'releaseChecksIndependent' }}
+      target_sha: ${{ needs.resolve_target.outputs.revision }}
