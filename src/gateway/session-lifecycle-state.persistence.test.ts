@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi, type MockInstance } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -239,7 +240,19 @@ it.each(["success", "failed-write"])(
     const runId = "native-cancel-run";
     const chatRunState = createChatRunState();
     const broadcast = vi.fn();
-    const broadcastToConnIds = vi.fn();
+    const terminalChanged = createDeferred();
+    const broadcastToConnIds = vi.fn<GatewayRequestContext["broadcastToConnIds"]>(
+      (event, payload) => {
+        if (
+          event === "sessions.changed" &&
+          isRecord(payload) &&
+          payload.runId === runId &&
+          payload.status === "killed"
+        ) {
+          terminalChanged.resolve();
+        }
+      },
+    );
     const context = {
       chatRunState,
       chatAbortControllers: new Map(),
@@ -449,6 +462,7 @@ it.each(["success", "failed-write"])(
           abortedLastRun: true,
         },
       });
+      await terminalChanged.promise;
       expect(broadcastToConnIds).toHaveBeenCalledWith(
         "sessions.changed",
         expect.objectContaining({ runId, status: "killed", hasActiveRun: false, runtimeMs: 1_000 }),
@@ -512,13 +526,10 @@ it.each([
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const writerStarted = createDeferred();
     const releaseWriter = createDeferred();
+    const clearRequested = createDeferred<string>();
     let claimId: string | undefined;
     let subscriptions: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
     let heldWriter: Promise<unknown> | undefined;
-    let terminalPersistence: Promise<void> | undefined;
-    let persistenceSpy:
-      | MockInstance<typeof lifecycleState.persistGatewaySessionLifecycleEvent>
-      | undefined;
     persistenceTestWarnings.mockReset();
     routing.loadSessionEntry.mockImplementation(() => ({
       ...target,
@@ -542,7 +553,12 @@ it.each([
       claimId = claimAgentRunContext(
         runId,
         { lifecycleGeneration, sessionId, sessionKey: target.sessionKey },
-        { exclusive: true, ownsContext: true, trackOwner: true },
+        {
+          exclusive: true,
+          ownsContext: true,
+          trackOwner: true,
+          onClearRequested: clearRequested.resolve,
+        },
       );
       if (!claimId) {
         throw new Error("expected worker terminal claim");
@@ -569,21 +585,6 @@ it.each([
         refreshConnectedUserProfiles: vi.fn(),
       });
 
-      const persistLifecycleEvent = lifecycleState.persistGatewaySessionLifecycleEvent;
-      persistenceSpy = vi
-        .spyOn(lifecycleState, "persistGatewaySessionLifecycleEvent")
-        .mockImplementation((params) => {
-          const persistence = persistLifecycleEvent(params);
-          if (
-            params.event.runId === runId &&
-            params.event.sessionId === sessionId &&
-            params.event.data?.phase === phase
-          ) {
-            terminalPersistence = persistence;
-          }
-          return persistence;
-        });
-
       emitAgentEventForOwner(
         {
           runId,
@@ -607,12 +608,11 @@ it.each([
       expect(getAgentRunContextOwnerStatus(runId, terminalClaimId, lifecycleGeneration)).toBe(
         "active",
       );
-      if (!terminalPersistence) {
-        throw new Error("expected the terminal persistence operation");
-      }
       releaseWriter.resolve();
       await heldWriter;
-      await terminalPersistence;
+      // Failed runs also persist a transcript receipt after the row update.
+      expect(await clearRequested.promise).toBe(terminalClaimId);
+      expect(persistenceTestWarnings).not.toHaveBeenCalled();
       expect(loadSessionEntry(target)?.status).toBe(status);
       if (status === "failed") {
         await expect(loadTranscriptEvents({ ...target, sessionId })).resolves.toContainEqual(
@@ -636,7 +636,6 @@ it.each([
       subscriptions?.transcriptUnsub();
       subscriptions?.lifecycleUnsub();
       await subscriptions?.taskUnsub();
-      persistenceSpy?.mockRestore();
       releaseAgentRunContext(runId, claimId);
       routing.loadSessionEntry.mockReset();
       closeOpenClawAgentDatabasesForTest();
