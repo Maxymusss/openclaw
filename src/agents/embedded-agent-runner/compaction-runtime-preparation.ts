@@ -6,6 +6,8 @@ import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { isDefaultAgentRuntimeId, normalizeOptionalAgentRuntimeId } from "../agent-runtime-id.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../defaults.js";
 import { resolveAgentHarnessPolicy } from "../harness/policy.js";
+import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
+import { resolveAgentHarnessSelectionDecision } from "../harness/selection-decision.js";
 import {
   selectAgentHarness,
   selectAgentHarnessForPreparedModelProviders,
@@ -33,6 +35,7 @@ import {
   resolveCompactionTargetRuntime,
   resolveEmbeddedCompactionTarget,
 } from "./compaction-runtime-context.js";
+import { resolveTieredModel } from "./model-resolution.js";
 
 export function projectCodexHostTranscriptBytePreflightConfig(
   config: OpenClawConfig | undefined,
@@ -148,6 +151,39 @@ export function resolveCompactionRuntimeSelection(params: {
     contextConfigProvider: target.contextProvider ?? provider,
     modelId,
   };
+}
+
+/** Resolves compaction metadata using the selected harness's auth ownership. */
+export async function prepareCompactionModel(
+  params: Parameters<typeof ensureSelectedAgentHarnessPlugin>[0] &
+    Omit<Parameters<typeof resolveTieredModel>[0], "provider" | "harnessAuthBootstrap"> & {
+      runtimeProvider: string;
+      reusableRuntimeAuthPlan?: AgentRuntimeAuthPlan;
+    },
+) {
+  await ensureSelectedAgentHarnessPlugin(params);
+  params.abortSignal?.throwIfAborted();
+  params.assertCurrent?.();
+  const selection = resolveAgentHarnessSelectionDecision({
+    config: params.config,
+    provider: params.provider,
+    modelId: params.modelId,
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    agentHarnessId: params.agentHarnessId,
+    agentHarnessRuntimeOverride: params.agentHarnessRuntimeOverride,
+    ...(params.reusableRuntimeAuthPlan
+      ? {
+          modelProvider: projectPreparedModelProvider({ plan: params.reusableRuntimeAuthPlan }),
+          preparedModelProvider: true,
+        }
+      : {}),
+  });
+  return resolveTieredModel({
+    ...params,
+    provider: params.runtimeProvider,
+    harnessAuthBootstrap: selection.builtIn ? undefined : selection.harness.authBootstrap,
+  });
 }
 
 /** Prepares one ordered auth-attempt set and converges it on a single compaction harness. */

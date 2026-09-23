@@ -6,11 +6,13 @@ import {
   createPluginStateSyncKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import {
+  createAdmittedHostCapabilityTestFixture,
+  createPluginRuntimeMock,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createAdmittedHostCapabilityTestFixture } from "../../src/agents/harness/host-capability.test-support.js";
-import { createPluginRuntime } from "../../src/plugins/runtime/index.js";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { AgentsApiConfig } from "./agentsapi-config.js";
 import { createAgentsApiHarness } from "./agentsapi-harness.js";
 
@@ -175,7 +177,7 @@ async function createFixture(pluginConfig: AgentsApiConfig) {
     host.closeHost();
     host.closeAdmission();
   });
-  const runtime = createPluginRuntime();
+  const runtime = createPluginRuntimeMock();
   runtime.state = {
     ...runtime.state,
     openSyncKeyedStore: <T>(

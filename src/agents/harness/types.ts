@@ -419,7 +419,7 @@ type AgentHarnessRunCapability<
   }): AgentHarnessSessionRuntimeOwnership | undefined;
   /**
    * `harness` may resolve forwarded profiles or native credentials. `plugin`
-   * exclusively uses the plugin's configured credential and receives no host key/profile.
+   * uses a plugin-configured credential without core selecting or resolving provider auth.
    */
   authBootstrap?: "harness" | "plugin";
   runAttempt(params: TAttemptParams): Promise<AgentHarnessAttemptResult>;
