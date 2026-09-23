@@ -3,7 +3,6 @@ import type { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isMainThread, threadId } from "node:worker_threads";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { executeWithCachedStatement } from "./kysely-sync-cache-state.js";
 import { readSqliteBusyTimeout, runWithSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
 import {
@@ -63,23 +62,6 @@ export function runSqliteDeferredTransactionSync<T>(
   return runSqliteTransactionSync(db, operation, "deferred", {
     ...options,
     logger: options?.logger ?? transactionLog,
-  });
-}
-
-/** Pin an implicit read snapshot without requiring transaction-control authorization. */
-export function runSqlitePinnedReadSnapshotSync<T>(db: DatabaseSync, operation: () => T): T {
-  return executeWithCachedStatement(db, "PRAGMA schema_version", [], (statement) => {
-    // sqlite-allow-raw: Stepping this pragma pins the connection's implicit read transaction.
-    const snapshot = statement.iterate();
-    try {
-      const first = snapshot.next();
-      if (first.done) {
-        throw new Error("SQLite schema version query returned no row");
-      }
-      return operation();
-    } finally {
-      snapshot.return?.();
-    }
   });
 }
 

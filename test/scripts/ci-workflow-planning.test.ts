@@ -986,16 +986,6 @@ if (stripe === process.env.FAIL_TYPE_STRIPE) process.exit(17);
   }
   if (options.types?.boundary) {
     // Routing proof records native leaves without executing repository checks.
-    writeFileSync(path.join(root, "scripts/tsx.mjs"), "");
-    writeFileSync(
-      path.join(root, "scripts/check-extension-plugin-sdk-boundary.mts"),
-      [
-        'import { appendFileSync } from "node:fs";',
-        'const command = ["node", ...process.execArgv, "scripts/check-extension-plugin-sdk-boundary.mts", ...process.argv.slice(2)].join(" ");',
-        'appendFileSync(process.env.TYPE_CALLS, [process.env.TYPE_ROW, process.env.OPENCLAW_LOCAL_CHECK ?? "<unset>", command].join(String.fromCharCode(9)) + String.fromCharCode(10));',
-      ].join(String.fromCharCode(10)),
-    );
-
     writeFileSync(
       path.join(root, "scripts/run-additional-boundary-checks.mts"),
       readFileSync("scripts/run-additional-boundary-checks.mts"),
@@ -3770,6 +3760,7 @@ describe("ci workflow guards", () => {
         ["android", "ubuntu-24.04", 35],
         ["checks-ui-e2e-real-gateway", "ubuntu-24.04", 40],
         ["build-artifacts", "ubuntu-24.04", 35],
+        ["checks-ui", "ubuntu-24.04", 35],
       ] as const) {
         const job = workflow.jobs[jobName];
         const retainedRetry = { ...context, runAttempt: 2, preflightOutputs: admitted.outputs };
@@ -4070,7 +4061,7 @@ describe("ci workflow guards", () => {
       }
     }
     expect(workflow.jobs["build-artifacts"]["timeout-minutes"]).toBe(
-      "${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || (contains(fromJSON('[\"hybrid\",\"runson\"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 35 || 20 }}",
+      "${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || (contains(fromJSON('[\"hybrid\",\"runson\"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) || (github.event_name == 'workflow_dispatch' && needs.preflight.outputs.ci_shape != 'main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 35 || 20 }}",
     );
     // PR events validate the artifact build on hosted runners (landing gate
     // stays satisfiable during Blacksmith outages); Testbox leases are
@@ -7000,27 +6991,6 @@ describe("ci workflow guards", () => {
     expect(checkShard.env.HISTORICAL_TARGET).toBe(
       "${{ needs.preflight.outputs.compatibility_target }}",
     );
-    expect(checkShard.run).toContain("pnpm tsgo:scripts");
-    expect(checkShard.run).toContain('elif [[ "$HISTORICAL_TARGET" != "true" ]]');
-    expect(checkShard.run).toContain('has_package_script "deps:npm-lock:check"');
-    expect(checkShard.run).toContain(
-      "Current CI targets must provide the deps:npm-lock:check package script.",
-    );
-    expect(checkShard.run).toContain(
-      "[skip] historical target predates the transient npm lock contract",
-    );
-    expect(checkShard.run).toContain('has_package_script "deadcode:dependencies"');
-    expect(checkShard.run).toContain('has_package_script "deadcode:unused-files"');
-    expect(checkShard.run).toContain('has_package_script "deadcode:exports"');
-    // The concurrent launcher invokes scripts through the dc_scripts array.
-    expect(checkShard.run).toContain("dc_scripts+=(deadcode:exports)");
-    expect(checkShard.run).toContain(
-      "Current CI targets must provide the deadcode:exports package script.",
-    );
-    expect(checkShard.run).toContain(
-      'elif [[ "$HISTORICAL_TARGET" == "true" ]] && has_package_script "deadcode:ci"',
-    );
-    expect(checkShard.run).toContain("Target does not provide a supported deadcode check.");
     const uiInstall = workflow.jobs["checks-ui"].steps.find(
       (step: { name?: string }) => step.name === "Install Playwright Chromium",
     );

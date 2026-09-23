@@ -1,4 +1,5 @@
 import { theme } from "../../../packages/terminal-core/src/theme.js";
+import { tryProcessCwd } from "../../infra/safe-cwd.js";
 import { resolveUpdateFinalizationTimeoutMs } from "../../infra/update-finalization-budget.js";
 import { assertUpdateWriteAuthority } from "../../infra/update-freebsd-write-admission.js";
 import type { RetainUpdateRuntime } from "../../infra/update-retained-runtime.js";
@@ -10,7 +11,6 @@ import { createUpdateProgress } from "./progress.js";
 import {
   confirmUpdateDowngrade,
   resolveGitInstallDir,
-  tryResolveInvocationCwd,
   type UpdateCommandOptions,
 } from "./shared.js";
 import {
@@ -60,7 +60,7 @@ async function updateCommandWithRuntime(
   inputOpts: UpdateCommandOptions,
   retainRuntime: RetainUpdateRuntime,
 ): Promise<void> {
-  const invocationCwd = tryResolveInvocationCwd();
+  const invocationCwd = tryProcessCwd();
   const recoveryState: UpdateCommandRecoveryState = {
     triageTarget: { env: resolveServiceRefreshEnv(process.env, invocationCwd) },
   };
