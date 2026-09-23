@@ -73,6 +73,12 @@ Frozen-target CI loads its Node shard planner, planning helpers, and measured
 costs from the pinned `workflow_sha` checkout. Test discovery and execution still
 use the candidate source, so current shard budgets do not replace release bytes.
 
+The npm/ClawHub release decision treats normal CI tests, plugin prerelease,
+cross-OS, performance, and QA lanes as advisory recorded evidence. Artifact,
+install-smoke, survivor, all first-hop compatibility, pack/npm qualification,
+and target-resolution proofs remain required. Aggregators follow required inputs;
+identity and provenance verification still apply.
+
 Release closeout refreshes hosted full-release shard costs with
 `node --import ./scripts/tsx.mjs scripts/ci-shard-timings-refresh.mts --run <ci-child-run-id>`.
 The generator records successful hosted job walls, including setup, in the existing

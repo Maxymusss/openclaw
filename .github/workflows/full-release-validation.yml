@@ -845,7 +845,7 @@ jobs:
               echo "- Owner-waived QA-live channels: $(jq -r 'join(", ")' <<< "$WAIVED_INTEGRATION_CHANNELS"); waived/not run, not a pass"
             fi
             if [[ -n "${LANE_WAIVER// }" ]]; then
-              echo "- Operator lane waiver (\`vars.OPENCLAW_FRV_LANE_WAIVER\`): \`${LANE_WAIVER}\`; non-proof lane failures are advisory, install-smoke/upgrade-survivor/pack/qualify/resolve_target proofs and artifact gates stay required"
+              echo "- Operator lane waiver (\`vars.OPENCLAW_FRV_LANE_WAIVER\`): \`${LANE_WAIVER}\`; first-hop exception requires green survivor lanes; other non-proof lanes are advisory by policy, install-smoke/upgrade-survivor/pack/qualify/resolve_target proofs and artifact gates stay required"
             fi
             echo "- Allow Unreleased changelog packaging: \`${ALLOW_UNRELEASED_CHANGELOG}\`"
             echo "- Rerun group: \`${RERUN_GROUP}\`"

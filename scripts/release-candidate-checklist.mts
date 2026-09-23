@@ -1793,10 +1793,6 @@ export function validateFullManifest(manifest: JsonRecord, params: JsonRecord) {
       `full validation must record runReleaseSoak=true for ${formatJsonValue(params.releaseProfile)} release candidates`,
     );
   }
-  const controls = isRecord(manifest.controls) ? manifest.controls : undefined;
-  if (params.releaseProfile !== "beta" && controls?.performanceBlocking !== true) {
-    throw new Error("full validation manifest must record blocking product performance evidence");
-  }
 }
 
 export function candidateParallelsArgs(

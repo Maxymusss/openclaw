@@ -118,7 +118,7 @@ describe("full release child evidence producer", () => {
     "keeps failed metadata advisory without masking failed %s workload jobs",
     (key) => {
       const workload = {
-        name: "required source tests",
+        name: "install_smoke",
         status: "completed",
         conclusion: "success",
       };
@@ -145,7 +145,7 @@ describe("full release child evidence producer", () => {
       workload.conclusion = "failure";
       expect(snapshot()).toMatchObject({
         state: "blocked_complete",
-        blockers: [expect.objectContaining({ job: "required source tests", kind: "job_failure" })],
+        blockers: [expect.objectContaining({ job: "install_smoke", kind: "job_failure" })],
       });
     },
   );

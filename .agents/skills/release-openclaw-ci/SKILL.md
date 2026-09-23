@@ -495,10 +495,15 @@ publish workflow reads the effective profile from the full-validation manifest.
 Stable publication requires soak unless the operator supplies `stable_soak_waiver`
 with a reason; the publisher forwards and records that reason in release evidence
 without changing validation coverage or other publication gates.
-An operator lane waiver (repository variable `OPENCLAW_FRV_LANE_WAIVER="<target version> <reason>"`, cleared after the release) keeps
-non-proof lane failures advisory; install-smoke, upgrade-survivor, pack/qualify-npm,
-`resolve_target`, and artifact gates stay blocking, and publishing that manifest
-needs the same `lane_waiver` acknowledgement on the publish workflow.
+For npm/ClawHub, artifact children, install smoke, both survivor lanes, all
+`update-first-hop-compat*` lanes, pack budget/npm qualification, and target
+resolution remain required. Verify aggregators follow their required inputs.
+Normal CI, plugin prerelease, cross-OS, performance, and QA test failures are
+advisory by default and remain recorded evidence; no lane waiver is needed.
+Provenance and complete evidence checks still apply. The explicit first-hop
+escape hatch uses `OPENCLAW_FRV_LANE_WAIVER="<target version> <reason>"` only
+when survivor lanes in the same child passed, requires `lane_waiver` at publish,
+and must be cleared after the release.
 
 ### Extended-stable validation
 

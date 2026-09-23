@@ -410,7 +410,8 @@ acquisition consumes raw npm bytes while npm qualification continues. Candidate
 Plugin Prerelease and Release Checks start as soon as that candidate is verified;
 they do not wait for independent validation or Docker preparation. The immutable
 execution plan still binds every selected child, and publication still requires
-qualified artifacts.
+qualified artifacts. Non-proof execution lanes are advisory by default; performance
+never gates npm or ClawHub publication.
 
 Validation children also upload immutable
 `full-release-child-evidence-<target-sha>-<role>-<run-id>-<attempt>` receipts.
@@ -1507,7 +1508,7 @@ release. Existing approval and provenance checks still apply.
 
 Stable publication requires Full Release Validation with `runReleaseSoak=true` unless the operator supplies a non-empty `stable_soak_waiver` reason; the waiver also accepts advisory (beta-profile) performance evidence for publication and closeout when the product performance child run succeeded. The reason is recorded in postpublish evidence and the release verification tail, and all other evidence checks remain required. For regular stable tags published to `latest`, the waiver also authorizes first-time plugin npm bootstrap with beta-profile validation and is recorded in the attested bootstrap approval. The [fast path](#fast-path-default) supplies the waiver by default; leave the input empty only when soak actually ran:
 
-**Operator lane waiver.** When the release owner decides non-proof lanes must not block a stable, set the repository variable `OPENCLAW_FRV_LANE_WAIVER` to `<target version> <reason>` (for example `2026.9.6 ship now`; `workflow_dispatch` caps inputs at 25, and a value naming another version fails closed) and dispatch Full Release Validation: failed jobs in the CI, plugin prerelease, release-checks, and performance children become advisory and are recorded in the manifest (`advisoryJobs` with `reason: lane_waiver`), while install-smoke, upgrade-survivor, pack/qualify-npm, `resolve_target`, and every artifact gate stay blocking (a lost `update-first-hop-compat` lane is waivable only behind green upgrade-survivor lanes). Publishing that evidence requires `lane_waiver=<reason>` on `openclaw-release-publish.yml` as acknowledgement; the receipt records `laneWaiver`, `laneWaiverAcknowledgement`, and `waivedJobs` next to `stableSoakWaiver`. Clear the variable after the release. Native app and Control UI CI lanes and cross-OS execution lanes are advisory for the npm decision even without a waiver.
+**Advisory publication policy.** npm and ClawHub require artifact children, install smoke, upgrade-survivor and published-upgrade-survivor, every `update-first-hop-compat*` lane, pack budget/npm qualification, and target resolution. Verify aggregators block when their required inputs fail or their failure is unexplained. Normal CI tests (including Windows, macOS, and UI), plugin prerelease tests, cross-OS checks, performance, and QA are advisory and recorded without an operator waiver. Identity, provenance, and complete evidence checks still apply. The narrow first-hop escape hatch remains: `OPENCLAW_FRV_LANE_WAIVER="<target version> <reason>"` can waive a lost first-hop lane only when survivor lanes in the same child succeeded. Publishing that exception requires `lane_waiver=<reason>`; clear the variable afterward.
 
 ```bash
 gh workflow run openclaw-release-publish.yml \

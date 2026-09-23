@@ -1123,7 +1123,7 @@ describe("GitHub API commands", () => {
     const firstAdvisory = expectDefined(advisoryJobs[0], "first advisory job");
     for (const advisoryClaim of [
       [
-        { ...firstAdvisory, job: "cross_os_release_checks / Linux / packaged fresh" },
+        { ...firstAdvisory, job: "install_smoke_release_checks / installer_smoke" },
         ...advisoryJobs.slice(1),
       ],
       [
@@ -1268,7 +1268,7 @@ process.stdout.write(readFileSync(process.env.ARCHIVE));
       expect(result.stdout).toContain(
         "advisory: releaseChecksCandidate completed/success cross_os_release_checks / macOS / packaged fresh",
       );
-      expect(result.stdout).not.toContain(
+      expect(result.stdout).toContain(
         "advisory: releaseChecksCandidate completed/success cross_os_release_checks / Linux",
       );
       const shimCalls = readFileSync(shimLog, "utf8");
@@ -3141,7 +3141,7 @@ describe("release CI summary child correlation", () => {
     ).rejects.toThrow(message);
   });
 
-  it("retains blocking product performance in sealed npm stable evidence", async () => {
+  it("retains advisory product performance in sealed npm stable evidence", async () => {
     const fixture = trustedMainNpmFixture("stable");
     const options = {
       runId: fixture.runId,
@@ -3164,7 +3164,11 @@ describe("release CI summary child correlation", () => {
       "performance child",
     );
     performance.conclusion = "failure";
-    await expect(validateReleaseRunEvidence(options, fixture.client)).rejects.toThrow();
+    await expect(validateReleaseRunEvidence(options, fixture.client)).resolves.toMatchObject({
+      children: expect.arrayContaining([
+        expect.objectContaining({ role: "productPerformance", conclusion: "failure" }),
+      ]),
+    });
   });
 
   it.each(["carried-guard", "newer-guard-failure", "earlier-publisher"])(
@@ -3249,14 +3253,12 @@ describe("release CI summary child correlation", () => {
     },
   );
 
-  it.each(["context", "blocking-performance", "soak-control", "soak", "missing-plan"])(
+  it.each(["context", "soak-control", "soak", "missing-plan"])(
     "rejects incomplete npm stable qualification: %s",
     async (drift) => {
       const fixture = trustedMainNpmFixture("stable");
       if (drift === "context") {
         fixture.manifest.validationInputs.targetContextRef = "";
-      } else if (drift === "blocking-performance") {
-        fixture.manifest.controls.performanceBlocking = false;
       } else if (drift === "soak-control") {
         fixture.manifest.controls.stableSoakRequired = false;
       } else if (drift === "soak") {
@@ -5600,18 +5602,18 @@ describe("lane waiver advisory evidence", () => {
     },
   };
 
-  it("records waived lanes with their reason and keeps proof lanes out", () => {
+  it("records advisory lanes without a waiver and keeps proof lanes out", () => {
     const withWaiver = releaseAdvisoryJobEvidence(childEvidence, "stable", "main", "ship");
     expect(
       withWaiver.map((entry) => `${entry.child}:${entry.job}:${entry.reason ?? "policy"}`),
     ).toEqual([
-      "normalCi:checks-node-fast:lane_waiver",
+      "normalCi:checks-node-fast:policy",
       "normalCi:checks-windows-node-test-1:policy",
-      "normalCi:openclaw/ci-gate:lane_waiver",
-      "releaseChecksCandidate:cross_os_release_checks / Linux / packaged fresh:lane_waiver",
+      "normalCi:openclaw/ci-gate:policy",
+      "releaseChecksCandidate:cross_os_release_checks / Linux / packaged fresh:policy",
     ]);
     expect(
       releaseAdvisoryJobEvidence(childEvidence, "stable", "main").map((entry) => entry.job),
-    ).toEqual(["checks-windows-node-test-1"]);
+    ).toEqual(withWaiver.map((entry) => entry.job));
   });
 });

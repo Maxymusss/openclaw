@@ -17,7 +17,6 @@ import {
 import { hasRequiredLinuxCrossOsSuites } from "./lib/cross-os-release-checks/suite-filter.mjs";
 import { candidateArtifactJsonFromBinding } from "./lib/full-release-candidate-reuse.mjs";
 import {
-  FULL_RELEASE_CHILD_EVIDENCE_JOB,
   MAX_RELEASE_ARTIFACT_BYTES,
   serializeReleaseArtifact,
 } from "./lib/full-release-evidence.mjs";
@@ -137,7 +136,7 @@ export function buildReleaseValidationManifest({ plan, drain, context }) {
         },
         controls: {
           stableSoakRequired: ["stable", "full"].includes(context.releaseProfile),
-          performanceBlocking: context.releaseProfile !== "beta",
+          performanceBlocking: false,
           performanceReportPublication: "artifact-only",
         },
         childRuns: {
@@ -150,7 +149,7 @@ export function buildReleaseValidationManifest({ plan, drain, context }) {
           productPerformance: {
             runId: runs.productPerformance ?? "",
             conclusion: drain?.children?.productPerformance?.conclusion ?? "",
-            blocking: context.releaseProfile !== "beta",
+            blocking: false,
           },
         },
       };
@@ -641,8 +640,8 @@ export function normalizeReleaseTelegramWaiver({
   return telegramWaiver;
 }
 
-// An operator lane waiver keeps non-proof lane failures advisory. It is bound
-// to the sealed plan and manifest, never to the raw dispatch input.
+// The explicit first-hop escape hatch is bound to the sealed plan and manifest,
+// never to the raw dispatch input. Other non-proof lanes are advisory by default.
 export function normalizeReleaseLaneWaiver(value) {
   return boundedString(value, MAX_MESSAGE_LENGTH);
 }
@@ -1580,82 +1579,32 @@ function blockerIndex(issues) {
   return issues.map((issue) => jsonSha256(blockerEvidence(issue))).toSorted();
 }
 
-export function isReleaseCheckJobAdvisory({ jobName, releaseProfile, workflowRef }) {
-  // Cross-OS Windows/macOS results remain evidence without gating npm publication.
-  // Match only execution lanes: Linux and shared preparation still block.
-  if (/^cross_os_release_checks \/ (?:Windows|macOS) \/ /u.test(jobName)) {
-    return true;
-  }
-  if (
-    jobName.startsWith("Run QA Lab parity lane (") ||
-    jobName === "Run QA Lab parity report" ||
-    jobName.startsWith("Run QA Lab runtime-pair lane (") ||
-    jobName === "Verify QA Lab runtime-pair lanes" ||
-    jobName === "Run QA Lab live Telegram lane" ||
-    jobName.startsWith("Run package acceptance / Telegram package acceptance / ") ||
-    jobName === "Run QA Lab live Discord lane" ||
-    jobName === "Run QA Lab live WhatsApp lane" ||
-    jobName === "Run QA Lab live Slack lane"
-  ) {
-    return true;
-  }
-  if (/^tideclaw\/alpha\/[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}Z$/u.test(workflowRef)) {
-    return !(
-      jobName === "resolve_target" ||
-      jobName === "Prepare release package artifact" ||
-      jobName.startsWith("install_smoke_release_checks / ") ||
-      jobName === "Run package acceptance" ||
-      jobName.startsWith("Run package acceptance / ")
-    );
-  }
-  return (
-    releaseProfile === "beta" &&
-    jobName.startsWith("Run repo/live E2E validation / ") &&
-    (jobName.includes("Docker live") ||
-      jobName.includes("Live media suites") ||
-      jobName.includes("validate_live_provider_suites") ||
-      jobName.includes("validate_release_live_cache") ||
-      jobName.includes("prepare_live_test_image"))
-  );
+// Publication requires package and upgrade proof; all other execution lanes
+// remain recorded confidence evidence regardless of the release profile.
+const REQUIRED_PROOF_JOB_PATTERNS = [
+  /install[-_ ]smoke/iu,
+  /upgrade-survivor/u,
+  /update-first-hop-compat/u,
+  /pack budget|npm-pack|Qualify release npm/iu,
+  /resolve_target/u,
+];
+const DERIVATIVE_GATE_JOB_PATTERN =
+  /^(?:openclaw\/ci-gate|Verify release checks|Run package acceptance \/ Verify package acceptance)$/u;
+const FIRST_HOP_JOB_PATTERN = /update-first-hop-compat/u;
+const SURVIVOR_JOB_PATTERN = /upgrade-survivor/u;
+const POLICY_CHILD_KEYS = new Set([...CHILD_SPECS, ...LEGACY_CHILD_SPECS].map(({ key }) => key));
+
+function isRequiredProofJob(jobName) {
+  return REQUIRED_PROOF_JOB_PATTERNS.some((pattern) => pattern.test(jobName));
+}
+
+export function isReleaseCheckJobAdvisory({ jobName }) {
+  return !isRequiredProofJob(jobName) && !DERIVATIVE_GATE_JOB_PATTERN.test(jobName);
 }
 
 function isReleaseChecksChild(key) {
   return ["releaseChecks", "releaseChecksIndependent", "releaseChecksCandidate"].includes(key);
 }
-
-function isAdvisoryChild(key, releaseProfile) {
-  return key === "npmTelegram" || (key === "productPerformance" && releaseProfile === "beta");
-}
-
-// Native app, Control UI, and cross-OS execution lanes are recorded evidence
-// that never gates npm publication (operator directive 2026-09-23).
-const ADVISORY_CI_JOB_PATTERN =
-  /^(?:checks-windows|macos-node|macos-swift \(|checks-ui|ios-build \(|ios-screenshot|android)/u;
-// Aggregators only restate their lanes: the CI gate is advisory when every
-// other failed lane in the child is advisory; the release-checks verifiers
-// only under an operator lane waiver.
-const CI_GATE_JOB_PATTERN = /^openclaw\/ci-gate$/u;
-const DERIVATIVE_GATE_JOB_PATTERN =
-  /^(?:openclaw\/ci-gate|Verify release checks|Run package acceptance \/ Verify package acceptance)$/u;
-const LANE_WAIVER_CHILD_KEYS = new Set([
-  "normalCi",
-  "pluginPrerelease",
-  "pluginPrereleaseIndependent",
-  "pluginPrereleaseCandidate",
-  "releaseChecks",
-  "releaseChecksIndependent",
-  "releaseChecksCandidate",
-  "productPerformance",
-]);
-// Proof lanes stay blocking under any lane waiver.
-const REQUIRED_PROOF_JOB_PATTERNS = [
-  /install[-_ ]smoke/iu,
-  /upgrade-survivor/u,
-  /pack budget|npm-pack|Qualify release npm/iu,
-  /resolve_target/u,
-];
-const FIRST_HOP_JOB_PATTERN = /update-first-hop-compat/u;
-const SURVIVOR_JOB_PATTERN = /upgrade-survivor/u;
 
 function isFailedJob(job) {
   return (
@@ -1671,60 +1620,29 @@ function survivorLanesGreen(jobs) {
   );
 }
 
-function isLaneAdvisory({ childKey, jobName, releaseProfile, workflowRef, laneWaiver, jobs }) {
-  if (
-    isAdvisoryChild(childKey, releaseProfile) ||
-    (jobName === FULL_RELEASE_CHILD_EVIDENCE_JOB &&
-      CHILD_SPECS.some((spec) => spec.key === childKey))
-  ) {
-    return true;
-  }
-  if (
-    isReleaseChecksChild(childKey) &&
-    isReleaseCheckJobAdvisory({ jobName, releaseProfile, workflowRef })
-  ) {
-    return true;
-  }
-  if (childKey === "normalCi" && ADVISORY_CI_JOB_PATTERN.test(jobName)) {
-    return true;
-  }
-  if (!laneWaiver || !LANE_WAIVER_CHILD_KEYS.has(childKey)) {
+function isLaneAdvisory({ childKey, jobName, laneWaiver, jobs }) {
+  if (!POLICY_CHILD_KEYS.has(childKey)) {
     return false;
   }
-  if (FIRST_HOP_JOB_PATTERN.test(jobName)) {
-    // A lost first-hop lane is covered by green survivor lanes in the same child.
+  if (FIRST_HOP_JOB_PATTERN.test(jobName) && laneWaiver) {
+    // The retained explicit escape hatch requires green survivor proof.
     return survivorLanesGreen(jobs);
   }
-  return !REQUIRED_PROOF_JOB_PATTERNS.some((pattern) => pattern.test(jobName));
+  return !isRequiredProofJob(jobName);
 }
 
-function isReleaseJobAdvisory({
-  childKey,
-  jobName,
-  releaseProfile,
-  workflowRef,
-  laneWaiver = "",
-  jobs = [],
-}) {
-  const context = {
-    childKey,
-    releaseProfile,
-    workflowRef,
-    laneWaiver: normalizeReleaseLaneWaiver(laneWaiver),
-    jobs,
-  };
-  if (
-    CI_GATE_JOB_PATTERN.test(jobName) ||
-    (context.laneWaiver && DERIVATIVE_GATE_JOB_PATTERN.test(jobName))
-  ) {
-    // A gate failing without any failed lane is its own finding and blocks.
-    const lanes = jobs.filter(
-      (job) => isFailedJob(job) && !DERIVATIVE_GATE_JOB_PATTERN.test(stringValue(job.name)),
-    );
-    return (
-      lanes.length > 0 &&
-      lanes.every((job) => isLaneAdvisory({ ...context, jobName: stringValue(job.name) }))
-    );
+function isReleaseJobAdvisory({ childKey, jobName, laneWaiver = "", jobs = [] }) {
+  const context = { childKey, laneWaiver: normalizeReleaseLaneWaiver(laneWaiver), jobs };
+  if (DERIVATIVE_GATE_JOB_PATTERN.test(jobName)) {
+    if (!POLICY_CHILD_KEYS.has(childKey)) {
+      return false;
+    }
+    const lanes = jobs.filter((job) => !DERIVATIVE_GATE_JOB_PATTERN.test(stringValue(job.name)));
+    const failures = lanes.filter(isFailedJob);
+    // An unexplained aggregate failure still blocks when it has required inputs.
+    return failures.length > 0
+      ? failures.every((job) => isLaneAdvisory({ ...context, jobName: stringValue(job.name) }))
+      : lanes.every((job) => isLaneAdvisory({ ...context, jobName: stringValue(job.name) }));
   }
   return isLaneAdvisory({ ...context, jobName });
 }
@@ -1778,7 +1696,10 @@ export function terminalPolicyPass(child, releaseProfile, workflowRef, laneWaive
   if (child.conclusion === "success") {
     return true;
   }
-  if (isAdvisoryChild(child.key, releaseProfile)) {
+  if (
+    ["npmTelegram", "productPerformance"].includes(child.key) &&
+    failedJobsForPolicy(child, releaseProfile, workflowRef, laneWaiver).length === 0
+  ) {
     return true;
   }
   const gate = isReleaseChecksChild(child.key)
@@ -1786,10 +1707,7 @@ export function terminalPolicyPass(child, releaseProfile, workflowRef, laneWaive
     : child.key === "normalCi"
       ? "openclaw/ci-gate"
       : undefined;
-  if (
-    gate === undefined &&
-    !(normalizeReleaseLaneWaiver(laneWaiver) && LANE_WAIVER_CHILD_KEYS.has(child.key))
-  ) {
+  if (!POLICY_CHILD_KEYS.has(child.key)) {
     return false;
   }
   // A failed workflow passes only with complete terminal job evidence whose

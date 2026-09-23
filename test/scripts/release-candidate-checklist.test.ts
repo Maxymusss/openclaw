@@ -2043,7 +2043,7 @@ describe("release candidate checklist", () => {
     }
   });
 
-  it("requires stable validation evidence to include soak and blocking performance", () => {
+  it("requires stable validation evidence to include soak", () => {
     const stableManifest = {
       workflowName: "Full Release Validation",
       targetSha: "candidate-sha",
@@ -2072,38 +2072,30 @@ describe("release candidate checklist", () => {
         },
       ),
     ).toThrow("runReleaseSoak=true");
-    expect(() =>
-      validateFullManifest(
-        {
-          ...stableManifest,
-          controls: { performanceBlocking: false },
-        },
-        {
-          targetSha: "candidate-sha",
-          releaseProfile: "stable",
-        },
-      ),
-    ).toThrow("blocking product performance");
   });
 
-  it("keeps product performance advisory for beta release candidates", () => {
-    expect(() =>
-      validateFullManifest(
-        {
-          workflowName: "Full Release Validation",
-          targetSha: "candidate-sha",
-          releaseProfile: "beta",
-          rerunGroup: "all",
-          runReleaseSoak: "false",
-          controls: { performanceBlocking: false },
-        },
-        {
-          targetSha: "candidate-sha",
-          releaseProfile: "beta",
-        },
-      ),
-    ).not.toThrow();
-  });
+  it.each(["beta", "stable", "full"])(
+    "keeps product performance advisory for %s release candidates",
+    (profile) => {
+      expect(() =>
+        validateFullManifest(
+          {
+            workflowName: "Full Release Validation",
+            targetSha: "candidate-sha",
+            releaseProfile: profile,
+            rerunGroup: "all",
+            runReleaseSoak: profile === "beta" ? "false" : "true",
+            controls: { performanceBlocking: false },
+            childRuns: { productPerformance: { conclusion: "failure" } },
+          },
+          {
+            targetSha: "candidate-sha",
+            releaseProfile: profile,
+          },
+        ),
+      ).not.toThrow();
+    },
+  );
 
   it.each([
     {

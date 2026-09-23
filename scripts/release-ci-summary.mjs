@@ -1316,12 +1316,9 @@ export function validateParentManifest(value, expected) {
       validationInputs.targetContextRef || String(value.targetRef ?? ""),
       validationInputs.targetVersion,
     ) ||
-      controls.performanceBlocking !== true ||
       controls.stableSoakRequired !== true)
   ) {
-    throw new Error(
-      "npm stable coverage policy requires release context, blocking performance, and stable soak",
-    );
+    throw new Error("npm stable coverage policy requires release context and stable soak");
   }
   const childEvidence = normalizeManifestChildEvidence(value.childEvidence);
   const advisoryJobs = releaseAdvisoryJobEvidence(

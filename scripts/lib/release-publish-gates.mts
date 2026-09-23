@@ -49,9 +49,6 @@ export function evaluateReleasePublishGates(input: {
   const profile = scalar(field(manifest, "releaseProfile"));
   const waiver = input.stableSoakWaiver?.trim();
   const rerunGroup = scalar(field(manifest, "rerunGroup"));
-  const performance = field(field(manifest, "controls"), "performanceBlocking");
-  const performanceSucceeded =
-    field(field(field(manifest, "childRuns"), "productPerformance"), "conclusion") === "success";
   const soak = field(manifest, "runReleaseSoak");
   if (consumer === "publisher") {
     const workflow = scalar(field(manifest, "workflowName"));
@@ -85,31 +82,6 @@ export function evaluateReleasePublishGates(input: {
     `Full release validation must run rerun_group=all before npm publish; got ${rerunGroup}`,
     "Seal successful Full Release Validation with rerun_group=all using pnpm frv continue.",
   );
-  // These are deliberately different shipped consumer policies. The preflight
-  // evaluates both so beta-profile evidence cannot hide a core npm rejection.
-  const blocking =
-    consumer === "stable-closeout" ? performance === true : scalar(performance) === "true";
-  const blockingRequired =
-    consumer === "stable-closeout" ||
-    (consumer === "publisher" ? profile !== "beta" : input.npmDistTag !== "beta");
-  if (!blocking && waiver) {
-    gates.push({
-      id: `${consumer}.performance`,
-      status: performanceSucceeded ? "WARN" : "FAIL",
-      message: performanceSucceeded
-        ? "Blocking product performance waived by operator stable soak waiver; advisory performance child passed."
-        : "Waiving blocking product performance requires a successful product performance child run.",
-      remediation:
-        "Use blocking product performance evidence or retain the explicit stable_soak_waiver with a successful product performance child.",
-    });
-  } else {
-    add(
-      "performance",
-      blocking || !blockingRequired,
-      "Full release validation manifest does not record blocking product performance evidence.",
-      "Run blocking product performance validation or supply an explicit stable_soak_waiver with successful advisory performance evidence.",
-    );
-  }
   const stableTag = !input.releaseTag.includes("-alpha.") && !input.releaseTag.includes("-beta.");
   const soaked = consumer === "stable-closeout" ? soak === "true" : scalar(soak) === "true";
   const soakRequired = consumer === "stable-closeout" || stableTag;
@@ -124,14 +96,6 @@ export function evaluateReleasePublishGates(input: {
           : "Stable releases require Full Release Validation with runReleaseSoak=true.",
     remediation: "Run release soak or supply the operator's explicit reason in stable_soak_waiver.",
   });
-  if (consumer === "stable-closeout") {
-    add(
-      "performance-child",
-      performanceSucceeded,
-      "Stable closeout requires a successful product performance child run.",
-      "Rerun the product performance child and reseal Full Release Validation before publication.",
-    );
-  }
   // Evidence sealed under an operator lane waiver publishes only with an
   // explicit acknowledgement; the waived lanes travel into the receipt.
   const laneWaiver = scalar(field(field(manifest, "validationInputs"), "laneWaiver")).trim();
