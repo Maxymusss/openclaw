@@ -148,8 +148,11 @@ describe("managed compiler evidence", () => {
       cwd,
       directory,
       command,
-      evidence: () =>
-        JSON.parse(fs.readFileSync(path.join(directory, fs.readdirSync(directory)[0]), "utf8")),
+      evidence: () => {
+        const [artifact] = fs.readdirSync(directory);
+        if (!artifact) throw new Error("Missing compiler metrics artifact");
+        return JSON.parse(fs.readFileSync(path.join(directory, artifact), "utf8"));
+      },
     };
   }
 

@@ -58,7 +58,9 @@ it("keeps compiler output unchanged with opt-in metrics and emits no metrics by 
     expect(result.stderr).toBe("");
     expect(fs.readdirSync(cwd)).toHaveLength(enabled ? 1 : 0);
     if (enabled) {
-      const evidence = JSON.parse(fs.readFileSync(path.join(cwd, fs.readdirSync(cwd)[0]), "utf8"));
+      const [artifact] = fs.readdirSync(cwd);
+      if (!artifact) throw new Error("Missing compiler metrics artifact");
+      const evidence = JSON.parse(fs.readFileSync(path.join(cwd, artifact), "utf8"));
       expect(evidence.outcome.exitCode).toBe(0);
       expect(evidence.command.args).toContain("--version");
       expect(evidence.cache.hit).toBe("unknown");
