@@ -462,7 +462,9 @@ describe("projectModelCatalogEntryForRoute", () => {
     const cfg: OpenClawConfig = {
       models: { providers: new Proxy(providers, { ownKeys: enumerate }) },
     };
-    const resolveIdentity = vi.fn(routePolicy.resolveIdentity);
+    const resolveIdentity = vi.fn<ModelCatalogRoutePolicy["resolveIdentity"]>((entry) =>
+      routePolicy.resolveIdentity(entry),
+    );
     const policy = { ...routePolicy, resolveIdentity };
     const resolve = createConfiguredModelCatalogOverridesResolver({ cfg, policy });
     expect(enumerate).not.toHaveBeenCalled();
