@@ -1255,13 +1255,17 @@ AFTER_CD
         qualification_runner_backend: "hybrid",
       },
     };
+    // The PR cancellation monitor has no runner contract on main or qualification runs.
+    for (const context of [push, qualification]) {
+      expect(evaluateWorkflowExpression(workflow.jobs["pr-fail-fast"].if, context)).toBe(false);
+    }
     for (const [name, rawJob] of Object.entries(workflow.jobs)) {
       const job = rawJob as {
         "runs-on": string;
         "timeout-minutes"?: string | number;
         needs?: string[] | string;
       };
-      if (!String(job.needs).includes("preflight")) {
+      if (name === "pr-fail-fast" || !String(job.needs).includes("preflight")) {
         continue;
       }
       for (const key of ["runs-on", "timeout-minutes"] as const) {
