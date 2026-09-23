@@ -447,6 +447,7 @@ async function createOwnerFixture(
   };
   return {
     cfg,
+    context,
     write,
     send,
     dispatched,

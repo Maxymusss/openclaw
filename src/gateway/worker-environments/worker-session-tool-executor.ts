@@ -3,6 +3,7 @@ import type { WorkerSessionsSpawnParams } from "../../../packages/gateway-protoc
 import { buildSubagentExecutionSessionSpawnContext } from "../../agents/subagents/spawn/subagent-spawn-execution-identity.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import {
+  bindAgentToolGatewayRequest,
   callAgentToolGatewayRequest,
   callInProcessGatewayToolWithCreation,
   type AgentToolGatewayRequestCaller,
@@ -119,8 +120,12 @@ export function createWorkerSessionToolExecutor(params: {
             sessionSpawnContext?: ReturnType<typeof buildSubagentExecutionSessionSpawnContext>,
           ): Promise<R> => {
             assertSource();
-            return await capability.run(() =>
-              callAgentToolGatewayRequest<R>(
+            return await capability.run(() => {
+              const call =
+                request.method === "agent"
+                  ? bindAgentToolGatewayRequest({ revalidateOnCompletion: false })
+                  : callAgentToolGatewayRequest;
+              return call<R>(
                 withAgentToolGatewayRuntimeIdentity(
                   {
                     ...request,
@@ -142,8 +147,8 @@ export function createWorkerSessionToolExecutor(params: {
                     ...(sessionSpawnContext ? { sessionSpawnContext } : {}),
                   },
                 ),
-              ),
-            );
+              );
+            });
           };
           assertSource();
           return await run({

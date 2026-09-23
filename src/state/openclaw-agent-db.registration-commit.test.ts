@@ -122,7 +122,7 @@ describe("agent registration commit publication", () => {
       if (!changed.registrationSettlement) {
         throw new Error("Registration invalidation has no settlement receipt");
       }
-      readiness = changed.registrationSettlement.then(() => {
+      readiness = changed.registrationSettlement.promise.then(() => {
         settled = true;
       });
       await Promise.resolve();
@@ -265,7 +265,7 @@ describe("agent registration commit publication", () => {
         if (!changed.registrationSettlement) {
           throw new Error("Registration invalidation has no settlement receipt");
         }
-        readiness = changed.registrationSettlement.then(() => {
+        readiness = changed.registrationSettlement.promise.then(() => {
           settled = true;
         });
         const witness = vi.fn((receipt: OpenClawAgentDatabaseRegistrationCommit) => {

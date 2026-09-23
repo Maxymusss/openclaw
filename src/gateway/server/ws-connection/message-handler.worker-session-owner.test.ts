@@ -1,4 +1,5 @@
 import "./message-handler.worker-session-owner.mocks.test-support.js";
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import type { PreparedSessionMutationFacts } from "../../session-sharing-policy.js";
@@ -85,6 +86,65 @@ describe("registered worker send session ownership", () => {
       });
     });
   });
+
+  it.each(["before-admission", "after-acceptance"] as const)(
+    "retains the ordinary send's sibling-lineage boundary at %s",
+    async (phase) => {
+      await withWorkerOwnerFixture("per-agent", async (fixture) => {
+        fixture.write(OWNER_SIBLING, { lifecycleRevision: "stable-sibling-admission" });
+        const entered = createDeferredCore();
+        const release = createDeferredCore();
+        const createFacade = expectDefined(
+          fixture.context.createAgentTurnFacade,
+          "worker Gateway turn facade",
+        );
+        const probe = vi
+          .spyOn(fixture.context, "createAgentTurnFacade")
+          .mockImplementation(async (principal) => {
+            const facade = await createFacade(principal);
+            if (phase === "before-admission") {
+              entered.resolve();
+              await release.promise;
+              return facade;
+            }
+            const dispatch: typeof facade.dispatch = async <T>(
+              ...args: Parameters<typeof facade.dispatch>
+            ) => {
+              const result = await facade.dispatch<T>(...args);
+              entered.resolve();
+              await release.promise;
+              return result;
+            };
+            return { ...facade, dispatch };
+          });
+        const pending = fixture.send(OWNER_SIBLING.sessionKey, "sibling-admission");
+        try {
+          await Promise.race([
+            entered.promise,
+            pending.then((response) => {
+              throw new Error(
+                `Send finished before facade preparation: ${JSON.stringify(response)}`,
+              );
+            }),
+          ]);
+          fixture.write(OWNER_SIBLING, {
+            parentSessionKey: "agent:main:unrelated",
+            parentSessionId: "unrelated-parent",
+          });
+          release.resolve();
+          const result = resultDetails(await pending);
+          expect(result, JSON.stringify({ result, dispatched: fixture.dispatched })).toMatchObject({
+            status: phase === "before-admission" ? "error" : "accepted",
+          });
+          expect(fixture.dispatched).toHaveLength(phase === "before-admission" ? 0 : 1);
+        } finally {
+          release.resolve();
+          await pending.catch(() => undefined);
+          probe.mockRestore();
+        }
+      });
+    },
+  );
 
   it.each([
     { outcome: "accepted" },
@@ -202,6 +262,7 @@ describe("registered worker send session ownership", () => {
   it.each([
     { owner: "source", change: "archive" },
     { owner: "source", change: "lineage" },
+    { owner: "source", change: "parent-incarnation" },
     { owner: "source", change: "replace" },
     { owner: "source", change: "revoke" },
     { owner: "target", change: "archive" },
@@ -265,7 +326,10 @@ describe("registered worker send session ownership", () => {
           const intercept = vi
             .spyOn(preparation, "prepareSessionMutationFacts")
             .mockImplementation(prepareAndHold);
-          const pending = fixture.send(OWNER_SIBLING.sessionKey, `${owner}-${change}`);
+          const pending = fixture.send(
+            change === "parent-incarnation" ? "global" : OWNER_SIBLING.sessionKey,
+            `${owner}-${change}`,
+          );
           try {
             await Promise.race([
               entered.promise,
@@ -298,16 +362,24 @@ describe("registered worker send session ownership", () => {
                   ? { archivedAt: 2 }
                   : change === "replace"
                     ? { sessionId: `replacement-${owner}` }
-                    : {
-                        parentSessionId: "unrelated-parent",
-                        parentSessionKey: "agent:main:unrelated",
-                      },
+                    : change === "parent-incarnation"
+                      ? { parentSessionId: "unrelated-parent" }
+                      : {
+                          parentSessionId: "unrelated-parent",
+                          parentSessionKey: "agent:main:unrelated",
+                        },
               );
             }
             release.resolve();
             const response = await pending;
             if (response.ok) {
-              expect(resultDetails(response)).toMatchObject({ status: "error" });
+              const result = resultDetails(response);
+              expect(
+                result,
+                JSON.stringify({ result, dispatched: fixture.dispatched }),
+              ).toMatchObject({
+                status: "error",
+              });
             } else {
               expect(response.error).toMatchObject({ details: { reason: "placement-mismatch" } });
             }

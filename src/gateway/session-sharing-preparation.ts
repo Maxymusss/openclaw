@@ -59,7 +59,7 @@ type PreparedSessionFacts<T extends PreparedSessionMutationFacts> = {
   release(this: void): void;
 };
 
-class SessionMutationFactsUnavailableError extends Error {
+export class SessionMutationFactsUnavailableError extends Error {
   constructor(options?: ErrorOptions) {
     super("Session access facts are unavailable; retry after session storage is ready.", options);
     this.name = "SessionMutationFactsUnavailableError";
@@ -392,9 +392,11 @@ export async function prepareSessionMutationFacts(
         });
       let selected: Awaited<ReturnType<typeof select>>;
       let registryRefreshed = false;
+      let assertRegistrationCurrent: (() => void) | undefined;
       for (;;) {
         try {
           selected = await select();
+          assertRegistrationCurrent?.();
           break;
         } catch (error) {
           // Only initial registry discovery can refresh. Original row and physical
@@ -407,9 +409,12 @@ export async function prepareSessionMutationFacts(
           if (!settlement || registryRefreshed) {
             throw error;
           }
+          settlement.assertCurrent();
           registryRefreshed = true;
-          await settlement;
+          assertRegistrationCurrent = settlement.assertCurrent;
+          await settlement.promise;
           assertPreparationCurrent();
+          assertRegistrationCurrent();
         }
       }
       assertActive();
@@ -423,7 +428,7 @@ export async function prepareSessionMutationFacts(
         selected.storeKeys,
       );
       const sharing = members.get(selected.storePath);
-      if ((!match || !sharing) && !params.allowMissing) {
+      if ((!match && !params.allowMissing) || (match && !sharing)) {
         throw new SessionMutationFactsUnavailableError();
       }
       facts = {
@@ -468,12 +473,12 @@ export async function prepareSessionMutationFacts(
       const retained = sharing
         ? retainedReads.get(`${sharing.databaseIdentity}\0${target.storeKey}`)
         : undefined;
-      if (!retained && !params.allowMissing) {
+      if (!retained && (match || !params.allowMissing)) {
         throw new SessionMutationFactsUnavailableError();
       }
       readFacts = () => {
         const current = retained?.readCurrent();
-        if (!current?.entry && !params.allowMissing) {
+        if (!current?.entry && (match || !params.allowMissing)) {
           throw new SessionMutationFactsUnavailableError();
         }
         return {
@@ -490,6 +495,10 @@ export async function prepareSessionMutationFacts(
       try {
         assertActive();
         if (!isDeepStrictEqual(routeFacts(cfg), route)) {
+          throw new SessionMutationFactsUnavailableError();
+        }
+        const currentIdentity = resolveSessionStoreIdentity({ ...params, cfg });
+        if (currentIdentity.agentId !== agentId || currentIdentity.canonicalKey !== canonicalKey) {
           throw new SessionMutationFactsUnavailableError();
         }
         assertSource();

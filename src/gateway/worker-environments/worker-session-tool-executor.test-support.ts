@@ -131,6 +131,7 @@ vi.mock("../../agents/tools/scoped-session-access.js", () => ({
 }));
 
 vi.mock("../../agents/tools/in-process-gateway.js", () => ({
+  bindAgentToolGatewayRequest: () => (request: unknown) => sharedMocks.gatewayRequest(request),
   callAgentToolGatewayRequest: (request: unknown) => sharedMocks.gatewayRequest(request),
   callInProcessGatewayTool: (method: string, params: Record<string, unknown>) =>
     sharedMocks.gatewayRequest({ method, params }),

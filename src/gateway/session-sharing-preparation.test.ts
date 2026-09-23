@@ -229,6 +229,8 @@ it.each([
   "negative-during-wait",
   "memo-switch",
   "registration-memo-switch",
+  "second-registration-during-wait",
+  "second-registration-before-registry-read",
   "second-registration",
 ] as const)(
   "keeps initial registration recovery bound to its original identity (%s)",
@@ -265,9 +267,30 @@ it.each([
       const enteredWait = createDeferredCore();
       const read = sessionEntryReads.readSessionEntriesFromStoreInWorker;
       const retain = entryCache.retainPreparedSessionSharingFacts;
+      const prepareRegistry = registryListing.prepareOpenClawAgentDatabaseRegistrySnapshotRead;
       let registration: ReturnType<typeof captureRegistration> | undefined;
       let registrationFinished = false;
       let reads = 0;
+      let interruptedBeforeRegistryRead = false;
+      const registrySpy = vi
+        .spyOn(registryListing, "prepareOpenClawAgentDatabaseRegistrySnapshotRead")
+        .mockImplementation((options) => {
+          const prepared = prepareRegistry(options);
+          let snapshotReads = 0;
+          return {
+            read: async () => {
+              snapshotReads += 1;
+              if (overlap === "second-registration-before-registry-read" && snapshotReads === 2) {
+                expect(registrationFinished).toBe(true);
+                const second = captureRegistration();
+                second.begin();
+                second.finish();
+                interruptedBeforeRegistryRead = true;
+              }
+              return await prepared.read();
+            },
+          };
+        });
       const readSpy = vi
         .spyOn(sessionEntryReads, "readSessionEntriesFromStoreInWorker")
         .mockImplementation(async (params) => {
@@ -348,6 +371,8 @@ it.each([
           overlap === "registry-only" ||
           overlap === "identity-during-wait" ||
           overlap === "negative-during-wait" ||
+          overlap === "second-registration-during-wait" ||
+          overlap === "second-registration-before-registry-read" ||
           overlap === "second-registration"
         ) {
           await Promise.race([
@@ -363,6 +388,10 @@ it.each([
             replaceIdentity();
           } else if (overlap === "negative-during-wait") {
             replaceSessionEntrySync(scope, initial);
+          } else if (overlap === "second-registration-during-wait") {
+            const second = captureRegistration();
+            second.begin();
+            second.finish();
           }
         }
         registration?.finish();
@@ -394,6 +423,10 @@ it.each([
             expect(reads).toBe(1);
           } else if (overlap === "second-registration") {
             expect(reads).toBe(2);
+          } else if (overlap === "second-registration-during-wait") {
+            expect(reads).toBe(1);
+          } else if (overlap === "second-registration-before-registry-read") {
+            expect(interruptedBeforeRegistryRead).toBe(true);
           }
         }
       } finally {
@@ -405,6 +438,7 @@ it.each([
         }
         readSpy.mockRestore();
         retainSpy.mockRestore();
+        registrySpy.mockRestore();
       }
     });
   },
@@ -436,6 +470,8 @@ it.each(["negative-sharing.sqlite", "sessions.json"])(
         const sql = observeHostDataSql(state.env);
         try {
           expect(absent.readCurrent(cfg).target).toBeNull();
+          sessionChanges.emit({ all: true, scope: "catalog" });
+          expect(absent.readCurrent(cfg).target).toBeNull();
           for (const call of sql.calls) {
             expect(call).not.toHaveBeenCalled();
           }
@@ -453,17 +489,30 @@ it.each(["negative-sharing.sqlite", "sessions.json"])(
       await expect(
         prepareSessionMutationFacts({ cfg, sessionKey, agentId: "main" }),
       ).rejects.toThrow(unavailableMessage);
-      replaceSessionEntrySync(
-        { agentId: "main", sessionKey, storePath },
-        {
-          sessionId: "new-restricted-session",
-          lifecycleRevision: "new-restricted-generation",
-          updatedAt: 1,
-          visibility: "draft",
-          sandbox: "required",
-          createdActor: { type: "human", source: "profile", id: "other" },
-        },
-      );
+      const missingEntry = await prepareSessionMutationFacts({
+        cfg,
+        sessionKey,
+        agentId: "main",
+        allowMissing: true,
+      });
+      try {
+        sessionChanges.emit({ all: true, scope: "catalog" });
+        expect(missingEntry.readCurrent(cfg).target).toBeNull();
+        replaceSessionEntrySync(
+          { agentId: "main", sessionKey, storePath },
+          {
+            sessionId: "new-restricted-session",
+            lifecycleRevision: "new-restricted-generation",
+            updatedAt: 1,
+            visibility: "draft",
+            sandbox: "required",
+            createdActor: { type: "human", source: "profile", id: "other" },
+          },
+        );
+        expect(() => missingEntry.readCurrent(cfg)).toThrow(unavailableMessage);
+      } finally {
+        missingEntry.release();
+      }
       const prepared = await prepareSessionMutationFacts({ cfg, sessionKey, agentId: "main" });
       try {
         const client = sharingPolicyClient({ user: "requester" });

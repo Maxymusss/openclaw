@@ -183,6 +183,7 @@ export async function startSessionsSendAgentRun(params: {
     }
     const response = await params.callGateway<{ runId: string; admissionPending?: boolean }>({
       method: "agent",
+      ...(assertCurrent ? { assertDispatchCurrent: assertCurrent } : {}),
       params: fallbackSessionKey
         ? {
             ...params.sendParams,

@@ -87,12 +87,16 @@ Managed worker session tools prepare source, target, and shared-parent session
 facts through the existing session mutation-facts owner. That owner retains
 negative lookups, lineage, archival state, and source metadata through committed
 entry publications; configuration or physical-store changes invalidate the read.
-Initial registry discovery may reacquire once after the exact registration that
-invalidated its snapshot settles. Original row and physical-identity witnesses
+Initial registry discovery may reacquire once after an uninterrupted registration
+settles without publishing a topology change. Its receipt rejects any intervening
+registry generation through reacquisition; committed topology changes invalidate
+the original preparation. Original row and physical-identity witnesses
 remain active throughout; facts already returned to a caller never refresh.
 Scoped incarnation checks consume those current facts, and sender classification
 reads ACP metadata in the shared-state worker. Prepared facts do not grant access:
 placement, run, claim, visibility, and incarnation checks remain authoritative.
+New-turn dispatch carries those guards through Gateway admission; acceptance
+transfers input to the receiving run's owner.
 The existing placement, delegated-claim, and tool-operation settlement owners
 still perform their own synchronous SQL, including placement schema revalidation.
 Gateway request authorization separately retains synchronous target-session reads,
@@ -787,6 +791,14 @@ it does not become a permanent restore failure.
 Task observation waits for each acknowledged row's required flow effects.
 Acknowledged task mutations are never replayed.
 
+Modern run-owner binding also awaits the shared-state worker. Its original creation
+receipt follows only matching committed lifecycle timestamp changes; replacement
+rows and rolled-back events cannot advance that identity. Binding joins accepted
+events and required publication, then rechecks the original run before installing
+its live cancellation owner. The receipt releases its lineage listener on failure
+or settlement. A confirmed no-op may reselect after a matching committed event;
+failed or uncertain writes are never replayed.
+
 Active core Gateway task completion retains the creation-time registry owners and
 updates its original run/runtime/session selection through the shared-state worker.
 Each selected task is reread against its exact receipt and current Gateway/run
@@ -1329,7 +1341,11 @@ Read-only callbacks made while a cached agent writer holds a transaction use a
 separate read-only companion connection. Each call rereads committed rows and
 checks the current schema, agent owner, and physical file identity. The companion
 retains prepared statements, never an authorization result or an open read
-transaction. Canonical validation belongs to the admitted physical database:
+transaction. On connections whose owner enables statement caching, schema-version
+checks reuse the prepared `PRAGMA user_version` statement but read its current
+value on every call. Authorizer changes, database replacement, and close retain
+the existing statement-cache invalidation rules.
+Canonical validation belongs to the admitted physical database:
 first admission requires full proof, then the schema-21 pending-key projection
 records changes independently of connection lifetime. Startup and initial Gateway
 authorization of an unadmitted reader use the existing mutation worker for pending
@@ -1364,6 +1380,18 @@ exit before closing the database. Cold restoration carries the request's same
 authority through queue waits and its native commit, so a revoked read cannot
 restore rows after database cleanup. These lifetimes change no schema or
 migration requirement.
+
+RPC and HTTP history pages, cursor deltas, recent messages, and exact message lookups prepare their
+physical target asynchronously and read cold-archive metadata through that same
+retained history worker only after a typed cold read requires restoration. Hot
+reads keep the atomic reader's existing cold check without a metadata preflight.
+Initial metadata
+probes share only in-flight work; every queued restoration rereads the metadata
+after earlier cold operations settle. The existing restoration owner still
+verifies and materializes the archive and retains the 24-hour hot-history cooldown.
+Write-side callers keep their existing native metadata preparation and writer
+admission rather than competing for foreground history capacity. Cold maintenance
+inventory and mutation control SQL also remain with their current owners.
 
 Correlated conversation replies retain their original store and state environment
 while waiting for write admission. Capture rechecks the live reply claim and
@@ -1661,17 +1689,41 @@ maintenance also waits for the parent's commit-settlement probe to release its
 writer lock. Child transaction settlement and parent probe release are distinct
 facts in the existing commit gate; failed release cannot acknowledge success.
 
-Queued archive pruning prepares cold connections through the same asynchronous
-admission owner while retaining its existing writer section. File-backed page
-drains use the existing reclamation worker, acquired before the caller's writer
-section. Each unit checks current authority before checkpointing and vacuum,
-authorizes commit, and joins native settlement. Cache eviction between units can
-refresh the host claim only for the same physical database; no dispatched mutation
-is replayed. Incognito maintenance retains its in-process owner.
-Archive-row and unpublished-name reads follow
-validation. After removing a derived archive file, pruning reacquires before the
-canonical row-deletion transaction; an acquisition failure propagates without
-deleting that recovery row.
+Archive pruning retains its maintenance and archive-worker lifetimes while each
+page-reclamation unit acquires and releases the physical writer separately.
+Foreground session writes can run between units. Durable archive metadata reads
+use the existing history worker; conditional deletions, legacy file removal, and
+page reclamation use the agent database execution broker.
+The host captures the physical file before
+waiting and rechecks the original path alias and live authority before effects
+and at worker admission. Each write joins native settlement without replaying a
+dispatched mutation. Host connection eviction does not redirect work or require
+a synchronous database reopen. Process-held incognito maintenance retains its
+existing in-process owner and remains a separate worker migration.
+
+Canonical archive removal holds one writer section through selection, derived-file
+removal, and conditional row deletion. It rechecks pressure, authority, and the
+selected published row before deleting the canonical recovery copy. A failed
+admission or changed row preserves that copy and stops the current
+cleanup attempt. Legacy file removal checks exact canonical filename ownership,
+stats the file, and unlinks it in one synchronous worker write transaction. It
+preserves files owned by published or unpublished rows and holds the SQLite writer
+lock through unlink. Since file removal cannot roll back, the host grants commit
+immediately before unlink; no-effect outcomes also require current commit authority.
+Native settlement finishes before the item writer is released. Filesystem inventory
+and successive page drains run outside the item writer.
+Aggregate pruning diagnostics report the whole operation separately from actual
+writer waits.
+Archive order, retention policy, schemas, and update behavior are unchanged.
+
+Worker retirement preserves the original operation failure without reporting it
+again as a cleanup failure. A successfully retired execution owner is released for
+later requests; genuine native-close and lease-cleanup failures retain their
+existing retry custody.
+Successful pooled-agent close relays its recorded WAL checkpoint after native and
+lease cleanup settle. The original generation and physical database identities
+fence that observation, and the budget owner releases deferral only for a newer
+completed checkpoint.
 
 Usage-cache rollup writes, pruning, and refresh-lock changes use the same async
 agent-database admission. A cold mutation waits for the existing integrity worker;

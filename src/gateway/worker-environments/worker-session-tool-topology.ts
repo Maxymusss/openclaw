@@ -115,8 +115,9 @@ export async function prepareWorkerSessionToolTarget(params: {
   const reads: Array<Awaited<ReturnType<typeof prepare>>> = [];
   const parentReads: typeof reads = [];
   let targetRead: (typeof reads)[number] | undefined;
-  const parentKey =
-    relationKey(params.source.entry.parentSessionKey) ?? relationKey(params.source.entry.spawnedBy);
+  const sourceEntry = params.source.entry;
+  const parentKey = relationKey(sourceEntry.parentSessionKey) ?? relationKey(sourceEntry.spawnedBy);
+  const parentSessionId = relationKey(sourceEntry.parentSessionId);
   const release = () => {
     for (const read of reads.splice(0).toReversed()) {
       read.release();
@@ -126,7 +127,7 @@ export async function prepareWorkerSessionToolTarget(params: {
     const entry = params.source.entry;
     const currentKey = relationKey(entry.parentSessionKey) ?? relationKey(entry.spawnedBy);
     const id = relationKey(entry.parentSessionId);
-    if (!parentKey || currentKey !== parentKey || !id) {
+    if (!parentKey || !parentSessionId || currentKey !== parentKey || id !== parentSessionId) {
       return undefined;
     }
     const matches = new Map<
@@ -135,7 +136,7 @@ export async function prepareWorkerSessionToolTarget(params: {
     >();
     for (const read of parentReads) {
       const target = read.readCurrent(getRuntimeConfig()).target;
-      if (target?.canonicalKey === parentKey && target.entry.sessionId === id) {
+      if (target?.canonicalKey === parentKey && target.entry.sessionId === parentSessionId) {
         matches.set(`${target.agentId}\0${target.canonicalKey}`, target);
       }
     }
@@ -168,7 +169,7 @@ export async function prepareWorkerSessionToolTarget(params: {
       !parentToChild &&
       !childToParent &&
       targetParent === parentKey &&
-      targetParentId === relationKey(params.source.entry.parentSessionId)
+      targetParentId === parentSessionId
         ? readParent()
         : undefined;
     if (!parentToChild && !childToParent && !siblingParent) {
@@ -206,7 +207,7 @@ export async function prepareWorkerSessionToolTarget(params: {
       (relationKey(target.entry.parentSessionKey) ?? relationKey(target.entry.spawnedBy)) ===
         params.source.sessionKey &&
       relationKey(target.entry.parentSessionId) === params.source.sessionId;
-    if (!directChild && parentKey && relationKey(params.source.entry.parentSessionId)) {
+    if (!directChild && parentKey && parentSessionId) {
       const keyAgentId = parseAgentSessionKey(parentKey)?.agentId;
       const owners = new Set<string>();
       for (const candidate of keyAgentId ? [keyAgentId] : listAgentIds(cfg)) {

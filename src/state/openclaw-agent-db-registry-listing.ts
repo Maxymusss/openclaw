@@ -28,13 +28,17 @@ import {
 } from "./openclaw-state-db-readonly.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
+type AgentDatabaseRegistrationSettlement = {
+  promise: Promise<void>;
+  assertCurrent(this: void): void;
+};
 // Registry metadata is process-stable: registry writes invalidate after each commit;
 // other-process changes take effect on restart. Polling here puts schema probes back on hot reads.
 type AgentDatabaseRegistryMemo = {
   pathname: string;
   token: symbol;
   entries?: readonly OpenClawRegisteredAgentDatabase[];
-  registrationSettlement?: Promise<void>;
+  registrationSettlement?: AgentDatabaseRegistrationSettlement;
 };
 // A plugin may first open a hot-created agent; its registration must invalidate
 // native discovery even when subsequent callers reuse the shared connection.
@@ -44,9 +48,9 @@ const registry = resolveGlobalSingleton<{ memo?: AgentDatabaseRegistryMemo }>(
 );
 
 export class AgentDatabaseRegistryChangedError extends Error {
-  readonly registrationSettlement?: Promise<void>;
+  readonly registrationSettlement?: AgentDatabaseRegistrationSettlement;
 
-  constructor(registrationSettlement?: Promise<void>) {
+  constructor(registrationSettlement?: AgentDatabaseRegistrationSettlement) {
     super("Agent database registry changed during discovery; retry the read.");
     this.name = "AgentDatabaseRegistryChangedError";
     this.registrationSettlement = registrationSettlement;
@@ -78,7 +82,7 @@ export function readOpenClawAgentDatabaseRegistryToken(
 
 export function invalidateRegisteredAgentDatabasesMemo(
   options: OpenClawStateDatabaseOptions,
-  registrationSettlement?: Promise<void>,
+  registrationSettlement?: AgentDatabaseRegistrationSettlement,
 ): void {
   const pathname = resolveAgentDatabaseRegistryPath(options);
   if (registry.memo?.pathname === pathname) {
@@ -94,7 +98,27 @@ export function captureOpenClawAgentDatabaseRegistration(params: {
   admission: OpenClawStateDatabaseReadAdmission;
 }) {
   const options = { path: params.admission.databasePath };
-  const settlement = createDeferredCore();
+  const completion = createDeferredCore();
+  const pathname = resolveAgentDatabaseRegistryPath(options);
+  let generation: symbol | undefined;
+  let invalidated = false;
+  const settlement: AgentDatabaseRegistrationSettlement = {
+    promise: completion.promise,
+    assertCurrent() {
+      params.admission.assertCurrent();
+      if (invalidated || !generation || registry.memo?.token !== generation) {
+        throw new AgentDatabaseRegistryChangedError();
+      }
+    },
+  };
+  const invalidate = () => {
+    // This registration may advance only its own uninterrupted memo succession.
+    invalidated ||= !generation || registry.memo?.token !== generation;
+    invalidateRegisteredAgentDatabasesMemo(options, settlement);
+    if (!invalidated) {
+      generation = registry.memo?.token;
+    }
+  };
   let active = false;
   let committed = false;
   let finished = false;
@@ -105,7 +129,8 @@ export function captureOpenClawAgentDatabaseRegistration(params: {
       }
       if (!active) {
         active = true;
-        invalidateRegisteredAgentDatabasesMemo(options, settlement.promise);
+        generation = registry.memo?.pathname === pathname ? registry.memo.token : undefined;
+        invalidate();
       }
     },
     recordCommitted(receipt: OpenClawAgentDatabaseRegistrationCommit) {
@@ -130,19 +155,20 @@ export function captureOpenClawAgentDatabaseRegistration(params: {
         try {
           params.admission.assertCurrent();
         } catch (error) {
+          invalidated = true;
           if (isStateDatabaseReadAdmissionInvalidatedError(error)) {
             return;
           }
           throw error;
         }
         if (active) {
-          invalidateRegisteredAgentDatabasesMemo(options, settlement.promise);
+          invalidate();
         }
         if (committed) {
           sessionChanges.emit({ all: true, scope: "stores" });
         }
       } finally {
-        settlement.resolve();
+        completion.resolve();
       }
     },
   };

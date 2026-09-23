@@ -1,4 +1,5 @@
 import path from "node:path";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi, type MockInstance } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -238,7 +239,19 @@ it.each(["success", "failed-write"])(
     const runId = "native-cancel-run";
     const chatRunState = createChatRunState();
     const broadcast = vi.fn();
-    const broadcastToConnIds = vi.fn();
+    const terminalChanged = createDeferred();
+    const broadcastToConnIds = vi.fn<GatewayRequestContext["broadcastToConnIds"]>(
+      (event, payload) => {
+        if (
+          event === "sessions.changed" &&
+          isRecord(payload) &&
+          payload.runId === runId &&
+          payload.status === "killed"
+        ) {
+          terminalChanged.resolve();
+        }
+      },
+    );
     const context = {
       chatRunState,
       chatAbortControllers: new Map(),
@@ -448,6 +461,7 @@ it.each(["success", "failed-write"])(
           abortedLastRun: true,
         },
       });
+      await terminalChanged.promise;
       expect(broadcastToConnIds).toHaveBeenCalledWith(
         "sessions.changed",
         expect.objectContaining({ runId, status: "killed", hasActiveRun: false, runtimeMs: 1_000 }),
@@ -511,6 +525,10 @@ it.each([
     const lifecycleGeneration = getAgentEventLifecycleGeneration();
     const writerStarted = createDeferred();
     const releaseWriter = createDeferred();
+    const terminalPersisted = createDeferred();
+    let persistenceSpy:
+      | MockInstance<typeof lifecycleState.persistGatewaySessionLifecycleEvent>
+      | undefined;
     let claimId: string | undefined;
     let subscriptions: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
     let heldWriter: Promise<unknown> | undefined;
@@ -563,6 +581,21 @@ it.each([
         terminalSessions: { closeTaskSessions: vi.fn() },
         refreshConnectedUserProfiles: vi.fn(),
       });
+      const persistLifecycleEvent = lifecycleState.persistGatewaySessionLifecycleEvent;
+      persistenceSpy = vi
+        .spyOn(lifecycleState, "persistGatewaySessionLifecycleEvent")
+        .mockImplementation((params) => {
+          const persistence = persistLifecycleEvent(params);
+          if (
+            params.event.runId === runId &&
+            params.sessionKey === target.sessionKey &&
+            params.event.lifecycleGeneration === lifecycleGeneration &&
+            params.event.data?.phase === phase
+          ) {
+            terminalPersisted.resolve(persistence);
+          }
+          return persistence;
+        });
 
       emitAgentEventForOwner(
         {
@@ -590,6 +623,8 @@ it.each([
       releaseWriter.resolve();
       await heldWriter;
       await vi.waitFor(() => expect(loadSessionEntry(target)?.status).toBe(status));
+      // Failure notices join this receipt after the terminal row commits.
+      await terminalPersisted.promise;
       await vi.waitFor(() =>
         expect(getAgentRunContextOwnerStatus(runId, terminalClaimId, lifecycleGeneration)).toBe(
           "clear-requested",
@@ -604,6 +639,7 @@ it.each([
       subscriptions?.lifecycleUnsub();
       await subscriptions?.taskUnsub();
       releaseAgentRunContext(runId, claimId);
+      persistenceSpy?.mockRestore();
       routing.loadSessionEntry.mockReset();
       closeOpenClawAgentDatabasesForTest();
       tempDirs.cleanup();
