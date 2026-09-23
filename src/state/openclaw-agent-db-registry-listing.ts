@@ -34,6 +34,12 @@ type AgentDatabaseRegistryMemo = {
   token: symbol;
   entries?: readonly OpenClawRegisteredAgentDatabase[];
 };
+
+export class AgentDatabaseRegistryChangedError extends Error {
+  constructor() {
+    super("Agent database registry changed during discovery; retry the read.");
+  }
+}
 // A plugin may first open a hot-created agent; its registration must invalidate
 // native discovery even when subsequent callers reuse the shared connection.
 const registry = resolveGlobalSingleton<{ memo?: AgentDatabaseRegistryMemo }>(
@@ -281,7 +287,7 @@ export function prepareOpenClawAgentDatabaseRegistrySnapshotRead(
           context.admission.assertCurrent();
           if (invalidated || registry.memo !== memo) {
             invalidated = true;
-            throw new Error("Agent database registry changed during discovery; retry the read.");
+            throw new AgentDatabaseRegistryChangedError();
           }
         };
         const followRegistration = (change: AgentDatabaseRegistryChange) => {

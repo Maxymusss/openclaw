@@ -1,5 +1,6 @@
 import path from "node:path";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import { readDatabasePathIdentitySync } from "../../infra/sqlite-worker-identity.js";
 import { createSqliteWorkerOperationAdmission } from "../../infra/sqlite-worker-operation-admission.js";
 import {
   isIncognitoSessionKey,
@@ -9,6 +10,7 @@ import {
 } from "../../routing/session-key.js";
 import { assertAgentDatabaseAdmitted } from "../../state/agent-database-admission.js";
 import {
+  AgentDatabaseRegistryChangedError,
   prepareOpenClawAgentDatabaseRegistrySnapshotRead,
   type AgentDatabaseRegistryChange,
 } from "../../state/openclaw-agent-db-registry-listing.js";
@@ -57,6 +59,7 @@ type PreparedStoreTarget = Extract<SessionStoreTargetReadResult, { kind: "sessio
 type StoreTargetReadOwner = {
   assertCurrent: () => void;
   onRegistryChange: (change: AgentDatabaseRegistryChange) => void;
+  refreshBeforeDispatch: (assertRetainedTarget: () => void) => Promise<void>;
   revalidateTarget: () => Promise<void>;
 };
 
@@ -95,13 +98,42 @@ async function withSessionStoreTarget<T>(
       }
       registry?.assertCurrent();
       const target = resolved;
-      const assertCurrent = () => {
-        registry?.assertCurrent();
+      const assertSourceCurrent = () => {
         discovery.assertCurrent();
         assertSessionStoreReadCandidate(target.sourcePath, candidates);
         assertCallerCurrent?.();
       };
+      const assertCurrent = () => {
+        registry?.assertCurrent();
+        assertSourceCurrent();
+      };
       let registrationChanged = false;
+      const verifyCurrentTarget = async (assertRetainedCurrent: () => void) => {
+        assertRetainedCurrent();
+        const currentRegistry = await registryRead.read();
+        assertRetainedCurrent();
+        currentRegistry.assertCurrent();
+        const current = await discovery.readStoreTarget({
+          ...targetRequest,
+          registeredDatabases:
+            currentRegistry.result.status === "available"
+              ? currentRegistry.result.entries
+              : { status: "unavailable" },
+        });
+        assertRetainedCurrent();
+        currentRegistry.assertCurrent();
+        if (
+          current.kind !== "session-store-target" ||
+          current.logicalAgentId !== target.logicalAgentId ||
+          current.sourcePath !== target.sourcePath ||
+          current.database.agentId !== target.database.agentId ||
+          current.database.path !== target.database.path
+        ) {
+          throw new Error("Session store registration changed its selected target");
+        }
+        registry = currentRegistry;
+        registrationChanged = false;
+      };
       assertCurrent();
       // A synchronous consumer may already publish; its operation owns the final currentness check.
       const result = await operation(target, {
@@ -112,33 +144,26 @@ async function withSessionStoreTarget<T>(
             registrationChanged = true;
           }
         },
+        async refreshBeforeDispatch(assertRetainedTarget) {
+          try {
+            assertCurrent();
+          } catch (error) {
+            if (!(error instanceof AgentDatabaseRegistryChangedError)) {
+              throw error;
+            }
+            // A preceding writer may register this same store while admission waits.
+            await verifyCurrentTarget(() => {
+              assertSourceCurrent();
+              assertRetainedTarget();
+            });
+          }
+        },
         async revalidateTarget() {
           assertCurrent();
           if (!registrationChanged) {
             return;
           }
-          const currentRegistry = await registryRead.read();
-          assertCurrent();
-          currentRegistry.assertCurrent();
-          const current = await discovery.readStoreTarget({
-            ...targetRequest,
-            registeredDatabases:
-              currentRegistry.result.status === "available"
-                ? currentRegistry.result.entries
-                : { status: "unavailable" },
-          });
-          assertCurrent();
-          currentRegistry.assertCurrent();
-          if (
-            current.kind !== "session-store-target" ||
-            current.logicalAgentId !== target.logicalAgentId ||
-            current.sourcePath !== target.sourcePath ||
-            current.database.agentId !== target.database.agentId ||
-            current.database.path !== target.database.path
-          ) {
-            throw new Error("Session store registration changed its selected target");
-          }
-          registrationChanged = false;
+          await verifyCurrentTarget(assertCurrent);
         },
       });
       if (registrationChanged) {
@@ -187,6 +212,7 @@ export async function readSessionEntryInWorker(
     async (target, owner) => {
       const sessionKey = resolveSqliteSessionKey(scope.sessionKey, target.logicalAgentId);
       const options = { ...target.database, env };
+      const targetIdentity = readDatabasePathIdentitySync(options.path);
       const execution = captureOpenClawAgentDatabaseExecution(options);
       const assertCurrent = () => {
         execution.assertCurrent();
@@ -194,8 +220,18 @@ export async function readSessionEntryInWorker(
       };
       let entry: SessionEntry | undefined;
       try {
-        entry = await runOpenClawAgentWorkerWrite(options, () =>
-          execution.runCreate(
+        entry = await runOpenClawAgentWorkerWrite(options, async () => {
+          await owner.refreshBeforeDispatch(() => {
+            execution.assertCurrent();
+            const currentIdentity = readDatabasePathIdentitySync(options.path);
+            if (
+              currentIdentity.key !== targetIdentity.key ||
+              currentIdentity.canonicalPath !== targetIdentity.canonicalPath
+            ) {
+              throw new Error("Session database identity changed while awaiting admission");
+            }
+          });
+          return execution.runCreate(
             {
               assertCurrent,
               onRegistryChange: owner.onRegistryChange,
@@ -213,8 +249,8 @@ export async function readSessionEntryInWorker(
               },
             },
             (worker) => worker.execute({ type: "session.entry.read", input: { sessionKey } }),
-          ),
-        );
+          );
+        });
         await owner.revalidateTarget();
         assertCurrent();
       } finally {

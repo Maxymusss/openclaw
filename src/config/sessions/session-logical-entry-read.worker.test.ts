@@ -21,6 +21,7 @@ import {
 import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-contract.js";
 import type { AgentDatabaseExecutionScope } from "../../state/openclaw-agent-execution-native.js";
 import * as executionOwner from "../../state/openclaw-agent-execution.js";
+import { runOpenClawAgentWorkerWrite } from "../../state/openclaw-agent-write-admission.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -254,17 +255,28 @@ it("refuses malformed folded candidate state while retaining the healthy request
   });
 });
 
-it.each(["before-open", "after-row", "after-release", "after-discovery-cleanup"] as const)(
-  "refuses registry reassociation %s instead of returning the previously selected row",
-  async (stage) => {
+it.each([
+  { stage: "while-queued", change: "registry" },
+  { stage: "while-queued", change: "file" },
+  { stage: "while-queued", change: "caller" },
+  { stage: "before-open", change: "registry" },
+  { stage: "after-row", change: "registry" },
+  { stage: "after-release", change: "registry" },
+  { stage: "after-discovery-cleanup", change: "registry" },
+] as const)(
+  "refuses $change replacement $stage instead of returning the previously selected row",
+  async ({ stage, change }) => {
     const scope = {
       agentId: "ops",
       env: state.env,
-      storePath: state.statePath(stage, "sessions.json"),
+      storePath: state.statePath(stage, change, "sessions.json"),
       sessionKey: "global",
     };
     replaceSessionEntrySync(scope, { sessionId: "selected-row", updatedAt: 1 });
     const target = toDatabaseOptions(resolveSqliteScope(scope));
+    if (change === "file") {
+      await closeOpenClawAgentDatabasesAsync();
+    }
     const entered = createDeferredCore();
     const release = createDeferredCore();
     let executionReleased = false;
@@ -291,6 +303,9 @@ it.each(["before-open", "after-row", "after-release", "after-discovery-cleanup"]
       .spyOn(executionOwner, "captureOpenClawAgentDatabaseExecution")
       .mockImplementation((...args) => {
         const execution = capture(...args);
+        if (stage === "while-queued") {
+          entered.resolve();
+        }
         return {
           ...execution,
           async runCreate<T>(
@@ -325,7 +340,23 @@ it.each(["before-open", "after-row", "after-release", "after-discovery-cleanup"]
           },
         };
       });
-    const reading = readSessionEntryInWorker(scope, () => {}).then(
+    const writerEntered = createDeferredCore();
+    const priorWriter =
+      stage === "while-queued"
+        ? runOpenClawAgentWorkerWrite(target, async () => {
+            writerEntered.resolve();
+            await release.promise;
+          })
+        : undefined;
+    if (priorWriter) {
+      await writerEntered.promise;
+    }
+    let callerCurrent = true;
+    const reading = readSessionEntryInWorker(scope, () => {
+      if (!callerCurrent) {
+        throw new Error("Captured caller was revoked");
+      }
+    }).then(
       (value) => ({ value, error: undefined }),
       (error: unknown) => ({ value: undefined, error }),
     );
@@ -335,8 +366,19 @@ it.each(["before-open", "after-row", "after-release", "after-discovery-cleanup"]
     try {
       await entered.promise;
       const databasePath = resolveOpenClawAgentSqlitePath(target);
-      unregisterOpenClawAgentDatabase({ agentId: "ops", path: databasePath, env: state.env });
-      registerOpenClawAgentDatabase({ agentId: "other", path: databasePath, env: state.env });
+      if (change === "registry") {
+        unregisterOpenClawAgentDatabase({ agentId: "ops", path: databasePath, env: state.env });
+      } else if (change === "file") {
+        fs.renameSync(databasePath, `${databasePath}.original`);
+        fs.copyFileSync(`${databasePath}.original`, databasePath);
+      } else {
+        callerCurrent = false;
+      }
+      registerOpenClawAgentDatabase({
+        agentId: change === "registry" ? "other" : "ops",
+        path: databasePath,
+        env: state.env,
+      });
       release.resolve();
       const result = await reading;
       expect(result.value).toBeUndefined();
@@ -344,6 +386,7 @@ it.each(["before-open", "after-row", "after-release", "after-discovery-cleanup"]
     } finally {
       release.resolve();
       await reading;
+      await priorWriter;
       intercept.mockRestore();
       closeIntercept.mockRestore();
       rotateIntercept.mockRestore();

@@ -322,8 +322,11 @@ agent database executor. The worker preserves canonical initialization and schem
 migration, logical key and folded-candidate validation, configured owner inference,
 and the distinction between logical agents and shared physical stores. Captured
 registry authority follows only registration changes witnessed by that same
-opening owner; unrelated changes invalidate the read. Recovery callers await the
-result and recheck their live authority before admission or reply decisions.
+opening owner after dispatch. A read queued behind an earlier writer may refresh
+registry facts before opening its actor, but must prove the original logical owner,
+physical target, and caller authority are unchanged. It never replays a dispatched
+operation or accepts target reassociation. Recovery callers await the result and
+recheck their live authority before admission or reply decisions.
 Transaction predicates and commit checks stay with their existing writers.
 Process-held incognito entries retain their native owner until its complete
 worker cutover; this does not make the whole reply path free of host SQLite.
