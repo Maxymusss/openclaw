@@ -4109,8 +4109,6 @@ export const en: TranslationMap & {
       desktopEmpty: "Connect to an available remote desktop.",
       portal: "Portal",
       portalEmpty: "Preview a web application running for this task.",
-      recovery: "Not started",
-      recoveryEmpty: "No requests need recovery.",
       discussion: "Discussion",
       discussionEmpty: "Open the shared discussion for this session.",
       dashboard: "Dashboard",
@@ -4133,7 +4131,6 @@ export const en: TranslationMap & {
     },
     inputRecovery: {},
     pendingInputs: {
-      recoveryUnavailable: "Recovery could not open. Reload to try again.",
       waitingForWorkspaceSync: "Received · waiting for workspace sync",
       waitingForWorkerSetup: "Received · waiting for worker setup",
       resuming:

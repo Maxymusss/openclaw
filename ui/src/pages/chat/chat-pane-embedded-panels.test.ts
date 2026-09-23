@@ -692,7 +692,6 @@ describe("chat pane embedded panels", () => {
     const definitions = sidebarPanelDefinitions();
     expect(definitions.map((definition) => definition.slot)).toEqual([
       "conversation",
-      "recovery",
       "detail",
       "terminal",
       "browser",
@@ -709,11 +708,6 @@ describe("chat pane embedded panels", () => {
       const mount = document.body.appendChild(document.createElement("div"));
       render(definition.loading, mount);
       const skeleton = mount.querySelector("openclaw-panel-loading-skeleton");
-      if (definition.slot === "recovery") {
-        expect(skeleton).toBeNull();
-        expect(mount.textContent).toBe("");
-        continue;
-      }
       await skeleton?.updateComplete;
       expect(skeleton?.getAttribute("data-panel-skeleton")).toBe(
         expected[definition.slot as keyof typeof expected],

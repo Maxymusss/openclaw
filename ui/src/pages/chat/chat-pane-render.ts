@@ -117,7 +117,7 @@ export class ChatPane extends ChatPaneLayoutRender {
     const board = this.resolveBoardView();
     const sidebarLayout = resolveSidebarLayoutForBoard({
       board,
-      layout: this.inputRecoveryPresentation.layout(state, state.sidebarLayout),
+      layout: state.sidebarLayout,
       paneWidth: this.paneWidth,
     });
     state.chatFollowUpMode = resolveChatPaneFollowUpMode(

@@ -54,7 +54,6 @@ describe("server-owned pending input pagination", () => {
     const active = getChatThreadPendingInputs(host);
     await loadChatPendingInputs(host, 2);
     expect(getChatRecoveryInputs(host)).toEqual([older]);
-    expect(getChatRecoveryInputs(host, { latest: true })).toEqual([]);
     expect(getChatThreadPendingInputs(host)).toBe(active);
     const next = { ...queued, id: "next", runId: "next-run" };
     applyChatPendingInputs(host, { items: [queued, next], total: 3, nextBefore: 2 });

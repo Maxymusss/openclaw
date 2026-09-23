@@ -1,10 +1,6 @@
-import { t } from "../../i18n/index.ts";
 import { parseCatalogSessionKey } from "../../lib/sessions/catalog-key.ts";
-import { showToast } from "../../lib/toast.ts";
-import { ChatInputRecoveryPresentation } from "./chat-input-recovery-presentation.ts";
 import { sendSessionObserverVisibility } from "./chat-observer.ts";
 import { ChatPaneBase } from "./chat-pane-base.ts";
-import { prepareSidebarPanel } from "./chat-pane-sidebar-layout.ts";
 import {
   ChatSessionCompanionThreads,
   type ChatSessionCompanionTurn,
@@ -25,28 +21,6 @@ import {
 } from "./sidebar-layout.ts";
 
 export abstract class ChatPaneSidePanels extends ChatPaneBase {
-  protected readonly inputRecoveryPresentation = new ChatInputRecoveryPresentation();
-
-  protected syncInputRecoveryPanel(): void {
-    const state = this.state;
-    if (!state || this.compact || this.catalogHost) {
-      return;
-    }
-    this.inputRecoveryPresentation.sync(state, {
-      isPresented: () =>
-        this.state === state &&
-        this.isConnected &&
-        this.active &&
-        this.presented &&
-        this.visuallyPresented,
-      prepare: () => prepareSidebarPanel("recovery"),
-      open: () =>
-        this.commitSidebarLayout(openSlot(state.sidebarLayout, "recovery"), { persist: false }),
-      onError: () =>
-        showToast({ message: t("chat.pendingInputs.recoveryUnavailable"), anchor: this }),
-    });
-  }
-
   protected sessionCompanionHydrationKey = "";
   protected sessionCompanionFocusGeneration = 0;
   private sessionCompanionPresented = false;

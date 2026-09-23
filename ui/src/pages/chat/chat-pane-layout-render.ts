@@ -10,6 +10,7 @@ import { storedChatOutboxScopeKey } from "../../lib/chat/outbox-store.ts";
 import { resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
 import { resolveSessionWorkspace } from "../../lib/sessions/workspace.ts";
 import "../../plugins/control-ui-contributions.ts";
+import { createChatInputRecoveryQueueProps } from "./chat-input-recovery-view.ts";
 import { ChatPaneBrowserAnnotationRender } from "./chat-pane-browser-annotation-render.ts";
 import {
   availableSidebarSlots,
@@ -19,7 +20,6 @@ import {
 import { resolveChatPaneDesktopTarget } from "./chat-pane-placement.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
 import { renderSidebarRegion, sidebarRegionCallbacks } from "./chat-pane-sidebar-layout.ts";
-import { getChatPendingInputs, getChatRecoveryInputs } from "./chat-pending-inputs.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { ChatToolIconController } from "./chat-tool-icon-controller.ts";
 import { renderChat, type ChatProps } from "./chat-view.ts";
@@ -141,6 +141,14 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         isSidebarSlotVisible(sidebarLayout, "conversation"),
       latestBrowserTabs: this.active && this.presented ? latestBrowserTabs : undefined,
       historyState: catalog ? undefined : state,
+      recoveryQueue: catalog
+        ? undefined
+        : createChatInputRecoveryQueueProps(
+            state,
+            chatProps.canSend &&
+              !chatProps.suggestionComposer &&
+              !chatProps.selectedSession?.providerReview,
+          ),
       header: nothing,
     });
     const primary = html`<div class="chat-pane-primary-column">${chat}</div>`;
@@ -223,14 +231,6 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         presented: this.presented,
         loadFullAssistantMessage: chatProps.loadFullAssistantMessage,
       }),
-      recovery: html`<openclaw-chat-input-recovery
-        .recoveryContext=${{ chat: chatProps, host: state }}
-      ></openclaw-chat-input-recovery>`,
-      recoveryAvailable:
-        this.inputRecoveryPresentation.isReady(state) &&
-        (getChatRecoveryInputs(state).length > 0 ||
-          getChatPendingInputs(state)?.page.nextBefore !== undefined ||
-          getChatPendingInputs(state)?.before !== undefined),
       renderDetail: (content) =>
         renderChatDetailSlot({
           chat: chatProps,

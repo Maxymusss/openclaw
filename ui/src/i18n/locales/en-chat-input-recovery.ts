@@ -4,15 +4,18 @@ import { en } from "./en.ts";
 const catalog = {
   chat: {
     inputRecovery: {
-      recoveryTitle: "Requests that never started",
-      recoveryDescription:
-        "These requests did not reach the agent. They will not run automatically. Copy a request if you want to send it again.",
-      interruptedStatus: "Interrupted · Not started",
-      cancelledStatus: "Cancelled · Not started",
-      emptyRecovery: "No requests need recovery on this page.",
-      acceptedAt: "Received {date}",
-      earlier: "Show earlier requests",
-      latest: "Show latest requests",
+      interruptedStatus: "Not started",
+      cancelledStatus: "Cancelled",
+      send: "Send",
+      discard: "Discard saved attempt",
+      attachmentOnly: "Saved attachment",
+      earlier: "Earlier saved attempts",
+      latest: "Latest",
+      readFailed: "Could not load the saved prompt. Try again.",
+      cannotSend:
+        "This saved prompt could not be restored safely. Its original text and attachments have not been sent.",
+      dismissedStorageFailed:
+        "Dismissed for this tab, but the choice could not be saved for reload.",
     },
   },
 } satisfies TranslationMap;

@@ -567,7 +567,6 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
         this.showComposerPrefillAttention(input);
       }
     }
-    this.syncInputRecoveryPanel();
     this.retireArchivedPresentation();
     this.cancelResetConfirmationForSessionChange();
     this.syncHistoryObserver();
@@ -586,7 +585,7 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
         isSidebarSlotVisible(
           resolveSidebarLayoutForBoard({
             board,
-            layout: this.inputRecoveryPresentation.layout(this.state, this.state.sidebarLayout),
+            layout: this.state.sidebarLayout,
             paneWidth: this.paneWidth,
           }),
           "conversation",
@@ -596,7 +595,6 @@ export abstract class ChatPaneLifecycle extends ChatPaneSessionObservation {
   }
 
   override disconnectedCallback() {
-    this.inputRecoveryPresentation.retire();
     this.syncSessionCompanionPresentation(false);
     this.composerPresentation?.dispose();
     this.composerPresentation = undefined;

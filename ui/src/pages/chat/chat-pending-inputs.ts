@@ -88,10 +88,7 @@ export function getChatThreadPendingInputs(state: ChatState): ChatPendingInputsP
   return (view.threadItems = inputs.length ? inputs : EMPTY_INPUTS);
 }
 
-export function getChatRecoveryInputs(
-  state: ChatState,
-  options: { latest?: boolean } = {},
-): ChatPendingInputsPage["items"] {
+export function getChatRecoveryInputs(state: ChatState): ChatPendingInputsPage["items"] {
   const view = getChatPendingInputs(state);
   if (!view) {
     return EMPTY_INPUTS;
@@ -99,7 +96,7 @@ export function getChatRecoveryInputs(
   return selectChatInputDisplay(
     state.chatMessages,
     state.chatQueue,
-    (options.latest ? view.latestPage : view.page).items,
+    view.page.items,
   ).pendingInputs.filter((input) => chatInputNeedsRecovery(input, state.chatQueue));
 }
 
@@ -165,19 +162,6 @@ export function getChatPendingInputs(state: ChatState): PendingInputView | undef
     view.agentId === resolveUiSelectedSessionAgentId(state)
     ? view
     : undefined;
-}
-
-/** Select already-confirmed current custody without a second loading transition. */
-export function showLatestChatPendingInputs(state: ChatState): void {
-  const view = getChatPendingInputs(state);
-  if (!view) {
-    return;
-  }
-  // Retire any older-page read so it cannot replace the newly selected page.
-  view.request = undefined;
-  view.before = undefined;
-  view.page = view.latestPage;
-  view.error = undefined;
 }
 
 export function clearChatPendingInputs(state: ChatState): void {
