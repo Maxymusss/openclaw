@@ -677,7 +677,7 @@ describe("ChatComposerCapabilityHost", () => {
         host.props(context, state, session, "main", false, true);
         first.reject(new Error("synthetic skill discovery failure"));
         await failed.promise;
-        for (let render = 0; render < 3; render += 1) {
+        for (let renderPass = 0; renderPass < 3; renderPass += 1) {
           const props = host.props(context, state, session, "main", false, true);
           expect(props.skillsError).toBe(true);
           expect(props.skillsLoading).toBe(false);
