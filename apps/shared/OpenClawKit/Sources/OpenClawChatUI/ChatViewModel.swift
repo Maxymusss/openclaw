@@ -301,6 +301,9 @@ public final class OpenClawChatViewModel {
     var runMessageScopesByRunID: [String: RunMessageScope] = [:]
     var provisionalFinalMessagesByID: [UUID: ProvisionalFinalMessage] = [:]
     var sessionGeneration: UInt64 = 0
+    #if DEBUG
+    @ObservationIgnored var testSessionGenerationObservation: (@MainActor (String) -> Void)?
+    #endif
     private var bootstrapGeneration: UInt64 = 0
     // A newer same-session history request only invalidates older responses after it applies.
     // Failed later refreshes must not drop the last successful pending-run history payload.
@@ -681,6 +684,12 @@ public final class OpenClawChatViewModel {
         }
         // Restart when this key depends on a changed routing value so cleared
         // state cannot remain stuck or cross session owners.
+        #if DEBUG
+        self.testSessionGenerationObservation?([
+            "generation-caller site=delivery-identity",
+            "activeAgentChanged=\(agentChanged) contractChanged=\(contractChanged)",
+        ].joined(separator: " "))
+        #endif
         advanceSessionGeneration()
         clearSessionOwnedState()
         startBootstrap()
@@ -828,6 +837,9 @@ extension OpenClawChatViewModel {
         guard stateApplied else {
             // After the server-side branch changes, never keep partially consistent local state.
             // Either install the new state completely or reload the session from scratch.
+            #if DEBUG
+            self.testSessionGenerationObservation?("generation-caller site=branch-reconciliation")
+            #endif
             self.advanceSessionGeneration()
             self.clearSessionOwnedState()
             self.startBootstrap(paintCachedTranscript: false)
@@ -1202,6 +1214,14 @@ extension OpenClawChatViewModel {
         }
         self.deferredExternalSessionKey = nil
         self.prepareComposerForSessionSwitch(to: next, agentID: nextAgentID)
+        #if DEBUG
+        self.testSessionGenerationObservation?([
+            "generation-caller site=session-switch",
+            "intent=\(intent == .externalSync ? "external-sync" : "user-initiated")",
+            "keyEqual=\(next == self.sessionKey) explicitOldPresent=\(self.explicitSessionAgentID != nil)",
+            "explicitNextPresent=\(nextAgentID != nil) explicitEqual=\(self.explicitSessionAgentID == nextAgentID)",
+        ].joined(separator: " "))
+        #endif
         self.advanceSessionGeneration()
         self.clearSessionOwnedState()
         if self.currentSessionSnapshot().deliveryAgentID !=
@@ -1246,6 +1266,15 @@ extension OpenClawChatViewModel {
         self.prepareComposerForSessionSwitch(
             to: selection.target.sessionKey,
             agentID: selection.target.agentID)
+        #if DEBUG
+        self.testSessionGenerationObservation?([
+            "generation-caller site=created-adoption",
+            "keyEqual=\(selection.target.sessionKey == self.sessionKey)",
+            "explicitOldPresent=\(self.explicitSessionAgentID != nil)",
+            "explicitNextPresent=\(selection.target.agentID != nil)",
+            "explicitEqual=\(self.explicitSessionAgentID == selection.target.agentID)",
+        ].joined(separator: " "))
+        #endif
         self.advanceSessionGeneration()
         self.clearSessionOwnedState()
         self.explicitSessionAgentID = selection.target.agentID

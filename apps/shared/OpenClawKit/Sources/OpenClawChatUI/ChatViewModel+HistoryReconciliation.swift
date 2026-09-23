@@ -836,6 +836,9 @@ extension OpenClawChatViewModel {
 
     func advanceSessionGeneration() {
         self.sessionGeneration &+= 1
+        #if DEBUG
+        self.testSessionGenerationObservation?("generation-advanced")
+        #endif
     }
 
     func invalidateRunSnapshots() {

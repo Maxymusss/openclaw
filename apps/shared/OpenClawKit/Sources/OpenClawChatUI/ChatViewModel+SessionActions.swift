@@ -33,6 +33,9 @@ extension OpenClawChatViewModel {
                 } else {
                     // Deleting the active main session: the key stays the
                     // address, so clear local state and re-bootstrap in place.
+                    #if DEBUG
+                    self.testSessionGenerationObservation?("generation-caller site=deleted-current-main")
+                    #endif
                     self.advanceSessionGeneration()
                     self.clearSessionOwnedState()
                     self.errorText = nil

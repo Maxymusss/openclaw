@@ -1528,20 +1528,32 @@ final class NativeActionVisualProofTests: XCTestCase {
                     XCTAssertTrue(chat.input.isEmpty)
                     XCTAssertTrue(chat.switchSession(to: secondKey, agentID: session.agentID))
                     let returned = chat.currentSessionSnapshot()
-                    try await self.waitUntil(failureFacts: {
-                        let observed = chat.currentSessionSnapshot()
-                        return [
-                            "fork-return-ready failureTime=true",
-                            "current=\(chat.isCurrentSession(returned)) loading=\(chat.isLoading)",
-                            "metadata=\(chat.hasCurrentSessionMetadata) detached=\(chat.isTransportDetached)",
-                            "keyEqual=\(observed.key == returned.key) generationEqual=\(observed.generation == returned.generation)",
-                            "activeAgentEqual=\(observed.agentID == returned.agentID)",
-                            "deliveryAgentEqual=\(observed.deliveryAgentID == returned.deliveryAgentID)",
-                            "contractEqual=\(observed.sessionRoutingContract == returned.sessionRoutingContract)",
-                            "ownerSameModel=\(model.chatPresentation.viewModel === chat)",
-                        ].joined(separator: " ")
-                    }) {
-                        chat.isCurrentSession(returned) && !chat.isLoading && chat.hasCurrentSessionMetadata
+                    do {
+                        let previousGenerationObservation = chat.testSessionGenerationObservation
+                        let capturedGeneration = returned.generation
+                        chat.testSessionGenerationObservation = { [weak chat, weak model] event in
+                            observeLifetime([
+                                "\(event) interval=fork-return",
+                                "generationMatchesCapture=\(chat?.sessionGeneration == capturedGeneration)",
+                                "ownerSameModel=\(chat != nil && model?.chatPresentation.viewModel === chat)",
+                            ].joined(separator: " "))
+                        }
+                        defer { chat.testSessionGenerationObservation = previousGenerationObservation }
+                        try await self.waitUntil(failureFacts: {
+                            let observed = chat.currentSessionSnapshot()
+                            return [
+                                "fork-return-ready failureTime=true",
+                                "current=\(chat.isCurrentSession(returned)) loading=\(chat.isLoading)",
+                                "metadata=\(chat.hasCurrentSessionMetadata) detached=\(chat.isTransportDetached)",
+                                "keyEqual=\(observed.key == returned.key) generationEqual=\(observed.generation == returned.generation)",
+                                "activeAgentEqual=\(observed.agentID == returned.agentID)",
+                                "deliveryAgentEqual=\(observed.deliveryAgentID == returned.deliveryAgentID)",
+                                "contractEqual=\(observed.sessionRoutingContract == returned.sessionRoutingContract)",
+                                "ownerSameModel=\(model.chatPresentation.viewModel === chat)",
+                            ].joined(separator: " ")
+                        }) {
+                            chat.isCurrentSession(returned) && !chat.isLoading && chat.hasCurrentSessionMetadata
+                        }
                     }
                     XCTAssertTrue(model.chatPresentation.viewModel === chat)
                     XCTAssertEqual(chat.currentSessionTarget, .init(sessionKey: secondKey, agentID: session.agentID))
