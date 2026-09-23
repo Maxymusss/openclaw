@@ -103,7 +103,7 @@ function installBuildCheckpoint(root: string, checkpoint: string) {
 function installScripts(
   root: string,
   scripts: string[],
-  { compiler = true, dependencies = ["tsx", "@openclaw/fs-safe"] } = {},
+  { compiler = true, dependencies = ["tsx", "@openclaw/fs-safe", "json5"] } = {},
 ) {
   // Keep the checkpoint launcher when installCompiler already owns this toolchain.
   if (compiler && !fs.existsSync(path.join(root, "node_modules/typescript/package.json"))) {
@@ -316,7 +316,10 @@ describe("native check launchers in paths with spaces", () => {
         installScripts(
           root,
           ["run-tsgo-core-test-shards.mts", "run-oxlint.mts", "run-oxlint-shards.mts"],
-          { compiler: false, dependencies: ["tsx", "@openclaw/fs-safe", "p-map", "koffi"] },
+          {
+            compiler: false,
+            dependencies: ["tsx", "@openclaw/fs-safe", "p-map", "koffi", "json5"],
+          },
         );
         const nativeJob = "src/process/supervisor/service-child-windows-job-native.ts";
         write(root, nativeJob, fs.readFileSync(path.join(sourceRoot, nativeJob), "utf8"));

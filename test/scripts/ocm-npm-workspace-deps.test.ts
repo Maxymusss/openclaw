@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { collectRuntimeImportClosure } from "../../scripts/lib/runtime-import-closure.mts";
 import {
   buildInstallManifest,
   parseWorkspaceDependencyDirs,
@@ -25,9 +26,7 @@ const adapterPath = fileURLToPath(
 const packageDocsMapPath = fileURLToPath(
   new URL("../../scripts/package-docs-map.mjs", import.meta.url),
 );
-const packageChangelogPath = fileURLToPath(
-  new URL("../../scripts/package-changelog.mjs", import.meta.url),
-);
+const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const postpackPath = fileURLToPath(new URL("../../scripts/openclaw-postpack.mjs", import.meta.url));
 
 describe("OCM npm workspace dependency adapter", () => {
@@ -157,7 +156,6 @@ describe("OCM npm workspace dependency adapter", () => {
 
   it("restores a prepared legacy source fixture through its changelog owner", () => {
     const root = mkdtempSync(join(tmpdir(), "openclaw-ocm-historical-pack-"));
-    const scriptsDir = join(root, "scripts");
     const sourceChangelog = `# Changelog
 
 ## 2026.8.1
@@ -166,24 +164,17 @@ describe("OCM npm workspace dependency adapter", () => {
 ## 2026.7.1
 - Previous release notes with enough detail for package validation.
 `;
-    mkdirSync(scriptsDir, { recursive: true });
     writeFileSync(join(root, "package.json"), '{"name":"openclaw","version":"2026.8.1"}\n');
     writeFileSync(join(root, "CHANGELOG.md"), sourceChangelog);
 
     try {
-      writeFileSync(
-        join(scriptsDir, "package-changelog.mjs"),
-        readFileSync(packageChangelogPath, "utf8"),
-      );
-      mkdirSync(join(scriptsDir, "lib"), { recursive: true });
-      writeFileSync(
-        join(scriptsDir, "lib", "release-changelog.mjs"),
-        readFileSync(new URL("../../scripts/lib/release-changelog.mjs", import.meta.url)),
-      );
-      writeFileSync(
-        join(scriptsDir, "lib", "release-notes-compaction.mjs"),
-        readFileSync(new URL("../../scripts/lib/release-notes-compaction.mjs", import.meta.url)),
-      );
+      for (const source of collectRuntimeImportClosure(repoRoot, [
+        "scripts/package-changelog.mjs",
+      ])) {
+        const target = join(root, source);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, readFileSync(join(repoRoot, source)));
+      }
       execFileSync(process.execPath, ["scripts/package-changelog.mjs", "prepare"], {
         cwd: root,
         stdio: "pipe",
