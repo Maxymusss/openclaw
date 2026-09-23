@@ -1,5 +1,4 @@
 import { isIP } from "node:net";
-import type { RemoteModelCatalogPricing } from "@openclaw/model-catalog-core";
 import { MODEL_PRICING_SOURCES } from "@openclaw/model-catalog-core/model-catalog-pricing";
 import { buildModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import type { ModelCatalogCost } from "@openclaw/model-catalog-core/model-catalog-types";
@@ -24,13 +23,14 @@ import {
   type PluginMetadataSnapshot,
 } from "../plugins/plugin-metadata-snapshot.js";
 import { planEffectiveModelCatalogRows } from "./index.js";
+import type { RemoteModelCatalogPrice } from "./remote-bundle.js";
 import { isRemoteModelCatalogRefreshEnabled } from "./remote-config.js";
 import {
   getRemoteModelCatalogPricing,
   prepareRemoteModelCatalogStartupSnapshot,
 } from "./remote-overlay.js";
 
-type PricingValue = RemoteModelCatalogPricing | ModelCatalogCost;
+type PricingValue = ModelCatalogCost;
 type ExternalPricingPolicy = {
   external: boolean;
   authoritative: boolean;
@@ -39,8 +39,8 @@ type PricingContext = {
   config: OpenClawConfig;
   normalizeKey: (provider: string, model: string) => string;
   catalog: ReadonlyMap<string, PricingValue>;
-  hosted: Readonly<Record<string, RemoteModelCatalogPricing>>;
-  normalizedHosted: ReadonlyMap<string, RemoteModelCatalogPricing>;
+  hosted: Readonly<Record<string, RemoteModelCatalogPrice>>;
+  normalizedHosted: ReadonlyMap<string, RemoteModelCatalogPrice>;
   policies: ReadonlyMap<string, ExternalPricingPolicy>;
   fingerprint: string;
 };
@@ -109,7 +109,7 @@ function buildPricingContext(
   // Hosted aliases are policy-resolved against installed manifests. If that metadata is
   // unavailable, fail closed instead of treating every provider as policy-free.
   const hosted = snapshot ? (getRemoteModelCatalogPricing(config) ?? {}) : {};
-  const normalizedHosted = new Map<string, RemoteModelCatalogPricing>();
+  const normalizedHosted = new Map<string, RemoteModelCatalogPrice>();
   for (const [key, pricing] of Object.entries(hosted).toSorted(([a], [b]) => a.localeCompare(b))) {
     const normalized = normalizedHostedKey(key, normalizeKey);
     if (normalized && !normalizedHosted.has(normalized)) {
@@ -289,10 +289,14 @@ export function resolveModelPricing(
     }
     const hosted =
       context.hosted[pricingKey] ?? (policy ? undefined : context.normalizedHosted.get(pricingKey));
-    // The publisher retains validated native zeros under exact owner keys. Catalog
-    // placeholders and normalized aliases cannot establish an authoritative free rate.
-    if (hosted && (hasKnownPricing(hosted) || policy?.authoritative)) {
-      return hosted;
+    // V2 known rates belong to an admitted catalog row. V1 mirrors still need
+    // exact owner policy to distinguish a free rate from a zero placeholder.
+    if (
+      hosted &&
+      (!hosted.explicit || catalog) &&
+      (hasKnownPricing(hosted.cost) || hosted.explicit || policy?.authoritative)
+    ) {
+      return hosted.cost;
     }
   }
   return undefined;
@@ -310,5 +314,5 @@ export function modelCatalogPricingFingerprint(context: PricingContext): string 
         .toSorted((a, b) => a.id.localeCompare(b.id)),
     }));
   // Lookup-policy changes must invalidate persisted estimates even when rates are unchanged.
-  return JSON.stringify({ policyVersion: 2, pricing: context.fingerprint, configuredEndpoints });
+  return JSON.stringify({ policyVersion: 3, pricing: context.fingerprint, configuredEndpoints });
 }

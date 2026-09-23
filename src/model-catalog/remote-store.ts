@@ -21,7 +21,8 @@ type RemoteModelCatalogWriteResult =
   | { status: "written" }
   | { status: "retained-newer"; row: RemoteModelCatalogStoreRow };
 
-const REMOTE_MODEL_CATALOG_STATE_KEY = "modelCatalog.remote";
+// Older clients retain their v1 slot, including when both versions refresh the same mirror.
+const REMOTE_MODEL_CATALOG_STATE_KEY = "modelCatalog.remote.v2";
 
 export function readRemoteModelCatalog(
   options: OpenClawStateDatabaseOptions = {},

@@ -66,10 +66,17 @@ The `models` root also owns global model-catalog behavior.
   model metadata and pricing then stay at the values shipped in the installed
   release or declared under `models.providers.*.models[].cost`.
 - `models.catalogRefresh.url`: optional HTTPS mirror override (plain HTTP is
-  accepted only for explicit localhost testing). The Gateway
+  accepted only for explicit localhost testing). The default is
+  `https://catalog.openclaw.ai/models/v2/catalog.json`. Mirrors can serve v1 or v2.
+  The Gateway
   checks in the background at startup and every six hours. A downloaded catalog
   applies on the next Gateway restart; a release whose bundled catalog is newer
   always wins.
+
+V2 includes pricing in each model row. Unknown or unavailable pricing does not
+mean a model is free. Unlike v1 mirrors, the default v2 feed does not include
+standalone prices for models outside the catalog, so estimates for historical or
+custom model IDs may be unavailable. Explicit model costs still take precedence.
 
 Pricing updates ship in the same hosted catalog file as model metadata. The
 retired `models.pricing` toggle is removed automatically by `openclaw doctor

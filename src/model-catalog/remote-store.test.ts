@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 import {
@@ -23,6 +24,8 @@ describe("remote model catalog store", () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-catalog-")));
     roots.push(root);
     const options = { path: path.join(root, "state.sqlite") };
+    const legacy = { bundle_json: '{"schemaVersion":1}', generated_at: 100 };
+    writeConfigMachineState("modelCatalog.remote", legacy, options);
     expect(readRemoteModelCatalog(options)).toBeUndefined();
     expect(
       markRemoteModelCatalogChecked(
@@ -38,7 +41,7 @@ describe("remote model catalog store", () => {
         options,
       ),
     ).toBe(false);
-    expect(readConfigMachineState("modelCatalog.remote", options)).toBeUndefined();
+    expect(readConfigMachineState("modelCatalog.remote.v2", options)).toBeUndefined();
     writeRemoteModelCatalog(
       {
         bundle_json: '{"schemaVersion":1}',
@@ -127,7 +130,7 @@ describe("remote model catalog store", () => {
       source_url: "https://catalog.test/two",
       checked_at: 6,
     });
-    expect(readConfigMachineState("modelCatalog.remote", options)).toEqual({
+    expect(readConfigMachineState("modelCatalog.remote.v2", options)).toEqual({
       bundle_json: '{"schemaVersion":1,"updated":true}',
       generated_at: 3,
       min_version: "2026.7.0",
@@ -136,5 +139,8 @@ describe("remote model catalog store", () => {
       last_modified: null,
       checked_at: 6,
     });
+    expect(readConfigMachineState("modelCatalog.remote", options)).toEqual(legacy);
+    writeConfigMachineState("modelCatalog.remote", { ...legacy, generated_at: 200 }, options);
+    expect(readRemoteModelCatalog(options)?.generated_at).toBe(3);
   });
 });
