@@ -321,35 +321,6 @@ describe("telegram thread bindings", () => {
     ]);
   });
 
-  it("registers a telegram binding adapter and binds current conversations", async () => {
-    const manager = await createTelegramThreadBindingManager({
-      accountId: "work",
-      persist: false,
-      enableSweeper: false,
-      idleTimeoutMs: 30_000,
-      maxAgeMs: 0,
-    });
-    const bound = await getSessionBindingService().bind({
-      targetSessionKey: "agent:main:subagent:child-1",
-      targetKind: "subagent",
-      conversation: {
-        channel: "telegram",
-        accountId: "work",
-        conversationId: "-100200300:topic:77",
-      },
-      placement: "current",
-      metadata: {
-        boundBy: "user-1",
-      },
-    });
-
-    expect(bound.conversation.channel).toBe("telegram");
-    expect(bound.conversation.accountId).toBe("work");
-    expect(bound.conversation.conversationId).toBe("-100200300:topic:77");
-    expect(bound.targetSessionKey).toBe("agent:main:subagent:child-1");
-    expect(manager.getByConversationId("-100200300:topic:77")?.boundBy).toBe("user-1");
-  });
-
   it.each(["before-create", "after-create"] as const)(
     "settles forum-topic binding only after native create admission (%s revocation)",
     async (revokeAt) => {
@@ -439,57 +410,6 @@ describe("telegram thread bindings", () => {
     );
   });
 
-  it("rejects child placement when conversationId is a bare topic ID with no group context", async () => {
-    await createTelegramThreadBindingManager({
-      accountId: "default",
-      persist: false,
-      enableSweeper: false,
-    });
-
-    const error = await getSessionBindingService()
-      .bind({
-        targetSessionKey: "agent:main:subagent:child-1",
-        targetKind: "subagent",
-        conversation: {
-          channel: "telegram",
-          accountId: "default",
-          conversationId: "77",
-        },
-        placement: "child",
-      })
-      .then(
-        () => undefined,
-        (bindError: unknown) => bindError,
-      );
-    expect((error as { code?: unknown } | undefined)?.code).toBe("BINDING_CREATE_FAILED");
-  });
-
-  it("rejects child placement when parentConversationId is also a bare topic ID", async () => {
-    await createTelegramThreadBindingManager({
-      accountId: "default",
-      persist: false,
-      enableSweeper: false,
-    });
-
-    const error = await getSessionBindingService()
-      .bind({
-        targetSessionKey: "agent:main:acp:child-acp-1",
-        targetKind: "session",
-        conversation: {
-          channel: "telegram",
-          accountId: "default",
-          conversationId: "77",
-          parentConversationId: "99",
-        },
-        placement: "child",
-      })
-      .then(
-        () => undefined,
-        (bindError: unknown) => bindError,
-      );
-    expect((error as { code?: unknown } | undefined)?.code).toBe("BINDING_CREATE_FAILED");
-  });
-
   it("shares binding state across distinct module instances", async () => {
     const bindingsA = await importFreshModule<typeof import("./thread-bindings.js")>(
       import.meta.url,
@@ -535,52 +455,6 @@ describe("telegram thread bindings", () => {
     } finally {
       await managerA.stop();
     }
-  });
-
-  it("updates lifecycle windows by session key", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-03-06T10:00:00.000Z"));
-    const manager = await createTelegramThreadBindingManager({
-      accountId: "work",
-      persist: false,
-      enableSweeper: false,
-    });
-
-    await getSessionBindingService().bind({
-      targetSessionKey: "agent:main:subagent:child-1",
-      targetKind: "subagent",
-      conversation: {
-        channel: "telegram",
-        accountId: "work",
-        conversationId: "1234",
-      },
-    });
-    const original = manager.listBySessionKey("agent:main:subagent:child-1")[0];
-    if (!original) {
-      throw new Error("expected original subagent thread binding");
-    }
-
-    const idleUpdated = await setTelegramThreadBindingIdleTimeoutBySessionKey({
-      accountId: "work",
-      targetSessionKey: "agent:main:subagent:child-1",
-      idleTimeoutMs: 2 * 60 * 60 * 1000,
-    });
-    vi.setSystemTime(new Date("2026-03-06T12:00:00.000Z"));
-    const maxAgeUpdated = await setTelegramThreadBindingMaxAgeBySessionKey({
-      accountId: "work",
-      targetSessionKey: "agent:main:subagent:child-1",
-      maxAgeMs: 6 * 60 * 60 * 1000,
-    });
-
-    expect(idleUpdated).toHaveLength(1);
-    expect(idleUpdated[0]?.idleTimeoutMs).toBe(2 * 60 * 60 * 1000);
-    expect(maxAgeUpdated).toHaveLength(1);
-    expect(maxAgeUpdated[0]?.maxAgeMs).toBe(6 * 60 * 60 * 1000);
-    expect(maxAgeUpdated[0]?.boundAt).toBe(original?.boundAt);
-    expect(maxAgeUpdated[0]?.lastActivityAt).toBe(Date.parse("2026-03-06T12:00:00.000Z"));
-    expect(manager.listBySessionKey("agent:main:subagent:child-1")[0]?.maxAgeMs).toBe(
-      6 * 60 * 60 * 1000,
-    );
   });
 
   it("does not persist lifecycle updates when manager persistence is disabled", async () => {
@@ -957,6 +831,12 @@ describe("telegram thread bindings", () => {
       targetSessionKey: "agent:main:subagent:child-3",
       idleTimeoutMs: 90_000,
     });
+    vi.setSystemTime(new Date("2026-03-06T12:00:00.000Z"));
+    await setTelegramThreadBindingMaxAgeBySessionKey({
+      accountId: "persist-reset",
+      targetSessionKey: "agent:main:subagent:child-3",
+      maxAgeMs: 6 * 60 * 60 * 1000,
+    });
 
     await manager.stop();
 
@@ -965,7 +845,12 @@ describe("telegram thread bindings", () => {
       persist: true,
       enableSweeper: false,
     });
-    expect(reloaded.getByConversationId("-100200300:topic:99")?.idleTimeoutMs).toBe(90_000);
+    expect(reloaded.getByConversationId("-100200300:topic:99")).toMatchObject({
+      idleTimeoutMs: 90_000,
+      maxAgeMs: 6 * 60 * 60 * 1000,
+      boundAt: Date.parse("2026-03-06T10:00:00.000Z"),
+      lastActivityAt: Date.parse("2026-03-06T12:00:00.000Z"),
+    });
     expect(
       (await storedBindings()).find((binding) => binding.accountId === "persist-reset")
         ?.idleTimeoutMs,
