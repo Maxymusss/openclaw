@@ -6,14 +6,8 @@ import {
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { requireActivePluginRegistry } from "../../plugins/runtime.js";
 import { mergeAcceptedSessionSpawnsForRun } from "../accepted-session-spawn.js";
-import {
-  readPreparedRunOperatorAuthority,
-  type PreparedAgentRunAdmission,
-} from "../admitted-run-context.js";
-import {
-  createAssistantErrorTranscript,
-  type AssistantErrorTranscript,
-} from "../assistant-error-transcript.js";
+import { readPreparedRunOperatorAuthority } from "../admitted-run-context.js";
+import { createAssistantErrorTranscript } from "../assistant-error-transcript.js";
 import { resolveModelFallbackError } from "../failover-error.js";
 import { createContextEngineLogicalTurnLease } from "../harness/context-engine-logical-turn.js";
 import {

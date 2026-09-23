@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
-import { emitDiagnosticEventWithTrustedTraceContext } from "../infra/diagnostic-events.js";
 import { recordDiagnosticToolExecutionDeadline } from "../infra/diagnostic-tool-execution-liveness.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
