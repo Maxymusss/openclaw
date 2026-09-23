@@ -8,6 +8,11 @@ on:
         required: false
         default: false
         type: boolean
+      s4_standalone:
+        description: Add one complete changed-planner sibling proof and twenty standalone planner-file proofs at eight workers.
+        required: false
+        default: false
+        type: boolean
       target_ref:
         description: Optional branch, tag, or full commit SHA to validate instead of the workflow ref
         required: false
@@ -6937,3 +6942,106 @@ jobs:
           if peak_memory="$(cat /sys/fs/cgroup/memory.peak 2>/dev/null)"; then
             echo "runner cgroup peak memory bytes=$peak_memory"
           fi
+
+  s4-standalone-proof:
+    name: S4 standalone planner proof (8 workers)
+    needs: [s4-probe-manifest]
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.s4_probe && inputs.s4_standalone && github.run_attempt == 1 && github.repository == 'openclaw/openclaw' }}
+    permissions:
+      contents: read
+    runs-on: blacksmith-32vcpu-ubuntu-2404
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    env:
+      CHECKOUT_GIT_COMMITS_JSON: ${{ toJson(matrix.git_commits) }}
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_CI_TEST_RUNTIME_POLICY: bun-compatible
+      FROZEN_TARGET: "false"
+      RUNNER_ENVIRONMENT: self-hosted
+      OPENCLAW_VITEST_MAX_WORKERS: "8"
+      OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "300000"
+      OPENCLAW_VITEST_NO_OUTPUT_RETRY: "0"
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix: ${{ fromJson(needs.s4-probe-manifest.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_REPO: ${{ github.repository }}
+          CHECKOUT_TOKEN: ${{ github.token }}
+          CHECKOUT_SHA: ${{ matrix.checkout_sha }}
+          WORKFLOW_SHA: ${{ matrix.workflow_sha }}
+        run: *owned_checkout_run
+      - name: Setup Node environment
+        uses: ./.ci-harness/.github/actions/setup-node-env
+        with:
+          cache-mode: ${{ matrix.setup_inputs['cache-mode'] }}
+          node-version: ${{ matrix.setup_inputs['node-version'] }}
+          install-bun: ${{ matrix.setup_inputs['install-bun'] }}
+          dependency-cache: ${{ matrix.setup_inputs['dependency-cache'] }}
+          vitest-fs-cache: ${{ matrix.setup_inputs['vitest-fs-cache'] }}
+          vitest-worker-cache: ${{ matrix.setup_inputs['vitest-worker-cache'] }}
+          node-compile-cache: ${{ matrix.setup_inputs['node-compile-cache'] }}
+      - name: Verify standalone candidate and allocation
+        shell: bash
+        env:
+          S4_CHECKOUT_SHA: ${{ matrix.checkout_sha }}
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$S4_CHECKOUT_SHA"
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          assert "s4-probe-manifest:" not in Path(".github/workflows/ci.yml").read_text()
+          cores = int(subprocess.check_output(["nproc"], text=True))
+          assert cores >= 8, "Standalone proof requires eight available CPUs"
+          print("S4_STANDALONE_ALLOCATION " + json.dumps({
+              "proof_kind": "standalone-planner-validation",
+              "checkout_sha": os.environ["S4_CHECKOUT_SHA"],
+              "runner_label": "blacksmith-32vcpu-ubuntu-2404",
+              "nproc": cores,
+              "logical_cpus": os.cpu_count(),
+              "cpu_affinity_count": len(os.sched_getaffinity(0)),
+              "worker_ceiling": 8,
+              "node_version": subprocess.check_output(["node", "--version"], text=True).strip(),
+          }), flush=True)
+          PY
+      - name: Run whole sibling file and twenty standalone planner proofs
+        shell: bash
+        env:
+          S4_CHECKOUT_SHA: ${{ matrix.checkout_sha }}
+        run: |
+          set -euo pipefail
+          proof_dir="$RUNNER_TEMP/s4-standalone-proof"
+          mkdir -p "$proof_dir"
+          run_proof() {
+            local label="$1" file="$2" started completed exit_code
+            started="$(date +%s)"
+            echo "::group::S4 proof $label"
+            if /usr/bin/time -p node scripts/run-vitest.mjs \
+              --config test/vitest/vitest.tooling.config.ts "$file" --maxWorkers=8 \
+              2>&1 | tee "$proof_dir/$label.log"; then
+              exit_code=0
+            else
+              exit_code=$?
+            fi
+            completed="$(date +%s)"
+            printf '{"label":"%s","file":"%s","checkout_sha":"%s","workers":8,"exit_code":%d,"started_epoch":%d,"completed_epoch":%d}\n' \
+              "$label" "$file" "$S4_CHECKOUT_SHA" "$exit_code" "$started" "$completed" \
+              | tee "$proof_dir/$label.json"
+            echo "::endgroup::"
+            return "$exit_code"
+          }
+          run_proof ci-changed-full test/scripts/ci-changed-node-test-plan.test.ts
+          for ((iteration = 1; iteration <= 20; iteration++)); do
+            printf -v label 'ci-node-%02d' "$iteration"
+            run_proof "$label" test/scripts/ci-node-test-plan.test.ts
+          done
+      - *runner_memory_peak_step
+      - name: Upload standalone proof logs and receipts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: s4-standalone-proof-${{ github.run_id }}
+          path: ${{ runner.temp }}/s4-standalone-proof/
