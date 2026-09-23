@@ -5,7 +5,7 @@ import postcss, { type Declaration, type Root, type Rule } from "postcss";
 import selectorParser from "postcss-selector-parser";
 import type { IconFixture } from "./control-ui-icon-fixtures.mts";
 
-export type IconGridFinding = {
+type IconGridFinding = {
   file: string;
   line: number;
   selector: string;
