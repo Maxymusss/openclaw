@@ -347,6 +347,15 @@ export async function finishUpdate(
         env: currentServiceStop()?.serviceEnv ?? params.ownedManagedUpdateEnv,
         timeoutMs: params.updateStepTimeoutMs,
         serviceStopped: !rolledBack && currentServiceStop()?.stopped,
+        // An initial failure before activation cannot promise a new service startup.
+        // Keep waiting after an observed stop/rebind or any rollback handling.
+        waitForStartup:
+          params.result.status !== "error" ||
+          params.mutationStarted !== false ||
+          params.preManagedServiceStop?.stopped === true ||
+          currentServiceStop()?.stopped === true ||
+          Boolean(params.originalManagedServiceRuntime?.definition.rebound) ||
+          rollbackAttempted,
         assertCurrent,
       });
       assertCurrent();
