@@ -379,59 +379,6 @@ public final class OpenClawChatViewModel {
         case externalSync
     }
 
-    struct ModelPatchTarget: Hashable {
-        let canonicalSessionKey: String
-        let agentID: String?
-        let sessionRoutingContract: String?
-    }
-
-    struct VerbosePreferenceState: Equatable {
-        let level: String
-        let isExplicit: Bool
-    }
-
-    enum VerbosePreferenceRequest {
-        case pending(VerbosePreferenceState)
-        case succeeded(VerbosePreferenceState)
-        case failed
-    }
-
-    struct ThinkingPreferenceState: Equatable {
-        let level: String
-        let isExplicit: Bool
-    }
-
-    enum ThinkingPreferenceRequest {
-        case pending(ThinkingPreferenceState)
-        case succeeded(ThinkingPreferenceState)
-        case failed
-    }
-
-    enum VerboseLevelState {
-        case none
-        case value(String)
-
-        var level: String? {
-            if case let .value(level) = self { return level }
-            return nil
-        }
-    }
-
-    enum ToolOverridesState {
-        case none
-        case value(OpenClawChatSessionToolOverrides)
-
-        var overrides: OpenClawChatSessionToolOverrides? {
-            if case let .value(overrides) = self { return overrides }
-            return nil
-        }
-    }
-
-    struct FastModeState {
-        let override: OpenClawChatFastMode?
-        let effective: OpenClawChatFastMode?
-    }
-
     private struct ModelSelectionRequest {
         let id: UInt64
         let target: ModelPatchTarget
