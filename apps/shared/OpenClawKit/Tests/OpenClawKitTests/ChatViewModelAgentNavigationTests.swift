@@ -361,6 +361,43 @@ struct ChatViewModelAgentNavigationTests {
         #expect(await transport.subscriptionTargets.contains(target))
     }
 
+    @Test(arguments: ["opaque-session", "global"])
+    func `external session echoes preserve the explicit conversation owner`(key: String) async throws {
+        let transport = AgentNavigationTransport(catalogs: [.success(self.catalog())])
+        let fixture = AgentNavigationFixture(transport: transport)
+        defer { fixture.close() }
+        let vm = fixture.viewModel
+        #expect(vm.switchSession(to: key, agentID: "research"))
+        try await waitUntil("explicit session bootstrap settled") {
+            await MainActor.run { !vm.isLoading && vm.hasCurrentSessionMetadata }
+        }
+        let target = OpenClawChatSessionTarget(sessionKey: key, agentID: "research")
+        let captured = vm.currentSessionSnapshot()
+        vm.input = "Keep the research draft"
+
+        vm.syncSession(to: " \(key) ")
+
+        #expect(vm.isCurrentSession(captured))
+        #expect(vm.currentSessionTarget == target)
+        #expect(vm.input == "Keep the research draft")
+        #expect(!vm.isLoading && vm.hasCurrentSessionMetadata)
+        let request = ChatFullMessageReaderRequest(viewModel: vm, messageID: "message-one")
+        _ = try await request.load()
+        #expect(await transport.fullMessageTargets == [target])
+
+        #expect(vm.switchSession(to: key, agentID: "main"))
+        #expect(!vm.isCurrentSession(captured))
+        #expect(vm.currentSessionTarget == .init(sessionKey: key, agentID: "main"))
+        #expect(vm.input.isEmpty)
+        #expect(vm.switchSession(to: key, agentID: "research"))
+        let research = vm.currentSessionSnapshot()
+        vm.syncSession(to: "different-session")
+        #expect(!vm.isCurrentSession(research))
+        #expect(vm.sessionKey == "different-session")
+        #expect(vm.explicitSessionAgentID == nil)
+        #expect(vm.currentSessionTarget == .init(sessionKey: "different-session", agentID: "main"))
+    }
+
     @Test func `sequential global activations acknowledge their owners and preserve manual unread marks`() async throws {
         let contract = "global|inbox|main"
         let transport = AgentNavigationTransport(

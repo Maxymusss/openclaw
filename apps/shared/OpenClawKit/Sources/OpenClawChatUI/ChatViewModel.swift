@@ -1140,7 +1140,12 @@ extension OpenClawChatViewModel {
         agentID: String? = nil) -> Bool
     {
         if intent == .userInitiated, !self.captureSessionTransitionAuthority()() { return false }
-        guard let selection = self.prepareSessionTarget(sessionKey, agentID: agentID) else { return false }
+        // Key-only synchronization echoes the selected conversation. Keep a bare
+        // key's explicit owner instead of retiring its transport and generation.
+        let targetAgentID = intent == .externalSync &&
+            sessionKey.trimmingCharacters(in: .whitespacesAndNewlines) == self.sessionKey
+            ? self.explicitSessionAgentID : agentID
+        guard let selection = self.prepareSessionTarget(sessionKey, agentID: targetAgentID) else { return false }
         let next = selection.target.sessionKey
         let nextAgentID = selection.target.agentID
         guard next != self.sessionKey || nextAgentID != self.explicitSessionAgentID else {
