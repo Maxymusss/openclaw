@@ -15,7 +15,7 @@ import {
   readSessionTranscriptCatalogPage,
   readSessionTranscriptCatalogTitle,
 } from "openclaw/plugin-sdk/session-transcript-runtime";
-import { sessionShareGroups } from "./config.js";
+import { sessionShareSelection } from "./config.js";
 
 export const SESSION_SHARE_LIST_COMMAND = "openclaw.sessions.list.v1";
 export const SESSION_SHARE_READ_COMMAND = "openclaw.sessions.read.v1";
@@ -36,10 +36,11 @@ function parseNodeParams(paramsJSON?: string | null): unknown {
 
 function sharedEntries(api: OpenClawPluginApi) {
   const config = api.runtime.config.current();
-  const groups = new Set(sessionShareGroups(config));
-  if (groups.size === 0) {
+  const selection = sessionShareSelection(config);
+  if (!selection) {
     return [];
   }
+  const groups = selection.groups ? new Set(selection.groups) : undefined;
   return listAgentIds(config)
     .toSorted()
     .flatMap((agentId) => {
@@ -47,13 +48,17 @@ function sharedEntries(api: OpenClawPluginApi) {
         agentId,
       });
       return api.runtime.agent.session
-        .listSessionEntries({ agentId, storePath, readOnly: true })
+        .listSessionEntries({
+          agentId,
+          storePath,
+          readOnly: true,
+          involvingProfileId: selection.involvingProfileId,
+        })
         .map((session) => Object.assign({}, session, { agentId, storePath }));
     })
     .filter(
       ({ sessionKey, entry }) =>
-        entry.category !== undefined &&
-        groups.has(entry.category) &&
+        (!groups || (entry.category !== undefined && groups.has(entry.category))) &&
         entry.incognito !== true &&
         entry.visibility !== "draft" &&
         !isSubagentSessionKey(sessionKey) &&
@@ -73,7 +78,7 @@ export function createSessionShareNodeCommands(
       hasActiveWork: () => false,
       cap: "openclaw-sessions",
       dangerous: false,
-      isAvailable: ({ config }) => sessionShareGroups(config).length > 0,
+      isAvailable: ({ config }) => sessionShareSelection(config) !== undefined,
       async handle(paramsJSON) {
         const params = sessionCatalogPaging.parseListParams(parseNodeParams(paramsJSON), {
           searchMaxLength: 500,
@@ -165,7 +170,7 @@ export function createSessionShareNodeCommands(
       hasActiveWork: () => false,
       cap: "openclaw-sessions",
       dangerous: false,
-      isAvailable: ({ config }) => sessionShareGroups(config).length > 0,
+      isAvailable: ({ config }) => sessionShareSelection(config) !== undefined,
       async handle(paramsJSON) {
         const params = sessionCatalogPaging.parseReadParams(parseNodeParams(paramsJSON), {
           threadIdMaxLength: 512,
@@ -176,7 +181,7 @@ export function createSessionShareNodeCommands(
         const session = sharedEntries(api).find(({ sessionKey }) => sessionKey === params.threadId);
         if (!session) {
           throw new Error(
-            "Session is not shared. The source operator must select its group and keep it non-draft.",
+            "Session is not shared. The session must match the source operator's filters and stay eligible.",
           );
         }
         const page = await readSessionTranscriptCatalogPage({
@@ -187,7 +192,7 @@ export function createSessionShareNodeCommands(
           limit: params.limit,
           cursor: params.cursor,
         });
-        // Group, store, and session changes revoke an in-flight read before publication.
+        // Selection, identity, store, and session changes revoke an in-flight read before publication.
         if (
           !sharedEntries(api).some(
             ({ agentId, sessionKey, storePath, entry }) =>
