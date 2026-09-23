@@ -65,6 +65,7 @@ it.each(["default", "custom"])(
       expect(selected.warn).toHaveBeenNthCalledWith(3, "slow SQLite transaction hold", {
         ...common,
         elapsedMs: 2_000,
+        mode: "immediate",
         thresholdMs: 1_000,
       });
       expect((logger ? defaultLogger : customLogger).warn).not.toHaveBeenCalled();
