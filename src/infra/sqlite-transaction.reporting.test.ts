@@ -53,12 +53,12 @@ it.each(["default", "custom"])(
         pid: process.pid,
         threadId,
       };
-      expect(selected.warn).toHaveBeenNthCalledWith(1, "slow SQLite transaction lock wait", {
+      expect(selected.warn).toHaveBeenNthCalledWith(1, "slow SQLite transaction step", {
         ...common,
         step: "begin",
         beginAdmission: { nativeAttempts: 1, nativeMs: 1_000, serviceCalls: 0, serviceMs: 0 },
       });
-      expect(selected.warn).toHaveBeenNthCalledWith(2, "slow SQLite transaction lock wait", {
+      expect(selected.warn).toHaveBeenNthCalledWith(2, "slow SQLite transaction step", {
         ...common,
         step: "commit",
       });
@@ -183,7 +183,7 @@ it.each(["BEGIN IMMEDIATE", "COMMIT"])(
         "COMMIT",
       ]);
       expect(warn).toHaveBeenCalledWith(
-        "slow SQLite transaction lock wait",
+        "slow SQLite transaction step",
         expect.objectContaining({ step: slowStep === "COMMIT" ? "commit" : "begin" }),
       );
     } finally {

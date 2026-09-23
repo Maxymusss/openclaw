@@ -101,7 +101,7 @@ unix.each([false, true])(
     for (const [index, step] of ["begin", "commit"].entries()) {
       expect(logger.warn).toHaveBeenNthCalledWith(
         index + 1,
-        "slow SQLite transaction lock wait",
+        "slow SQLite transaction step",
         expect.objectContaining({ step, elapsedMs: 1_000, async: false }),
       );
     }
