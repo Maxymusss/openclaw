@@ -22,7 +22,7 @@ function fixture() {
   const role = expectDefined(cfg.gateway?.roles?.definitions.view, "reader role");
   role.scopes = ["operator.sessions.read"];
   role.agents = ["guest"];
-  role.modelPolicy = { allow: ["fixture/allowed"] };
+  role.modelPolicy = { sourceAgent: "guest", allow: ["fixture/allowed"] };
   const read = vi.fn(async (agentIds: readonly string[]) =>
     agentIds.map(() => ({ status: "fulfilled" as const, value: { entries: [] } })),
   );

@@ -101,7 +101,8 @@ export function createOpenClawCodingToolsInternal(
   skillReadResources?: SkillSnapshot["resolvedSkills"],
   operatorAuthority?: AdmittedRunOperatorAuthority,
 ): AnyAgentTool[] {
-  const decisionAllowed = isOperatorDecisionRuntimeAllowed(operatorAuthority);
+  const decisionAllowed =
+    isOperatorDecisionRuntimeAllowed() && isOperatorDecisionRuntimeAllowed(operatorAuthority);
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
   const isMemoryFlushRun = options?.trigger === "memory";
   if (isMemoryFlushRun && !options?.memoryFlushWritePath) {
@@ -408,9 +409,8 @@ export function createOpenClawCodingToolsInternal(
   // Passed by reference to sessions_spawn and populated after the final policy
   // pass so child sessions inherit the actual parent tool surface.
   const inheritedToolAllowlist = options?.inheritedToolAllowlistRef ?? [];
-  const toolPolicyInheritanceSources = capabilityProfile.policy.inheritancePolicies;
   const shouldInheritEffectiveToolAllowlist =
-    toolPolicyInheritanceSources.some(hasRestrictiveAllowPolicy);
+    capabilityProfile.policy.inheritancePolicies.some(hasRestrictiveAllowPolicy);
   const cronCreatorToolAllowlist = options?.cronCreatorToolAllowlistRef ?? [];
   const cronCreatorToolAllowlistCaptureRef = options?.cronCreatorToolAllowlistCaptureRef;
   const gatewayCaller = resolveScheduledToolCallerContext({

@@ -94,7 +94,13 @@ describe("standalone registered plugin completion authority", () => {
               : "fixture/default",
           ],
         };
-        cfg.agents = { defaults: { workspace: state.workspaceDir, model: "fixture/default" } };
+        cfg.agents = {
+          defaults: {
+            workspace: state.workspaceDir,
+            model: "fixture/default",
+            params: { transport: "sse" },
+          },
+        };
         cfg.plugins = {
           load: { paths: [pluginDir] },
           slots: { memory: "none" },
@@ -213,6 +219,7 @@ describe("standalone registered plugin completion authority", () => {
               undefined,
             );
             expect(runtime.complete).toHaveBeenCalledOnce();
+            expect(runtime.complete.mock.calls[0]?.[2]).toMatchObject({ transport: "sse" });
           } else {
             expect(respond).toHaveBeenCalledWith(
               true,

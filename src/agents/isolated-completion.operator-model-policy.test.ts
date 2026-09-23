@@ -4,6 +4,7 @@ import {
   isolatedCompletionMocks as mocks,
   isolatedRequest,
   registerIsolatedHarness,
+  releaseRuntimeLease,
   resetIsolatedCompletionTestState,
   runIsolatedCompletion,
 } from "./isolated-completion.test-support.js";
@@ -18,14 +19,14 @@ const { createDeferredCore } = await import("../shared/deferred.js");
 const config = {
   agents: { entries: { main: {} }, defaults: { model: "test-provider/allowed" } },
 };
-function operator() {
+function operator(restricted = true) {
   return createAdmittedRunOperatorAuthority({
     profileId: "isolated-reader",
     scopes: ["operator.write"],
     assertCurrent: () => {},
     modelPolicy: prepareOperatorModelPolicy({
       cfg: config,
-      policy: { sourceAgent: "main" },
+      policy: restricted ? { sourceAgent: "main" } : undefined,
       manifestPlugins: [],
     }),
   });
@@ -94,6 +95,7 @@ describe("isolated completion requester model policy", () => {
     const signals = new Map<string, AbortSignal>();
     registerIsolatedHarness({
       id: "test-harness",
+      operatorModelPolicySupport: "exact",
       runIsolatedCompletionV2: async (params) => {
         if (!params.abortSignal) {
           throw new Error("isolated model has no cancellation signal");
@@ -151,6 +153,7 @@ describe("isolated completion requester model policy", () => {
       const dispatch = vi.fn();
       registerIsolatedHarness({
         id: "test-harness",
+        operatorModelPolicySupport: "exact",
         ...(owner === "harness" ? { authBootstrap: "harness" as const } : {}),
         runIsolatedCompletionV2: dispatch,
       });
@@ -184,30 +187,51 @@ describe("isolated completion requester model policy", () => {
     expect(dispatch).toHaveBeenCalledOnce();
   });
 
-  it("carries the canonical requester model and original authority into CLI admission", async () => {
-    const authority = operator();
-    mocks.resolveCliRuntimeCanonicalProvider.mockReturnValue("test-provider");
-    mocks.isCliRuntimeAliasForProvider.mockReturnValue(true);
-    mocks.runCliAgent.mockImplementation(async (params) => {
-      expect(readRunOperatorAuthority({ preparedRunAdmission: params.preparedRunAdmission })).toBe(
-        authority,
+  it.each([false, true])(
+    "preserves CLI admission and cleanup with configured policy=%s",
+    async (restricted) => {
+      const authority = operator(restricted);
+      mocks.resolveCliRuntimeCanonicalProvider.mockReturnValue("test-provider");
+      mocks.isCliRuntimeAliasForProvider.mockReturnValue(true);
+      mocks.runCliAgent.mockImplementation(async (params) => {
+        expect(
+          readRunOperatorAuthority({ preparedRunAdmission: params.preparedRunAdmission }),
+        ).toBe(authority);
+        return { payloads: [{ text: "CLI answer." }] };
+      });
+      const work = new AsyncWorkScope();
+      const completion = work.run(() =>
+        runIsolatedCompletion({
+          ...request(),
+          provider: "test-cli",
+          agentHarnessRuntimeOverride: "test-cli",
+          operatorAuthority: authority,
+        }),
       );
-      return { payloads: [{ text: "CLI answer." }] };
-    });
-    await expect(
-      runIsolatedCompletion({
-        ...request(),
-        provider: "test-cli",
-        agentHarnessRuntimeOverride: "test-cli",
-        operatorAuthority: authority,
-      }),
-    ).resolves.toMatchObject({ text: "CLI answer." });
-    expect(mocks.runCliAgent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        provider: "test-cli",
-        modelProvider: "test-provider",
-        requesterModel: { provider: "test-provider", model: "allowed" },
-      }),
-    );
-  });
+      try {
+        if (restricted) {
+          await expect(completion).rejects.toMatchObject({
+            code: "OPERATOR_MODEL_POLICY_DENIED",
+            message: expect.stringContaining("cannot enforce your operator model restrictions"),
+          });
+          expect(mocks.runCliAgent).not.toHaveBeenCalled();
+        } else {
+          await expect(completion).resolves.toMatchObject({ text: "CLI answer." });
+          expect(mocks.runCliAgent).toHaveBeenCalledExactlyOnceWith(
+            expect.objectContaining({
+              provider: "test-cli",
+              modelProvider: "test-provider",
+              requesterModel: { provider: "test-provider", model: "allowed" },
+            }),
+          );
+        }
+        expect(mocks.prepareSimpleCompletionModel).not.toHaveBeenCalled();
+        expect(mocks.resolveModelAsync).not.toHaveBeenCalled();
+      } finally {
+        await completion.catch(() => {});
+        await work.drain();
+      }
+      expect(releaseRuntimeLease).toHaveBeenCalledOnce();
+    },
+  );
 });

@@ -257,8 +257,10 @@ describe("direct session model catalogs", () => {
           clearUserProfileAuthLink({ profileId: f.person.id, provider: "openai" });
           const harness = createChatMetadataHarness(f.config, { useDefaultProjection: true });
           harness.setOwner(f.owner);
+          let tightened = false;
           const tighten = () => {
-            if (mode === "tightened") {
+            if (mode === "tightened" && !tightened) {
+              tightened = true;
               f.config.gateway.roles.definitions.reader.modelPolicy = { allow: [] };
               f.publishConfig();
             }
@@ -280,15 +282,28 @@ describe("direct session model catalogs", () => {
                 ? { sessionKey }
                 : { agentId: "main", authProfileId: f.authProfileId };
             const respond = vi.fn<RespondFn>();
-            await handleGatewayRequest({
-              req: { type: "req", id: `account-${mode}`, method, params },
-              context: f.context,
-              client: f.client,
-              respond,
-              isWebchatConnect: () => false,
-              extraHandlers: { ...modelsHandlers, "chat.metadata": handleChatMetadataRequest },
-            });
-            expect(respond.mock.calls[0]?.[0]).toBe(true);
+            const request = () =>
+              handleGatewayRequest({
+                req: { type: "req", id: `account-${mode}`, method, params },
+                context: f.context,
+                client: f.client,
+                respond,
+                isWebchatConnect: () => false,
+                extraHandlers: { ...modelsHandlers, "chat.metadata": handleChatMetadataRequest },
+              });
+            await request();
+            if (method === "models.list" && mode === "tightened") {
+              expect(respond).toHaveBeenCalledExactlyOnceWith(false, undefined, {
+                code: "UNAVAILABLE",
+                message: "Model catalog changed while preparing this result. Retry the request.",
+                retryable: true,
+                retryAfterMs: 0,
+              });
+              respond.mockClear();
+              await request();
+            }
+            expect(respond).toHaveBeenCalledOnce();
+            expect(respond.mock.calls[0]?.[0], JSON.stringify(respond.mock.calls)).toBe(true);
             const result = respond.mock.calls[0]?.[1];
             if (mode === "none" || mode === "tightened") {
               expect(result).toMatchObject({ models: [] });

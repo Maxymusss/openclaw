@@ -48,8 +48,26 @@ describe("sessions.create initial-turn model policy through authenticated ingres
       const key = "agent:main:dashboard:model-policy";
       const profile = ensureProfileForEmail("create-model-policy@example.test");
       const initialConfig = getRuntimeConfig();
+      const fixtureModels = ["model-a", "model-b"].map((id) => ({
+        id,
+        name: id,
+        reasoning: false,
+        input: ["text" as const],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 8192,
+        maxTokens: 1024,
+      }));
       let committedConfig: OpenClawConfig = {
         ...initialConfig,
+        models: {
+          providers: {
+            fixture: {
+              api: "openai-completions",
+              baseUrl: "https://fixture.invalid/v1",
+              models: fixtureModels,
+            },
+          },
+        },
         session: { ...initialConfig.session, store: storePath },
         agents: {
           ...initialConfig.agents,
@@ -88,6 +106,8 @@ describe("sessions.create initial-turn model policy through authenticated ingres
       const context = createDirectChatContext({
         getRuntimeConfig: () => committedConfig,
         getCommittedRuntimeConfig: () => committedConfig,
+        loadGatewayModelCatalog: async () =>
+          fixtureModels.map((model) => ({ ...model, provider: "fixture" })),
       });
       context.resolveGatewayContext = () => context;
       context.readPreparedGatewayModelCatalog = async () => {
@@ -213,8 +233,11 @@ describe("sessions.create initial-turn model policy through authenticated ingres
       try {
         await Promise.race([
           beforeInitialSend.promise,
-          creation.then(() => {
-            throw new Error("Creation ended before the real post-commit barrier");
+          creation.then(async () => {
+            const response = await harness.awaitResponseFrame("create");
+            throw new Error(
+              `Creation ended before the real post-commit barrier: ${JSON.stringify(response)}`,
+            );
           }),
         ]);
         const original = expectDefined(originalAuthority, "pre-await creation authority");

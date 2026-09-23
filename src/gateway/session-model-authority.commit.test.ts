@@ -396,7 +396,9 @@ describe("durable session model selection authority", () => {
               "original model selection authority revoked",
             );
           } else {
-            expect(respond.mock.calls[0]?.[2]?.message).toContain("does not allow this model");
+            expect(respond.mock.calls[0]?.[2]?.message).toContain(
+              mode === "explicit-denied" ? "cannot use this model" : "does not allow this model",
+            );
           }
           expect(rows).toEqual([]);
           expect(provider.read).not.toHaveBeenCalled();
@@ -451,7 +453,11 @@ describe("durable session model selection authority", () => {
               error: {
                 code: "FORBIDDEN",
                 message: expect.stringContaining(
-                  mode === "unsupported" ? "cannot enforce" : "does not allow this model",
+                  mode === "unsupported"
+                    ? "cannot enforce"
+                    : mode === "explicit-denied"
+                      ? "cannot use this model"
+                      : "does not allow this model",
                 ),
               },
             });
@@ -680,7 +686,9 @@ describe("durable session model selection authority", () => {
                     ? "original model selection authority revoked"
                     : mode === "unsupported"
                       ? "cannot enforce"
-                      : "does not allow this model",
+                      : mode === "explicit-denied"
+                        ? "cannot use this model"
+                        : "does not allow this model",
               ),
             }),
           );

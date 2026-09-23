@@ -40,7 +40,7 @@ function fixture(allow?: string[]) {
   const role = expectDefined(cfg.gateway?.roles?.definitions.view, "visitor role");
   role.scopes = ["operator.sessions.read"];
   if (allow) {
-    role.modelPolicy = { allow };
+    role.modelPolicy = { sourceAgent: "main", allow };
   }
   setRuntimeConfigSnapshot(cfg);
   const client = roleClient("view", "catalog-reader");
@@ -202,7 +202,7 @@ describe("caller-local operator catalogs", () => {
       const f = fixture(["fixture/allowed"]);
       const source = neutralCatalog();
       const first = captureOperatorModelCatalogAccess(f);
-      f.role.modelPolicy = { allow: ["fixture/forbidden"] };
+      f.role.modelPolicy = { sourceAgent: "main", allow: ["fixture/forbidden"] };
       f.publish();
       const second = captureOperatorModelCatalogAccess(f);
       try {
@@ -235,7 +235,7 @@ describe("caller-local operator catalogs", () => {
       const f = fixture([]);
       const access = captureOperatorModelCatalogAccess(f);
       try {
-        f.role.modelPolicy = { allow: ["fixture/allowed"] };
+        f.role.modelPolicy = { sourceAgent: "main", allow: ["fixture/allowed"] };
         f.publish();
         expect(access.projectCatalog(neutralCatalog())).toMatchObject({
           models: [],

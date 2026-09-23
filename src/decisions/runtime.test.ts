@@ -107,16 +107,20 @@ afterEach(() => {
 });
 
 describe("registered decision capability", () => {
-  it.each([
-    ["direct", "model"],
-    ["direct", "foreground"],
-    ["registry", "model"],
-    ["registry", "foreground"],
-    ["facade", "model"],
-    ["facade", "foreground"],
-  ] as const)(
-    "captures request-only %s/%s authority before lazy loading and promotion",
-    async (entry, restriction) => {
+  it.each(
+    [
+      ["direct", "model"],
+      ["direct", "foreground"],
+      ["registry", "model"],
+      ["registry", "foreground"],
+      ["facade", "model"],
+      ["facade", "foreground"],
+    ].flatMap(([entry, restriction]) =>
+      ["request", "direct-tool"].map((source) => ({ entry, restriction, source })),
+    ),
+  )(
+    "captures $source $entry/$restriction authority before lazy loading and promotion",
+    async ({ entry, restriction, source }) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
         const call = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
         const isReady = vi.fn(() => true);
@@ -159,31 +163,41 @@ describe("registered decision capability", () => {
             : entry === "registry"
               ? () => host.api.runtime.decisions.evaluate(batch, options())
               : () => createPluginRuntime().decisions.evaluate(batch, options());
-        const pending = withPluginRuntimeGatewayRequestScope(
-          {
-            client,
-            context,
-            pluginRegistry: host.registry,
-            isWebchatConnect: () => false,
-          },
-          invoke,
-        );
+        const invokeAsOperator = () =>
+          source === "direct-tool"
+            ? withOperatorToolGatewayAuthority(
+                {
+                  scopes: ["operator.read"],
+                  operatorRunAuthority: createAdmittedRunOperatorAuthority({
+                    profileId: profile.id,
+                    scopes: ["operator.read"],
+                    assertCurrent: () => {},
+                    executionPolicy: client.internal?.operatorAccessAuthority?.executionPolicy,
+                    modelPolicy: prepareOperatorModelPolicy({
+                      cfg: current,
+                      policy: current.gateway?.roles?.definitions?.guest?.modelPolicy,
+                      manifestPlugins: [],
+                    }),
+                  }),
+                },
+                invoke,
+              )
+            : withPluginRuntimeGatewayRequestScope(
+                {
+                  client,
+                  context,
+                  pluginRegistry: host.registry,
+                  isWebchatConnect: () => false,
+                },
+                invoke,
+              );
+        const pending = invokeAsOperator();
         current = config;
         client.internal = undefined;
         await expect(pending).rejects.toBeInstanceOf(OperatorModelPolicyError);
         expect(isReady).not.toHaveBeenCalled();
         expect(call).not.toHaveBeenCalled();
-        await expect(
-          withPluginRuntimeGatewayRequestScope(
-            {
-              client,
-              context,
-              pluginRegistry: host.registry,
-              isWebchatConnect: () => false,
-            },
-            invoke,
-          ),
-        ).resolves.toMatchObject({ status: "ok" });
+        await expect(invokeAsOperator()).resolves.toMatchObject({ status: "ok" });
         expect(call).toHaveBeenCalledOnce();
       });
     },
@@ -357,10 +371,18 @@ describe("registered decision capability", () => {
               },
               invoke,
             ),
-      ).rejects.toThrow(
+      ).rejects.toMatchObject(
         source === "unbound-operator"
-          ? "requires original Gateway authority"
-          : "cannot use this model",
+          ? {
+              code: "OPERATOR_MODEL_POLICY_DENIED",
+              cause: expect.objectContaining({
+                message: expect.stringContaining("requires original Gateway authority"),
+              }),
+            }
+          : {
+              code: "OPERATOR_MODEL_POLICY_DENIED",
+              message: "Decision inference is unavailable under this operator authority.",
+            },
       );
       expect(evaluate).not.toHaveBeenCalled();
       await expect(host.api.runtime.decisions.evaluate(batch, options())).resolves.toMatchObject({
