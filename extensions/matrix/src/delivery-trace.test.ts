@@ -2,7 +2,7 @@
 //
 // Drives the real monitor handler (createMatrixRoomMessageHandler) end to end
 // through the shared handler test harness: IN steps map onto the captured
-// reply-dispatcher wiring (deliver, typing callbacks, onPartialReply,
+// real reply dispatcher (enqueue, typing callbacks, onPartialReply,
 // onBlockReplyQueued, onAssistantMessageStart), OUT events are the raw Matrix
 // client calls (sendMessage/getEvent/redactEvent/setTyping/sendReadReceipt)
 // observed at a recording client. The room is plain (E2EE out of scope), so
@@ -34,25 +34,34 @@ import {
 } from "openclaw/plugin-sdk/reply-chunking";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { convertMarkdownTables } from "openclaw/plugin-sdk/text-chunking";
-import { beforeAll, describe, it, vi } from "vitest";
+import { beforeEach, describe, it, vi } from "vitest";
 import {
   createMatrixHandlerTestHarness,
+  installMatrixHandlerTestFixture,
+  matrixCaseConfig,
+  registerMatrixTestRelease,
+  waitForMatrixTestSignal,
+  type MatrixReplyScript,
   createMatrixTextMessageEvent,
 } from "./matrix/monitor/handler.test-helpers.js";
 import type { MatrixClient } from "./matrix/sdk.js";
 import { installMatrixTestRuntime } from "./test-runtime.js";
 
+const matrixFixture = installMatrixHandlerTestFixture();
+
 const ROOM_ID = "!room:example.org";
 const BOT_USER_ID = "@openclaw:example.org";
 const INBOUND_EVENT_ID = "$inbound-1";
 
-beforeAll(() => {
+beforeEach(() => {
   // send.ts/replies.ts read text helpers and the monitor's mention gating from
   // the module runtime slot; bind the real chunking/table implementations so
   // rendered wire content is part of the recorded lifecycle (mirrors the
   // feishu adoption's runtime stub). Media helpers stay absent: these
   // scenarios are text-only and a media lookup should fail loudly.
   installMatrixTestRuntime({
+    cfg: matrixCaseConfig(),
+    stateDir: matrixFixture.state.stateDir,
     logging: { shouldLogVerbose: () => false },
     channel: {
       inbound: createPluginRuntimeMock().channel.inbound,
@@ -167,8 +176,6 @@ function createRecordingMatrixClient(recorder: WireRecorder): Partial<MatrixClie
   return client;
 }
 
-type MatrixTraceDeliver = (payload: ReplyPayload, info: { kind: string }) => Promise<void>;
-
 type MatrixTraceReplyOptions = {
   onPartialReply?: (payload: { text: string }) => void;
   onBlockReplyQueued?: (
@@ -181,53 +188,38 @@ type MatrixTraceReplyOptions = {
 async function setupMatrixTrace(recorder: WireRecorder) {
   const client = createRecordingMatrixClient(recorder);
 
-  let capturedDeliver: MatrixTraceDeliver | undefined;
+  let capturedDispatcher: Parameters<MatrixReplyScript>[0]["dispatcher"] | undefined;
   let capturedOnReplyStart: (() => Promise<void> | void) | undefined;
-  let capturedOnIdle: (() => void) | undefined;
   let capturedReplyOptions: MatrixTraceReplyOptions | undefined;
   let resolveCaptured: (() => void) | undefined;
   const captured = new Promise<void>((resolve) => {
     resolveCaptured = resolve;
   });
-  const notifyCaptured = () => {
-    if (capturedDeliver && capturedReplyOptions) {
-      resolveCaptured?.();
-    }
-  };
 
-  // The scripted steps stand in for the model run: dispatchInboundMessage
+  // The scripted steps stand in for the model run: dispatchReplyFromConfig
   // stays pending until the script's final/cancel step settles it, so the
   // handler's post-dispatch flow (including the finally-block draft abandon
   // path) runs exactly where the real run would settle.
-  type DispatchResult = { queuedFinal: boolean; counts: { final: number; block: number } };
-  let releaseRun: ((result: DispatchResult) => void) | undefined;
-  const runGate = new Promise<DispatchResult>((resolve) => {
+  let queuedFinal = false;
+  let releaseRun: (() => void) | undefined;
+  const runGate = new Promise<void>((resolve) => {
     releaseRun = resolve;
   });
 
+  registerMatrixTestRelease(() => releaseRun?.());
   const { handler } = createMatrixHandlerTestHarness({
     streaming: "partial",
     blockStreamingEnabled: true,
     client,
     resolveMarkdownTableMode: () => resolveMarkdownTableMode({ cfg: {}, channel: "matrix" }),
-    createReplyDispatcherWithTyping: (options: Record<string, unknown> | undefined) => {
-      capturedDeliver = options?.deliver as MatrixTraceDeliver | undefined;
-      capturedOnReplyStart = options?.onReplyStart as typeof capturedOnReplyStart;
-      capturedOnIdle = options?.onIdle as typeof capturedOnIdle;
-      notifyCaptured();
-      return {
-        dispatcher: { markComplete: () => {}, waitForIdle: async () => {} },
-        replyOptions: {},
-        markDispatchIdle: () => {},
-        markRunComplete: () => {},
-      };
+    dispatchReplyFromConfig: async ({ dispatcher, replyOptions }) => {
+      capturedDispatcher = dispatcher;
+      capturedOnReplyStart = replyOptions?.onReplyStart;
+      capturedReplyOptions = replyOptions;
+      resolveCaptured?.();
+      await runGate;
+      return { queuedFinal, counts: dispatcher.getQueuedCounts() };
     },
-    dispatchInboundMessage: (async (args: { replyOptions?: MatrixTraceReplyOptions }) => {
-      capturedReplyOptions = args?.replyOptions;
-      notifyCaptured();
-      const result = await runGate;
-      return { queuedFinal: result.queuedFinal, counts: { ...result.counts, tool: 0 } };
-    }) as never,
   });
 
   const handlerDone = handler(
@@ -238,12 +230,17 @@ async function setupMatrixTrace(recorder: WireRecorder) {
       originServerTs: Date.now(),
     }),
   );
-  await Promise.race([
-    captured,
-    handlerDone.then(() => {
-      throw new Error("matrix handler settled before capturing dispatcher wiring");
-    }),
-  ]);
+  await waitForMatrixTestSignal(captured, handlerDone);
+  const dispatcher = capturedDispatcher!;
+  const deliver = async (payload: ReplyPayload, kind: "block" | "final") => {
+    if (kind === "final") {
+      const accepted = dispatcher.sendFinalReply(payload);
+      queuedFinal ||= accepted;
+    } else {
+      dispatcher.sendBlockReply(payload);
+    }
+    await dispatcher.waitForIdle();
+  };
   // Drain the fire-and-forget inbound read receipt so it lands at a fixed
   // position (before the first scripted step) in every recording.
   await vi.advanceTimersByTimeAsync(0);
@@ -273,7 +270,7 @@ async function setupMatrixTrace(recorder: WireRecorder) {
           { text: step.text },
           { assistantMessageIndex },
         );
-        await capturedDeliver?.({ text: step.text }, { kind: "block" });
+        await deliver({ text: step.text }, "block");
         break;
       case "tool-progress":
         // Preview tool progress is not adopted here; a completed tool round
@@ -283,25 +280,25 @@ async function setupMatrixTrace(recorder: WireRecorder) {
         }
         break;
       case "final":
-        await capturedDeliver?.(
+        await deliver(
           {
             ...(step.text !== undefined ? { text: step.text } : {}),
             ...(step.mediaUrls ? { mediaUrls: step.mediaUrls } : {}),
             ...(step.isError ? { isError: true } : {}),
           },
-          { kind: "final" },
+          "final",
         );
-        releaseRun?.({ queuedFinal: true, counts: { final: 1, block: 0 } });
+        releaseRun?.();
         await handlerDone;
         break;
       case "cancel":
-        // An aborted run settles the dispatch without a final payload; the
-        // handler's finally block flushes and redacts the unconsumed draft.
-        releaseRun?.({ queuedFinal: false, counts: { final: 0, block: 0 } });
+        // This script completes successfully without a final payload. A real
+        // abort/error retains an accepted preview; separate handler cases cover it.
+        releaseRun?.();
         await handlerDone;
         break;
       case "idle":
-        capturedOnIdle?.();
+        await handlerDone;
         break;
       case "wire-fault":
         throw new Error("matrix trace scenarios do not script wire faults");
@@ -383,15 +380,18 @@ const MATRIX_TRACE_SCENARIOS: readonly DeliveryTraceScenario[] = [
 
 describe("matrix delivery trace goldens", () => {
   for (const scenario of MATRIX_TRACE_SCENARIOS) {
-    it(`records ${scenario.name}`, async () => {
-      const events = await runDeliveryTraceScenario({
-        scenario,
-        setup: setupMatrixTrace,
-      });
-      expectDeliveryTraceMatchesGolden({
-        goldenUrl: new URL(`./__traces__/${scenario.name}.trace.jsonl`, import.meta.url),
-        events,
-      });
-    });
+    it(
+      `records ${scenario.name}`,
+      matrixFixture.wrapCase(async () => {
+        const events = await runDeliveryTraceScenario({
+          scenario,
+          setup: setupMatrixTrace,
+        });
+        expectDeliveryTraceMatchesGolden({
+          goldenUrl: new URL(`./__traces__/${scenario.name}.trace.jsonl`, import.meta.url),
+          events,
+        });
+      }),
+    );
   }
 });

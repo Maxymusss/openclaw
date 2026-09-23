@@ -4,9 +4,13 @@ import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
 import type { MatrixClient } from "../sdk.js";
 import {
   createMatrixHandlerTestHarness,
+  installMatrixHandlerTestFixture,
+  matrixCaseConfig,
   createMatrixTextMessageEvent,
 } from "./handler.test-helpers.js";
 import type { MatrixRawEvent } from "./types.js";
+
+const matrixFixture = installMatrixHandlerTestFixture();
 
 describe("createMatrixRoomMessageHandler inbound body formatting", () => {
   type MatrixHandlerHarness = ReturnType<typeof createMatrixHandlerTestHarness>;
@@ -73,11 +77,11 @@ describe("createMatrixRoomMessageHandler inbound body formatting", () => {
     return call[0] as FinalizedReplyContext;
   }
 
-  function latestSessionKey(recordInboundSession: MatrixHandlerHarness["recordInboundSession"]) {
-    const calls = vi.mocked(recordInboundSession).mock.calls;
+  function latestSessionKey(recordedTurn: MatrixHandlerHarness["recordedTurn"]) {
+    const calls = vi.mocked(recordedTurn).mock.calls;
     const call = calls[calls.length - 1];
     if (!call) {
-      throw new Error("expected recordInboundSession call");
+      throw new Error("expected recordedTurn call");
     }
     const context = call[0] as { sessionKey?: string };
     return context?.sessionKey;
@@ -85,14 +89,17 @@ describe("createMatrixRoomMessageHandler inbound body formatting", () => {
 
   beforeEach(() => {
     installMatrixMonitorTestRuntime({
+      cfg: matrixCaseConfig(),
+      stateDir: matrixFixture.state.stateDir,
       matchesMentionPatterns: () => false,
       saveMediaBuffer: vi.fn(),
     });
   });
 
-  it("records thread metadata for group thread messages", async () => {
-    const { handler, finalizeInboundContext, recordInboundSession } =
-      createMatrixHandlerTestHarness({
+  it(
+    "records thread metadata for group thread messages",
+    matrixFixture.wrapCase(async () => {
+      const { handler, finalizeInboundContext, recordedTurn } = createMatrixHandlerTestHarness({
         client: {
           getEvent: async () =>
             createMatrixTextMessageEvent({
@@ -106,54 +113,58 @@ describe("createMatrixRoomMessageHandler inbound body formatting", () => {
           userId === "@alice:example.org" ? "Alice" : "sender",
       });
 
-    await handler(
-      "!room:example.org",
-      createMatrixTextMessageEvent({
-        eventId: "$reply1",
-        body: "@room follow up",
-        relatesTo: {
-          rel_type: "m.thread",
-          event_id: "$thread-root",
-          "m.in_reply_to": { event_id: "$thread-root" },
-        },
-        mentions: { room: true },
-      }),
-    );
+      await handler(
+        "!room:example.org",
+        createMatrixTextMessageEvent({
+          eventId: "$reply1",
+          body: "@room follow up",
+          relatesTo: {
+            rel_type: "m.thread",
+            event_id: "$thread-root",
+            "m.in_reply_to": { event_id: "$thread-root" },
+          },
+          mentions: { room: true },
+        }),
+      );
 
-    const finalized = latestFinalizedReplyContext(finalizeInboundContext);
-    expect(finalized.MessageThreadId).toBe("$thread-root");
-    expect(finalized.ThreadStarterBody).toBe(
-      "Matrix thread root $thread-root from Alice:\nRoot topic",
-    );
-    // Thread messages get thread-scoped session keys (thread isolation feature).
-    expect(latestSessionKey(recordInboundSession)).toBe("agent:ops:main:thread:$thread-root");
-  });
+      const finalized = latestFinalizedReplyContext(finalizeInboundContext);
+      expect(finalized.MessageThreadId).toBe("$thread-root");
+      expect(finalized.ThreadStarterBody).toBe(
+        "Matrix thread root $thread-root from Alice:\nRoot topic",
+      );
+      // Thread messages get thread-scoped session keys (thread isolation feature).
+      expect(latestSessionKey(recordedTurn)).toBe("agent:ops:main:thread:$thread-root");
+    }),
+  );
 
-  it("starts the thread-scoped session from the triggering message when threadReplies is always", async () => {
-    const { handler, finalizeInboundContext, recordInboundSession } =
-      createMatrixHandlerTestHarness({
+  it(
+    "starts the thread-scoped session from the triggering message when threadReplies is always",
+    matrixFixture.wrapCase(async () => {
+      const { handler, finalizeInboundContext, recordedTurn } = createMatrixHandlerTestHarness({
         isDirectMessage: false,
         threadReplies: "always",
       });
 
-    await handler(
-      "!room:example.org",
-      createMatrixTextMessageEvent({
-        eventId: "$thread-root",
-        body: "@room start thread",
-        mentions: { room: true },
-      }),
-    );
+      await handler(
+        "!room:example.org",
+        createMatrixTextMessageEvent({
+          eventId: "$thread-root",
+          body: "@room start thread",
+          mentions: { room: true },
+        }),
+      );
 
-    const finalized = latestFinalizedReplyContext(finalizeInboundContext);
-    expect(finalized.MessageThreadId).toBe("$thread-root");
-    expect(finalized.ReplyToId).toBeUndefined();
-    expect(latestSessionKey(recordInboundSession)).toBe("agent:ops:main:thread:$thread-root");
-  });
+      const finalized = latestFinalizedReplyContext(finalizeInboundContext);
+      expect(finalized.MessageThreadId).toBe("$thread-root");
+      expect(finalized.ReplyToId).toBeUndefined();
+      expect(latestSessionKey(recordedTurn)).toBe("agent:ops:main:thread:$thread-root");
+    }),
+  );
 
-  it("records formatted poll results for inbound poll response events", async () => {
-    const { handler, finalizeInboundContext, recordInboundSession } =
-      createMatrixHandlerTestHarness({
+  it(
+    "records formatted poll results for inbound poll response events",
+    matrixFixture.wrapCase(async () => {
+      const { handler, finalizeInboundContext, recordedTurn } = createMatrixHandlerTestHarness({
         client: {
           getEvent: async () => ({
             event_id: "$poll",
@@ -194,186 +205,196 @@ describe("createMatrixRoomMessageHandler inbound body formatting", () => {
           userId === "@bot:example.org" ? "Bot" : "sender",
       });
 
-    await handler("!room:example.org", {
-      type: "m.poll.response",
-      sender: "@user:example.org",
-      event_id: "$vote1",
-      origin_server_ts: 2,
-      content: {
-        "m.poll.response": { answers: ["a1"] },
-        "m.relates_to": { rel_type: "m.reference", event_id: "$poll" },
-      },
-    } as MatrixRawEvent);
+      await handler("!room:example.org", {
+        type: "m.poll.response",
+        sender: "@user:example.org",
+        event_id: "$vote1",
+        origin_server_ts: 2,
+        content: {
+          "m.poll.response": { answers: ["a1"] },
+          "m.relates_to": { rel_type: "m.reference", event_id: "$poll" },
+        },
+      } as MatrixRawEvent);
 
-    const finalized = latestFinalizedReplyContext(finalizeInboundContext);
-    expect(finalized.RawBody).toContain("1. Pizza (1 vote)");
-    expect(finalized.RawBody).toContain("Total voters: 1");
-    expect(latestSessionKey(recordInboundSession)).toBe("agent:ops:main");
-  });
+      const finalized = latestFinalizedReplyContext(finalizeInboundContext);
+      expect(finalized.RawBody).toContain("1. Pizza (1 vote)");
+      expect(finalized.RawBody).toContain("Total voters: 1");
+      expect(latestSessionKey(recordedTurn)).toBe("agent:ops:main");
+    }),
+  );
 
-  it("settles inbound poll events when relation pagination repeats a cursor", async () => {
-    let pollPageCalls = 0;
-    const getRelations = vi.fn(async () => {
-      pollPageCalls += 1;
-      if (pollPageCalls > 2) {
-        throw new Error("test stopped unbounded Matrix poll pagination");
-      }
-      return { events: [], nextBatch: "stuck", prevBatch: null };
-    });
-    const logVerboseMessage = vi.fn();
-    const { handler, finalizeInboundContext } = createMatrixHandlerTestHarness({
-      client: {
-        getEvent: async () => ({
-          event_id: "$poll",
-          sender: "@bot:example.org",
-          type: "m.poll.start",
-          origin_server_ts: 1,
-          content: {
-            "m.poll.start": {
-              question: { "m.text": "Lunch?" },
-              answers: [{ id: "pizza", "m.text": "Pizza" }],
-            },
-          },
-        }),
-        getRelations,
-      } as unknown as Partial<MatrixClient>,
-      isDirectMessage: true,
-      logVerboseMessage,
-    });
-
-    await handler("!room:example.org", {
-      type: "m.poll.response",
-      sender: "@user:example.org",
-      event_id: "$vote",
-      origin_server_ts: 2,
-      content: {
-        "m.poll.response": { answers: ["pizza"] },
-        "m.relates_to": { rel_type: "m.reference", event_id: "$poll" },
-      },
-    } as MatrixRawEvent);
-
-    expect(getRelations).toHaveBeenCalledTimes(2);
-    expect(finalizeInboundContext).not.toHaveBeenCalled();
-    expect(logVerboseMessage).toHaveBeenCalledWith(
-      expect.stringContaining("Matrix poll pagination returned a repeated cursor"),
-    );
-  });
-
-  it("records reply context for quoted poll start events inside always-threaded replies", async () => {
-    const { handler, finalizeInboundContext } = createMatrixHandlerTestHarness({
-      client: {
-        getEvent: async (_roomId: string, eventId: string) => {
-          if (eventId === "$thread-root") {
-            return createMatrixTextMessageEvent({
-              eventId: "$thread-root",
-              sender: "@bob:example.org",
-              body: "Root topic",
-            });
-          }
-
-          return {
+  it(
+    "settles inbound poll events when relation pagination repeats a cursor",
+    matrixFixture.wrapCase(async () => {
+      let pollPageCalls = 0;
+      const getRelations = vi.fn(async () => {
+        pollPageCalls += 1;
+        if (pollPageCalls > 2) {
+          throw new Error("test stopped unbounded Matrix poll pagination");
+        }
+        return { events: [], nextBatch: "stuck", prevBatch: null };
+      });
+      const logVerboseMessage = vi.fn();
+      const { handler, finalizeInboundContext } = createMatrixHandlerTestHarness({
+        client: {
+          getEvent: async () => ({
             event_id: "$poll",
-            sender: "@alice:example.org",
+            sender: "@bot:example.org",
             type: "m.poll.start",
             origin_server_ts: 1,
             content: {
               "m.poll.start": {
                 question: { "m.text": "Lunch?" },
-                kind: "m.poll.disclosed",
-                max_selections: 1,
-                answers: [
-                  { id: "a1", "m.text": "Pizza" },
-                  { id: "a2", "m.text": "Sushi" },
-                ],
+                answers: [{ id: "pizza", "m.text": "Pizza" }],
               },
             },
-          } satisfies MatrixRawEvent;
+          }),
+          getRelations,
+        } as unknown as Partial<MatrixClient>,
+        isDirectMessage: true,
+        logVerboseMessage,
+      });
+
+      await handler("!room:example.org", {
+        type: "m.poll.response",
+        sender: "@user:example.org",
+        event_id: "$vote",
+        origin_server_ts: 2,
+        content: {
+          "m.poll.response": { answers: ["pizza"] },
+          "m.relates_to": { rel_type: "m.reference", event_id: "$poll" },
         },
-      } as unknown as Partial<MatrixClient>,
-      isDirectMessage: false,
-      threadReplies: "always",
-      getMemberDisplayName: async (_roomId, userId) => {
-        if (userId === "@alice:example.org") {
-          return "Alice";
-        }
-        if (userId === "@bob:example.org") {
-          return "Bob";
-        }
-        return "sender";
-      },
-    });
+      } as MatrixRawEvent);
 
-    await handler(
-      "!room:example.org",
-      createMatrixTextMessageEvent({
-        eventId: "$reply1",
-        body: "@room follow up",
-        relatesTo: {
-          rel_type: "m.thread",
-          event_id: "$thread-root",
-          "m.in_reply_to": { event_id: "$poll" },
+      expect(getRelations).toHaveBeenCalledTimes(2);
+      expect(finalizeInboundContext).not.toHaveBeenCalled();
+      expect(logVerboseMessage).toHaveBeenCalledWith(
+        expect.stringContaining("Matrix poll pagination returned a repeated cursor"),
+      );
+    }),
+  );
+
+  it(
+    "records reply context for quoted poll start events inside always-threaded replies",
+    matrixFixture.wrapCase(async () => {
+      const { handler, finalizeInboundContext } = createMatrixHandlerTestHarness({
+        client: {
+          getEvent: async (_roomId: string, eventId: string) => {
+            if (eventId === "$thread-root") {
+              return createMatrixTextMessageEvent({
+                eventId: "$thread-root",
+                sender: "@bob:example.org",
+                body: "Root topic",
+              });
+            }
+
+            return {
+              event_id: "$poll",
+              sender: "@alice:example.org",
+              type: "m.poll.start",
+              origin_server_ts: 1,
+              content: {
+                "m.poll.start": {
+                  question: { "m.text": "Lunch?" },
+                  kind: "m.poll.disclosed",
+                  max_selections: 1,
+                  answers: [
+                    { id: "a1", "m.text": "Pizza" },
+                    { id: "a2", "m.text": "Sushi" },
+                  ],
+                },
+              },
+            } satisfies MatrixRawEvent;
+          },
+        } as unknown as Partial<MatrixClient>,
+        isDirectMessage: false,
+        threadReplies: "always",
+        getMemberDisplayName: async (_roomId, userId) => {
+          if (userId === "@alice:example.org") {
+            return "Alice";
+          }
+          if (userId === "@bob:example.org") {
+            return "Bob";
+          }
+          return "sender";
         },
-        mentions: { room: true },
-      }),
-    );
+      });
 
-    const finalized = latestFinalizedReplyContext(finalizeInboundContext);
-    expect(finalized.MessageThreadId).toBe("$thread-root");
-    expect(finalized.ReplyToId).toBeUndefined();
-    expect(finalized.ReplyToSender).toBe("Alice");
-    expect(finalized.ReplyToBody).toBe("[Poll]\nLunch?\n\n1. Pizza\n2. Sushi");
-    expect(finalized.ThreadStarterBody).toBe(
-      "Matrix thread root $thread-root from Bob:\nRoot topic",
-    );
-  });
+      await handler(
+        "!room:example.org",
+        createMatrixTextMessageEvent({
+          eventId: "$reply1",
+          body: "@room follow up",
+          relatesTo: {
+            rel_type: "m.thread",
+            event_id: "$thread-root",
+            "m.in_reply_to": { event_id: "$poll" },
+          },
+          mentions: { room: true },
+        }),
+      );
 
-  it("reuses the fetched thread root when reply context points at the same event", async () => {
-    const getEvent = vi.fn(async () =>
-      createMatrixTextMessageEvent({
-        eventId: "$thread-root",
-        sender: "@alice:example.org",
-        body: "Root topic",
-      }),
-    );
-    const getMemberDisplayName = vi.fn(async (_roomId: string, userId: string) =>
-      userId === "@alice:example.org" ? "Alice" : "sender",
-    );
-    const { handler, finalizeInboundContext } = createMatrixHandlerTestHarness({
-      client: { getEvent },
-      isDirectMessage: false,
-      threadReplies: "always",
-      getMemberDisplayName,
-    });
+      const finalized = latestFinalizedReplyContext(finalizeInboundContext);
+      expect(finalized.MessageThreadId).toBe("$thread-root");
+      expect(finalized.ReplyToId).toBeUndefined();
+      expect(finalized.ReplyToSender).toBe("Alice");
+      expect(finalized.ReplyToBody).toBe("[Poll]\nLunch?\n\n1. Pizza\n2. Sushi");
+      expect(finalized.ThreadStarterBody).toBe(
+        "Matrix thread root $thread-root from Bob:\nRoot topic",
+      );
+    }),
+  );
 
-    await handler(
-      "!room:example.org",
-      createMatrixTextMessageEvent({
-        eventId: "$reply1",
-        body: "@room follow up",
-        relatesTo: {
-          rel_type: "m.thread",
-          event_id: "$thread-root",
-          "m.in_reply_to": { event_id: "$thread-root" },
-        },
-        mentions: { room: true },
-      }),
-    );
+  it(
+    "reuses the fetched thread root when reply context points at the same event",
+    matrixFixture.wrapCase(async () => {
+      const getEvent = vi.fn(async () =>
+        createMatrixTextMessageEvent({
+          eventId: "$thread-root",
+          sender: "@alice:example.org",
+          body: "Root topic",
+        }),
+      );
+      const getMemberDisplayName = vi.fn(async (_roomId: string, userId: string) =>
+        userId === "@alice:example.org" ? "Alice" : "sender",
+      );
+      const { handler, finalizeInboundContext } = createMatrixHandlerTestHarness({
+        client: { getEvent },
+        isDirectMessage: false,
+        threadReplies: "always",
+        getMemberDisplayName,
+      });
 
-    const finalized = latestFinalizedReplyContext(finalizeInboundContext);
-    expect(finalized.MessageThreadId).toBe("$thread-root");
-    expect(finalized.ReplyToId).toBeUndefined();
-    expect(finalized.ReplyToSender).toBe("Alice");
-    expect(finalized.ReplyToBody).toBe("Root topic");
-    expect(finalized.ThreadStarterBody).toBe(
-      "Matrix thread root $thread-root from Alice:\nRoot topic",
-    );
-    expect(getEvent).toHaveBeenCalledTimes(1);
-    expect(getMemberDisplayName).toHaveBeenCalledTimes(2);
-  });
+      await handler(
+        "!room:example.org",
+        createMatrixTextMessageEvent({
+          eventId: "$reply1",
+          body: "@room follow up",
+          relatesTo: {
+            rel_type: "m.thread",
+            event_id: "$thread-root",
+            "m.in_reply_to": { event_id: "$thread-root" },
+          },
+          mentions: { room: true },
+        }),
+      );
+
+      const finalized = latestFinalizedReplyContext(finalizeInboundContext);
+      expect(finalized.MessageThreadId).toBe("$thread-root");
+      expect(finalized.ReplyToId).toBeUndefined();
+      expect(finalized.ReplyToSender).toBe("Alice");
+      expect(finalized.ReplyToBody).toBe("Root topic");
+      expect(finalized.ThreadStarterBody).toBe(
+        "Matrix thread root $thread-root from Alice:\nRoot topic",
+      );
+      expect(getEvent).toHaveBeenCalledTimes(1);
+      expect(getMemberDisplayName).toHaveBeenCalledTimes(2);
+    }),
+  );
 
   it.each(["allowlist", "allowlist_quote"] as const)(
     "filters disallowed thread context while applying %s quote visibility",
-    async (contextVisibility) => {
+    matrixFixture.wrapCase(async (contextVisibility) => {
       const { handler, finalizeInboundContext } = createMatrixHandlerTestHarness({
         client: {
           getEvent: async () =>
@@ -422,27 +443,33 @@ describe("createMatrixRoomMessageHandler inbound body formatting", () => {
       expect(finalized.ReplyToSender).toBe(
         contextVisibility === "allowlist_quote" ? "Mallory" : undefined,
       );
-    },
+    }),
   );
 
-  it("drops quoted reply context fetched from non-allowlisted room senders", async () => {
-    const { handler, finalizeInboundContext } = createQuotedReplyVisibilityHarness("allowlist");
+  it(
+    "drops quoted reply context fetched from non-allowlisted room senders",
+    matrixFixture.wrapCase(async () => {
+      const { handler, finalizeInboundContext } = createQuotedReplyVisibilityHarness("allowlist");
 
-    await sendQuotedReply(handler);
+      await sendQuotedReply(handler);
 
-    const finalized = latestFinalizedReplyContext(finalizeInboundContext);
-    expect(finalized.ReplyToBody).toBeUndefined();
-    expect(finalized.ReplyToSender).toBeUndefined();
-  });
+      const finalized = latestFinalizedReplyContext(finalizeInboundContext);
+      expect(finalized.ReplyToBody).toBeUndefined();
+      expect(finalized.ReplyToSender).toBeUndefined();
+    }),
+  );
 
-  it("keeps quoted reply context in allowlist_quote mode", async () => {
-    const { handler, finalizeInboundContext } =
-      createQuotedReplyVisibilityHarness("allowlist_quote");
+  it(
+    "keeps quoted reply context in allowlist_quote mode",
+    matrixFixture.wrapCase(async () => {
+      const { handler, finalizeInboundContext } =
+        createQuotedReplyVisibilityHarness("allowlist_quote");
 
-    await sendQuotedReply(handler);
+      await sendQuotedReply(handler);
 
-    const finalized = latestFinalizedReplyContext(finalizeInboundContext);
-    expect(finalized.ReplyToBody).toBe("Quoted payload");
-    expect(finalized.ReplyToSender).toBe("Mallory");
-  });
+      const finalized = latestFinalizedReplyContext(finalizeInboundContext);
+      expect(finalized.ReplyToBody).toBe("Quoted payload");
+      expect(finalized.ReplyToSender).toBe("Mallory");
+    }),
+  );
 });

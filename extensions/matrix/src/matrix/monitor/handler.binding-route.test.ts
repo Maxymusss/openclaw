@@ -1,4 +1,5 @@
 import { defineChannelPluginEntry } from "openclaw/plugin-sdk/channel-core";
+import { runChannelInboundEvent } from "openclaw/plugin-sdk/channel-inbound";
 import { withPluginRuntimeRegistryScope } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
@@ -12,24 +13,24 @@ import {
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
-  createReplyDispatcher,
-  dispatchInboundMessage,
-  resetInboundDedupe,
-} from "openclaw/plugin-sdk/reply-runtime";
-import {
   registerSessionBindingAdapter,
   testing as bindingTesting,
   type SessionBindingRecord,
 } from "openclaw/plugin-sdk/session-binding-runtime";
-import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { matrixPlugin } from "../../channel.js";
 import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
 import { createMatrixMonitorEventsTestHarness } from "./events.test-helpers.js";
 import {
   createMatrixHandlerTestHarness,
+  installMatrixHandlerTestFixture,
+  matrixCaseConfig,
+  registerMatrixTestRelease,
+  waitForMatrixTestSignal,
   createMatrixTextMessageEvent,
 } from "./handler.test-helpers.js";
+
+const matrixFixture = installMatrixHandlerTestFixture();
 
 // Provisioning is a separate ACP contract. The real shared dispatch guard and
 // registered terminal hook below exercise the configured route's observation.
@@ -38,25 +39,23 @@ vi.mock("openclaw/plugin-sdk/acp-binding-runtime", () => ({
 }));
 
 let cleanup: (() => Promise<void>) | undefined;
-afterEach(async () => {
+matrixFixture.afterEach(async () => {
   await cleanup?.();
   cleanup = undefined;
-  resetInboundDedupe();
   bindingTesting.resetSessionBindingAdaptersForTests();
   resetPluginRuntimeStateForTest();
   vi.restoreAllMocks();
 });
 
-it.each([
+it.for([
   "none-to-global",
   "plugin-to-global",
   "configured-stable",
   "configured-to-global",
 ] as const)(
   "preserves Matrix's prepared owner through a registered message: %s",
-  async (scenario) => {
-    const state = await createOpenClawTestState({ label: "matrix-route-carry" });
-    cleanup = () => state.cleanup();
+  matrixFixture.wrapCase(async (scenario, context) => {
+    const state = matrixFixture.state;
     const roomId = "!route:example.org";
     const senderId = "@sender:example.org";
     const configured = scenario.startsWith("configured");
@@ -74,7 +73,7 @@ it.each([
           },
         ]
       : undefined;
-    const cfg: OpenClawConfig = {
+    const cfg: OpenClawConfig = matrixCaseConfig({
       agents: {
         ownership: "explicit",
         entries: {
@@ -88,18 +87,14 @@ it.each([
       plugins: { enabled: true, allow: ["matrix"], entries: { matrix: { enabled: true } } },
       acp: { enabled: true, dispatch: { enabled: true } },
       ...(bindings ? { bindings } : {}),
-    };
+    });
     installMatrixMonitorTestRuntime({ cfg, stateDir: state.stateDir });
     const builder = createPluginRegistry({
       logger: { info() {}, warn() {}, error() {}, debug() {} },
       runtime: createPluginRuntimeMock(),
       activateGlobalSideEffects: false,
     });
-    const cleanupState = cleanup;
-    cleanup = async () => {
-      await disposePluginRegistryInstances(builder.registry);
-      await cleanupState();
-    };
+    cleanup = () => disposePluginRegistryInstances(builder.registry);
     const record = createPluginRecord({ id: "matrix", origin: "bundled", status: "loaded" });
     const api = builder.createApi(record, { config: cfg });
     builder.registry.plugins.push(record);
@@ -159,6 +154,7 @@ it.each([
     });
     const entered = createDeferred<void>();
     const release = createDeferred<void>();
+    registerMatrixTestRelease(release.resolve);
     let pause = true;
     const commit = vi.fn(async () => true);
     const releaseClaim = vi.fn();
@@ -167,7 +163,6 @@ it.each([
       cfg,
       runtime,
       isDirectMessage: false,
-      resolveStorePath: () => state.path("sessions.json"),
       resolveAgentRoute: () => ({
         agentId: "main",
         channel: "matrix",
@@ -190,90 +185,91 @@ it.each([
         }
         return "synthetic sender";
       },
-      dispatchInboundMessage: async ({ ctx }) => {
-        const dispatcher = createReplyDispatcher({
-          deliver: async () => {
-            throw new Error("The terminal fixture must not send a provider message");
-          },
-        });
-        try {
-          return await withPluginRuntimeRegistryScope(builder.registry, () =>
-            dispatchInboundMessage({
-              ctx,
-              cfg,
-              dispatcher,
-              replyResolver: async () => {
-                throw new Error("Synthetic terminal hook was not selected");
+      runChannelInboundEvent: (params) =>
+        withPluginRuntimeRegistryScope(builder.registry, () =>
+          runChannelInboundEvent({
+            ...params,
+            adapter: {
+              ...params.adapter,
+              resolveTurn: async (...args) => {
+                const turn = await params.adapter.resolveTurn(...args);
+                if (!("delivery" in turn)) {
+                  throw new Error("Expected Matrix delivery plan");
+                }
+                return {
+                  ...turn,
+                  replyResolver: async () => {
+                    throw new Error("Synthetic terminal hook was not selected");
+                  },
+                  delivery: {
+                    ...turn.delivery,
+                    deliver: async () => {
+                      throw new Error("The terminal fixture must not send a provider message");
+                    },
+                  },
+                };
               },
-            }),
-          );
-        } finally {
-          dispatcher.markComplete();
-          await dispatcher.waitForIdle();
-        }
-      },
+            },
+          }),
+        ),
     });
     const monitor = createMatrixMonitorEventsTestHarness({
       cfg,
       accountId: "ops",
       onRoomMessage: handler,
     });
-    const cleanupRegistry = cleanup;
-    cleanup = async () => {
+    // Later finished hooks run first: join this callback before the event harness removes its state.
+    context.onTestFinished(async () => {
+      release.resolve();
+      await matrixFixture.joinCase();
+    });
+    try {
+      const event = createMatrixTextMessageEvent({
+        eventId: `$matrix-route-${scenario}`,
+        sender: senderId,
+        body: "@room continue",
+        mentions: { room: true },
+      });
+      const emit = () => {
+        monitor.roomMessageListener(roomId, event);
+        return monitor.flushTasks();
+      };
+      const first = emit();
+      await waitForMatrixTestSignal(entered.promise, first);
+      expect(inspect).toHaveBeenCalled();
+      expect(touch).not.toHaveBeenCalled();
+      expect(terminal).not.toHaveBeenCalled();
+      if (transition) {
+        current = replacement;
+      }
+      release.resolve();
+      await first;
+
+      if (transition) {
+        expect(terminal).not.toHaveBeenCalled();
+        expect(commit).not.toHaveBeenCalled();
+        expect(releaseClaim).toHaveBeenCalledOnce();
+        expect(runtime.error).toHaveBeenCalledWith(
+          expect.stringContaining("Conversation binding changed while preparing the reply"),
+        );
+        await emit();
+        expect(terminal).toHaveBeenCalledExactlyOnceWith("work", "global");
+      } else {
+        expect(runtime.error).not.toHaveBeenCalled();
+        expect(releaseClaim).not.toHaveBeenCalled();
+        expect(terminal).toHaveBeenCalledExactlyOnceWith(
+          "configured",
+          expect.stringContaining("agent:configured:acp:binding:matrix:ops:"),
+        );
+      }
+      expect(commit).toHaveBeenCalledOnce();
+    } finally {
       release.resolve();
       try {
         await monitor.flushTasks();
       } finally {
-        try {
-          await monitor.dispose();
-        } finally {
-          await cleanupRegistry();
-        }
+        await monitor.dispose();
       }
-    };
-    const event = createMatrixTextMessageEvent({
-      eventId: `$matrix-route-${scenario}`,
-      sender: senderId,
-      body: "@room continue",
-      mentions: { room: true },
-    });
-    const emit = () => {
-      monitor.roomMessageListener(roomId, event);
-      return monitor.flushTasks();
-    };
-    const first = emit();
-    await Promise.race([
-      entered.promise,
-      first.then(() => {
-        throw new Error("Message missed the post-route barrier");
-      }),
-    ]);
-    expect(inspect).toHaveBeenCalled();
-    expect(touch).not.toHaveBeenCalled();
-    expect(terminal).not.toHaveBeenCalled();
-    if (transition) {
-      current = replacement;
     }
-    release.resolve();
-    await first;
-
-    if (transition) {
-      expect(terminal).not.toHaveBeenCalled();
-      expect(commit).not.toHaveBeenCalled();
-      expect(releaseClaim).toHaveBeenCalledOnce();
-      expect(runtime.error).toHaveBeenCalledWith(
-        expect.stringContaining("Conversation binding changed while preparing the reply"),
-      );
-      await emit();
-      expect(terminal).toHaveBeenCalledExactlyOnceWith("work", "global");
-    } else {
-      expect(runtime.error).not.toHaveBeenCalled();
-      expect(releaseClaim).not.toHaveBeenCalled();
-      expect(terminal).toHaveBeenCalledExactlyOnceWith(
-        "configured",
-        expect.stringContaining("agent:configured:acp:binding:matrix:ops:"),
-      );
-    }
-    expect(commit).toHaveBeenCalledOnce();
-  },
+  }),
 );
