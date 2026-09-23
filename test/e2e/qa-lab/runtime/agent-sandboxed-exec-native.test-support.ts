@@ -20,6 +20,7 @@ import {
   type SandboxContainerEngine,
 } from "../../../../src/agents/sandbox/container-engine.js";
 import { removeSandboxContainer } from "../../../../src/agents/sandbox/manage.js";
+import { isSandboxProvisioningError } from "../../../../src/agents/sandbox/provisioning-error.js";
 import { readRegistryEntry } from "../../../../src/agents/sandbox/registry.js";
 import { AuthStorage, ModelRegistry } from "../../../../src/agents/sessions/index.js";
 import { resolveAttemptWorkspaceSandbox } from "../../../../src/agents/workspace-sandbox.js";
@@ -491,7 +492,16 @@ export function registerNativeSandboxLifecycleTests(backend: SandboxContainerEng
         await Promise.resolve();
         expect(closed).toBe(false);
         deliver.resolve();
-        expect(await observed).toBe(stopped);
+        // Let the producer observe the composite before inspecting its reason.
+        const error = await observed;
+        expect(abort.signal.reason).toBe(stopped);
+        expect(generation.current.signal.aborted).toBe(true);
+        expect(isSandboxProvisioningError(error)).toBe(true);
+        expect(error).toMatchObject({ backendId: engine.id });
+        if (!(error instanceof Error)) {
+          throw new Error("Expected a sandbox provisioning error", { cause: error });
+        }
+        expect(error.cause).toBe(generation.current.signal.reason);
         await release;
         generation.assertCleanupConfirmed();
         confirmed = true;

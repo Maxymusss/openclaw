@@ -239,7 +239,7 @@ export async function startForegroundLifecycleFixture() {
                 agents: "*",
                 sessions: { others: "write" },
                 scopes: ["operator.sessions.read", "operator.sessions.write"],
-                modelPolicy: { allow: [allowedModel] },
+                modelPolicy: { sourceAgent: "main", allow: [allowedModel] },
               },
               staff: {
                 agents: "*",
@@ -379,7 +379,7 @@ export async function startForegroundLifecycleFixture() {
       },
       async setGuestModelPolicy(policy: { allow: string[] } | undefined) {
         if (policy) {
-          config.gateway.roles.definitions.guest.modelPolicy = policy;
+          config.gateway.roles.definitions.guest.modelPolicy = { ...policy, sourceAgent: "main" };
         } else {
           delete config.gateway.roles.definitions.guest.modelPolicy;
         }
@@ -469,7 +469,7 @@ export async function openForegroundPage(
   const created = await rpc(page, "sessions.create", {
     key,
     agentId: person === "staff" ? "staff" : "main",
-    label: "Foreground lifecycle fixture",
+    label: `Foreground lifecycle fixture: ${key}`,
     visibility: "shared",
   });
   expect(created, created.ok ? undefined : JSON.stringify(created.error)).toMatchObject({
