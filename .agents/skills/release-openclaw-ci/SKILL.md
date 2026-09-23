@@ -26,6 +26,8 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   product defects, package/provenance defects in the bytes to publish, security
   defects, or failures that make publication impossible. Queue other findings
   for postpublish confidence or the next beta.
+- Frozen CI children use the pinned Tooling SHA's Node shard planner and measured
+  costs, while discovering and executing tests from the candidate checkout.
 - Use trusted `main` workflow revisions as immutable dispatch sources. Do not
   adopt newer main code, repair unrelated main CI, wait for broad main health,
   or expand a release fix because the workflow source lives on `main`.

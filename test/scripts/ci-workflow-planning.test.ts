@@ -543,6 +543,10 @@ function runCiManifestFixture(options: {
     for (const name of ["release-context.mjs", "release-version.mjs"]) {
       writeFileSync(path.join(trustedReleasePolicy, name), readFileSync(`scripts/lib/${name}`));
     }
+    copyFileSync(
+      path.join(scriptsDir, "ci-node-test-plan.mts"),
+      path.join(trustedReleasePolicy, "ci-node-test-plan.mts"),
+    );
     const fixtureBin = path.join(root, "bin");
     let correctionBaseSha = "";
     if (options.remoteTagRefs) {

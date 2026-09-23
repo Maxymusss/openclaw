@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
+  cpSync,
   existsSync,
   globSync,
   mkdirSync,
@@ -8650,6 +8651,70 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         eventName,
       ).toBe(events.includes(eventName) ? base : "");
     }
+  });
+
+  it.each([false, true])("loads the Node shard planner from its owner (frozen=%s)", (frozen) => {
+    const workflow = readCiWorkflow();
+    const step = workflow.jobs.preflight.steps.find(
+      (entry: WorkflowStep) => entry.name === "Build CI manifest",
+    );
+    const selection = expectDefined(
+      step.run.match(/const nodeTestPlanPath =[\s\S]*?(?=const importTargetPlan)/u)?.[0],
+      "Node planner selection",
+    );
+    const root = tempDirs.make("ci-planner-owner-");
+    writeFileSync(path.join(root, "candidate.txt"), "candidate-source");
+    for (const [directory, owner] of [
+      ["scripts/lib", "candidate"],
+      [".ci-harness/scripts/lib", "workflow"],
+    ] as const) {
+      mkdirSync(path.join(root, directory), { recursive: true });
+      writeFileSync(
+        path.join(root, directory, "ci-node-test-plan.mts"),
+        `import { readFileSync } from "node:fs";
+         export const createNodeTestShardBundles = () =>
+           [${JSON.stringify(owner)}, readFileSync("candidate.txt", "utf8")];`,
+      );
+    }
+    const run = spawnSync(testNodeExecPath, ["--input-type=module"], {
+      cwd: root,
+      input: `import { existsSync } from "node:fs";
+        const frozenTarget = ${frozen};
+        const compatibilityTarget = true;
+        ${selection}
+        console.log(JSON.stringify(createNodeTestPlan()));`,
+      encoding: "utf8",
+    });
+    expect(run.status, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toEqual([frozen ? "workflow" : "candidate", "candidate-source"]);
+    if (frozen) {
+      const checkout = workflow.jobs.preflight.steps.find(
+        (entry: WorkflowStep) => entry.name === "Checkout trusted CI harness",
+      );
+      expect(checkout.with.ref).toBe("${{ github.workflow_sha }}");
+      expect(checkout.with["sparse-checkout"]).toContain("/scripts/");
+      expect(checkout.with["sparse-checkout"]).toContain("/test/vitest/");
+      expect(checkout.with["sparse-checkout"]).toContain("/config/ci-test-timings.json");
+    }
+  });
+
+  it("imports the real frozen planner from the declared sparse checkout", () => {
+    const checkout = readCiWorkflow().jobs.preflight.steps.find(
+      (entry: WorkflowStep) => entry.name === "Checkout trusted CI harness",
+    );
+    const root = tempDirs.make("ci-planner-sparse-");
+    for (const entry of String(checkout.with["sparse-checkout"]).trim().split("\n")) {
+      const relative = entry.replace(/^\//u, "");
+      const destination = path.join(root, ".ci-harness", relative);
+      mkdirSync(path.dirname(destination), { recursive: true });
+      cpSync(relative, destination, { recursive: true });
+    }
+    const run = spawnSync(testNodeExecPath, ["--input-type=module"], {
+      cwd: root,
+      input: 'await import("./.ci-harness/scripts/lib/ci-node-test-plan.mts");',
+      encoding: "utf8",
+    });
+    expect(run.status, run.stderr).toBe(0);
   });
 
   it("keeps the preflight manifest import closure dependency-free", () => {

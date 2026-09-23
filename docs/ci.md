@@ -69,6 +69,10 @@ Linux PR tests use Bun for the measured compatible unit lanes and Control UI
 Vitest job, with a targeted CSS-tokenizer optimizer workaround. Full Release Validation
 keeps their Node coverage and runs them on Bun too; see [test runtime selection](/ci/pipeline#test-runtime-selection).
 
+Frozen-target CI loads its Node shard planner, planning helpers, and measured
+costs from the pinned `workflow_sha` checkout. Test discovery and execution still
+use the candidate source, so current shard budgets do not replace release bytes.
+
 Full Release Validation's exact-target UI job retains the current three native
 shards for both runtimes. Historical compatibility targets keep their original
 unsharded package command; see [UI job budgets](/ci/scope-and-routing/job-budgets).

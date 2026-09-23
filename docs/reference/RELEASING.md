@@ -900,7 +900,9 @@ The helper verifies that the recorded Tooling SHA remains reachable from current
 accepts only the release branch's final package version or a matching beta
 prerelease, infers `beta` for that beta path and `stable` for final versions, and
 dispatches `Full Release Validation` with the Validation SHA as `expected_sha`.
-Target resolution rejects a mismatch before child dispatch. Every child workflow
+Target resolution rejects a mismatch before child dispatch. Frozen CI children
+load the Node shard planner and its measured costs from the pinned Tooling SHA;
+the candidate checkout remains the test discovery and execution root. Every child workflow
 `headSha` must match the Tooling SHA. Pass `-f reuse_evidence=false` to force a
 fresh run or `-f release_profile=full` for the broad advisory sweep. Never
 replace the recorded Tooling SHA with a fresh `main` lookup. The helper rejects

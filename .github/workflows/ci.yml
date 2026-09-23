@@ -958,9 +958,10 @@ jobs:
           path: .ci-harness
           sparse-checkout: |
             /.github/actions/
-            /scripts/lib/pnpm-lockfile-documents.mjs
-            /scripts/lib/release-context.mjs
-            /scripts/lib/release-version.mjs
+            /scripts/
+            /test/vitest/
+            /config/ci-test-timings.json
+            /packages/normalization-core/src/stable-stringify.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -1437,9 +1438,13 @@ jobs:
           const frozenTarget =
             eventName === "workflow_dispatch" && checkoutRevision !== workflowRevision;
 
-          const nodeTestPlanPath = existsSync("./scripts/lib/ci-node-test-plan.mts")
-            ? "./scripts/lib/ci-node-test-plan.mts"
-            : "./scripts/lib/ci-node-test-plan.mjs";
+          // Frozen releases use current trusted shard budgets while discovery
+          // and test execution keep the candidate checkout as their root.
+          const nodeTestPlanPath = frozenTarget
+            ? "./.ci-harness/scripts/lib/ci-node-test-plan.mts"
+            : existsSync("./scripts/lib/ci-node-test-plan.mts")
+              ? "./scripts/lib/ci-node-test-plan.mts"
+              : "./scripts/lib/ci-node-test-plan.mjs";
           const nodeTestPlan = await import(nodeTestPlanPath);
           const createNodeTestPlan =
             typeof nodeTestPlan.createNodeTestShardBundles === "function"
