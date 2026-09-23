@@ -101,7 +101,7 @@ async function deniedSend(page: Page, observed: Observation, text: string, messa
     ok: false,
     error: { code: "UNAVAILABLE", message: expect.stringContaining(message) },
   });
-  if (!response || response.ok || typeof response.error?.message !== "string") {
+  if (response?.type !== "res" || response.ok || typeof response.error?.message !== "string") {
     throw new Error("Missing definitive send refusal");
   }
   const runId = asNullableRecord(request.params)?.idempotencyKey;
