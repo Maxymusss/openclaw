@@ -170,7 +170,9 @@ describe("foreground-only chat admission", () => {
     enqueuePendingRunMessage(host, "Command joined to the current run", "owned-run");
     const queue = readChatQueueForScope(host, sessionKey);
     const pending = queue.find((item) => item.pendingRunId === "owned-run");
-    if (!pending) throw new Error("Expected the pane-local pending run row");
+    if (!pending) {
+      throw new Error("Expected the pane-local pending run row");
+    }
     await resumeStoredChatOutboxes(host);
     expect(host.request.mock.calls.filter(([method]) => method === "chat.send")).toEqual([]);
     expect(readChatQueueForScope(host, sessionKey).find((item) => item.id === pending.id)).toEqual(
@@ -219,8 +221,8 @@ describe("foreground-only chat admission", () => {
     });
     retainedRows(host);
     await resumeStoredChatOutboxes(host);
-    const sends = host.request.mock.calls.filter(([method]) => method === "chat.send");
-    expect(sends[0]?.[1]).toMatchObject({ message: "Retained 1", idempotencyKey: "run-old-first" });
+    const send = host.request.mock.calls.find(([method]) => method === "chat.send");
+    expect(send?.[1]).toMatchObject({ message: "Retained 1", idempotencyKey: "run-old-first" });
     expect(
       listStoredChatOutboxes(host)
         .flatMap((outbox) => outbox.queue)
@@ -346,7 +348,9 @@ describe("foreground-only chat admission", () => {
       try {
         expect(listStoredChatOutboxes(host)[0]?.queue).toHaveLength(1);
         const original = listStoredChatOutboxes(host)[0]?.queue[0];
-        if (!original) throw new Error("Expected the live input row");
+        if (!original) {
+          throw new Error("Expected the live input row");
+        }
         host.hello = foregroundHello();
         host.chatMessage = "Second input stays a draft";
         await handleSendChat(host, undefined, undefined, new Event("submit"));

@@ -259,7 +259,8 @@ vi.mock("./embedded-agent-runner/runs.js", () => ({
   getActiveEmbeddedRunSnapshot: (...args: unknown[]) => getActiveEmbeddedRunSnapshotMock(...args),
 }));
 
-vi.mock("./agent-scope.js", () => ({
+vi.mock("./agent-scope.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./agent-scope.js")>()),
   listAgentEntries: (...args: unknown[]) => listAgentEntriesMock(...args),
   resolveAgentConfig: (cfg: { agents?: { list?: Array<{ id?: string }> } }, agentId: string) =>
     cfg.agents?.list?.find((entry) => entry.id === agentId),

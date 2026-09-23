@@ -79,7 +79,7 @@ function operatorSource(unrestricted = false) {
   };
 }
 
-function installHarness(runSideQuestion?: AgentHarness["runSideQuestion"]) {
+function installHarness(sideQuestion?: AgentHarness["runSideQuestion"]) {
   registerAgentHarness({
     id: "btw-policy-fixture",
     label: "BTW policy fixture",
@@ -87,7 +87,7 @@ function installHarness(runSideQuestion?: AgentHarness["runSideQuestion"]) {
     operatorModelPolicySupport: "exact",
     nativeModelPolicySupport: "exact",
     runAttempt: vi.fn(),
-    ...(runSideQuestion ? { runSideQuestion } : {}),
+    ...(sideQuestion ? { runSideQuestion: sideQuestion } : {}),
   });
 }
 
@@ -154,7 +154,9 @@ describe("BTW mapped model authority", () => {
           ? { ...mapped, id: "other" }
           : mapped;
     const original = operatorSource(mode === "staff");
-    if (mode === "initial-denied") original.narrow();
+    if (mode === "initial-denied") {
+      original.narrow();
+    }
     const entered = createDeferred();
     const proceed = createDeferred();
     const releaseRuntime = vi.fn(async () => undefined);
@@ -203,8 +205,12 @@ describe("BTW mapped model authority", () => {
         ]);
         expect(getApiKeyForModelMock).not.toHaveBeenCalled();
         expect(releaseRuntime).not.toHaveBeenCalled();
-        if (mode === "source-revoked") original.cancellation.abort(new Error("BTW source revoked"));
-        if (mode === "policy-narrowed") original.narrow();
+        if (mode === "source-revoked") {
+          original.cancellation.abort(new Error("BTW source revoked"));
+        }
+        if (mode === "policy-narrowed") {
+          original.narrow();
+        }
       }
       proceed.resolve();
       const result = await outcome;
@@ -243,7 +249,9 @@ describe("BTW mapped model authority", () => {
     }
     expect(releaseRuntime).toHaveBeenCalledTimes(mode === "initial-denied" ? 0 : 1);
     expect(original.releases.length).toBeGreaterThan(0);
-    for (const release of original.releases) expect(release).toHaveBeenCalledOnce();
+    for (const release of original.releases) {
+      expect(release).toHaveBeenCalledOnce();
+    }
   });
 
   it.each(["mapped", "revoked", "narrowed"] as const)(
@@ -266,8 +274,12 @@ describe("BTW mapped model authority", () => {
       });
       resolveSessionAuthSelectionMock.mockResolvedValue(undefined);
       getApiKeyForModelMock.mockImplementation(async ({ profileId }: { profileId?: string }) => {
-        if (profileId === "btw-policy:primary") throw new Error("Primary unavailable");
-        if (profileId !== "btw-policy:backup") throw new Error("Expected prepared backup");
+        if (profileId === "btw-policy:primary") {
+          throw new Error("Primary unavailable");
+        }
+        if (profileId !== "btw-policy:backup") {
+          throw new Error("Expected prepared backup");
+        }
         return {
           apiKey: "backup-key",
           mode: "api-key",
@@ -330,9 +342,12 @@ describe("BTW mapped model authority", () => {
         expect(prepareProviderRuntimeAuthMock).not.toHaveBeenCalled();
         expect(provider).not.toHaveBeenCalled();
         expect(releaseRuntime).not.toHaveBeenCalled();
-        if (mode === "revoked")
+        if (mode === "revoked") {
           original.cancellation.abort(new Error("BTW refresh source revoked"));
-        if (mode === "narrowed") original.narrow();
+        }
+        if (mode === "narrowed") {
+          original.narrow();
+        }
         proceed.resolve();
         const result = await outcome;
         if (mode === "mapped") {
@@ -363,7 +378,9 @@ describe("BTW mapped model authority", () => {
       }
       expect(releaseRuntime).toHaveBeenCalledOnce();
       expect(original.releases.length).toBeGreaterThan(0);
-      for (const release of original.releases) expect(release).toHaveBeenCalledOnce();
+      for (const release of original.releases) {
+        expect(release).toHaveBeenCalledOnce();
+      }
     },
   );
 
@@ -405,7 +422,9 @@ describe("BTW mapped model authority", () => {
       }
       expect(releaseRuntime).toHaveBeenCalledOnce();
       expect(original.releases.length).toBeGreaterThan(0);
-      for (const release of original.releases) expect(release).toHaveBeenCalledOnce();
+      for (const release of original.releases) {
+        expect(release).toHaveBeenCalledOnce();
+      }
     },
   );
 });

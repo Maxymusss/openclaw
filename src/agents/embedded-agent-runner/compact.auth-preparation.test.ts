@@ -3,10 +3,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
-import { bindModelRequestRoute } from "../../llm/model-runtime-binding.js";
-import { createAdmittedRunOperatorAuthority } from "../admitted-run-operator-authority.js";
 import { createApiKeyCredential } from "../auth-profiles/credential-fixtures.test-support.js";
-import { prepareOperatorModelPolicy } from "../operator-model-policy.js";
 import { makeProviderModelFixture } from "../test-helpers/provider-model-fixture.js";
 import {
   contextEngineCompactMock,
@@ -27,12 +24,18 @@ const [
   { closeOpenClawAgentDatabasesForTest },
   { ensureAuthProfileStoreWithoutExternalProfiles },
   { AsyncWorkScope },
+  { bindModelRequestRoute },
+  { createAdmittedRunOperatorAuthority },
+  { prepareOperatorModelPolicy },
   { prepareProviderRuntimeAuth },
 ] = await Promise.all([
   import("../../config/sessions/session-accessor.js"),
   import("../../state/openclaw-agent-db.js"),
   import("../model-auth.js"),
   import("../../shared/async-work-scope.js"),
+  import("../../llm/model-runtime-binding.js"),
+  import("../admitted-run-operator-authority.js"),
+  import("../operator-model-policy.js"),
   import("../../plugins/provider-runtime.js"),
 ]);
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -52,7 +55,9 @@ it.each(["mapped", "unbound", "mutated", "revoked", "narrowed", "staff"] as cons
       selectAgentHarnessForPreparedModelProvidersMock,
     ]) {
       const original = select.getMockImplementation();
-      if (!original) throw new Error("Expected canonical compaction harness fixture");
+      if (!original) {
+        throw new Error("Expected canonical compaction harness fixture");
+      }
       select.mockImplementation((params) => ({
         ...original(params),
         operatorModelPolicySupport: "exact",
@@ -137,13 +142,16 @@ it.each(["mapped", "unbound", "mutated", "revoked", "narrowed", "staff"] as cons
       ]);
       expect(getApiKeyForModelMock).not.toHaveBeenCalled();
       expect(contextEngineCompactMock).not.toHaveBeenCalled();
-      if (mode === "revoked") source.abort(new Error("original compaction source revoked"));
-      if (mode === "narrowed")
+      if (mode === "revoked") {
+        source.abort(new Error("original compaction source revoked"));
+      }
+      if (mode === "narrowed") {
         policy = prepareOperatorModelPolicy({
           cfg: {},
           policy: { allow: [] },
           manifestPlugins: [],
         });
+      }
       proceed.resolve();
       const result = await outcome;
       if (mode === "mapped" || mode === "staff") {
@@ -233,7 +241,7 @@ it.each(["lookup", "hook", "allowed"] as const)(
     }
     expect(getApiKeyForModelMock).toHaveBeenCalled();
     expect(prepareAuth).toHaveBeenCalledTimes(stage === "lookup" ? 0 : 1);
-    expect(result.ok).toBe(stage === "allowed");
+    expect(result.ok, result.reason).toBe(stage === "allowed");
     if (stage !== "allowed") {
       expect(result.reason).toContain("compaction source revoked");
     }

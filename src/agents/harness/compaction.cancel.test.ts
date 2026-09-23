@@ -180,13 +180,16 @@ describe("harness compaction cancellation", () => {
           ]);
           expect(compact).not.toHaveBeenCalled();
           expect(released).not.toHaveBeenCalled();
-          if (mode === "revoked") source.abort(new Error("original harness source revoked"));
-          if (mode === "narrowed")
+          if (mode === "revoked") {
+            source.abort(new Error("original harness source revoked"));
+          }
+          if (mode === "narrowed") {
             policy = prepareOperatorModelPolicy({
               cfg: {},
               policy: { allow: [] },
               manifestPlugins: [],
             });
+          }
         }
         proceed.resolve();
         const result = await outcome;
@@ -197,8 +200,9 @@ describe("harness compaction cancellation", () => {
         } else {
           expect(result).toHaveProperty("error");
           expect(compact).not.toHaveBeenCalled();
-          if (mode === "unbound" || mode === "mutated")
+          if (mode === "unbound" || mode === "mutated") {
             expect(compactAuthMocks.getApiKeyForModelCore).not.toHaveBeenCalled();
+          }
         }
       } finally {
         proceed.resolve();

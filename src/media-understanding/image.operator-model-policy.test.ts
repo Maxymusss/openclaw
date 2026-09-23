@@ -101,7 +101,9 @@ describe("image operator model selection", () => {
     let resolutions = 0;
     resolveModelAsyncMock.mockImplementation(async () => {
       resolutions += 1;
-      if (resolutions > 1) await hold("refresh");
+      if (resolutions > 1) {
+        await hold("refresh");
+      }
       return { model, authStorage: preparedAuthStorage, modelRegistry: {} };
     });
     shouldPreferProviderRuntimeResolvedModelMock.mockReturnValue(true);
@@ -155,13 +157,16 @@ describe("image operator model selection", () => {
         expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
         expect(completeMock).not.toHaveBeenCalled();
         expect(releasePreparedModelRuntimeMock).not.toHaveBeenCalled();
-        if (mode.endsWith("revoked")) source.abort(new Error("original image source revoked"));
-        if (mode === "refresh-narrowed")
+        if (mode.endsWith("revoked")) {
+          source.abort(new Error("original image source revoked"));
+        }
+        if (mode === "refresh-narrowed") {
           policy = prepareOperatorModelPolicy({
             cfg: {},
             policy: { allow: [] },
             manifestPlugins: [],
           });
+        }
       }
       proceed.resolve();
       const result = await outcome;
@@ -194,9 +199,12 @@ describe("image operator model selection", () => {
         expect(setRuntimeApiKeyMock).not.toHaveBeenCalled();
         expect(registerProviderStreamForModelMock).not.toHaveBeenCalled();
         expect(completeMock).not.toHaveBeenCalled();
-        if (stage !== "runtime") expect(prepareProviderRuntimeAuthMock).not.toHaveBeenCalled();
-        if (mode === "unbound" || mode === "mutated")
+        if (stage !== "runtime") {
+          expect(prepareProviderRuntimeAuthMock).not.toHaveBeenCalled();
+        }
+        if (mode === "unbound" || mode === "mutated") {
           expect(getApiKeyForModelMock).not.toHaveBeenCalled();
+        }
       }
     } finally {
       proceed.resolve();
@@ -208,7 +216,9 @@ describe("image operator model selection", () => {
     }
     expect(releasePreparedModelRuntimeMock).toHaveBeenCalledTimes(1);
     expect(releases.length).toBeGreaterThan(0);
-    for (const release of releases) expect(release).toHaveBeenCalledTimes(1);
+    for (const release of releases) {
+      expect(release).toHaveBeenCalledTimes(1);
+    }
   });
 
   it.each(["mapped", "mapped-revoked", "unknown", "unknown-revoked", "staff"] as const)(
@@ -228,16 +238,17 @@ describe("image operator model selection", () => {
         }),
         logical,
       );
-      if (unknown)
+      if (unknown) {
         resolveModelAsyncMock.mockRejectedValue(
           new Error("Unknown model: minimax-portal/MiniMax-VL-01"),
         );
-      else
+      } else {
         resolveModelAsyncMock.mockResolvedValue({
           model,
           authStorage: preparedAuthStorage,
           modelRegistry: {},
         });
+      }
       const source = new AbortController();
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "minimax-owner",
@@ -287,7 +298,9 @@ describe("image operator model selection", () => {
           }),
         ]);
         expect(fetchMock).toHaveBeenCalledTimes(1);
-        if (mode.endsWith("revoked")) source.abort(new Error("original MiniMax source revoked"));
+        if (mode.endsWith("revoked")) {
+          source.abort(new Error("original MiniMax source revoked"));
+        }
         proceed.resolve();
         const result = await outcome;
         if (mode.endsWith("revoked")) {
