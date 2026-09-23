@@ -980,14 +980,14 @@ jobs:
           Remove-Item -LiteralPath $env:TEST_ROOT -Recurse -Force -ErrorAction SilentlyContinue
 
   f113-diagnostic:
-    name: F113 Windows shutdown cohort ${{ matrix.node }} / ${{ matrix.part }}
+    name: F113 minimal messenger ${{ matrix.node }} / ${{ matrix.part }}
     runs-on: blacksmith-16vcpu-windows-2025
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 2
       matrix:
-        part: [1, 2]
+        part: [1]
         node: [24.19.0, 24.20.0]
     defaults:
       run:
@@ -1034,7 +1034,7 @@ jobs:
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: f113-${{ github.run_id }}-${{ matrix.node }}-${{ matrix.part }}
+          name: f113-minimal-${{ github.run_id }}-${{ matrix.node }}
           path: .artifacts/f113
           if-no-files-found: error
           retention-days: 7
