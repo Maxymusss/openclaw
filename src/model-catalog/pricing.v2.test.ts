@@ -92,7 +92,9 @@ describe("inline v2 pricing", () => {
       models: [{ id: "native/model" }],
     });
     expect(resolveModelCostConfig({ config, provider: "fixture", model: "native/model" })).toEqual(
-      expected ? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, ...expected } : undefined,
+      expected
+        ? { input: expected.input, output: expected.output ?? 0, cacheRead: 0, cacheWrite: 0 }
+        : undefined,
     );
   });
 
