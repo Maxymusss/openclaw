@@ -282,7 +282,7 @@ export async function codexControlRequest(
   };
   if (options.onResponse || options.beforeRequest) {
     return await withCodexAppServerJsonClient(
-      { ...controlRequestOptions, deadlineCaller: "command-rpc" },
+      controlRequestOptions,
       async (request, client, scope) => {
         await options.beforeRequest?.(request, client, scope);
         scope.assertCurrent();

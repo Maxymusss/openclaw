@@ -112,7 +112,6 @@ async function discoverInstalledCuratedPlugins(
   try {
     return await withCodexAppServerJsonClient(
       {
-        deadlineCaller: "migration",
         timeoutMs: 60_000,
         startOptions,
         authProfileId: null,

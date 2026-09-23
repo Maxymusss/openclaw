@@ -126,7 +126,6 @@ export function createCodexAppServerModelCatalog(runtime: string) {
       const timeoutMs = discovery?.timeoutMs ?? DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS;
       const result = await withCodexAppServerJsonClient(
         {
-          deadlineCaller: "model-catalog",
           startOptions: start,
           config: params.config,
           agentDir: params.agentDir,

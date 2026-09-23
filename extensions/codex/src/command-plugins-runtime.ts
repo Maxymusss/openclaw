@@ -94,7 +94,6 @@ export async function withCodexPluginCommandContext<T>(
   }
   return await withCodexAppServerJsonClient(
     {
-      deadlineCaller: "plugin-command",
       startOptions: appServer.start,
       pluginConfig,
       agentDir: scope.agentDir,

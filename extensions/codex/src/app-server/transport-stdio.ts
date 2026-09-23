@@ -14,7 +14,6 @@ import type { CodexAppServerStartOptions } from "./config.js";
 import { normalizeCodexAppServerArgs } from "./launch-args.js";
 import { resolveManagedCodexNativeCommand } from "./managed-binary.js";
 import { observeManagedCodexLauncherFailure } from "./managed-launcher-failure.js";
-import { noteCodexStartup, type CodexStartupObservation } from "./request-observation.js";
 import { getCodexAppServerSpawnFailure, recordCodexAppServerSpawnFailure } from "./spawn-error.js";
 import { prepareCodexAppServerProcessRegistration } from "./transport-process-registration.js";
 import { closeCodexAppServerTransportAndWait, type CodexAppServerTransport } from "./transport.js";
@@ -136,7 +135,6 @@ export async function createStdioTransport(
   baseEnv: NodeJS.ProcessEnv = process.env,
   assertCurrent?: () => void,
   onSpawn?: (child: ChildProcessWithoutNullStreams) => void,
-  startupObservation?: CodexStartupObservation,
 ): Promise<ChildProcessWithoutNullStreams> {
   const env = resolveCodexAppServerSpawnEnv(options, baseEnv);
   const invocation = resolveCodexAppServerSpawnInvocation(options, env);
@@ -156,7 +154,6 @@ export async function createStdioTransport(
   if (previousFailure) {
     throw previousFailure;
   }
-  noteCodexStartup(startupObservation, "registration-prepare");
   const register = await prepareCodexAppServerProcessRegistration();
   assertCurrent?.();
   embeddedAgentLog.debug("Codex app-server spawn", {
@@ -169,7 +166,6 @@ export async function createStdioTransport(
   });
   let child: ChildProcessWithoutNullStreams & Pick<CodexAppServerTransport, "startupFailure">;
   try {
-    noteCodexStartup(startupObservation, "spawn-call");
     child = spawn(invocation.command, invocation.argv, {
       // Preserve the shipped Supervisor endpoint contract: relative commands and
       // config discovery may depend on the endpoint's process working directory.
@@ -183,16 +179,13 @@ export async function createStdioTransport(
   } catch (error) {
     throw recordCodexAppServerSpawnFailure(error, invocation.command, launchKey);
   }
-  noteCodexStartup(startupObservation, "spawn-returned", undefined, child.pid);
   try {
     if (nativeCommand && invocation.resolution === "node-entrypoint") {
       observeManagedCodexLauncherFailure(child, nativeCommand);
     }
     // Attach lifecycle observers before inspection can yield to an early exit.
     onSpawn?.(child);
-    noteCodexStartup(startupObservation, "registration-pending");
     await register(child);
-    noteCodexStartup(startupObservation, "registered");
     assertCurrent?.();
     return child;
   } catch (error) {
