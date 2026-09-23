@@ -37,6 +37,7 @@ function writeDescriptor() {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   fetchWithSsrFGuardMock.mockReset();
   for (const root of roots.splice(0)) {
     fs.rmSync(root, { force: true, recursive: true });
@@ -93,6 +94,13 @@ describe("Telegram private production local-app proof", () => {
   it("accepts a native UI acknowledgement without placing raw participant IDs in the handoff", async () => {
     const file = writeDescriptor();
     const descriptor = readTelegramPrivateProductionDescriptor(file)!;
+    const requestReady = Promise.withResolvers<void>();
+    vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      if (String(chunk).startsWith("TELEGRAM_PRIVATE_APP_SEND_REQUIRED ")) {
+        requestReady.resolve();
+      }
+      return true;
+    });
     const pending = requestTelegramPrivateAppTurn({
       descriptor,
       destination: "forum-topic",
@@ -100,20 +108,11 @@ describe("Telegram private production local-app proof", () => {
       text: "@qa_bot Reply exactly: marker",
     });
     const proofRoot = `${file}.app-proof`;
-    let requestPath: string | undefined;
-    for (let attempts = 0; attempts < 100 && !requestPath; attempts += 1) {
-      requestPath = fs.existsSync(proofRoot)
-        ? fs
-            .readdirSync(proofRoot)
-            .map((entry) => path.join(proofRoot, entry))
-            .find((entry) => entry.endsWith(".request.json"))
-        : undefined;
-      if (!requestPath) {
-        await new Promise<void>((resolve) => {
-          setTimeout(resolve, 10);
-        });
-      }
-    }
+    await Promise.race([requestReady.promise, pending]);
+    const requestPath = fs
+      .readdirSync(proofRoot)
+      .map((entry) => path.join(proofRoot, entry))
+      .find((entry) => entry.endsWith(".request.json"));
     expect(requestPath).toBeDefined();
     const requestText = fs.readFileSync(requestPath!, "utf8");
     expect(requestText).not.toContain('"100"');
