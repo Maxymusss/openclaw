@@ -95,7 +95,6 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   private fileEditor: FileEditorViewHandle | null = null;
   private fileEditorLoad: Promise<void> | null = null;
   private fileDraftContent: string | null = null;
-  private fileSavedContent = "";
   private fileHash = "";
   private readonly requestAttachmentUpdate = () => this.requestUpdate();
   private readonly attachmentDownload = new AttachmentDownloadController(
@@ -182,7 +181,6 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       setFileDraft(this.content, null);
     }
     this.fileDraftContent = restoredDraft?.content ?? null;
-    this.fileSavedContent = this.content?.kind === "file" ? this.content.content : "";
     this.fileHash =
       restoredDraft?.expectedHash ??
       (this.content?.kind === "file" ? (this.content.edit?.hash ?? "") : "");
@@ -290,7 +288,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
           const draft = captureFileEditorDraft(current, {
             editing: this.fileEditing,
             content: nextContent,
-            savedContent: this.fileSavedContent,
+            savedContent: current.content,
             expectedHash: this.fileHash,
           });
           if (!draft) {
@@ -458,7 +456,6 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       this.fileEditor.focus();
       return;
     }
-    this.fileSavedContent = content.content;
     this.fileHash = content.edit.hash;
     this.fileDirty = false;
     this.fileSaveNotice = null;
@@ -472,26 +469,27 @@ class ChatDetailPanel extends OpenClawLightDomElement {
   };
 
   private readonly discardFileEdits = () => {
-    if (!this.fileEditing || this.fileSaving) {
+    const content = this.visibleContent;
+    if (content?.kind !== "file" || !this.fileEditing || this.fileSaving) {
       return;
     }
-    this.fileEditor?.setContent(this.fileSavedContent);
+    this.fileEditor?.setContent(content.content);
     this.fileDraftContent = null;
-    this.htmlPreview.discard(this.fileSavedContent);
-    const content = this.visibleContent;
-    if (content?.kind === "file") {
-      setFileDraft(content, null);
-      this.fileHash = content.edit?.hash ?? "";
-    }
+    this.htmlPreview.discard(content.content);
+    setFileDraft(content, null);
+    this.fileHash = content.edit?.hash ?? "";
     this.fileDirty = false;
     this.fileSaveNotice = null;
     this.fileEditing = false;
     this.fileEditor?.setEditable(false);
   };
 
-  private updateSavedFile(content: FileSidebarContent, nextContent: string, hash: string) {
-    const draftContent = this.currentFileText();
-    this.fileSavedContent = nextContent;
+  private updateSavedFile(
+    content: FileSidebarContent,
+    nextContent: string,
+    hash: string,
+    draftContent: string,
+  ) {
     this.fileHash = hash;
     this.fileDirty = draftContent !== nextContent;
     this.fileDraftContent = !this.fileEditor && this.fileDirty ? draftContent : null;
@@ -520,7 +518,7 @@ class ChatDetailPanel extends OpenClawLightDomElement {
       return;
     }
     if (outcome.ok) {
-      this.updateSavedFile(this.visibleContent, nextContent, outcome.hash);
+      this.updateSavedFile(this.visibleContent, nextContent, outcome.hash, this.currentFileText());
     } else if (outcome.code === "conflict") {
       this.fileSaveNotice = { kind: "conflict" };
     } else {
@@ -581,15 +579,14 @@ class ChatDetailPanel extends OpenClawLightDomElement {
           return;
         }
         this.fileEditor?.setContent(latest.content);
-        this.fileDraftContent = this.fileEditor ? null : latest.content;
         this.htmlPreview.discard(latest.content);
-        this.updateSavedFile(this.visibleContent, latest.content, latest.hash);
+        // Reload adopts disk bytes; read-only editor normalization is not a new edit.
+        this.updateSavedFile(this.visibleContent, latest.content, latest.hash, latest.content);
         // A reload can bring back content that no longer qualifies for edit
         // mode (e.g. the agent rewrote the file with mixed line endings);
         // drop the edit capability instead of letting a save corrupt it.
         if (!latest.editable && this.visibleContent?.kind === "file") {
           this.fileEditing = false;
-          this.fileDirty = false;
           const { edit: _removed, ...readOnly } = this.visibleContent;
           this.visibleContent = readOnly;
         }

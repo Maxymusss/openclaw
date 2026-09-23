@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { canReloadControlUiDocument } from "../../../app/document-reload-guard.ts";
 import "../../../styles.css";
 import "../../../styles/chat.ts";
 import "../../../styles/chat/side-panel.css";
@@ -325,6 +326,7 @@ describe.runIf(browserMode)("chat file editor", () => {
     expect(button(panel, "Save").disabled).toBe(false);
     expect(editor.textContent).toContain("newer");
     await userEvent.click(button(panel, "Discard"));
+    expect(editor.textContent).toBe("submitted");
   });
 
   it("restores an unsaved draft after the detail panel is closed", async () => {
@@ -431,35 +433,43 @@ describe.runIf(browserMode)("chat file editor", () => {
     expect(button(panel, "Save").disabled).toBe(true);
   });
 
-  it("drops edit mode when a conflict reload returns non-editable content", async () => {
-    const save = vi.fn().mockResolvedValue({ ok: false, code: "conflict" });
-    const fetchLatest = vi.fn().mockResolvedValue({
-      content: "mixed\r\nendings\nnow",
-      hash: "hash-2",
-      editable: false,
-    });
-    const panel = await mountFile({
-      kind: "file",
-      path: "notes.txt",
-      name: "notes.txt",
-      content: "before",
-      edit: { hash: "hash-1", save, fetchLatest },
-    });
+  it.each([
+    { name: "CRLF first", content: "mixed\r\nendings\nnow" },
+    { name: "LF first", content: "mixed\nendings\r\nnow" },
+  ])(
+    "settles drafts when a conflict reload returns $name non-editable content",
+    async ({ content }) => {
+      const save = vi.fn().mockResolvedValue({ ok: false, code: "conflict" });
+      const fetchLatest = vi.fn().mockResolvedValue({
+        content,
+        hash: "hash-2",
+        editable: false,
+      });
+      const panel = await mountFile({
+        kind: "file",
+        path: "notes.txt",
+        name: "notes.txt",
+        content: "before",
+        edit: { hash: "hash-1", save, fetchLatest },
+      });
 
-    await userEvent.click(button(panel, "Edit file"));
-    await userEvent.fill(panel.querySelector<HTMLElement>(".cm-content")!, "local");
-    await userEvent.click(button(panel, "Save"));
-    await expect.poll(() => panel.querySelector('[role="alert"]')).not.toBeNull();
-    await userEvent.click(button(panel, "Reload"));
+      await userEvent.click(button(panel, "Edit file"));
+      await userEvent.fill(panel.querySelector<HTMLElement>(".cm-content")!, "local");
+      await userEvent.click(button(panel, "Save"));
+      await expect.poll(() => panel.querySelector('[role="alert"]')).not.toBeNull();
+      await userEvent.click(button(panel, "Reload"));
 
-    await expect.poll(() => panel.querySelector(".cm-content")?.textContent).toContain("mixed");
-    expect(panel.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
-    expect(
-      Array.from(panel.querySelectorAll("button")).some(
-        (candidate) => candidate.getAttribute("aria-label") === "Edit file",
-      ),
-    ).toBe(false);
-  });
+      await expect.poll(() => panel.querySelector(".cm-content")?.textContent).toContain("mixed");
+      expect(panel.querySelector(".cm-content")?.getAttribute("contenteditable")).toBe("false");
+      expect(
+        Array.from(panel.querySelectorAll("button")).some(
+          (candidate) => candidate.getAttribute("aria-label") === "Edit file",
+        ),
+      ).toBe(false);
+      expect.soft(readFileDraft(panel.content)).toBeUndefined();
+      expect.soft(canReloadControlUiDocument()).toBe(true);
+    },
+  );
 
   it("makes the editor read-only while reloading a conflict", async () => {
     let finishReload:
