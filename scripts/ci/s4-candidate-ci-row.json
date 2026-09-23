@@ -2,8 +2,8 @@
   {
     "proof_kind": "candidate-ci-row",
     "provisional": false,
-    "checkout_sha": "edfaaff9d60ea9de90e6fd3f48337b73465a2c30",
-    "workflow_sha": "edfaaff9d60ea9de90e6fd3f48337b73465a2c30",
+    "checkout_sha": "3b6bdb2a0e978816838db64f0b5e56a3a4010df2",
+    "workflow_sha": "3b6bdb2a0e978816838db64f0b5e56a3a4010df2",
     "check_name": "checks-node-compact-small-42",
     "test_runtime_policy": "bun-compatible",
     "requires_bun": false,
