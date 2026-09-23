@@ -404,10 +404,6 @@ export function runSqliteTransactionSync<T>(
     const result = operation();
     assertSyncTransactionResult(result);
     assertTransactionUsable(db);
-    logSlowTransactionHold({
-      elapsedMs: Date.now() - transactionStartedAt,
-      options,
-    });
     if (options?.withCommit) {
       assertSyncTransactionResult(
         options.withCommit(() => commitImmediateTransaction(db, options)),
@@ -420,5 +416,15 @@ export function runSqliteTransactionSync<T>(
     abortImmediateTransaction(db, error);
     assertTransactionUsable(db);
     throw error;
+  } finally {
+    // Include COMMIT and failed holders: both keep other writers waiting too.
+    try {
+      logSlowTransactionHold({
+        elapsedMs: Date.now() - transactionStartedAt,
+        options,
+      });
+    } catch {
+      // Diagnostics cannot change an already-settled transaction's outcome.
+    }
   }
 }

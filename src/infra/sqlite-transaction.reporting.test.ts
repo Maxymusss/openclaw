@@ -20,7 +20,7 @@ it.each(["default", "custom"])(
     const logger = reporter === "custom" ? customLogger : undefined;
     const selected = logger ?? defaultLogger;
     let now = 0;
-    let stepMs = 999;
+    let stepMs = 499;
     vi.spyOn(Date, "now").mockImplementation(() => now);
     const exec = db.exec.bind(db);
     vi.spyOn(db, "exec").mockImplementation((sql) => {
@@ -52,15 +52,71 @@ it.each(["default", "custom"])(
         step: "begin",
         beginAdmission: { nativeAttempts: 1, nativeMs: 1_000, serviceCalls: 0, serviceMs: 0 },
       });
-      expect(selected.warn).toHaveBeenNthCalledWith(2, "slow SQLite transaction hold", {
-        ...common,
-        thresholdMs: 1_000,
-      });
-      expect(selected.warn).toHaveBeenNthCalledWith(3, "slow SQLite transaction lock wait", {
+      expect(selected.warn).toHaveBeenNthCalledWith(2, "slow SQLite transaction lock wait", {
         ...common,
         step: "commit",
       });
+      expect(selected.warn).toHaveBeenNthCalledWith(3, "slow SQLite transaction hold", {
+        ...common,
+        elapsedMs: 2_000,
+        thresholdMs: 1_000,
+      });
       expect((logger ? defaultLogger : customLogger).warn).not.toHaveBeenCalled();
+    } finally {
+      db.close();
+    }
+  },
+);
+
+it.each([false, true])(
+  "preserves the settled transaction when its hold reporter throws (rollback: %s)",
+  (rollback) => {
+    const db = new DatabaseSync(":memory:");
+    const failure = new Error("original transaction failure");
+    let now = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => now);
+    const heldAtReport: boolean[] = [];
+    const warn = vi.fn(() => {
+      heldAtReport.push(db.isTransaction);
+      throw new Error("hold reporter failure");
+    });
+    try {
+      db.exec("CREATE TABLE entries (value TEXT NOT NULL)");
+      const operation = () =>
+        runSqliteImmediateTransactionSync(
+          db,
+          () => {
+            db.prepare("INSERT INTO entries VALUES ('committed')").run();
+            now += 1_000;
+            if (rollback) {
+              throw failure;
+            }
+            return "committed";
+          },
+          { logger: { warn } },
+        );
+      if (rollback) {
+        let caught: unknown;
+        try {
+          operation();
+        } catch (error) {
+          caught = error;
+        }
+        expect(caught).toBe(failure);
+      } else {
+        expect(operation()).toBe("committed");
+      }
+      expect(db.isTransaction).toBe(false);
+      expect(db.prepare("SELECT value FROM entries").all()).toEqual(
+        rollback ? [] : [{ value: "committed" }],
+      );
+      expect(warn).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledWith(
+        "slow SQLite transaction hold",
+        expect.objectContaining({ elapsedMs: 1_000 }),
+      );
+      expect(heldAtReport).toEqual([false]);
+      expect(defaultLogger.warn).not.toHaveBeenCalled();
     } finally {
       db.close();
     }
