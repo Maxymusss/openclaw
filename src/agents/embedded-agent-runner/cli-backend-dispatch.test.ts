@@ -346,7 +346,6 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
         {
           provider: "anthropic",
           id: "claude-opus-4-8",
-          name: "Claude",
           input: ["text", "image"],
         },
       ],
