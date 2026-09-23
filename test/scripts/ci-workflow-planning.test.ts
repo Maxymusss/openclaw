@@ -76,6 +76,7 @@ function runCiGateFixture(jobResults: string) {
     env: {
       ...process.env,
       JOB_RESULTS: jobResults,
+      RUNNER_TEMP: tempDirs.make("openclaw-ci-gate-"),
     },
   });
 }
