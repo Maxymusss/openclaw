@@ -141,6 +141,32 @@ export function clearPendingClearedSubmittedDraft(state: ChatComposerState, key:
   }
 }
 
+export function syncComposerDraftAfterSend(
+  props: ChatComposerProps,
+  state: ChatComposerState,
+  draftKey: string,
+  target: HTMLTextAreaElement | null,
+): void {
+  state.emojiMenu.close();
+  state.mentionMenu.close();
+  const submittedDraft = target?.value ?? props.getDraft?.() ?? props.draft;
+  const hostDraft = props.getDraft?.() ?? props.draft;
+  const clearedSubmittedDraft =
+    hostDraft === "" && submittedDraft !== "" && target?.value === submittedDraft;
+  if (clearedSubmittedDraft) {
+    state.pendingClearedSubmittedDraft = {
+      key: draftKey,
+      value: submittedDraft,
+    };
+  } else {
+    clearPendingClearedSubmittedDraft(state, draftKey);
+  }
+  if (target && target.value !== hostDraft) {
+    target.value = hostDraft;
+    adjustTextareaHeight(target);
+  }
+}
+
 function isExplicitComposerInsertion(event: InputEvent): boolean {
   return event.inputType === "insertFromPaste" || event.inputType === "insertFromDrop";
 }

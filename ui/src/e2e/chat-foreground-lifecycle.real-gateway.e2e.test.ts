@@ -96,14 +96,28 @@ async function stopWithHeldCleanup(page: Page, observed: Observation, runId: str
 
 async function deniedSend(page: Page, observed: Observation, text: string, message: string) {
   const request = await sendForegroundMessage(page, observed, text);
-  expect(observed.response(request.id)).toMatchObject({
+  const response = observed.response(request.id);
+  expect(response).toMatchObject({
     ok: false,
     error: { code: "UNAVAILABLE", message: expect.stringContaining(message) },
   });
-  await expect
-    .poll(() => thread(page).getByText(message, { exact: false }).count())
-    .toBeGreaterThan(0);
-  await expect.poll(() => composer(page).inputValue()).toBe(text);
+  if (!response || response.ok || typeof response.error?.message !== "string") {
+    throw new Error("Missing definitive send refusal");
+  }
+  const runId = asNullableRecord(request.params)?.idempotencyKey;
+  if (typeof runId !== "string") {
+    throw new Error("Missing rejected submission identity");
+  }
+  // Pending user rows retain the original send identity through reconnect.
+  const rowKey = `group:user:msg:send:${runId}:0`;
+  const failed = thread(page).locator(`[data-chat-row-key="${rowKey}"]`);
+  const status = failed.locator('.chat-send-status[data-send-state="failed"]');
+  await expect.poll(() => failed.count()).toBe(1);
+  await expect.poll(() => failed.getByText(text, { exact: true }).count()).toBe(1);
+  await expect.poll(() => status.getByText("Not sent", { exact: true }).count()).toBe(1);
+  await expect.poll(() => status.getAttribute("title")).toBe(response.error.message);
+  await expect.poll(() => composer(page).inputValue()).toBe("");
+  return { failed, status, rowKey, diagnostic: response.error.message };
 }
 
 suite.define(() => {
@@ -393,9 +407,11 @@ suite.define(() => {
             await waitForReleasedThread(page, key);
             const requests = fixture.provider.requests.length;
             const draft = "Keep this draft while cleanup is unresolved";
-            await deniedSend(page, observed, draft, cleanupRefusal);
+            const rejected = await deniedSend(page, observed, draft, cleanupRefusal);
+            expect(await rejected.failed.locator(".chat-send-status__retry").count()).toBe(0);
             expect(fixture.provider.requests).toHaveLength(requests);
             expect((await history(page, key)).pending).toMatchObject({ items: [], total: 0 });
+            const sendsBeforePromotion = observed.requests("chat.send").length;
             const connection = observed.hello()?.server.connId;
             expect(
               await rpc(staff, "users.setRole", {
@@ -411,9 +427,20 @@ suite.define(() => {
             await waitForControlUiGatewayReady(page);
             expect(observed.hello()?.auth.executionPolicy).toBeUndefined();
             expect(observed.hello()?.auth.modelRestricted).toBeUndefined();
-            expect(await composer(page).inputValue()).toBe(draft);
+            expect(await composer(page).inputValue()).toBe("");
+            expect(await rejected.failed.getAttribute("data-chat-row-key")).toBe(rejected.rowKey);
+            expect(await rejected.failed.getByText(draft, { exact: true }).count()).toBe(1);
+            expect(await rejected.status.getByText("Not sent", { exact: true }).count()).toBe(1);
+            expect(await rejected.status.getAttribute("title")).toBe(rejected.diagnostic);
+            expect(observed.requests("chat.send")).toHaveLength(sendsBeforePromotion);
             expect(fixture.provider.requests).toHaveLength(requests);
-            await deniedSend(page, observed, draft, cleanupRefusal);
+            await deniedSend(
+              page,
+              observed,
+              "New explicit request after promotion",
+              cleanupRefusal,
+            );
+            expect(await rejected.failed.getAttribute("data-chat-row-key")).toBe(rejected.rowKey);
             expect((await history(page, key)).pending).toMatchObject({ items: [], total: 0 });
             expect(fixture.provider.requests).toHaveLength(requests);
             expect(turn.closed).toEqual({ code: 23, signal: null });

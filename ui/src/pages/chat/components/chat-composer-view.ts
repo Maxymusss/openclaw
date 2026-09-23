@@ -142,6 +142,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     slashMenuAnnouncementId,
     goalComposer,
   } = context;
+  const canEditDraft = props.canEditDraft ?? canCompose;
   const disabledBanner = props.disabledBanner
     ? html`
         <div
@@ -382,10 +383,10 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                 state.emojiMenu.dismiss(state.composerTextarea);
                 requestUpdate();
               }}
-              @click=${(event: MouseEvent) => focusComposerFromChrome(event, canCompose)}
+              @click=${(event: MouseEvent) => focusComposerFromChrome(event, canEditDraft)}
               @pointerdown=${(event: PointerEvent) => {
                 markPointerOpenedChatComposerDropdown(event);
-                focusComposerFromChrome(event, canCompose);
+                focusComposerFromChrome(event, canEditDraft);
               }}
               ${ref(state.composerInputRef ?? undefined)}
             >
@@ -496,7 +497,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                     ${ref(state.textareaRef ?? undefined)}
                     .value=${guard([dictationPreviewDraft], () => live(dictationPreviewDraft))}
                     dir=${draftDirection}
-                    ?disabled=${!canCompose}
+                    ?disabled=${!canEditDraft}
                     ?readonly=${dictation?.locksComposer === true || goalComposer.pending}
                     aria-autocomplete="list"
                     aria-controls=${ifDefined(

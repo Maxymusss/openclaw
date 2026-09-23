@@ -47,7 +47,6 @@ import {
   updateSlashMenu,
 } from "./chat-composer-slash-menu.ts";
 import {
-  clearPendingClearedSubmittedDraft,
   commitComposerDraft,
   composerDraftKey,
   consumeComposerInputIntent,
@@ -57,6 +56,7 @@ import {
   isCurrentSessionSubmittedProgress,
   markComposerInputIntent,
   suppressStaleSubmittedDraftReplay,
+  syncComposerDraftAfterSend,
 } from "./chat-composer-state.ts";
 import type { ChatComposerProps } from "./chat-composer-types.ts";
 import { renderChatComposerView } from "./chat-composer-view.ts";
@@ -263,27 +263,6 @@ export function renderChatComposer(props: ChatComposerProps) {
     (props.connected || !draft.trimStart().startsWith("/"));
   const renderedDraftCanSubmit = canSubmitDraft(visibleDraft);
 
-  const syncComposerDraftAfterSend = (target: HTMLTextAreaElement | null) => {
-    state.emojiMenu.close();
-    state.mentionMenu.close();
-    const submittedDraft = target?.value ?? props.getDraft?.() ?? props.draft;
-    const hostDraft = props.getDraft?.() ?? props.draft;
-    const clearedSubmittedDraft =
-      hostDraft === "" && submittedDraft !== "" && target?.value === submittedDraft;
-    if (clearedSubmittedDraft) {
-      state.pendingClearedSubmittedDraft = {
-        key: draftKey,
-        value: submittedDraft,
-      };
-    } else {
-      clearPendingClearedSubmittedDraft(state, draftKey);
-    }
-    if (target && target.value !== hostDraft) {
-      target.value = hostDraft;
-      adjustTextareaHeight(target);
-    }
-  };
-
   const handleKeyDown = createComposerKeyDownHandler({
     state,
     props,
@@ -294,7 +273,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     sendShortcut,
     canSubmitDraft,
     commitDraft: (draft) => commitComposerDraft(props, draft),
-    syncDraftAfterSend: syncComposerDraftAfterSend,
+    syncDraftAfterSend: (target) => syncComposerDraftAfterSend(props, state, draftKey, target),
     showAbortableUi,
     alternateFollowUpMode,
     goalComposer,
@@ -317,21 +296,23 @@ export function renderChatComposer(props: ChatComposerProps) {
         : undefined,
     );
     state.mentionInput = undefined;
-    goalComposer.activateDraft(target.value);
-    if (!goalComposer.active) {
-      updateSlashMenu(target.value, state, slashMenuHost, requestUpdate);
-      updateSkillMenu(target.value, target.selectionStart, state, skillMenuHost, requestUpdate);
-      const mentionIntent = typedAtSign ? "trigger" : "input";
-      state.mentionMenu.update(target, requestUpdate, mentionIntent);
+    if (canCompose) {
+      goalComposer.activateDraft(target.value);
+      if (!goalComposer.active) {
+        updateSlashMenu(target.value, state, slashMenuHost, requestUpdate);
+        updateSkillMenu(target.value, target.selectionStart, state, skillMenuHost, requestUpdate);
+        const mentionIntent = typedAtSign ? "trigger" : "input";
+        state.mentionMenu.update(target, requestUpdate, mentionIntent);
+      }
+      state.emojiMenu.update(
+        target,
+        requestUpdate,
+        !state.composerComposing &&
+          !state.skillMenuOpen &&
+          !state.slashMenuOpen &&
+          !state.mentionMenu.open,
+      );
     }
-    state.emojiMenu.update(
-      target,
-      requestUpdate,
-      !state.composerComposing &&
-        !state.skillMenuOpen &&
-        !state.slashMenuOpen &&
-        !state.mentionMenu.open,
-    );
     // The textarea owns ordinary edits; only redraw the pane when surrounding
     // controls change. Slash and skill menus invalidate their own presentation.
     if (
@@ -387,6 +368,9 @@ export function renderChatComposer(props: ChatComposerProps) {
     props.onTypingChange?.(Boolean(target.value.trim()), target.value);
   };
   const handleSelect = (event: Event) => {
+    if (!canCompose) {
+      return;
+    }
     const target = event.target as HTMLTextAreaElement;
     state.emojiMenu.update(
       target,
@@ -457,7 +441,7 @@ export function renderChatComposer(props: ChatComposerProps) {
       return;
     }
     void props.onSend(undefined, submissionAction);
-    syncComposerDraftAfterSend(state.composerTextarea);
+    syncComposerDraftAfterSend(props, state, draftKey, state.composerTextarea);
   };
   state.microphonePicker ??= new ComposerMicrophonePicker(requestUpdate);
   const devicePicker = state.microphonePicker;

@@ -326,18 +326,21 @@ export class ChatPane extends ChatPaneLayoutRender {
     const initialHistoryUnavailable = !catalogKey && isInitialChatHistoryUnavailable(state);
     const foregroundOnly = isForegroundChat(state);
     const foregroundDisabledReason = foregroundChatAdmissionError(state);
+    // Foreground admission holds submission, not the next text draft. All other
+    // composer restrictions still apply before granting textarea editability.
+    const canEditDraft =
+      !providerPaused &&
+      sessionDisabledBanner?.kind !== "composer-replacement" &&
+      (catalogKey
+        ? this.catalogSession?.canContinue === true
+        : !disabledReason &&
+          !selectedSessionArchived &&
+          !restartRecoveryTombstoned &&
+          !placementComposer.blocksSend &&
+          (!sendHoldReason || initialHistoryUnavailable));
     const composerAvailability = {
-      canSend:
-        !foregroundDisabledReason &&
-        !providerPaused &&
-        sessionDisabledBanner?.kind !== "composer-replacement" &&
-        (catalogKey
-          ? this.catalogSession?.canContinue === true
-          : !disabledReason &&
-            !selectedSessionArchived &&
-            !restartRecoveryTombstoned &&
-            !placementComposer.blocksSend &&
-            (!sendHoldReason || initialHistoryUnavailable)),
+      canSend: canEditDraft && !foregroundDisabledReason,
+      canEditDraft,
       ...initialHistorySubmitState(state, initialHistoryUnavailable),
       modelRequiredReason,
       disabledReason:

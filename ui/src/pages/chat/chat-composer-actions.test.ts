@@ -37,6 +37,76 @@ function pressComposerEnter(
 }
 
 describe("renderChatComposer controls", () => {
+  it.each([undefined, true])(
+    "limits draft editability to the explicit override: %s",
+    (canEditDraft) => {
+      const { container } = renderComposer({ canSend: false, canEditDraft, draft: "Held draft" });
+      expect(container.querySelector<HTMLTextAreaElement>("textarea")?.disabled).toBe(
+        !canEditDraft,
+      );
+      expect(primaryButton(container).disabled).toBe(true);
+    },
+  );
+
+  describe.each([false, true])("held draft shortcuts (goal mode: %s)", (goalMode) => {
+    it.each([
+      ["enter", {}, true],
+      ["enter", { metaKey: true }, true],
+      ["enter", { shiftKey: true }, false],
+      ["modifier-enter", {}, false],
+      ["modifier-enter", { ctrlKey: true }, true],
+      ["modifier-enter", { ctrlKey: true, shiftKey: true }, false],
+    ] as const)("preserves text for %s and %j", (sendShortcut, modifiers, prevented) => {
+      const onSend = vi.fn();
+      const onGoalSubmit = vi.fn();
+      const { container, props } = renderComposer({
+        canSend: false,
+        canEditDraft: true,
+        draft: "Keep this exact draft",
+        sendShortcut,
+        goalDraftMode: goalMode ? { action: "start" } : undefined,
+        onSend,
+        onGoalSubmit,
+      });
+      expect(Boolean(getChatComposerState(props.paneId).goalComposer)).toBe(goalMode);
+      const event = pressComposerEnter(container, modifiers);
+      expect(event.defaultPrevented).toBe(prevented);
+      expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(props.draft);
+      expect(onSend).not.toHaveBeenCalled();
+      expect(onGoalSubmit).not.toHaveBeenCalled();
+      expect(props.onDraftChange).not.toHaveBeenCalled();
+    });
+  });
+
+  it("keeps Escape available after open command menus become unavailable", () => {
+    const onAbort = vi.fn();
+    const onSend = vi.fn();
+    const { container, props } = renderComposer({
+      draft: "Held draft",
+      canAbort: true,
+      onAbort,
+      onSend,
+    });
+    const state = getChatComposerState(props.paneId);
+    state.slashMenuOpen = true;
+    state.skillMenuOpen = true;
+    state.skillCommandRefreshPending = true;
+    props.canSend = false;
+    props.canEditDraft = true;
+    render(renderChatComposer(props), container);
+    expect(state.slashMenuOpen).toBe(true);
+    expect(state.skillMenuOpen).toBe(true);
+    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    expect(pressComposerEnter(container).defaultPrevented).toBe(true);
+    expect(onSend).not.toHaveBeenCalled();
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    container.querySelector("textarea")?.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(true);
+    expect(onAbort).toHaveBeenCalledOnce();
+    expect(container.querySelector<HTMLTextAreaElement>("textarea")?.value).toBe(props.draft);
+    expect(state.skillCommandRefreshPending).toBe(true);
+  });
+
   it.each([true, false])(
     "keeps command submission gated while history is pending: %s",
     (pending) => {
@@ -205,6 +275,31 @@ describe("renderChatComposer controls", () => {
       stop: false,
     },
     {
+      name: "held foreground draft",
+      overrides: {
+        canAbort: true,
+        canSend: false,
+        canEditDraft: true,
+        draft: "Keep editing",
+        onAbort: vi.fn(),
+      },
+      label: t("chat.runControls.stopGenerating"),
+      disabled: false,
+      stop: true,
+    },
+    {
+      name: "attachment preparation hold",
+      overrides: {
+        canAbort: true,
+        draft: "Wait for attachment",
+        pendingAttachmentReads: 1,
+        onAbort: vi.fn(),
+      },
+      label: t("chat.runControls.stopGenerating"),
+      disabled: false,
+      stop: true,
+    },
+    {
       name: "steered follow-up",
       overrides: {
         canAbort: true,
@@ -232,6 +327,13 @@ describe("renderChatComposer controls", () => {
       expect(primary.getAttribute("aria-label")).toBe(label);
       expect(primary.disabled).toBe(disabled);
       expect(primary.classList.contains("chat-send-btn--stop")).toBe(stop);
+      if (overrides.canAbort) {
+        const mobile = view.container.querySelector<HTMLButtonElement>(
+          ".chat-mobile-primary-action button",
+        );
+        expect(mobile?.disabled).toBe(disabled);
+        expect(mobile?.classList.contains("chat-send-btn--stop")).toBe(stop);
+      }
       expect(view.container.querySelectorAll(".chat-send-btn--stop")).toHaveLength(stop ? 1 : 0);
       expect(button(view.container, t("chat.composer.startVoiceInput"))).not.toBe(primary);
     },

@@ -52,12 +52,22 @@ export function createComposerKeyDownHandler({
     if (state.composerComposing || event.isComposing || event.keyCode === 229) {
       return;
     }
-
-    if (state.emojiMenu.handleKeydown(event, props.paneId, requestUpdate)) {
+    const sendShortcutMatches =
+      event.key === "Enter" &&
+      !event.shiftKey &&
+      (sendShortcut === "enter" || event.metaKey || event.ctrlKey);
+    // A text-only draft cannot enter stale menu or goal submission paths, and
+    // its configured send shortcut must not become an accidental newline.
+    if (!props.canSend && sendShortcutMatches) {
+      event.preventDefault();
       return;
     }
 
-    if (state.mentionMenu.handleKeydown(event, mentionMenuHost, requestUpdate)) {
+    if (props.canSend && state.emojiMenu.handleKeydown(event, props.paneId, requestUpdate)) {
+      return;
+    }
+
+    if (props.canSend && state.mentionMenu.handleKeydown(event, mentionMenuHost, requestUpdate)) {
       return;
     }
 
@@ -65,12 +75,7 @@ export function createComposerKeyDownHandler({
       if (event.key === "Escape") {
         event.preventDefault();
         goalComposer.cancel();
-      } else if (
-        event.key === "Enter" &&
-        !event.shiftKey &&
-        (sendShortcut === "enter" || event.metaKey || event.ctrlKey) &&
-        canSubmitDraft(target.value)
-      ) {
+      } else if (sendShortcutMatches && canSubmitDraft(target.value)) {
         event.preventDefault();
         commitDraft(target.value);
         void goalComposer.submit(event);
@@ -78,18 +83,27 @@ export function createComposerKeyDownHandler({
       return;
     }
 
-    if (props.connected && handleSkillMenuKeydown(event, state, skillMenuHost, requestUpdate)) {
+    if (
+      props.canSend &&
+      props.connected &&
+      handleSkillMenuKeydown(event, state, skillMenuHost, requestUpdate)
+    ) {
       return;
     }
 
     if (
+      props.canSend &&
       props.connected &&
       handleInlineSlashArgKeydown(event, state, slashMenuHost, requestUpdate, sendShortcut)
     ) {
       return;
     }
 
-    if (props.connected && handleSlashMenuKeydown(event, state, slashMenuHost, requestUpdate)) {
+    if (
+      props.canSend &&
+      props.connected &&
+      handleSlashMenuKeydown(event, state, slashMenuHost, requestUpdate)
+    ) {
       return;
     }
 
@@ -124,9 +138,8 @@ export function createComposerKeyDownHandler({
 
     if (
       event.key === "Escape" &&
-      !state.skillMenuOpen &&
-      !state.slashMenuOpen &&
-      !state.mentionMenu.open &&
+      (!props.canSend ||
+        (!state.skillMenuOpen && !state.slashMenuOpen && !state.mentionMenu.open)) &&
       !props.replyTarget &&
       !state.dictation?.active &&
       showAbortableUi &&
@@ -137,8 +150,7 @@ export function createComposerKeyDownHandler({
       return;
     }
 
-    const sendShortcutMatches = sendShortcut === "enter" || event.metaKey || event.ctrlKey;
-    if (event.key === "Enter" && !event.shiftKey && sendShortcutMatches) {
+    if (sendShortcutMatches) {
       // Holding send is one action, even after the draft clears into the queue.
       if (event.repeat) {
         event.preventDefault();
