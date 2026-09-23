@@ -336,16 +336,17 @@ async function sendPreparedChatMessage(
     host.chatSendingScopeKey = storedChatOutboxScopeKey(scope);
     host.chatSending = true;
     // Keep the current run intact until an ACK or live event owns its replacement.
-    if (!host.chatRunId) {
+    if (!host.chatRunId && prepared.participation !== "humans") {
       resetToolStream(host);
       host.providerPolicyNotice = null;
     }
     setChatError(host, null);
-    reconcileChatRunLifecycle(host, {
-      clearRunStatus: true,
-      // A send has not replaced the active run; its progress and approvals still belong to it.
-      clearIndicators: !host.chatRunId,
-    });
+    if (prepared.participation !== "humans")
+      reconcileChatRunLifecycle(host, {
+        clearRunStatus: true,
+        // A send has not replaced the active run; its progress and approvals still belong to it.
+        clearIndicators: !host.chatRunId,
+      });
   }
 
   try {
@@ -364,6 +365,7 @@ async function sendPreparedChatMessage(
       : expectedLeafEntryId;
     const ack = await requestChatSend(host, {
       message,
+      participation: prepared.participation,
       workContext: prepared.workContext,
       mentions: submitted.mentions,
       attachments: attachments.length ? attachments : undefined,
@@ -473,7 +475,10 @@ async function sendPreparedChatMessage(
           );
         }
       }
-      if (ack.status === "ok") {
+      if (ack.status === "posted") {
+        // A committed discussion settles only its outbox row, never the active run.
+        void loadChatHistory(host, { deferBranches: true });
+      } else if (ack.status === "ok") {
         reconcileChatRunLifecycle(host, {
           outcome: "done",
           sessionStatus: "done",
@@ -616,6 +621,7 @@ export async function deliverChatQueueItem(
       const routeVisible = visibleSessionMatches(host, routingSessionKey, admittedItem.agentId);
       if (
         routeVisible &&
+        admittedItem.participation !== "humans" &&
         !admittedItem.queueMode &&
         !sendOptions.allowActiveRunSend &&
         (isChatBusy(host) || hasDirectSessionRun(host))

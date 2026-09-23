@@ -120,6 +120,8 @@ export type ToolApprovalReview = {
 
 export type ChatQueueItem = {
   id: string;
+  /** Immutable per-send audience; never infer it from mention text on replay. */
+  participation?: "agent" | "humans";
   /** UI question associated with this input; delivery and retry stay outbox-owned. */
   asyncQuestionItemId?: string;
   workContext?: ChatWorkContext;

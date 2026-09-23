@@ -267,7 +267,9 @@ export function finishChatDeliveryAdmission(
     holdProviderReviewQueuedInputs(host, route, current.agentId);
     return "pending";
   }
-  const sendsDuringActiveRun = Boolean(current.queueMode || options?.allowActiveRunSend);
+  const sendsDuringActiveRun = Boolean(
+    current.participation === "humans" || current.queueMode || options?.allowActiveRunSend,
+  );
   if (
     chatSendHoldReason(host, route) ||
     (options?.routingSessionKey && !routeVisible(current.agentId)) ||

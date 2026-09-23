@@ -145,7 +145,11 @@ async function reconcileStoredChatOutboxHead(
   // history to retire delivered messages, even while a run streams.
   const neverAttempted =
     (item.sendAttempts ?? 0) === 0 && item.sendRequestStartedAtMs === undefined;
-  if (neverAttempted && item.queueMode && item.sendState !== "unconfirmed") {
+  if (
+    neverAttempted &&
+    (item.participation === "humans" || item.queueMode) &&
+    item.sendState !== "unconfirmed"
+  ) {
     return "send";
   }
   if (neverAttempted) {
@@ -187,7 +191,8 @@ async function reconcileStoredChatOutboxHead(
   if (
     typeof history !== "string" &&
     isInterruptedChatInput(history, item) &&
-    (item.queueMode === "steer" ||
+    (item.participation === "humans" ||
+      item.queueMode === "steer" ||
       item.queueMode === "interrupt" ||
       !(visibleSessionMatches(host, outbox.sessionKey, outbox.agentId) && isChatBusy(host)))
   ) {
@@ -202,7 +207,11 @@ async function reconcileStoredChatOutboxHead(
   ) {
     return history === "continue" ? "continue" : "blocked";
   }
-  if (visibleSessionMatches(host, outbox.sessionKey, outbox.agentId) && isChatBusy(host)) {
+  if (
+    item.participation !== "humans" &&
+    visibleSessionMatches(host, outbox.sessionKey, outbox.agentId) &&
+    isChatBusy(host)
+  ) {
     return "blocked";
   }
   if ((item.sendAttempts ?? 0) > 0) {

@@ -1411,7 +1411,9 @@ function installControlUiMockGateway(
       !isRecord(params) ||
       typeof params.idempotencyKey !== "string" ||
       typeof params.message !== "string" ||
-      (!params.intent && params.message.trimStart().startsWith("/"))
+      (!params.intent &&
+        params.participation !== "humans" &&
+        params.message.trimStart().startsWith("/"))
     ) {
       return undefined;
     }
@@ -2195,15 +2197,14 @@ function installControlUiMockGateway(
           realtime: { ready: true, providers: [] },
         };
       case "chat.send": {
-        // The default fixture starts execution. Its original source is canonical
-        // before ACK; explicit responses and held requests model other outcomes.
+        // Commit before ACK; human discussion does not enter run tracking.
         const source = commitDefaultChatInput(params);
         return {
           runId:
             isRecord(params) && typeof params.idempotencyKey === "string"
               ? params.idempotencyKey
               : "control-ui-e2e-run",
-          status: "started",
+          status: isRecord(params) && params.participation === "humans" ? "posted" : "started",
           ...(source &&
           (!isRecord(params) ||
             !Array.isArray(params.attachments) ||

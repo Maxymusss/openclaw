@@ -4,6 +4,13 @@ import { en } from "./en.ts";
 const enChatMessageMetadata = {
   chat: {
     messages: {
+      discussion: {
+        post: "Post to people",
+        ask: "Ask agent",
+        hint: "Post without starting or interrupting the agent",
+        textOnly:
+          "Human discussion supports text in an existing conversation. Remove attachments or choose Ask agent.",
+      },
       attachedContext: {
         label: "Context attached",
         captured: "Captured when this message was sent.",

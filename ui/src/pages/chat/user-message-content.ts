@@ -73,6 +73,7 @@ function buildUserChatMessageContentBlocks(
 }
 
 type LocalUserMessageInput = {
+  participation?: "agent" | "humans";
   workContext?: ChatWorkContext;
   attachments?: readonly ChatAttachment[];
   mentions?: readonly HumanMention[];
@@ -128,6 +129,7 @@ export function buildLocalUserMessage(
     content,
     timestamp: input.createdAt,
     __openclaw: {
+      ...(input.participation ? { participation: input.participation } : {}),
       ...(input.workContext
         ? { workContext: { snapshot: input.workContext, text: input.text } }
         : {}),

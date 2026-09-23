@@ -71,6 +71,8 @@ export function renderChatComposer(props: ChatComposerProps) {
   const state = getChatComposerState(props.paneId);
   state.slashCommandDispatchConnected = props.connected;
   const canCompose = props.canCompose ?? props.canSend;
+  const humanDiscussion =
+    props.discussionAvailable && props.replyTarget?.participation === "humans";
   const isBusy = props.sending || props.stream !== null;
   const canAbort = Boolean(props.canAbort && props.onAbort);
   const showAbortableUi = canAbort && !hasTerminalRunStatus(props.runStatus);
@@ -298,6 +300,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     showAbortableUi,
     alternateFollowUpMode,
     goalComposer,
+    humanDiscussion,
   });
 
   const syncComposerValue = (target: HTMLTextAreaElement, typedAtSign = false) => {
@@ -317,8 +320,8 @@ export function renderChatComposer(props: ChatComposerProps) {
         : undefined,
     );
     state.mentionInput = undefined;
-    goalComposer.activateDraft(target.value);
-    if (!goalComposer.active) {
+    if (!humanDiscussion) goalComposer.activateDraft(target.value);
+    if (!goalComposer.active && !humanDiscussion) {
       updateSlashMenu(target.value, state, slashMenuHost, requestUpdate);
       updateSkillMenu(target.value, target.selectionStart, state, skillMenuHost, requestUpdate);
       const mentionIntent = typedAtSign ? "trigger" : "input";
@@ -440,7 +443,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     props.onTypingChange?.(false);
   };
-  const handleSend = (submissionAction?: Event) => {
+  const handleSend = (submissionAction?: Event, participation?: "agent" | "humans") => {
     const draft = state.composerTextarea?.value ?? props.draft;
     if (!canSubmitDraft(draft)) {
       return;
@@ -449,14 +452,18 @@ export function renderChatComposer(props: ChatComposerProps) {
     state.composingDraft = null;
     commitComposerDraft(props, draft);
     props.onTypingChange?.(false);
-    if (goalComposer.activateDraft(draft, true)) {
+    if (participation !== "humans" && !humanDiscussion && goalComposer.activateDraft(draft, true)) {
       return;
     }
     if (goalComposer.active) {
       void goalComposer.submit(submissionAction);
       return;
     }
-    void props.onSend(undefined, submissionAction);
+    if (participation || humanDiscussion) {
+      void props.onSend(undefined, submissionAction, participation ?? "humans");
+    } else {
+      void props.onSend(undefined, submissionAction);
+    }
     syncComposerDraftAfterSend(state.composerTextarea);
   };
   state.microphonePicker ??= new ComposerMicrophonePicker(requestUpdate);
@@ -638,6 +645,11 @@ export function renderChatComposer(props: ChatComposerProps) {
     onSelectVoice: props.onSelectRealtimeVoice,
     onAbort: props.onAbort,
     onSend: handleSend,
+    humanDiscussion,
+    onAlternateAudience:
+      props.discussionAvailable && !goalComposer.active
+        ? (event) => handleSend(event, humanDiscussion ? "agent" : "humans")
+        : undefined,
     onToggleVoice: props.onToggleRealtimeTalk ? handleVoicePrimaryAction : undefined,
     onToggleCamera: props.onToggleRealtimeCamera,
     microphonePicker,

@@ -88,6 +88,7 @@ import { scheduleChatScroll } from "./scroll.ts";
 registerChatGoalsEnglish();
 
 export type ChatSendSubmitOptions = {
+  participation?: "agent" | "humans";
   asyncQuestionItemId?: string;
   intent?: ChatSendIntent;
   attachmentsOverride?: readonly ChatAttachment[];
@@ -133,6 +134,14 @@ export async function handleSendChat(
     return undefined;
   }
   const previousDraft = host.chatMessage;
+  const participation =
+    opts?.participation ??
+    (opts?.resumeQueuedMessageEditId
+      ? activeQueuedMessageEdit(host)?.source.participation
+      : messageOverride == null && !opts?.intent
+        ? host.chatReplyTarget?.participation
+        : undefined);
+  const humanDiscussion = participation === "humans";
   const previousMentions = host.chatMentions?.map((mention) => ({ ...mention }));
   const intent = opts?.intent;
   const rawMessage = messageOverride ?? host.chatMessage;
@@ -141,6 +150,7 @@ export async function handleSendChat(
   const userMessage = intent ? rawMessage : submitted.text;
   const submittedAtMs = controlUiNowMs();
   const submittedSessionKey = host.sessionKey;
+  const submittedSessionId = host.currentSessionId;
   const submittedClient = host.client;
   const submittedEpoch = host.connectionEpoch;
   const submittedOwnerIsCurrent = captureOutboxPayloadOwner(host);
@@ -149,6 +159,10 @@ export async function handleSendChat(
     messageOverride == null ? host.chatAttachments : (opts?.attachmentsOverride ?? []),
   );
   const hasAttachments = attachmentsToSend.length > 0;
+  if (humanDiscussion && (!host.currentSessionId || hasAttachments || intent)) {
+    setChatError(host, t("chat.messages.discussion.textOnly"));
+    return undefined;
+  }
   if (intent) {
     if (draftMentions?.length) {
       setChatError(host, t("chat.mentions.unsupported"));
@@ -180,8 +194,9 @@ export async function handleSendChat(
   // Classify the operator's raw row draft before browser annotation context is
   // prepended. Otherwise annotation text can hide /stop, /compact, or a stop
   // alias from the inline-edit command fence.
-  const rawParsedCommand = intent ? null : parseSlashCommand(userMessage);
+  const rawParsedCommand = intent || humanDiscussion ? null : parseSlashCommand(userMessage);
   if (
+    !humanDiscussion &&
     submitted.mentions?.length &&
     (rawParsedCommand || /^\/(?:btw|side)(?::|\s|$)/i.test(userMessage))
   ) {
@@ -213,7 +228,7 @@ export async function handleSendChat(
     return undefined;
   }
 
-  if (!intent) {
+  if (!intent && !humanDiscussion) {
     // Natural stop aliases require a run; explicit /stop is always available.
     if (
       isChatStopCommand(userMessage) &&
@@ -483,6 +498,7 @@ export async function handleSendChat(
   // ordinary model input; commands and Goals never acquire ambient context.
   const acceptsWorkContext =
     !intent &&
+    !humanDiscussion &&
     !userMessage.startsWith("/") &&
     !userMessage.startsWith("!") &&
     !isAbortTrigger(quotedMessage);
@@ -565,8 +581,12 @@ export async function handleSendChat(
         host.chatFollowUpMode ??
         normalizeChatFollowUpModeOverride(host.settings?.chatFollowUpMode));
     const activeRunQueueMode =
-      !intent && applyRunPolicy && followUpMode !== "queue" ? followUpMode : undefined;
-    const allowActiveRunSend = Boolean(intent || (applyRunPolicy && followUpMode !== "queue"));
+      !intent && !humanDiscussion && applyRunPolicy && followUpMode !== "queue"
+        ? followUpMode
+        : undefined;
+    const allowActiveRunSend = Boolean(
+      humanDiscussion || intent || (applyRunPolicy && followUpMode !== "queue"),
+    );
     const submission = createPendingSendMessage(
       host,
       effectiveMessage,
@@ -586,6 +606,12 @@ export async function handleSendChat(
       return;
     }
     let queued = submission.item;
+    if (participation) {
+      queued.participation = participation;
+    }
+    if (humanDiscussion) {
+      queued.sessionId = submittedSessionId ?? undefined;
+    }
     queued.asyncQuestionItemId =
       resumedEdit?.source.asyncQuestionItemId ?? opts?.asyncQuestionItemId;
     if (queued.attachments?.length) {

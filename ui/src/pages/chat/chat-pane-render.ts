@@ -454,6 +454,9 @@ export class ChatPane extends ChatPaneLayoutRender {
       mentions: state.chatMentions,
       getMentions: () => state.chatMentions ?? [],
       mentionsUnsupported,
+      discussionAvailable: Boolean(
+        selfProfileId && state.currentSessionId && !catalogKey && !suggestionViewer,
+      ),
       mentionDirectory:
         state.connected && state.client && !mentionsUnsupported && !sessionParticipationBlocked
           ? {
@@ -584,7 +587,7 @@ export class ChatPane extends ChatPaneLayoutRender {
       onScrollToBottom: state.scrollToBottom,
       ...this.chatState.attachmentInputProps(state),
       onRemoveAttachment: this.removeBrowserAnnotation,
-      onSend: (followUpModeOverride, submissionAction) =>
+      onSend: (followUpModeOverride, submissionAction, participation) =>
         !composerAvailability.canSend ||
         (modelRequiredReason &&
           (state.chatAttachments.length > 0 || !isModelIndependentChatCommand(state.chatMessage)))
@@ -595,7 +598,10 @@ export class ChatPane extends ChatPaneLayoutRender {
               ? this.addCurrentSessionSuggestion()
               : state.handleSendChat(
                   undefined,
-                  followUpModeOverride ? { followUpMode: followUpModeOverride } : undefined,
+                  {
+                    ...(followUpModeOverride ? { followUpMode: followUpModeOverride } : {}),
+                    ...(participation ? { participation } : {}),
+                  },
                   submissionAction,
                 ),
       onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,

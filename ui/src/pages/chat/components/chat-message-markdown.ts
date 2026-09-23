@@ -25,6 +25,7 @@ registerChatMessageMetadataEnglish();
 
 export type MessageReplyTarget = {
   messageId: string;
+  participation?: "humans";
   text: string;
   senderLabel?: string | null;
   sourceMessageId?: string | null;
@@ -119,6 +120,9 @@ export function resolveMessageActionDetails(
       ? {
           replyTarget: {
             messageId: renderMessageId,
+            ...(role === "user" && normalizedMessage.sender?.identity?.type === "profile"
+              ? { participation: "humans" as const }
+              : {}),
             text: replyText,
             senderLabel,
             ...(sourceMessageId ? { sourceMessageId } : {}),

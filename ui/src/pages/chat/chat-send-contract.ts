@@ -87,6 +87,7 @@ export type ChatHost = ChatInputHistoryState &
     /** Selected message to reply to (right-click / keyboard shortcut). */
     chatReplyTarget?: {
       messageId: string;
+      participation?: "humans";
       text: string;
       senderLabel?: string | null;
       sourceMessageId?: string | null;

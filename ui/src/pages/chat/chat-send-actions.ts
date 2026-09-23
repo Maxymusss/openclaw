@@ -72,7 +72,10 @@ const resetRetryState = (
     sendError: entry.sendState === "failed" ? entry.sendError : undefined,
     sendRequestStartedAtMs: uncertain ? entry.sendRequestStartedAtMs : undefined,
     sendRunId:
-      entry.sendState === "failed" && entry.queueMode !== "steer" && !entry.intent
+      entry.sendState === "failed" &&
+      entry.participation !== "humans" &&
+      entry.queueMode !== "steer" &&
+      !entry.intent
         ? generateUUID()
         : entry.sendRunId,
     sendState: uncertain ? "unconfirmed" : sendState,
@@ -83,7 +86,10 @@ export async function steerQueuedChatMessage(host: ChatHost, id: string): Promis
   if (chatProviderReviewRow(host)?.providerReview || isInitialChatHistoryUnavailable(host)) {
     return;
   }
-  if (readQueuedMessageById(host, id)?.intent) {
+  if (
+    readQueuedMessageById(host, id)?.intent ||
+    readQueuedMessageById(host, id)?.participation === "humans"
+  ) {
     setChatError(host, t("chat.goals.admissionImmutable"));
     return;
   }

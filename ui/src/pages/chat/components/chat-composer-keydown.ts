@@ -25,6 +25,7 @@ type ComposerKeyDownDeps = {
   showAbortableUi: boolean;
   alternateFollowUpMode?: ChatFollowUpMode;
   goalComposer: GoalComposerController;
+  humanDiscussion?: boolean;
 };
 
 export function createComposerKeyDownHandler({
@@ -41,6 +42,7 @@ export function createComposerKeyDownHandler({
   showAbortableUi,
   alternateFollowUpMode,
   goalComposer,
+  humanDiscussion,
 }: ComposerKeyDownDeps): (event: KeyboardEvent) => void {
   return (event) => {
     // The handler only ever binds to the composer textarea; narrowing here
@@ -78,18 +80,27 @@ export function createComposerKeyDownHandler({
       return;
     }
 
-    if (props.connected && handleSkillMenuKeydown(event, state, skillMenuHost, requestUpdate)) {
+    if (
+      !humanDiscussion &&
+      props.connected &&
+      handleSkillMenuKeydown(event, state, skillMenuHost, requestUpdate)
+    ) {
       return;
     }
 
     if (
+      !humanDiscussion &&
       props.connected &&
       handleInlineSlashArgKeydown(event, state, slashMenuHost, requestUpdate, sendShortcut)
     ) {
       return;
     }
 
-    if (props.connected && handleSlashMenuKeydown(event, state, slashMenuHost, requestUpdate)) {
+    if (
+      !humanDiscussion &&
+      props.connected &&
+      handleSlashMenuKeydown(event, state, slashMenuHost, requestUpdate)
+    ) {
       return;
     }
 
@@ -173,12 +184,16 @@ export function createComposerKeyDownHandler({
       }
       event.preventDefault();
       commitDraft(target.value);
-      if (goalComposer.activateDraft(target.value, true)) {
+      if (!humanDiscussion && goalComposer.activateDraft(target.value, true)) {
         return;
       }
       const followUpModeOverride =
         (event.metaKey || event.ctrlKey) && !event.altKey ? alternateFollowUpMode : undefined;
-      void props.onSend(followUpModeOverride, event);
+      if (humanDiscussion) {
+        void props.onSend(undefined, event, "humans");
+      } else {
+        void props.onSend(followUpModeOverride, event);
+      }
       syncDraftAfterSend(target);
     }
   };

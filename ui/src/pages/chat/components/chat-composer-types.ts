@@ -132,6 +132,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   getPendingAttachmentReads?: () => number;
   replyTarget?: {
     messageId: string;
+    participation?: "humans";
     text: string;
     senderLabel?: string | null;
     sourceMessageId?: string | null;
@@ -155,6 +156,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   onOpenTalkSettings?: () => void;
   onOpenDictationSettings?: () => void;
   suggestionComposer?: boolean;
+  discussionAvailable?: boolean;
   typingActors?: readonly { id: string; label: string; preview?: string }[];
   onTypingChange?: (typing: boolean, preview?: string) => void;
   composerControls?: TemplateResult | typeof nothing;
@@ -168,6 +170,7 @@ export type ChatComposerProps = ChatAttachmentControlsProps & {
   onSend: (
     followUpModeOverride?: ChatFollowUpMode,
     submissionAction?: Event,
+    participation?: "agent" | "humans",
   ) => void | Promise<boolean | void>;
   onToggleRealtimeTalk?: () => void;
   onSelectRealtimeVoice?: (voice: string) => void;

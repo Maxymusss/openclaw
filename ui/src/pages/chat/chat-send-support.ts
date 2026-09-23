@@ -68,7 +68,10 @@ export function isChatResetCommand(text: string) {
 
 /** Commands and Goals have their own terminal receipts; chat needs input consumption. */
 export function requiresChatInputConsumption(item: ChatQueueItem): boolean {
-  return !item.intent && !item.localCommandName && !item.text.trimStart().startsWith("/");
+  return (
+    item.participation === "humans" ||
+    (!item.intent && !item.localCommandName && !item.text.trimStart().startsWith("/"))
+  );
 }
 
 export function chatSendHoldReason(

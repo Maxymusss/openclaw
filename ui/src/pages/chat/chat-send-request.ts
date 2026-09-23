@@ -21,6 +21,7 @@ export async function requestChatSend(
   state: ChatState,
   params: {
     message: string;
+    participation?: "agent" | "humans";
     workContext?: ChatWorkContext;
     mentions?: readonly HumanMention[];
     attachments?: ChatAttachment[];
@@ -40,7 +41,10 @@ export async function requestChatSend(
   }
   const sessionId = params.sessionId ?? (params.intent ? undefined : routing.sessionId);
   const controlUiReconnectResume = Boolean(
-    !params.intent && sessionId && state.reconnectResumeSessionId === sessionId,
+    params.participation !== "humans" &&
+    !params.intent &&
+    sessionId &&
+    state.reconnectResumeSessionId === sessionId,
   );
   const payload = await state.client!.request("chat.send", {
     sessionKey: routing.sessionKey,
@@ -50,10 +54,11 @@ export async function requestChatSend(
     ...(sessionId ? { sessionId } : {}),
     ...(controlUiReconnectResume ? { __controlUiReconnectResume: true } : {}),
     message: params.message,
+    ...(params.participation ? { participation: params.participation } : {}),
     ...(params.workContext ? { workContext: params.workContext } : {}),
     ...(params.mentions?.length ? { mentions: params.mentions } : {}),
     ...(params.intent ? { intent: params.intent } : {}),
-    deliver: false,
+    ...(params.participation === "humans" ? {} : { deliver: false }),
     ...(params.replyToId ? { replyToId: params.replyToId } : {}),
     ...(params.queueMode ? { queueMode: params.queueMode } : {}),
     ...(params.expectedLeafEntryId !== undefined

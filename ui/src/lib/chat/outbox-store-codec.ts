@@ -42,6 +42,7 @@ export function sameQueuedDeliveryVersion(left: ChatQueueItem, right: ChatQueueI
     left.id === right.id &&
     left.asyncQuestionItemId === right.asyncQuestionItemId &&
     left.text === right.text &&
+    left.participation === right.participation &&
     left.workContextUnavailable === right.workContextUnavailable &&
     JSON.stringify(left.workContext) === JSON.stringify(right.workContext) &&
     JSON.stringify(left.mentions ?? []) === JSON.stringify(right.mentions ?? []) &&
@@ -117,6 +118,12 @@ export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
         .filter((item): item is ChatAttachment => item !== null)
     : [];
   const item: ChatQueueItem = { id, text, createdAt };
+  if (entry.participation === "agent" || entry.participation === "humans") {
+    item.participation = entry.participation;
+  } else if (entry.participation !== undefined) {
+    // Losing audience must not turn a discussion into an agent assignment.
+    return null;
+  }
   const asyncQuestionItemId = normalizeOptionalString(entry.asyncQuestionItemId);
   if (asyncQuestionItemId && asyncQuestionItemId.length <= 256) {
     item.asyncQuestionItemId = asyncQuestionItemId;

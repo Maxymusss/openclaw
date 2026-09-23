@@ -5,6 +5,7 @@ import type { ChatFollowUpMode } from "../../../app/settings.ts";
 import { icons } from "../../../components/icons.ts";
 import { syncDropdownItemRadio } from "../../../components/web-awesome.ts";
 import { t } from "../../../i18n/index.ts";
+import { registerChatMessageMetadataEnglish } from "../../../i18n/locales/en-chat-message-metadata.ts";
 import { canSubmitBeforeChatHistory } from "../../../lib/chat/commands.ts";
 import type { ControlUiFollowUpMode } from "../../../lib/chat/follow-up-mode.ts";
 import type { ComposerDictationController } from "../composer-dictation.ts";
@@ -23,6 +24,8 @@ import {
   renderMicrophoneActivity,
   voiceStatusLabel,
 } from "./chat-voice-activity.ts";
+
+registerChatMessageMetadataEnglish();
 
 export type ChatRunControlsProps = {
   canAbort: boolean;
@@ -51,6 +54,8 @@ export type ChatRunControlsProps = {
   onPrimaryActionPointerDown?: (event: PointerEvent) => void;
   onAbort?: () => void;
   onSend: (submissionAction?: Event) => void;
+  onAlternateAudience?: (submissionAction?: Event) => void;
+  humanDiscussion?: boolean;
   onToggleVoice?: () => void;
   onToggleCamera?: () => void;
   microphonePicker?: TemplateResult | typeof nothing;
@@ -507,6 +512,7 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
   const interruptsActiveRun = props.followUpMode === "interrupt";
   const activeRunActionLabel =
     props.submissionLabel ??
+    (props.humanDiscussion ? t("chat.messages.discussion.post") : undefined) ??
     (props.suggestionComposer
       ? t("chat.sessionSuggestions.suggest")
       : !props.canAbort || props.followUpMode === undefined
@@ -518,6 +524,7 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
             : t("chat.runControls.queue"));
   const activeRunActionDescription =
     props.submissionLabel ??
+    (props.humanDiscussion ? t("chat.messages.discussion.post") : undefined) ??
     (props.suggestionComposer
       ? t("chat.sessionSuggestions.suggestMessage")
       : !props.canAbort || props.followUpMode === undefined
@@ -639,6 +646,18 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
         : props.onToggleVoice
           ? mobileTalkAction
           : sendAction;
+  const audienceAction =
+    props.onAlternateAudience && hasComposedContent
+      ? html`<button
+          type="button"
+          class="btn btn--sm"
+          ?disabled=${!props.canSend || props.sending || props.hasAttachments || Boolean(sendDisabledReason)}
+          @click=${props.onAlternateAudience}
+          title=${props.humanDiscussion ? t("chat.messages.discussion.ask") : t("chat.messages.discussion.hint")}
+        >
+          ${props.humanDiscussion ? t("chat.messages.discussion.ask") : t("chat.messages.discussion.post")}
+        </button>`
+      : nothing;
   const primaryActions =
     mobilePrimaryAction === desktopPrimaryAction
       ? html`<span class="chat-mobile-primary-action chat-desktop-primary-action"
@@ -734,7 +753,7 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
               >${abortAction}</span
             >
           `
-        : html` ${voiceControl} ${mobileDictationControl} ${primaryActions} `
+        : html` ${voiceControl} ${mobileDictationControl} ${audienceAction} ${primaryActions} `
     }
   `;
 }

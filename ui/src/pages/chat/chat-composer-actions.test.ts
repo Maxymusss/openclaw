@@ -37,6 +37,41 @@ function pressComposerEnter(
 }
 
 describe("renderChatComposer controls", () => {
+  it("offers a no-agent post without changing the ordinary send", () => {
+    const onSend = vi.fn();
+    const { container } = renderComposer({
+      discussionAvailable: true,
+      draft: "Discuss this",
+      onSend,
+    });
+    const post = Array.from(container.querySelectorAll("button")).find(
+      (el) => el.textContent?.trim() === "Post to people",
+    );
+    expect(post).toBeDefined();
+    post?.click();
+    expect(onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event), "humans");
+    primaryButton(container).click();
+    expect(onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event));
+  });
+
+  it("posts a human reply with Enter and offers Ask agent for mixed requests", () => {
+    const onSend = vi.fn();
+    const { container } = renderComposer({
+      discussionAvailable: true,
+      draft: "Please check",
+      onSend,
+      replyTarget: { messageId: "human", text: "Question", participation: "humans" },
+    });
+    expect(primaryButton(container).getAttribute("aria-label")).toBe("Post to people");
+    pressComposerEnter(container);
+    expect(onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event), "humans");
+    const ask = Array.from(container.querySelectorAll("button")).find(
+      (el) => el.textContent?.trim() === "Ask agent",
+    );
+    ask?.click();
+    expect(onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event), "agent");
+  });
+
   it.each(["local draft", "/stop"])(
     "keeps an editable draft without send permission: %s",
     (draft) => {

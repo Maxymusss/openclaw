@@ -4,7 +4,7 @@
 import { asNonNegativeFiniteNumber as normalizeAckTimingValue } from "@openclaw/normalization-core/number-coercion";
 import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
 
-type ChatSendAckStatus = "started" | "in_flight" | "ok" | "timeout" | "error";
+type ChatSendAckStatus = "started" | "in_flight" | "ok" | "posted" | "timeout" | "error";
 
 type ChatSendAckServerTiming = {
   receivedToAckMs?: number;
@@ -37,7 +37,11 @@ function normalizeChatSendAckServerTiming(value: unknown): ChatSendAckServerTimi
 }
 
 export function normalizeChatSendAckStatus(status: unknown): ChatSendAckStatus {
-  return status === "in_flight" || status === "ok" || status === "timeout" || status === "error"
+  return status === "in_flight" ||
+    status === "ok" ||
+    status === "posted" ||
+    status === "timeout" ||
+    status === "error"
     ? status
     : "started";
 }
@@ -47,6 +51,17 @@ export function normalizeChatSendAck(payload: unknown, fallbackRunId: string): C
     return { runId: fallbackRunId, status: "started" };
   }
   const record = payload as Record<string, unknown>;
+  if (
+    record.status === "posted" &&
+    (typeof record.messageId !== "string" ||
+      !record.messageId.trim() ||
+      !Number.isSafeInteger(record.messageSeq) ||
+      Number(record.messageSeq) <= 0)
+  ) {
+    throw new Error(
+      "The Gateway did not confirm the posted message. Check history before retrying.",
+    );
+  }
   const runId =
     typeof record.runId === "string" && record.runId.trim() ? record.runId.trim() : fallbackRunId;
   const serverTiming = normalizeChatSendAckServerTiming(record.serverTiming);
