@@ -291,6 +291,9 @@ describe("requester settle dispatch deadline", () => {
       const child = settledChild();
       child.completionTarget = "parent";
       child.completionRequesterSessionId = "requester-session";
+      // Only an unyielded batch stays private; a yielded requester owes a visible reply.
+      child.delivery = { status: "pending" };
+      child.requesterSettleWake = { status: "pending", attemptCount: 0 };
       registryRead.listSubagentRunsForRequester.mockReturnValue([child]);
       deliver
         .mockResolvedValueOnce({

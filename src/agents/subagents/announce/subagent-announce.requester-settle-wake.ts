@@ -401,8 +401,10 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   );
   // Delivered children remain in yield cohorts. One private result makes the
   // aggregate private; public siblings keep their individual completion route.
+  // A requester that yielded still owes its own answer: child output stays
+  // internal as wake input, but the continuation must be able to deliver.
   const privateRows = completionRows.filter((entry) => entry.completionTarget === "parent");
-  const parentOnly = privateRows.length > 0;
+  const parentOnly = privateRows.length > 0 && !requesterYieldedAfterDelivery;
   if (
     privateRows.some((entry) => entry.completionRequesterSessionId !== requesterEntry.sessionId)
   ) {
@@ -622,9 +624,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
                         completionRequesterSessionId: requesterEntry.sessionId,
                       }
                     : {}),
-                  ...(!parentOnly && requesterYieldedAfterDelivery
-                    ? { requireVisibleReply: true }
-                    : {}),
+                  ...(requesterYieldedAfterDelivery ? { requireVisibleReply: true } : {}),
                   directIdempotencyKey,
                   signal: params.signal,
                   resolveGatewayContext,

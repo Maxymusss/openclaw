@@ -30,13 +30,16 @@ const { maybeWakeRequesterAfterAllChildrenSettled } =
   await import("./subagent-announce.requester-settle-wake.js");
 
 describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
-  it.each([
-    { name: "delivered private pair", mixed: false, yielded: false, single: false },
-    { name: "delivered mixed pair", mixed: true, yielded: false, single: false },
-    { name: "yielded private child", mixed: false, yielded: true, single: true },
-    { name: "yielded mixed pair", mixed: true, yielded: true, single: false },
-  ])("keeps settled private results internal: $name", async ({ mixed, yielded, single }) => {
-    const children = (single ? ["run-b"] : ["run-a", "run-b"]).map((runId, index) =>
+  const settledPrivateChildren = ({
+    mixed,
+    yielded,
+    single,
+  }: {
+    mixed: boolean;
+    yielded: boolean;
+    single: boolean;
+  }) =>
+    (single ? ["run-b"] : ["run-a", "run-b"]).map((runId, index) =>
       makeSettledChild({
         runId,
         ...(!mixed || index === 0
@@ -55,7 +58,14 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
         },
       }),
     );
-    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(children);
+
+  it.each([
+    { name: "delivered private pair", mixed: false },
+    { name: "delivered mixed pair", mixed: true },
+  ])("keeps settled private results internal: $name", async ({ mixed }) => {
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(
+      settledPrivateChildren({ mixed, yielded: false, single: false }),
+    );
     expect(await maybeWakeRequesterAfterAllChildrenSettled(wakeParams())).toBe(true);
     expect(deliverSpy).toHaveBeenCalledOnce();
     expect(deliveredCallArg()).toMatchObject({
@@ -75,6 +85,28 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     expect(deliverSpy).toHaveBeenCalledOnce();
     expect(completeBatchSpy.mock.calls[0]?.[2]).not.toHaveProperty(
       "requesterVisibleFinalDelivered",
+    );
+  });
+
+  // The requester yielded on a user request and still owes its answer. A private
+  // continuation cannot deliver, so its final would be discarded silently.
+  it.each([
+    { name: "yielded private child", mixed: false, single: true },
+    { name: "yielded mixed pair", mixed: true, single: false },
+  ])("resumes a yielded requester with a deliverable reply: $name", async ({ mixed, single }) => {
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(
+      settledPrivateChildren({ mixed, yielded: true, single }),
+    );
+    expect(await maybeWakeRequesterAfterAllChildrenSettled(wakeParams())).toBe(true);
+    expect(deliverSpy).toHaveBeenCalledOnce();
+    expect(deliveredCallArg()).toMatchObject({
+      requireDirectDelivery: true,
+      requireVisibleReply: true,
+    });
+    expect(deliveredCallArg().completionTarget).toBeUndefined();
+    expect(String(deliveredCallArg().triggerMessage)).toContain("private marker");
+    expect(String(deliveredCallArg().triggerMessage)).toContain(
+      "still requires your visible final answer",
     );
   });
 
