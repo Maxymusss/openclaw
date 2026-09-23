@@ -10,31 +10,26 @@ export function assertSqliteFlipProofCore(report: SqliteFlipProofReport): void {
   const seededCheckpoint = report.checkpoints.find(
     (checkpoint) => checkpoint.label === "seeded-legacy-store",
   );
-  const refusalCheckpoint = report.checkpoints.find(
-    (checkpoint) => checkpoint.label === "after-startup-refusal",
+  const deferralCheckpoint = report.checkpoints.find(
+    (checkpoint) => checkpoint.label === "after-startup-deferral",
   );
-  expect(report.startupRefusal?.message).toContain('Run "openclaw doctor --fix"');
-  expect(
-    report.startupRefusal?.preservedSourceFiles.map((filePath) => filePath.replaceAll("\\", "/")),
-  ).toEqual(
-    expect.arrayContaining([
-      "agents/main/sessions/sessions.json",
-      "agents/main/sessions/archive-fixture/cold-archive.jsonl",
-      "sessions/sessions.json",
-    ]),
+  expect(report.startupDeferral?.message).toContain("[gateway] ready");
+  expect(report.startupDeferral?.message).toContain("[historical_transcript_deferred]");
+  expect(report.startupDeferral?.preservedSourceFiles).toHaveLength(1);
+  expect(deferralCheckpoint?.activeJsonl).toEqual([]);
+  expect(deferralCheckpoint?.legacyStateJsonl).toEqual([]);
+  expect(deferralCheckpoint?.sqlite.sessionEntries).toBeGreaterThan(
+    seededCheckpoint?.sqlite.sessionEntries ?? 0,
   );
-  expect(refusalCheckpoint?.activeJsonl).toEqual(seededCheckpoint?.activeJsonl);
-  expect(refusalCheckpoint?.legacyStateJsonl).toEqual(seededCheckpoint?.legacyStateJsonl);
-  expect(refusalCheckpoint?.sqlite.sessionEntries).toBe(seededCheckpoint?.sqlite.sessionEntries);
-  expect(refusalCheckpoint?.sqlite.transcriptEvents).toBe(
-    seededCheckpoint?.sqlite.transcriptEvents,
+  expect(deferralCheckpoint?.sqlite.transcriptEvents).toBeGreaterThan(
+    seededCheckpoint?.sqlite.transcriptEvents ?? 0,
   );
   expect(
     report.checkpoints
       .filter(
         (checkpoint) =>
           checkpoint.label !== "seeded-legacy-store" &&
-          checkpoint.label !== "after-startup-refusal",
+          checkpoint.label !== "after-startup-deferral",
       )
       .every((checkpoint) => checkpoint.activeJsonl.length === 0),
   ).toBe(true);
@@ -49,7 +44,7 @@ export function assertSqliteFlipProofCore(report: SqliteFlipProofReport): void {
       .filter(
         (checkpoint) =>
           checkpoint.label !== "seeded-legacy-store" &&
-          checkpoint.label !== "after-startup-refusal",
+          checkpoint.label !== "after-startup-deferral",
       )
       .every((checkpoint) => checkpoint.legacyStateJsonl.length === 0),
   ).toBe(true);
@@ -196,7 +191,7 @@ export function assertSqliteFlipProofCore(report: SqliteFlipProofReport): void {
   ).toBe(false);
   expect(report.checkpoints.map((checkpoint) => checkpoint.label)).toEqual([
     "seeded-legacy-store",
-    "after-startup-refusal",
+    "after-startup-deferral",
     "after-doctor-fix",
     "after-gateway-start",
     "after-doctor-inspect",

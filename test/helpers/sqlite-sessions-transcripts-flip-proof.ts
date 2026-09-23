@@ -58,7 +58,7 @@ type DowngradeReupgradeEvidence = Awaited<ReturnType<typeof runDowngradeReupgrad
 type BusyContentionEvidence = Awaited<ReturnType<typeof runSqliteBusyContentionProof>>;
 type SecondStartupAfterResetEvidence = Awaited<ReturnType<typeof runSecondStartupAfterResetProof>>;
 type RollbackRestoreEvidence = Awaited<ReturnType<typeof runRollbackRestoreProof>>;
-type StartupRefusalEvidence = Awaited<ReturnType<typeof requireLegacyStartupRefusal>>;
+type StartupDeferralEvidence = Awaited<ReturnType<typeof requireLegacyStartupDeferral>>;
 type AbruptRestartEvidence = Awaited<ReturnType<typeof runAbruptRestartProof>>;
 
 type ProofContext = ReturnType<typeof buildProofContext>;
@@ -141,7 +141,7 @@ export async function runSqliteSessionsTranscriptsFlipProof(options: RunOptions 
   let rollbackRestore: RollbackRestoreEvidence | undefined;
   let scaleMigration: ScaleMigrationEvidence | undefined;
   let secondStartupAfterReset: SecondStartupAfterResetEvidence | undefined;
-  let startupRefusal: StartupRefusalEvidence | undefined;
+  let startupDeferral: StartupDeferralEvidence | undefined;
   let abruptRestart: AbruptRestartEvidence | undefined;
 
   const record = async (label: string, doctor?: DoctorCommandEvidence) => {
@@ -203,8 +203,8 @@ export async function runSqliteSessionsTranscriptsFlipProof(options: RunOptions 
         await seedLegacySessionStore(context);
         await record("seeded-legacy-store");
 
-        startupRefusal = await requireLegacyStartupRefusal(inst, context);
-        await record("after-startup-refusal");
+        startupDeferral = await requireLegacyStartupDeferral(inst, context);
+        await record("after-startup-deferral");
 
         const doctorImportStartedAt = Date.now();
         const fixDoctor = await runDoctor(inst, "fix", context.storePath);
@@ -411,7 +411,7 @@ export async function runSqliteSessionsTranscriptsFlipProof(options: RunOptions 
     ...(downgradeReupgrade ? { downgradeReupgrade } : {}),
     ...(scaleMigration ? { scaleMigration } : {}),
     ...(secondStartupAfterReset ? { secondStartupAfterReset } : {}),
-    ...(startupRefusal ? { startupRefusal } : {}),
+    ...(startupDeferral ? { startupDeferral } : {}),
     sharedSessionKeys: [...context.sharedSessionKeys],
     stateDir: context.stateDir,
   };
@@ -840,42 +840,39 @@ async function importProofSession(
   }
 }
 
-async function requireLegacyStartupRefusal(inst: OpenClawTestInstance, context: ProofContext) {
+async function requireLegacyStartupDeferral(inst: OpenClawTestInstance, context: ProofContext) {
   const sources = new Map<string, Buffer>();
+  const deferredTranscriptPath = path.join(context.activeSessionsDir, "sqlite-shared-b.jsonl");
   for (const directory of [context.activeSessionsDir, context.legacySessionsDir]) {
-    await walkFiles(directory, async (filePath) => {
-      sources.set(filePath, await fs.readFile(filePath));
-    });
-    if (!sources.has(path.join(directory, "sessions.json"))) {
+    if (!(await fs.stat(path.join(directory, "sessions.json")).catch(() => undefined))) {
       throw new Error(`missing seeded legacy session store in ${directory}`);
     }
   }
-  let message = "";
-  try {
-    await inst.startGateway();
-  } catch (error) {
-    message = error instanceof Error ? error.message : String(error);
-  }
-  if (
-    !message.startsWith("gateway exited before readiness (code=78 signal=null)") ||
-    !message.includes("Gateway failed to start: Legacy session store requires migration:") ||
-    !message.includes(path.join(context.legacySessionsDir, "sessions.json")) ||
-    !message.includes('Run "openclaw doctor --fix"')
-  ) {
+  sources.set(deferredTranscriptPath, await fs.readFile(deferredTranscriptPath));
+  await inst.startGateway();
+  const message = inst.logs();
+  await inst.stopGateway();
+  if (!message.includes("[gateway] ready")) {
     throw new Error(
-      `expected legacy session migration refusal, got: ${message || "ready Gateway"}`,
+      `expected legacy session migration deferral evidence, got: ${message || "empty Gateway log"}`,
     );
   }
+  const preservedSourceFiles: string[] = [];
   for (const [filePath, bytes] of sources) {
-    if (!(await fs.readFile(filePath)).equals(bytes)) {
-      throw new Error(`Gateway changed legacy source bytes before Doctor migration: ${filePath}`);
+    let preservedPath: string | undefined;
+    await walkFiles(context.stateDir, async (candidatePath) => {
+      if (!preservedPath && (await fs.readFile(candidatePath)).equals(bytes)) {
+        preservedPath = candidatePath;
+      }
+    });
+    if (!preservedPath) {
+      throw new Error(`Gateway did not preserve legacy transcript bytes: ${filePath}`);
     }
+    preservedSourceFiles.push(path.relative(context.stateDir, preservedPath));
   }
   return {
     message,
-    preservedSourceFiles: [...sources.keys()]
-      .map((filePath) => path.relative(context.stateDir, filePath))
-      .toSorted(),
+    preservedSourceFiles: preservedSourceFiles.toSorted(),
   };
 }
 
@@ -2251,7 +2248,7 @@ function validateCheckpointInvariants(
   checkpoint: ProofCheckpoint,
   failures: string[],
 ): void {
-  if (checkpoint.label !== "seeded-legacy-store" && checkpoint.label !== "after-startup-refusal") {
+  if (checkpoint.label !== "seeded-legacy-store" && checkpoint.label !== "after-startup-deferral") {
     for (const [description, inventory] of [
       ["active sessions directory", checkpoint.activeJsonl],
       ["old sessions directory", checkpoint.legacyStateJsonl],
