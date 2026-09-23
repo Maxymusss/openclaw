@@ -22,59 +22,38 @@ struct RootTabs: View {
     @AppStorage("gateway.manual.enabled") private var manualGatewayEnabled: Bool = false
     @AppStorage("gateway.manual.host") private var manualGatewayHost: String = ""
     @AppStorage("onboarding.quickSetupDismissed") private var quickSetupDismissed: Bool = false
-    @State private var selectedSidebarDestination: SidebarDestination = Self.initialSidebarDestination
-    @State private var selectedSettingsRoute: SettingsRoute? =
-        Self.initialSidebarDestination.settingsRoute
-    @State private var activeSettingsRoute: SettingsRoute? =
-        Self.initialSidebarDestination.settingsRoute
-    @State private var selectedSettingsRouteRequestID: Int = 0
     @State private var sidebarModel = RootSidebarModel()
-    // Embedded Settings rows push onto the sidebar stack; clear it before
-    // changing sidebar roots so stale settings detail screens cannot survive.
-    @State private var sidebarNavigationPath: [SettingsRoute] = []
-    @State private var isSidebarDetailRootVisible: Bool = true
-    @State private var isSidebarVisible: Bool = Self.initialSidebarVisibility ?? false
-    @State private var sidebarVisibilityUserOverridden: Bool = Self.initialSidebarVisibility != nil
-    @State private var isSidebarDrawerLayout: Bool = false
-    @State private var didResolveSidebarLayout: Bool = false
     @State private var voiceWakeToastText: String?
     @State private var toastDismissGate = DelayedActionGate()
-    @State private var presentedSheet: PresentedSheet?
-    @State private var pagesEditor: SidebarPagesPresentation?
-    @State private var showGatewayProblemDetails: Bool = false
     @State private var gatewayToastDragOffset: CGFloat = 0
     @State private var gatewayRetryFailure: String?
     // Swipe-up hides the toast only until the next problem report.
     @State private var isGatewayToastSwipeDismissed: Bool = false
-    @State private var showOnboarding: Bool = false
     @State private var onboardingAllowSkip: Bool = true
     @State private var didEvaluateOnboarding: Bool = false
     @State private var didAutoOpenSettings: Bool = false
     @State private var didApplyInitialChatSession: Bool = false
     @State private var gatewaySetupRequest: GatewaySetupRequest?
-    @State private var suppressedExecApprovalForNotificationSettings: NodeAppModel.ExecApprovalInboxKey?
-    @State private var nativeRunInspection: NativeActionRouter.RunPresentation?
-    @State private var nativeChatBinding: IOSNativeActionBinding?
-    @State private var nativePresentationID: UUID?
     @State private var nativeLifetime = IOSNativePresentationLifetime()
-    @State private var chatModals = OpenClawChatModalPresentations()
-    @State private var chatModalScope: ChatModalScope?
-    @State private var transcriptExportError: OpenClawChatModalPresentations.Receipt?
 
-    private struct ChatModalScope: Equatable {
-        let origin: OpenClawChatModalOrigin
-        let shellID: String
-        let ownerID: String
-        let sessionKey: String
-        let agentID: String?
-        let accountGeneration: UInt64
-        let inputs: GatewayConnectConfig.ControlUIInputs?
+    @State private var presentation: RootTabsPresentationState
+
+    init(
+        initialSidebarVisibility: Bool? = nil,
+        presentation: RootTabsPresentationState? = nil)
+    {
+        _presentation = State(initialValue: presentation ?? RootTabsPresentationState(
+            initialDestination: Self.initialSidebarDestination,
+            initialSidebarVisibility: initialSidebarVisibility ?? Self.initialSidebarVisibility))
     }
 
-    init(initialSidebarVisibility: Bool? = nil) {
-        let resolvedVisibility = initialSidebarVisibility ?? Self.initialSidebarVisibility
-        _isSidebarVisible = State(initialValue: resolvedVisibility ?? false)
-        _sidebarVisibilityUserOverridden = State(initialValue: resolvedVisibility != nil)
+    private var actions: RootTabsPresentationState.Actions {
+        .init(
+            state: self.presentation,
+            appModel: self.appModel,
+            nativeActions: self.nativeActions,
+            gatewayController: self.gatewayController,
+            sidebarAnimation: self.sidebarAnimation)
     }
 
     private static var initialSidebarDestination: SidebarDestination {
@@ -97,7 +76,10 @@ struct RootTabs: View {
     }
 
     private var chatPresentation: IOSChatViewModelOwner.Presentation {
-        .init(binding: self.nativeChatBinding, router: self.nativeActions, id: self.nativePresentationID)
+        .init(
+            binding: self.presentation.nativeChatBinding,
+            router: self.nativeActions,
+            id: self.presentation.nativePresentationID)
     }
 
     var body: some View {
@@ -109,10 +91,10 @@ struct RootTabs: View {
                 self.rootOverlays(
                     self.sidebarSplitContent
                         .tint(OpenClawBrand.accent))))
-            .environment(\.userNavigationAction, navigationAction())
+            .environment(\.userNavigationAction, self.actions.navigationAction())
             .background(IOSNativePresentationAnchor(lifetime: self.nativeLifetime).frame(width: 0, height: 0))
-            .onChange(of: self.currentChatModalScope, initial: true) { _, _ in
-                self.synchronizeChatModalScope()
+            .onChange(of: self.actions.currentChatModalScope, initial: true) { _, _ in
+                self.actions.synchronizeChatModalScope()
             }
             .overlay(alignment: .topLeading) {
                 self.uiTestReadinessMarker
@@ -133,8 +115,8 @@ struct RootTabs: View {
             }
             .task(id: self.appModel.chatPresentation.taskIdentity(
                 appModel: self.appModel,
-                nativeBinding: self.nativeChatBinding,
-                presentationID: self.nativePresentationID,
+                nativeBinding: self.presentation.nativeChatBinding,
+                presentationID: self.presentation.nativePresentationID,
                 chatRegistrationID: self.nativeActions?.chatRegistrationID))
             {
                 await self.appModel.chatPresentation.synchronizePresentation(
@@ -161,7 +143,7 @@ struct RootTabs: View {
                 .accessibilityIdentifier("RootTabs.Ready")
                 .accessibilityLabel(Text(verbatim: "OpenClaw test readiness"))
                 .accessibilityValue(
-                    "\(self.scenePhase == .active ? "ready" : "inactive"):\(self.selectedSidebarDestination.rawValue)")
+                    "\(self.scenePhase == .active ? "ready" : "inactive"):\(self.presentation.selectedSidebarDestination.rawValue)")
         }
         #endif
     }
@@ -187,13 +169,13 @@ struct RootTabs: View {
                 }
             }
             .onAppear {
-                self.updateSidebarLayout(containerSize: layoutContainerSize, force: false)
+                self.actions.updateSidebarLayout(containerSize: layoutContainerSize, force: false)
             }
             .onChange(of: proxy.size) { _, size in
                 let layoutContainerSize = Self.sidebarLayoutContainerSize(
                     contentSize: size,
                     windowSize: self.foregroundKeyWindowSize())
-                self.updateSidebarLayout(containerSize: layoutContainerSize, force: false)
+                self.actions.updateSidebarLayout(containerSize: layoutContainerSize, force: false)
             }
             // Single refresh owner: identity/session changes, scene activation,
             // and the periodic attention refresh all land here.
@@ -224,7 +206,7 @@ struct RootTabs: View {
         SessionObserverTaskIdentity(
             sidebarRefreshID: self.sidebarRefreshID,
             isSceneActive: self.scenePhase == .active,
-            isSidebarVisible: self.isSidebarVisible)
+            isSidebarVisible: self.presentation.isSidebarVisible)
     }
 
     private var sidebarRefreshID: String {
@@ -238,7 +220,7 @@ struct RootTabs: View {
 
     private func sidebarNavigationSplitContent(sidebarWidth: CGFloat) -> some View {
         HStack(spacing: 0) {
-            if self.isSidebarVisible {
+            if self.presentation.isSidebarVisible {
                 self.sidebarColumn()
                     .frame(width: sidebarWidth, alignment: .topLeading)
                     .frame(maxHeight: .infinity, alignment: .topLeading)
@@ -252,7 +234,7 @@ struct RootTabs: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .background(OpenClawProBackground())
-        .animation(self.sidebarAnimation, value: self.isSidebarVisible)
+        .animation(self.sidebarAnimation, value: self.presentation.isSidebarVisible)
     }
 
     private func sidebarDrawerContent(
@@ -261,30 +243,31 @@ struct RootTabs: View {
     {
         RootSidebarDrawer(
             sidebarWidth: sidebarWidth,
-            isPresented: self.isSidebarVisible,
-            canOpenFromEdge: self.isSidebarDetailRootVisible && self.sidebarNavigationPath.isEmpty,
+            isPresented: self.presentation.isSidebarVisible,
+            canOpenFromEdge: self.presentation.isSidebarDetailRootVisible && self.presentation.sidebarNavigationPath
+                .isEmpty,
             reduceMotion: self.reduceMotion,
             animation: self.sidebarAnimation,
-            onShow: self.showSidebar,
-            onHide: self.hideSidebar,
+            onShow: self.actions.showSidebar,
+            onHide: self.actions.hideSidebar,
             sidebar: self.sidebarColumn(drawerSafeAreaInsets: safeAreaInsets),
             detail: self.sidebarDetailNavigationShell)
     }
 
     private var sidebarDetailShell: some View {
-        let shellID = self.sidebarDetailShellID
+        let shellID = self.presentation.sidebarDetailShellID
         return self.sidebarDetail
-            .environment(\.userNavigationAction, navigationAction(detail: true))
+            .environment(\.userNavigationAction, self.actions.navigationAction(detail: true))
             .id(shellID)
             // Destination-style links replace this root inside the shared stack;
             // the Settings hub owns its stack and reports typed pushes through the path.
             .onAppear {
-                guard self.sidebarDetailShellID == shellID else { return }
-                self.isSidebarDetailRootVisible = true
+                guard self.presentation.sidebarDetailShellID == shellID else { return }
+                self.presentation.isSidebarDetailRootVisible = true
             }
             .onDisappear {
-                guard self.sidebarDetailShellID == shellID else { return }
-                self.isSidebarDetailRootVisible = false
+                guard self.presentation.sidebarDetailShellID == shellID else { return }
+                self.presentation.isSidebarDetailRootVisible = false
             }
     }
 
@@ -292,31 +275,26 @@ struct RootTabs: View {
     /// insets. Drawer mode goes full-bleed (ignoresSafeArea) so the captured
     /// insets are re-applied manually; split mode keeps system safe areas.
     private func sidebarColumn(drawerSafeAreaInsets: EdgeInsets? = nil) -> some View {
-        let action = navigationAction()
+        let action = self.actions.navigationAction()
         return RootSidebar(
             model: self.sidebarModel,
-            pagesEditor: self.userModalBinding(self.$pagesEditor),
-            selectedDestination: self.selectedSidebarDestination,
-            isDrawerLayout: self.isSidebarDrawerLayout,
-            isDismissButtonEnabled: self.isSidebarVisible,
-            isPagesEditorRootCurrent: self.navigationContext(),
+            pagesEditor: self.actions.userModalBinding(self.$presentation.pagesEditor),
+            selectedDestination: self.presentation.selectedSidebarDestination,
+            isDrawerLayout: self.presentation.isSidebarDrawerLayout,
+            isDismissButtonEnabled: self.presentation.isSidebarVisible,
+            isPagesEditorRootCurrent: self.actions.navigationContext(),
             selectDestination: { destination in
                 guard action() else { return }
-                self.selectSidebarDestination(destination)
+                self.actions.selectSidebarDestination(destination)
             },
             selectSession: { session in
                 guard action() else { return }
-                self.selectSidebarSession(session)
+                self.actions.selectSidebarSession(session)
             },
-            openChat: openChatAction(),
-            requestNewChat: userAction(disposition: .chatSessionTransition) {
-                self.appModel.chatPresentation.requestNewChat(
-                    appModel: self.appModel,
-                    presentation: self.chatPresentation)
-                self.selectSidebarDestination(.chat)
-            },
-            prepareFork: prepareForkAction(),
-            hideSidebar: hideSidebar)
+            openChat: self.actions.openChatAction(),
+            requestNewChat: self.actions.requestNewChatAction(),
+            prepareFork: self.actions.prepareForkAction(),
+            hideSidebar: self.actions.hideSidebar)
             .padding(.top, drawerSafeAreaInsets.map { $0.top + 8 } ?? 0)
             .padding(.bottom, drawerSafeAreaInsets.map { $0.bottom + 8 } ?? 0)
             .safeAreaPadding(.top, drawerSafeAreaInsets == nil ? 8 : 0)
@@ -334,84 +312,86 @@ struct RootTabs: View {
 
     @ViewBuilder
     private var sidebarDetail: some View {
-        switch self.selectedSidebarDestination.screen {
+        switch self.presentation.selectedSidebarDestination.screen {
         case .chat:
             // Agent identity pill owns the chat header (prototype parity).
             ChatProTab(
                 headerSidebarAction: self.sidebarHeaderAction,
-                nativeBinding: self.nativeChatBinding,
-                nativePresentationID: self.nativePresentationID,
-                openSettings: userDestinationAction(.gateway),
-                prepareModal: self.prepareChatModal,
-                retainModalPresentation: self.retainChatModalPresentation)
+                nativeBinding: self.presentation.nativeChatBinding,
+                nativePresentationID: self.presentation.nativePresentationID,
+                openSettings: self.actions.userDestinationAction(.gateway),
+                prepareModal: self.actions.prepareChatModal,
+                retainModalPresentation: self.actions.retainChatModalPresentation)
                 .openClawChatModalPresentations(
-                    self.chatModals,
-                    origin: self.currentChatModalScope?.origin ?? self.chatModals.standaloneOrigin,
-                    actions: self.chatModalActions)
+                    self.presentation.chatModals,
+                    origin: self.actions.currentChatModalScope?.origin ?? self.presentation.chatModals.standaloneOrigin,
+                    actions: self.actions.chatModalActions)
         case .overview:
             CommandCenterTab(
                 headerTitle: "Overview",
                 headerSidebarAction: self.sidebarHeaderAction,
                 dashboardModel: self.sidebarModel,
-                openChat: openChatAction(detail: true),
-                prepareFork: prepareForkAction(detail: true),
-                openSettings: userDestinationAction(.gateway),
-                openSessions: userDestinationAction(.sessions),
-                openApprovals: userAction(detail: true) { self.selectSettingsRoute(.approvals) },
-                openAutomations: userDestinationAction(.cron),
-                openUsage: userDestinationAction(.usage))
+                openChat: self.actions.openChatAction(detail: true),
+                prepareFork: self.actions.prepareForkAction(detail: true),
+                openSettings: self.actions.userDestinationAction(.gateway),
+                openSessions: self.actions.userDestinationAction(.sessions),
+                openApprovals: self.actions.userAction(detail: true) { self.actions.selectSettingsRoute(.approvals) },
+                openAutomations: self.actions.userDestinationAction(.cron),
+                openUsage: self.actions.userDestinationAction(.usage))
         case let .dashboard(path):
             DashboardPageScreen(
                 path: path,
-                title: self.selectedSidebarDestination.title,
+                title: self.presentation.selectedSidebarDestination.title,
+                navigationPath: self.actions.userSettingsPath,
                 headerSidebarAction: self.sidebarHeaderAction,
-                onRouteChange: handleSettingsRouteChange,
-                onApprovalNotificationsRoute: notificationSettingsAction(detail: true))
+                onRouteChange: self.actions.handleSettingsRouteChange,
+                onApprovalNotificationsRoute: self.actions.notificationSettingsAction(detail: true))
                 .id(path)
         case .agents:
             AgentProTab(
                 directRoute: .agents,
                 headerSidebarAction: self.sidebarHeaderAction,
                 headerTitle: "Agents",
-                openSettings: userDestinationAction(.gateway))
-                .id(self.selectedSidebarDestination.id)
+                openSettings: self.actions.userDestinationAction(.gateway))
+                .id(self.presentation.selectedSidebarDestination.id)
         case .sessions:
             CommandSessionsScreen(
                 headerSidebarAction: self.sidebarHeaderAction,
-                openChat: openChatAction(detail: true),
-                prepareFork: prepareForkAction(detail: true))
+                openChat: self.actions.openChatAction(detail: true),
+                prepareFork: self.actions.prepareForkAction(detail: true))
         case .files:
             AgentProTab(
                 directRoute: .files,
                 headerSidebarAction: self.sidebarHeaderAction,
                 headerTitle: "Files",
-                openSettings: userDestinationAction(.gateway))
-                .id(self.selectedSidebarDestination.id)
+                openSettings: self.actions.userDestinationAction(.gateway))
+                .id(self.presentation.selectedSidebarDestination.id)
         case .desktop:
             DesktopHubScreen(
                 headerSidebarAction: self.sidebarHeaderAction,
-                gatewayAction: userDestinationAction(.gateway))
+                gatewayAction: self.actions.userDestinationAction(.gateway))
         case .terminal:
             TerminalHubScreen(
                 headerSidebarAction: self.sidebarHeaderAction,
-                gatewayAction: userDestinationAction(.gateway))
+                gatewayAction: self.actions.userDestinationAction(.gateway))
         case .docs:
             OpenClawDocsScreen(
                 headerSidebarAction: self.sidebarHeaderAction,
-                gatewayAction: userDestinationAction(.gateway))
+                gatewayAction: self.actions.userDestinationAction(.gateway))
         case .settings:
             SettingsHubScreen(
-                navigationPath: userSettingsPath,
+                navigationPath: self.actions.userSettingsPath,
                 headerSidebarAction: self.sidebarHeaderAction,
-                onRouteChange: handleSettingsRouteChange,
-                onApprovalNotificationsRoute: notificationSettingsAction(detail: true))
+                onRouteChange: self.actions.handleSettingsRouteChange,
+                onApprovalNotificationsRoute: self.actions.notificationSettingsAction(detail: true))
         case .gateway:
             SettingsProTab(
-                directRoute: self.selectedSettingsRoute ?? self.selectedSidebarDestination.settingsRoute ?? .gateway,
-                acceptsGatewaySetupRequests: !self.showOnboarding,
+                directRoute: self.presentation.selectedSettingsRoute ?? self.presentation.selectedSidebarDestination
+                    .settingsRoute ?? .gateway,
+                acceptsGatewaySetupRequests: !self.presentation.showOnboarding,
                 headerSidebarAction: self.sidebarHeaderAction,
-                onRouteChange: handleSettingsRouteChange,
-                onApprovalNotificationsRoute: notificationSettingsAction(detail: true),
+                onRouteChange: self.actions.handleSettingsRouteChange,
+                onApprovalNotificationsRoute: self.actions.notificationSettingsAction(detail: true),
                 gatewaySetupRequest: self.gatewaySetupRequest,
                 onGatewaySetupRequestHandled: handleGatewaySetupRequest)
         }
@@ -419,59 +399,49 @@ struct RootTabs: View {
 
     private var sidebarDetailNavigationShell: some View {
         Group {
-            if self.selectedSidebarDestination == .settings {
+            if self.presentation.selectedSidebarDestination == .settings {
                 self.sidebarDetailShell
-            } else if case .dashboard = self.selectedSidebarDestination.screen {
+            } else if case .dashboard = self.presentation.selectedSidebarDestination.screen {
                 self.sidebarDetailShell
             } else {
-                NavigationStack(path: self.userSettingsPath) {
+                NavigationStack(path: self.actions.userSettingsPath) {
                     self.sidebarDetailShell
                 }
             }
         }
-        .onChange(of: self.sidebarNavigationPath) { _, navigationPath in
-            self.handleSidebarSettingsNavigationPathChange(navigationPath)
+        .onChange(of: self.presentation.sidebarNavigationPath) { _, navigationPath in
+            self.actions.handleSidebarSettingsNavigationPathChange(navigationPath)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var sidebarDetailShellID: String {
-        let routeID = self.selectedSettingsRoute.map { "\($0)" } ?? "root"
-        return "\(self.selectedSidebarDestination.id):\(routeID):\(self.selectedSettingsRouteRequestID)"
-    }
-
     private var activeExecApprovalPromptSuppression: NodeAppModel.ExecApprovalInboxKey? {
-        if case .notificationSettings = self.presentedSheet {
-            return self.suppressedExecApprovalForNotificationSettings
+        if case .notificationSettings = self.presentation.presentedSheet {
+            return self.presentation.suppressedExecApprovalForNotificationSettings
         }
-        guard self.activeSettingsRoute == .approvals else { return nil }
+        guard self.presentation.activeSettingsRoute == .approvals else { return nil }
         return NodeAppModel.execApprovalInboxKey(self.appModel.pendingExecApprovalPrompt)
-    }
-
-    private var shouldCollapseSidebarAfterSelection: Bool {
-        Self.shouldCollapseSidebarAfterSelection(
-            layoutMode: self.isSidebarDrawerLayout ? .drawer : .split)
     }
 
     private var sidebarHeaderAction: OpenClawSidebarHeaderAction? {
         guard Self.shouldShowSidebarRevealInDestinationHeader(
-            isSidebarVisible: self.isSidebarVisible,
-            layoutMode: self.isSidebarDrawerLayout ? .drawer : .split)
+            isSidebarVisible: self.presentation.isSidebarVisible,
+            layoutMode: self.presentation.isSidebarDrawerLayout ? .drawer : .split)
         else {
             return nil
         }
-        if self.isSidebarVisible {
+        if self.presentation.isSidebarVisible {
             return OpenClawSidebarHeaderAction(
                 systemName: "line.3.horizontal",
                 accessibilityLabel: .localized("Hide Sidebar"),
                 accessibilityIdentifier: Self.sidebarHideButtonAccessibilityIdentifier,
-                action: { self.hideSidebar() })
+                action: { self.actions.hideSidebar() })
         }
         return OpenClawSidebarHeaderAction(
             systemName: "line.3.horizontal",
             accessibilityLabel: .localized("Show Sidebar"),
             accessibilityIdentifier: Self.sidebarShowButtonAccessibilityIdentifier,
-            action: { self.showSidebar() })
+            action: { self.actions.showSidebar() })
     }
 
     private var sidebarAnimation: Animation? {
@@ -569,7 +539,7 @@ struct RootTabs: View {
     }
 
     private func gatewayProblemToast(_ problem: GatewayConnectionProblem) -> some View {
-        let action = navigationAction()
+        let action = self.actions.navigationAction()
         return GatewayProblemBanner(
             problem: problem,
             primaryActionTitle: gatewayProblemPrimaryActionTitle(problem),
@@ -578,7 +548,7 @@ struct RootTabs: View {
             },
             onShowDetails: {
                 guard action() else { return }
-                self.showGatewayProblemDetails = true
+                self.presentation.showGatewayProblemDetails = true
             })
             .padding(.horizontal, 12)
             .safeAreaPadding(.top, 10)
@@ -638,7 +608,7 @@ struct RootTabs: View {
     }
 
     private func rootAppearLifecycle(_ content: some View) -> some View {
-        let inspections = self.userModalBinding(self.$nativeRunInspection)
+        let inspections = self.actions.userModalBinding(self.$presentation.nativeRunInspection)
         return content
             .onAppear {
                 self.updateIdleTimer()
@@ -649,47 +619,53 @@ struct RootTabs: View {
                 self.applyInitialChatSessionIfNeeded()
                 self.handleLiveVoiceStartRequest()
                 if self.appModel.consumeOpenChatRequest(self.appModel.openChatRequestID) {
-                    self.selectSidebarDestination(.chat)
+                    self.actions.selectSidebarDestination(.chat)
                 }
                 if self.appModel.consumeDashboardNavigationRequest(self.appModel.dashboardNavigationRequestID) {
-                    self.selectSidebarDestination(.overview)
+                    self.actions.selectSidebarDestination(.overview)
                 }
-                if self.nativeActions?.capturePresentationAuthority(self.nativePresentationID) != nil { return }
-                self.nativePresentationID = self.nativeActions?.registerPresentation(onRetire: { disposition in
-                    // Modal interactions and in-place session creation retire old
-                    // native operations while retaining their current UI transport.
-                    if case .departure = disposition { self.nativeChatBinding = nil }
-                    self.nativeRunInspection = nil
-                }, onSessionAdopted: { previous, binding in
-                    guard self.nativeChatBinding == nil ||
-                        self.nativeChatBinding?.canReuse(previous) == true else { return }
-                    self.nativeChatBinding = binding
-                }, { request, binding, receipt in
-                    self.synchronizeChatModalScope()
-                    guard !self.chatModals.hasActivePresentation, self.transcriptExportError == nil,
-                          UIApplication.shared.applicationState == .active,
-                          !self.showOnboarding, !self.showGatewayProblemDetails, self.presentedSheet == nil,
-                          self.pagesEditor == nil,
-                          self.appModel.pendingExecApprovalPrompt == nil,
-                          self.appModel.pendingNotificationPermissionGuidancePrompt == nil,
-                          self.appModel.pendingAgentDeepLinkPrompt == nil,
-                          self.gatewayController.pendingTrustPrompt == nil
-                    else {
-                        throw OpenClawNativeActionError("Finish the current screen in OpenClaw, then try again.")
-                    }
-                    if let existing = self.nativeRunInspection {
-                        guard case let .inspect(run) = request, existing.inspection.run == run else {
-                            throw OpenClawNativeActionError("Close the current run inspection, then try again.")
+                if self.nativeActions?
+                    .capturePresentationAuthority(self.presentation.nativePresentationID) != nil { return }
+                self.presentation.nativePresentationID = self.nativeActions?.registerPresentation(
+                    onRetire: { disposition in
+                        // Modal interactions and in-place session creation retire old
+                        // native operations while retaining their current UI transport.
+                        if case .departure = disposition { self.presentation.nativeChatBinding = nil }
+                        self.presentation.nativeRunInspection = nil
+                    },
+                    onSessionAdopted: { previous, binding in
+                        guard self.presentation.nativeChatBinding == nil ||
+                            self.presentation.nativeChatBinding?.canReuse(previous) == true else { return }
+                        self.presentation.nativeChatBinding = binding
+                    },
+                    { request, binding, receipt in
+                        self.actions.synchronizeChatModalScope()
+                        guard !self.presentation.chatModals.hasActivePresentation,
+                              self.presentation.transcriptExportError == nil,
+                              UIApplication.shared.applicationState == .active,
+                              !self.presentation.showOnboarding, !self.presentation.showGatewayProblemDetails,
+                              self.presentation.presentedSheet == nil,
+                              self.presentation.pagesEditor == nil,
+                              self.appModel.pendingExecApprovalPrompt == nil,
+                              self.appModel.pendingNotificationPermissionGuidancePrompt == nil,
+                              self.appModel.pendingAgentDeepLinkPrompt == nil,
+                              self.gatewayController.pendingTrustPrompt == nil
+                        else {
+                            throw OpenClawNativeActionError("Finish the current screen in OpenClaw, then try again.")
                         }
-                    }
-                    let session = request.session
-                    self.appModel.setSelectedAgentId(session.agentID)
-                    self.appModel.focusChatSession(session.sessionKey)
-                    self.nativeChatBinding = binding
-                    self.selectSidebarDestination(.chat)
-                    self.nativeRunInspection = receipt
-                })
-                if let id = self.nativePresentationID {
+                        if let existing = self.presentation.nativeRunInspection {
+                            guard case let .inspect(run) = request, existing.inspection.run == run else {
+                                throw OpenClawNativeActionError("Close the current run inspection, then try again.")
+                            }
+                        }
+                        let session = request.session
+                        self.appModel.setSelectedAgentId(session.agentID)
+                        self.appModel.focusChatSession(session.sessionKey)
+                        self.presentation.nativeChatBinding = binding
+                        self.actions.selectSidebarDestination(.chat)
+                        self.presentation.nativeRunInspection = receipt
+                    })
+                if let id = self.presentation.nativePresentationID {
                     #if DEBUG
                     let router = self.nativeActions
                     self.nativeLifetime.testLifetimeObservation = { [weak router] event in
@@ -702,10 +678,11 @@ struct RootTabs: View {
                             "root-cleanup current=\(self.nativeActions?.presentationRegistrationID == id)")
                         #endif
                         self.nativeActions?.unregisterPresentation(id)
-                        guard self.nativePresentationID == id else { return }
-                        self.nativePresentationID = nil
-                        self.pagesEditor = nil
-                        self.clearChatModalScope()
+                        guard self.presentation.nativePresentationID == id else { return }
+                        self.presentation.nativePresentationID = nil
+                        self.presentation.pagesEditor = nil
+                        self.presentation.approvalDashboard.reset()
+                        self.actions.clearChatModalScope()
                     }
                 }
             }
@@ -757,7 +734,7 @@ struct RootTabs: View {
                 .onAppear {
                     self.nativeActions?.acknowledgeInspection(
                         presentation,
-                        presentationID: self.nativePresentationID)
+                        presentationID: self.presentation.nativePresentationID)
                 }
             }
             .onChange(of: self.appModel.chatSessionKey) { _, _ in self.clearChangedNativeChatSelection() }
@@ -786,33 +763,33 @@ struct RootTabs: View {
         #if DEBUG
         self.nativeActions?.testLifetimeObservation?("root-on-disappear")
         #endif
-        if self.pagesEditor != nil {
+        if self.presentation.pagesEditor != nil {
             // Pages owns this cover, but never retains a native chat binding.
             // The exact-ID lifetime anchor still releases actual Root removal.
             _ = self.nativeActions?.userNavigationDidChange(
-                presentationID: self.nativePresentationID,
+                presentationID: self.presentation.nativePresentationID,
                 disposition: .departure)
-        } else if self.retainChatModalPresentation() {
+        } else if self.actions.retainChatModalPresentation() {
             _ = self.nativeActions?.userNavigationDidChange(
-                presentationID: self.nativePresentationID,
+                presentationID: self.presentation.nativePresentationID,
                 disposition: .chatModal)
         } else {
             self.nativeLifetime.release()
-            self.clearChatModalScope()
+            self.actions.clearChatModalScope()
         }
         UIApplication.shared.isIdleTimerDisabled = false
         self.clearVoiceWakeToast()
     }
 
     private func clearChangedNativeChatSelection() {
-        guard let binding = self.nativeChatBinding else { return }
+        guard let binding = self.presentation.nativeChatBinding else { return }
         let session = binding.session
         guard self.appModel.chatSessionKey.utf8.elementsEqual(session.sessionKey.utf8),
               self.appModel.chatDeliveryAgentId?.utf8.elementsEqual(session.agentID.utf8) == true,
               self.appModel.chatTranscriptCacheGatewayID?.utf8
                   .elementsEqual(session.owner.gatewayID.utf8) == true
         else {
-            self.nativeActions?.retireChatSelection(presentationID: self.nativePresentationID)
+            self.nativeActions?.retireChatSelection(presentationID: self.presentation.nativePresentationID)
             return
         }
     }
@@ -849,13 +826,13 @@ struct RootTabs: View {
     }
 
     private func rootRequestLifecycle(_ content: some View) -> some View {
-        let isCurrent = navigationContext()
-        let action = navigationAction()
+        let isCurrent = self.actions.navigationContext()
+        let action = self.actions.navigationAction()
         return content
             .onChange(of: self.onboardingRequestID) { _, _ in
                 self.evaluateOnboardingPresentation(force: true)
             }
-            .onChange(of: self.showOnboarding) { _, newValue in
+            .onChange(of: self.presentation.showOnboarding) { _, newValue in
                 guard !newValue else { return }
                 self.maybeRequestLocalNetworkAccess(reason: "onboarding_dismissed")
             }
@@ -864,28 +841,28 @@ struct RootTabs: View {
             }
             .onChange(of: self.appModel.openChatRequestID) { _, newValue in
                 guard isCurrent(), self.appModel.consumeOpenChatRequest(newValue), action() else { return }
-                self.selectSidebarDestination(.chat)
+                self.actions.selectSidebarDestination(.chat)
             }
             .onChange(of: self.appModel.dashboardNavigationRequestID) { _, requestID in
                 guard isCurrent(), self.appModel.consumeDashboardNavigationRequest(requestID), action() else { return }
-                self.selectSidebarDestination(.overview)
+                self.actions.selectSidebarDestination(.overview)
             }
             .onChange(of: self.appModel.gatewaySetupRequestID) { _, _ in
                 guard isCurrent() else { return }
                 self.maybeOpenSettingsForGatewaySetup(onAccepted: action)
             }
             .onChange(of: NodeAppModel.execApprovalInboxKey(self.appModel.pendingExecApprovalPrompt)) { _, newValue in
-                if newValue != self.suppressedExecApprovalForNotificationSettings {
-                    self.suppressedExecApprovalForNotificationSettings = nil
+                if newValue != self.presentation.suppressedExecApprovalForNotificationSettings {
+                    self.presentation.suppressedExecApprovalForNotificationSettings = nil
                 }
             }
     }
 
     private func rootPresentation(_ content: some View) -> some View {
-        let action = navigationAction()
-        let sheets = self.chatSheetBinding
+        let action = self.actions.navigationAction()
+        let sheets = self.actions.chatSheetBinding
         return content
-            .sheet(isPresented: userModalBinding(self.$showGatewayProblemDetails)) {
+            .sheet(isPresented: self.actions.userModalBinding(self.$presentation.showGatewayProblemDetails)) {
                 if let gatewayProblem = self.appModel.lastGatewayProblem {
                     GatewayProblemDetailsSheet(
                         problem: gatewayProblem,
@@ -897,7 +874,7 @@ struct RootTabs: View {
             }
             .sheet(item: sheets) { sheet in
                 let sheetAction: @MainActor @Sendable () -> Bool = {
-                    guard self.presentedSheet == sheet else { return false }
+                    guard self.presentation.presentedSheet == sheet else { return false }
                     if let receipt = sheet.chatReceipt {
                         return receipt.retireIfCurrent()
                     }
@@ -908,8 +885,8 @@ struct RootTabs: View {
                     case .quickSetup:
                         GatewayQuickSetupSheet(onUseManualSetup: {
                             guard sheetAction() else { return }
-                            self.presentedSheet = nil
-                            self.selectSettingsRoute(.gateway)
+                            self.presentation.presentedSheet = nil
+                            self.actions.selectSettingsRoute(.gateway)
                         })
                         .environment(self.appModel)
                         .environment(self.gatewayController)
@@ -928,7 +905,7 @@ struct RootTabs: View {
                     case let .newSessionOptions(viewModel, receipt):
                         self.chatModalContent(receipt) {
                             ChatNewSessionOptionsPopover(viewModel: viewModel) {
-                                self.dismissChatModal(receipt)
+                                self.actions.dismissChatModal(receipt)
                             }
                             .presentationDetents([.medium])
                             .presentationDragIndicator(.visible)
@@ -941,39 +918,40 @@ struct RootTabs: View {
             }
             .alert(
                 String(localized: "Unable to Export Transcript"),
-                isPresented: self.transcriptExportErrorBinding)
+                isPresented: self.actions.transcriptExportErrorBinding)
             {
-                let receipt = self.transcriptExportError
+                let receipt = self.presentation.transcriptExportError
                 Button(role: .cancel) {
-                    if let receipt { self.dismissChatModal(receipt) }
+                    if let receipt { self.actions.dismissChatModal(receipt) }
                 } label: {
                     Text("OK").font(OpenClawType.body)
                 }
             } message: {
                 Text("OpenClaw could not prepare the Markdown file.").font(OpenClawType.body)
             }
-            .fullScreenCover(isPresented: self.$showOnboarding) {
+            .fullScreenCover(isPresented: self.$presentation.showOnboarding) {
                     OnboardingWizardView(
                         allowSkip: self.onboardingAllowSkip,
                         onRequestLocalNetworkAccess: { reason in
                             self.requestLocalNetworkAccess(reason: reason)
                         },
                         onClose: {
-                            self.showOnboarding = false
+                            self.presentation.showOnboarding = false
                         },
                         onComplete: {
-                            self.showOnboarding = false
-                            self.selectSidebarDestination(.chat)
+                            self.presentation.showOnboarding = false
+                            self.actions.selectSidebarDestination(.chat)
                         })
                         .environment(self.appModel)
                         .environment(self.voiceWake)
                         .environment(self.gatewayController)
                 }
-                .gatewayTrustPromptAlert(isEnabled: !self.showOnboarding)
+                .gatewayTrustPromptAlert(isEnabled: !self.presentation.showOnboarding)
                 .deepLinkAgentPromptAlert()
                 .execApprovalPromptDialog(
-                    suppressedApproval: self.activeExecApprovalPromptSuppression)
-                .notificationPermissionGuidanceDialog(openNotifications: notificationSettingsAction())
+                    suppressedApproval: self.activeExecApprovalPromptSuppression,
+                    dashboardPresentation: self.presentation.approvalDashboard)
+                .notificationPermissionGuidanceDialog(openNotifications: self.actions.notificationSettingsAction())
     }
 
     private func updateIdleTimer() {
@@ -983,54 +961,6 @@ struct RootTabs: View {
 }
 
 extension RootTabs {
-    private var currentChatModalScope: ChatModalScope? {
-        guard self.selectedSidebarDestination == .chat,
-              let viewModel = self.appModel.chatPresentation.viewModel else { return nil }
-        return ChatModalScope(
-            origin: .init(viewModel: viewModel),
-            shellID: self.sidebarDetailShellID,
-            ownerID: self.appModel.chatViewModelOwnerID,
-            sessionKey: self.appModel.chatSessionKey,
-            agentID: self.appModel.chatDeliveryAgentId,
-            accountGeneration: self.appModel.operatorAuthorityGeneration,
-            inputs: self.appModel.activeGatewayConnectConfig?.controlUIInputs)
-    }
-
-    private func clearChatModalScope() {
-        if let scope = self.chatModalScope { self.chatModals.invalidate(origin: scope.origin) }
-        if self.presentedSheet?.chatReceipt != nil { self.presentedSheet = nil }
-        self.transcriptExportError = nil
-        self.chatModalScope = nil
-    }
-
-    private func synchronizeChatModalScope() {
-        let current = self.currentChatModalScope
-        guard self.chatModalScope != current else { return }
-        self.clearChatModalScope()
-        self.chatModalScope = current
-        if let current { self.chatModals.synchronize(origin: current.origin) }
-    }
-
-    private var chatModalActions: OpenClawChatModalActions {
-        let scope = self.currentChatModalScope
-        let contextIsCurrent = self.navigationContext(detail: true)
-        let container = self.presentedSheet
-        let inspection = self.nativeRunInspection
-        return Self.makeChatModalActions(
-            origin: scope?.origin,
-            router: self.nativeActions,
-            rootID: self.nativePresentationID,
-            isCurrentScope: { scope == self.currentChatModalScope && contextIsCurrent() },
-            isCurrentContainer: {
-                self.presentedSheet == container && self.nativeRunInspection == inspection &&
-                    self.transcriptExportError == nil && !self.showOnboarding &&
-                    !self.showGatewayProblemDetails && self.appModel.pendingExecApprovalPrompt == nil &&
-                    self.appModel.pendingNotificationPermissionGuidancePrompt == nil &&
-                    self.appModel.pendingAgentDeepLinkPrompt == nil &&
-                    self.gatewayController.pendingTrustPrompt == nil
-            })
-    }
-
     /// Shared sheets carry this frozen root context through async publication and
     /// dismissal. A retained callback can never borrow a replacement registration.
     static func makeChatModalActions(
@@ -1066,137 +996,16 @@ extension RootTabs {
             isCurrent: isCurrent)
     }
 
-    private func retainChatModalPresentation() -> Bool {
-        // Reset actual target/account departure before treating disappearance as cover.
-        self.synchronizeChatModalScope()
-        guard let scope = self.chatModalScope else { return false }
-        return self.chatModals.hasActivePresentation(for: scope.origin) ||
-            self.presentedSheet?.chatReceipt?.origin == scope.origin ||
-            self.transcriptExportError?.origin == scope.origin
-    }
-
-    private func prepareChatModal(_ viewModel: OpenClawChatViewModel) -> IOSChatModalPublication? {
-        self.synchronizeChatModalScope()
-        guard self.appModel.chatPresentation.viewModel === viewModel,
-              let scope = self.chatModalScope, self.presentedSheet == nil,
-              self.transcriptExportError == nil, !self.chatModals.hasActivePresentation,
-              let capture = self.chatModals.capture(
-                  origin: scope.origin,
-                  producerID: UUID(),
-                  actions: self.chatModalActions)
-        else { return nil }
-        return IOSChatModalPublication(
-            isCurrent: { capture.isCurrent },
-            present: { request in
-                guard self.presentedSheet == nil, self.transcriptExportError == nil,
-                      capture.accept() else { return }
-                let receipt = capture.receipt
-                switch request {
-                case let .backgroundTasks(agentID):
-                    self.presentedSheet = .backgroundTasks(agentID: agentID, receipt: receipt)
-                case let .newSessionOptions(viewModel):
-                    self.presentedSheet = .newSessionOptions(viewModel, receipt: receipt)
-                case let .transcriptShare(fileURL):
-                    self.presentedSheet = .transcriptShare(fileURL, receipt: receipt)
-                case .transcriptExportError:
-                    self.transcriptExportError = receipt
-                }
-            })
-    }
-
-    private func dismissChatModal(_ receipt: OpenClawChatModalPresentations.Receipt) {
-        guard self.presentedSheet?.chatReceipt?.id == receipt.id ||
-            self.transcriptExportError?.id == receipt.id else { return }
-        receipt.retireIfCurrent()
-        self.chatModals.removeDescendants(of: receipt)
-        if self.presentedSheet?.chatReceipt?.id == receipt.id { self.presentedSheet = nil }
-        if self.transcriptExportError?.id == receipt.id { self.transcriptExportError = nil }
-    }
-
-    private var chatSheetBinding: Binding<PresentedSheet?> {
-        let expected = self.presentedSheet
-        let ordinary = self.userModalBinding(self.$presentedSheet)
-        return Binding(get: { self.presentedSheet }, set: { value in
-            guard self.presentedSheet == expected else { return }
-            if let receipt = expected?.chatReceipt, value == nil {
-                self.dismissChatModal(receipt)
-            } else {
-                ordinary.wrappedValue = value
-            }
-        })
-    }
-
-    private var transcriptExportErrorBinding: Binding<Bool> {
-        let receipt = self.transcriptExportError
-        return Binding(get: { self.transcriptExportError != nil }, set: { value in
-            if !value, let receipt { self.dismissChatModal(receipt) }
-        })
-    }
-
     private func chatModalContent(
         _ receipt: OpenClawChatModalPresentations.Receipt,
         @ViewBuilder content: () -> some View) -> some View
     {
         content().openClawChatModalPresentations(
-            self.chatModals,
+            self.presentation.chatModals,
             origin: receipt.origin,
-            actions: self.chatModalActions,
+            actions: self.actions.chatModalActions,
             parent: receipt,
-            parentIsCurrent: { self.presentedSheet?.chatReceipt?.id == receipt.id })
-    }
-
-    /// Freeze the root and (for detail callbacks) stack that produced this action.
-    /// A callback retained by a departed view cannot act for a replacement root.
-    private func navigationContext(detail: Bool = false) -> @MainActor @Sendable () -> Bool {
-        let router = self.nativeActions
-        let rootID = self.nativePresentationID
-        let shellID = detail ? self.sidebarDetailShellID : nil
-        return {
-            (router == nil || router?.capturePresentationAuthority(rootID) != nil) &&
-                (shellID == nil || shellID == self.sidebarDetailShellID)
-        }
-    }
-
-    private func navigationAction(
-        detail: Bool = false,
-        disposition: NativeActionRouter.RetirementDisposition = .departure)
-        -> @MainActor @Sendable () -> Bool
-    {
-        let isCurrent = self.navigationContext(detail: detail)
-        let router = self.nativeActions
-        let rootID = self.nativePresentationID
-        return {
-            guard isCurrent() else { return false }
-            return router?.userNavigationDidChange(presentationID: rootID, disposition: disposition) ?? true
-        }
-    }
-
-    private func userAction(
-        detail: Bool = false,
-        disposition: NativeActionRouter.RetirementDisposition = .departure,
-        _ perform: @escaping @MainActor () -> Void) -> @MainActor () -> Void
-    {
-        let action = self.navigationAction(detail: detail, disposition: disposition)
-        return {
-            guard action() else { return }
-            perform()
-        }
-    }
-
-    private func userDestinationAction(_ destination: SidebarDestination) -> @MainActor () -> Void {
-        self.userAction(detail: true) { self.selectSidebarDestination(destination) }
-    }
-
-    private var userSettingsPath: Binding<[SettingsRoute]> {
-        let action = self.navigationAction(detail: true)
-        return Binding(get: { self.sidebarNavigationPath }, set: { path in
-            guard path != self.sidebarNavigationPath, action() else { return }
-            self.sidebarNavigationPath = path
-        })
-    }
-
-    private func userModalBinding<Value: Equatable>(_ binding: Binding<Value>) -> Binding<Value> {
-        Self.matchedModalBinding(binding, admit: self.navigationAction())
+            parentIsCurrent: { self.presentation.presentedSheet?.chatReceipt?.id == receipt.id })
     }
 
     static func matchedModalBinding<Value: Equatable>(
@@ -1210,190 +1019,18 @@ extension RootTabs {
         })
     }
 
-    private func notificationSettingsAction(detail: Bool = false) -> (String?) -> Void {
-        let action = self.navigationAction(detail: detail)
-        return { approvalID in
-            guard action() else { return }
-            self.openNotificationSettings(approvalID)
-        }
-    }
-
-    private func chatTarget(_ session: OpenClawChatSessionEntry) -> OpenClawChatSessionTarget {
-        IOSGatewayChatTransport.sessionTarget(
-            for: session.key,
-            selectedAgentID: self.appModel.chatDeliveryAgentId,
-            overrideAgentID: session.agentId)
-    }
-
-    private func commitChatNavigation(_ target: OpenClawChatSessionTarget) {
-        self.appModel.focusChatSession(target)
-        self.appModel.openChat(sessionKey: target.sessionKey)
-        // UI navigation is already admitted. Its request projection must not retire
-        // a newer native action when SwiftUI delivers the later onChange callback.
-        _ = self.appModel.consumeOpenChatRequest(self.appModel.openChatRequestID)
-        self.selectSidebarDestination(.chat)
-    }
-
-    private func openChatAction(detail: Bool = false) -> (OpenClawChatSessionTarget) -> Void {
-        let action = self.navigationAction(detail: detail)
-        return { target in
-            guard action() else { return }
-            self.commitChatNavigation(target)
-        }
-    }
-
-    private func prepareForkAction(detail: Bool = false) -> (OpenClawChatSessionEntry) -> PreparedChatNavigation? {
-        let action = self.navigationAction(detail: detail)
-        let context = self.navigationContext(detail: detail)
-        let router = self.nativeActions
-        let rootID = self.nativePresentationID
-        return { session in
-            guard action() else { return nil }
-            return PreparedChatNavigation.capture(
-                appModel: self.appModel,
-                router: router,
-                presentationID: rootID,
-                session: session,
-                isCurrentContext: context,
-                currentNativeBinding: { self.nativeChatBinding },
-                open: { self.commitChatNavigation($0) })
-        }
-    }
-
-    private func selectSidebarSession(_ session: OpenClawChatSessionEntry) {
-        switch Self.sidebarPresentation(for: session) {
-        case .chat:
-            self.commitChatNavigation(self.chatTarget(session))
-        case .dashboard:
-            let target = Self.sidebarDashboardTarget(for: session)
-            self.presentedSheet = .sessionDashboard(
-                sessionKey: target.sessionKey,
-                agentId: target.agentId)
-            guard self.shouldCollapseSidebarAfterSelection else { return }
-            withAnimation(self.sidebarAnimation) {
-                self.setSidebarVisible(false)
-            }
-        }
-    }
-
-    private func selectSidebarDestination(_ destination: SidebarDestination) {
-        // Replace stale stack callbacks without remounting an unchanged native Chat.
-        if self.selectedSidebarDestination != destination || !self.sidebarNavigationPath.isEmpty {
-            self.selectedSettingsRouteRequestID &+= 1
-        }
-        self.sidebarNavigationPath.removeAll()
-        self.suppressedExecApprovalForNotificationSettings = nil
-        self.selectedSidebarDestination = destination
-        self.selectedSettingsRoute = destination.settingsRoute
-        self.activeSettingsRoute = destination.settingsRoute
-        guard self.shouldCollapseSidebarAfterSelection else { return }
-        withAnimation(self.sidebarAnimation) {
-            self.setSidebarVisible(false)
-        }
-    }
-
     private func handleLiveVoiceStartRequest() {
         guard self.didApplyInitialChatSession, self.didEvaluateOnboarding,
               self.scenePhase == .active, self.appModel.pendingLiveVoiceStart
         else { return }
-        if !self.showOnboarding {
-            self.presentedSheet = nil
-            self.showGatewayProblemDetails = false
+        if !self.presentation.showOnboarding {
+            self.presentation.presentedSheet = nil
+            self.presentation.showGatewayProblemDetails = false
         }
         self.appModel.consumeLiveVoiceStartRequest(
             isSceneActive: true,
-            isOnboardingPresented: self.showOnboarding,
+            isOnboardingPresented: self.presentation.showOnboarding,
             hasGatewayConfiguration: self.hasExistingGatewayConfig() || self.appModel.gatewayServerName != nil)
-    }
-
-    private func selectSettingsRoute(_ route: SettingsRoute) {
-        self.sidebarNavigationPath.removeAll()
-        self.suppressedExecApprovalForNotificationSettings = nil
-        self.selectedSettingsRoute = nil
-        self.activeSettingsRoute = route
-        self.selectedSettingsRouteRequestID &+= 1
-        self.selectedSidebarDestination = .settings
-        self.sidebarNavigationPath = [route]
-        guard self.shouldCollapseSidebarAfterSelection else { return }
-        withAnimation(self.sidebarAnimation) {
-            self.setSidebarVisible(false)
-        }
-    }
-
-    private func openNotificationSettings(_ approvalID: String?) {
-        if let approvalID {
-            self.suppressExecApprovalPromptForNotificationSettings(approvalID)
-        }
-        let path = Self.notificationSettingsPath(
-            servingEnabled: NotificationServingPreference.isEnabled(),
-            disclosureAccepted: !PushBuildConfig.current.usesOpenClawHostedRelay
-                || PushEnrollmentConsent.disclosureAccepted)
-        self.presentedSheet = .notificationSettings(path: path)
-    }
-
-    private func suppressExecApprovalPromptForNotificationSettings(_ approvalID: String) {
-        guard let approvalID = ExecApprovalIdentifier.key(approvalID),
-              let prompt = self.appModel.pendingExecApprovalPrompt,
-              ExecApprovalIdentifier.key(prompt.id) == approvalID
-        else { return }
-        self.suppressedExecApprovalForNotificationSettings = NodeAppModel.execApprovalInboxKey(prompt)
-    }
-
-    private func handleSettingsRouteChange(_ route: SettingsRoute?) {
-        self.activeSettingsRoute = route
-        if route == nil {
-            self.selectedSettingsRoute = nil
-            if self.selectedSidebarDestination == .settings {
-                self.selectedSidebarDestination = .settings
-            }
-        }
-        self.suppressedExecApprovalForNotificationSettings = nil
-    }
-
-    private func handleSidebarSettingsNavigationPathChange(_ navigationPath: [SettingsRoute]) {
-        guard self.selectedSidebarDestination == .settings || self.selectedSidebarDestination == .gateway else {
-            return
-        }
-        let baseRoute = self.selectedSettingsRoute ?? self.selectedSidebarDestination.settingsRoute
-        let route = Self.visibleSettingsRoute(
-            navigationPath: navigationPath,
-            baseRoute: baseRoute)
-        self.handleSettingsRouteChange(route)
-    }
-
-    private func showSidebar() {
-        self.sidebarVisibilityUserOverridden = true
-        withAnimation(self.sidebarAnimation) {
-            self.setSidebarVisible(true)
-        }
-    }
-
-    private func hideSidebar() {
-        self.sidebarVisibilityUserOverridden = true
-        withAnimation(self.sidebarAnimation) {
-            self.setSidebarVisible(false)
-        }
-    }
-
-    private func updateSidebarLayout(containerSize: CGSize, force: Bool) {
-        let layoutMode = Self.sidebarLayoutMode(containerSize: containerSize)
-        let previousLayoutMode: SidebarLayoutMode = self.isSidebarDrawerLayout ? .drawer : .split
-        let didResolvePreviousLayout = self.didResolveSidebarLayout
-        let layoutModeDidChange = layoutMode != previousLayoutMode
-        self.didResolveSidebarLayout = true
-        self.isSidebarDrawerLayout = layoutMode == .drawer
-        if layoutModeDidChange && didResolvePreviousLayout {
-            self.sidebarVisibilityUserOverridden = false
-        }
-        guard force || !self.sidebarVisibilityUserOverridden else { return }
-
-        let preferredVisibility = Self.preferredSidebarVisibility(layoutMode: layoutMode)
-        guard self.isSidebarVisible != preferredVisibility else { return }
-        self.setSidebarVisible(preferredVisibility)
-    }
-
-    private func setSidebarVisible(_ isVisible: Bool) {
-        self.isSidebarVisible = isVisible
     }
 
     private func gatewayProblemPrimaryActionTitle(_ problem: GatewayConnectionProblem) -> String? {
@@ -1427,14 +1064,14 @@ extension RootTabs {
             }
         } else {
             guard onNavigate() else { return }
-            self.selectSidebarDestination(.gateway)
+            self.actions.selectSidebarDestination(.gateway)
         }
     }
 
     private func evaluateOnboardingPresentation(force: Bool) {
         if force {
             self.onboardingAllowSkip = true
-            self.showOnboarding = true
+            self.presentation.showOnboarding = true
             return
         }
 
@@ -1451,10 +1088,10 @@ extension RootTabs {
             self.maybeRequestLocalNetworkAccess(reason: "root_appear")
         case .onboarding:
             self.onboardingAllowSkip = true
-            self.showOnboarding = true
+            self.presentation.showOnboarding = true
         case .settings:
             self.didAutoOpenSettings = true
-            self.selectSidebarDestination(.gateway)
+            self.actions.selectSidebarDestination(.gateway)
             self.maybeRequestLocalNetworkAccess(reason: "root_appear")
         }
     }
@@ -1472,7 +1109,7 @@ extension RootTabs {
 
     private func maybeAutoOpenSettings() {
         guard !self.didAutoOpenSettings else { return }
-        guard !self.showOnboarding else { return }
+        guard !self.presentation.showOnboarding else { return }
         let route = Self.startupPresentationRoute(
             gatewayConnected: self.appModel.gatewayServerName != nil,
             hasConnectedOnce: self.hasConnectedOnce,
@@ -1481,7 +1118,7 @@ extension RootTabs {
             shouldPresentOnLaunch: false)
         guard route == .settings else { return }
         self.didAutoOpenSettings = true
-        self.selectSidebarDestination(.gateway)
+        self.actions.selectSidebarDestination(.gateway)
         self.maybeRequestLocalNetworkAccess(reason: "auto_open_settings")
     }
 
@@ -1489,12 +1126,12 @@ extension RootTabs {
         let requestID = self.appModel.gatewaySetupRequestID
         guard requestID != 0, requestID != self.gatewaySetupRequest?.id else { return }
         // The presented onboarding flow owns setup-link staging until it dismisses.
-        guard !self.showOnboarding else { return }
+        guard !self.presentation.showOnboarding else { return }
         guard let link = appModel.consumePendingGatewaySetupLink(), onAccepted() else { return }
-        self.showOnboarding = false
-        self.presentedSheet = nil
+        self.presentation.showOnboarding = false
+        self.presentation.presentedSheet = nil
         self.didAutoOpenSettings = true
-        self.selectSidebarDestination(.gateway)
+        self.actions.selectSidebarDestination(.gateway)
         // Root owns delivery so embedded Settings views cannot consume the one-shot link.
         self.gatewaySetupRequest = GatewaySetupRequest(id: requestID, link: link)
         self.requestLocalNetworkAccess(reason: "gateway_setup_deeplink")
@@ -1508,7 +1145,7 @@ extension RootTabs {
     private func maybeRequestLocalNetworkAccess(reason: String) {
         guard self.didEvaluateOnboarding else { return }
         guard self.scenePhase == .active else { return }
-        guard !self.showOnboarding else { return }
+        guard !self.presentation.showOnboarding else { return }
         self.requestLocalNetworkAccess(reason: reason)
     }
 
@@ -1526,13 +1163,13 @@ extension RootTabs {
     private func maybeShowQuickSetup() {
         let shouldPresent = Self.shouldPresentQuickSetup(
             quickSetupDismissed: self.quickSetupDismissed,
-            showOnboarding: self.showOnboarding,
-            hasPresentedSheet: self.presentedSheet != nil,
+            showOnboarding: self.presentation.showOnboarding,
+            hasPresentedSheet: self.presentation.presentedSheet != nil,
             gatewayConnected: self.appModel.gatewayServerName != nil,
             hasExistingGatewayConfig: self.hasExistingGatewayConfig(),
             discoveredGatewayCount: self.gatewayController.gateways.count)
         guard shouldPresent else { return }
-        self.presentedSheet = .quickSetup
+        self.presentation.presentedSheet = .quickSetup
     }
 }
 

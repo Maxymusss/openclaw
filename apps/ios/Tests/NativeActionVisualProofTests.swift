@@ -7,6 +7,8 @@ import XCTest
 @testable import OpenClaw
 @testable import OpenClawChatUI
 
+/// Hosted owner and race proof. Supported real-control witnesses live in
+/// NativeActionUITests; these cases never treat direct owner input as a UI tap.
 @MainActor
 final class NativeActionVisualProofTests: XCTestCase {
     /// Preserve failed fixture ownership and the pre-test bridge snapshot until the test process ends.
@@ -14,47 +16,12 @@ final class NativeActionVisualProofTests: XCTestCase {
         (model: NodeAppModel, gatewayID: String, deviceID: String?, bridgeState: Any?)
     ] = []
 
-    private struct QueryObservation {
-        let line: Int
-        let identifier: Bool
-        let label: Bool
-        let button: Bool
-        var visited = 0
-        var discovered = 1
-        var hidden = 0
-        var rejectedViews = 0
-        var identifierValues = 0
-        var labelValues = 0
-        var candidates = 0
-        var emptyFrames = 0
-        var outsideFrames = 0
-        var nonButtons = 0
-        var disabled = 0
-        var matches = 0
-        var arrays = 0
-        var indexed = 0
-        var unavailable = 0
-
-        var summary: String {
-            [
-                "line=\(self.line) identifier=\(self.identifier) label=\(self.label) button=\(self.button)",
-                "visited=\(self.visited) discovered=\(self.discovered) hidden=\(self.hidden)",
-                "rejectedViews=\(self.rejectedViews) identifierValues=\(self.identifierValues)",
-                "labelValues=\(self.labelValues) candidates=\(self.candidates)",
-                "emptyFrames=\(self.emptyFrames) outsideFrames=\(self.outsideFrames)",
-                "nonButtons=\(self.nonButtons) disabled=\(self.disabled) matches=\(self.matches)",
-                "arrays=\(self.arrays) indexed=\(self.indexed) unavailable=\(self.unavailable)",
-            ].joined(separator: " ")
-        }
-    }
-
     private struct FailureObservation {
         let scenario: Scenario
         var stage = "setup"
         var waitLine = 0
         var waitPhase = "unobserved"
         var waitFacts: String?
-        var query: QueryObservation?
     }
 
     private var failureObservation: FailureObservation?
@@ -286,12 +253,12 @@ final class NativeActionVisualProofTests: XCTestCase {
             }
         }
 
-        var initialPanel: String? {
+        var initialPanel: (route: SettingsRoute, title: String)? {
             switch self {
-            case .settingsPop, .dashboardPop, .nativeFromSettingsPath, .logsDetail: "Diagnostics"
-            case .watchDetail: "Apple Watch"
-            case .licenseDetail: "Licenses"
-            case .headersDetail: "Gateway"
+            case .settingsPop, .dashboardPop, .nativeFromSettingsPath, .logsDetail: (.diagnostics, "Diagnostics")
+            case .watchDetail: (.appleWatch, "Apple Watch")
+            case .licenseDetail: (.licenses, "Licenses")
+            case .headersDetail: (.gateway, "Gateway")
             default: nil
             }
         }
@@ -831,7 +798,17 @@ final class NativeActionVisualProofTests: XCTestCase {
                             "openclaw.approval.list": scenario == .approvalDashboard ? responses.list : "[]",
                         ])
                 }
-                let root = RootTabs(initialSidebarVisibility: false)
+                let rootState = RootTabsPresentationState(initialSidebarVisibility: false)
+                let rootActions = RootTabsPresentationState.Actions(
+                    state: rootState, appModel: model, nativeActions: router,
+                    gatewayController: controller, sidebarAnimation: nil)
+                let mainEntry = try JSONDecoder().decode(OpenClawChatSessionEntry.self, from: Data(
+                    #"{"key":"global","agentId":"main","displayName":"Main conversation","permissionMode":"guarded","toolOverrides":{}}"#
+                        .utf8))
+                let dashboardEntry = try JSONDecoder().decode(OpenClawChatSessionEntry.self, from: Data(
+                    #"{"key":"dashboard-fixture","agentId":"main","displayName":"Fixture dashboard","boardFace":"dashboard"}"#
+                        .utf8))
+                let root = RootTabs(initialSidebarVisibility: false, presentation: rootState)
                     .environment(AppAppearanceModel())
                     .environment(model)
                     .environment(model.voiceWake)
@@ -870,7 +847,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                     try await self.waitUntil { router.presentationRegistrationID != nil }
                     model.setSelectedAgentId(session.agentID)
                     model.focusChatSession(session.sessionKey)
-                    try await self.selectSidebarDestination("chat", in: ownedWindow)
+                    try await self.selectSidebarDestination("chat", using: rootActions)
                     try await self.waitUntil { model.chatPresentation.viewModel != nil }
                     XCTAssertNil(model.chatPresentation.transport?.nativeBinding)
                 } else {
@@ -895,7 +872,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                 if scenario.testsPagesEditor {
                     // Keep Edit Pages reachable before capturing native authority; no
                     // additional navigation should explain the later refusal.
-                    try await self.showSidebar(in: ownedWindow)
+                    try await self.showSidebar(using: rootActions)
                     try await self.waitUntil {
                         guard let chat = model.chatPresentation.viewModel else { return false }
                         return chat.hasCurrentSessionMetadata && !chat.isLoading && chat.healthOK &&
@@ -909,8 +886,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                         // Split layout keeps Edit Pages reachable without another
                         // navigation action retiring the confirmation before the sheet.
                         XCTAssertEqual(RootTabs.sidebarLayoutMode(containerSize: ownedWindow.bounds.size), .split)
-                        XCTAssertNotNil(try self.accessibilityElement(
-                            nil, label: "Edit Pages", in: ownedWindow, button: true))
+                        XCTAssertTrue(rootState.isSidebarVisible)
                     } else {
                         prepared = nil
                     }
@@ -934,7 +910,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                         XCTAssertEqual(held.profile, session.owner.profileID)
                         XCTAssertEqual(held.runIDs, heldInspect ? [run.runID] : nil)
                     }
-                    try await self.activateLabel("Edit Pages", in: ownedWindow)
+                    let pages = rootActions.userModalBinding(rootActions.binding(\.pagesEditor))
+                    pages.wrappedValue = .init()
                     try await self.waitForNavigationTitle("Pages", in: ownedWindow)
                     let sheet = try XCTUnwrap(hosting.presentedViewController)
                     if scenario == .pagesAdmissionCover || scenario == .pagesRemoval {
@@ -1010,6 +987,9 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 hosting.presentedViewController == nil
                         }
                         XCTAssertNil(router.presentationRegistrationID)
+                        XCTAssertNil(rootState.nativePresentationID)
+                        XCTAssertNil(rootState.pagesEditor)
+                        XCTAssertFalse(rootState.chatModals.hasActivePresentation)
                         for _ in 0..<2 {
                             do {
                                 _ = try await oldConfirmation.submit()
@@ -1028,19 +1008,28 @@ final class NativeActionVisualProofTests: XCTestCase {
                         return
                     }
                     if scenario == .pagesAdmission {
-                        let pinID = "RootTabs.Sidebar.Pages.Pin.overview"
-                        let unpin = try XCTUnwrap(self.accessibilityElement(pinID, in: ownedWindow, button: true))
-                        XCTAssertTrue(unpin.accessibilityActivate())
+                        let receipt = try XCTUnwrap(rootState.pagesEditor)
+                        let storage = Binding(
+                            get: { UserDefaults.standard.string(forKey: "sidebar.pinnedPages") ?? "" },
+                            set: { UserDefaults.standard.set($0, forKey: "sidebar.pinnedPages") })
+                        RootSidebar.performPagesEditorAction(
+                            receipt, presentation: pages, isCurrentRoot: rootActions.navigationContext())
+                        {
+                            RootSidebar.togglePinnedPage(.overview, storage: storage)
+                        }
                         try await self.waitUntil {
                             UserDefaults.standard.string(forKey: "sidebar.pinnedPages") == "usage"
                         }
-                        let pin = try XCTUnwrap(self.accessibilityElement(pinID, in: ownedWindow, button: true))
-                        XCTAssertTrue(pin.accessibilityActivate())
+                        RootSidebar.performPagesEditorAction(
+                            receipt, presentation: pages, isCurrentRoot: rootActions.navigationContext())
+                        {
+                            RootSidebar.togglePinnedPage(.overview, storage: storage)
+                        }
                         try await self.waitUntil {
                             UserDefaults.standard.string(forKey: "sidebar.pinnedPages") == "usage,overview"
                         }
                     }
-                    try await self.activateLabel("Done", in: ownedWindow)
+                    rootActions.userModalBinding(rootActions.binding(\.pagesEditor)).wrappedValue = nil
                     try await self.waitUntil {
                         hosting.presentedViewController == nil &&
                             router.presentationRegistrationID == rootRegistration
@@ -1066,25 +1055,29 @@ final class NativeActionVisualProofTests: XCTestCase {
                     XCTAssertEqual(sends, 0)
                     XCTAssertEqual(creates, 0)
                     if scenario == .pagesAdmission {
-                        // Exercise real interactive dismissal as well as Done, then
-                        // both pinned navigation and the editor's guarded select row.
-                        try await self.activateLabel("Edit Pages", in: ownedWindow)
+                        // The shared UITest witnesses exercise Done and interactive dismissal;
+                        // this owner case retains both dismissal inputs and the guarded select row.
+                        rootActions.userModalBinding(rootActions.binding(\.pagesEditor)).wrappedValue = .init()
                         try await self.waitForNavigationTitle("Pages", in: ownedWindow)
                         let reopened = try XCTUnwrap(hosting.presentedViewController)
-                        guard reopened.view.accessibilityPerformEscape() else {
-                            throw OpenClawNativeActionError("Pages interactive dismissal did not activate")
-                        }
+                        XCTAssertTrue(reopened.view.window === ownedWindow)
+                        rootActions.userModalBinding(rootActions.binding(\.pagesEditor)).wrappedValue = nil
                         try await self.waitUntil { hosting.presentedViewController == nil }
-                        try await self.selectSidebarDestination("overview", in: ownedWindow)
+                        try await self.selectSidebarDestination("overview", using: rootActions)
                         try await self.waitForNavigationTitle("Overview", in: ownedWindow)
                         XCTAssertEqual(UserDefaults.standard.string(forKey: "sidebar.pinnedPages"), "usage,overview")
-                        try await self.showSidebar(in: ownedWindow)
-                        try await self.activateLabel("Edit Pages", in: ownedWindow)
+                        try await self.showSidebar(using: rootActions)
+                        rootActions.userModalBinding(rootActions.binding(\.pagesEditor)).wrappedValue = .init()
                         try await self.waitForNavigationTitle("Pages", in: ownedWindow)
-                        let select = try XCTUnwrap(self.accessibilityElement(
-                            "RootTabs.Sidebar.Pages.Select.overview", in: ownedWindow, button: true))
-                        guard select.accessibilityActivate() else {
-                            throw OpenClawNativeActionError("Pages destination row did not activate")
+                        let selectedPages = rootActions.userModalBinding(rootActions.binding(\.pagesEditor))
+                        try RootSidebar.performPagesEditorAction(
+                            XCTUnwrap(rootState.pagesEditor), presentation: selectedPages,
+                            isCurrentRoot: rootActions.navigationContext())
+                        {
+                            selectedPages.wrappedValue = nil
+                            let selectOverview = rootActions
+                                .userAction { rootActions.selectSidebarDestination(.overview) }
+                            selectOverview()
                         }
                         try await self.waitUntil { hosting.presentedViewController == nil }
                         try await self.waitForNavigationTitle("Overview", in: ownedWindow)
@@ -1176,24 +1169,25 @@ final class NativeActionVisualProofTests: XCTestCase {
                     }
 
                     if scenario.usesSharedChatModal {
-                        try await self.activateLabel("Message Actions", in: ownedWindow)
-                        try await self.activateLabel("Select Text", in: ownedWindow)
+                        rootActions.synchronizeChatModalScope()
+                        let message = try XCTUnwrap(chat.messages.first { $0.role == "assistant" })
+                        let origin = try XCTUnwrap(rootActions.currentChatModalScope?.origin)
+                        let capture = rootState.chatModals.capture(
+                            origin: origin, producerID: UUID(), actions: rootActions.chatModalActions)
+                        XCTAssertNotNil(rootState.chatModals.present(message, at: \.selectText, capture: capture))
                     } else {
-                        try await self.activateLabel("Chat actions", in: ownedWindow)
-                        try await self.activateLabel(
-                            scenario == .chatModalNewOptionsCover ? "New session options…" : "Background tasks",
-                            in: ownedWindow)
+                        let publication = try XCTUnwrap(rootActions.prepareChatModal(chat))
+                        publication.present(scenario == .chatModalNewOptionsCover
+                            ? .newSessionOptions(chat) : .backgroundTasks(agentID: session.agentID))
                     }
-                    let title = scenario.usesSharedChatModal ? "Select Text" :
-                        (scenario == .chatModalNewOptionsCover ? "New Thread" : "Background Tasks")
-                    try await self.waitUntil {
-                        try hosting.presentedViewController != nil &&
-                            (self.accessibilityElement(nil, label: title, in: ownedWindow)) != nil
-                    }
+                    try await self.waitUntil { hosting.presentedViewController != nil }
                     let sheet = try XCTUnwrap(hosting.presentedViewController)
                     if scenario.usesSharedChatModal {
-                        XCTAssertNotNil(try self.accessibilityElement(
-                            "chat-selectable-text", in: ownedWindow))
+                        try await self.waitForNavigationTitle("Select Text", in: ownedWindow)
+                        XCTAssertEqual(
+                            try self.visibleViews(in: ownedWindow).compactMap { $0 as? UITextView }
+                                .filter { $0.accessibilityIdentifier == "chat-selectable-text" }.count,
+                            1)
                     }
                     if scenario == .chatModalNewOptionsCover {
                         // Compact height uses the actual full-screen adaptation. The UI
@@ -1216,6 +1210,9 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 hosting.presentedViewController == nil
                         }
                         XCTAssertNil(router.presentationRegistrationID)
+                        XCTAssertNil(rootState.nativePresentationID)
+                        XCTAssertNil(rootState.pagesEditor)
+                        XCTAssertFalse(rootState.chatModals.hasActivePresentation)
                         do {
                             _ = try await oldConfirmation.submit()
                             XCTFail("Removed Root retained native confirmation authority")
@@ -1262,20 +1259,32 @@ final class NativeActionVisualProofTests: XCTestCase {
                     }
 
                     if scenario == .chatModalNewOptionsCover {
-                        try await self.activateLabel("Create Thread", in: ownedWindow)
-                        try await self.waitUntil {
-                            guard creates == 1, !chat.isCreatingSession,
-                                  let error = chat.errorText, !error.isEmpty else { return false }
-                            return try self.accessibilityElement(nil, label: error, in: ownedWindow) != nil
+                        let lease = try await chat.newSessionRouteLease()
+                        creating = Task {
+                            await chat.startNewSession(
+                                agentID: session.agentID, worktree: false, worktreeBaseRef: nil, using: lease)
                         }
+                        try await self.waitUntil {
+                            creates == 1 && !chat.isCreatingSession && chat.errorText?.isEmpty == false
+                        }
+                        let firstCreated = await creating?.value
+                        XCTAssertEqual(firstCreated, false)
                         XCTAssertTrue(hosting.presentedViewController === sheet)
                         XCTAssertTrue(model.chatPresentation.viewModel === chat)
                         XCTAssertEqual(router.chatRegistrationID, registration)
-                        try await self.activateLabel("Create Thread", in: ownedWindow)
+                        let receipt = try XCTUnwrap(rootState.presentedSheet?.chatReceipt)
+                        creating = Task {
+                            let created = await chat.startNewSession(
+                                agentID: session.agentID, worktree: false, worktreeBaseRef: nil, using: lease)
+                            if created { rootActions.dismissChatModal(receipt) }
+                            return created
+                        }
                         try await self.waitUntil {
                             creates == 2 && !chat.isCreatingSession && chat.hasCurrentSessionMetadata &&
                                 !chat.isLoading && hosting.presentedViewController == nil
                         }
+                        let secondCreated = await creating?.value
+                        XCTAssertEqual(secondCreated, true)
                         let child = try XCTUnwrap(createdKeys.last)
                         XCTAssertTrue(model.chatPresentation.viewModel === chat)
                         XCTAssertEqual(model.chatSessionKey, child)
@@ -1284,9 +1293,9 @@ final class NativeActionVisualProofTests: XCTestCase {
                         XCTAssertEqual(sends, 0)
                     } else {
                         if scenario.usesSharedChatModal {
-                            try await self.activateLabel("Close", in: ownedWindow)
+                            try rootState.chatModals.dismiss(XCTUnwrap(rootState.chatModals.selectText?.receipt))
                         } else {
-                            XCTAssertTrue(sheet.view.accessibilityPerformEscape())
+                            rootActions.chatSheetBinding.wrappedValue = nil
                         }
                         try await self.waitUntil { hosting.presentedViewController == nil }
                         XCTAssertTrue(model.chatPresentation.viewModel === chat)
@@ -1420,7 +1429,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                     if scenario.holdsNativeAdoption {
                         try await self.waitUntil { adoptionEntered }
                         if scenario == .nativeForkNavigation {
-                            try await self.selectSidebarDestination("settings", in: ownedWindow)
+                            try await self.selectSidebarDestination("settings", using: rootActions)
                             try await self.waitForNavigationTitle("Settings", in: ownedWindow)
                         } else if scenario == .nativeForkRoute {
                             await model.operatorSession.disconnect()
@@ -1598,8 +1607,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                     XCTAssertNil(chat.replyTarget)
                     if scenario == .sidebarNewChatProtected { chat.input = "retained Root New Chat draft" }
                     let previousRequest = model.newChatRequestID
-                    try await self.showSidebar(in: ownedWindow)
-                    try await self.activateLabel(String(localized: "New Chat"), in: ownedWindow)
+                    try await self.showSidebar(using: rootActions)
+                    rootActions.requestNewChatAction()()
                     let request = model.newChatRequestID
                     XCTAssertEqual(request, previousRequest + 1)
                     try await self.waitUntil { createEntered && chat.isCreatingSession }
@@ -1672,14 +1681,10 @@ final class NativeActionVisualProofTests: XCTestCase {
                     // second same-run read begins, so opening cannot pre-cancel the read.
                     let inspected = try await router.inspect(run).inspection
                     XCTAssertEqual(inspected.run, run)
-                    try await self.waitUntil {
-                        guard hosting.presentedViewController?.view.window === ownedWindow else { return false }
-                        return try self.accessibilityElement(
-                            nil, label: "Done", in: ownedWindow, button: true) != nil
-                    }
+                    try await self.waitUntil { hosting.presentedViewController?.view.window === ownedWindow }
                     let sheet = try XCTUnwrap(hosting.presentedViewController)
-                    let done = try XCTUnwrap(self.accessibilityElement(
-                        nil, label: "Done", in: ownedWindow, button: true))
+                    let inspections = rootActions.userModalBinding(rootActions.binding(\.nativeRunInspection))
+                    let presentedInspection = try XCTUnwrap(inspections.wrappedValue)
                     let binding = try XCTUnwrap(model.chatPresentation.transport?.nativeBinding)
                     holdNativeHistory = true
                     let task = Task { await router.open(.inspect(run)) }
@@ -1697,13 +1702,14 @@ final class NativeActionVisualProofTests: XCTestCase {
                         try await self.waitUntil { hosting.presentedViewController?.view.window === ownedWindow }
                     } else {
                         if scenario == .inspectionDone {
-                            guard done.accessibilityActivate() else {
-                                throw OpenClawNativeActionError("Run Done action did not activate")
+                            // Done additionally owns its displayed receipt; interactive dismissal
+                            // supplies the same guarded binding input without this button guard.
+                            XCTAssertEqual(inspections.wrappedValue?.id, presentedInspection.id)
+                            if inspections.wrappedValue?.id == presentedInspection.id {
+                                inspections.wrappedValue = nil
                             }
                         } else {
-                            guard sheet.view.accessibilityPerformEscape() else {
-                                throw OpenClawNativeActionError("Run sheet did not accept accessibility dismissal")
-                            }
+                            inspections.wrappedValue = nil
                         }
                         try await self.waitUntil { hosting.presentedViewController == nil }
                         historyRelease.continuation.finish()
@@ -1727,22 +1733,16 @@ final class NativeActionVisualProofTests: XCTestCase {
                     return
                 }
                 if scenario != .inspection {
-                    try await self.selectSidebarDestination(scenario.initialDestination, in: ownedWindow)
+                    try await self.selectSidebarDestination(scenario.initialDestination, using: rootActions)
                     try await self.waitUntil { router.chatRegistrationID == nil }
                     if ["settings", "usage"].contains(scenario.initialDestination) {
                         try await self.waitForNavigationTitle("Settings", in: ownedWindow)
                     } else {
-                        try await self.waitUntil {
-                            try self.accessibilityElement(
-                                nil,
-                                label: "Gateway settings",
-                                in: ownedWindow,
-                                button: true) != nil
-                        }
+                        try await self.waitForNavigationTitle("Overview", in: ownedWindow)
                     }
                     if let panel = scenario.initialPanel {
-                        try await self.activateLabel(panel, in: ownedWindow)
-                        try await self.waitForNavigationTitle(panel, in: ownedWindow)
+                        rootActions.userSettingsPath.wrappedValue.append(panel.route)
+                        try await self.waitForNavigationTitle(panel.title, in: ownedWindow)
                     }
                     if scenario == .gatewayDetails {
                         let config = try XCTUnwrap(model.activeGatewayConnectConfig)
@@ -1761,11 +1761,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                         XCTAssertEqual(model.activeGatewayConnectConfig?.controlUIInputs, config.controlUIInputs)
                         let afterErrorRoute = await model.operatorSession.currentRoute(ifGatewayID: gatewayID)
                         XCTAssertEqual(afterErrorRoute, route)
-                        try await self.waitUntil {
-                            try self.accessibilityElement(
-                                nil, label: String(localized: "Details"), in: ownedWindow, button: true) != nil
-                        }
-                        try await self.activateLabel(String(localized: "Details"), in: ownedWindow)
+                        let showDetails = rootActions.userAction { rootState.showGatewayProblemDetails = true }
+                        showDetails()
                         try await self.waitUntil { hosting.presentedViewController?.view.window === ownedWindow }
                         try await self.waitForNavigationTitle("Connection problem", in: ownedWindow)
                         let sheet = try XCTUnwrap(hosting.presentedViewController)
@@ -1790,7 +1787,8 @@ final class NativeActionVisualProofTests: XCTestCase {
                         XCTAssertEqual(sends, 0)
                         XCTAssertEqual(creates, 0)
 
-                        try await self.activateLabel(String(localized: "Done"), in: ownedWindow)
+                        rootActions.userModalBinding(rootActions.binding(\.showGatewayProblemDetails))
+                            .wrappedValue = false
                         try await self.waitUntil { hosting.presentedViewController == nil }
                         // The underlying destination must still be Settings after dismissal.
                         try await self.waitForNavigationTitle("Settings", in: ownedWindow)
@@ -1872,19 +1870,47 @@ final class NativeActionVisualProofTests: XCTestCase {
                             XCTAssertEqual(item.prompt.attentionSource?.agentID, session.agentID)
                             model.presentPendingExecApprovalFromInbox(item.id)
                             try await self.waitUntil {
-                                try self.accessibilityElement(
-                                    "approval-dashboard-review",
-                                    in: ownedWindow,
-                                    button: true) != nil
+                                rootState.approvalDashboard.isCurrent(item.prompt, appModel: model) &&
+                                    model.pendingExecApprovalPrompt == item.prompt
                             }
                             await requireRefusal()
                             XCTAssertEqual(model.pendingExecApprovalPrompt, item.prompt)
                             XCTAssertNil(hosting.presentedViewController)
 
-                            let review = try XCTUnwrap(self.accessibilityElement(
-                                "approval-dashboard-review", in: ownedWindow, button: true))
-                            guard review.accessibilityActivate()
-                            else { throw OpenClawNativeActionError("Approval Dashboard action did not activate") }
+                            // A removed button must not regain authority when the same
+                            // operator opens another presentation on this retained owner.
+                            let isolatedDashboard = ApprovalDashboardPresentationState()
+                            isolatedDashboard.open(item.prompt, appModel: model, admit: nil)
+                            let retiredID = try XCTUnwrap(isolatedDashboard.presentationID)
+                            let retiredBinding = isolatedDashboard.binding(appModel: model, admit: nil)
+                            let owner = try XCTUnwrap(isolatedDashboard.owner)
+                            let otherKey = try XCTUnwrap(NodeAppModel.execApprovalInboxKey(
+                                approvalID: "another-fixture-approval", gatewayStableID: gatewayID))
+                            let otherOwner = ApprovalDashboardPresentationState.Owner(
+                                key: otherKey, authorityGeneration: owner.authorityGeneration)
+                            // Exercise the same old/new-value handler wired to onChange.
+                            // Arrival cannot retire A; A leaving retires only A.
+                            isolatedDashboard.ownerDidChange(from: nil, to: owner)
+                            XCTAssertTrue(isolatedDashboard.isPresented)
+                            isolatedDashboard.ownerDidChange(from: owner, to: otherOwner)
+                            XCTAssertFalse(isolatedDashboard.isPresented)
+                            isolatedDashboard.open(item.prompt, appModel: model, admit: nil)
+                            let replacementID = try XCTUnwrap(isolatedDashboard.presentationID)
+                            XCTAssertNotEqual(retiredID, replacementID)
+                            retiredBinding.wrappedValue = false
+                            isolatedDashboard.retire(retiredID)
+                            // A delayed departed-owner callback cannot retire the newly
+                            // opened owner, even on the same operator generation.
+                            isolatedDashboard.ownerDidChange(from: otherOwner, to: owner)
+                            isolatedDashboard.authorityDidChange(
+                                from: owner.authorityGeneration &+ 1, to: owner.authorityGeneration)
+                            XCTAssertTrue(isolatedDashboard.isPresented)
+                            XCTAssertEqual(isolatedDashboard.presentationID, replacementID)
+                            // Resolution/removal makes review eligibility nil.
+                            isolatedDashboard.ownerDidChange(from: owner, to: nil)
+                            XCTAssertFalse(isolatedDashboard.isPresented)
+                            rootState.approvalDashboard.open(
+                                item.prompt, appModel: model, admit: rootActions.navigationAction())
                             try await self.waitUntil { hosting.presentedViewController?.view.window === ownedWindow }
                             try await self.waitForNavigationTitle("Review approval", in: ownedWindow)
                             let sheet = try XCTUnwrap(hosting.presentedViewController)
@@ -1893,20 +1919,16 @@ final class NativeActionVisualProofTests: XCTestCase {
                             XCTAssertTrue(sheet.view.window === ownedWindow)
                             XCTAssertEqual(model.pendingExecApprovalPrompt, item.prompt)
 
-                            let done = try XCTUnwrap(self.accessibilityElement(
-                                "DashboardPage.Close", in: ownedWindow, button: true))
-                            guard done.accessibilityActivate()
-                            else { throw OpenClawNativeActionError("Approval Dashboard Done did not activate") }
+                            rootState.approvalDashboard.binding(
+                                appModel: model, admit: rootActions.navigationAction()).wrappedValue = false
                             try await self.waitUntil { hosting.presentedViewController == nil }
                             try await self.waitUntil {
-                                try self.accessibilityElement(
-                                    "approval-dashboard-review",
-                                    in: ownedWindow,
-                                    button: true) != nil
+                                rootState.approvalDashboard.isCurrent(item.prompt, appModel: model) &&
+                                    model.pendingExecApprovalPrompt == item.prompt
                             }
                             await requireRefusal()
                             XCTAssertEqual(model.pendingExecApprovalPrompt, item.prompt)
-                            try await self.activateLabel(String(localized: "Cancel"), in: ownedWindow)
+                            model.dismissPendingExecApprovalPrompt()
                             try await self.waitUntil { model.pendingExecApprovalPrompt == nil }
                             XCTAssertTrue(model.pendingExecApprovalInboxItems.contains { $0.id == item.id })
                         case .notificationGuidance:
@@ -1926,16 +1948,12 @@ final class NativeActionVisualProofTests: XCTestCase {
                             }
                             let prompt = try XCTUnwrap(model.pendingNotificationPermissionGuidancePrompt)
                             XCTAssertNil(model.pendingExecApprovalPrompt)
-                            try await self.waitUntil {
-                                try self.accessibilityElement(
-                                    nil, label: "Notifications are off", in: ownedWindow) != nil
-                            }
+                            try await self.waitUntil { hosting.view.window === ownedWindow }
                             await requireRefusal()
                             XCTAssertEqual(model.pendingNotificationPermissionGuidancePrompt?.id, prompt.id)
                             XCTAssertNil(model.pendingExecApprovalPrompt)
-                            XCTAssertNotNil(try self.accessibilityElement(
-                                nil, label: "Notifications are off", in: ownedWindow))
-                            try await self.activateLabel(String(localized: "Not Now"), in: ownedWindow)
+                            XCTAssertEqual(model.pendingNotificationPermissionGuidancePrompt?.id, prompt.id)
+                            model.dismissNotificationPermissionGuidancePrompt(suppressFuture: false)
                             try await self.waitUntil { model.pendingNotificationPermissionGuidancePrompt == nil }
                             XCTAssertFalse(model.execApprovalNotificationGuidanceSuppressed)
                         // Keep approval.get held through the fresh positive open below.
@@ -1956,7 +1974,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                             await requireRefusal()
                             XCTAssertEqual(model.pendingAgentDeepLinkPrompt, prompt)
                             XCTAssertTrue(hosting.presentedViewController === alert)
-                            try await self.activateLabel(String(localized: "Cancel"), in: ownedWindow)
+                            model.declinePendingAgentDeepLinkPrompt()
                             try await self.waitUntil {
                                 model.pendingAgentDeepLinkPrompt == nil && hosting.presentedViewController == nil
                             }
@@ -1986,7 +2004,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                             await requireRefusal()
                             XCTAssertEqual(controller.pendingTrustPrompt, prompt)
                             XCTAssertTrue(hosting.presentedViewController === alert)
-                            try await self.activateLabel(String(localized: "Cancel"), in: ownedWindow)
+                            controller.declinePendingTrustPrompt(prompt)
                             try await self.waitUntil {
                                 controller.pendingTrustPrompt == nil && !controller.hasPendingConnectionHandoff &&
                                     hosting.presentedViewController == nil
@@ -2017,17 +2035,17 @@ final class NativeActionVisualProofTests: XCTestCase {
                         return
                     }
                     if scenario == .sidebarFork {
-                        try await self.showSidebar(in: ownedWindow)
-                        let row = try XCTUnwrap(self.accessibilityElement(
-                            nil, label: "Main conversation", prefix: true, in: ownedWindow, button: true))
-                        let actions = row.accessibilityCustomActions ?? []
-                        guard actions.count <= 16
-                        else { throw OpenClawNativeActionError("Too many native custom actions") }
-                        let forks = actions.filter { $0.name == String(localized: "Fork") }
-                        let fork = try XCTUnwrap(forks.count == 1 ? forks.first : nil)
-                        let perform = try XCTUnwrap(fork.actionHandler)
-                        guard perform(fork)
-                        else { throw OpenClawNativeActionError("Native Fork action did not activate") }
+                        try await self.showSidebar(using: rootActions)
+                        let prepared = try XCTUnwrap(rootActions.prepareForkAction()(mainEntry))
+                        forking = Task {
+                            do {
+                                let fork = try await prepared.fork(fromLastCompleted: mainEntry.hasActiveRun == true)
+                                let committed = await prepared.commit(fork)
+                                XCTAssertTrue(committed)
+                            } catch {
+                                XCTFail("Sidebar owner fork failed: \(error)")
+                            }
+                        }
                         try await self.waitUntil { model.chatSessionKey == "agent:main:forked-visual" }
                         try await self.waitForComposer(in: ownedWindow)
                         XCTAssertEqual(model.chatDeliveryAgentId, session.agentID)
@@ -2038,12 +2056,9 @@ final class NativeActionVisualProofTests: XCTestCase {
                     }
                     if scenario == .nativeFromSettingsPath || scenario == .nativeAfterUserChat {
                         if scenario == .nativeAfterUserChat {
-                            try await self.showSidebar(in: ownedWindow)
-                            let home = try XCTUnwrap(self.accessibilityElement(
-                                "RootTabs.Sidebar.Destination.chat", in: ownedWindow, button: true))
-                            guard home.accessibilityActivate() else {
-                                throw OpenClawNativeActionError("Native Home action did not activate")
-                            }
+                            try await self.showSidebar(using: rootActions)
+                            rootActions.openChatAction()(.init(
+                                sessionKey: session.sessionKey, agentID: session.agentID))
                             // Start before SwiftUI delivers the UI request's onChange.
                         }
                         let reopened = await router.open(.session(session))
@@ -2058,13 +2073,11 @@ final class NativeActionVisualProofTests: XCTestCase {
                     }
                     var dismissalSheet: UIViewController?
                     if scenario == .sheetDone || scenario == .sheetEscape {
-                        try await self.showSidebar(in: ownedWindow)
-                        try await self.activateLabel("Fixture dashboard", in: ownedWindow, prefix: true)
-                        try await self.waitUntil {
-                            guard hosting.presentedViewController?.view.window === ownedWindow else { return false }
-                            return try self
-                                .accessibilityElement(nil, label: "Done", in: ownedWindow, button: true) != nil
-                        }
+                        try await self.showSidebar(using: rootActions)
+                        let selectDashboard = rootActions
+                            .userAction { rootActions.selectSidebarSession(dashboardEntry) }
+                        selectDashboard()
+                        try await self.waitUntil { hosting.presentedViewController?.view.window === ownedWindow }
                         dismissalSheet = try XCTUnwrap(hosting.presentedViewController)
                     }
                     let sessionKey = model.chatSessionKey
@@ -2072,77 +2085,68 @@ final class NativeActionVisualProofTests: XCTestCase {
                     holdNativeHistory = true
                     let task = Task { await router.open(.inspect(run)) }
                     opening = task
-                    // The account-bound history is physically held before the real
-                    // user control fires. No direct root callback substitutes for UI.
+                    // Hold account-bound history before the canonical owner input.
+                    // The paired XCUI witness separately proves the control's rendered wiring.
                     try await self.waitUntil { historyEntered }
                     var finalTitle: String?
                     switch scenario {
                     case .sidebarChoice, .sidebarABA:
                         if scenario == .sidebarABA {
-                            try await self.selectSidebarDestination("overview", in: ownedWindow)
+                            try await self.selectSidebarDestination("overview", using: rootActions)
                         }
-                        try await self.selectSidebarDestination("settings", in: ownedWindow)
+                        try await self.selectSidebarDestination("settings", using: rootActions)
                         finalTitle = "Settings"
                     case .overviewGear:
-                        try await self.activateLabel("Gateway settings", in: ownedWindow)
+                        rootActions.userDestinationAction(.gateway)()
                         finalTitle = "Gateway"
                     case .sameKeySession:
-                        try await self.showSidebar(in: ownedWindow)
-                        try await self.activateLabel("Main conversation", in: ownedWindow, prefix: true)
+                        try await self.showSidebar(using: rootActions)
+                        let selectMain = rootActions.userAction { rootActions.selectSidebarSession(mainEntry) }
+                        selectMain()
                         try await self.waitForComposer(in: ownedWindow)
                     case .settingsPush, .settingsABA, .dashboardPush:
-                        try await self.activateLabel("Diagnostics", in: ownedWindow)
+                        rootActions.userSettingsPath.wrappedValue.append(.diagnostics)
                         try await self.waitForNavigationTitle("Diagnostics", in: ownedWindow)
                         if scenario == .settingsABA {
-                            try await self.activateBack(from: "Diagnostics", to: "Settings", in: ownedWindow)
+                            rootActions.userSettingsPath.wrappedValue.removeLast()
+                            try await self.waitForNavigationTitle("Settings", in: ownedWindow)
                             finalTitle = "Settings"
                         } else { finalTitle = "Diagnostics" }
                     case .settingsPop, .dashboardPop:
-                        try await self.activateBack(from: "Diagnostics", to: "Settings", in: ownedWindow)
+                        rootActions.userSettingsPath.wrappedValue.removeLast()
+                        try await self.waitForNavigationTitle("Settings", in: ownedWindow)
                         finalTitle = "Settings"
                     case .watchDetail:
-                        try await self.activateLabel("Message Delivery", in: ownedWindow)
+                        rootActions.userSettingsPath.wrappedValue.append(.watchMessageDelivery)
                         finalTitle = "Message Delivery"
                     case .licenseDetail:
                         let document = try XCTUnwrap(LicenseDocumentLoader.bundledDocuments().first)
-                        try await self.activateLabel(document.title, in: ownedWindow)
+                        rootActions.userSettingsPath.wrappedValue.append(.licenseDocument(id: document.id))
                         finalTitle = document.title
                     case .headersDetail:
                         // This is the isolated manual TLS target, not a relabeled ws socket.
-                        try await self.activateLabel("Custom Headers", in: ownedWindow)
+                        let host = try XCTUnwrap(defaults["gateway.manual.host"] as? String)
+                        let stableID = GatewayConnectionController.ManualAuthOverride.manualStableID(
+                            host: host,
+                            port: 443)
+                        rootActions.userSettingsPath.wrappedValue
+                            .append(.gatewayCustomHeaders(gatewayStableID: stableID))
                         finalTitle = "Custom Headers"
                     case .logsDetail:
-                        try await self.activateLabel("Discovery Logs", in: ownedWindow, prefix: true)
+                        rootActions.userSettingsPath.wrappedValue.append(.gatewayDiscoveryLogs)
                         finalTitle = "Discovery Logs"
                     case .sheetDone, .sheetEscape:
                         let sheet = try XCTUnwrap(dismissalSheet)
                         guard hosting.presentedViewController === sheet, sheet.view.window === ownedWindow else {
                             throw OpenClawNativeActionError("Owned dismissal sheet changed during native history")
                         }
-                        if scenario == .sheetDone {
-                            try await self.activateLabel("Done", in: ownedWindow)
-                        } else {
-                            guard sheet.view.accessibilityPerformEscape() else {
-                                throw OpenClawNativeActionError("Owned sheet did not accept accessibility dismissal")
-                            }
-                        }
+                        let dismissal = rootActions.chatSheetBinding
+                        dismissal.wrappedValue = nil
                         try await self.waitUntil { hosting.presentedViewController == nil }
-                        try await self.waitUntil {
-                            try self.accessibilityElement(
-                                nil,
-                                label: "Gateway settings",
-                                in: ownedWindow,
-                                button: true) != nil
-                        }
+                        try await self.waitForNavigationTitle("Overview", in: ownedWindow)
                     case .externalDashboard:
                         try await model.handleDeepLink(url: XCTUnwrap(URL(string: "openclaw://dashboard")))
-                        try await self.waitUntil {
-                            try self.accessibilityElement(
-                                nil,
-                                label: "Gateway settings",
-                                in: ownedWindow,
-                                button: true) != nil
-                        }
+                        try await self.waitForNavigationTitle("Overview", in: ownedWindow)
                     case .inspection, .inspectionDone, .inspectionEscape, .inspectionReplacement,
                          .nativeFromSettingsPath, .nativeAfterUserChat, .sidebarFork, .sidebarNewChat, .gatewayDetails,
                          .sidebarNewChatProtected, .sidebarNewChatOrdinary,
@@ -2213,43 +2217,15 @@ final class NativeActionVisualProofTests: XCTestCase {
             "sceneActive=\(window?.windowScene?.activationState == .foregroundActive)",
             "hostInWindow=\(window != nil && hosting?.viewIfLoaded?.window === window)",
             "presented=\(hosting?.presentedViewController != nil)",
-            "lastQuery={\(observation.query?.summary ?? "unobserved")}",
             "waitFailureFacts={\(observation.waitFacts ?? "unobserved")}",
         ]
         // One bounded row per failed scenario; never emit labels, identifiers, or object descriptions.
         print(String(fields.joined(separator: " ").prefix(2048)))
     }
 
-    private func showSidebar(in window: UIWindow) async throws {
-        let show = try XCTUnwrap(self.accessibilityElement("RootTabs.Sidebar.Show", in: window, button: true))
-        guard show.accessibilityActivate() else {
-            throw OpenClawNativeActionError("Native sidebar action did not activate")
-        }
-        try await self.waitUntil {
-            try self.accessibilityElement("RootTabs.Sidebar.Destination.settings", in: window, button: true) != nil
-        }
-    }
-
-    private func activateLabel(_ label: String, in window: UIWindow, prefix: Bool = false) async throws {
-        for _ in 0..<8 {
-            if let action = try self.accessibilityElement(nil, label: label, prefix: prefix, in: window, button: true) {
-                guard action.accessibilityActivate() else {
-                    throw OpenClawNativeActionError("Native navigation control did not activate")
-                }
-                return
-            }
-            let scrolls = try self.visibleViews(in: window).compactMap { $0 as? UIScrollView }.filter {
-                $0.isScrollEnabled && $0.contentSize.height > $0.bounds.height &&
-                    $0.convert($0.bounds, to: window).intersects(window.bounds)
-            }
-            let scroll = try XCTUnwrap(scrolls.count == 1 ? scrolls.first : nil)
-            let before = scroll.contentOffset
-            guard scroll.accessibilityScroll(.down) else {
-                throw OpenClawNativeActionError("Native navigation list did not scroll")
-            }
-            try await self.waitUntil { scroll.contentOffset != before }
-        }
-        throw OpenClawNativeActionError("Native navigation control was not found")
+    private func showSidebar(using actions: RootTabsPresentationState.Actions) async throws {
+        actions.showSidebar()
+        try await self.waitUntil { actions.state.isSidebarVisible }
     }
 
     private func visibleViews(in window: UIWindow) throws -> [UIView] {
@@ -2276,20 +2252,6 @@ final class NativeActionVisualProofTests: XCTestCase {
             try self.visibleViews(in: window).compactMap { $0 as? UINavigationBar }
                 .filter { $0.topItem?.title == title }.count == 1
         }
-    }
-
-    private func activateBack(from title: String, to previous: String, in window: UIWindow) async throws {
-        let bars = try self.visibleViews(in: window).compactMap { $0 as? UINavigationBar }
-            .filter { $0.topItem?.title == title }
-        let bar = try XCTUnwrap(bars.count == 1 ? bars.first : nil)
-        let backTitle = try XCTUnwrap(bar.backItem?.backButtonTitle ?? bar.backItem?.title)
-        let named = try self.accessibilityElement(nil, label: backTitle, in: window, button: true)
-        let back = try XCTUnwrap(named ?? self.accessibilityElement(
-            nil, label: String(localized: "Back"), in: window, button: true))
-        guard back.accessibilityActivate() else {
-            throw OpenClawNativeActionError("Native Back control did not activate")
-        }
-        try await self.waitForNavigationTitle(previous, in: window)
     }
 
     @MainActor
@@ -2342,129 +2304,18 @@ final class NativeActionVisualProofTests: XCTestCase {
             ]]), as: UTF8.self))
     }
 
-    private func selectSidebarDestination(_ destination: String, in window: UIWindow) async throws {
-        if let show = try self.accessibilityElement("RootTabs.Sidebar.Show", in: window, button: true) {
-            guard show.accessibilityActivate() else {
-                throw OpenClawNativeActionError("Native sidebar action did not activate")
-            }
-        }
-        let identifier = "RootTabs.Sidebar.Destination.\(destination)"
-        try await self.waitUntil {
-            try self.accessibilityElement(identifier, in: window, button: true) != nil
-        }
-        let action = try XCTUnwrap(self.accessibilityElement(identifier, in: window, button: true))
-        guard action.accessibilityActivate() else {
-            throw OpenClawNativeActionError("Native sidebar destination did not activate")
-        }
-        // Phone drawer selection closes the real sidebar before another action
-        // can be addressed. Never replace a missing element with a direct callback.
-        try await self.waitUntil {
-            try self.accessibilityElement("RootTabs.Sidebar.Show", in: window, button: true) != nil
-        }
-    }
-
-    private func accessibilityElement(
-        _ identifier: String?,
-        label: String? = nil,
-        prefix: Bool = false,
-        in window: UIWindow,
-        button: Bool = false,
-        line: Int = #line) throws -> NSObject?
+    private func selectSidebarDestination(
+        _ rawDestination: String,
+        using actions: RootTabsPresentationState.Actions) async throws
     {
-        var observation = QueryObservation(
-            line: line,
-            identifier: identifier != nil,
-            label: label != nil,
-            button: button)
-        self.failureObservation?.stage = "accessibility-query"
-        defer { self.failureObservation?.query = observation }
-        guard !window.isHidden, window.isKeyWindow else {
-            self.failureObservation?.stage = "accessibility-window-ownership"
-            throw OpenClawNativeActionError("Native visual window lost ownership")
+        let destination = try XCTUnwrap(RootTabs.SidebarDestination(rawValue: rawDestination))
+        if !actions.state.isSidebarVisible { actions.showSidebar() }
+        let selectDestination = actions.userAction { actions.selectSidebarDestination(destination) }
+        selectDestination()
+        try await self.waitUntil {
+            actions.state.selectedSidebarDestination == destination &&
+                (!actions.state.shouldCollapseSidebarAfterSelection || !actions.state.isSidebarVisible)
         }
-        let bounds = window.convert(window.bounds, to: nil as UIWindow?)
-        var pending: [NSObject] = [window]
-        var discovered: Set<ObjectIdentifier> = [ObjectIdentifier(window)]
-        var matches: [NSObject] = []
-        func enqueue(_ child: NSObject) throws {
-            guard discovered.insert(ObjectIdentifier(child)).inserted else { return }
-            observation.discovered = discovered.count
-            guard discovered.count <= 512 else {
-                throw OpenClawNativeActionError("Native visual accessibility hierarchy exceeds its bound")
-            }
-            pending.append(child)
-        }
-        while let element = pending.popLast() {
-            observation.visited += 1
-            guard !element.accessibilityElementsHidden else {
-                observation.hidden += 1
-                continue
-            }
-            if let view = element as? UIView {
-                guard view === window || view.window === window, !view.isHidden, view.alpha > 0 else {
-                    observation.rejectedViews += 1
-                    continue
-                }
-                for child in view.subviews {
-                    try enqueue(child)
-                }
-            }
-            let matchesIdentifier: Bool
-            if identifier != nil {
-                let value = (element as? UIAccessibilityIdentification)?.accessibilityIdentifier
-                if value != nil { observation.identifierValues += 1 }
-                matchesIdentifier = value == identifier
-            } else {
-                matchesIdentifier = false
-            }
-            let matchesLabel = label.map {
-                let value = element.accessibilityLabel
-                if value != nil { observation.labelValues += 1 }
-                return prefix ? (value?.hasPrefix($0) == true) : value == $0
-            } ?? false
-            // Count each original filter only when its short-circuit evaluation reaches it.
-            if matchesIdentifier || matchesLabel {
-                observation.candidates += 1
-                if element.accessibilityFrame.isEmpty {
-                    observation.emptyFrames += 1
-                } else if !bounds.intersects(element.accessibilityFrame) {
-                    observation.outsideFrames += 1
-                } else if button, !element.accessibilityTraits.contains(.button) {
-                    observation.nonButtons += 1
-                } else if button, element.accessibilityTraits.contains(.notEnabled) {
-                    observation.disabled += 1
-                } else {
-                    matches.append(element)
-                    observation.matches += 1
-                }
-            }
-            if let children = element.accessibilityElements {
-                observation.arrays += 1
-                guard children.count <= 512 else {
-                    throw OpenClawNativeActionError("Native visual accessibility container exceeds its bound")
-                }
-                for child in children {
-                    if let child = child as? NSObject { try enqueue(child) }
-                }
-            } else {
-                let count = element.accessibilityElementCount()
-                if count == NSNotFound {
-                    observation.unavailable += 1
-                    continue
-                }
-                observation.indexed += 1
-                guard (0...512).contains(count) else {
-                    throw OpenClawNativeActionError("Native visual accessibility container exceeds its bound")
-                }
-                for index in 0..<count {
-                    if let child = element.accessibilityElement(at: index) as? NSObject { try enqueue(child) }
-                }
-            }
-        }
-        guard matches.count <= 1 else {
-            throw OpenClawNativeActionError("Native visual accessibility target is ambiguous")
-        }
-        return matches.first
     }
 
     private func waitForComposer(in window: UIWindow, expectedText: String = "") async throws {

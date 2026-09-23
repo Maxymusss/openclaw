@@ -102,13 +102,17 @@ struct RootSidebar: View {
     }
 
     private func togglePinnedPage(_ destination: RootTabs.SidebarDestination) {
-        var pages = self.storedPinnedPages
+        Self.togglePinnedPage(destination, storage: self.$pinnedPagesStorage)
+    }
+
+    static func togglePinnedPage(_ destination: RootTabs.SidebarDestination, storage: Binding<String>) {
+        var pages = RootTabs.pinnedSidebarPages(from: storage.wrappedValue)
         if let index = pages.firstIndex(of: destination) {
             pages.remove(at: index)
         } else {
             pages.append(destination)
         }
-        self.pinnedPagesStorage = RootTabs.pinnedSidebarPagesStorage(pages)
+        storage.wrappedValue = RootTabs.pinnedSidebarPagesStorage(pages)
     }
 
     /// Brand header with compact global actions. Connection and Settings live
