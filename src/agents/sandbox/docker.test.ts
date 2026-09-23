@@ -387,7 +387,7 @@ describe("resolvePodmanSandboxRuntimeInfo", () => {
       [
         { client: "4.7.2", server: "5.8.2", uri: "unix:///tmp/host.sock" },
         { client: "4.8.0", server: "4.3.0", uri: "unix:///tmp/named.sock" },
-      ].map((version) => ({ binary, ...version })),
+      ].map(({ client, server, uri }) => ({ binary, client, server, uri })),
     ),
   )(
     "keeps $binary $client precedence independent of server $server",

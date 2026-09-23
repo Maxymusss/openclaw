@@ -1,10 +1,11 @@
 import fs from "node:fs";
-import type { Mock } from "vitest";
+import { expect, type Mock } from "vitest";
 import {
   createAdmittedRunOperatorAuthority,
   prepareSystemAgentRunAdmission,
 } from "../admitted-run-context.js";
 import { createEmbeddedAttemptToolGenerationOwner } from "../embedded-agent-runner/run/attempt-tool-generation.js";
+import { readRegistryEntry, updateRegistry } from "./registry.js";
 let nextRun = 0;
 
 export function commandResult(stdout = "", failure?: "cancel" | "exit") {
@@ -196,6 +197,25 @@ export function createNativePipeline(
     throw new Error("unexpected native fixture command: " + args[0]);
   });
   return { commands, allocations };
+}
+
+export async function markPendingAllocationForForegroundRetirement(
+  allocations: ReadonlyMap<string, { id: string }>,
+  containerId: string | undefined,
+) {
+  const allocation = [...allocations].find(([, value]) => value.id === containerId);
+  if (!allocation) {
+    throw new Error("missing setup allocation");
+  }
+  const [name, value] = allocation;
+  const row = await readRegistryEntry(name);
+  if (!row) {
+    throw new Error("missing setup reservation");
+  }
+  expect(row.runtimeState).toBe("pending");
+  const entry = { ...row, retirementPolicy: "foreground-owner" } satisfies typeof row;
+  await updateRegistry(entry);
+  return { entry, containerId: value.id };
 }
 
 export async function createNativeGeneration(releases: Array<() => Promise<void>>) {

@@ -27,6 +27,7 @@ import {
   createOperatorWsClient,
 } from "../server/ws-connection/authenticated-request-dispatch.test-support.js";
 import * as sessionCreator from "../session-create-service.js";
+import type { CreatedGatewaySession } from "../session-create-service.types.js";
 import { dispatchInboundMessageMock, installGatewayTestHooks, testState } from "../test-helpers.js";
 import { sessionCreateHandlers } from "./sessions-create.js";
 
@@ -49,6 +50,7 @@ describe("sessions.create initial-turn model policy through authenticated ingres
       const initialConfig = getRuntimeConfig();
       let committedConfig: OpenClawConfig = {
         ...initialConfig,
+        session: { ...initialConfig.session, store: storePath },
         agents: {
           ...initialConfig.agents,
           defaults: {
@@ -111,6 +113,7 @@ describe("sessions.create initial-turn model policy through authenticated ingres
       const childEntered = createDeferred();
       const releaseChild = createDeferred();
       let originalAuthority: AdmittedRunOperatorAuthority | undefined;
+      let committedSession: CreatedGatewaySession | undefined;
       const createGatewaySession = sessionCreator.createGatewaySession;
       const creator = vi
         .spyOn(sessionCreator, "createGatewaySession")
@@ -120,6 +123,7 @@ describe("sessions.create initial-turn model policy through authenticated ingres
             afterCreate: async (session) => {
               if (session.key === key) {
                 originalAuthority = params.operatorAuthority;
+                committedSession = session;
                 beforeInitialSend.resolve();
                 await releaseInitialSend.promise;
               }
@@ -129,6 +133,7 @@ describe("sessions.create initial-turn model policy through authenticated ingres
         );
       const sources: AdmittedRunOperatorAuthority[] = [];
       const callbackWork: Promise<unknown>[] = [];
+      const childReleases: Promise<void>[] = [];
       const effects = vi.fn<(model: string) => void>();
       dispatchInboundMessageMock.mockImplementation((input: unknown) => {
         const { replyOptions } = input as Parameters<typeof dispatchInboundMessage>[0];
@@ -138,6 +143,27 @@ describe("sessions.create initial-turn model policy through authenticated ingres
           sources.push(source);
           if (first) {
             childEntered.resolve();
+          }
+          const session = expectDefined(committedSession, "committed creation identity");
+          const entry = expectDefined(
+            loadSessionEntry({
+              sessionKey: session.key,
+              agentId: session.agentId,
+              storePath: session.storePath,
+            }),
+            "committed child session",
+          );
+          expect(entry.sessionId).toBe(session.entry.sessionId);
+          childReleases.push(
+            expectDefined(
+              getSessionWorkAdmissionRelease({
+                scope: session.storePath,
+                identities: [session.key, entry.sessionId],
+              }),
+              "active child admission",
+            ),
+          );
+          if (first) {
             await releaseChild.promise;
           }
           const recorder = expectDefined(
@@ -172,15 +198,6 @@ describe("sessions.create initial-turn model policy through authenticated ingres
         callbackWork.push(work);
         return work;
       });
-      const drainChild = async () => {
-        const entry = loadSessionEntry({ sessionKey: key, storePath });
-        if (entry) {
-          await getSessionWorkAdmissionRelease({
-            scope: storePath,
-            identities: [key, entry.sessionId],
-          });
-        }
-      };
       const owner = new AsyncWorkScope();
       const creation = owner.run(() =>
         harness.dispatcher.dispatch(
@@ -218,7 +235,12 @@ describe("sessions.create initial-turn model policy through authenticated ingres
         releaseInitialSend.resolve();
         const accepted = await harness.awaitResponseFrame("create");
         expect(accepted.ok).toBe(true);
-        expect(accepted.payload).toMatchObject({ runStarted: true });
+        const committed = expectDefined(committedSession, "acknowledged creation identity");
+        expect(accepted.payload).toMatchObject({
+          runStarted: true,
+          key: committed.key,
+          sessionId: committed.entry.sessionId,
+        });
         await creation;
         await childEntered.promise;
         const child = expectDefined(sources[0], "retained initial child");
@@ -228,17 +250,7 @@ describe("sessions.create initial-turn model policy through authenticated ingres
         expect(() => child.assertCurrent()).not.toThrow();
         expect(client.internal).not.toHaveProperty("operatorRunAuthority");
         expect(effects).not.toHaveBeenCalled();
-        const entry = expectDefined(
-          loadSessionEntry({ sessionKey: key, storePath }),
-          "committed initial session",
-        );
-        const childReleased = expectDefined(
-          getSessionWorkAdmissionRelease({
-            scope: storePath,
-            identities: [key, entry.sessionId],
-          }),
-          "held initial child admission",
-        );
+        const childReleased = expectDefined(childReleases[0], "held initial child admission");
         releaseChild.resolve();
         await Promise.all(callbackWork);
         await childReleased;
@@ -261,7 +273,8 @@ describe("sessions.create initial-turn model policy through authenticated ingres
               id: "fresh",
               method: "chat.send",
               params: {
-                sessionKey: key,
+                sessionKey: committed.key,
+                agentId: committed.agentId,
                 message: "Fresh request",
                 idempotencyKey: "fresh-model-policy",
               },
@@ -272,8 +285,8 @@ describe("sessions.create initial-turn model policy through authenticated ingres
         const fresh = await harness.awaitResponseFrame("fresh");
         expect(fresh.ok).toBe(true);
         expect(isRecord(fresh.payload) && fresh.payload.status).toBe("started");
-        await drainChild();
         await Promise.all(callbackWork);
+        await expectDefined(childReleases[1], "fresh child admission");
         await AsyncWorkScope.runWhenAllIdle(
           () => [owner],
           () => {
@@ -293,7 +306,7 @@ describe("sessions.create initial-turn model policy through authenticated ingres
         releaseChild.resolve();
         try {
           await Promise.allSettled([creation, ...callbackWork]);
-          await drainChild();
+          await Promise.all(childReleases);
           await AsyncWorkScope.runWhenAllIdle(
             () => [owner],
             () => owner.drain(),

@@ -35,6 +35,7 @@ import {
   commandResult,
   createNativeGeneration,
   createNativePipeline,
+  markPendingAllocationForForegroundRetirement,
   type NativePipelineOptions,
 } from "./context.native-custody.test-support.js";
 import { dockerSandboxBackendManager } from "./docker-backend.js";
@@ -901,26 +902,15 @@ describe("actual native resolver custody", () => {
   });
 
   it("refuses legacy partial cleanup if ownership changes during awaited setup", async () => {
-    const setup: {
-      entry?: NonNullable<Awaited<ReturnType<typeof readRegistryEntry>>>;
-      containerId?: string;
-    } = {};
+    const setup: Partial<Awaited<ReturnType<typeof markPendingAllocationForForegroundRetirement>>> =
+      {};
     const h = nativePipeline({
       before: async (args) => {
         if (args[0] === "exec" && args.includes("fixture-setup")) {
-          const allocation = [...h.allocations].find(([, value]) => value.id === args[2]);
-          if (!allocation) {
-            throw new Error("missing setup allocation");
-          }
-          const [name, value] = allocation;
-          const row = await readRegistryEntry(name);
-          if (!row) {
-            throw new Error("missing setup reservation");
-          }
-          expect(row.runtimeState).toBe("pending");
-          setup.containerId = value.id;
-          setup.entry = { ...row, retirementPolicy: "foreground-owner" };
-          await updateRegistry(setup.entry);
+          Object.assign(
+            setup,
+            await markPendingAllocationForForegroundRetirement(h.allocations, args[2]),
+          );
           throw new Error("setup failed after ownership changed");
         }
       },
