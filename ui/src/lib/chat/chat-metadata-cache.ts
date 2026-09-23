@@ -15,7 +15,7 @@ import type { UiSessionDefaultsHost } from "../sessions/session-key.ts";
 
 export type ChatMetadataResult = CommandsListResult;
 export type ChatMetadataResponse = ChatMetadataResult &
-  Partial<Pick<ModelCatalogResult, "models" | "accountSelection">>;
+  Partial<Pick<ModelCatalogResult, "models" | "accountSelection" | "modelRestricted">>;
 
 export type ChatMetadataUpdate =
   | { type: "invalidated"; scope: "session" | "full"; refreshSessionFacts: boolean }

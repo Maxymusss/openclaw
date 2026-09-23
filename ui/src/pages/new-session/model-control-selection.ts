@@ -5,10 +5,12 @@ import { registerModelControlsEnglish } from "../../i18n/locales/en-model-contro
 import { chatModelUnavailableMessage } from "../../lib/chat/model-select-state.ts";
 import type { ChatModelCatalogState } from "../chat/components/chat-model-controls.ts";
 import {
+  reconcileDraftModelSelection,
   resolveDraftModelTarget,
   resolveDraftModelUnavailableReason,
   resolveDraftThinkingDefaults,
 } from "./model-target.ts";
+import type { NewSessionPreference } from "./preferences.ts";
 
 registerModelControlsEnglish();
 
@@ -33,8 +35,41 @@ export function resolveDraftModelPresentation(input: {
   };
 }
 
+export type DraftModelMetadata = ChatModelCatalogState & {
+  catalog: ModelCatalogEntry[];
+  accountSelection?: ChatAccountSelection;
+  modelRestricted?: true;
+  displayOnly?: boolean;
+};
+
+export function resolveDraftModelPreference(input: {
+  preference: NewSessionPreference;
+  agent?: GatewayAgentRow;
+  defaults?: SessionsListResult["defaults"];
+  catalog: ModelCatalogEntry[];
+  restricted: boolean;
+}) {
+  const { preference, catalog } = input;
+  const selection = reconcileDraftModelSelection({
+    model: preference.model ?? "",
+    agentRuntime: preference.agentRuntime,
+    thinkingLevel: preference.thinkingLevel ?? "",
+    fastMode: preference.fastMode,
+    agent: input.agent,
+    defaults: input.defaults,
+    catalog,
+  });
+  // An authorization-filtered catalog cannot prove an omitted preference is invalid.
+  // Clear its visible selection, but keep the saved intent for a later allowed snapshot.
+  const omitted =
+    input.restricted &&
+    Boolean(preference.model) &&
+    !resolveDraftModelTarget(preference.model, undefined, catalog)?.entry;
+  return { ...selection, persistRepair: selection.repaired && !omitted };
+}
+
 type DraftModelAccess = {
-  metadata: ChatModelCatalogState & { catalog: ModelCatalogEntry[]; displayOnly?: boolean };
+  metadata: DraftModelMetadata;
   model: string;
   defaultModel?: string;
   agentRuntime?: string;
@@ -110,7 +145,7 @@ export function resolveDraftModelAccess(input: DraftModelAccess) {
 }
 
 export function isDraftModelAccountReady(input: {
-  metadata: DraftModelAccess["metadata"] & { accountSelection?: ChatAccountSelection };
+  metadata: DraftModelMetadata;
   account?: Pick<UserModelAccount, "authProfileId" | "provider"> & { model: string };
   agentRuntime?: string;
   current: boolean;

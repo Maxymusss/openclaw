@@ -30,7 +30,7 @@ import {
   type PreparedAgentRunAdmission,
 } from "./admitted-run-context.js";
 import { wrapRunWithTestPreparedAdmission } from "./admitted-run-context.test-support.js";
-import { assertOperatorModelAllowed } from "./operator-model-policy.js";
+import { prepareOperatorModelPolicy, assertOperatorModelAllowed } from "./operator-model-policy.js";
 
 const enabledConfig = { logging: { audit: { enabled: true, executionIdentity: true } } };
 const facts = {
@@ -406,7 +406,11 @@ describe("prepared run admission", () => {
     const authority = createAdmittedRunOperatorAuthority({
       profileId: "combined-operator",
       scopes: ["operator.write"],
-      permissions: { models: { allow: models } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: models },
+        manifestPlugins: [],
+      }),
       executionPolicy: "foreground-only",
       foregroundRunId: "combined-turn",
       foregroundDeadlineAt: 2_000,
@@ -440,8 +444,11 @@ describe("prepared run admission", () => {
     });
     try {
       models.push("provider/forbidden");
-      expect(authority.permissions?.models?.allow).toEqual(["provider/allowed"]);
-      expect(Object.isFrozen(authority.permissions?.models?.allow)).toBe(true);
+      expect(authority.modelPolicy?.allows({ provider: "provider", model: "allowed" })).toBe(true);
+      expect(authority.modelPolicy?.allows({ provider: "provider", model: "forbidden" })).toBe(
+        false,
+      );
+      expect(Object.isFrozen(authority.modelPolicy?.models)).toBe(true);
       expect(readPreparedRunOperatorAuthority(prepared)).toBe(authority);
       for (const runtime of ["plugin-harness", "worker"] as const) {
         await expect(prepared.admit(runtime)).rejects.toThrow(
@@ -512,7 +519,11 @@ describe("prepared run admission", () => {
         operatorAuthority: createAdmittedRunOperatorAuthority({
           profileId: "native-operator",
           scopes: ["operator.write"],
-          permissions: { models: { allow: models } },
+          modelPolicy: prepareOperatorModelPolicy({
+            cfg: {},
+            policy: { allow: models },
+            manifestPlugins: [],
+          }),
           assertCurrent: () => {
             if (!current || sourceHolds === 0) {
               throw new Error("source claim lost");
@@ -533,11 +544,12 @@ describe("prepared run admission", () => {
       const prepared = withPostAdmissionExecutionOwnerBinding(source, () => {});
       expect(readPreparedRunOperatorAuthority(prepared)?.profileId).toBe("native-operator");
       models.push("provider/forbidden");
-      const permissions = readPreparedRunOperatorAuthority(prepared)?.permissions;
-      expect(permissions).toEqual({ models: { allow: ["provider/allowed"] } });
-      expect(Object.isFrozen(permissions?.models?.allow)).toBe(true);
+      const policy = readPreparedRunOperatorAuthority(prepared)?.modelPolicy;
+      expect(policy?.allows({ provider: "provider", model: "allowed" })).toBe(true);
+      expect(policy?.allows({ provider: "provider", model: "forbidden" })).toBe(false);
+      expect(Object.isFrozen(policy?.models)).toBe(true);
       const admitted = await prepared.admit(runtime.kind);
-      expect(readAdmittedRunOperatorAuthority(admitted)?.permissions).toBe(permissions);
+      expect(readAdmittedRunOperatorAuthority(admitted)?.modelPolicy).toBe(policy);
       const recovery = retainAdmittedRunBeforeToolCallRecovery(admitted);
       expect(recovery).toBeDefined();
       try {

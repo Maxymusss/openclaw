@@ -60,7 +60,7 @@ it.each(["sessions.list", "sessions.describe"] as const)(
         config.agents = { entries: { main: {} }, defaults: { model: "fixture/model-b" } };
         const role = expectDefined(config.gateway?.roles?.definitions.viewer, "viewer role");
         if (change !== "omitted") {
-          role.models = {
+          role.modelPolicy = {
             allow:
               change === "tighten" || change === "allowed"
                 ? ["fixture/model-a", "fixture/model-b"]
@@ -135,9 +135,9 @@ it.each(["sessions.list", "sessions.describe"] as const)(
               "current viewer role",
             );
             if (change === "remove") {
-              delete next.models;
+              delete next.modelPolicy;
             } else {
-              next.models = {
+              next.modelPolicy = {
                 allow:
                   change === "widen" ? ["fixture/model-a", "fixture/model-b"] : ["fixture/model-a"],
               };

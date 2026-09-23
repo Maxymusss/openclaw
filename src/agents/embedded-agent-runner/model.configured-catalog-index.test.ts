@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { bindModelRequestRoute, readModelRequestRoute } from "../../llm/model-runtime-binding.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
@@ -124,20 +125,23 @@ function fixture(
     if (!model) {
       throw new Error("Missing registered fixture model");
     }
-    return attachModelProviderRequestRouteFacts(
-      {
-        ...model,
-        maxTokensSource: "discovered",
-        headers: undefined,
-        toolSearchMode: undefined,
-        compat: {
-          supportsDeveloperRole: false,
-          supportsUsageInStreaming: false,
-          supportsStrictMode: false,
+    return bindModelRequestRoute(
+      attachModelProviderRequestRouteFacts(
+        {
+          ...model,
+          maxTokensSource: "discovered",
+          headers: undefined,
+          toolSearchMode: undefined,
+          compat: {
+            supportsDeveloperRole: false,
+            supportsUsageInStreaming: false,
+            supportsStrictMode: false,
+          },
+          ...(maxSidePx === undefined ? {} : { mediaInput: { image: { maxSidePx } } }),
         },
-        ...(maxSidePx === undefined ? {} : { mediaInput: { image: { maxSidePx } } }),
-      },
-      stores.modelRegistry.getProviderMetadataOwners(),
+        stores.modelRegistry.getProviderMetadataOwners(),
+      ),
+      { provider: PROVIDER, model: modelId },
     );
   };
   return { snapshot, stores, resolve, expected };
@@ -224,6 +228,9 @@ describe("prepared configured model indexes", () => {
           [modelId],
         );
         const result = await resolve(modelId);
+        expect(result.model && readModelRequestRoute(result.model)?.logicalRef).toEqual(
+          result.logicalRef,
+        );
         expect(result).toEqual({
           ...stores,
           model: expected(modelId, maxSidePx),

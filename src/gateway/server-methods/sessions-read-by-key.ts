@@ -60,7 +60,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
               client,
               undefined,
               undefined,
-              access.permissions,
+              access.policy,
             );
             const denied = presentation.authorizeDescription(query);
             if (denied) {

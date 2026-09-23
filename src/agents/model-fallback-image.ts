@@ -15,10 +15,6 @@ import {
 import { resolveImageFallbackCandidates } from "./model-fallback-candidates.js";
 import type { FallbackAttempt } from "./model-fallback.types.js";
 import type { ModelManifestNormalizationContext } from "./model-ref-shared.js";
-import {
-  assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
-  restrictOperatorModelCandidates,
-} from "./operator-model-policy.js";
 
 type ImageFallbackSelectionParams = {
   cfg: OpenClawConfig | undefined;
@@ -34,10 +30,7 @@ export function resolveAllowedImageFallbackCandidates(params: ImageFallbackSelec
     assertAdmittedRunOperatorAuthority(authority);
     authority.assertCurrent();
   }
-  const candidates = restrictOperatorModelCandidates(
-    authority,
-    resolveImageFallbackCandidates(params),
-  );
+  const candidates = resolveImageFallbackCandidates(params);
   if (params.modelOverride?.trim()) {
     assertOperatorModelAllowed(
       authority,
@@ -71,7 +64,6 @@ export async function runWithImageModelFallback<T>(
   let lastError: unknown;
 
   for (const [i, candidate] of candidates.entries()) {
-    assertOperatorModelTupleAllowed(params.operatorAuthority, candidate.provider, candidate.model);
     assertOperatorModelAllowed(params.operatorAuthority, candidate);
     const attemptRun = await runFallbackAttempt({
       run: params.run,

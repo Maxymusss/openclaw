@@ -135,12 +135,12 @@ describe("VisitorAccessService", () => {
   });
 
   it.each([
-    { name: "omitted models", models: undefined },
-    { name: "finite models", models: { allow: ["fixture/approved"] } },
-    { name: "empty models", models: { allow: [] } },
-  ])("accepts $name without changing invitation authority", async ({ models }) => {
+    { name: "omitted models", modelPolicy: undefined },
+    { name: "finite models", modelPolicy: { allow: ["fixture/approved"] } },
+    { name: "empty models", modelPolicy: { allow: [] } },
+  ])("accepts $name without changing invitation authority", async ({ modelPolicy }) => {
     for (const agents of [guestRole.agents, "*" as const]) {
-      const role = { ...guestRole, agents, ...(models ? { models } : {}) };
+      const role = { ...guestRole, agents, ...(modelPolicy ? { modelPolicy } : {}) };
       const fixture = visitorFixture({
         gatewayConfig: {
           gateway: { roles: { default: "guest", definitions: { guest: role } } },

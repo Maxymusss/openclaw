@@ -13,6 +13,7 @@ import { createDeferredCore } from "../../shared/deferred.js";
 import { createAdmittedRunOperatorAuthority } from "../admitted-run-context.js";
 import * as maintenanceBudget from "../command/maintenance-budget.js";
 import * as runtimeLoaders from "../command/runtime-loaders.js";
+import { prepareOperatorModelPolicy } from "../operator-model-policy.js";
 import { waitForSessionMaintenance } from "./coordinator.js";
 import * as maintenanceCoordinator from "./coordinator.js";
 import { createSessionMaintenanceFollowup, scheduleSessionMaintenance } from "./run.js";
@@ -26,7 +27,11 @@ it.each(["foreground", "expired", "revoked"] as const)(
     followupRun.operatorAuthority = createAdmittedRunOperatorAuthority({
       profileId: "restricted-maintenance",
       scopes: ["operator.write"],
-      permissions: { models: { allow: ["test-provider/test-model"] } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: ["test-provider/test-model"] },
+        manifestPlugins: [],
+      }),
       executionPolicy: "foreground-only",
       foregroundRunId: "original-turn",
       foregroundDeadlineAt: Date.now() + (state === "expired" ? -1 : 60_000),
@@ -82,7 +87,11 @@ it("preserves original model authority without foreground tool or writer custody
   const original = createAdmittedRunOperatorAuthority({
     profileId: "viewer",
     scopes: ["operator.sessions.write"],
-    permissions: { models: { allow: ["test-provider/test-model"] } },
+    modelPolicy: prepareOperatorModelPolicy({
+      cfg: {},
+      policy: { allow: ["test-provider/test-model"] },
+      manifestPlugins: [],
+    }),
     assertCurrent: () => {},
   });
   const foreground = createTestFollowupRun({
@@ -120,9 +129,18 @@ it("preserves original model authority without foreground tool or writer custody
   expect(embedded.runtimePluginToolGrant).toBeUndefined();
   expect(maintenance.userTurnTranscriptRecorder).toBeUndefined();
   expect(maintenance.operatorAuthority).toBe(original);
-  expect(maintenance.operatorAuthority?.permissions?.models?.allow).toEqual([
-    "test-provider/test-model",
-  ]);
+  expect(
+    maintenance.operatorAuthority?.modelPolicy?.allows({
+      provider: "test-provider",
+      model: "test-model",
+    }),
+  ).toBe(true);
+  expect(
+    maintenance.operatorAuthority?.modelPolicy?.allows({
+      provider: "test-provider",
+      model: "other",
+    }),
+  ).toBe(false);
 });
 
 it.each(["success", "failure", "deadline"] as const)(
@@ -148,7 +166,11 @@ it.each(["success", "failure", "deadline"] as const)(
     followupRun.operatorAuthority = createAdmittedRunOperatorAuthority({
       profileId: "viewer",
       scopes: ["operator.sessions.write"],
-      permissions: { models: { allow: ["test-provider/test-model"] } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: ["test-provider/test-model"] },
+        manifestPlugins: [],
+      }),
       assertCurrent: () => {},
       retain: retainSource,
     });

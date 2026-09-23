@@ -20,6 +20,7 @@ import {
   resolveDefaultModelForAgent,
 } from "../agents/model-selection.js";
 import { resolveThinkingDefaultCore } from "../agents/model-thinking-default-core.js";
+import type { PreparedOperatorModelPolicy } from "../agents/operator-model-policy.types.js";
 import { publishedModelCatalogOwnerMatchesAgent } from "../agents/prepared-model-catalog-owner.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import {
@@ -39,7 +40,6 @@ import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/sess
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
-import type { OperatorPermissionCeiling } from "../shared/operator-permissions.js";
 import { projectOperatorSessionPatch } from "./operator-model-projection.js";
 import type { GatewayModelCatalogSnapshot } from "./server-model-catalog.types.js";
 import { resolveSessionDisplayModelIdentityRef } from "./session-model-display.js";
@@ -607,7 +607,7 @@ export function projectSessionPatchResult(params: {
   modelCatalogRouteVariants?: readonly ModelCatalogEntry[];
   storePath: string;
   targetAgentId: string;
-  operatorPermissions?: OperatorPermissionCeiling;
+  operatorModelPolicy?: PreparedOperatorModelPolicy;
 }): SessionsPatchResult {
   const agentId = resolveSessionAgentId({
     config: params.cfg,
@@ -658,7 +658,7 @@ export function projectSessionPatchResult(params: {
           : {}),
       },
     } satisfies SessionsPatchResult,
-    params.operatorPermissions,
+    params.operatorModelPolicy,
     resolved,
   );
 }

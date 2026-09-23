@@ -30,6 +30,7 @@ import {
 } from "./embedded-agent-runner/extra-params.js";
 import { wrapStreamFnWithMessageTransform } from "./embedded-agent-runner/run/message-transform-stream-wrapper.js";
 import {
+  prepareOperatorModelPolicy,
   captureOperatorModelRequest,
   runWithOperatorModelRequest,
   wrapOperatorModelStream,
@@ -51,7 +52,11 @@ function finiteAuthority(assertCurrent: () => void = () => {}) {
   return createAdmittedRunOperatorAuthority({
     profileId: "transport-operator",
     scopes: ["operator.sessions.write"],
-    permissions: { models: { allow: ["fixture/allowed", "openai/allowed"] } },
+    modelPolicy: prepareOperatorModelPolicy({
+      cfg: {},
+      policy: { allow: ["fixture/allowed", "openai/allowed"] },
+      manifestPlugins: [],
+    }),
     assertCurrent,
   });
 }

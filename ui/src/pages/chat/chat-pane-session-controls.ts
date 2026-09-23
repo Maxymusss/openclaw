@@ -230,7 +230,7 @@ export function renderChatPaneComposerControls(params: {
           activeRunSessionKey: getChatRunOwnerSessionKey(state),
           modelObservedRunId: getChatModelObservedRunId(state, selectedSession),
           agentDefaultModel,
-          modelRestricted: state.hello?.auth?.modelRestricted,
+          modelRestricted: state.chatModelRestricted ?? state.hello?.auth?.modelRestricted,
           connected: state.connected,
           gatewayAvailable: Boolean(state.client),
           loading: state.chatLoading,

@@ -28,13 +28,18 @@ export function createLlmRuntime(registry: ApiRegistry = createApiRegistry()) {
   ): AssistantMessageEventStreamContract {
     const selected = resolveApiProvider(model.api);
     const delegate = selected.stream;
-    getAiTransportHost().modelRequests?.requireLeafSupport?.(
-      model,
-      selected.modelRequestBindingSupport?.stream,
-      options?.transport,
-    );
-    getAiTransportHost().modelRequests?.requireDelegateSupport(delegate.modelRequestBinding);
-    return delegate(model, context, options as StreamOptions);
+    const policy = getAiTransportHost().modelRequests;
+    const request = policy?.capture(model);
+    const dispatch = () => {
+      policy?.requireLeafSupport?.(
+        model,
+        selected.modelRequestBindingSupport?.stream,
+        options?.transport,
+      );
+      policy?.requireDelegateSupport(delegate.modelRequestBinding);
+      return delegate(model, context, options as StreamOptions);
+    };
+    return request ? request.run(dispatch) : dispatch();
   }
 
   async function complete<TApi extends Api>(
@@ -52,13 +57,18 @@ export function createLlmRuntime(registry: ApiRegistry = createApiRegistry()) {
   ): AssistantMessageEventStreamContract {
     const selected = resolveApiProvider(model.api);
     const delegate = selected.streamSimple;
-    getAiTransportHost().modelRequests?.requireLeafSupport?.(
-      model,
-      selected.modelRequestBindingSupport?.streamSimple,
-      options?.transport,
-    );
-    getAiTransportHost().modelRequests?.requireDelegateSupport(delegate.modelRequestBinding);
-    return delegate(model, context, options);
+    const policy = getAiTransportHost().modelRequests;
+    const request = policy?.capture(model);
+    const dispatch = () => {
+      policy?.requireLeafSupport?.(
+        model,
+        selected.modelRequestBindingSupport?.streamSimple,
+        options?.transport,
+      );
+      policy?.requireDelegateSupport(delegate.modelRequestBinding);
+      return delegate(model, context, options);
+    };
+    return request ? request.run(dispatch) : dispatch();
   }
 
   async function completeSimple<TApi extends Api>(

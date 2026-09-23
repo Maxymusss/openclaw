@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { prepareOperatorModelPolicy } from "../agents/operator-model-policy.js";
 
 const mocks = vi.hoisted(() => ({
   generate: vi.fn(),
@@ -121,7 +122,11 @@ describe("worktree title source lifecycle", () => {
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "title-operator",
         scopes: ["operator.write"],
-        permissions: { models: { allow: ["openai/gpt-5.5"] } },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["openai/gpt-5.5"] },
+          manifestPlugins: [],
+        }),
         assertCurrent: () => {
           if (!active) {
             throw new Error("title model source revoked");

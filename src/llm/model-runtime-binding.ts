@@ -1,7 +1,9 @@
 import type { LlmRuntime } from "@openclaw/ai";
+import type { ProviderModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import type { Model, SimpleStreamOptions } from "./types.js";
 
 const MODEL_LLM_RUNTIME = Symbol("openclaw.modelLlmRuntime");
+const MODEL_REQUEST_ROUTE = Symbol("openclaw.modelRequestRoute");
 const streamLlmRuntimes = new WeakMap<object, LlmRuntime>();
 
 type ModelCompletionOwner = {
@@ -18,7 +20,72 @@ type ModelRuntimeBinding = {
 
 type RuntimeBoundModel = Model & {
   [MODEL_LLM_RUNTIME]?: ModelRuntimeBinding;
+  [MODEL_REQUEST_ROUTE]?: Readonly<{
+    logicalRef: Readonly<ProviderModelRef>;
+    routes: readonly Readonly<Pick<Model, "provider" | "id" | "api" | "baseUrl">>[];
+  }>;
 };
+
+function modelRoute(model: Model) {
+  return Object.freeze({
+    provider: model.provider,
+    id: model.id,
+    api: model.api,
+    baseUrl: model.baseUrl,
+  });
+}
+
+function modelRequestRoute(model: Model, logicalRef: ProviderModelRef) {
+  return Object.freeze({
+    logicalRef: Object.freeze({ ...logicalRef }),
+    routes: Object.freeze([modelRoute(model)]),
+  });
+}
+
+/** Host resolution owns the logical identity; provider callbacks cannot supply it. */
+export function bindModelRequestRoute<T extends Model>(model: T, logicalRef: ProviderModelRef): T {
+  const bound = {
+    ...model,
+    [MODEL_REQUEST_ROUTE]: modelRequestRoute(model, logicalRef),
+  };
+  const runtime = (model as RuntimeBoundModel)[MODEL_LLM_RUNTIME];
+  if (runtime) {
+    Object.defineProperty(bound, MODEL_LLM_RUNTIME, { value: runtime, enumerable: false });
+  }
+  return bound;
+}
+
+/** Canonical transport projections add their API alias before invocation captures the route. */
+export function inheritModelRequestRoute<T extends Model>(source: RuntimeBoundModel, target: T): T {
+  // Raw callers still get a host-owned self selection before a transport API alias.
+  const selection =
+    source[MODEL_REQUEST_ROUTE] ??
+    modelRequestRoute(source, {
+      provider: source.provider,
+      model: source.id,
+    });
+  const known = selection.routes.some(
+    (route) =>
+      route.provider === target.provider &&
+      route.id === target.id &&
+      route.api === target.api &&
+      route.baseUrl === target.baseUrl,
+  );
+  return {
+    ...target,
+    [MODEL_REQUEST_ROUTE]: known
+      ? selection
+      : Object.freeze({
+          logicalRef: selection.logicalRef,
+          routes: Object.freeze([...selection.routes, modelRoute(target)]),
+        }),
+  };
+}
+
+export function readModelRequestRoute(model: object) {
+  // SAFETY: Only this module's host routing writers can create the private symbol.
+  return (model as RuntimeBoundModel)[MODEL_REQUEST_ROUTE];
+}
 
 function bindModelRuntime(model: Model, binding: ModelRuntimeBinding): Model {
   const bound: RuntimeBoundModel = { ...model };

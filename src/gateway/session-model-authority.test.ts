@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import type { AgentHarness } from "../agents/harness/types.js";
+import { prepareOperatorModelPolicy } from "../agents/operator-model-policy.js";
 import type { InternalSessionEntry } from "../config/sessions.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveSessionModelAuthorityError } from "./session-model-authority.js";
@@ -26,7 +27,11 @@ function source(allow: string[]) {
     authority: createAdmittedRunOperatorAuthority({
       profileId: "selection-owner",
       scopes: ["operator.sessions.write"],
-      permissions: { models: { allow } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: allow },
+        manifestPlugins: [],
+      }),
       assertCurrent: () => {
         if (!current) {
           throw new Error("original selection source revoked");

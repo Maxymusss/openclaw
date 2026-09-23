@@ -8,18 +8,17 @@ import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/sc
 import { listAgentIds } from "../agents/agent-scope-config.js";
 import { BUILTIN_AGENT_HARNESS_METADATA } from "../agents/harness/builtin-openclaw-metadata.js";
 import { getRegisteredAgentHarness } from "../agents/harness/registry.js";
-import { OperatorModelPolicyError } from "../agents/operator-model-policy.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
-  intersectOperatorPermissionCeilings,
-  operatorModelAllowed,
-} from "../shared/operator-permissions.js";
+  intersectOperatorModelPolicies,
+  OperatorModelPolicyError,
+} from "../agents/operator-model-policy.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveGatewayAgentSelectionState } from "./agent-list.js";
 import type { UserModelAccountSelection } from "./model-account-authority.js";
 import { modelCatalogRequestBindingSupported } from "./model-catalog-request-binding.js";
 import {
   resolveGatewayOperatorRoleActor,
-  resolveOperatorPermissionCeiling,
+  resolveOperatorModelPolicy,
   resolveOperatorRolePolicy,
 } from "./operator-role-policy.js";
 import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
@@ -82,7 +81,9 @@ export function captureOperatorModelCatalogAccess(
   const { client, context, signal } = options;
   const source = captureGatewayOperatorRunAuthority(options);
   try {
-    const original = resolveOperatorPermissionCeiling(client, context.getRuntimeConfig());
+    const original =
+      source?.authority.modelPolicy ??
+      resolveOperatorModelPolicy(client, context.getRuntimeConfig());
     const originalAgentIds = new Set(
       listOperatorModelCatalogAgentIds(client, context.getRuntimeConfig()),
     );
@@ -90,27 +91,29 @@ export function captureOperatorModelCatalogAccess(
     const originalAgentCeiling = Array.isArray(originalAgents)
       ? new Set(originalAgents)
       : undefined;
-    const permissions = () => {
+    const policy = () => {
       signal?.throwIfAborted();
       source?.authority.assertCurrent();
       if (options.hasCurrentClientAuthority?.() === false) {
         throw new OperatorModelPolicyError("Gateway caller authority is no longer active.");
       }
-      return intersectOperatorPermissionCeilings(
-        original,
-        resolveOperatorPermissionCeiling(client, context.getRuntimeConfig()),
-      );
+      return source
+        ? source.authority.modelPolicy
+        : intersectOperatorModelPolicies(
+            original,
+            resolveOperatorModelPolicy(client, context.getRuntimeConfig()),
+          );
     };
     const allowsRef = (ref: string | undefined): boolean => {
-      const ceiling = permissions();
-      if (!ceiling?.models) {
+      const ceiling = policy();
+      if (!ceiling) {
         return true;
       }
       const parsed = ref ? parseProviderModelRef(ref) : null;
-      return parsed !== null && operatorModelAllowed(ceiling, parsed.provider, parsed.model);
+      return parsed !== null && ceiling.allows(parsed);
     };
     const allowsAgent = (id: string): boolean => {
-      permissions();
+      policy();
       const current = catalogRole(client, context.getRuntimeConfig())?.agents;
       return (
         (!originalAgentCeiling || originalAgentCeiling.has(id)) &&
@@ -118,13 +121,13 @@ export function captureOperatorModelCatalogAccess(
       );
     };
     const projectModels = (models: ModelChoice[]): ModelChoice[] => {
-      const ceiling = permissions();
-      if (!ceiling?.models) {
+      const ceiling = policy();
+      if (!ceiling) {
         return models;
       }
       const projected: ModelChoice[] = [];
       for (const model of models.filter((row) =>
-        operatorModelAllowed(ceiling, row.provider, row.id),
+        ceiling.allows({ provider: row.provider, model: row.id }),
       )) {
         const runtimeChoices = model.runtimeChoices?.map((choice) =>
           runtimeSupportsModelCeiling(choice.agentRuntime.id) &&
@@ -173,15 +176,15 @@ export function captureOperatorModelCatalogAccess(
     };
     return {
       assertCurrent: () => {
-        permissions();
+        policy();
       },
       release: () => source?.release(),
-      restricted: () => permissions()?.models !== undefined,
-      permissions,
+      restricted: () => policy() !== undefined,
+      policy,
       allowsRef,
       allowsAgent,
       agentIds: () => {
-        permissions();
+        policy();
         return listOperatorModelCatalogAgentIds(client, context.getRuntimeConfig()).filter((id) =>
           originalAgentIds.has(id),
         );
@@ -192,10 +195,11 @@ export function captureOperatorModelCatalogAccess(
         selectedRef?: string,
         draft?: UserModelAccountSelection,
       ): ChatMetadataResult => {
-        permissions();
+        const restricted = policy() !== undefined;
         const { models, accountSelection, ...rest } = metadata;
         return {
           ...rest,
+          ...(restricted ? { modelRestricted: true as const } : {}),
           ...(models ? { models: projectModels(models) } : {}),
           ...(accountSelection &&
           allowsAccountSelection({ ...metadata, models: models ?? [] }, selectedRef, draft)
@@ -208,18 +212,16 @@ export function captureOperatorModelCatalogAccess(
         selectedRef?: string,
         draft?: UserModelAccountSelection,
       ): ModelsListResult => {
-        const ceiling = permissions();
-        if (!ceiling?.models) {
+        const ceiling = policy();
+        if (!ceiling) {
           return result;
         }
+        const projectedModels = projectModels(result.models);
         const providers = new Set(
-          ceiling.models.allow
-            .map((ref) => parseProviderModelRef(ref))
-            .filter((ref) => ref !== null)
-            .map((ref) => normalizeProviderId(ref.provider)),
+          projectedModels.map((model) => normalizeProviderId(model.provider)),
         );
         const {
-          models,
+          models: _models,
           decisionModels,
           defaultModels,
           pendingProviders,
@@ -229,11 +231,12 @@ export function captureOperatorModelCatalogAccess(
         } = result;
         return {
           ...rest,
-          models: projectModels(models),
+          modelRestricted: true,
+          models: projectedModels,
           ...(decisionModels
             ? {
                 decisionModels: decisionModels.filter((model) =>
-                  operatorModelAllowed(ceiling, model.provider, model.id),
+                  ceiling.allows({ provider: model.provider, model: model.id }),
                 ),
               }
             : {}),

@@ -26,7 +26,7 @@ import {
 import { resolveEffectiveCompactionMode } from "../agent-settings.js";
 import { pickFallbackThinkingLevel } from "../embedded-agent-helpers.js";
 import {
-  assertOperatorModelAllowed,
+  assertOperatorModelSelection,
   isOperatorModelPolicyError,
 } from "../operator-model-policy.js";
 import { resolveAgentRunSessionTarget } from "../run-session-target.js";
@@ -136,11 +136,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
       memoryTranscript?.assertActive ?? captureOwnedTranscriptWriteAssertion(sessionTarget);
     const assertActive = () => {
       assertTranscriptActive();
-      assertOperatorModelAllowed(
-        params.operatorAuthority,
-        effectiveModel.provider,
-        effectiveModel.id,
-      );
+      assertOperatorModelSelection(params.operatorAuthority, effectiveModel);
     };
     assertActive();
     const transcriptPolicy = runtimePlan.transcript.resolvePolicy(runtimePlanModelContext);

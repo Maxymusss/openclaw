@@ -168,10 +168,6 @@ export const CORE_FIELD_HELP: Record<string, string> = {
     'Model references, source-agent aliases, or trailing prefix wildcards excluded from this role. A pattern such as "provider/family-*" excludes future members of that family too. Exclusions match resolved model identities and take precedence over allowed and source-agent models.',
   "gateway.roles.definitions.*.scopes":
     "Closed list of operator scopes granted as this role's maximum connection authority. Requested, paired, identity-granted, and upgraded scopes are intersected with this list.",
-  "gateway.roles.definitions.*.models":
-    "Optional additional model ceiling for this role. Omission preserves existing model access; the ceiling never grants access denied by another policy.",
-  "gateway.roles.definitions.*.models.allow":
-    "Exact provider/model references allowed for operator-owned inference, including fallback and utility work. An empty list denies all models. Restricted runs require a selected runtime that enforces this ceiling; no runtime or model is substituted to bypass it.",
   "gateway.roles.definitions.*.accessPolicyPlugin":
     "Optional exact plugin ID whose Gateway access policy must authorize this role. Access is denied when the plugin is missing, disabled, fails to load, or supplies no current authority. Unavailable plugin IDs remain valid configuration so independent staff roles and the Gateway owner can repair access. Omitting this field adds no plugin dependency.",
   "gateway.trustedProxies":

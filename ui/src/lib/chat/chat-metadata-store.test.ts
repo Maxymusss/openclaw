@@ -46,6 +46,37 @@ afterEach(() => {
 });
 
 describe("chat metadata store", () => {
+  it("invalidates the caller catalog for a marker-only change and never caches policy in command metadata", async () => {
+    const row = { provider: "fixture", id: "allowed", name: "Allowed" };
+    const request = vi.fn().mockResolvedValue({ models: [row] });
+    const client = clientWith(request);
+    const other = clientWith(vi.fn().mockResolvedValue({ models: [row] }));
+    const scope = { agentId: "main", sessionKey: "agent:main:policy" };
+    const release = subscribeChatMetadata(client, scope, () => {});
+    await Promise.all([loadModelCatalog(client, scope), loadModelCatalog(other, scope)]);
+    beginChatMetadataPublication(client, scope).publish({ ...metadata("same"), models: [row] });
+    invalidateChatMetadataForSessionEvent(client, { ...scope, reason: "patch" }, {});
+    const stale = beginChatMetadataPublication(client, scope);
+    beginChatMetadataPublication(client, scope).publish({
+      ...metadata("same"),
+      models: [row],
+      modelRestricted: true,
+    });
+    expect(peekModelCatalog(client, scope)).toBeUndefined();
+    expect(peekModelCatalog(other, scope)).toEqual({ models: [row] });
+    expect(peekChatMetadata(client, scope)).toEqual(metadata("same"));
+    request.mockResolvedValue({ models: [row], modelRestricted: true });
+    await loadModelCatalog(client, scope);
+    stale.publish({ ...metadata("old"), models: [row] });
+    expect(peekModelCatalog(client, scope)?.modelRestricted).toBe(true);
+    invalidateChatMetadataForSessionEvent(client, { ...scope, reason: "patch" }, {});
+    beginChatMetadataPublication(client, scope).publish({ ...metadata("same"), models: [row] });
+    expect(peekModelCatalog(client, scope)).toBeUndefined();
+    request.mockResolvedValue({ models: [row] });
+    expect(await loadModelCatalog(client, scope)).toEqual({ models: [row] });
+    release();
+  });
+
   it("preserves only subscribed exact catalog scopes during session validation", async () => {
     const client = clientWith(vi.fn().mockResolvedValue({ models: [] }));
     const scope = { agentId: "main", sessionKey: "agent:main:main" };

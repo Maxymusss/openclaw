@@ -12,6 +12,7 @@ import {
   validateSessionsPluginPatchParams,
   validateSessionsResetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { intersectOperatorModelPolicies } from "../../agents/operator-model-policy.js";
 import {
   assignSessionOwner,
   updateSessionProfileInvolvement,
@@ -19,11 +20,10 @@ import {
 import { patchPluginSessionExtension } from "../../plugins/host-hook-state.js";
 import { isPluginJsonValue } from "../../plugins/host-hooks.js";
 import { runExclusiveSessionLifecycleMutation } from "../../sessions/session-lifecycle-admission.js";
-import { intersectOperatorPermissionCeilings } from "../../shared/operator-permissions.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
 import { captureOperatorModelCatalogAccess } from "../operator-model-catalog.js";
 import { projectOperatorSessionPatch } from "../operator-model-projection.js";
-import { resolveOperatorPermissionCeiling } from "../operator-role-policy.js";
+import { resolveOperatorModelPolicy } from "../operator-role-policy.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import {
@@ -216,9 +216,9 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
           entry: outcome.entry,
           modelCatalog: catalog?.entries,
           modelCatalogRouteVariants: catalog?.routeVariants,
-          operatorPermissions: intersectOperatorPermissionCeilings(
-            modelSource?.authority.permissions,
-            resolveOperatorPermissionCeiling(client, context.getRuntimeConfig()),
+          operatorModelPolicy: intersectOperatorModelPolicies(
+            modelSource?.authority.modelPolicy,
+            resolveOperatorModelPolicy(client, context.getRuntimeConfig()),
           ),
         }),
         undefined,
@@ -617,7 +617,7 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
         true,
         projectOperatorSessionPatch(
           { ok: true, key: result.key, entry: result.entry, resolved: result.resolved },
-          modelAccess.permissions(),
+          modelAccess.policy(),
           { provider: result.resolved.modelProvider, model: result.resolved.model },
         ),
         undefined,

@@ -9,7 +9,6 @@ import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { runIsolatedCompletion } from "../../agents/isolated-completion.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
 import {
-  assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
   assertOperatorModelAuthorityCurrent,
   isOperatorModelPolicyError,
   runWithOperatorModelAuthority,
@@ -146,11 +145,6 @@ async function runOwnedLabelAttempts(
         continue;
       }
       assertOperatorModelAllowed(params.operatorAuthority, model);
-      assertOperatorModelTupleAllowed(
-        params.operatorAuthority,
-        selection.provider,
-        selection.modelId,
-      );
       // The session's runtime override was resolved for its primary provider; a
       // utility model on another provider cannot run through that harness.
       const agentHarnessRuntimeOverride = resolveCompatibleAgentRuntimeForProvider({

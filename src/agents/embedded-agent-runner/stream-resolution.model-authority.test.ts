@@ -5,6 +5,7 @@ import { createAssistantMessageEventStream } from "../../llm/utils/event-stream.
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createAdmittedRunOperatorAuthority } from "../admitted-run-operator-authority.js";
 import {
+  prepareOperatorModelPolicy,
   assertOperatorModelAllowed,
   captureOperatorModelRequest,
   runWithOperatorModelRequest,
@@ -36,7 +37,11 @@ describe("embedded stream model authority", () => {
       const guest = createAdmittedRunOperatorAuthority({
         profileId: "guest",
         scopes: ["operator.sessions.write"],
-        permissions: { models: { allow: ["fixture/allowed"] } },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["fixture/allowed"] },
+          manifestPlugins: [],
+        }),
         assertCurrent() {},
       });
       const response = createAssistantMessageEventStream();
@@ -88,7 +93,11 @@ describe("embedded stream model authority", () => {
         profileId: "same-person",
         source,
         scopes: ["operator.sessions.write"],
-        permissions: { models: { allow: ["fixture/allowed"] } },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["fixture/allowed"] },
+          manifestPlugins: [],
+        }),
         executionPolicy: "foreground-only",
         foregroundRunId: "original-turn",
         foregroundDeadlineAt: deadline,
@@ -175,7 +184,11 @@ describe("embedded stream model authority", () => {
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "viewer",
         scopes: ["operator.sessions.write"],
-        permissions: { models: { allow: ["fixture/allowed"] } },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["fixture/allowed"] },
+          manifestPlugins: [],
+        }),
         assertCurrent: () => {
           if (!current) {
             throw new Error("original model source revoked");

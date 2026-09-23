@@ -12,6 +12,10 @@ import type {
   RequestFrame,
 } from "../../../packages/gateway-protocol/src/schema/frames.ts";
 import { readActiveGatewayLockIdentity } from "../../../src/infra/gateway-lock.ts";
+import {
+  getCanonicalUserPreferences,
+  setCanonicalUserPreferences,
+} from "../../../src/state/user-preferences.ts";
 import { ensureProfileForEmail, setUserProfileRole } from "../../../src/state/user-profiles.ts";
 import { writeOpenAiResponsesText } from "../../../test/helpers/openai-responses-sse.ts";
 import {
@@ -28,6 +32,10 @@ import { verifyGatewayServedControlUiBundle } from "./control-ui-auth-proof.test
 export const fixtureProvider = "foreground-lifecycle";
 export const allowedModel = `${fixtureProvider}/allowed`;
 export const forbiddenModel = `${fixtureProvider}/forbidden`;
+export const savedModelPreference = {
+  "new-session.v1:main": { model: forbiddenModel, agentRuntime: "openclaw" },
+  "new-session.migration.v1": true,
+};
 export const restartNotice =
   "The Gateway restarted. This turn was not resumed automatically for security reasons. Your conversation history is preserved. Send a new request to continue.";
 const people = ["guest", "uncertain", "restart", "staff"] as const;
@@ -230,8 +238,8 @@ export async function startForegroundLifecycleFixture() {
                 accessPolicyPlugin: fixtureProvider,
                 agents: "*",
                 sessions: { others: "write" },
-                scopes: ["operator.read", "operator.write"],
-                models: { allow: [allowedModel] },
+                scopes: ["operator.sessions.read", "operator.sessions.write"],
+                modelPolicy: { allow: [allowedModel] },
               },
               staff: {
                 agents: "*",
@@ -303,6 +311,9 @@ export async function startForegroundLifecycleFixture() {
       const email = `${person}@foreground.example.invalid`;
       const profile = ensureProfileForEmail(email, { env: instance.env });
       setUserProfileRole(profile.id, person === "staff" ? "staff" : "guest", { env: instance.env });
+      expect(
+        await setCanonicalUserPreferences(profile.id, savedModelPreference, { env: instance.env }),
+      ).toMatchObject({ ok: true });
       const proxy = await createProxy({
         configFile: false,
         envFile: false,
@@ -354,6 +365,25 @@ export async function startForegroundLifecycleFixture() {
           throw new Error("Unknown fixture person");
         }
         return identity;
+      },
+      async savedModelPreference(person: FixturePerson) {
+        const identity = identities.get(person);
+        if (!identity) {
+          throw new Error("Unknown fixture person");
+        }
+        return (
+          await getCanonicalUserPreferences(identity.profileId, Object.keys(savedModelPreference), {
+            env: owner.env,
+          })
+        )?.entries;
+      },
+      async setGuestModelPolicy(policy: { allow: string[] } | undefined) {
+        if (policy) {
+          config.gateway.roles.definitions.guest.modelPolicy = policy;
+        } else {
+          delete config.gateway.roles.definitions.guest.modelPolicy;
+        }
+        await owner.state.writeConfig(config);
       },
       async restart(staff: Page) {
         const target = await readActiveGatewayLockIdentity({

@@ -1,5 +1,5 @@
 import { DEFAULT_GATEWAY_REQUEST_TIMEOUT_MS } from "@openclaw/gateway-client/browser";
-import type { ChatAccountSelection, UserModelAccount } from "@openclaw/gateway-protocol";
+import type { UserModelAccount } from "@openclaw/gateway-protocol";
 import type {
   FastMode,
   GatewayAgentRow,
@@ -24,15 +24,14 @@ import {
 } from "../../lib/model-catalog-store.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import { renderChatModelAccountControl } from "../chat/components/chat-model-account-control.ts";
-import {
-  renderChatModelControls,
-  type ChatModelCatalogState,
-} from "../chat/components/chat-model-controls.ts";
+import { renderChatModelControls } from "../chat/components/chat-model-controls.ts";
 import { CatalogTargetDiscovery } from "./catalog-target.ts";
 import type { DraftCloudProfile } from "./discovery.ts";
 import {
+  type DraftModelMetadata,
   isDraftModelAccountReady,
   resolveDraftModelAccess,
+  resolveDraftModelPreference,
   resolveDraftModelPresentation,
 } from "./model-control-selection.ts";
 import {
@@ -49,11 +48,6 @@ import { hasNewSessionModelPreference, type NewSessionPreference } from "./prefe
 registerModelControlsEnglish();
 
 type NewSessionMetadataClient = NonNullable<ApplicationContext["gateway"]["snapshot"]["client"]>;
-type NewSessionMetadataState = ChatModelCatalogState & {
-  catalog: ModelCatalogEntry[];
-  accountSelection?: ChatAccountSelection;
-  displayOnly?: boolean;
-};
 type NewSessionMetadataLoadOptions = {
   agent?: GatewayAgentRow;
   preference?: NewSessionPreference | null;
@@ -65,7 +59,7 @@ export class NewSessionModelControl {
   private initialModel: string | undefined;
   private pendingInitialModel: string | undefined;
   private agentId = "";
-  private metadataState: NewSessionMetadataState = {
+  private metadataState: DraftModelMetadata = {
     catalog: [],
     hasSnapshot: false,
     status: "idle",
@@ -114,6 +108,9 @@ export class NewSessionModelControl {
   }
 
   private get modelRestricted(): boolean {
+    if (this.metadataState.hasSnapshot) {
+      return this.metadataState.modelRestricted === true;
+    }
     return this.pendingContext?.gateway.snapshot.hello?.auth?.modelRestricted === true;
   }
 
@@ -178,7 +175,7 @@ export class NewSessionModelControl {
     this.catalogTargets.load(context, agentId, enabled);
   }
 
-  private updateMetadataState(next: NewSessionMetadataState) {
+  private updateMetadataState(next: DraftModelMetadata) {
     this.metadataState = next;
     this.notify();
   }
@@ -187,6 +184,7 @@ export class NewSessionModelControl {
     this.metadataState = {
       ...this.metadataState,
       catalog: result.models,
+      modelRestricted: result.modelRestricted,
       displayOnly,
       ...resolveModelCatalogState(result),
     };
@@ -195,13 +193,26 @@ export class NewSessionModelControl {
   private publishMetadataCatalog(result: ModelCatalogResult) {
     this.assignMetadataCatalog(result);
     this.metadataState.accountSelection = result.accountSelection;
+    if (
+      this.modelRestricted &&
+      this.selected &&
+      !reconcileDraftModelSelection({
+        model: this.selected,
+        thinkingLevel: this.thinkingLevel,
+        catalog: this.catalog,
+      }).model
+    ) {
+      this.resetSelection();
+    }
     if (!this.draftAccount && this.pendingSelectionGeneration === this.selectionGeneration) {
       if (this.pendingInitialModel) {
-        const selection = reconcileDraftModelSelection({
-          model: this.pendingInitialModel,
-          thinkingLevel: "",
-          catalog: this.catalog,
-        });
+        const selection = this.modelRestricted
+          ? reconcileDraftModelSelection({
+              model: this.pendingInitialModel,
+              thinkingLevel: "",
+              catalog: this.catalog,
+            })
+          : { model: this.pendingInitialModel };
         this.resetSelection(selection.model);
         if (selection.model) {
           this.pendingInitialModel = undefined;
@@ -507,11 +518,9 @@ export class NewSessionModelControl {
     if (!preference) {
       return;
     }
-    const selection = reconcileDraftModelSelection({
-      model: preference.model ?? "",
-      agentRuntime: preference.agentRuntime,
-      thinkingLevel: preference.thinkingLevel ?? "",
-      fastMode: preference.fastMode,
+    const selection = resolveDraftModelPreference({
+      preference,
+      restricted: this.modelRestricted,
       agent: this.pendingAgent,
       defaults: this.pendingContext?.sessions.state.result?.defaults,
       catalog: this.catalog,
@@ -520,7 +529,7 @@ export class NewSessionModelControl {
     this.agentRuntime = selection.agentRuntime;
     this.thinkingLevel = selection.thinkingLevel;
     this.fastMode = selection.fastMode;
-    if (selection.repaired) {
+    if (selection.persistRepair) {
       this.persistSelection(preference.agentRuntime ? (this.agentRuntime ?? "") : undefined);
     }
   }

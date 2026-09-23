@@ -1,8 +1,5 @@
 import { parseProviderModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
-import {
-  operatorModelAllowed,
-  type OperatorPermissionCeiling,
-} from "../shared/operator-permissions.js";
+import type { PreparedOperatorModelPolicy } from "../agents/operator-model-policy.types.js";
 import type {
   GatewaySessionRow,
   GatewaySessionsDefaults,
@@ -10,26 +7,23 @@ import type {
 } from "./session-utils.types.js";
 
 function visibleModel(
-  permissions: OperatorPermissionCeiling | undefined,
+  policy: PreparedOperatorModelPolicy | undefined,
   provider: string | null | undefined,
   model: string | null | undefined,
 ): boolean {
-  return (
-    !permissions?.models ||
-    Boolean(provider && model && operatorModelAllowed(permissions, provider, model))
-  );
+  return !policy || Boolean(provider && model && policy.allows({ provider, model }));
 }
 
 /** Redact only this caller's presentation; the shared row/catalog remains neutral. */
 export function projectOperatorSessionModel(
   row: GatewaySessionRow,
-  permissions: OperatorPermissionCeiling | undefined,
+  policy: PreparedOperatorModelPolicy | undefined,
 ): GatewaySessionRow {
-  if (!permissions?.models) {
+  if (!policy) {
     return row;
   }
   const result = { ...row };
-  if (!visibleModel(permissions, row.modelProvider, row.model)) {
+  if (!visibleModel(policy, row.modelProvider, row.model)) {
     delete result.model;
     delete result.modelProvider;
     delete result.modelOverrideSource;
@@ -43,7 +37,7 @@ export function projectOperatorSessionModel(
     delete result.contextWindows;
     delete result.contextWindowDefault;
   }
-  if (!visibleModel(permissions, row.activeModelProvider, row.activeModel)) {
+  if (!visibleModel(policy, row.activeModelProvider, row.activeModel)) {
     delete result.activeModel;
     delete result.activeModelProvider;
   }
@@ -52,9 +46,9 @@ export function projectOperatorSessionModel(
 
 export function projectOperatorSessionDefaults(
   defaults: GatewaySessionsDefaults,
-  permissions: OperatorPermissionCeiling | undefined,
+  policy: PreparedOperatorModelPolicy | undefined,
 ): GatewaySessionsDefaults {
-  if (visibleModel(permissions, defaults.modelProvider, defaults.model)) {
+  if (visibleModel(policy, defaults.modelProvider, defaults.model)) {
     return defaults;
   }
   return {
@@ -72,17 +66,17 @@ export function projectOperatorSessionPatch<
   T extends Pick<SessionsPatchResult, "entry" | "resolved">,
 >(
   result: T,
-  permissions: OperatorPermissionCeiling | undefined,
+  policy: PreparedOperatorModelPolicy | undefined,
   selected: { provider: string; model: string },
 ): Omit<T, "entry" | "resolved"> & Pick<SessionsPatchResult, "entry" | "resolved"> {
-  if (!permissions?.models) {
+  if (!policy) {
     return result;
   }
   const entry = { ...result.entry };
-  const selectionVisible = visibleModel(permissions, selected.provider, selected.model);
+  const selectionVisible = visibleModel(policy, selected.provider, selected.model);
   const visibleRef = (ref: string) => {
     const parsed = parseProviderModelRef(ref);
-    return parsed !== null && visibleModel(permissions, parsed.provider, parsed.model);
+    return parsed !== null && visibleModel(policy, parsed.provider, parsed.model);
   };
   if (!selectionVisible) {
     delete entry.providerOverride;
@@ -105,7 +99,7 @@ export function projectOperatorSessionPatch<
     delete entry.cliSessionBindings;
     delete entry.claudeCliSessionId;
   }
-  if (!visibleModel(permissions, entry.modelProvider, entry.model)) {
+  if (!visibleModel(policy, entry.modelProvider, entry.model)) {
     delete entry.modelProvider;
     delete entry.model;
   }
@@ -120,7 +114,7 @@ export function projectOperatorSessionPatch<
   }
   if (
     entry.systemPromptReport &&
-    !visibleModel(permissions, entry.systemPromptReport.provider, entry.systemPromptReport.model)
+    !visibleModel(policy, entry.systemPromptReport.provider, entry.systemPromptReport.model)
   ) {
     entry.systemPromptReport = { ...entry.systemPromptReport };
     delete entry.systemPromptReport.provider;
@@ -128,7 +122,7 @@ export function projectOperatorSessionPatch<
   }
   if (entry.pendingTranscriptRepair) {
     entry.pendingTranscriptRepair = entry.pendingTranscriptRepair.map((repair) => {
-      if (visibleModel(permissions, repair.provider, repair.model)) {
+      if (visibleModel(policy, repair.provider, repair.model)) {
         return repair;
       }
       const { provider: _provider, model: _model, ...content } = repair;
@@ -137,17 +131,13 @@ export function projectOperatorSessionPatch<
   }
   if (
     entry.contextBudgetStatus &&
-    !visibleModel(permissions, entry.contextBudgetStatus.provider, entry.contextBudgetStatus.model)
+    !visibleModel(policy, entry.contextBudgetStatus.provider, entry.contextBudgetStatus.model)
   ) {
     delete entry.contextBudgetStatus;
   }
   if (
     entry.quotaSuspension &&
-    !visibleModel(
-      permissions,
-      entry.quotaSuspension.failedProvider,
-      entry.quotaSuspension.failedModel,
-    )
+    !visibleModel(policy, entry.quotaSuspension.failedProvider, entry.quotaSuspension.failedModel)
   ) {
     delete entry.quotaSuspension;
   }
@@ -158,7 +148,7 @@ export function projectOperatorSessionPatch<
   }
   if (
     !visibleModel(
-      permissions,
+      policy,
       entry.modelOverrideFallbackOriginProvider,
       entry.modelOverrideFallbackOriginModel,
     )
@@ -169,12 +159,12 @@ export function projectOperatorSessionPatch<
   const fallback = entry.modelFallback;
   if (
     fallback &&
-    (!visibleModel(permissions, fallback.prevProvider, fallback.prevModel) ||
+    (!visibleModel(policy, fallback.prevProvider, fallback.prevModel) ||
       (fallback.prevModelOverride !== undefined &&
-        !visibleModel(permissions, fallback.prevProviderOverride, fallback.prevModelOverride)) ||
+        !visibleModel(policy, fallback.prevProviderOverride, fallback.prevModelOverride)) ||
       (fallback.prevModelOverrideFallbackOriginModel !== undefined &&
         !visibleModel(
-          permissions,
+          policy,
           fallback.prevModelOverrideFallbackOriginProvider,
           fallback.prevModelOverrideFallbackOriginModel,
         )))

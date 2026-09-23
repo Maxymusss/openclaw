@@ -12,6 +12,7 @@ import {
   prepareOperatorModelPolicy,
   resolveOperatorModelDefault,
   assertOperatorModelAllowed,
+  captureOperatorModelRequest,
   assertOperatorModelResponse,
   guardOperatorModelProviderStream,
   OperatorModelPolicyError,
@@ -61,7 +62,11 @@ describe("operator model request lifetime", () => {
       profileId: "same-person",
       source,
       scopes: ["operator.read", "operator.write"],
-      permissions: { models: { allow: ["fixture/shared", "fixture/only-a"] } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: ["fixture/shared", "fixture/only-a"] },
+        manifestPlugins: [],
+      }),
       gatewayAccessGrant: { pluginId: "fixture", grantId: "original" },
       executionPolicy: "foreground-only",
       foregroundRunId: "original-turn",
@@ -73,7 +78,11 @@ describe("operator model request lifetime", () => {
     const b = createAdmittedRunOperatorAuthority({
       ...a,
       scopes: ["operator.read"],
-      permissions: { models: { allow: ["fixture/shared", "fixture/only-b"] } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: ["fixture/shared", "fixture/only-b"] },
+        manifestPlugins: [],
+      }),
       gatewayAccessGrant: { pluginId: "fixture", grantId: "original" },
       foregroundDeadlineAt: deadline - 1_000,
       signal: signals[1]!.signal,
@@ -85,7 +94,15 @@ describe("operator model request lifetime", () => {
     const result = owner.run(() =>
       runWithOperatorModelRequest(a, () =>
         runWithOperatorModelRequest(b, (combined) => {
-          expect(combined?.permissions).toEqual({ models: { allow: ["fixture/shared"] } });
+          expect(combined?.modelPolicy?.allows({ provider: "fixture", model: "shared" })).toBe(
+            true,
+          );
+          expect(combined?.modelPolicy?.allows({ provider: "fixture", model: "only-a" })).toBe(
+            false,
+          );
+          expect(combined?.modelPolicy?.allows({ provider: "fixture", model: "only-b" })).toBe(
+            false,
+          );
           expect(combined?.scopes).toEqual(["operator.read"]);
           expect(combined?.foregroundDeadlineAt).toBe(deadline - 1_000);
           expect(combined?.executionPolicy).toBe("foreground-only");
@@ -289,7 +306,11 @@ describe("operator model request lifetime", () => {
     const authority = createAdmittedRunOperatorAuthority({
       profileId: "original-person",
       scopes: ["operator.sessions.write"],
-      permissions: { models: { allow: [] } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: [] },
+        manifestPlugins: [],
+      }),
       assertCurrent: () => {},
       retain,
     });
@@ -325,7 +346,11 @@ describe("operator model request lifetime", () => {
     const original = createAdmittedRunOperatorAuthority({
       profileId: "original-person",
       scopes: ["operator.sessions.write"],
-      permissions: { models: { allow: [] } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: [] },
+        manifestPlugins: [],
+      }),
       assertCurrent: () => {},
     });
     await runWithOperatorModelRequest(original, async () => {
@@ -432,6 +457,38 @@ describe("operator model policy", () => {
     const empty = prepareOperatorModelPolicy({ cfg, policy: { allow: [] }, manifestPlugins: [] })!;
     expect(empty.models).toEqual([]);
     expect(empty.allows({ provider: "vendor", model: "primary" })).toBe(false);
+  });
+
+  it("binds wildcard members absent from the presentation list to one immutable request", () => {
+    const policy = prepareOperatorModelPolicy({
+      cfg: config(),
+      policy: { allow: ["vendor/*"], deny: ["vendor/restricted-*"] },
+      manifestPlugins: [],
+    })!;
+    const model = makeProviderModelFixture({
+      provider: "vendor",
+      id: "undiscovered",
+      api: "openai-completions",
+      baseUrl: "https://models.example/v1",
+    });
+    expect(policy.models).not.toContainEqual({ provider: model.provider, model: model.id });
+    const authority = createAdmittedRunOperatorAuthority({
+      profileId: "wildcard-reader",
+      scopes: ["operator.write"],
+      modelPolicy: policy,
+      assertCurrent() {},
+    });
+    runWithOperatorModelRequest(authority, () => {
+      const capture = captureOperatorModelRequest(model)!;
+      capture.run(() => {
+        const wire = capture.bindWireModel("deployment", model);
+        expect(() => wire(model, "deployment")).not.toThrow();
+        expect(() => captureOperatorModelRequest({ ...model, id: "another-allowed" })).toThrow(
+          OperatorModelPolicyError,
+        );
+        expect(() => wire(model, "different-deployment")).toThrow(OperatorModelPolicyError);
+      });
+    });
   });
 
   it("replaces a denied default with an existing automatic fallback without granting a manual override", () => {

@@ -1,13 +1,23 @@
 import { reasoningTagTextPolicy } from "@openclaw/ai/internal/openai";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { findSourceImportBackedges } from "../../test/helpers/source-import-closure.js";
-import { bindModelCompletionOwner } from "../llm/model-runtime-binding.js";
+import {
+  bindModelCompletionOwner,
+  bindModelRequestRoute,
+  inheritModelRequestRoute,
+} from "../llm/model-runtime-binding.js";
 import type { Model } from "../llm/types.js";
 import { createAdmittedRunOperatorAuthority } from "./admitted-run-context.js";
+import {
+  assertOperatorModelRequestRoute,
+  captureOperatorModelRequest,
+  prepareOperatorModelPolicy,
+  runWithOperatorModelSelection,
+} from "./operator-model-policy.js";
 
 const mocks = vi.hoisted(() => ({
   complete: vi.fn(),
-  prepareModel: vi.fn((params: { model: unknown }) => params.model),
+  prepareModel: vi.fn((params: { model: Model }) => params.model),
 }));
 
 vi.mock("../llm/stream.js", () => ({ completeSimple: mocks.complete }));
@@ -46,7 +56,7 @@ beforeEach(() => {
   mocks.complete.mockReset();
   mocks.complete.mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
   mocks.prepareModel.mockReset();
-  mocks.prepareModel.mockImplementation((params: { model: unknown }) => params.model);
+  mocks.prepareModel.mockImplementation((params: { model: Model }) => params.model);
 });
 
 describe("prepared completion import boundary", () => {
@@ -61,6 +71,66 @@ describe("prepared completion import boundary", () => {
 });
 
 describe("completeWithPreparedSimpleCompletionModel", () => {
+  it.each([false, true])(
+    "keeps nested prepared selection separate and restores the outer route after throw=%s",
+    async (throws) => {
+      const outer = bindModelRequestRoute(baseModel, { provider: "logical", model: "outer" });
+      const nested = bindModelRequestRoute(
+        { ...baseModel, id: "physical-nested" },
+        { provider: "logical", model: "nested" },
+      );
+      const authority = createAdmittedRunOperatorAuthority({
+        scopes: [],
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["logical/outer", "logical/nested"] },
+          manifestPlugins: [],
+        }),
+        assertCurrent() {},
+      });
+      const failure = new Error("nested provider failed");
+      mocks.prepareModel.mockImplementation(({ model }) => {
+        assertOperatorModelRequestRoute(authority, model);
+        return model;
+      });
+      mocks.complete.mockImplementation(async (model: Model) => {
+        await Promise.resolve();
+        assertOperatorModelRequestRoute(authority, model);
+        expect(() => captureOperatorModelRequest(outer)).toThrow();
+        if (throws) {
+          throw failure;
+        }
+        return { content: [{ type: "text", text: "nested" }] };
+      });
+      await runWithOperatorModelSelection(authority, outer, async () => {
+        expect(() => captureOperatorModelRequest(nested)).toThrow();
+        const completion = completeWithPreparedSimpleCompletionModel({
+          model: nested,
+          auth: { apiKey: "test", source: "test", mode: "api-key" },
+          context,
+        });
+        if (throws) {
+          await expect(completion).rejects.toBe(failure);
+        } else {
+          await expect(completion).resolves.toEqual({
+            content: [{ type: "text", text: "nested" }],
+          });
+        }
+        assertOperatorModelRequestRoute(authority, outer);
+        expect(() => captureOperatorModelRequest(nested)).toThrow();
+        await expect(
+          completeWithPreparedSimpleCompletionModel({
+            model: { ...baseModel, id: "denied" },
+            auth: { apiKey: "test", source: "test", mode: "api-key" },
+            context,
+          }),
+        ).rejects.toMatchObject({ code: "OPERATOR_MODEL_POLICY_DENIED" });
+        assertOperatorModelRequestRoute(authority, outer);
+      });
+      expect(mocks.prepareModel).toHaveBeenCalledOnce();
+      expect(mocks.complete).toHaveBeenCalledOnce();
+    },
+  );
   it.each(["allowed", "forbidden", "revoked"] as const)(
     "checks the final transport model and original source: %s",
     async (mode) => {
@@ -68,16 +138,26 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "viewer",
         scopes: ["operator.sessions.write"],
-        permissions: { models: { allow: ["openai/gpt-5.4"] } },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["openai/gpt-5.4"] },
+          manifestPlugins: [],
+        }),
         assertCurrent: () => {
           if (!current) {
             throw new Error("original source revoked");
           }
         },
       });
-      const preparedModel = { ...baseModel, id: mode === "forbidden" ? "other" : baseModel.id };
-      mocks.prepareModel.mockImplementationOnce(() => {
+      let preparedModel: Model = {
+        ...baseModel,
+        id: mode === "forbidden" ? "other" : baseModel.id,
+      };
+      mocks.prepareModel.mockImplementationOnce(({ model }) => {
         current = mode !== "revoked";
+        if (mode === "allowed") {
+          preparedModel = inheritModelRequestRoute(model, preparedModel);
+        }
         return preparedModel;
       });
       const completion = completeWithPreparedSimpleCompletionModel({

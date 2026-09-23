@@ -19,6 +19,7 @@ import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import { MissingProviderAuthError } from "../model-auth.js";
 import { projectModelThinkingCompat } from "../model-catalog-lookup.js";
 import {
+  assertOperatorModelSelection,
   assertOperatorModelAllowed,
   assertOperatorModelHarnessSupported,
   isOperatorModelPolicyError,
@@ -162,7 +163,7 @@ export async function prepareDirectCompactionAttempt(
     const reason = error ?? `Unknown model: ${runtimeProvider}/${modelId}`;
     return { ok: false as const, result: fail(reason) };
   }
-  assertOperatorModelAllowed(params.operatorAuthority, model.provider, model.id);
+  assertOperatorModelSelection(params.operatorAuthority, model);
   const modelResolutionOptions = {
     authStorage,
     modelRegistry,
@@ -269,7 +270,7 @@ export async function prepareDirectCompactionAttempt(
     return { ok: false as const, result: fail(formatErrorMessage(err), err) };
   }
   let runtimeModel: ProviderRuntimeModel = resolvedAuthAttempt.model;
-  assertOperatorModelAllowed(params.operatorAuthority, runtimeModel.provider, runtimeModel.id);
+  assertOperatorModelSelection(params.operatorAuthority, runtimeModel);
   const apiKeyInfo = resolvedAuthAttempt.auth;
   const resolvedRuntimeAuthPlan = resolvedAuthAttempt.plan;
   let hasRuntimeAuthExchange = false;
@@ -306,7 +307,7 @@ export async function prepareDirectCompactionAttempt(
         preparedAuth: runtimeAuth,
       });
       runtimeModel = applyPreparedRuntimeAuthToModel(runtimeModel, preparedAuth);
-      assertOperatorModelAllowed(params.operatorAuthority, runtimeModel.provider, runtimeModel.id);
+      assertOperatorModelSelection(params.operatorAuthority, runtimeModel);
       const runtimeApiKey = preparedAuth?.apiKey ?? apiKeyInfo.apiKey;
       hasRuntimeAuthExchange = Boolean(preparedAuth?.apiKey);
       if (!runtimeApiKey) {

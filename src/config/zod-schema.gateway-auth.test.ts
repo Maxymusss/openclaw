@@ -111,8 +111,8 @@ describe("gateway operator role config", () => {
   };
 
   test.each([undefined, { allow: [] }, { allow: ["provider/model", "provider/other"] }])(
-    "preserves optional exact model ceilings with wildcard agents: %j",
-    (models) => {
+    "preserves optional canonical model policies with wildcard agents: %j",
+    (modelPolicy) => {
       const result = OpenClawSchema.parse({
         gateway: {
           roles: {
@@ -122,7 +122,7 @@ describe("gateway operator role config", () => {
                 ...validRole,
                 agents: "*",
                 accessPolicyPlugin: "visitor-access",
-                ...(models ? { models } : {}),
+                ...(modelPolicy ? { modelPolicy } : {}),
               },
             },
           },
@@ -132,26 +132,30 @@ describe("gateway operator role config", () => {
         ...validRole,
         agents: "*",
         accessPolicyPlugin: "visitor-access",
-        ...(models ? { models } : {}),
+        ...(modelPolicy ? { modelPolicy } : {}),
       });
     },
   );
 
-  test.each(["model", "provider/", "/model", "provider/*", "*/model", " "])(
-    "rejects non-exact operator model ref %j",
-    (ref) => {
-      expect(
-        OpenClawSchema.safeParse({
-          gateway: {
-            roles: {
-              default: "guest",
-              definitions: { guest: { ...validRole, models: { allow: [ref] } } },
-            },
-          },
-        }).success,
-      ).toBe(false);
-    },
-  );
+  test.each(["provider/", "/model", " "])("rejects malformed operator model ref %j", (ref) => {
+    const result = validateConfigObject({
+      agents: { entries: { main: {} } },
+      gateway: {
+        roles: {
+          default: "guest",
+          definitions: { guest: { ...validRole, modelPolicy: { allow: [ref] } } },
+        },
+      },
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ path: "gateway.roles.definitions.guest.modelPolicy.allow.0" }),
+        ]),
+      );
+    }
+  });
   test("validates model source, scoped aliases, empty membership and future-family exclusions", () => {
     const result = validateConfigObject({
       agents: {

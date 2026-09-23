@@ -21,12 +21,12 @@ describe("caller-local session patch model presentation", () => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const client = roleClient("view", "model-patch-owner");
         client.connect.scopes = ["operator.sessions.write"];
-        const cfg = rolePolicyConfig();
+        let cfg = rolePolicyConfig();
         cfg.agents = { defaults: { model: "openai/gpt-5" } };
         const role = expectDefined(cfg.gateway?.roles?.definitions.view, "operator role");
         role.scopes = ["operator.sessions.write"];
         if (mode !== "unrestricted") {
-          role.models = {
+          role.modelPolicy = {
             allow: [
               mode === "allowed" || mode === "tightened" ? "openai/gpt-5" : "openai/gpt-5-mini",
             ],
@@ -135,13 +135,14 @@ describe("caller-local session patch model presentation", () => {
             await expect(
               Promise.race([entered.promise.then(() => true), request.then(() => false)]),
             ).resolves.toBe(true);
-            expect(role.models).toEqual({
+            expect(role.modelPolicy).toEqual({
               allow: [mode === "widened" ? "openai/gpt-5-mini" : "openai/gpt-5"],
             });
-            role.models = {
+            role.modelPolicy = {
               allow: [mode === "widened" ? "openai/gpt-5" : "openai/gpt-5-mini"],
             };
-            expect(role.models).toEqual({
+            cfg = structuredClone(cfg);
+            expect(role.modelPolicy).toEqual({
               allow: [mode === "widened" ? "openai/gpt-5" : "openai/gpt-5-mini"],
             });
             release.resolve();

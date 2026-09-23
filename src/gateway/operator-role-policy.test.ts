@@ -18,7 +18,7 @@ import {
   publishOperatorRoleConfigChange,
   resolveCreatorSandbox,
   resolveGatewayOperatorRoleActor,
-  resolveOperatorPermissionCeiling,
+  resolveOperatorModelPolicy,
   resolveOperatorRolePolicy,
   resolveOperatorRolePolicyForAssignment,
   resolveOperatorRolePolicyForProfile,
@@ -285,7 +285,7 @@ describe("operator role policy", () => {
       }
     });
   });
-  it.each(["agents", "sessions", "sandbox", "models"] as const)(
+  it.each(["agents", "sessions", "sandbox"] as const)(
     "retires only affected sources after a committed %s policy change with unchanged scopes",
     async (restriction) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -318,10 +318,8 @@ describe("operator role policy", () => {
             changedRole.agents = [];
           } else if (restriction === "sessions") {
             changedRole.sessions.others = "none";
-          } else if (restriction === "sandbox") {
-            changedRole.sandbox = "required";
           } else {
-            changedRole.models = { allow: [] };
+            changedRole.sandbox = "required";
           }
           expect(
             authorizeCurrentOperatorRoleScopes(identifiedClient(profile.id), candidate),
@@ -701,7 +699,7 @@ describe("operator role policy", () => {
         const profile = ensureProfileForEmail("execution-policy@example.test");
         const cfg = roleConfig();
         const models = ["test-provider/test-model"];
-        cfg.gateway!.roles!.definitions.guest!.models = { allow: models };
+        cfg.gateway!.roles!.definitions.guest!.modelPolicy = { allow: models };
         const client = identifiedClient(profile.id);
         client.connect.scopes = ["operator.read", "operator.write"];
         const revocation = new AbortController();
@@ -726,8 +724,16 @@ describe("operator role policy", () => {
           sourceAuthority.executionPolicy = undefined;
           expect(narrowed.authority.scopes).toEqual(["operator.read"]);
           expect(narrowed.authority.executionPolicy).toBe(executionPolicy);
-          expect(narrowed.authority.permissions?.models?.allow).toEqual(models);
-          expect(Object.isFrozen(narrowed.authority.permissions?.models?.allow)).toBe(true);
+          expect(
+            narrowed.authority.modelPolicy?.allows({
+              provider: "test-provider",
+              model: "test-model",
+            }),
+          ).toBe(true);
+          expect(
+            narrowed.authority.modelPolicy?.allows({ provider: "test-provider", model: "other" }),
+          ).toBe(false);
+          expect(Object.isFrozen(narrowed.authority.modelPolicy?.models)).toBe(true);
           expect(narrowed.authority.source).toBe(original.authority.source);
           expect(narrowed.authority.assertCurrent).not.toThrow();
           revocation.abort(new Error("original grant ended"));
@@ -742,9 +748,9 @@ describe("operator role policy", () => {
   it("retains the admitted model ceiling across current widening and rejects identity substitution", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const profile = ensureProfileForEmail("model-source@example.test");
-      const cfg = roleConfig();
+      let cfg = roleConfig();
       const role = expectDefined(cfg.gateway?.roles?.definitions.guest, "guest role");
-      role.models = { allow: ["provider/allowed"] };
+      role.modelPolicy = { allow: ["provider/allowed"] };
       const client = identifiedClient(profile.id);
       const captured = expectDefined(
         captureGatewayOperatorRunAuthority({ client, context: { getRuntimeConfig: () => cfg } }),
@@ -752,16 +758,32 @@ describe("operator role policy", () => {
       );
       client.internal = { operatorRunAuthority: captured.authority };
       try {
-        role.models.allow.push("provider/later");
-        expect(resolveOperatorPermissionCeiling(client, cfg)).toEqual({
-          models: { allow: ["provider/allowed"] },
-        });
-        delete role.models;
-        expect(resolveOperatorPermissionCeiling(client, cfg)).toEqual({
-          models: { allow: ["provider/allowed"] },
-        });
+        cfg = structuredClone(cfg);
+        expectDefined(cfg.gateway?.roles?.definitions.guest, "current role").modelPolicy = {
+          allow: ["provider/allowed", "provider/later"],
+        };
+        expect(
+          resolveOperatorModelPolicy(client, cfg)?.allows({
+            provider: "provider",
+            model: "allowed",
+          }),
+        ).toBe(true);
+        expect(
+          resolveOperatorModelPolicy(client, cfg)?.allows({ provider: "provider", model: "later" }),
+        ).toBe(false);
+        cfg = structuredClone(cfg);
+        delete expectDefined(cfg.gateway?.roles?.definitions.guest, "current role").modelPolicy;
+        expect(
+          resolveOperatorModelPolicy(client, cfg)?.allows({
+            provider: "provider",
+            model: "allowed",
+          }),
+        ).toBe(true);
+        expect(
+          resolveOperatorModelPolicy(client, cfg)?.allows({ provider: "provider", model: "later" }),
+        ).toBe(false);
         client.internal.operatorRoleActor = { kind: "system" };
-        expect(() => resolveOperatorPermissionCeiling(client, cfg)).toThrow(
+        expect(() => resolveOperatorModelPolicy(client, cfg)).toThrow(
           "operator source identity changed",
         );
       } finally {
@@ -774,10 +796,12 @@ describe("operator role policy", () => {
     const cfg = roleConfig();
     const client = identifiedClient("unresolved");
     delete client.authenticatedUserProfile;
-    expect(resolveOperatorPermissionCeiling(client, cfg)).toEqual({ models: { allow: [] } });
-    expect(resolveOperatorPermissionCeiling(client, {})).toBeUndefined();
-    expect(resolveOperatorPermissionCeiling(null, cfg)).toBeUndefined();
+    expect(
+      resolveOperatorModelPolicy(client, cfg)?.allows({ provider: "provider", model: "any" }),
+    ).toBe(false);
+    expect(resolveOperatorModelPolicy(client, {})).toBeUndefined();
+    expect(resolveOperatorModelPolicy(null, cfg)).toBeUndefined();
     client.internal = { operatorRoleActor: { kind: "system" } };
-    expect(resolveOperatorPermissionCeiling(client, cfg)).toBeUndefined();
+    expect(resolveOperatorModelPolicy(client, cfg)).toBeUndefined();
   });
 });

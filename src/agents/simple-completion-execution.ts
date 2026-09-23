@@ -9,6 +9,8 @@ import { resolveProviderThinkingLevel, type ThinkLevel } from "../auto-reply/thi
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   bindModelLlmRuntime,
+  bindModelRequestRoute,
+  readModelRequestRoute,
   getModelCompletionOwner,
   getModelCompletionTransport,
   getModelCompletionTransportKind,
@@ -23,10 +25,13 @@ import {
 } from "./embedded-agent-runner/extra-params.js";
 import type { ResolvedProviderAuth } from "./model-auth.js";
 import {
-  assertOperatorModelAllowed,
+  assertOperatorModelRequestRoute,
+  assertOperatorModelSelection,
+  OperatorModelPolicyError,
   assertOperatorModelResponse,
   runWithOperatorModelAuthority,
   runWithOperatorModelRequest,
+  runWithOperatorModelSelection,
 } from "./operator-model-policy.js";
 
 type SimpleCompletionModelOptions = {
@@ -54,21 +59,31 @@ export async function completeWithPreparedSimpleCompletionModel(
   params: PreparedCompletionParams,
 ): Promise<AssistantMessage> {
   return await runWithOperatorModelRequest(params.operatorAuthority, async (operatorAuthority) => {
-    const owner = getModelCompletionOwner(params.model);
+    const model =
+      !operatorAuthority?.modelPolicy || readModelRequestRoute(params.model)
+        ? params.model
+        : bindModelRequestRoute(params.model, {
+            provider: params.model.provider,
+            model: params.model.id,
+          });
+    const owner = getModelCompletionOwner(model);
     // SDK ownership can replace the ambient work scope. Retain inside it so
     // accepted provider callbacks and cleanup keep this source until they drain.
     const run = () =>
       runWithOperatorModelAuthority(operatorAuthority, async () => {
-        const result = await completePreparedModel({
-          ...params,
-          operatorAuthority,
-          assertCurrent: owner
-            ? () => {
-                owner.assertCurrent();
-                params.assertCurrent?.();
-              }
-            : params.assertCurrent,
-        });
+        const result = await runWithOperatorModelSelection(operatorAuthority, model, () =>
+          completePreparedModel({
+            ...params,
+            model,
+            operatorAuthority,
+            assertCurrent: owner
+              ? () => {
+                  owner.assertCurrent();
+                  params.assertCurrent?.();
+                }
+              : params.assertCurrent,
+          }),
+        );
         assertOperatorModelResponse(result);
         return result;
       });
@@ -105,34 +120,49 @@ async function completePreparedModel(params: PreparedCompletionParams): Promise<
   if (runtime) {
     completionModel = bindModelLlmRuntime(completionModel, runtime);
   }
-  const assertCurrent = () => {
-    params.assertCurrent?.();
-    assertOperatorModelAllowed(
-      params.operatorAuthority,
-      completionModel.provider,
-      completionModel.id,
-    );
-  };
-  assertCurrent();
-  const { reasoning: rawReasoning, strictReasoningTags, ...options } = params.options ?? {};
-  const providerReasoning = resolveProviderThinkingLevel({
-    provider: completionModel.provider,
-    model: completionModel.id,
-    catalog: [completionModel],
-    agentRuntime: "openclaw",
-    level: rawReasoning,
-  });
-  const reasoning = providerReasoning === "adaptive" ? "medium" : providerReasoning;
-  const headers = prepareHeadersForSimpleCompletion(completionModel, options);
-  const completionOptions: SimpleStreamOptions = {
-    ...options,
-    ...(transport ? { transport } : {}),
-    ...(reasoning ? { reasoning } : {}),
-    apiKey: params.auth.apiKey,
-    ...(headers ? { headers } : {}),
-  };
-  if (strictReasoningTags) {
-    reasoningTagTextPolicy.markStrict(completionOptions);
+  if (
+    params.operatorAuthority?.modelPolicy &&
+    readModelRequestRoute(completionModel)?.logicalRef !==
+      readModelRequestRoute(params.model)?.logicalRef
+  ) {
+    throw new OperatorModelPolicyError("The transport replaced the prepared model selection.");
   }
-  return await completeSimple(completionModel, params.context, completionOptions, assertCurrent);
+  return await runWithOperatorModelSelection(
+    params.operatorAuthority,
+    completionModel,
+    async () => {
+      const assertCurrent = () => {
+        params.assertCurrent?.();
+        assertOperatorModelSelection(params.operatorAuthority, params.model);
+        assertOperatorModelRequestRoute(params.operatorAuthority, completionModel);
+      };
+      assertCurrent();
+      const { reasoning: rawReasoning, strictReasoningTags, ...options } = params.options ?? {};
+      const providerReasoning = resolveProviderThinkingLevel({
+        provider: completionModel.provider,
+        model: completionModel.id,
+        catalog: [completionModel],
+        agentRuntime: "openclaw",
+        level: rawReasoning,
+      });
+      const reasoning = providerReasoning === "adaptive" ? "medium" : providerReasoning;
+      const headers = prepareHeadersForSimpleCompletion(completionModel, options);
+      const completionOptions: SimpleStreamOptions = {
+        ...options,
+        ...(transport ? { transport } : {}),
+        ...(reasoning ? { reasoning } : {}),
+        apiKey: params.auth.apiKey,
+        ...(headers ? { headers } : {}),
+      };
+      if (strictReasoningTags) {
+        reasoningTagTextPolicy.markStrict(completionOptions);
+      }
+      return await completeSimple(
+        completionModel,
+        params.context,
+        completionOptions,
+        assertCurrent,
+      );
+    },
+  );
 }

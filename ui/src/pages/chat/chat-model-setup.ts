@@ -27,7 +27,13 @@ export function requiresChatModelSetup(state: ChatModelSetupState): boolean {
 export function resolveChatModelSetup(input: {
   state: Pick<
     ChatPageHost,
-    "hello" | "chatModelCatalog" | "sessions" | "sessionKey" | "sessionsResult" | "connected"
+    | "hello"
+    | "chatModelCatalog"
+    | "chatModelRestricted"
+    | "sessions"
+    | "sessionKey"
+    | "sessionsResult"
+    | "connected"
   >;
   session?: GatewaySessionRow;
   agent?: GatewayAgentRow;
@@ -37,7 +43,7 @@ export function resolveChatModelSetup(input: {
 }) {
   const { state, session, agent } = input;
   const model = resolveChatModelSelectState({
-    modelRestricted: state.hello?.auth?.modelRestricted,
+    modelRestricted: state.chatModelRestricted ?? state.hello?.auth?.modelRestricted,
     activeSession: session,
     agentDefaultModel: agent?.model?.primary,
     chatModelCatalog: state.chatModelCatalog,

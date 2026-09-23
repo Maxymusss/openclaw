@@ -49,7 +49,7 @@ export function isOperatorDecisionRuntimeAllowed(
   return runWithOperatorModelRequest(undefined, (ambient) => {
     assertOperatorModelAuthorityCurrent(authority);
     return [ambient, authority].every(
-      (source) => !source?.permissions?.models && source?.executionPolicy !== "foreground-only",
+      (source) => !source?.modelPolicy && source?.executionPolicy !== "foreground-only",
     );
   });
 }

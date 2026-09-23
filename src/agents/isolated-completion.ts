@@ -39,6 +39,7 @@ import {
   resolveCliRuntimeExecutionProvider,
 } from "./model-runtime-aliases.js";
 import {
+  assertOperatorModelSelection,
   assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
   assertOperatorModelAuthorityCurrent,
   assertOperatorModelHarnessSupported,
@@ -363,11 +364,7 @@ async function runIsolatedCompletionOwned(
         if ("error" in prepared) {
           throw new Error(`Isolated completion preparation failed: ${prepared.error}`);
         }
-        assertOperatorModelTupleAllowed(
-          input.operatorAuthority,
-          prepared.model.provider,
-          prepared.model.id,
-        );
+        assertOperatorModelSelection(input.operatorAuthority, prepared.model);
         return { owner: "host", ...prepared };
       };
       let result: AgentHarnessIsolatedCompletionResult | undefined;
@@ -405,11 +402,7 @@ async function runIsolatedCompletionOwned(
             );
           }
           const runtimeModel = resolution.model;
-          assertOperatorModelTupleAllowed(
-            input.operatorAuthority,
-            runtimeModel.provider,
-            runtimeModel.id,
-          );
+          assertOperatorModelSelection(input.operatorAuthority, runtimeModel);
           assertCurrent();
           const authProfileStore = ensureAuthProfileStore(agentDir, {
             profileId: request.authProfileId,
@@ -519,7 +512,7 @@ async function runIsolatedCompletionOwned(
               });
               assertCurrent();
               if (model) {
-                assertOperatorModelTupleAllowed(input.operatorAuthority, model.provider, model.id);
+                assertOperatorModelSelection(input.operatorAuthority, model);
               }
               modelMaxTokens = model?.maxTokens;
               authorization = {

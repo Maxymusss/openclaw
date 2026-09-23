@@ -299,11 +299,12 @@ not share diagnostics or control-plane write authority.
 
 ### Optional model ceiling
 
-A role can add `models: { allow: ["provider/model"] }` to restrict operator-owned
-inference to exact model references. Omitting `models` preserves existing
-behavior; `allow: []` denies all models. Model wildcards are not accepted.
-`agents: "*"` remains valid, and model limits do not grant session access,
-operator scopes, provider accounts, or runtime support.
+A role can set `modelPolicy: { allow: ["provider/model"] }` to restrict
+operator-owned inference. Omitting `modelPolicy` preserves unrestricted behavior;
+`allow: []` denies all models. The same policy supports source-agent defaults,
+aliases, wildcard membership, and exclusions described above. `agents: "*"`
+remains valid. Model limits do not grant session access, operator scopes,
+provider accounts, or runtime support.
 
 The original admitted ceiling remains attached to owned work. Current policy can
 tighten it; widening or removing the field cannot expand an existing request's
@@ -311,12 +312,19 @@ authority. The same limit applies to fallback candidates and utility work such
 as compaction, titles, image analysis, and PDF analysis. An unsupported selected
 runtime is refused without substituting another runtime or removing the limit.
 
+The host authorizes the selected logical model, then captures its prepared
+physical route and provider-owned wire model. A provider can encode a deployment
+name for that route, but a late wrapper cannot switch to another model, even one
+the role separately allows. Wildcard membership uses the policy predicate, not
+the finite list offered as defaults and fallbacks.
+
 Catalogs and session metadata hide model and runtime details outside the caller's
-ceiling. An allowed explicit selection can be used when the agent default is
+ceiling. Committed model-policy changes refresh these caller-specific snapshots
+on the same connection. An allowed explicit selection can be used when the agent default is
 hidden. The agent allowlist governs catalog selection; it does not remove an
 otherwise authorized shared session's history or read access.
 
-A finite caller's catalog choices must also have a qualified physical provider
+A model-restricted caller's catalog choices must also have a qualified physical provider
 route and captured config/default transport. Execution rechecks the actual
 session/settings transport. The standard OpenAI API-key route already defaults
 to SSE; no extra setting is needed for that default. Explicit `auto`, WebSocket,
@@ -332,9 +340,14 @@ or retry without it.
 
 The built-in OpenClaw runtime declares exact model enforcement. This declaration
 does not qualify another runtime or a provider's physical route. Native and worker
-runtimes without that support remain unavailable to finite callers. Interrupted
+runtimes without that support remain unavailable to model-restricted callers. Interrupted
 foreground work is not resumed automatically; a fresh explicit request needs
-current authority, including after restart or rollback.
+current authority after restart.
+
+Database schema versions are unchanged, but existing records gain foreground-run
+and sandbox-retirement metadata. Older builds can preserve these fields without
+enforcing their custody rules. Rollback does not provide equivalent model or
+cleanup protection.
 
 ## Identity scope grants
 

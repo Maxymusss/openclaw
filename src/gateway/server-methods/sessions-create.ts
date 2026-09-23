@@ -9,6 +9,7 @@ import {
   missingScopeErrorShape,
   validateSessionsCreateParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { intersectOperatorModelPolicies } from "../../agents/operator-model-policy.js";
 import { resolveAgentMainSessionKey } from "../../config/sessions/main-session.js";
 import { sessionEntryForkedFromParent } from "../../config/sessions/session-entry-lineage.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -19,14 +20,13 @@ import {
   resolveProjectRegistry,
 } from "../../projects/project-registry.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
-import { intersectOperatorPermissionCeilings } from "../../shared/operator-permissions.js";
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
 import { buildDashboardSessionTitleSource } from "../dashboard-session-title.js";
 import { ADMIN_SCOPE, authorizeOperatorScopesForRequiredScope } from "../method-scopes.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import { authorizeOperatorBackgroundWork } from "../operator-foreground-work.js";
 import { projectOperatorSessionPatch } from "../operator-model-projection.js";
-import { resolveOperatorPermissionCeiling } from "../operator-role-policy.js";
+import { resolveOperatorModelPolicy } from "../operator-role-policy.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
 import { resolveSessionCreateCatalogSelectionError } from "../session-create-model-selection.js";
 import { buildDashboardSessionKey, createGatewaySession } from "../session-create-service.js";
@@ -646,9 +646,9 @@ async function handleSessionCreate(options: GatewayRequestHandlerOptions): Promi
     operatorAuthority?.assertCurrent();
     const projected = projectOperatorSessionPatch(
       { entry: responseEntry, resolved: created.resolved },
-      intersectOperatorPermissionCeilings(
-        operatorAuthority?.permissions,
-        resolveOperatorPermissionCeiling(client, context.getRuntimeConfig()),
+      intersectOperatorModelPolicies(
+        operatorAuthority?.modelPolicy,
+        resolveOperatorModelPolicy(client, context.getRuntimeConfig()),
       ),
       { provider: created.resolved.modelProvider, model: created.resolved.model },
     );

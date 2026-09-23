@@ -117,7 +117,7 @@ export function resolveEmbeddedAgentStream(
   const resolved = resolveEmbeddedAgentStreamCore(params);
   return {
     ...resolved,
-    streamFn: wrapOperatorModelStream(resolved.streamFn, params.operatorAuthority),
+    streamFn: wrapOperatorModelStream(resolved.streamFn, params.operatorAuthority, params.model),
   };
 }
 

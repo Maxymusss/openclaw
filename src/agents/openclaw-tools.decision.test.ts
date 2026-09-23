@@ -35,6 +35,7 @@ import { createOpenClawCodingTools, createOpenClawCodingToolsInternal } from "./
 import { isDecisionAssistanceEligible } from "./decision-assistance.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
 import {
+  prepareOperatorModelPolicy,
   OperatorModelPolicyError,
   runWithOperatorModelAuthority,
   runWithOperatorModelRequest,
@@ -164,7 +165,13 @@ describe("core decision_evaluate registered flow", () => {
         scopes: ["operator.read"],
         retain,
         ...(restriction === "model"
-          ? { permissions: { models: { allow: ["fixture/default"] } } }
+          ? {
+              modelPolicy: prepareOperatorModelPolicy({
+                cfg: {},
+                policy: { allow: ["fixture/default"] },
+                manifestPlugins: [],
+              }),
+            }
           : { executionPolicy: "foreground-only" as const }),
         assertCurrent: () => {},
       });
@@ -232,7 +239,11 @@ describe("core decision_evaluate registered flow", () => {
     const guest = createAdmittedRunOperatorAuthority({
       profileId: "guest",
       scopes: ["operator.sessions.write"],
-      permissions: { models: { allow: [] } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: [] },
+        manifestPlugins: [],
+      }),
       assertCurrent: () => {},
     });
     const staff = createAdmittedRunOperatorAuthority({
@@ -292,7 +303,13 @@ describe("core decision_evaluate registered flow", () => {
         profileId: "guest",
         scopes: ["operator.sessions.write"],
         ...(restriction === "model"
-          ? { permissions: { models: { allow: ["fixture/default"] } } }
+          ? {
+              modelPolicy: prepareOperatorModelPolicy({
+                cfg: {},
+                policy: { allow: ["fixture/default"] },
+                manifestPlugins: [],
+              }),
+            }
           : { executionPolicy: "foreground-only" as const }),
         assertCurrent: () => {},
       });

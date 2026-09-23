@@ -22,7 +22,7 @@ function fixture() {
   const role = expectDefined(cfg.gateway?.roles?.definitions.view, "reader role");
   role.scopes = ["operator.sessions.read"];
   role.agents = ["guest"];
-  role.models = { allow: ["fixture/allowed"] };
+  role.modelPolicy = { allow: ["fixture/allowed"] };
   const read = vi.fn(async (agentIds: readonly string[]) =>
     agentIds.map(() => ({ status: "fulfilled" as const, value: { entries: [] } })),
   );
@@ -64,7 +64,7 @@ describe("caller-local agent catalog", () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const f = fixture();
       f.role.agents = "*";
-      delete f.role.models;
+      delete f.role.modelPolicy;
       await f.request();
       expect(f.read).toHaveBeenCalledExactlyOnceWith(["main", "guest"]);
       expect(f.respond).toHaveBeenCalledExactlyOnceWith(

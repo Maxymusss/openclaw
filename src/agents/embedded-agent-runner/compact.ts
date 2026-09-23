@@ -38,7 +38,6 @@ import {
   assertOperatorModelAllowed,
   assertOperatorModelHarnessSupported,
   isOperatorModelPolicyError,
-  restrictOperatorModelCandidates,
   runWithOperatorModelAuthority,
 } from "../operator-model-policy.js";
 import { acquireAgentRunPreparedModelRuntime } from "../prepared-model-runtime.js";
@@ -403,20 +402,25 @@ async function compactDirectOwned(
               manifestPlugins: metadataSnapshot,
               allowPluginNormalization: false,
             });
-            const pluginPlanCandidates = restrictOperatorModelCandidates(
+            assertOperatorModelAllowed(
               requestedParams.operatorAuthority,
-              resolveModelCandidateChain({
-                cfg: config,
-                agentId: requestedAgentIds.sessionAgentId,
-                manifestPlugins: metadataSnapshot,
-                allowPluginNormalization: false,
-                provider: selected.provider,
-                model: selected.modelId,
-                requestedRouteResolution: "resolved",
-                fallbacksOverride: transcriptBytePreflightAuthority
-                  ? []
-                  : resolveCompactionFallbacksOverride({ ...requestedParams, config }),
-              }),
+              selected.provider,
+              selected.modelId,
+            );
+            const pluginPlanCandidates = resolveModelCandidateChain({
+              cfg: config,
+              agentId: requestedAgentIds.sessionAgentId,
+              manifestPlugins: metadataSnapshot,
+              allowPluginNormalization: false,
+              provider: selected.provider,
+              model: selected.modelId,
+              requestedRouteResolution: "resolved",
+              fallbacksOverride: transcriptBytePreflightAuthority
+                ? []
+                : resolveCompactionFallbacksOverride({ ...requestedParams, config }),
+            }).filter(
+              (candidate) =>
+                requestedParams.operatorAuthority?.modelPolicy?.allows(candidate) !== false,
             );
             return [
               {

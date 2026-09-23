@@ -6,7 +6,12 @@ import { prepareModelForSimpleCompletion } from "@openclaw/ai/transports";
  */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { formatErrorMessage } from "../infra/errors.js";
-import { bindModelLlmRuntime } from "../llm/model-runtime-binding.js";
+import {
+  bindModelLlmRuntime,
+  bindModelRequestRoute,
+  inheritModelRequestRoute,
+  readModelRequestRoute,
+} from "../llm/model-runtime-binding.js";
 import type { Model } from "../llm/types.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
@@ -47,8 +52,11 @@ import { resolveDefaultModelForAgent } from "./model-selection.js";
 import { resolveOpenAIModelRoutes } from "./openai-model-routes.js";
 import {
   assertOperatorModelAllowed,
+  assertOperatorModelSelection,
   isOperatorModelPolicyError,
+  OperatorModelPolicyError,
   runWithOperatorModelAuthority,
+  runWithOperatorModelSelection,
 } from "./operator-model-policy.js";
 import {
   acquireAgentRunPreparedModelRuntime,
@@ -178,256 +186,281 @@ async function prepareSimpleCompletionModelWithAuthority(
   }
   assertCurrent?.();
   params.signal?.throwIfAborted();
-  const initialModel = resolved.model;
-  assertOperatorModelAllowed(params.operatorAuthority, initialModel.provider, initialModel.id);
-  let resolvedModel = initialModel;
-  let authStore: AuthProfileStore | undefined;
-  let auth: ResolvedProviderAuth;
-  try {
-    authStore =
-      params.bindAuthOwner || initialModel.provider === "openai"
-        ? ensureAuthProfileStore(params.agentDir, {
-            readOnly: true,
-            allowKeychainPrompt: false,
-            config: params.cfg,
-            profileId: params.profileId,
-          })
-        : undefined;
+  // Custom resolver results do not own logical identity; only the host's private
+  // selection survives here. Otherwise the already-selected input owns that fact.
+  if (
+    params.operatorAuthority?.modelPolicy &&
+    !readModelRequestRoute(resolved.model) &&
+    (resolved.model.provider !== params.provider || resolved.model.id !== params.modelId)
+  ) {
+    throw new OperatorModelPolicyError(
+      "The resolver changed the selected model without a host-owned route binding.",
+    );
+  }
+  const initialModel = readModelRequestRoute(resolved.model)
+    ? resolved.model
+    : bindModelRequestRoute(resolved.model, { provider: params.provider, model: params.modelId });
+  return await runWithOperatorModelSelection(params.operatorAuthority, initialModel, async () => {
+    let resolvedModel = initialModel;
+    let authStore: AuthProfileStore | undefined;
+    let auth: ResolvedProviderAuth;
+    try {
+      authStore =
+        params.bindAuthOwner || initialModel.provider === "openai"
+          ? ensureAuthProfileStore(params.agentDir, {
+              readOnly: true,
+              allowKeychainPrompt: false,
+              config: params.cfg,
+              profileId: params.profileId,
+            })
+          : undefined;
 
-    const authParams = {
-      provider: initialModel.provider,
-      modelId: initialModel.id,
-      modelApi: initialModel.api,
-      modelBaseUrl: initialModel.baseUrl,
-      config: params.cfg,
-      agentId: params.agentId,
-      agentDir: params.agentDir,
-      workspaceDir,
-      authProfileStore: authStore,
-      metadataSnapshot: context.preparedModelRuntime.metadataSnapshot,
-      sessionAuthProfileId: params.profileId ?? params.preferredProfile,
-      sessionAuthProfileSource: params.profileId ? "user" : "auto",
-      ...(params.bindAuthOwner && params.profileId ? { allowAuthProfileFallback: false } : {}),
-    } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
-    await reconcileAuthProfileQuotaBlocks(authParams);
-    assertCurrent?.();
-    params.signal?.throwIfAborted();
-
-    const primaryModel = params.cfg
-      ? resolveDefaultModelForAgent({
-          cfg: params.cfg,
-          agentId: params.agentId,
-          allowManifestNormalization: false,
-          allowPluginNormalization: false,
-        })
-      : undefined;
-    const resolveProfileAuthMode = (profileId: string) => authStore?.profiles[profileId]?.type;
-    const routeIntent = params.agentRuntimeId
-      ? { runtimeId: params.agentRuntimeId, source: "explicit" as const }
-      : resolveModelRouteIntent({
-          config: params.cfg,
-          provider: initialModel.provider,
-          modelId: initialModel.id,
-          agentId: params.agentId,
-          primaryModel,
-          resolveProfileAuthMode,
-        });
-    const routeResolution = resolveOpenAIModelRoutes({
-      provider: initialModel.provider,
-      modelId: initialModel.id,
-      api: initialModel.api,
-      baseUrl: initialModel.baseUrl,
-      config: params.cfg,
-      agentId: params.agentId,
-      routeIntent,
-      resolveProfileAuthMode,
-      pinnedAuthRequirement: resolveProviderModelRouteAuthRequirement(
-        params.profileId ? authStore?.profiles[params.profileId]?.type : undefined,
-      ),
-      env: process.env,
-    });
-    const preparedAuth =
-      routeResolution?.kind === "routes"
-        ? prepareAgentRuntimeAuth({ ...authParams, routeIntent })
-        : undefined;
-    const materializeModel = async ({
-      plan,
-      model,
-      forceResolve,
-    }: {
-      plan: AgentRuntimeAuthPlan;
-      model: Model;
-      forceResolve?: boolean;
-    }) =>
-      (await materializePreparedRuntimeModel({
-        operatorAuthority: params.operatorAuthority,
-        plan,
+      const authParams = {
         provider: initialModel.provider,
         modelId: initialModel.id,
+        modelApi: initialModel.api,
+        modelBaseUrl: initialModel.baseUrl,
         config: params.cfg,
-        workspaceDir,
-        metadataSnapshot: context.preparedModelRuntime.metadataSnapshot,
-        model,
-        forceResolve,
-        resolveModel: ({ config, authProfileId, authProfileMode }) =>
-          modelResolver(initialModel.provider, initialModel.id, params.agentDir, config, {
-            abortSignal: params.signal,
-            assertCurrent,
-            modelIdSource: "selected",
-            ...(params.agentId ? { agentId: params.agentId } : {}),
-            skipAgentDiscovery: true,
-            allowBundledStaticCatalogFallback: true,
-            authProfileId,
-            authProfileMode,
-          }),
-      })) ?? model;
-    if (preparedAuth && authStore) {
-      const resolvedAuth = await resolvePreparedRuntimeAuthAttempts({
-        attempts: preparedAuth.attempts,
-        store: authStore,
-        modelId: initialModel.id,
-        model: initialModel,
-        materializeModel,
-        resolveAuth: ({ attempt, model }) =>
-          resolvePreparedRuntimeModelAuth({
-            plan: attempt.plan,
-            model,
-            cfg: params.cfg,
-            agentDir: params.agentDir,
-            workspaceDir,
-            store: authStore,
-            allowAuthProfileFallback: attempt.allowAuthProfileFallback,
-            secretSentinels: true,
-          }),
-        errorMessage: "Simple completion auth attempts could not be resolved.",
-      });
-      auth = resolvedAuth.auth;
-      resolvedModel = resolvedAuth.model;
-    } else {
-      auth = await getApiKeyForModelCore({
-        model: initialModel,
-        cfg: params.cfg,
+        agentId: params.agentId,
         agentDir: params.agentDir,
         workspaceDir,
-        profileId: params.profileId,
-        preferredProfile: params.preferredProfile,
-        ...(authStore ? { store: authStore } : {}),
-        ...(params.bindAuthOwner && params.profileId ? { lockedProfile: true } : {}),
-        secretSentinels: true,
-      });
-    }
-  } catch (err) {
-    if (isOperatorModelPolicyError(err)) {
-      throw err;
-    }
-    return {
-      error: `Auth lookup failed for provider "${initialModel.provider}": ${formatErrorMessage(err)}`,
-    };
-  }
-  const rawApiKey = auth.apiKey?.trim();
-  if (!rawApiKey && !params.allowMissingApiKeyModes?.includes(auth.mode)) {
-    return {
-      error: formatMissingAuthError(auth, resolvedModel.provider),
-      auth,
-    };
-  }
+        authProfileStore: authStore,
+        metadataSnapshot: context.preparedModelRuntime.metadataSnapshot,
+        sessionAuthProfileId: params.profileId ?? params.preferredProfile,
+        sessionAuthProfileSource: params.profileId ? "user" : "auto",
+        ...(params.bindAuthOwner && params.profileId ? { allowAuthProfileFallback: false } : {}),
+      } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
+      await reconcileAuthProfileQuotaBlocks(authParams);
+      assertCurrent?.();
+      params.signal?.throwIfAborted();
 
-  let authValue = rawApiKey;
-  if (rawApiKey) {
-    const preparedAuth = protectPreparedProviderRuntimeAuth({
-      provider: resolvedModel.provider,
-      preparedAuth: await prepareProviderRuntimeAuth({
-        provider: resolvedModel.provider,
+      const primaryModel = params.cfg
+        ? resolveDefaultModelForAgent({
+            cfg: params.cfg,
+            agentId: params.agentId,
+            allowManifestNormalization: false,
+            allowPluginNormalization: false,
+          })
+        : undefined;
+      const resolveProfileAuthMode = (profileId: string) => authStore?.profiles[profileId]?.type;
+      const routeIntent = params.agentRuntimeId
+        ? { runtimeId: params.agentRuntimeId, source: "explicit" as const }
+        : resolveModelRouteIntent({
+            config: params.cfg,
+            provider: initialModel.provider,
+            modelId: initialModel.id,
+            agentId: params.agentId,
+            primaryModel,
+            resolveProfileAuthMode,
+          });
+      const routeResolution = resolveOpenAIModelRoutes({
+        provider: initialModel.provider,
+        modelId: initialModel.id,
+        api: initialModel.api,
+        baseUrl: initialModel.baseUrl,
         config: params.cfg,
-        workspaceDir,
+        agentId: params.agentId,
+        routeIntent,
+        resolveProfileAuthMode,
+        pinnedAuthRequirement: resolveProviderModelRouteAuthRequirement(
+          params.profileId ? authStore?.profiles[params.profileId]?.type : undefined,
+        ),
         env: process.env,
-        context: {
+      });
+      const preparedAuth =
+        routeResolution?.kind === "routes"
+          ? prepareAgentRuntimeAuth({ ...authParams, routeIntent })
+          : undefined;
+      const materializeModel = async ({
+        plan,
+        model,
+        forceResolve,
+      }: {
+        plan: AgentRuntimeAuthPlan;
+        model: Model;
+        forceResolve?: boolean;
+      }) =>
+        (await materializePreparedRuntimeModel({
+          operatorAuthority: params.operatorAuthority,
+          plan,
+          provider: initialModel.provider,
+          modelId: initialModel.id,
+          config: params.cfg,
+          workspaceDir,
+          metadataSnapshot: context.preparedModelRuntime.metadataSnapshot,
+          model,
+          forceResolve,
+          resolveModel: ({ config, authProfileId, authProfileMode }) =>
+            modelResolver(initialModel.provider, initialModel.id, params.agentDir, config, {
+              abortSignal: params.signal,
+              assertCurrent,
+              modelIdSource: "selected",
+              ...(params.agentId ? { agentId: params.agentId } : {}),
+              skipAgentDiscovery: true,
+              allowBundledStaticCatalogFallback: true,
+              authProfileId,
+              authProfileMode,
+            }),
+        })) ?? model;
+      if (preparedAuth && authStore) {
+        const resolvedAuth = await resolvePreparedRuntimeAuthAttempts({
+          attempts: preparedAuth.attempts,
+          store: authStore,
+          modelId: initialModel.id,
+          model: initialModel,
+          materializeModel,
+          resolveAuth: ({ attempt, model }) =>
+            resolvePreparedRuntimeModelAuth({
+              plan: attempt.plan,
+              model,
+              cfg: params.cfg,
+              agentDir: params.agentDir,
+              workspaceDir,
+              store: authStore,
+              allowAuthProfileFallback: attempt.allowAuthProfileFallback,
+              secretSentinels: true,
+            }),
+          errorMessage: "Simple completion auth attempts could not be resolved.",
+        });
+        auth = resolvedAuth.auth;
+        resolvedModel = resolvedAuth.model;
+      } else {
+        auth = await getApiKeyForModelCore({
+          model: initialModel,
+          cfg: params.cfg,
+          agentDir: params.agentDir,
+          workspaceDir,
+          profileId: params.profileId,
+          preferredProfile: params.preferredProfile,
+          ...(authStore ? { store: authStore } : {}),
+          ...(params.bindAuthOwner && params.profileId ? { lockedProfile: true } : {}),
+          secretSentinels: true,
+        });
+      }
+    } catch (err) {
+      if (isOperatorModelPolicyError(err)) {
+        throw err;
+      }
+      return {
+        error: `Auth lookup failed for provider "${initialModel.provider}": ${formatErrorMessage(err)}`,
+      };
+    }
+    const rawApiKey = auth.apiKey?.trim();
+    if (!rawApiKey && !params.allowMissingApiKeyModes?.includes(auth.mode)) {
+      return {
+        error: formatMissingAuthError(auth, resolvedModel.provider),
+        auth,
+      };
+    }
+
+    let authValue = rawApiKey;
+    if (rawApiKey) {
+      const preparedAuth = protectPreparedProviderRuntimeAuth({
+        provider: resolvedModel.provider,
+        preparedAuth: await prepareProviderRuntimeAuth({
+          provider: resolvedModel.provider,
           config: params.cfg,
           workspaceDir,
           env: process.env,
-          provider: resolvedModel.provider,
-          modelId: resolvedModel.id,
-          model: resolvedModel,
-          apiKey: rawApiKey,
-          authMode: auth.mode,
-          profileId: auth.profileId,
-        },
-      }),
-    });
-    authValue = preparedAuth?.apiKey?.trim() || rawApiKey;
-    resolved.authStorage.setRuntimeApiKey(resolvedModel.provider, authValue);
-    resolvedModel = applyPreparedRuntimeAuthToModel(resolvedModel, preparedAuth);
-  }
+          context: {
+            config: params.cfg,
+            workspaceDir,
+            env: process.env,
+            provider: resolvedModel.provider,
+            modelId: resolvedModel.id,
+            model: resolvedModel,
+            apiKey: rawApiKey,
+            authMode: auth.mode,
+            profileId: auth.profileId,
+          },
+        }),
+      });
+      authValue = preparedAuth?.apiKey?.trim() || rawApiKey;
+      resolved.authStorage.setRuntimeApiKey(resolvedModel.provider, authValue);
+      resolvedModel = applyPreparedRuntimeAuthToModel(resolvedModel, preparedAuth);
+    }
 
-  const resolvedAuth: ResolvedProviderAuth = {
-    ...auth,
-    apiKey: authValue,
-  };
-  const profileCredential = params.profileId ? authStore?.profiles[params.profileId] : undefined;
-  const sourceAuthFingerprint = params.bindAuthOwner
-    ? profileCredential?.type === "oauth" && params.profileId
-      ? fingerprintAuthProfileCredential({
-          profileId: params.profileId,
-          credential: profileCredential,
-        })
-      : fingerprintResolvedProviderAuth(auth)
-    : undefined;
-  await import("./ai-transport-runtime-host.js");
-  assertCurrent?.();
-  params.signal?.throwIfAborted();
-  const modelRuntime = getModelRegistryRuntime(resolved.modelRegistry);
-  const model = applySecretRefHeaderSentinels(
-    applyLocalNoAuthHeaderOverride(resolvedModel, resolvedAuth),
-    params.cfg,
-  );
-  const providerRuntimeHandle = resolveProviderRuntimePluginHandle({
-    provider: model.provider,
-    modelId: model.id,
-    config: params.cfg,
-    workspaceDir,
-    env: process.env,
-    pluginMetadataSnapshot: context.preparedModelRuntime.metadataSnapshot,
-  });
-  const preparedModel = attachModelProviderRuntimePluginHandle(model, providerRuntimeHandle);
-  const transport = resolveSupportedTransport(
-    resolvePreparedExtraParams({
-      cfg: params.cfg,
-      agentId: params.agentId,
-      agentDir: params.agentDir,
-      workspaceDir,
+    const resolvedAuth: ResolvedProviderAuth = {
+      ...auth,
+      apiKey: authValue,
+    };
+    const profileCredential = params.profileId ? authStore?.profiles[params.profileId] : undefined;
+    const sourceAuthFingerprint = params.bindAuthOwner
+      ? profileCredential?.type === "oauth" && params.profileId
+        ? fingerprintAuthProfileCredential({
+            profileId: params.profileId,
+            credential: profileCredential,
+          })
+        : fingerprintResolvedProviderAuth(auth)
+      : undefined;
+    await import("./ai-transport-runtime-host.js");
+    assertCurrent?.();
+    params.signal?.throwIfAborted();
+    const modelRuntime = getModelRegistryRuntime(resolved.modelRegistry);
+    const model = applySecretRefHeaderSentinels(
+      applyLocalNoAuthHeaderOverride(resolvedModel, resolvedAuth),
+      params.cfg,
+    );
+    const providerRuntimeHandle = resolveProviderRuntimePluginHandle({
       provider: model.provider,
       modelId: model.id,
-      model: preparedModel,
-      providerRuntimeHandle,
-    }).transport,
-  );
-  // Capture this generation's transport hooks while keeping the logical model API
-  // visible to callers that build prompts before dispatch.
-  const completionTransport = attachModelProviderRuntimePluginHandle(
-    prepareModelForSimpleCompletion({
-      apiRegistry: modelRuntime.apiRegistry,
-      model: preparedModel,
-      cfg: params.cfg,
-      transport,
-    }),
-    providerRuntimeHandle,
-  );
-  assertOperatorModelAllowed(
-    params.operatorAuthority,
-    completionTransport.provider,
-    completionTransport.id,
-  );
-
-  return {
-    model: bindModelLlmRuntime(
+      config: params.cfg,
+      workspaceDir,
+      env: process.env,
+      pluginMetadataSnapshot: context.preparedModelRuntime.metadataSnapshot,
+    });
+    const preparedModel = inheritModelRequestRoute(
+      initialModel,
+      attachModelProviderRuntimePluginHandle(model, providerRuntimeHandle),
+    );
+    const transport = resolveSupportedTransport(
+      resolvePreparedExtraParams({
+        cfg: params.cfg,
+        agentId: params.agentId,
+        agentDir: params.agentDir,
+        workspaceDir,
+        provider: model.provider,
+        modelId: model.id,
+        model: preparedModel,
+        providerRuntimeHandle,
+      }).transport,
+    );
+    // Capture this generation's transport hooks while keeping the logical model API
+    // visible to callers that build prompts before dispatch.
+    const completionTransport = runWithOperatorModelSelection(
+      params.operatorAuthority,
       preparedModel,
-      modelRuntime.llmRuntime,
-      completionTransport,
-      transport,
-    ),
-    auth: resolvedAuth,
-    ...(sourceAuthFingerprint ? { sourceAuthFingerprint } : {}),
-  };
+      () =>
+        attachModelProviderRuntimePluginHandle(
+          prepareModelForSimpleCompletion({
+            apiRegistry: modelRuntime.apiRegistry,
+            model: preparedModel,
+            cfg: params.cfg,
+            transport,
+          }),
+          providerRuntimeHandle,
+        ),
+    );
+    if (
+      params.operatorAuthority?.modelPolicy &&
+      readModelRequestRoute(completionTransport)?.logicalRef !==
+        readModelRequestRoute(preparedModel)?.logicalRef
+    ) {
+      throw new OperatorModelPolicyError("The transport replaced the prepared model selection.");
+    }
+    assertOperatorModelSelection(params.operatorAuthority, completionTransport);
+
+    return {
+      model: bindModelLlmRuntime(
+        preparedModel,
+        modelRuntime.llmRuntime,
+        completionTransport,
+        transport,
+      ),
+      auth: resolvedAuth,
+      ...(sourceAuthFingerprint ? { sourceAuthFingerprint } : {}),
+    };
+  });
 }
 
 async function acquirePreparedSimpleCompletionRuntime(

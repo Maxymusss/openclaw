@@ -306,7 +306,7 @@ export async function prepareSessionPatchRuntimeSelection(params: {
     params.patch.model !== undefined ||
     params.patch.agentRuntime !== undefined ||
     grantingConsent ||
-    (params.creation === true && params.operatorAuthority?.permissions?.models !== undefined);
+    (params.creation === true && params.operatorAuthority?.modelPolicy !== undefined);
   if (selectingModel) {
     validateModel = () => resolveSessionModelAuthorityError(params);
     const error = resolveSessionModelAuthorityError(params);
@@ -322,7 +322,7 @@ export async function prepareSessionPatchRuntimeSelection(params: {
     typeof params.patch.agentRuntime === "string" ||
     typeof params.patch.model === "string" ||
     grantingConsent ||
-    (selectingModel && params.operatorAuthority?.permissions?.models !== undefined)
+    (selectingModel && params.operatorAuthority?.modelPolicy !== undefined)
   ) {
     const model = resolveSessionModelRef(params.cfg, params.entry, params.agentId);
     const previousModel = params.expectedEntry
@@ -339,7 +339,7 @@ export async function prepareSessionPatchRuntimeSelection(params: {
       previousModel?.provider === model.provider &&
       previousModel.model === model.model &&
       params.expectedEntry?.authProfileOverride === params.entry.authProfileOverride;
-    if (preservesRuntimeSelection && params.operatorAuthority?.permissions?.models !== undefined) {
+    if (preservesRuntimeSelection && params.operatorAuthority?.modelPolicy !== undefined) {
       // Repinning the same account preserves its runtime. Retain that exact owner
       // for the model ceiling and COMMIT check without selecting a replacement.
       const runtime = resolveEffectiveAgentRuntime({

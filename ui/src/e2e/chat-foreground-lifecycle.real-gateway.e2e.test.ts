@@ -9,6 +9,7 @@ import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-rea
 import {
   allowedModel,
   forbiddenModel,
+  savedModelPreference,
   composer,
   hasTerminalEvent,
   history,
@@ -98,6 +99,86 @@ async function deniedSend(page: Page, observed: Observation, text: string, messa
 }
 
 suite.define(() => {
+  it("refreshes model policy on the same narrow guest connection without synthesizing forbidden choices", async (context) => {
+    await suite.runScenario(context, {
+      retainedState: () => fixture.instance.stateDir,
+      close: async () => {
+        fixture.provider.releaseAll();
+      },
+      run: async () =>
+        suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
+          const key = "agent:main:live-model-policy";
+          const observed = await openForegroundPage(page, fixture, "guest", key);
+          const hello = observed.hello();
+          const connId = hello?.server.connId;
+          expect(await fixture.savedModelPreference("guest")).toEqual(savedModelPreference);
+          expect(connId).toBeTruthy();
+          expect(observed.hello()?.auth.scopes).not.toContain("operator.read");
+          const picker = thread(page).locator("details.chat-controls__model-picker");
+          await picker.locator(":scope > summary").click();
+          const changed = async (restricted: boolean) => {
+            const events = observed.received.filter(
+              (frame) => frame.type === "event" && frame.event === "chat.metadata.changed",
+            ).length;
+            const catalogsForSession = () =>
+              observed
+                .requests("models.list")
+                .filter((request) => asNullableRecord(request.params)?.sessionKey === key);
+            const catalogs = catalogsForSession().length;
+            await fixture.setGuestModelPolicy(restricted ? { allow: [allowedModel] } : undefined);
+            await expect
+              .poll(
+                () =>
+                  observed.received.filter(
+                    (frame) => frame.type === "event" && frame.event === "chat.metadata.changed",
+                  ).length,
+              )
+              .toBeGreaterThan(events);
+            await expect.poll(() => catalogsForSession().length).toBeGreaterThan(catalogs);
+            await expect
+              .poll(() => {
+                const request = catalogsForSession().at(-1);
+                const response = request && observed.response(request.id);
+                return response?.type === "res" && response.ok
+                  ? asNullableRecord(response.payload)?.modelRestricted === true
+                  : null;
+              })
+              .toBe(restricted);
+            expect(observed.hello()).toEqual(hello);
+            expect(observed.hello()?.server.connId).toBe(connId);
+            expect(await fixture.savedModelPreference("guest")).toEqual(savedModelPreference);
+            await expect
+              .poll(() => picker.locator(`[data-chat-model-option="${forbiddenModel}"]`).count())
+              .toBe(restricted ? 0 : 1);
+          };
+          try {
+            await changed(false);
+            await changed(true);
+            expect(await rpc(page, "sessions.patch", { key, model: forbiddenModel })).toMatchObject(
+              { ok: false, error: { code: "FORBIDDEN" } },
+            );
+            await picker.locator(":scope > summary").click();
+            await completed(
+              page,
+              observed,
+              key,
+              "Use the approved route after policy refresh",
+              "Approved policy refresh response",
+            );
+            expect(fixture.provider.requests.every((request) => request.model === "allowed")).toBe(
+              true,
+            );
+            await picker.locator(":scope > summary").click();
+            await changed(false);
+            expect(observed.hello()?.auth.modelRestricted).toBe(true);
+            await changed(true);
+          } finally {
+            await fixture.setGuestModelPolicy({ allow: [allowedModel] });
+          }
+        }),
+    });
+  });
+
   it("holds the stopped guest thread until actual child close, then accepts a fresh finite request", async (context) => {
     await suite.runScenario(context, {
       retainedState: () => fixture.instance.stateDir,
@@ -284,6 +365,7 @@ suite.define(() => {
           await suite.withPage(createControlUiE2eContextOptions(), async ({ page }) => {
             const key = "agent:main:foreground-restart";
             const observed = await openForegroundPage(page, fixture, "restart", key);
+            expect(await fixture.savedModelPreference("restart")).toEqual(savedModelPreference);
             const earlier = "Earlier conversation survives restart.";
             await completed(page, observed, key, "Remember this earlier request", earlier);
             const turn = fixture.provider.plan("hold", "Interrupted response must not resume.");
@@ -314,6 +396,7 @@ suite.define(() => {
             expect(fixture.instance.child).toBe(child);
             expect(child?.exitCode).toBeNull();
             expect(fixture.instance.stateDir).toBe(stateDir);
+            expect(await fixture.savedModelPreference("restart")).toEqual(savedModelPreference);
             await expect
               .poll(() => thread(page).getByText(restartNotice, { exact: true }).count())
               .toBe(1);
@@ -338,6 +421,13 @@ suite.define(() => {
             ).toHaveLength(1);
             expect(fixture.provider.requests).toHaveLength(requests);
             expect(observed.requests("chat.send")).toHaveLength(sendsBeforeRestart);
+            const picker = thread(page).locator("details.chat-controls__model-picker");
+            await picker.locator(":scope > summary").click();
+            expect(
+              await picker.locator(`[data-chat-model-option="${forbiddenModel}"]`).count(),
+            ).toBe(0);
+            expect(await fixture.savedModelPreference("restart")).toEqual(savedModelPreference);
+            await picker.locator(":scope > summary").click();
             await thread(page).screenshot({
               path: path.join(suite.artifactDir, "restart-notice.png"),
               animations: "disabled",

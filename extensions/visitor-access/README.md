@@ -86,8 +86,8 @@ Visitor Access validates the configured role; the Gateway provides those
 capabilities. Preserve existing staff assignments and apply the guest
 configuration as the final rollout step.
 
-The optional Gateway role field `models: { allow: ["provider/model"] }` adds a
-model ceiling; Visitor Access does not require it or grant model access itself.
+The optional Gateway role field `modelPolicy: { allow: ["provider/model"] }` adds a
+model ceiling with aliases, wildcard membership, and exclusions; Visitor Access does not require it or grant model access itself.
 Omission keeps existing model behavior, and `allow: []` denies all inference.
 The field also works with `agents: "*"`. Invitation, renewal, and expiry still use
 the same live grant authority.
@@ -95,7 +95,8 @@ the same live grant authority.
 The built-in OpenClaw runtime enforces exact model ceilings on qualified physical
 provider routes. The standard OpenAI API-key route already defaults to supported
 SSE; explicit `auto`, WebSocket and unqualified routes remain unavailable to
-finite callers. Unsupported runtimes are refused without substitution. Qualify
+model-restricted callers. Existing configured model policies must also qualify
+their physical routes. Unsupported runtimes are refused without substitution. Qualify
 the deployed route before applying the guest configuration; this support does
 not change the Visitor Access preset or restore interrupted work. See
 [Operator model ceilings](https://docs.openclaw.ai/gateway/operator-scopes#optional-model-ceiling).

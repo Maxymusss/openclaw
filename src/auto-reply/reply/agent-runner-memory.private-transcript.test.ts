@@ -10,6 +10,7 @@ import {
   peekSessionMcpRuntime,
 } from "../../agents/agent-bundle-mcp-manager-api.js";
 import * as embeddedEntry from "../../agents/embedded-agent-runner/run-entry.js";
+import { prepareOperatorModelPolicy } from "../../agents/operator-model-policy.js";
 import { waitForSessionMaintenance } from "../../agents/session-maintenance/coordinator.js";
 import { createSessionMaintenanceFollowup } from "../../agents/session-maintenance/run.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
@@ -117,7 +118,11 @@ it.each(["current", "expired", "revoked", "staff"] as const)(
         ...(status === "staff"
           ? {}
           : ({
-              permissions: { models: { allow: ["anthropic/claude"] } },
+              modelPolicy: prepareOperatorModelPolicy({
+                cfg: {},
+                policy: { allow: ["anthropic/claude"] },
+                manifestPlugins: [],
+              }),
               executionPolicy: "foreground-only",
               foregroundRunId: "original-turn",
               foregroundDeadlineAt: Date.now() + (status === "expired" ? -1 : 60_000),

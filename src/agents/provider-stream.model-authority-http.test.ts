@@ -15,7 +15,11 @@ import { attachModelProviderRuntimePluginHandle } from "../plugins/provider-hook
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
 import { createAdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
 import { resolveEmbeddedAgentStream } from "./embedded-agent-runner/stream-resolution.js";
-import { runWithOperatorModelRequest, wrapOperatorModelStream } from "./operator-model-policy.js";
+import {
+  prepareOperatorModelPolicy,
+  runWithOperatorModelRequest,
+  wrapOperatorModelStream,
+} from "./operator-model-policy.js";
 import {
   attachModelProviderLocalService,
   stopManagedProviderLocalServices,
@@ -212,7 +216,11 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
           const authority = createAdmittedRunOperatorAuthority({
             profileId: "finite-operator",
             scopes: ["operator.sessions.write"],
-            permissions: { models: { allow: [`${selected.provider}/${selected.id}`] } },
+            modelPolicy: prepareOperatorModelPolicy({
+              cfg: {},
+              policy: { allow: [`${selected.provider}/${selected.id}`] },
+              manifestPlugins: [],
+            }),
             assertCurrent() {},
           });
           const prepare = (finite: boolean) =>
@@ -282,7 +290,11 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
     const authority = createAdmittedRunOperatorAuthority({
       profileId: "loopback-operator",
       scopes: ["operator.sessions.write"],
-      permissions: { models: { allow: ["model-policy-loopback/allowed"] } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: ["model-policy-loopback/allowed"] },
+        manifestPlugins: [],
+      }),
       assertCurrent: () => {
         if (!current) {
           throw new Error("Original model authority was revoked during payload preparation");
@@ -385,7 +397,11 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "readiness-operator",
         scopes: ["operator.sessions.write"],
-        permissions: { models: { allow: ["model-policy-loopback/allowed"] } },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["model-policy-loopback/allowed"] },
+          manifestPlugins: [],
+        }),
         assertCurrent: () => {
           if (!current) {
             throw new Error("original source revoked");
@@ -471,7 +487,11 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "responses-operator",
         scopes: ["operator.sessions.write"],
-        permissions: { models: { allow: ["model-policy-loopback/allowed"] } },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["model-policy-loopback/allowed"] },
+          manifestPlugins: [],
+        }),
         assertCurrent: () => {
           if (!current) {
             throw new Error("responses source revoked");
@@ -570,7 +590,11 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
           const authority = createAdmittedRunOperatorAuthority({
             profileId: "direct-operator",
             scopes: ["operator.sessions.write"],
-            permissions: { models: { allow: ["model-policy-loopback/allowed"] } },
+            modelPolicy: prepareOperatorModelPolicy({
+              cfg: {},
+              policy: { allow: ["model-policy-loopback/allowed"] },
+              manifestPlugins: [],
+            }),
             assertCurrent: () => {
               if (!current) {
                 throw new Error("direct source revoked");
@@ -633,7 +657,11 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "replay-operator",
         scopes: ["operator.sessions.write"],
-        permissions: { models: { allow: ["model-policy-loopback/allowed"] } },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["model-policy-loopback/allowed"] },
+          manifestPlugins: [],
+        }),
         assertCurrent: () => {
           if (!current) {
             throw new Error("replay source revoked");
@@ -707,7 +735,11 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "publication-operator",
         scopes: ["operator.sessions.write"],
-        permissions: { models: { allow: ["model-policy-loopback/allowed"] } },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: ["model-policy-loopback/allowed"] },
+          manifestPlugins: [],
+        }),
         assertCurrent: () => {
           if (!current) {
             throw new Error("publication source revoked");

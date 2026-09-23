@@ -199,7 +199,7 @@ export async function sendGatewayHello(
       scopes,
       ...(role === "operator" &&
       resolveOperatorRolePolicyForProfile(authenticatedUserProfileId, context.configSnapshot)
-        ?.models
+        ?.modelPolicy
         ? { modelRestricted: true as const }
         : {}),
       ...(executionPolicy ? { executionPolicy } : {}),

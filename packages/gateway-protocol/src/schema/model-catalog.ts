@@ -118,6 +118,8 @@ export const ModelCatalogProviderOutcomeSchema = closedObject({
 
 export const ModelsListResultSchema = closedObject({
   models: Type.Array(ModelChoiceSchema),
+  /** Restriction for this exact caller/catalog projection; omission clears a previous restriction. */
+  modelRestricted: Type.Optional(Type.Literal(true)),
   /** Manifest-owned decision choices, separate from conversational model routing. */
   decisionModels: Type.Optional(
     Type.Array(

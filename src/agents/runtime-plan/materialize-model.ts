@@ -1,8 +1,10 @@
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { readModelRequestRoute } from "../../llm/model-runtime-binding.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import type { AdmittedRunOperatorAuthority } from "../admitted-run-context.js";
 import { FailoverError } from "../failover/error.js";
+import type { ModelRef } from "../model-ref-shared.js";
 import { resolveBuiltInModelSuppressionFromManifest } from "../model-suppression.js";
 import { assertOperatorModelAllowed } from "../operator-model-policy.js";
 import {
@@ -52,6 +54,7 @@ type PreparedRuntimeModelRequest = {
 };
 
 type PreparedRuntimeModelTarget = {
+  logicalRef?: ModelRef;
   operatorAuthority?: AdmittedRunOperatorAuthority;
   provider: string;
   modelId: string;
@@ -81,10 +84,11 @@ export function validatePreparedRuntimeModel<Model extends RuntimeRouteModel>(
 ): Model {
   validatePreparedTarget(params);
   const { model, route } = params;
+  const logical = params.logicalRef ?? readModelRequestRoute(model)?.logicalRef;
   assertOperatorModelAllowed(
     params.operatorAuthority,
-    model.provider ?? params.provider,
-    model.id ?? params.modelId,
+    logical?.provider ?? params.provider,
+    logical?.model ?? params.modelId,
   );
   if (route && !modelMatchesPreparedTarget({ ...params, route })) {
     throw new Error(
@@ -126,12 +130,17 @@ export async function materializePreparedRuntimeModel<Model extends RuntimeRoute
     request: PreparedRuntimeModelRequest,
   ): Promise<{ model?: Model | null; error?: string }>;
 }): Promise<Model | undefined> {
-  assertOperatorModelAllowed(params.operatorAuthority, params.provider, params.modelId);
+  const logicalRef = params.model ? readModelRequestRoute(params.model)?.logicalRef : undefined;
+  assertOperatorModelAllowed(
+    params.operatorAuthority,
+    logicalRef?.provider ?? params.provider,
+    logicalRef?.model ?? params.modelId,
+  );
   const route = params.plan.modelRoute;
   const config = route
     ? projectProviderModelRouteConfig({ provider: params.provider, config: params.config, route })
     : params.config;
-  const target = { ...params, route, config };
+  const target = { ...params, route, config, logicalRef };
   const validateFinalModel = (model: Model | undefined): Model | undefined =>
     model ? validatePreparedRuntimeModel({ ...target, model }) : undefined;
   if (!route && !params.forceResolve) {

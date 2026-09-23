@@ -108,6 +108,8 @@ it("commits model-only role changes without retiring permitted models or origina
     setRuntimeConfigSnapshot(initialConfig);
     const fixture = createDirectConfigWriteFixture(initialConfig);
     const context = createGatewayTestContext();
+    const metadataChanged = vi.fn();
+    context.broadcast = metadataChanged;
     const connection = new AbortController();
     const close = vi.fn(() => connection.abort());
     const client = {
@@ -260,6 +262,7 @@ it("commits model-only role changes without retiring permitted models or origina
         }),
       ]);
       expect(getCommittedRuntimeConfig()).toBe(initialConfig);
+      expect(metadataChanged).not.toHaveBeenCalled();
       expect(modelA.signal.aborted).toBe(false);
       expect(modelB.signal.aborted).toBe(false);
       expect(original.authority.assertCurrent).not.toThrow();
@@ -267,6 +270,7 @@ it("commits model-only role changes without retiring permitted models or origina
       releasePreparation.resolve();
       await expect(rejected).resolves.toBe("failed");
       expect(getCommittedRuntimeConfig()).toBe(initialConfig);
+      expect(metadataChanged).not.toHaveBeenCalled();
       expect(modelA.signal.aborted).toBe(false);
       expect(modelB.signal.aborted).toBe(false);
       expect(close).not.toHaveBeenCalled();
@@ -276,6 +280,12 @@ it("commits model-only role changes without retiring permitted models or origina
       await vi.advanceTimersByTimeAsync(0);
       await expect(accepted).resolves.toBe("applied");
       expect(getCommittedRuntimeConfig()).toEqual(candidate);
+      expect(metadataChanged).toHaveBeenCalledExactlyOnceWith(
+        "chat.metadata.changed",
+        {},
+        { dropIfSlow: true },
+      );
+      expect(client.connect.scopes).not.toContain("operator.read");
       expect(modelA.signal.aborted).toBe(true);
       expect(modelB.signal.aborted).toBe(false);
       expect(modelA.assertCurrent).toThrow("operator role cannot use this model");

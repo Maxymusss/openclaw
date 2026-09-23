@@ -5,16 +5,17 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import { assertAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
+import {
+  prepareOperatorModelPolicy,
+  intersectOperatorModelPolicies,
+} from "../agents/operator-model-policy.js";
+import type { PreparedOperatorModelPolicy } from "../agents/operator-model-policy.types.js";
 import type { SessionCreatedActor } from "../config/sessions/session-entry-provenance.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { getProcessGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
 import { notifyListeners, registerListener } from "../shared/listeners.js";
-import {
-  freezeOperatorPermissionCeiling,
-  intersectOperatorPermissionCeilings,
-  type OperatorPermissionCeiling,
-} from "../shared/operator-permissions.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { getUserProfileRole } from "../state/user-profiles.js";
 import { bumpGatewayAccessRevision } from "./gateway-access-revision.js";
@@ -37,7 +38,7 @@ const deniedOperatorRole: GatewayOperatorRoleDefinition = {
   sessions: { others: "none" },
   agents: [],
   scopes: [],
-  models: { allow: [] },
+  modelPolicy: { allow: [] },
 };
 
 type GatewaySessionAgentAuthorization = {
@@ -210,17 +211,11 @@ export function operatorSessionCap(client: GatewayClient | null, cfg: OpenClawCo
   return resolveOperatorRolePolicy(client, cfg)?.sessions.others;
 }
 
-export function operatorRolePermissionCeiling(
-  role: GatewayOperatorRoleDefinition | undefined,
-): OperatorPermissionCeiling | undefined {
-  return role?.models ? freezeOperatorPermissionCeiling({ models: role.models }) : undefined;
-}
-
 /** Published catalog and request checks share the original retained source's ceiling. */
-export function resolveOperatorPermissionCeiling(
+export function resolveOperatorModelPolicy(
   client: GatewayClient | null,
   cfg: OpenClawConfig,
-): OperatorPermissionCeiling | undefined {
+): PreparedOperatorModelPolicy | undefined {
   if (!client) {
     return undefined;
   }
@@ -239,9 +234,13 @@ export function resolveOperatorPermissionCeiling(
     client.authenticatedUserProfile?.profileId === GATEWAY_OWNER_PROFILE_ID
       ? undefined
       : resolveOperatorRolePolicy(client, cfg);
-  return intersectOperatorPermissionCeilings(
-    inherited?.permissions,
-    operatorRolePermissionCeiling(role),
+  return intersectOperatorModelPolicies(
+    inherited?.modelPolicy,
+    prepareOperatorModelPolicy({
+      cfg,
+      policy: role?.modelPolicy,
+      manifestPlugins: getProcessGatewayPluginMetadataSnapshot() ?? [],
+    }),
   );
 }
 

@@ -78,7 +78,6 @@ import {
 import {
   assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
   assertOperatorModelAuthorityCurrent,
-  restrictOperatorModelCandidates,
 } from "./operator-model-policy.js";
 import {
   resolveSessionSuspensionReason,
@@ -131,18 +130,15 @@ async function runWithModelFallbackInternal<T>(
     assertAdmittedRunOperatorAuthority(operatorAuthority);
     operatorAuthority.assertCurrent();
   }
-  const plannedCandidates = restrictOperatorModelCandidates(
-    operatorAuthority,
-    resolveModelCandidateChain({
-      cfg: params.cfg,
-      agentId: params.agentId,
-      provider: params.provider,
-      model: params.model,
-      fallbacksOverride: params.fallbacksOverride,
-      requestedRouteResolution: params.requestedRouteResolution,
-      manifestPlugins: params.manifestPlugins,
-    }),
-  );
+  const plannedCandidates = resolveModelCandidateChain({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    provider: params.provider,
+    model: params.model,
+    fallbacksOverride: params.fallbacksOverride,
+    requestedRouteResolution: params.requestedRouteResolution,
+    manifestPlugins: params.manifestPlugins,
+  });
   const operatorModelPolicy = operatorAuthority?.modelPolicy;
   const candidates = operatorModelPolicy
     ? plannedCandidates.filter(operatorModelPolicy.allows)
@@ -244,7 +240,6 @@ async function runWithModelFallbackInternal<T>(
     if (tlsFailedProviders.has(candidate.provider)) {
       continue;
     }
-    assertOperatorModelTupleAllowed(params.operatorAuthority, candidate.provider, candidate.model);
     const candidateRef = { provider: candidate.provider, model: candidate.model };
     operatorAuthority?.assertCurrent();
     if (operatorAuthority?.modelPolicy?.allows(candidateRef) === false) {

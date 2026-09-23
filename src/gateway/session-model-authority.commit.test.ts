@@ -5,6 +5,7 @@ import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-conte
 import { getRegisteredAgentHarness, registerAgentHarness } from "../agents/harness/registry.js";
 import type { AgentHarness } from "../agents/harness/types.js";
 import { createModelRuntimeChoiceOwnerFixture } from "../agents/model-runtime-choice.test-support.js";
+import { prepareOperatorModelPolicy } from "../agents/operator-model-policy.js";
 import type { PreparedModelRuntimeSnapshot } from "../agents/prepared-model-runtime.types.js";
 import { resolveSessionModelRef } from "../agents/session-model-ref.js";
 import * as modelRuntimeSelection from "../auto-reply/reply/model-runtime-normalization.js";
@@ -88,7 +89,7 @@ function fixture(mode: string, scopes: OperatorScope[] = ["operator.sessions.wri
   const role = expectDefined(cfg.gateway?.roles?.definitions.view, "selection role");
   role.scopes = scopes;
   if (mode !== "unrestricted") {
-    role.models = { allow: ["fixture/allowed"] };
+    role.modelPolicy = { allow: ["fixture/allowed"] };
   }
   cfg.agents = {
     defaults: {
@@ -103,7 +104,7 @@ function fixture(mode: string, scopes: OperatorScope[] = ["operator.sessions.wri
   const operatorAuthority = createAdmittedRunOperatorAuthority({
     profileId,
     scopes: client.connect.scopes,
-    permissions: mode === "unrestricted" ? undefined : { models: { allow: ["fixture/allowed"] } },
+    modelPolicy: prepareOperatorModelPolicy({ cfg, policy: role.modelPolicy, manifestPlugins: [] }),
     assertCurrent: () => {
       if (!active) {
         throw new Error("original model selection authority revoked");
@@ -197,7 +198,7 @@ describe("durable session model selection authority", () => {
         delete f.client.internal!.operatorRunAuthority;
         if (mode === "widened") {
           published.beforeOwnership = () => {
-            f.role.models = { allow: ["fixture/allowed", "fixture/hidden"] };
+            f.role.modelPolicy = { allow: ["fixture/allowed", "fixture/hidden"] };
           };
         }
         const request = withPluginRuntimeGenerationScope(f.owner, () =>
@@ -364,7 +365,7 @@ describe("durable session model selection authority", () => {
           ).toBe(true);
           expect(listSessionEntriesCore({ agentId: "main" })).toEqual([]);
           if (mode === "widened") {
-            f.role.models = { allow: ["fixture/allowed", "fixture/hidden"] };
+            f.role.modelPolicy = { allow: ["fixture/allowed", "fixture/hidden"] };
           } else {
             f.revoke();
           }
@@ -568,9 +569,18 @@ describe("durable session model selection authority", () => {
                 throw new Error("Expected the finite-policy repin to prepare successfully");
               }
               expect(expectDefined(result.validate, "repin COMMIT validator")()).toBeUndefined();
-              expect(params.operatorAuthority?.permissions?.models).toEqual({
-                allow: ["fixture/allowed"],
-              });
+              expect(
+                params.operatorAuthority?.modelPolicy?.allows({
+                  provider: "fixture",
+                  model: "allowed",
+                }),
+              ).toBe(true);
+              expect(
+                params.operatorAuthority?.modelPolicy?.allows({
+                  provider: "fixture",
+                  model: "hidden",
+                }),
+              ).toBe(false);
               expect(params.entry.agentRuntimeOverride).toBe("selection-runtime");
               expect(loadSessionEntry(scope)).toEqual(storedOriginal);
               const retained = expectDefined(
@@ -632,7 +642,7 @@ describe("durable session model selection authority", () => {
         if (repin) {
           expect(selection).toHaveBeenCalledOnce();
           expect(prepareRuntime).not.toHaveBeenCalled();
-          expect(f.role.models).toEqual({ allow: ["fixture/allowed"] });
+          expect(f.role.modelPolicy).toEqual({ allow: ["fixture/allowed"] });
         }
         if (mode === "allowed" || mode === "unrestricted" || mode === "repin-allowed") {
           expect(respond).toHaveBeenCalledWith(

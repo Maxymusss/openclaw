@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isDeepStrictEqual } from "node:util";
 import {
   advancePreparedModelRuntimeConfig,
   refreshPreparedModelRuntimeSnapshots,
@@ -23,6 +24,7 @@ import {
   type GatewayReloadPlan,
 } from "./config-reload.js";
 import { publishOperatorRoleConfigChange } from "./operator-role-policy.js";
+import { broadcastChatMetadataChanged } from "./server-chat-metadata-lifecycle.js";
 import {
   assertReloadPublicationCurrent,
   GatewayConfigReloadSupersededError,
@@ -348,9 +350,19 @@ export function startManagedGatewayConfigReloader(
       // Secret resolution can make the committed runtime config a different
       // object from the source-derived candidate. Record the committed one so a
       // rebuild below stamps owners with the identity readers actually supply.
+      const rolesChanged = !isDeepStrictEqual(
+        committedRuntimeConfig.gateway?.roles,
+        nextCommittedRuntimeConfig.gateway?.roles,
+      );
       lastCommittedRuntimeConfig = nextCommittedRuntimeConfig;
       committedRuntimeConfig = nextCommittedRuntimeConfig;
-      publishOperatorRoleConfigChange(params.resolveGatewayContext?.());
+      const context = params.resolveGatewayContext?.();
+      publishOperatorRoleConfigChange(context);
+      // Policy-only commits keep the socket/catalog owner. Narrow clients need
+      // the existing metadata signal even when physical model rows did not change.
+      if (rolesChanged && context) {
+        broadcastChatMetadataChanged(context);
+      }
       publishSystemEventStoreConfig(nextCommittedRuntimeConfig);
       params.resolveGatewayContext?.()?.mentionInbox?.invalidate();
       if (canAdvancePreparedModelRuntimeConfigInPlace(plan)) {

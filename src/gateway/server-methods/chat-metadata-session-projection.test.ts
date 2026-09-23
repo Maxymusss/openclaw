@@ -84,7 +84,7 @@ it.each([false, true])(
         const cfg = rolePolicyConfig();
         const role = expectDefined(cfg.gateway?.roles?.definitions.view, "view role");
         role.scopes = ["operator.sessions.read"];
-        role.models = { allow: ["fixture/allowed"] };
+        role.modelPolicy = { allow: ["fixture/allowed"] };
         const model = makeProviderModelFixture<"openai-completions">({
           provider: "fixture",
           id: "allowed",

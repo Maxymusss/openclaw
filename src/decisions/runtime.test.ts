@@ -134,7 +134,9 @@ describe("registered decision capability", () => {
                   sessions: { others: "view" },
                   agents: "*",
                   scopes: ["operator.read"],
-                  ...(restriction === "model" ? { models: { allow: ["fixture/fixture-v1"] } } : {}),
+                  ...(restriction === "model"
+                    ? { modelPolicy: { allow: ["fixture/fixture-v1"] } }
+                    : {}),
                 },
               },
             },
@@ -197,7 +199,13 @@ describe("registered decision capability", () => {
         profileId: "restricted",
         scopes: ["operator.sessions.write"],
         ...(restriction === "model"
-          ? { permissions: { models: { allow: ["fixture/fixture-v1"] } } }
+          ? {
+              modelPolicy: prepareOperatorModelPolicy({
+                cfg: {},
+                policy: { allow: ["fixture/fixture-v1"] },
+                manifestPlugins: [],
+              }),
+            }
           : { executionPolicy: "foreground-only" as const }),
         assertCurrent: () => {},
       });

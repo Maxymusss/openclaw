@@ -9,12 +9,15 @@ import * as workerSessionTargetRuntime from "../gateway/worker-environments/sess
 import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtures.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { createAdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import * as sessionAuthRuntime from "./auth-profiles/session-override.js";
+import { prepareOperatorModelPolicy } from "./operator-model-policy.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
 import {
   acquireSimpleCompletionModelForAgent,
   completeWithPreparedSimpleCompletionModel,
 } from "./simple-completion-runtime.js";
+import { makeProviderModelFixture } from "./test-helpers/provider-model-fixture.js";
 
 afterEach(async () => {
   await resetPreparedModelRuntimeSnapshotsForTest();
@@ -195,6 +198,43 @@ module.exports = {
                   await prepared[Symbol.asyncDispose]();
                 }
               }
+            }
+            if (mode === "agent") {
+              const operatorAuthority = createAdmittedRunOperatorAuthority({
+                profileId: "resolver-reader",
+                scopes: ["operator.write"],
+                modelPolicy: prepareOperatorModelPolicy({
+                  cfg,
+                  policy: { allow: [`${provider}/plain`] },
+                  manifestPlugins: [],
+                }),
+                assertCurrent() {},
+              });
+              await expect(
+                acquireSimpleCompletionModelForAgent({
+                  cfg,
+                  agentId: "main",
+                  modelRef: `${provider}/plain`,
+                  operatorAuthority,
+                  modelResolver: async (_provider, _model, _dir, _cfg, options) => {
+                    if (!options?.authStorage || !options.modelRegistry) {
+                      throw new Error("Missing prepared stores");
+                    }
+                    return {
+                      model: makeProviderModelFixture({
+                        provider,
+                        id: "final",
+                        api: "openai-completions",
+                        baseUrl,
+                      }),
+                      // Public callback metadata cannot manufacture the host's selected route.
+                      logicalRef: { provider, model: "plain" },
+                      authStorage: options.authStorage,
+                      modelRegistry: options.modelRegistry,
+                    };
+                  },
+                }),
+              ).rejects.toMatchObject({ code: "OPERATOR_MODEL_POLICY_DENIED" });
             }
             expect(requests).toEqual(["middle", "final", "plain"]);
           } finally {

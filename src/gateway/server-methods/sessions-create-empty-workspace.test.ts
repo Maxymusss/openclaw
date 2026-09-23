@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, expect, test, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
+import { prepareOperatorModelPolicy } from "../../agents/operator-model-policy.js";
 import { managedWorktrees } from "../../agents/worktrees/service.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
@@ -13,8 +14,8 @@ import {
   directSessionReq,
   setupGatewaySessionsHandlerTestHarness,
 } from "../test/server-sessions.test-helpers.js";
-import { identifiedClient } from "./sessions-sharing.test-support.js";
 import { disposeSessionReadContexts } from "./sessions-read-cache.test-support.js";
+import { identifiedClient } from "./sessions-sharing.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const { createSessionStoreDir } = setupGatewaySessionsHandlerTestHarness();
@@ -86,7 +87,11 @@ test("sessions.create refuses a combined-policy initial turn before creating a w
     operatorRunAuthority: createAdmittedRunOperatorAuthority({
       profileId: profile.id,
       scopes: ["operator.read", "operator.write"],
-      permissions: { models: { allow: ["test-provider/test-model"] } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: ["test-provider/test-model"] },
+        manifestPlugins: [],
+      }),
       executionPolicy: "foreground-only",
       foregroundRunId: "original-create-turn",
       foregroundDeadlineAt: Date.now() + 60_000,

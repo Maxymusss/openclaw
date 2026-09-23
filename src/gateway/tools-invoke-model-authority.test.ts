@@ -87,7 +87,7 @@ describe("standalone registered plugin completion authority", () => {
         const cfg = rolePolicyConfig();
         const role = expectDefined(cfg.gateway?.roles?.definitions.view, "model role");
         role.scopes = ["operator.write"];
-        role.models = {
+        role.modelPolicy = {
           allow: [
             mode === "denied" || mode === "widened" || mode === "system"
               ? "fixture/other"
@@ -186,7 +186,7 @@ describe("standalone registered plugin completion authority", () => {
               await Promise.race([entered.promise.then(() => true), request.then(() => false)]),
             ).toBe(true);
             if (mode === "widened" || mode === "provider-widened") {
-              role.models = { allow: ["fixture/other", "fixture/default"] };
+              role.modelPolicy = { allow: ["fixture/other", "fixture/default"] };
             } else {
               source.abort(new Error("original plugin model source revoked"));
             }

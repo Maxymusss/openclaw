@@ -201,21 +201,18 @@ describe("generateConversationLabelWithFallback", () => {
     preferredProfile: "work",
   };
 
-  it.each(["allowed", "selected-denied", "source-revoked", "materialized-denied"] as const)(
+  it.each(["allowed", "all-denied", "source-revoked", "materialized-denied"] as const)(
     "retains the original model authority and terminal policy outcome (%s)",
     async (outcome) => {
       let current = true;
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "label-operator",
         scopes: ["operator.write"],
-        permissions: {
-          models: {
-            allow:
-              outcome === "selected-denied"
-                ? ["openai/gpt-main"]
-                : ["openai/gpt-mini", "openai/gpt-main"],
-          },
-        },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: { allow: outcome === "all-denied" ? [] : ["openai/gpt-mini", "openai/gpt-main"] },
+          manifestPlugins: [],
+        }),
         assertCurrent: () => {
           if (!current) {
             throw new Error("label source revoked");
@@ -241,17 +238,15 @@ describe("generateConversationLabelWithFallback", () => {
       });
       if (outcome === "allowed") {
         await expect(request).resolves.toBe("Allowed title");
+      } else if (outcome === "all-denied") {
+        await expect(request).resolves.toBeNull();
       } else {
         await expect(request).rejects.toThrow(
-          outcome === "selected-denied"
-            ? "does not allow this model"
-            : outcome === "source-revoked"
-              ? "label source revoked"
-              : "completion cleanup failed",
+          outcome === "source-revoked" ? "label source revoked" : "completion cleanup failed",
         );
       }
-      expect(runIsolatedCompletion).toHaveBeenCalledTimes(outcome === "selected-denied" ? 0 : 1);
-      if (outcome !== "selected-denied") {
+      expect(runIsolatedCompletion).toHaveBeenCalledTimes(outcome === "all-denied" ? 0 : 1);
+      if (outcome !== "all-denied") {
         expect(runIsolatedCompletion.mock.calls[0]?.[0].operatorAuthority).toBe(authority);
         expect(runIsolatedCompletion.mock.calls[0]?.[0].model).toBe("gpt-mini");
       }

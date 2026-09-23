@@ -13,6 +13,7 @@ import {
   isOperatorForegroundWork,
 } from "./operator-foreground-work.js";
 import {
+  prepareOperatorModelPolicy,
   runWithOperatorModelAuthority,
   runWithOperatorModelRequest,
 } from "./operator-model-policy.js";
@@ -73,7 +74,13 @@ it.each(["request", "retained"] as const)(
             scopes: ["operator.sessions.write"],
             ...(policy === "foreground" ? { executionPolicy: "foreground-only" as const } : {}),
             ...(policy === "finite-model"
-              ? { permissions: { models: { allow: ["fixture/allowed"] } } }
+              ? {
+                  modelPolicy: prepareOperatorModelPolicy({
+                    cfg: {},
+                    policy: { allow: ["fixture/allowed"] },
+                    manifestPlugins: [],
+                  }),
+                }
               : {}),
             assertCurrent() {},
           });

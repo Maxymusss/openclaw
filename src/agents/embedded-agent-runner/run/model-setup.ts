@@ -23,6 +23,7 @@ import { resolveModelCandidateChain } from "../../model-fallback-candidates.js";
 import type { ModelRef } from "../../model-selection.js";
 import { resolveSelectedOpenAIRuntimeProvider } from "../../openai-routing.js";
 import {
+  assertOperatorModelSelection,
   assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
   assertOperatorModelHarnessSupported,
 } from "../../operator-model-policy.js";
@@ -338,7 +339,7 @@ export async function resolveEmbeddedRunModelSetup(params: {
   }
   const { model, authStorage, modelRegistry } = modelResolution;
   assertOperatorModelTupleAllowed(operatorAuthority, provider, modelId);
-  assertOperatorModelTupleAllowed(operatorAuthority, model.provider, model.id);
+  assertOperatorModelSelection(operatorAuthority, model);
   if (!nativeSessionRuntime) {
     assertOperatorModelAllowed(operatorAuthority, { provider, model: modelId });
   }

@@ -5,7 +5,10 @@ import { getModelProviderRuntimePluginHandle } from "../../plugins/provider-hook
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { resolveProviderTextTransforms } from "../../plugins/provider-runtime.js";
 import type { AdmittedRunOperatorAuthority } from "../admitted-run-context.js";
-import { assertOperatorModelAllowed } from "../operator-model-policy.js";
+import {
+  assertOperatorModelSelection,
+  assertOperatorModelRequestRoute,
+} from "../operator-model-policy.js";
 import { wrapStreamFnTextTransforms } from "../plugin-text-transforms.js";
 import type { AgentRuntimePlan } from "../runtime-plan/types.js";
 import { applyExtraParamsToAgent, resolveSupportedTransport } from "./extra-params.js";
@@ -47,11 +50,7 @@ export async function prepareCompactionSessionAgent(params: {
   senderUsername?: string | null;
   senderE164?: string | null;
 }) {
-  assertOperatorModelAllowed(
-    params.operatorAuthority,
-    params.effectiveModel.provider,
-    params.effectiveModel.id,
-  );
+  assertOperatorModelSelection(params.operatorAuthority, params.effectiveModel);
   const authStorage =
     params.authStorage &&
     typeof params.authStorage === "object" &&
@@ -80,8 +79,7 @@ export async function prepareCompactionSessionAgent(params: {
     transportAuthAvailable: Boolean(transportApiKey?.trim()),
     authProfileId: params.runtimePlan?.auth.forwardedAuthProfileId,
     authStorage: params.authStorage as never,
-    assertModelCurrent: (model) =>
-      assertOperatorModelAllowed(params.operatorAuthority, model.provider, model.id),
+    assertModelCurrent: (model) => assertOperatorModelRequestRoute(params.operatorAuthority, model),
   }).streamFn;
   const providerTextTransforms = resolveProviderTextTransforms({
     provider: params.provider,

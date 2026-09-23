@@ -32,6 +32,7 @@ import type {
   EmbeddedRunAttemptResult,
 } from "../embedded-agent-runner/run/types.js";
 import {
+  assertOperatorModelSelection,
   assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
   assertOperatorModelHarnessSupported,
 } from "../operator-model-policy.js";
@@ -192,7 +193,7 @@ export async function runAgentHarnessAttempt(
 ): Promise<EmbeddedRunAttemptResult> {
   const operatorAuthority = readAdmittedRunOperatorAuthority(params.admittedRunContext);
   assertOperatorModelTupleAllowed(operatorAuthority, params.provider, params.modelId);
-  assertOperatorModelTupleAllowed(operatorAuthority, params.model.provider, params.model.id);
+  assertOperatorModelSelection(operatorAuthority, params.model);
   let internalParams = params as EmbeddedRunAttemptParams & {
     systemAgentTool?: SystemAgentToolOptions;
   };
@@ -234,11 +235,7 @@ export async function runAgentHarnessAttempt(
     const preparedOperatorAuthority = assertHarnessModelPolicySupport(harness, params);
     assertOperatorModelHarnessSupported(preparedOperatorAuthority, harness);
     assertOperatorModelTupleAllowed(preparedOperatorAuthority, prepared.provider, prepared.modelId);
-    assertOperatorModelTupleAllowed(
-      preparedOperatorAuthority,
-      prepared.model.provider,
-      prepared.model.id,
-    );
+    assertOperatorModelSelection(preparedOperatorAuthority, prepared.model);
     const modelExecution =
       selection.builtIn || (nativeOwnsModel && nativeModelPolicySupported)
         ? undefined
@@ -508,7 +505,7 @@ async function runAgentHarnessOperation<T>(
   const assertModels = () => {
     assertOperatorModelHarnessSupported(authority, harness);
     assertOperatorModelTupleAllowed(authority, params.provider, params.modelId);
-    assertOperatorModelTupleAllowed(authority, params.model.provider, params.model.id);
+    assertOperatorModelSelection(authority, params.model);
   };
   assertModels();
   await prepareActiveNodeContext();

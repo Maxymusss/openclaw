@@ -458,7 +458,7 @@ async function readChatHistoryRequest(
         sessionModelCatalog,
         defaultModelCatalog,
       });
-      const permissions = modelAccess.permissions();
+      const permissions = modelAccess.policy();
       if (sessionInfo) {
         sessionInfo = projectOperatorSessionModel(sessionInfo, permissions);
       }

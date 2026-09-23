@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { bindModelRequestRoute } from "../../llm/model-runtime-binding.js";
 import type { Model } from "../../llm/types.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { providerOwnsDynamicModelPreparation } from "../../plugins/provider-runtime.js";
@@ -242,7 +243,12 @@ export async function resolveModelAsync(
           : undefined;
       options?.assertCurrent?.();
       if (suppressedRuntimeModel) {
-        return { model: suppressedRuntimeModel, logicalRef, authStorage, modelRegistry };
+        return {
+          model: bindModelRequestRoute(suppressedRuntimeModel, logicalRef),
+          logicalRef,
+          authStorage,
+          modelRegistry,
+        };
       }
       return {
         error:
@@ -402,7 +408,12 @@ export async function resolveModelAsync(
       }
     }
     if (model) {
-      return { model, logicalRef, authStorage, modelRegistry };
+      return {
+        model: bindModelRequestRoute(model, logicalRef),
+        logicalRef,
+        authStorage,
+        modelRegistry,
+      };
     }
     return {
       error: buildUnknownModelError({

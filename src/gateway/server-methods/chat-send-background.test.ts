@@ -32,7 +32,7 @@ it.each(["foreground", "expired", "revoked", "staff", "model-only"] as const)(
           state === "staff"
             ? undefined
             : {
-                models: { allow: ["test-provider/test-model"] },
+                modelPolicy: { allow: ["test-provider/test-model"] },
               },
         ...(restricted
           ? ({

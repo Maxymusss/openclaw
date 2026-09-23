@@ -4,11 +4,8 @@ import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error
 import { parseOperatorModelPolicyWildcardRef } from "../config/model-policy-ref.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { bindModelRequestRoute, readModelRequestRoute } from "../llm/model-runtime-binding.js";
 import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
-import {
-  intersectOperatorPermissionCeilings,
-  operatorModelAllowed,
-} from "../shared/operator-permissions.js";
 import { intersectOperatorScopes } from "../shared/operator-scope-compat.js";
 import {
   assertAdmittedRunOperatorAuthority,
@@ -17,7 +14,6 @@ import {
 } from "./admitted-run-operator-authority.js";
 import { resolveConfiguredAgentId, resolveAmbientOwnerAgentId } from "./agent-scope-config.js";
 import { compileGlobPatterns, matchesAnyGlobPattern } from "./glob-pattern.js";
-import type { ModelFallbackCandidate } from "./model-fallback.types.js";
 import type { ModelManifestNormalizationContext, ModelRef } from "./model-ref-shared.js";
 import { normalizeProviderId } from "./model-ref-shared.js";
 import { resolveDefaultModelForAgent } from "./model-selection-config.js";
@@ -30,6 +26,7 @@ export type { PreparedOperatorModelPolicy } from "./operator-model-policy.types.
 
 const operatorModelRequest = new AsyncLocalStorage<{
   authority: AdmittedRunOperatorAuthority | undefined;
+  route?: NonNullable<ReturnType<typeof readModelRequestRoute>>;
 }>();
 
 // Weak provenance only: compositions belong to their request, never a global pair cache.
@@ -103,7 +100,6 @@ function currentOperatorModelAuthority(authority: AdmittedRunOperatorAuthority |
     return authority;
   }
   const leaves = Object.freeze([...new Set([...originalLeaves, ...suppliedLeaves])]);
-  let permissions = ambient.permissions;
   let scopes = ambient.scopes;
   let executionPolicy = ambient.executionPolicy;
   let foregroundRunId = ambient.foregroundRunId;
@@ -125,7 +121,6 @@ function currentOperatorModelAuthority(authority: AdmittedRunOperatorAuthority |
         "The retained model source does not belong to this request. Start a new request with current authority.",
       );
     }
-    permissions = intersectOperatorPermissionCeilings(permissions, leaf.permissions);
     scopes = intersectOperatorScopes(scopes, leaf.scopes);
     executionPolicy ??= leaf.executionPolicy;
     foregroundRunId ??= leaf.foregroundRunId;
@@ -139,7 +134,6 @@ function currentOperatorModelAuthority(authority: AdmittedRunOperatorAuthority |
   const signals = [...new Set(leaves.flatMap((leaf) => (leaf.signal ? [leaf.signal] : [])))];
   const combined = createAdmittedRunOperatorAuthority({
     ...ambient,
-    permissions,
     scopes,
     executionPolicy,
     foregroundRunId,
@@ -180,7 +174,9 @@ export function runWithOperatorModelRequest<T>(
 ): T {
   const original = currentOperatorModelAuthority(authority);
   assertOperatorModelAuthorityCurrent(original);
-  return operatorModelRequest.run({ authority: original }, () => run(original));
+  return operatorModelRequest.run({ ...operatorModelRequest.getStore(), authority: original }, () =>
+    run(original),
+  );
 }
 
 /** Policy and source denials are terminal; auth/profile/provider fallback cannot repair them. */
@@ -257,7 +253,7 @@ export function assertOperatorModelAllowed(
 ): void {
   const original = currentOperatorModelAuthority(authority);
   assertOperatorModelAuthorityCurrent(original);
-  if (!operatorModelAllowed(original?.permissions, provider, model)) {
+  if (original?.modelPolicy?.allows({ provider, model }) === false) {
     throw new OperatorModelPolicyError(
       "Your operator role does not allow this model. Choose an allowed model or ask an administrator to update your role.",
     );
@@ -270,43 +266,23 @@ export function assertOperatorModelHarnessSupported(
 ): void {
   const original = currentOperatorModelAuthority(authority);
   assertOperatorModelAuthorityCurrent(original);
-  if (original?.permissions?.models && harness.operatorModelPolicySupport !== "exact") {
+  if (original?.modelPolicy && harness.operatorModelPolicySupport !== "exact") {
     throw new OperatorModelPolicyError(
       "The selected runtime cannot enforce your operator model restrictions. Choose a supported runtime or ask an administrator to configure one.",
     );
   }
 }
 
-export function restrictOperatorModelCandidates<T extends ModelFallbackCandidate>(
-  authority: AdmittedRunOperatorAuthority | undefined,
-  candidates: readonly T[],
-): T[] {
-  const original = currentOperatorModelAuthority(authority);
-  assertOperatorModelAuthorityCurrent(original);
-  const allowed = candidates.filter((candidate) => {
-    if (candidate.routeOrigin === "requested") {
-      assertOperatorModelAllowed(original, candidate.provider, candidate.model);
-      return true;
-    }
-    return operatorModelAllowed(original?.permissions, candidate.provider, candidate.model);
-  });
-  if (candidates.length && !allowed.length) {
-    throw new OperatorModelPolicyError(
-      "No configured model is allowed by your operator role. Choose an allowed model or ask an administrator to update the configuration.",
-    );
-  }
-  return allowed;
-}
-
 /** Install inside retry/transform wrappers so each actual provider tuple is checked. */
 export function wrapOperatorModelStream(
   stream: StreamFn,
   authority: AdmittedRunOperatorAuthority | undefined,
+  preparedModel?: Model,
 ): StreamFn {
   return inheritModelRequestBinding<StreamFn>(
     (model, context, options) =>
-      runWithOperatorModelRequest(authority, () => {
-        assertOperatorModelAllowed(authority, model.provider, model.id);
+      runWithOperatorModelSelection(authority, preparedModel ?? model, () => {
+        assertOperatorModelRequestRoute(authority, model);
         requireOperatorModelDelegateSupport(stream.modelRequestBinding);
         return stream(model, context, options);
       }),
@@ -317,13 +293,13 @@ export function wrapOperatorModelStream(
 /** Cached delegates stay caller-neutral; check after each plugin model rewrite/await. */
 export function guardOperatorModelProviderStream(stream: StreamFn): StreamFn {
   return inheritModelRequestBinding<StreamFn>((model, context, options) => {
-    requireOperatorModelDelegateSupport(stream.modelRequestBinding);
-    assertOperatorModelAllowed(
-      operatorModelRequest.getStore()?.authority,
-      model.provider,
-      model.id,
-    );
-    return stream(model, context, options);
+    const request = captureOperatorModelRequest(model);
+    const run = () => {
+      requireOperatorModelDelegateSupport(stream.modelRequestBinding);
+      assertOperatorModelRequestRoute(undefined, model);
+      return stream(model, context, options);
+    };
+    return request ? request.run(run) : run();
   }, stream);
 }
 
@@ -331,25 +307,98 @@ export function guardOperatorModelProviderStream(stream: StreamFn): StreamFn {
 export function requireOperatorModelDelegateSupport(support: "wire-model-v1" | undefined): void {
   const original = currentOperatorModelAuthority(undefined);
   assertOperatorModelAuthorityCurrent(original);
-  if (original?.permissions?.models && support !== "wire-model-v1") {
+  if (original?.modelPolicy && support !== "wire-model-v1") {
     throw new OperatorModelPolicyError(
       "The selected transport cannot bind your model restrictions to its request. Choose a supported HTTP transport.",
     );
   }
 }
 
+/** Selection facts are host-owned; a late wrapper cannot authorize another allowed route. */
+export function assertOperatorModelRequestRoute(
+  authority: AdmittedRunOperatorAuthority | undefined,
+  model: Model,
+): void {
+  assertModelRequestRoute(
+    authority,
+    model,
+    operatorModelRequest.getStore()?.route ?? readModelRequestRoute(model),
+  );
+}
+
+/** Preparation checks its own host selection; it must not borrow an outer inference route. */
+export function assertOperatorModelSelection(
+  authority: AdmittedRunOperatorAuthority | undefined,
+  model: Model,
+): void {
+  assertModelRequestRoute(authority, model, readModelRequestRoute(model));
+}
+
+function assertModelRequestRoute(
+  authority: AdmittedRunOperatorAuthority | undefined,
+  model: Model,
+  selected: ReturnType<typeof readModelRequestRoute>,
+): void {
+  const original = currentOperatorModelAuthority(authority);
+  const logical = selected?.logicalRef ?? { provider: model.provider, model: model.id };
+  assertOperatorModelAllowed(original, logical.provider, logical.model);
+  if (
+    original?.modelPolicy &&
+    selected &&
+    !selected.routes.some(
+      (route) =>
+        route.provider === model.provider &&
+        route.id === model.id &&
+        route.api === model.api &&
+        route.baseUrl === model.baseUrl,
+    )
+  ) {
+    throw new OperatorModelPolicyError(
+      "The provider changed the prepared model route. Select the model before preparing the request.",
+    );
+  }
+}
+
+/** Only an inference owner starts a new selection; delegate/serializer captures reuse it. */
+export function runWithOperatorModelSelection<T>(
+  authority: AdmittedRunOperatorAuthority | undefined,
+  model: Model,
+  run: () => T,
+): T {
+  return runWithOperatorModelRequest(authority, (original) => {
+    const route =
+      readModelRequestRoute(model) ??
+      readModelRequestRoute(
+        bindModelRequestRoute(model, { provider: model.provider, model: model.id }),
+      );
+    return operatorModelRequest.run({ authority: original, route }, () => {
+      assertOperatorModelRequestRoute(original, model);
+      return run();
+    });
+  });
+}
+
 /** The serializer borrows this request-local source; the existing inference owner retains it. */
 export function captureOperatorModelRequest(model: Model) {
   const original = currentOperatorModelAuthority(undefined);
-  if (!original?.permissions?.models) {
+  if (!original?.modelPolicy) {
     return undefined;
   }
-  assertOperatorModelAllowed(original, model.provider, model.id);
-  const assertCurrent = () => assertOperatorModelAuthorityCurrent(original);
+  const route =
+    operatorModelRequest.getStore()?.route ??
+    readModelRequestRoute(model) ??
+    readModelRequestRoute(
+      bindModelRequestRoute(model, { provider: model.provider, model: model.id }),
+    );
+  const run = <T>(callback: () => T): T =>
+    operatorModelRequest.run({ authority: original, route }, callback);
+  const assertCurrent = () => run(() => assertOperatorModelRequestRoute(original, model));
+  assertCurrent();
   return {
+    run,
     assertCurrent,
     bindWireModel(initial: string | undefined, requestModel: Model) {
-      assertOperatorModelAllowed(original, requestModel.provider, requestModel.id);
+      run(() => assertOperatorModelRequestRoute(original, requestModel));
       const { provider, id, api, baseUrl } = requestModel;
       const validate = (current: Model, wireModel: string | undefined) => {
         assertCurrent();
@@ -373,6 +422,20 @@ export function captureOperatorModelRequest(model: Model) {
 }
 
 const modelPolicyMembership = new WeakMap<PreparedOperatorModelPolicy, string>();
+
+/** A current policy can narrow an original selection but cannot expand its authority. */
+export function intersectOperatorModelPolicies(
+  original: PreparedOperatorModelPolicy | undefined,
+  current: PreparedOperatorModelPolicy | undefined,
+): PreparedOperatorModelPolicy | undefined {
+  if (!original || !current) {
+    return original ?? current;
+  }
+  return Object.freeze({
+    models: Object.freeze(current.models.filter(original.allows)),
+    allows: (ref: ModelRef) => original.allows(ref) && current.allows(ref),
+  });
+}
 
 /** Comparison uses the original predicate, including models outside concrete discovery choices. */
 export function readOperatorModelPolicyMembership(

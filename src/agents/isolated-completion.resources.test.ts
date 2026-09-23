@@ -23,7 +23,10 @@ import { withEnvAsync } from "../test-utils/env.js";
 import { createAdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
 import { clearRuntimeAuthProfileStoreSnapshots } from "./auth-profiles/runtime-snapshots.js";
 import { runIsolatedCompletion } from "./isolated-completion.js";
-import { runWithOperatorModelRequest } from "./operator-model-policy.js";
+import {
+  prepareOperatorModelPolicy,
+  runWithOperatorModelRequest,
+} from "./operator-model-policy.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
 import { ModelRegistry } from "./sessions/model-registry.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
@@ -403,7 +406,13 @@ it.each(["foreground", "finite-model", "staff", "revoked", "deadline", "cancelle
           }
         : {}),
       ...(mode === "finite-model"
-        ? { permissions: { models: { allow: [`${fixture.providerId}/isolated-model`] } } }
+        ? {
+            modelPolicy: prepareOperatorModelPolicy({
+              cfg: {},
+              policy: { allow: [`${fixture.providerId}/isolated-model`] },
+              manifestPlugins: [],
+            }),
+          }
         : {}),
       signal: source.signal,
       assertCurrent() {},

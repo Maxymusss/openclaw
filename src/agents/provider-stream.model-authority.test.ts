@@ -5,7 +5,11 @@ import {
 } from "@openclaw/ai/transports";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
-import { bindModelCompletionOwner, bindModelLlmRuntime } from "../llm/model-runtime-binding.js";
+import {
+  bindModelCompletionOwner,
+  bindModelLlmRuntime,
+  bindModelRequestRoute,
+} from "../llm/model-runtime-binding.js";
 import type { AssistantMessage, Model } from "../llm/types.js";
 import { createAssistantMessageEventStream } from "../llm/utils/event-stream.js";
 import { isRetryableAssistantError } from "../llm/utils/retry.js";
@@ -21,6 +25,7 @@ import {
 import { resolveEmbeddedAgentStream } from "./embedded-agent-runner/stream-resolution.js";
 import { requireIsolatedAssistantText } from "./isolated-completion-output.js";
 import {
+  prepareOperatorModelPolicy,
   captureOperatorModelRequest,
   OperatorModelPolicyError,
   runWithOperatorModelRequest,
@@ -40,7 +45,11 @@ function originalAuthority(allow: string[]) {
     authority: createAdmittedRunOperatorAuthority({
       profileId: "stream-owner",
       scopes: ["operator.sessions.write"],
-      permissions: { models: { allow } },
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg: {},
+        policy: { allow: allow },
+        manifestPlugins: [],
+      }),
       assertCurrent: () => {
         if (!current) {
           throw new Error("HTTP 503: original model source revoked");
@@ -55,6 +64,7 @@ type RequestMode = "stream" | "completion" | "agent";
 function preparedProvider(
   mode: RequestMode,
   completionOwner?: Parameters<typeof bindModelCompletionOwner>[1],
+  hostMapping?: Pick<Model, "provider" | "id">,
 ) {
   const registry = createApiRegistry();
   const runtime = createLlmRuntime(registry);
@@ -113,13 +123,20 @@ function preparedProvider(
     ...(mode === "completion" ? { wrapSimpleCompletionStreamFn: wrap } : { wrapStreamFn: wrap }),
   };
   const model = attachModelProviderRuntimePluginHandle(
-    makeProviderModelFixture({
-      api: "fixture-model-authority",
-      provider: "fixture",
-      id: "requested",
-      baseUrl: "https://provider.example/v1",
-    }),
-    { provider: "fixture", modelId: "requested", plugin },
+    bindModelRequestRoute(
+      makeProviderModelFixture({
+        api: "fixture-model-authority",
+        provider: hostMapping?.provider ?? "fixture",
+        id: hostMapping?.id ?? "requested",
+        baseUrl: "https://provider.example/v1",
+      }),
+      { provider: "fixture", model: "requested" },
+    ),
+    {
+      provider: hostMapping?.provider ?? "fixture",
+      modelId: hostMapping?.id ?? "requested",
+      plugin,
+    },
   );
   // Prepare once, before any caller enters. Cached factories must remain authority-neutral.
   const preparedRuntime =
@@ -221,7 +238,11 @@ it("retains SDK-owned completion authority through cancelled provider callback a
   const authority = createAdmittedRunOperatorAuthority({
     profileId: "completion-owner",
     scopes: ["operator.sessions.write"],
-    permissions: { models: { allow: ["fixture/requested"] } },
+    modelPolicy: prepareOperatorModelPolicy({
+      cfg: {},
+      policy: { allow: ["fixture/requested"] },
+      manifestPlugins: [],
+    }),
     assertCurrent: () => {},
     retain,
   });
@@ -305,14 +326,18 @@ describe.each(["stream", "completion", "agent"] as const)(
   "cached %s provider authority",
   (mode) => {
     it.each(["model", "provider"] as const)(
-      "isolates concurrent callers after an awaited %s rewrite without recreating the factory",
+      "preserves host-mapped %s selection and rejects a separately allowed late switch on the cached factory",
       async (rewrite) => {
-        const f = preparedProvider(mode);
         const target = { provider: rewrite === "provider" ? "other" : "fixture", id: "selected" };
-        const allowed = originalAuthority(["fixture/requested", `${target.provider}/selected`]);
-        const denied = originalAuthority(["fixture/requested"]);
+        const f = preparedProvider(mode, undefined, target);
+        const allowed = originalAuthority(["fixture/requested"]);
+        const switched = { provider: target.provider, id: "separately-allowed" };
+        const denied = originalAuthority([
+          "fixture/requested",
+          `${switched.provider}/${switched.id}`,
+        ]);
         const yes = f.start("allowed", target, allowed.authority);
-        const no = f.start("denied", target, denied.authority);
+        const no = f.start("denied", switched, denied.authority);
         const denial = expectDenied(mode, no.result);
         const accepted = expect(yes.result).resolves.toMatchObject({ stopReason: "stop" });
         try {

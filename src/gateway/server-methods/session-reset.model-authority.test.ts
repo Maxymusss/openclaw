@@ -25,7 +25,7 @@ describe.each(["sessions.reset", "sessions.create"])("%s model response privacy"
         const role = expectDefined(cfg.gateway?.roles?.definitions.view, "reset role");
         role.scopes = ["operator.admin"];
         if (mode !== "unrestricted") {
-          role.models = { allow: [mode === "allowed" ? "openai/gpt-5" : "openai/gpt-5-mini"] };
+          role.modelPolicy = { allow: [mode === "allowed" ? "openai/gpt-5" : "openai/gpt-5-mini"] };
         }
         if (mode === "system") {
           client.internal = { operatorRoleActor: { kind: "system" } };

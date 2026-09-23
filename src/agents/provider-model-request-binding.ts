@@ -13,7 +13,8 @@ import type {
 } from "../plugins/provider-transport.types.js";
 import type { AdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
 import {
-  assertOperatorModelAllowed,
+  assertOperatorModelRequestRoute,
+  assertOperatorModelSelection,
   OperatorModelPolicyError,
   requireOperatorModelDelegateSupport,
   runWithOperatorModelRequest,
@@ -28,8 +29,8 @@ type BindingParams = ProviderModelRequestBindingContext & {
 
 function assertBinding(params: BindingParams, supported: () => boolean): boolean {
   return runWithOperatorModelRequest(params.authority, (original) => {
-    assertOperatorModelAllowed(original, params.model.provider, params.model.id);
-    if (!original?.permissions?.models) {
+    assertOperatorModelSelection(original, params.model);
+    if (!original?.modelPolicy) {
       return false;
     }
     if (params.isCurrent?.() === false || !supported()) {
@@ -84,6 +85,7 @@ export function guardProviderModelRequestBinding(
   },
 ): StreamFn {
   return inheritModelRequestBinding<StreamFn>((model, context, options) => {
+    assertOperatorModelRequestRoute(undefined, model);
     assertProviderModelRequestBinding({
       ...params,
       model,
@@ -127,6 +129,7 @@ export function constructProviderModelStreamWrapper(params: {
     return (
       wrapped &&
       inheritModelRequestBinding<StreamFn>((runtimeModel, context, options) => {
+        assertOperatorModelRequestRoute(params.authority, runtimeModel);
         assertProviderModelRequestBindingHook({
           ...params,
           model: params.context.sourceApi

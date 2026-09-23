@@ -73,6 +73,7 @@ export function retireChatMetadataRequests(host: ChatPageHost): void {
   metadataBindings.get(host)?.unsubscribe();
   metadataBindings.delete(host);
   host.chatModelCatalog = [];
+  host.chatModelRestricted = undefined;
   host.chatModelCatalogError = null;
   host.chatModelCatalogRefreshFailed = undefined;
   host.chatModelCatalogPendingProviders = undefined;
@@ -475,6 +476,7 @@ async function loadChatModelCatalog(
 
 function applyChatModelCatalog(host: ChatPageHost, result: ModelCatalogResult) {
   host.chatModelCatalog = result.models;
+  host.chatModelRestricted = result.modelRestricted === true;
   host.chatAccountSelection = result.accountSelection ?? null;
   host.chatModelCatalogError = null;
   host.chatModelCatalogRefreshFailed = result.refreshFailed;

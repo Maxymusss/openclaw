@@ -6,6 +6,7 @@ import {
 } from "../agents/admitted-run-context.js";
 import {
   prepareOperatorModelPolicy,
+  intersectOperatorModelPolicies,
   readOperatorModelPolicyMembership,
 } from "../agents/operator-model-policy.js";
 import { getProcessGatewayPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-state.js";
@@ -24,7 +25,6 @@ import {
 import {
   authorizeCurrentOperatorRoleScopes,
   onOperatorRolePolicyChanged,
-  operatorRolePermissionCeiling,
   resolveGatewayOperatorRoleActor,
   resolveOperatorRolePolicyForProfile,
 } from "./operator-role-policy.js";
@@ -188,14 +188,7 @@ export function captureGatewayOperatorRunAuthority(params: {
         policy: resolveOperatorRolePolicyForProfile(profileId, cfg)?.modelPolicy,
         manifestPlugins: metadata ?? [],
       });
-      modelPolicy =
-        original && current
-          ? Object.freeze({
-              models: Object.freeze(current.models.filter(original.allows)),
-              allows: (ref: Parameters<typeof original.allows>[0]) =>
-                original.allows(ref) && current.allows(ref),
-            })
-          : (original ?? current);
+      modelPolicy = intersectOperatorModelPolicies(original, current);
       modelPolicyConfig = cfg;
       modelPolicyMetadata = metadata;
     }
@@ -312,7 +305,6 @@ export function captureGatewayOperatorRunAuthority(params: {
         profileId,
         scopes,
         gatewayAccessGrant: sourceAuthority === null ? null : sourceAuthority?.gatewayAccessGrant,
-        permissions: operatorRolePermissionCeiling(capturedRole),
         executionPolicy: sourceAuthority?.executionPolicy,
         source: source.token,
         assertCurrent,

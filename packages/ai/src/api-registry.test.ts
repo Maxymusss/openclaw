@@ -1,5 +1,6 @@
 // LLM Runtime tests cover api registry behavior.
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { configureAiTransportHost, getAiTransportHost } from "./host.js";
 import {
   createApiRegistry,
   createAssistantMessageEventStream,
@@ -11,6 +12,7 @@ import {
   streamSimple as streamSimpleDefault,
 } from "./internal/default-runtime.js";
 
+const initialHost = getAiTransportHost();
 const TEST_SOURCE_ID = "test:llm-runtime-api-registry";
 const emptyStream = () => createAssistantMessageEventStream();
 
@@ -30,7 +32,65 @@ const model = {
 describe("LLM API registry", () => {
   afterEach(() => {
     defaultApiRegistry.unregisterApiProviders(TEST_SOURCE_ID);
+    configureAiTransportHost(initialHost);
   });
+
+  it.each(["stream", "streamSimple"] as const)(
+    "%s borrows its captured selection and returns the exact synchronous stream",
+    (method) => {
+      const runtime = createLlmRuntime();
+      const result = emptyStream();
+      let inside = false;
+      const delegate = vi.fn(() => {
+        expect(inside).toBe(true);
+        return result;
+      });
+      const entered = vi.fn();
+      const run = <T>(callback: () => T): T => {
+        entered();
+        inside = true;
+        try {
+          return callback();
+        } finally {
+          inside = false;
+        }
+      };
+      const capture = vi.fn(() => ({ run, assertCurrent() {}, bindWireModel: () => () => {} }));
+      configureAiTransportHost({ modelRequests: { capture, requireDelegateSupport() {} } });
+      runtime.registry.registerApiProvider({
+        api: model.api,
+        stream: delegate,
+        streamSimple: delegate,
+      });
+      expect(runtime[method](model, { messages: [] })).toBe(result);
+      expect(capture).toHaveBeenCalledExactlyOnceWith(model);
+      expect(entered).toHaveBeenCalledOnce();
+      expect(delegate).toHaveBeenCalledOnce();
+      expect(inside).toBe(false);
+    },
+  );
+
+  it.each(["stream", "streamSimple"] as const)(
+    "%s preserves absent and unrestricted capture behavior",
+    (method) => {
+      const runtime = createLlmRuntime();
+      const result = emptyStream();
+      const delegate = vi.fn(() => result);
+      runtime.registry.registerApiProvider({
+        api: model.api,
+        stream: delegate,
+        streamSimple: delegate,
+      });
+      for (const modelRequests of [
+        undefined,
+        { capture: () => undefined, requireDelegateSupport() {} },
+      ]) {
+        configureAiTransportHost({ modelRequests });
+        expect(runtime[method](model, { messages: [] })).toBe(result);
+      }
+      expect(delegate).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("copies method-specific support and retires it with the exact registration", () => {
     const registry = createApiRegistry();

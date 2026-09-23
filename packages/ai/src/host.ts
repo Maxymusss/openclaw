@@ -149,6 +149,8 @@ export interface AiTransportHost {
     ): void;
     capture(model: Model):
       | {
+          /** Borrows one captured request selection across delegate and serializer awaits. */
+          run<T>(callback: () => T): T;
           assertCurrent(): void;
           bindWireModel(
             initial: string | undefined,

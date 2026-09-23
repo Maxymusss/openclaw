@@ -208,7 +208,7 @@ describe("sendGatewayHello update detail scope", () => {
           roles: {
             default: "guest",
             definitions: {
-              guest: { models: { allow: ["test-provider/test-model"] } },
+              guest: { modelPolicy: { allow: ["test-provider/test-model"] } },
             },
           },
         },

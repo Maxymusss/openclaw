@@ -37,7 +37,7 @@ import { abortable } from "../embedded-agent-runner/run/abortable.js";
 import { applySecretRefHeaderSentinels } from "../model-auth.js";
 import { resolveAllowedImageFallbackCandidates } from "../model-fallback-image.js";
 import {
-  assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
+  assertOperatorModelSelection,
   runWithOperatorModelAuthority,
   assertOperatorModelResponse,
   wrapOperatorModelStream,
@@ -237,11 +237,7 @@ async function runPdfPrompt(params: {
         params.assertResourcesOpen?.();
         modelExecution?.assertCurrent();
         assertOperatorModelAllowed(params.operatorAuthority, resolved.logicalRef);
-        assertOperatorModelTupleAllowed(
-          params.operatorAuthority,
-          resolved.model.provider,
-          resolved.model.id,
-        );
+        assertOperatorModelSelection(params.operatorAuthority, resolved.model);
       };
       assertModelCurrent();
       const modelRuntime = getModelRegistryRuntime(resolved.modelRegistry);

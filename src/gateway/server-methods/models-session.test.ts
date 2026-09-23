@@ -50,7 +50,7 @@ function fixture(restrictions?: { models?: string[]; agents?: "*" | string[]; na
   const roleScopes: OperatorScope[] = restrictions?.narrow
     ? ["operator.sessions.read"]
     : ["operator.read"];
-  const config = {
+  let config = {
     ...createOpenAIChatMetadataConfig(),
     gateway: {
       roles: {
@@ -60,7 +60,7 @@ function fixture(restrictions?: { models?: string[]; agents?: "*" | string[]; na
             agents: restrictions?.agents ?? "*",
             scopes: roleScopes,
             sessions: { others: "none" },
-            ...(restrictions?.models ? { models: { allow: restrictions.models } } : {}),
+            ...(restrictions?.models ? { modelPolicy: { allow: restrictions.models } } : {}),
           },
         },
       },
@@ -142,7 +142,12 @@ function fixture(restrictions?: { models?: string[]; agents?: "*" | string[]; na
   return {
     person,
     authProfileId,
-    config,
+    get config() {
+      return config;
+    },
+    publishConfig: () => {
+      config = structuredClone(config);
+    },
     client,
     clients,
     snapshot,
@@ -254,7 +259,8 @@ describe("direct session model catalogs", () => {
           harness.setOwner(f.owner);
           const tighten = () => {
             if (mode === "tightened") {
-              f.config.gateway.roles.definitions.reader.models = { allow: [] };
+              f.config.gateway.roles.definitions.reader.modelPolicy = { allow: [] };
+              f.publishConfig();
             }
           };
           f.readPrepared.mockImplementation(async () => {

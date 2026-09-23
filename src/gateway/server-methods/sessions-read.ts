@@ -266,7 +266,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         context,
         client,
         diagnostics,
-        readModelPermissions: access.permissions,
+        readModelPolicy: access.policy,
         onResult: (result) => {
           access.assertCurrent();
           respond(true, result);

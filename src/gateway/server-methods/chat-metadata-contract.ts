@@ -38,6 +38,7 @@ export type ChatMetadataReadParams = {
 export type ChatMetadataResult = {
   commands?: unknown[];
   models?: ModelChoice[];
+  modelRestricted?: true;
   swarmEnabled: boolean;
   runtimeSelectionLocked?: boolean;
   accountSelection?: ChatAccountSelection;

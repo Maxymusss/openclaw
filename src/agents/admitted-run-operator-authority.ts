@@ -3,16 +3,11 @@ import {
   readOperatorExecutionPolicy,
   type OperatorExecutionPolicy,
 } from "../shared/operator-execution-policy.js";
-import {
-  freezeOperatorPermissionCeiling,
-  type OperatorPermissionCeiling,
-} from "../shared/operator-permissions.js";
 import type { PreparedOperatorModelPolicy } from "./operator-model-policy.types.js";
 
 export type AdmittedRunOperatorAuthority = Readonly<{
   profileId: string;
   scopes: readonly string[];
-  permissions?: OperatorPermissionCeiling;
   /** Original access dependency; null is proven independent, undefined is unclassified. */
   gatewayAccessGrant?: GatewayAccessGrantRef | null;
   executionPolicy?: OperatorExecutionPolicy;
@@ -56,7 +51,6 @@ export function createAdmittedRunOperatorAuthority(
   const authority = Object.freeze({
     profileId: source.profileId,
     scopes: Object.freeze([...source.scopes]),
-    permissions: freezeOperatorPermissionCeiling(source.permissions),
     gatewayAccessGrant: source.gatewayAccessGrant
       ? Object.freeze({ ...source.gatewayAccessGrant })
       : source.gatewayAccessGrant,

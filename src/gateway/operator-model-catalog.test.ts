@@ -35,18 +35,31 @@ beforeEach(() => {
 afterEach(() => restoreActivePluginRegistrySnapshot(registry));
 
 function fixture(allow?: string[]) {
-  const cfg = rolePolicyConfig();
+  let cfg = rolePolicyConfig();
   cfg.agents = { entries: { main: {}, guest: {} } };
   const role = expectDefined(cfg.gateway?.roles?.definitions.view, "visitor role");
   role.scopes = ["operator.sessions.read"];
   if (allow) {
-    role.models = { allow };
+    role.modelPolicy = { allow };
   }
   setRuntimeConfigSnapshot(cfg);
   const client = roleClient("view", "catalog-reader");
   client.connect.scopes = ["operator.sessions.read"];
   const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
-  return { cfg, role, client, context };
+  return {
+    get cfg() {
+      return cfg;
+    },
+    get role() {
+      return expectDefined(cfg.gateway?.roles?.definitions.view, "visitor role");
+    },
+    publish() {
+      cfg = structuredClone(cfg);
+      setRuntimeConfigSnapshot(cfg);
+    },
+    client,
+    context,
+  };
 }
 
 function neutralCatalog(): ModelsListResult {
@@ -114,7 +127,8 @@ describe("caller-local operator catalogs", () => {
           access.projectMetadata({ swarmEnabled: false, models: [bound] }).models?.[0],
         ).toMatchObject({ available: false, unavailableReason: "unsupported-runtime" });
         expect(JSON.stringify(bound)).toBe(JSON.stringify(missingFact));
-        delete f.role.models;
+        delete f.role.modelPolicy;
+        f.publish();
         const staff = captureOperatorModelCatalogAccess(f);
         try {
           const catalog = { models: [bound] };
@@ -147,6 +161,7 @@ describe("caller-local operator catalogs", () => {
       const original = structuredClone(source);
       try {
         expect(access.projectCatalog(source, "fixture/forbidden")).toEqual({
+          modelRestricted: true,
           models: [
             {
               ...source.models[0],
@@ -187,14 +202,16 @@ describe("caller-local operator catalogs", () => {
       const f = fixture(["fixture/allowed"]);
       const source = neutralCatalog();
       const first = captureOperatorModelCatalogAccess(f);
-      f.role.models = { allow: ["fixture/forbidden"] };
+      f.role.modelPolicy = { allow: ["fixture/forbidden"] };
+      f.publish();
       const second = captureOperatorModelCatalogAccess(f);
       try {
         expect(first.projectCatalog(source).models).toEqual([]);
         expect(second.projectCatalog(source).models.map((model) => model.id)).toEqual([
           "forbidden",
         ]);
-        delete f.role.models;
+        delete f.role.modelPolicy;
+        f.publish();
         expect(first.projectCatalog(source).models.map((model) => model.id)).toEqual(["allowed"]);
         expect(second.projectCatalog(source).models.map((model) => model.id)).toEqual([
           "forbidden",
@@ -218,7 +235,8 @@ describe("caller-local operator catalogs", () => {
       const f = fixture([]);
       const access = captureOperatorModelCatalogAccess(f);
       try {
-        f.role.models = { allow: ["fixture/allowed"] };
+        f.role.modelPolicy = { allow: ["fixture/allowed"] };
+        f.publish();
         expect(access.projectCatalog(neutralCatalog())).toMatchObject({
           models: [],
           decisionModels: [],
@@ -232,7 +250,7 @@ describe("caller-local operator catalogs", () => {
             models: neutralCatalog().models,
             accountSelection: { kind: "shared", label: "Hidden", authProfileId: "hidden" },
           }),
-        ).toEqual({ swarmEnabled: false, models: [] });
+        ).toEqual({ swarmEnabled: false, models: [], modelRestricted: true });
       } finally {
         access.release();
       }

@@ -36,7 +36,7 @@ function fixture() {
   role.agents = ["guest"];
   role.scopes = ["operator.read"];
   role.sessions = { others: "none" };
-  role.models = { allow: [`openai/${allowed}`] };
+  role.modelPolicy = { allow: [`openai/${allowed}`] };
   config.agents = {
     ...createOpenAIChatMetadataConfig([allowed, forbidden]).agents,
     list: [{ id: "main", default: true }, { id: "guest" }],
@@ -149,7 +149,7 @@ it.each(
     }
     if (mode === "unrestricted-preview") {
       f.role.agents = "*";
-      delete f.role.models;
+      delete f.role.modelPolicy;
     }
     await state.writeConfig(f.config);
     if (mode !== "missing" && mode !== "unrestricted-preview") {
