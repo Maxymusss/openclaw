@@ -5910,6 +5910,26 @@ jobs:
             -only-testing:OpenClawTests/OpenClawTypographyTests \
             test
 
+      # Full validation collects installed control proof before the required native suites.
+      # Keep failure boundaries success-only and retain the original smoke order below.
+      - name: Prove native iOS actions against a real Gateway
+        if: matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true'
+        env:
+          OPENCLAW_BUILD_PRIVATE_QA: "1"
+        run: &ios_native_gateway_proof |
+          pnpm build qaRuntime
+          node --import ./scripts/tsx.mjs scripts/test-native-action-gateway.mts ios
+
+      - name: Prove installed iOS automatic run opening
+        id: ios_installed_shortcuts
+        if: matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true'
+        env:
+          PROOF_SOURCE_SHA: ${{ needs.preflight.outputs.checkout_revision }}
+        run: |
+          node --import ./scripts/tsx.mjs scripts/test-ios-shortcuts-installed.mts \
+            "$RUNNER_TEMP/ios-shortcuts-installed.json" \
+            --matrix automatic-run-opening --target-sha "$PROOF_SOURCE_SHA"
+
       # Native navigation and modal ownership also run in automatic smoke CI.
       - name: Run focused iOS native action simulator tests
         id: ios_native_action_tests
@@ -5977,22 +5997,10 @@ jobs:
             test
 
       - name: Prove native iOS actions against a real Gateway
-        if: (matrix.phase == 'smoke' || matrix.phase == 'tests') && needs.preflight.outputs.compatibility_target != 'true'
+        if: matrix.phase == 'smoke' && needs.preflight.outputs.compatibility_target != 'true'
         env:
           OPENCLAW_BUILD_PRIVATE_QA: "1"
-        run: |
-          pnpm build qaRuntime
-          node --import ./scripts/tsx.mjs scripts/test-native-action-gateway.mts ios
-
-      - name: Prove installed iOS automatic run opening
-        id: ios_installed_shortcuts
-        if: matrix.phase == 'tests' && needs.preflight.outputs.compatibility_target != 'true'
-        env:
-          PROOF_SOURCE_SHA: ${{ needs.preflight.outputs.checkout_revision }}
-        run: |
-          node --import ./scripts/tsx.mjs scripts/test-ios-shortcuts-installed.mts \
-            "$RUNNER_TEMP/ios-shortcuts-installed.json" \
-            --matrix automatic-run-opening --target-sha "$PROOF_SOURCE_SHA"
+        run: *ios_native_gateway_proof
 
       # Raw setup/XCTest output and identifiers stay in private RUNNER_TEMP paths.
       - name: Upload installed iOS Shortcuts receipt

@@ -1525,10 +1525,10 @@ describe("ci workflow guards", () => {
                 "Build iOS app",
                 "Prove native managed document download and export",
                 "Run focused iOS voice cleanup simulator tests",
-                "Run focused iOS native action simulator tests",
-                "Run focused iOS lifecycle simulator tests",
                 "Prove native iOS actions against a real Gateway",
                 "Prove installed iOS automatic run opening",
+                "Run focused iOS native action simulator tests",
+                "Run focused iOS lifecycle simulator tests",
                 "Run focused Apple Watch operation simulator tests",
               ],
             };
