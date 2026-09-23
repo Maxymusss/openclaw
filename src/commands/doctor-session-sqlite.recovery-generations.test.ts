@@ -2,15 +2,17 @@ import fs from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import { loadExactSessionEntry } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { loadTranscriptEventsSync } from "../config/sessions/session-accessor.sqlite-read.js";
 import { prepareGithubIssue } from "../infra/github-issue.js";
-import * as migrationArtifact from "../infra/session-sqlite-migration-artifact.js";
 import * as migrationRun from "../infra/session-sqlite-migration-manifest.js";
 import {
   createSessionSqliteMigrationRun,
   writeSessionSqliteMigrationManifest,
 } from "../infra/session-sqlite-migration-manifest.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import * as migrationArchive from "./doctor-session-sqlite-archive.js";
 import {
   claimSessionSqliteMigrationGithubIssue,
   createSessionSqliteMigrationFailureIssue,
@@ -127,7 +129,42 @@ describe("runDoctorSessionSqlite", () => {
       expect(restored.targets.flatMap((target) => target.issues)).toEqual([]);
       expect(fs.readFileSync(store.storePath)).toEqual(indexBytes);
       expect(fs.readFileSync(transcriptPath)).toEqual(transcriptBytes);
-      await runDoctorSessionSqlite({ env: store.env, store: store.storePath, mode: "import" });
+      const interruptedAfterRestore = readMigrationManifest(interruptedManifestPath);
+      const interruptedTranscriptArchive = expectDefined(
+        interruptedAfterRestore.targets[0]?.plannedMoves.find((move) => move.kind === "transcript"),
+        "interrupted transcript publication",
+      ).archivePath;
+      expect(interruptedAfterRestore.restore?.consumedArchives).toContain(
+        interruptedTranscriptArchive,
+      );
+      const scope = {
+        agentId: "main",
+        env: store.env,
+        sessionId: "session-1",
+        sessionKey: "agent:main:main",
+        storePath: store.storePath,
+      };
+      let ownerBeforeReplay: ReturnType<typeof loadExactSessionEntry>;
+      if (version === 3) {
+        await replaceSessionEntry(scope, {
+          ...expectDefined(loadExactSessionEntry(scope), "current retry owner").entry,
+          label: "newer retry owner",
+          lifecycleRunId: "newer-retry-run",
+          startedAt: 8_999,
+          status: "running",
+          updatedAt: 9_000,
+        });
+        ownerBeforeReplay = loadExactSessionEntry(scope);
+      }
+      const finalImport = await runDoctorSessionSqlite({
+        env: store.env,
+        store: store.storePath,
+        mode: "import",
+      });
+      expect(finalImport.targets.flatMap((target) => target.issues)).toEqual([]);
+      if (ownerBeforeReplay) {
+        expect(loadExactSessionEntry(scope)).toEqual(ownerBeforeReplay);
+      }
       closeOpenClawAgentDatabasesForTest();
       const completed = await retireSessionSqliteRecovery({
         env: store.env,
@@ -138,6 +175,75 @@ describe("runDoctorSessionSqlite", () => {
       expect(completed.totals.removedFiles).toBe(2);
     },
   );
+
+  it("retains a restored interrupted transcript when it would append without a receipt", async () => {
+    const store = createLegacyStore({
+      transcriptLines: [
+        '{"type":"session","id":"session-1","version":3}',
+        '{"type":"message","id":"one","parentId":null,"message":{"role":"user","content":"retained retry history"}}',
+      ],
+    });
+    let interruptedManifestPath: string | undefined;
+    const spy = vi
+      .spyOn(migrationRun, "recordCompletedMigrationMoves")
+      .mockImplementationOnce((run) => {
+        interruptedManifestPath = run?.manifestPath;
+        throw new Error("interrupted after transcript publication");
+      });
+    try {
+      await expect(importLegacyStore(store)).rejects.toThrow(
+        "interrupted after transcript publication",
+      );
+    } finally {
+      spy.mockRestore();
+    }
+    const retried = await importLegacyStore(store);
+    expect(retried.targets.flatMap((target) => target.issues)).toEqual([]);
+    const restored = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "restore",
+      store: store.storePath,
+    });
+    expect(restored.targets.flatMap((target) => target.issues)).toEqual([]);
+    fs.appendFileSync(
+      store.transcriptPath,
+      `${JSON.stringify({
+        type: "message",
+        id: "unverified-tail",
+        parentId: "one",
+        message: { role: "assistant", content: "must remain external" },
+      })}\n`,
+    );
+    const sourceBefore = fs.readFileSync(store.transcriptPath);
+    const scope = {
+      agentId: "main",
+      env: store.env,
+      sessionId: "session-1",
+      sessionKey: "agent:main:main",
+      storePath: store.storePath,
+    };
+    const ownerBefore = loadExactSessionEntry(scope);
+    const historyBefore = loadTranscriptEventsSync(scope);
+
+    const refused = await importLegacyStore(store);
+
+    expect(refused.targets[0]?.issues).toContainEqual(
+      expect.objectContaining({
+        code: "historical_transcript_deferred",
+        message: expect.stringContaining("not an ordered suffix"),
+      }),
+    );
+    expect(refused.totals.importedTranscriptEvents).toBe(0);
+    expect(loadExactSessionEntry(scope)).toEqual(ownerBefore);
+    expect(loadTranscriptEventsSync(scope)).toEqual(historyBefore);
+    expect(fs.existsSync(store.storePath)).toBe(true);
+    expect(fs.existsSync(store.transcriptPath)).toBe(true);
+    expect(fs.readFileSync(store.transcriptPath)).toEqual(sourceBefore);
+    const interrupted = readMigrationManifest(interruptedManifestPath);
+    expect(interrupted.targets[0]?.completedMoves.some((move) => move.kind === "transcript")).toBe(
+      false,
+    );
+  });
 
   it.each(["transcript", "legacy-store"] as const)(
     "retains unique %s bytes changed at archival identity capture",
@@ -156,32 +262,49 @@ describe("runDoctorSessionSqlite", () => {
             }) +
             "\n"
           : JSON.stringify({ "agent:main:unique": { sessionId: "unique", updatedAt: 9000 } });
-      const readIdentity = migrationArtifact.readMigrationArtifactIdentity;
-      let captures = 0;
       let injected = false;
-      const spy = vi
-        .spyOn(migrationArtifact, "readMigrationArtifactIdentity")
-        .mockImplementation((file, ...args) => {
-          if (file === source && ++captures === (kind === "transcript" ? 1 : 2)) {
-            // Transcript: replace just before identity capture. Index: replace after the verified
-            // identity is returned, before the publication owner plans the archive.
-            if (kind === "legacy-store") {
-              const identity = readIdentity(file, ...args);
-              fs.writeFileSync(file, replacement);
-              injected = true;
-              return identity;
-            }
-            fs.unlinkSync(file);
-            fs.writeFileSync(file, replacement);
-            injected = true;
-          }
-          return readIdentity(file, ...args);
-        });
+      const replaceSource = () => {
+        if (kind === "transcript") {
+          fs.unlinkSync(source);
+        }
+        fs.writeFileSync(source, replacement);
+        injected = true;
+      };
+      const planTranscript = migrationArchive.planImportedTranscriptArtifactsToArchive;
+      const planStore = migrationArchive.planSessionJsonlArchiveMove;
+      const planSpy =
+        kind === "transcript"
+          ? vi
+              .spyOn(migrationArchive, "planImportedTranscriptArtifactsToArchive")
+              .mockImplementation((...params) => {
+                const moves = planTranscript(...params);
+                if (
+                  !injected &&
+                  fs.realpathSync.native(params[2]) === fs.realpathSync.native(source)
+                ) {
+                  // Imported bytes are already verified when the publication owner plans the move.
+                  replaceSource();
+                }
+                return moves;
+              })
+          : vi
+              .spyOn(migrationArchive, "planSessionJsonlArchiveMove")
+              .mockImplementation((params) => {
+                const move = planStore(params);
+                if (
+                  !injected &&
+                  params.kind === kind &&
+                  fs.realpathSync.native(params.sourcePathRaw) === fs.realpathSync.native(source)
+                ) {
+                  replaceSource();
+                }
+                return move;
+              });
       let imported;
       try {
         imported = await importLegacyStore(store);
       } finally {
-        spy.mockRestore();
+        planSpy.mockRestore();
       }
       expect(injected).toBe(true);
       expect(fs.existsSync(source)).toBe(true);

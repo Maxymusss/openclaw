@@ -72,8 +72,8 @@ export async function reconcileSessionSqliteMigrationPublications(params: {
   env: NodeJS.ProcessEnv;
   trustedTargets: readonly SessionSqliteMigrationTargetInput[];
   sourcePath?: string;
-}): Promise<void> {
-  await reconcileRestorePublications(
+}): Promise<boolean> {
+  return await reconcileRestorePublications(
     loadRestoreManifestContexts(
       listSessionSqliteMigrationManifestPaths(params.env),
       params.trustedTargets,
@@ -87,7 +87,8 @@ async function reconcileRestorePublications(
   contexts: readonly RestoreManifestContext[],
   env: NodeJS.ProcessEnv,
   sourcePath?: string,
-): Promise<void> {
+): Promise<boolean> {
+  let reconciled = false;
   const stateDir = path.dirname(
     canonicalMigrationFilePath(path.join(resolveStateDir(env), "anchor")),
   );
@@ -141,9 +142,11 @@ async function reconcileRestorePublications(
             recordRestoredMigrationMove(context.manifest, context.manifestPath, move);
           },
         );
+        reconciled = true;
       }
     }
   }
+  return reconciled;
 }
 
 function recordRestoredMigrationMove(

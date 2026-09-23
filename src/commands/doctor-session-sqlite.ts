@@ -30,6 +30,7 @@ import { formatErrorMessage } from "../infra/errors.js";
 import {
   readMigrationArtifactIdentity,
   sameMigrationArtifact,
+  statMigrationPath,
   moveMigrationArtifact,
   type MigrationArtifactIdentity,
 } from "../infra/session-sqlite-migration-artifact.js";
@@ -164,6 +165,7 @@ export async function runDoctorSessionSqlite(
     ? collectHistoricalArchiveSources({ cfg, env })
     : undefined;
   const historicalArchives = historicalEvidence?.sources ?? new Map();
+  let completedStoreReplays = historicalEvidence?.completedStoreReplays;
   const targets = filterLegacySessionStoreTargets(
     candidates,
     options.mode,
@@ -214,11 +216,14 @@ export async function runDoctorSessionSqlite(
       },
     });
   }
-  if (options.mode === "import") {
-    await reconcileSessionSqliteMigrationPublications({
+  if (
+    options.mode === "import" &&
+    (await reconcileSessionSqliteMigrationPublications({
       env,
       trustedTargets: targets.map(createMigrationTargetInput),
-    });
+    }))
+  ) {
+    completedStoreReplays = collectHistoricalArchiveSources({ cfg, env }).completedStoreReplays;
   }
   const activeRun =
     options.mode === "import" && targets.length > 0
@@ -241,7 +246,7 @@ export async function runDoctorSessionSqlite(
         mode: options.mode,
         target,
         historicalArchives,
-        completedStoreReplays: historicalEvidence?.completedStoreReplays,
+        completedStoreReplays,
         referencedPaths: coverage?.referencedPaths,
         expectedIndexIdentity: coverage?.indexIdentities.get(
           canonicalMigrationFilePath(target.storePath),
@@ -696,12 +701,6 @@ async function inspectOrMigrateTarget(params: {
     candidate.agentId === migrationTarget.agentId &&
     candidate.storePath === migrationTarget.storePath &&
     candidate.sqlitePath === migrationTarget.sqlitePath;
-  const completedIndexReplay = params.completedStoreReplays?.find(
-    (candidate) =>
-      matchesTarget(candidate.target) &&
-      params.expectedIndexIdentity !== undefined &&
-      sameMigrationArtifact(candidate.sourceIdentity, params.expectedIndexIdentity),
-  );
   const allRecords =
     isSqliteStore || sourceConflicts.has(path.resolve(params.target.storePath))
       ? []
@@ -712,11 +711,40 @@ async function inspectOrMigrateTarget(params: {
             ? new Set(retainedImport.sources.map((source) => source.path))
             : undefined,
         });
+  const replayRecords = shouldFilterLegacySessionRecordsByTarget(params.target)
+    ? allRecords.filter((record) =>
+        isLegacySessionRecordOwnedByTarget(params.cfg, params.target, record.sessionKey),
+      )
+    : allRecords;
+  const replayTranscriptPaths = new Set(
+    replayRecords.flatMap((record) =>
+      record.transcriptPath ? [canonicalMigrationFilePath(record.transcriptPath)] : [],
+    ),
+  );
+  const verifiedCoverage = (candidate: CompletedLegacyStoreReplay) =>
+    [...replayTranscriptPaths].filter((source) =>
+      candidate.verifiedTranscriptIdentities.has(source),
+    ).length;
+  const completedIndexReplay = params.completedStoreReplays
+    ?.filter(
+      (candidate) =>
+        matchesTarget(candidate.target) &&
+        params.expectedIndexIdentity !== undefined &&
+        sameMigrationArtifact(candidate.sourceIdentity, params.expectedIndexIdentity),
+    )
+    .reduce<CompletedLegacyStoreReplay | undefined>(
+      (selected, candidate) =>
+        !selected || verifiedCoverage(candidate) > verifiedCoverage(selected)
+          ? candidate
+          : selected,
+      undefined,
+    );
   if (completedIndexReplay) {
     for (const record of allRecords) {
       record.completedIndexReplay = {
         indexIdentity: completedIndexReplay.sourceIdentity,
         verifiedTranscriptIdentities: completedIndexReplay.verifiedTranscriptIdentities,
+        verifyOnlyTranscriptArchives: completedIndexReplay.verifyOnlyTranscriptArchives,
       };
     }
   }
@@ -1232,7 +1260,11 @@ async function archiveLegacyArtifacts(
   const reservedArchivePaths = new Set<string>();
   const planned = new Map<
     string,
-    { move: SessionSqliteMigrationMove; owners: Map<LegacyArchiveTarget, string | undefined> }
+    {
+      move: SessionSqliteMigrationMove;
+      owners: Map<LegacyArchiveTarget, string | undefined>;
+      published: boolean;
+    }
   >();
   const recordFailure = (
     owner: LegacyArchiveTarget,
@@ -1247,6 +1279,53 @@ async function archiveLegacyArtifacts(
   };
   for (const [source, refs] of references) {
     const first = refs[0]!;
+    const adopted = refs.flatMap(({ owner, record }) => {
+      const move = record.completedIndexReplay?.verifyOnlyTranscriptArchives.get(source);
+      return move &&
+        record.completedIndexReplay?.outcome === "unchanged" &&
+        record.recovery?.complete &&
+        owner.validated &&
+        selectedStorePaths.has(owner.target.storePath) &&
+        countBlockingSessionSqliteIssues(owner.report) === 0
+        ? [{ move, owner, sessionKey: record.sessionKey }]
+        : [];
+    });
+    if (adopted.length > 0) {
+      try {
+        if (statMigrationPath(source) !== undefined) {
+          throw new Error("Verified transcript source reappeared before replay settlement");
+        }
+      } catch (error) {
+        for (const owner of new Set(refs.map((ref) => ref.owner))) {
+          recordFailure(owner, source, error);
+        }
+        continue;
+      }
+      const move = adopted[0]?.move;
+      if (
+        move?.artifact &&
+        adopted.length === refs.length &&
+        adopted.every(
+          (item) =>
+            item.move.archivePath === move.archivePath &&
+            sameMigrationArtifact(item.move.artifact!.identity, move.artifact!.identity),
+        )
+      ) {
+        planned.set(source, {
+          move: {
+            ...move,
+            artifact: { ...move.artifact, dependencies: [] },
+          },
+          owners: new Map(adopted.map(({ owner, sessionKey }) => [owner, sessionKey] as const)),
+          published: true,
+        });
+        continue;
+      }
+      for (const owner of new Set(refs.map((ref) => ref.owner))) {
+        recordFailure(owner, source, "Verified replay archive ownership is ambiguous");
+      }
+      continue;
+    }
     if (!fs.existsSync(source)) {
       // Only initially missing sources may be skipped. Losing an admitted original must
       // protect every referencing index and its remaining recovery dependencies.
@@ -1349,6 +1428,7 @@ async function archiveLegacyArtifacts(
           planned.set(move.sourcePath, {
             move,
             owners: new Map(refs.map((ref) => [ref.owner, ref.record.sessionKey])),
+            published: false,
           });
         }
       }
@@ -1396,7 +1476,11 @@ async function archiveLegacyArtifacts(
           disposal: { state: "retained" },
         };
         reservedArchivePaths.add(move.archivePath);
-        planned.set(source, { move, owners: new Map([[owner, undefined]]) });
+        planned.set(source, {
+          move,
+          owners: new Map([[owner, undefined]]),
+          published: false,
+        });
       } catch (error) {
         recordFailure(owner, source, error, true);
       }
@@ -1421,23 +1505,35 @@ async function archiveLegacyArtifacts(
     recordPlannedMigrationMoves(activeRun, owner.target, movesForOwner(owner));
   }
   const completed = new Set<string>();
-  for (const { move, owners: referencingOwners } of planned.values()) {
+  for (const { move, owners: referencingOwners, published } of planned.values()) {
     try {
-      for (const owner of referencingOwners.keys()) {
-        assertSafeSessionSqliteMigrationMove(move, owner.target);
+      if (published) {
+        if (
+          statMigrationPath(move.sourcePath) !== undefined ||
+          !sameMigrationArtifact(
+            readMigrationArtifactIdentity(move.archivePath),
+            move.artifact!.identity,
+          )
+        ) {
+          throw new Error("Verified transcript archive changed before replay settlement");
+        }
+      } else {
+        for (const owner of referencingOwners.keys()) {
+          assertSafeSessionSqliteMigrationMove(move, owner.target);
+        }
+        assertCurrent?.();
+        await moveMigrationArtifact(
+          move.sourcePath,
+          move.archivePath,
+          move.artifact!.identity,
+          assertCurrent
+            ? () => {
+                assertCurrent();
+              }
+            : undefined,
+          publishSourceRemoval,
+        );
       }
-      assertCurrent?.();
-      await moveMigrationArtifact(
-        move.sourcePath,
-        move.archivePath,
-        move.artifact!.identity,
-        assertCurrent
-          ? () => {
-              assertCurrent();
-            }
-          : undefined,
-        publishSourceRemoval,
-      );
       assertCurrent?.();
       completed.add(move.sourcePath);
       for (const { report } of referencingOwners.keys()) {

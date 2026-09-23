@@ -271,6 +271,60 @@ describe("completed legacy index replay", () => {
     },
   );
 
+  it("settles a changed recognized prefix that is already canonical", async () => {
+    const lines = transcriptLines();
+    const completed = await prepareCompletedImport(lines);
+    await replaceSessionEntry(completed.scope, {
+      ...expectDefined(loadExactSessionEntry(completed.scope), "current entry").entry,
+      label: "current prefix owner",
+      updatedAt: 9_000,
+    });
+    const entryBefore = loadExactSessionEntry(completed.scope);
+    const contextBefore = SessionManager.open(completed.scope).buildSessionContext();
+    const rowsBefore = readCompletedTranscriptRows(completed);
+    const database = openCompletedDatabase(completed);
+    const windowBefore = database.db
+      .prepare(
+        "SELECT session_key, created_at, updated_at FROM session_windows WHERE session_id = ?",
+      )
+      .get(completed.scope.sessionId);
+    fs.copyFileSync(completed.indexMove.archivePath, completed.indexMove.sourcePath);
+    const prefixBytes = `${lines.slice(0, 2).join("\n")}\n`;
+    fs.writeFileSync(completed.transcriptMove.sourcePath, prefixBytes, { mode: 0o600 });
+
+    const evidence = sessionSqliteDiscovery.collectHistoricalArchiveSources({
+      cfg: {},
+      env: completed.store.env,
+    });
+    const replay = expectDefined(evidence.completedStoreReplays[0], "completed index replay");
+    expect(replay.verifiedTranscriptIdentities.size).toBe(0);
+
+    const replayed = await runDoctorSessionSqlite({
+      env: completed.store.env,
+      mode: "import",
+      store: completed.store.storePath,
+    });
+
+    expect(replayed.targets[0]?.issues).toEqual([]);
+    expect(replayed.totals).toMatchObject({ importedEntries: 0, importedTranscriptEvents: 0 });
+    expect(loadExactSessionEntry(completed.scope)).toEqual(entryBefore);
+    expect(SessionManager.open(completed.scope).buildSessionContext()).toEqual(contextBefore);
+    expect(readCompletedTranscriptRows(completed)).toEqual(rowsBefore);
+    expect(
+      openCompletedDatabase(completed)
+        .db.prepare(
+          "SELECT session_key, created_at, updated_at FROM session_windows WHERE session_id = ?",
+        )
+        .get(completed.scope.sessionId),
+    ).toEqual(windowBefore);
+    const fresh = readMigrationManifest(replayed.migrationRun?.manifestPath);
+    const freshTranscript = expectDefined(
+      fresh.targets[0]?.completedMoves.find((move) => move.kind === "transcript"),
+      "fresh transcript receipt",
+    );
+    expect(fs.readFileSync(freshTranscript.archivePath, "utf8")).toBe(prefixBytes);
+  });
+
   it("settles restored legacy media against canonical history on repeated passes", async () => {
     const completed = await prepareCompletedImport([
       JSON.stringify({ type: "session", id: "session-1", version: 3, cwd: "/fixture" }),
@@ -839,7 +893,7 @@ describe("completed legacy index replay", () => {
     expect(replayed.targets[0]?.issues).toContainEqual(
       expect.objectContaining({
         code: "historical_transcript_deferred",
-        message: expect.stringContaining("no matching completed import receipt"),
+        message: expect.stringContaining("not an ordered suffix"),
       }),
     );
     expect(replayed.totals.importedTranscriptEvents).toBe(0);
@@ -884,7 +938,7 @@ describe("completed legacy index replay", () => {
     expect(replayed.targets[0]?.issues).toContainEqual(
       expect.objectContaining({
         code: "historical_transcript_deferred",
-        message: expect.stringContaining("no matching completed import receipt"),
+        message: expect.stringContaining("could not be fully verified"),
       }),
     );
     expect(replayed.totals.importedTranscriptEvents).toBe(0);
@@ -941,7 +995,7 @@ describe("completed legacy index replay", () => {
     expect(replayed.targets[0]?.issues).toContainEqual(
       expect.objectContaining({
         code: "historical_transcript_deferred",
-        message: expect.stringContaining("no matching completed import receipt"),
+        message: expect.stringContaining("could not be fully verified"),
       }),
     );
     expect(replayed.totals.importedTranscriptEvents).toBe(0);

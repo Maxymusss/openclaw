@@ -71,9 +71,11 @@ export async function importLegacySessionRecords(
       string,
       {
         fingerprint: MigrationArtifactFingerprint;
-        identity: MigrationArtifactIdentity;
+        identity?: MigrationArtifactIdentity;
         key: string;
+        path: string;
         result?: ReturnType<typeof countTranscriptEventsForPath>;
+        verifyOnly: boolean;
       }
     >();
     const pending = records.slice(offset, offset + SESSION_IMPORT_BATCH_SIZE).flatMap((record) => {
@@ -83,8 +85,18 @@ export async function importLegacySessionRecords(
               canonicalMigrationFilePath(record.transcriptPath),
             )
           : undefined;
+      const verifyOnlyTranscriptArchive =
+        record.completedIndexReplay && record.transcriptPath
+          ? record.completedIndexReplay.verifyOnlyTranscriptArchives.get(
+              canonicalMigrationFilePath(record.transcriptPath),
+            )
+          : undefined;
+      const completedReplayPath =
+        completedTranscriptIdentity || !verifyOnlyTranscriptArchive
+          ? record.transcriptPath
+          : verifyOnlyTranscriptArchive.archivePath;
       const completedReplaySourceKey =
-        completedTranscriptIdentity && record.transcriptPath
+        record.completedIndexReplay && record.transcriptPath
           ? `${record.entry.sessionId}\0${canonicalMigrationFilePath(record.transcriptPath)}`
           : undefined;
       let completedReplaySource = completedReplaySourceKey
@@ -93,23 +105,24 @@ export async function importLegacySessionRecords(
       const readCompletedReplaySource =
         completedReplaySourceKey !== undefined && completedReplaySource === undefined;
       if (
-        completedTranscriptIdentity &&
+        record.completedIndexReplay &&
         record.transcriptPath &&
+        completedReplayPath &&
         completedReplaySourceKey &&
         !completedReplaySource
       ) {
         try {
-          const fingerprint = readMigrationArtifactFingerprint(record.transcriptPath);
-          if (
-            sameMigrationArtifact(
-              readMigrationArtifactIdentity(record.transcriptPath, 1n, fingerprint),
-              completedTranscriptIdentity,
-            )
-          ) {
+          const fingerprint = readMigrationArtifactFingerprint(completedReplayPath);
+          const identity = readMigrationArtifactIdentity(completedReplayPath, 1n, fingerprint);
+          const expectedIdentity =
+            completedTranscriptIdentity ?? verifyOnlyTranscriptArchive?.artifact?.identity;
+          if (!expectedIdentity || sameMigrationArtifact(identity, expectedIdentity)) {
             completedReplaySource = {
               fingerprint,
-              identity: completedTranscriptIdentity,
+              ...(expectedIdentity ? { identity: expectedIdentity } : {}),
               key: completedReplaySourceKey,
+              path: completedReplayPath,
+              verifyOnly: completedTranscriptIdentity === undefined,
             };
             completedReplaySources.set(completedReplaySourceKey, completedReplaySource);
           }
@@ -120,9 +133,10 @@ export async function importLegacySessionRecords(
       if (
         record.completedIndexReplay &&
         record.transcriptPath &&
-        (!completedTranscriptIdentity ||
-          !completedReplaySource ||
-          !sameMigrationArtifact(completedReplaySource.identity, completedTranscriptIdentity))
+        (!completedReplaySource ||
+          (completedTranscriptIdentity !== undefined &&
+            (!completedReplaySource.identity ||
+              !sameMigrationArtifact(completedReplaySource.identity, completedTranscriptIdentity))))
       ) {
         record.completedIndexReplay.outcome = "unverified-source";
         replayRetainedPaths.add(target.storePath);
@@ -178,7 +192,9 @@ export async function importLegacySessionRecords(
           const reason =
             result.completedIndexReplay === "history-not-appendable"
               ? "is not an ordered suffix of current canonical history"
-              : `belongs to a ${result.completedIndexReplay.replaceAll("-", " ")} canonical session`;
+              : result.completedIndexReplay === "unverified-source"
+                ? "could not be fully verified"
+                : `belongs to a ${result.completedIndexReplay.replaceAll("-", " ")} canonical session`;
           report.issues.push({
             code: "historical_transcript_deferred",
             sessionKey: record.sessionKey,
@@ -210,9 +226,11 @@ function prepareLegacySessionImport(
   existingSnapshot: ReadOnlySqliteValidationSnapshot | undefined,
   completedReplaySource?: {
     fingerprint: MigrationArtifactFingerprint;
-    identity: MigrationArtifactIdentity;
+    identity?: MigrationArtifactIdentity;
     key: string;
+    path: string;
     result?: ReturnType<typeof countTranscriptEventsForPath>;
+    verifyOnly: boolean;
   },
   readCompletedReplaySource = false,
 ) {
@@ -244,9 +262,12 @@ function prepareLegacySessionImport(
     (shouldReadTranscript && record.transcriptPath && fs.existsSync(record.transcriptPath)
       ? readTranscriptFingerprint(record.transcriptPath)
       : undefined);
-  record.sourceFingerprint = transcriptFingerprint;
+  if (!completedReplaySource || completedReplaySource.path === record.transcriptPath) {
+    record.sourceFingerprint = transcriptFingerprint;
+  }
   const result =
-    completedReplaySource?.result ?? countTranscriptEventsForPath(record.transcriptPath);
+    completedReplaySource?.result ??
+    countTranscriptEventsForPath(completedReplaySource?.path ?? record.transcriptPath);
   if (completedReplaySource && !completedReplaySource.result) {
     completedReplaySource.result = result;
   }
@@ -255,11 +276,11 @@ function prepareLegacySessionImport(
     ? normalizePersistedSessionEntryShape(record.entry, { sessionKey: record.sessionKey })
     : undefined;
   const params = {
-    ...(readCompletedReplaySource && completedReplaySource && record.transcriptPath
+    ...(readCompletedReplaySource && completedReplaySource
       ? {
           beforePersistentApply: () => {
             assertMigrationArtifactFingerprint(
-              record.transcriptPath!,
+              completedReplaySource.path,
               completedReplaySource.fingerprint,
             );
           },
@@ -267,6 +288,7 @@ function prepareLegacySessionImport(
       : {}),
     historicalOnly: Boolean(record.historical),
     completedIndexReplay: Boolean(record.completedIndexReplay),
+    completedReplayVerifyOnly: completedReplaySource?.verifyOnly === true,
     ...(completedReplaySource ? { completedReplaySourceKey: completedReplaySource.key } : {}),
     allowMalformedRowRepair: true,
     repairLegacyTranscript: true,
@@ -318,7 +340,7 @@ function prepareLegacySessionImport(
       ...(shouldReadTranscript && record.transcriptPath && transcriptFingerprint
         ? {
             readTranscriptEvents: createTranscriptEventReader(
-              record.transcriptPath,
+              completedReplaySource?.path ?? record.transcriptPath,
               record.entry.sessionId,
               result.status === "malformed",
               transcriptFingerprint,

@@ -3,10 +3,26 @@ import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import type { TranscriptEvent } from "../config/sessions/session-accessor.sqlite-contract.js";
+import { loadExactSessionEntry } from "../config/sessions/session-accessor.sqlite-entry.js";
+import {
+  readTranscriptEventId,
+  readTranscriptEventRows,
+} from "../config/sessions/session-accessor.sqlite-read.js";
+import {
+  prepareSqliteTranscriptSuffixMutation,
+  replaceSqliteTranscriptSuffixInTransaction,
+} from "../config/sessions/session-accessor.sqlite-transcript-suffix.js";
 import * as directoryDurability from "../infra/directory-durability.js";
 import * as migrationArtifact from "../infra/session-sqlite-migration-artifact.js";
+import * as migrationRun from "../infra/session-sqlite-migration-manifest.js";
 import { ExitError } from "../runtime.js";
-import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
+} from "../state/openclaw-agent-db.js";
 import { inspectSessionSqliteRecovery } from "./doctor-session-sqlite-recovery-inventory.js";
 import { retireSessionSqliteRecovery } from "./doctor-session-sqlite-retirement.js";
 import { runDoctorSessionSqlite } from "./doctor-session-sqlite.js";
@@ -71,6 +87,33 @@ describe("runDoctorSessionSqlite", () => {
       expect(fs.readFileSync(source)).toEqual(original);
       expect(fs.statSync(source).nlink).toBe(2);
       expect(fs.statSync(source).ino).toBe(fs.statSync(move.archivePath).ino);
+      const scope = {
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        storePath: expectDefined(interrupted.targets[0]?.sqlitePath, "SQLite target"),
+      };
+      if (kind === "legacy-store") {
+        await replaceSessionEntry(scope, {
+          ...expectDefined(loadExactSessionEntry(scope), "current owner").entry,
+          label: "advanced current owner",
+          updatedAt: 9_000,
+        });
+      }
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: store.env });
+      const ownerBefore = kind === "legacy-store" ? loadExactSessionEntry(scope) : undefined;
+      const rowsBefore =
+        kind === "legacy-store" ? readTranscriptEventRows(database, "session-1") : undefined;
+      const windowBefore =
+        kind === "legacy-store"
+          ? database.db
+              .prepare(
+                "SELECT session_key, created_at, updated_at FROM session_windows WHERE session_id = ?",
+              )
+              .get("session-1")
+          : undefined;
+      const transcriptArchive = readMigrationManifest(manifestPath).targets[0]!.completedMoves.find(
+        (item) => item.kind === "transcript",
+      )?.archivePath;
       if (entry === "public") {
         const runtime = {
           log: vi.fn(),
@@ -103,6 +146,22 @@ describe("runDoctorSessionSqlite", () => {
         expect(fs.readFileSync(source)).toEqual(original);
         const reimport = await importLegacyStore(store);
         expect(reimport.targets[0]?.issues).toEqual([]);
+      }
+      if (kind === "legacy-store") {
+        const currentDatabase = openOpenClawAgentDatabase({ agentId: "main", env: store.env });
+        expect(loadExactSessionEntry(scope)).toEqual(ownerBefore);
+        expect(readTranscriptEventRows(currentDatabase, "session-1")).toEqual(rowsBefore);
+        expect(
+          currentDatabase.db
+            .prepare(
+              "SELECT session_key, created_at, updated_at FROM session_windows WHERE session_id = ?",
+            )
+            .get("session-1"),
+        ).toEqual(windowBefore);
+        expect(fs.existsSync(store.transcriptPath)).toBe(false);
+        if (mode === "import") {
+          expect(transcriptArchive && fs.existsSync(transcriptArchive)).toBe(true);
+        }
       }
       closeOpenClawAgentDatabasesForTest();
       const cleanup = await retireSessionSqliteRecovery({
@@ -148,6 +207,324 @@ describe("runDoctorSessionSqlite", () => {
         expect(fs.readFileSync(move.sourcePath)).toEqual(before);
         expect(fs.readFileSync(move.archivePath)).toEqual(before);
         expect(fs.statSync(move.sourcePath).nlink).toBe(fault === "third-link" ? 3 : 2);
+      }
+    },
+  );
+
+  it("reuses one exact transcript archive across repeated index publication retries", async () => {
+    const { store } = await createVerifiedRecoveryStore();
+    await runDoctorSessionSqlite({ env: store.env, mode: "restore", store: store.storePath });
+    const interruptIndexPublication = async () => {
+      const unlink = fs.unlinkSync;
+      const spy = vi.spyOn(fs, "unlinkSync").mockImplementation((file) => {
+        if (file === store.storePath) {
+          throw new Error("injected repeated index publication interruption");
+        }
+        return unlink(file);
+      });
+      try {
+        const report = await importLegacyStore(store);
+        expect(report.targets[0]?.issues).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ code: "legacy_store_archive_failed" }),
+          ]),
+        );
+      } finally {
+        spy.mockRestore();
+      }
+    };
+
+    await interruptIndexPublication();
+    await interruptIndexPublication();
+    const completed = await importLegacyStore(store);
+    expect(completed.targets[0]?.issues).toEqual([]);
+    const cleanup = await retireSessionSqliteRecovery({
+      env: store.env,
+      preview: inspectSessionSqliteRecovery({ cfg: {}, env: store.env }),
+      readConfig: async () => ({}),
+      confirm: async () => true,
+    });
+    expect(cleanup.status).toBe("complete");
+    expect(cleanup.totals.removedFiles).toBe(2);
+  });
+
+  it("reuses completed authority after an interrupted archive receipt", async () => {
+    const { store } = await createVerifiedRecoveryStore();
+    await runDoctorSessionSqlite({ env: store.env, mode: "restore", store: store.storePath });
+    const unlink = fs.unlinkSync;
+    const publicationSpy = vi.spyOn(fs, "unlinkSync").mockImplementation((file) => {
+      if (file === store.storePath) {
+        throw new Error("injected index publication interruption");
+      }
+      return unlink(file);
+    });
+    let first;
+    try {
+      first = await importLegacyStore(store);
+    } finally {
+      publicationSpy.mockRestore();
+    }
+    const transcriptArchive = expectDefined(
+      readMigrationManifest(first.migrationRun?.manifestPath).targets[0]?.completedMoves.find(
+        (move) => move.kind === "transcript",
+      )?.archivePath,
+      "completed transcript archive",
+    );
+    const completed = migrationRun.recordCompletedMigrationMoves;
+    let injected = false;
+    const receiptSpy = vi
+      .spyOn(migrationRun, "recordCompletedMigrationMoves")
+      .mockImplementation((activeRun, target, moves) => {
+        if (!injected && moves.some((move) => move.archivePath === transcriptArchive)) {
+          injected = true;
+          throw new Error("injected interruption before archive receipt");
+        }
+        return completed(activeRun, target, moves);
+      });
+    try {
+      await expect(importLegacyStore(store)).rejects.toThrow(
+        "injected interruption before archive receipt",
+      );
+    } finally {
+      receiptSpy.mockRestore();
+    }
+    expect(injected).toBe(true);
+    const retried = await importLegacyStore(store);
+    expect(retried.targets[0]?.issues).toEqual([]);
+  });
+
+  it("uses a fresh settled receipt to append a missing canonical tail", async () => {
+    const { store } = await createVerifiedRecoveryStore();
+    await runDoctorSessionSqlite({ env: store.env, mode: "restore", store: store.storePath });
+    const unlink = fs.unlinkSync;
+    const publicationSpy = vi.spyOn(fs, "unlinkSync").mockImplementation((file) => {
+      if (file === store.storePath) {
+        throw new Error("injected index publication interruption");
+      }
+      return unlink(file);
+    });
+    try {
+      await importLegacyStore(store);
+    } finally {
+      publicationSpy.mockRestore();
+    }
+    const settled = await importLegacyStore(store);
+    expect(settled.targets[0]?.issues).toEqual([]);
+    const restored = await runDoctorSessionSqlite({
+      env: store.env,
+      mode: "restore",
+      store: store.storePath,
+    });
+    expect(restored.targets[0]?.issues).toEqual([]);
+    const scope = {
+      agentId: "main",
+      env: store.env,
+      sessionId: "session-1",
+      sessionKey: "agent:main:main",
+      storePath: expectDefined(settled.targets[0]?.sqlitePath, "SQLite target"),
+    };
+    const database = openOpenClawAgentDatabase({ agentId: "main", env: store.env });
+    const ownerBefore = loadExactSessionEntry(scope);
+    const events = readTranscriptEventRows(database, scope.sessionId).map(
+      (row) => JSON.parse(row.eventJson) as TranscriptEvent,
+    );
+    const next = events.filter((event) => readTranscriptEventId(event) !== "one");
+    expect(next).toHaveLength(events.length - 1);
+    const plan = prepareSqliteTranscriptSuffixMutation(database, scope, events, next);
+    runOpenClawAgentWriteTransaction((transaction) => {
+      replaceSqliteTranscriptSuffixInTransaction(transaction, scope, plan);
+    }, scope);
+
+    const replayed = await importLegacyStore(store);
+    expect(replayed.targets[0]?.issues).toEqual([]);
+    expect(replayed.totals.importedEntries).toBe(0);
+    expect(replayed.totals.importedTranscriptEvents).toBe(1);
+    expect(loadExactSessionEntry(scope)).toEqual(ownerBefore);
+    expect(
+      readTranscriptEventRows(
+        openOpenClawAgentDatabase({ agentId: "main", env: store.env }),
+        scope.sessionId,
+      ).map((row) => JSON.parse(row.eventJson) as TranscriptEvent),
+    ).toEqual(events);
+  });
+
+  it("retains a transcript source that reappears after archive admission", async () => {
+    const { store } = await createVerifiedRecoveryStore();
+    await runDoctorSessionSqlite({ env: store.env, mode: "restore", store: store.storePath });
+    const unlink = fs.unlinkSync;
+    const spy = vi.spyOn(fs, "unlinkSync").mockImplementation((file) => {
+      if (file === store.storePath) {
+        throw new Error("injected index publication interruption");
+      }
+      return unlink(file);
+    });
+    let interrupted;
+    try {
+      interrupted = await importLegacyStore(store);
+    } finally {
+      spy.mockRestore();
+    }
+    const transcriptMove = expectDefined(
+      readMigrationManifest(interrupted.migrationRun?.manifestPath).targets[0]?.completedMoves.find(
+        (move) => move.kind === "transcript",
+      ),
+      "completed transcript archive",
+    );
+    const archived = fs.readFileSync(transcriptMove.archivePath);
+    const indexBytes = fs.readFileSync(store.storePath);
+    const scope = {
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      storePath: expectDefined(interrupted.targets[0]?.sqlitePath, "SQLite target"),
+    };
+    const ownerBefore = loadExactSessionEntry(scope);
+    const database = openOpenClawAgentDatabase({ agentId: "main", env: store.env });
+    const rowsBefore = readTranscriptEventRows(database, "session-1");
+    const reappeared = Buffer.from("new unverified source\n");
+    const recordPlanned = migrationRun.recordPlannedMigrationMoves;
+    let appeared = false;
+    const plannedSpy = vi
+      .spyOn(migrationRun, "recordPlannedMigrationMoves")
+      .mockImplementation((activeRun, target, moves) => {
+        recordPlanned(activeRun, target, moves);
+        if (!appeared && moves.some((move) => move.archivePath === transcriptMove.archivePath)) {
+          appeared = true;
+          fs.writeFileSync(store.transcriptPath, reappeared, { mode: 0o600 });
+        }
+      });
+    let refused;
+    try {
+      refused = await importLegacyStore(store);
+    } finally {
+      plannedSpy.mockRestore();
+    }
+    expect(appeared).toBe(true);
+    expect(refused.targets[0]?.issues).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: "transcript_archive_failed",
+          message: expect.stringContaining("changed before replay settlement"),
+        }),
+      ]),
+    );
+    expect(fs.readFileSync(store.transcriptPath)).toEqual(reappeared);
+    expect(fs.readFileSync(transcriptMove.archivePath)).toEqual(archived);
+    expect(fs.readFileSync(store.storePath)).toEqual(indexBytes);
+    expect(loadExactSessionEntry(scope)).toEqual(ownerBefore);
+    expect(
+      readTranscriptEventRows(
+        openOpenClawAgentDatabase({ agentId: "main", env: store.env }),
+        "session-1",
+      ),
+    ).toEqual(rowsBefore);
+  });
+
+  it.each(["changed-archive", "competing-archive", "missing-canonical-tail"] as const)(
+    "retains an interrupted replay with %s",
+    async (fault) => {
+      const { store } = await createVerifiedRecoveryStore();
+      await runDoctorSessionSqlite({ env: store.env, mode: "restore", store: store.storePath });
+      const unlink = fs.unlinkSync;
+      const spy = vi.spyOn(fs, "unlinkSync").mockImplementation((file) => {
+        if (file === store.storePath) {
+          throw new Error("injected index publication interruption");
+        }
+        return unlink(file);
+      });
+      let interrupted;
+      try {
+        interrupted = await importLegacyStore(store);
+      } finally {
+        spy.mockRestore();
+      }
+      const manifestPath = requireMigrationManifestPath(interrupted.migrationRun?.manifestPath);
+      const manifest = readMigrationManifest(manifestPath);
+      const transcriptMove = expectDefined(
+        manifest.targets[0]?.completedMoves.find((move) => move.kind === "transcript"),
+        "completed transcript archive",
+      );
+      const scope = {
+        agentId: "main",
+        env: store.env,
+        sessionId: "session-1",
+        sessionKey: "agent:main:main",
+        storePath: expectDefined(interrupted.targets[0]?.sqlitePath, "SQLite target"),
+      };
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: store.env });
+      let competingArchive: string | undefined;
+      if (fault === "changed-archive") {
+        fs.appendFileSync(transcriptMove.archivePath, '{"type":"event","id":"changed"}\n');
+      } else if (fault === "competing-archive") {
+        competingArchive = `${transcriptMove.archivePath}.competing`;
+        fs.copyFileSync(transcriptMove.archivePath, competingArchive);
+        const competingMove = {
+          ...transcriptMove,
+          archivePath: competingArchive,
+          artifact: {
+            ...expectDefined(transcriptMove.artifact, "transcript artifact"),
+            identity: migrationArtifact.readMigrationArtifactIdentity(competingArchive),
+          },
+        };
+        const target = expectDefined(manifest.targets[0], "migration target");
+        const competingManifest = {
+          ...manifest,
+          runId: `${manifest.runId}-competing`,
+          targets: [
+            {
+              ...target,
+              completedMoves: [competingMove],
+              plannedMoves: [competingMove],
+            },
+          ],
+        };
+        fs.writeFileSync(
+          path.join(path.dirname(manifestPath), `${competingManifest.runId}.json`),
+          `${JSON.stringify(competingManifest, null, 2)}\n`,
+          { mode: 0o600 },
+        );
+      } else {
+        const events = readTranscriptEventRows(database, scope.sessionId).map(
+          (row) => JSON.parse(row.eventJson) as TranscriptEvent,
+        );
+        const next = events.filter((event) => readTranscriptEventId(event) !== "one");
+        expect(next).toHaveLength(events.length - 1);
+        const plan = prepareSqliteTranscriptSuffixMutation(database, scope, events, next);
+        runOpenClawAgentWriteTransaction((transaction) => {
+          replaceSqliteTranscriptSuffixInTransaction(transaction, scope, plan);
+        }, scope);
+      }
+      const archiveBytes = fs.readFileSync(transcriptMove.archivePath);
+      const competingBytes = competingArchive ? fs.readFileSync(competingArchive) : undefined;
+      const indexBytes = fs.readFileSync(store.storePath);
+      const ownerBefore = loadExactSessionEntry(scope);
+      const rowsBefore = readTranscriptEventRows(database, scope.sessionId);
+      const windowBefore = database.db
+        .prepare(
+          "SELECT session_key, created_at, updated_at FROM session_windows WHERE session_id = ?",
+        )
+        .get(scope.sessionId);
+
+      const refused = await importLegacyStore(store);
+      expect(refused.targets[0]?.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ code: "historical_transcript_deferred" }),
+        ]),
+      );
+      const currentDatabase = openOpenClawAgentDatabase({ agentId: "main", env: store.env });
+      expect(loadExactSessionEntry(scope)).toEqual(ownerBefore);
+      expect(readTranscriptEventRows(currentDatabase, scope.sessionId)).toEqual(rowsBefore);
+      expect(
+        currentDatabase.db
+          .prepare(
+            "SELECT session_key, created_at, updated_at FROM session_windows WHERE session_id = ?",
+          )
+          .get(scope.sessionId),
+      ).toEqual(windowBefore);
+      expect(fs.readFileSync(store.storePath)).toEqual(indexBytes);
+      expect(fs.existsSync(store.transcriptPath)).toBe(false);
+      expect(fs.readFileSync(transcriptMove.archivePath)).toEqual(archiveBytes);
+      if (competingArchive && competingBytes) {
+        expect(fs.readFileSync(competingArchive)).toEqual(competingBytes);
       }
     },
   );

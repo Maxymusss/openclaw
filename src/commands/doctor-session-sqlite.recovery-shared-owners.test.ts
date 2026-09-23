@@ -168,6 +168,81 @@ describe("runDoctorSessionSqlite", () => {
     },
   );
 
+  it.each([false, true])(
+    "replays one failed transcript archive for each shared target (conflicting claim=%s)",
+    async (conflictingClaim) => {
+      const { cfg, env, indexes } = createSharedRecoveryFixture({
+        separateIndexes: true,
+        reverse: false,
+      });
+      const imported = await runDoctorSessionSqlite({ cfg, env, allAgents: true, mode: "import" });
+      expect(imported.targets.flatMap((target) => target.issues)).toEqual([]);
+      const restored = await runDoctorSessionSqlite({ cfg, env, allAgents: true, mode: "restore" });
+      expect(restored.targets.flatMap((target) => target.issues)).toEqual([]);
+      const owners = new Map<string, ReturnType<typeof loadExactSessionEntry>>();
+      for (const owner of ["main", "work"]) {
+        const scope = {
+          agentId: owner,
+          env,
+          sessionKey: `agent:${owner}:main`,
+          storePath: indexes.find((index) => index.endsWith(`${owner}.json`))!,
+        };
+        owners.set(owner, loadExactSessionEntry(scope));
+      }
+      const unlink = fs.unlinkSync;
+      const spy = vi.spyOn(fs, "unlinkSync").mockImplementation((file) => {
+        if (indexes.includes(String(file))) {
+          throw new Error("injected shared index publication interruption");
+        }
+        return unlink(file);
+      });
+      let interrupted;
+      try {
+        interrupted = await runDoctorSessionSqlite({ cfg, env, allAgents: true, mode: "import" });
+      } finally {
+        spy.mockRestore();
+      }
+      expect(
+        interrupted.targets.flatMap((target) => target.issues.map((issue) => issue.code)),
+      ).toEqual(expect.arrayContaining(["legacy_store_archive_failed"]));
+
+      if (conflictingClaim) {
+        const manifestPath = interrupted.migrationRun?.manifestPath;
+        const manifest = readMigrationManifest(manifestPath);
+        const target = manifest.targets.find((candidate) => candidate.agentId === "work")!;
+        for (const move of [...target.plannedMoves, ...target.completedMoves]) {
+          if (move.kind === "transcript" && move.artifact) {
+            move.artifact.identity.sha256 = "0".repeat(64);
+          }
+        }
+        fs.writeFileSync(manifestPath!, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600 });
+      }
+      const retried = await runDoctorSessionSqlite({ cfg, env, allAgents: true, mode: "import" });
+      if (conflictingClaim) {
+        for (const index of indexes) {
+          expect(
+            retried.targets
+              .find((target) => target.storePath === index)
+              ?.issues.map((issue) => issue.code),
+          ).toEqual(expect.arrayContaining(["historical_transcript_deferred"]));
+          expect(fs.existsSync(index)).toBe(true);
+        }
+      } else {
+        expect(retried.targets.flatMap((target) => target.issues)).toEqual([]);
+      }
+      for (const owner of ["main", "work"]) {
+        expect(
+          loadExactSessionEntry({
+            agentId: owner,
+            env,
+            sessionKey: `agent:${owner}:main`,
+            storePath: indexes.find((index) => index.endsWith(`${owner}.json`))!,
+          }),
+        ).toEqual(owners.get(owner));
+      }
+    },
+  );
+
   it.each(["shared", "distinct", "unreadable", "invalid-entry"] as const)(
     "retains known unselected index recovery (%s)",
     async (coverage) => {

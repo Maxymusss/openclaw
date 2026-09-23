@@ -54,6 +54,8 @@ type SqliteSessionImportRowsParams = Pick<
   historicalOnly?: boolean;
   /** A receipt-backed replay may append only to the exact current lifecycle it already owns. */
   completedIndexReplay?: boolean;
+  /** A replay without transcript authority may only prove that current history already contains it. */
+  completedReplayVerifyOnly?: boolean;
   /** Receipt rows for aliases may share one bounded on-disk staging source within this batch. */
   completedReplaySourceKey?: string;
   preserveExactStoredKey?: boolean;
@@ -75,6 +77,7 @@ type SqliteSessionImportRowsResult = {
     | "history-not-appendable"
     | "owner-missing"
     | "unchanged"
+    | "unverified-source"
     | "window-missing";
   recovery?: { complete: boolean; repaired: boolean; events: number };
   transcriptEvents: number;
@@ -235,6 +238,14 @@ function importSqliteSessionRowsInTransaction(
       source,
       params.entry.sessionId,
     );
+    if (params.completedReplayVerifyOnly && (!repair?.recognized || !stage.complete)) {
+      return {
+        completedIndexReplay: "unverified-source",
+        sessionId: params.entry.sessionId,
+        sessionKey: resolved.sessionKey,
+        transcriptEvents,
+      };
+    }
     if (transcript === "refuse") {
       return {
         completedIndexReplay: "history-not-appendable",
@@ -258,6 +269,14 @@ function importSqliteSessionRowsInTransaction(
               },
             }
           : {}),
+      };
+    }
+    if (params.completedReplayVerifyOnly) {
+      return {
+        completedIndexReplay: "history-not-appendable",
+        sessionId: params.entry.sessionId,
+        sessionKey: resolved.sessionKey,
+        transcriptEvents,
       };
     }
   }

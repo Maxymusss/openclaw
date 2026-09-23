@@ -37,7 +37,6 @@ import {
   HISTORICAL_IMPORT_REASON,
   canonicalMigrationFilePath,
   assertSafeSessionSqliteMigrationDirectory,
-  migrationMoveKey,
   type SessionSqliteMigrationMove,
 } from "../infra/session-sqlite-migration-manifest.js";
 import {
@@ -51,6 +50,8 @@ import {
   collectRecoveryInventory,
   type RecoveryArtifactReference,
 } from "./doctor-session-sqlite-recovery-inventory.js";
+import { collectCompletedStoreReplays } from "./doctor-session-sqlite-replay-authority.js";
+export type { CompletedLegacyStoreReplay } from "./doctor-session-sqlite-replay-authority.js";
 
 export type LegacySessionRecord = {
   entry: SessionEntry;
@@ -75,6 +76,7 @@ export type LegacySessionRecord = {
       | "unverified-source"
       | "window-missing";
     verifiedTranscriptIdentities: ReadonlyMap<string, MigrationArtifactIdentity>;
+    verifyOnlyTranscriptArchives: ReadonlyMap<string, SessionSqliteMigrationMove>;
   };
 };
 export type HistoricalArchiveSources = Map<
@@ -85,122 +87,6 @@ export type HistoricalArchiveSources = Map<
   }
 >;
 
-export type CompletedLegacyStoreReplay = {
-  move: SessionSqliteMigrationMove;
-  sourceIdentity: MigrationArtifactIdentity;
-  target: { agentId: string; sqlitePath: string; storePath: string };
-  verifiedTranscriptIdentities: ReadonlyMap<string, MigrationArtifactIdentity>;
-};
-
-type CompletedMoveEvidence = {
-  move: SessionSqliteMigrationMove;
-  sourceIdentity: MigrationArtifactIdentity;
-  target: RecoveryArtifactReference["target"];
-};
-
-function sameMigrationArtifactContent(
-  left: Pick<MigrationArtifactIdentity, "sha256" | "size">,
-  right: Pick<MigrationArtifactIdentity, "sha256" | "size">,
-): boolean {
-  return left.sha256 === right.sha256 && left.size === right.size;
-}
-
-// Only a completed move can distinguish a restored input from a first import. The archive or
-// restore receipt proves provenance; matching live bytes admit replay under the current owner.
-function collectCompletedMoveAuthorities(
-  groups: Iterable<readonly RecoveryArtifactReference[]>,
-  kind: SessionSqliteMigrationMove["kind"],
-): CompletedMoveEvidence[] {
-  const evidence: CompletedMoveEvidence[] = [];
-  for (const refs of groups) {
-    const firstRef = refs[0];
-    if (
-      !firstRef ||
-      refs.some(
-        (ref) =>
-          !ref.trusted ||
-          ref.move.kind !== kind ||
-          ref.move.sourcePath !== firstRef.move.sourcePath,
-      )
-    ) {
-      continue;
-    }
-    const consumed = refs[0]!.consumedByRestore;
-    if (refs.some((ref) => ref.consumedByRestore !== consumed)) {
-      continue;
-    }
-    const completed = refs.map((ref) => {
-      if (
-        !ref.run.manifest.completedAt ||
-        ref.run.manifest.failedAt ||
-        ref.run.manifest.failureReports ||
-        ref.target.validationBeforeArchive !== "passed" ||
-        ref.target.issues.some((issue) => !isSessionSqliteMigrationWarning(issue)) ||
-        (kind === "legacy-store" && ref.move.sourcePath !== ref.target.storePath)
-      ) {
-        return undefined;
-      }
-      return ref.target.completedMoves.find(
-        (move) =>
-          migrationMoveKey(move) === migrationMoveKey(ref.move) &&
-          move.kind === kind &&
-          move.artifact !== undefined &&
-          (kind === "legacy-store"
-            ? move.artifact.classification === "imported"
-            : move.artifact.classification === "imported" ||
-              move.artifact.classification === "repair-original") &&
-          move.artifact.reason ===
-            (kind === "legacy-store" ? "verified-index-import" : "verified-import-original") &&
-          move.artifact.disposal.state === "retained",
-      );
-    });
-    const first = completed[0];
-    if (
-      !first?.artifact ||
-      completed.some(
-        (move) =>
-          !move?.artifact ||
-          !sameMigrationArtifact(move.artifact.identity, first.artifact!.identity),
-      )
-    ) {
-      continue;
-    }
-    try {
-      if (!fs.existsSync(first.sourcePath)) {
-        continue;
-      }
-      const sourceIdentity = readMigrationArtifactIdentity(first.sourcePath);
-      if (!sameMigrationArtifactContent(sourceIdentity, first.artifact.identity)) {
-        continue;
-      }
-      if (consumed) {
-        if (fs.existsSync(first.archivePath)) {
-          continue;
-        }
-      } else if (
-        !fs.existsSync(first.archivePath) ||
-        !sameMigrationArtifact(
-          readMigrationArtifactIdentity(first.archivePath),
-          first.artifact.identity,
-        )
-      ) {
-        continue;
-      }
-      for (const [index, ref] of refs.entries()) {
-        const move = completed[index]!;
-        evidence.push({
-          move,
-          sourceIdentity,
-          target: ref.target,
-        });
-      }
-    } catch {
-      // Inaccessible receipt evidence grants neither replay nor conflict authority.
-    }
-  }
-  return evidence;
-}
-
 /** Retained manifests bind archive files to their original agent, path, and bytes. */
 export function collectHistoricalArchiveSources(params: {
   cfg: OpenClawConfig;
@@ -208,40 +94,7 @@ export function collectHistoricalArchiveSources(params: {
 }) {
   const result: HistoricalArchiveSources = new Map();
   const inventory = collectRecoveryInventory(params);
-  const completedStores = collectCompletedMoveAuthorities(
-    inventory.references.values(),
-    "legacy-store",
-  );
-  const completedTranscripts = collectCompletedMoveAuthorities(
-    inventory.references.values(),
-    "transcript",
-  );
-  const completedStoreReplays = completedStores.map<CompletedLegacyStoreReplay>((store) => {
-    const dependencies = new Set(store.move.artifact!.dependencies.map(canonicalMigrationFilePath));
-    return {
-      move: store.move,
-      sourceIdentity: store.sourceIdentity,
-      target: {
-        agentId: store.target.agentId,
-        sqlitePath: store.target.sqlitePath,
-        storePath: store.target.storePath,
-      },
-      // Dependencies acquire authority only from the same producing manifest target.
-      verifiedTranscriptIdentities: new Map(
-        completedTranscripts.flatMap((transcript) =>
-          dependencies.has(canonicalMigrationFilePath(transcript.move.sourcePath)) &&
-          transcript.target === store.target
-            ? [
-                [
-                  canonicalMigrationFilePath(transcript.move.sourcePath),
-                  transcript.sourceIdentity,
-                ] as const,
-              ]
-            : [],
-        ),
-      ),
-    };
-  });
+  const completedStoreReplays = collectCompletedStoreReplays(inventory.references.values());
   const claims = new Map<string, RecoveryArtifactReference[][]>();
   for (const refs of inventory.references.values()) {
     if (refs.some((ref) => !ref.trusted || ref.consumedByRestore)) {
