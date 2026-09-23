@@ -1,9 +1,14 @@
 import { vi } from "vitest";
+import { getTaskRegistryProcessState } from "../../../tasks/task-registry.process-state.js";
 import * as mod from "./subagent-registry.test-helpers.js";
 
-export function createLifecycleWaits(requesterSessionKey: string) {
-  const flushAsync = () => vi.dynamicImportSettled();
+export async function flushLifecycleTaskWrites() {
+  await vi.dynamicImportSettled();
+  // Imported completion handlers can enqueue SQLite writes before announce cleanup.
+  await getTaskRegistryProcessState().projection.mutationTail;
+}
 
+export function createLifecycleWaits(requesterSessionKey: string) {
   const waitForCleanupHandledFalse = async (runId: string) => {
     // Cleanup can be released asynchronously after announce failure; poll fake
     // time until the retry-grace state is observable.
@@ -19,7 +24,7 @@ export function createLifecycleWaits(requesterSessionKey: string) {
         return;
       }
       await vi.advanceTimersByTimeAsync(1);
-      await flushAsync();
+      await flushLifecycleTaskWrites();
     }
     throw new Error(`run ${runId} did not reach cleanupHandled=false in time`);
   };
@@ -42,7 +47,7 @@ export function createLifecycleWaits(requesterSessionKey: string) {
         return;
       }
       await vi.advanceTimersByTimeAsync(1);
-      await flushAsync();
+      await flushLifecycleTaskWrites();
     }
     throw new Error(
       `run ${runId} did not finish delivered cleanup in time: ${JSON.stringify({
@@ -63,7 +68,7 @@ export function createLifecycleWaits(requesterSessionKey: string) {
         return run;
       }
       await vi.advanceTimersByTimeAsync(1);
-      await flushAsync();
+      await flushLifecycleTaskWrites();
     }
     throw new Error(`run ${runId} frozen result did not refresh`);
   };
@@ -72,7 +77,7 @@ export function createLifecycleWaits(requesterSessionKey: string) {
     waitForFrozenResult(runId, (resultText) => resultText === expectedText);
 
   return {
-    flushAsync,
+    flushAsync: flushLifecycleTaskWrites,
     waitForCleanupHandledFalse,
     waitForDeliveredCleanup,
     waitForFrozenResult,

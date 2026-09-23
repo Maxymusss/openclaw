@@ -281,22 +281,6 @@ export function captureOpenClawAgentDatabaseExecution(
     assertCurrent,
     borrow(expected) {
       const expectedIdentity = expected ? Object.freeze({ ...expected }) : undefined;
-      assertCurrent();
-      if (expectedIdentity) {
-        if (fileIdentity && fileIdentity.physicalIdentity !== expectedIdentity.physicalIdentity) {
-          throw new Error("Agent database borrower belongs to another physical file");
-        }
-        assertExistingDatabaseIdentity(pathname, `file:${expectedIdentity.physicalIdentity}`);
-      }
-      observeOpenClawDatabaseMaintenanceResource(unregisterAgent);
-      borrowers += 1;
-      clearIdleTimer();
-      if (executionState.idle === owner && !nativeClosing && !cleanupFailure) {
-        executionState.idle = undefined;
-      }
-      let released = false;
-      let release: Promise<void> | undefined;
-      const pending = new Set<Promise<unknown>>();
       const assertReferenceCurrent = () => {
         assertCurrent();
         if (expectedIdentity) {
@@ -306,6 +290,16 @@ export function captureOpenClawAgentDatabaseExecution(
           assertExistingDatabaseIdentity(pathname, `file:${expectedIdentity.physicalIdentity}`);
         }
       };
+      assertReferenceCurrent();
+      observeOpenClawDatabaseMaintenanceResource(unregisterAgent);
+      borrowers += 1;
+      clearIdleTimer();
+      if (executionState.idle === owner && !nativeClosing && !cleanupFailure) {
+        executionState.idle = undefined;
+      }
+      let released = false;
+      let release: Promise<void> | undefined;
+      const pending = new Set<Promise<unknown>>();
       const assertBorrowed = () => {
         if (released) {
           throw new Error("Agent database execution reference is released");

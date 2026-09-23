@@ -236,17 +236,19 @@ describe("REQUESTER-OWNER requester agent id survives completion dispatch", () =
         expect(modelServer.requestCount()).toBe(requestsBeforeStatus);
 
         childGate.resolve();
-        await vi.waitFor(
-          () => {
+        const finished = await vi.waitFor(
+          async () => {
             expect(loadSubagentRegistryFromSqlite().get(run.runId), instance.logs()).toMatchObject({
               execution: { status: "terminal", outcome: { status: "ok" } },
               completion: { resultText: CHILD_MARKER },
               delivery: { status: "pending" },
             });
+            const result = await client.request<TasksGetResult>("tasks.get", { taskId: child.id });
+            expect(result.task.status).toBe("completed");
+            return result;
           },
           { interval: 50, timeout: 30_000 },
         );
-        const finished = await client.request<TasksGetResult>("tasks.get", { taskId: child.id });
         expect(finished.task).toMatchObject({
           id: child.id,
           runId: child.runId,

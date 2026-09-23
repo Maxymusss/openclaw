@@ -1,6 +1,9 @@
 import { MessageChannel, receiveMessageOnPort } from "node:worker_threads";
 import type { Result } from "@openclaw/normalization-core/result";
-import { createSqliteLifecycleAggregateError } from "../infra/sqlite-coordinator.js";
+import {
+  createSqliteLifecycleAggregateError,
+  throwSqliteLifecycleErrors,
+} from "../infra/sqlite-coordinator.js";
 import { sqliteReaderDatabasePathKey } from "../infra/sqlite-reader-lifecycle.js";
 import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
 import {
@@ -501,16 +504,7 @@ function openAgentDatabaseBackend(
           errors.push(error);
         }
       }
-      if (errors.length === 1) {
-        throw errors[0];
-      }
-      if (errors.length > 1) {
-        throw createSqliteLifecycleAggregateError(
-          errors,
-          "Agent database cleanup failed",
-          errors[0],
-        );
-      }
+      throwSqliteLifecycleErrors(errors, "Agent database cleanup failed");
       if (identity && checkpoint) {
         closeReceipt = {
           identity: {
