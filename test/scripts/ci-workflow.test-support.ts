@@ -78,6 +78,7 @@ export function evaluateWorkflowExpression(
     releaseGate?: boolean;
     releaseRunnerGroup?: string;
     runnerGroup?: string;
+    releasePriorityRun?: string;
     releaseScope?: string;
     repository: string;
     runCheck?: boolean;
@@ -209,6 +210,7 @@ export function evaluateWorkflowExpression(
       MAINTAINER_COMMAND_REACTIONS: context.maintainerCommands ?? "",
       OPENCLAW_CI_RUNNER_BACKEND: context.runnerBackend ?? "",
       OPENCLAW_RELEASE_RUNNER_GROUP: context.releaseRunnerGroup ?? "",
+      OPENCLAW_RELEASE_PRIORITY_RUN: context.releasePriorityRun ?? "",
     },
   });
 }
