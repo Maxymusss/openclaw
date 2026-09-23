@@ -52,7 +52,10 @@ import {
 import { emitSessionsChanged } from "./session-change-event.js";
 import { prepareSessionWorkspace } from "./session-create-project.js";
 
-export function startChatDispatch(params: StartChatDispatchParams): void {
+// Keep setup throws synchronous for the request handler. A successful return joins
+// initial dispatch finalization, excluding detached title/media work and later
+// queued turns.
+export function startChatDispatch(params: StartChatDispatchParams): Promise<void> {
   const {
     admissionStartedAt,
     admission,
@@ -662,7 +665,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
       }
     })
     .catch(dispatchErrorLifecycle.handleError);
-  void (async () => {
+  const completion = (async () => {
     try {
       await dispatch;
     } finally {
@@ -695,4 +698,5 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
     sessionLoadOptions: session.sessionLoadOptions,
     storePath: session.storePath,
   });
+  return completion;
 }
