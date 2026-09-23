@@ -1,5 +1,6 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/cli/daemon-cli/restart-health-client.test.ts",
   "src/acp/control-plane/manager.test.ts",
   "src/config/sessions/disk-budget.physical-usage.test.ts",
   "src/agents/agent-bundle-mcp-requester-connect.read.test.ts",
@@ -70,6 +71,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/subagents/announce/subagent-announce.requester-settle-wake.test.ts",
   "src/agents/subagents/registry/subagent-control.accounting.test.ts",
   "src/agents/subagents/registry/subagent-registry.persistence.test.ts",
+  "src/agents/subagents/registry/subagent-registry.session-failure.test.ts",
   "src/agents/subagents/spawn/subagent-spawn.test.ts",
   "src/agents/cli-runner/prepare.test.ts",
   "src/agents/cli-runner/prepare.durable-context.test.ts",
@@ -103,6 +105,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/sessions/session-manager-hydration-stream.test.ts",
   "src/channels/join-intro/report-channel-room-join.test.ts",
   "src/plugin-sdk/ingress-effect-once.test.ts",
+  "src/plugin-sdk/session-transcript-runtime.test.ts",
   "src/plugin-sdk/persistent-dedupe.worker.test.ts",
   "src/acp/runtime/session-meta.legacy-migration.test.ts",
   "src/agents/mcp-oauth-refresh-issuer.test.ts",
@@ -601,6 +604,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/tools/cron-tool.output-contract.test.ts",
   "src/plugins/services.cron.test.ts",
   "test/plugins/memory-dreaming-cron.test.ts",
+  "test/plugins/workboard-automation-authority.test.ts",
   "src/state/creator-namespace-migration.test.ts",
   "src/agents/auth-profiles/store-owner-publication.test.ts",
   "src/agents/auth-profiles/usage.inherited-owner.test.ts",
@@ -632,6 +636,7 @@ const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
 
 // Preserve watch admission for consumers previously inferred into fast lanes.
 export const databaseWorkerCoreFormerFastKinds = new Map([
+  ["src/agents/subagents/registry/subagent-registry.session-failure.test.ts", "unitFast"],
   ["src/agents/mcp-oauth-store.test.ts", "unitFast"],
   ["src/node-host/invoke-system-run.test.ts", "unitFastIsolated"],
   ["src/state/openclaw-agent-execution-cleanup.test.ts", "unitFastIsolated"],
