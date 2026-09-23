@@ -29,6 +29,7 @@ import type { CanvasToolPreview } from "../../lib/chat/tool-cards.ts";
 import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
 import {
   insertPendingInputProjections,
+  observePendingInputOrder,
   projectPendingInputItems,
   type PendingInputPlacement,
 } from "./chat-pending-input-placement.ts";
@@ -78,7 +79,7 @@ import { coalesceToolActivityMessages } from "./chat-tool-activity-coalesce.ts";
 import { safeNormalizeMessage } from "./chat-turn-boundary.ts";
 import { selectChatInputDisplay } from "./history-merge.ts";
 import {
-  isLiveTerminalForRun,
+  isAssistantReplyForRun,
   readLiveTerminalRunId,
   readLiveTerminalAfterBoundaryRunId,
 } from "./terminal-message-identity.ts";
@@ -328,6 +329,7 @@ export function buildChatItems(
       earliest == null ? queued.createdAt : Math.min(earliest, queued.createdAt),
     null,
   );
+  const observedInputKeys = new Set<string>();
   const appendQueuedSend = (queued: ChatQueueItem) => {
     if (!shouldRenderQueuedSendInThread(queued)) {
       return;
@@ -348,22 +350,19 @@ export function buildChatItems(
     // Reconnect can deliver a saved reply before history recovers its user row.
     // Anchor to the first rendered owned output even after the local run clears;
     // hidden/imported rows cannot anchor, and unmatched future sends stay last.
-    const insertionIndex = items.findIndex((item) => {
-      if (!runId || item.kind !== "message") {
-        return false;
-      }
-      const identity = readSessionMessageIdentity(item.message);
-      return (
-        isLiveTerminalForRun(item.message, runId) ||
-        (identity?.role === "assistant" && !identity.isImported && identity.runId === runId)
-      );
-    });
+    const insertionIndex = items.findIndex(
+      (item) => runId && item.kind === "message" && isAssistantReplyForRun(item.message, runId),
+    );
     // The retained New Session prompt predates all recovery output, including
     // after a reload when its original browser timestamp is unavailable.
     const position = queued.id === props.initialTurnId ? 0 : insertionIndex;
+    const key = queued.sendRunId
+      ? buildMessageItems([message])[0]!.key
+      : `pending-send:${queued.id}`;
+    observedInputKeys.add(key);
     items.splice(position < 0 ? items.length : position, 0, {
       kind: "message",
-      key: queued.sendRunId ? buildMessageItems([message])[0]!.key : `pending-send:${queued.id}`,
+      key,
       message,
     });
   };
@@ -740,6 +739,15 @@ export function buildChatItems(
   for (const queued of futureQueuedSends) {
     appendQueuedSend(queued);
   }
+
+  observePendingInputOrder(
+    items,
+    observedInputKeys,
+    pendingProjections,
+    historyItems,
+    historySourceKeys,
+    pendingInputPlacements,
+  );
 
   return groupMessages(coalesceToolActivityMessages(items));
 }

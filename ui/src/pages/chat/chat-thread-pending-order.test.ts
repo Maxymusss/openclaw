@@ -217,7 +217,12 @@ describe("observed pending-input order", () => {
     visible(props());
     const messages = [...history, nextUser];
     visible(props({ messages }));
-    visible(props({ messages, pendingInputs: [{ ...handoff, id: "older-handoff" }] }));
+    visible(
+      props({
+        messages,
+        pendingInputs: [{ ...handoff, id: "older-handoff", runId: "older-handoff-run" }],
+      }),
+    );
     expect(visible(props({ messages }))).toEqual([...history, handoff.message, nextUser]);
   });
 
@@ -308,7 +313,7 @@ describe("observed pending-input order", () => {
     },
   );
 
-  it("keeps three observed sends in order across custody with backward clocks", () => {
+  function observeFollowups() {
     visible(props());
     const firstQueue = {
       id: "first",
@@ -329,7 +334,7 @@ describe("observed pending-input order", () => {
     visible(props({ pendingInputs: [first, handoff] }));
     const secondQueue = {
       id: "second",
-      text: "Second follow-up.",
+      text: "Second handoff follow-up.",
       createdAt: 0,
       sendRunId: "second-run",
       sendSubmittedAtMs: 0,
@@ -343,6 +348,48 @@ describe("observed pending-input order", () => {
       state: "queued" as const,
       message: { role: "user", content: secondQueue.text, timestamp: 0 },
     };
+    visible(props({ pendingInputs: [second, first, handoff] }));
+    return { first, second };
+  }
+
+  it.each(["neither", "first", "second", "both"] as const)(
+    "keeps the observed input sequence when %s follow-ups become canonical",
+    (promoted) => {
+      const { first, second } = observeFollowups();
+      const firstSaved = message("user", first.message.content, 3, first.runId);
+      const secondSaved = message("user", second.message.content, 4, second.runId);
+      const saveFirst = promoted === "first" || promoted === "both";
+      const saveSecond = promoted === "second" || promoted === "both";
+      const messages = [
+        ...history,
+        ...(saveFirst ? [firstSaved] : []),
+        ...(saveSecond ? [secondSaved] : []),
+      ];
+      const pendingInputs = [
+        ...(saveSecond ? [] : [second]),
+        ...(saveFirst ? [] : [first]),
+        handoff,
+      ];
+      expect(visible(props({ messages, pendingInputs }))).toEqual([
+        ...history,
+        handoff.message,
+        saveFirst ? firstSaved : first.message,
+        saveSecond ? secondSaved : second.message,
+      ]);
+    },
+  );
+
+  it("projects the observed input sequence through search-hidden middle custody", () => {
+    const { first, second } = observeFollowups();
+    expect(
+      visible(
+        props({
+          pendingInputs: [second, first, handoff],
+          searchOpen: true,
+          searchQuery: "handoff",
+        }),
+      ),
+    ).toEqual([handoff.message, second.message]);
     expect(visible(props({ pendingInputs: [second, first, handoff] }))).toEqual([
       ...history,
       handoff.message,
@@ -350,6 +397,161 @@ describe("observed pending-input order", () => {
       second.message,
     ]);
   });
+
+  it.each(["submitting", "waiting-reconnect"] as const)(
+    "observes a new %s send during search before custody acceptance",
+    (sendState) => {
+      visible(props());
+      const search = { searchOpen: true, searchQuery: "handoff" };
+      visible(props(search));
+      const queue = [
+        {
+          id: "new-send",
+          text: nextUser.content,
+          createdAt: 1,
+          sendRunId: "next-run",
+          sendSubmittedAtMs: 1,
+          sendAttempts: 1,
+          sendState,
+        },
+      ];
+      expect(visible(props({ ...search, queue }))).toEqual([
+        handoff.message,
+        expect.objectContaining({ content: [{ type: "text", text: nextUser.content }] }),
+      ]);
+      const accepted = {
+        id: "new-send",
+        runId: "next-run",
+        acceptedAt: 1,
+        state: "queued" as const,
+        message: { ...nextUser, timestamp: 1, __openclaw: { id: "pending:new-send" } },
+      };
+      expect(visible(props({ ...search, pendingInputs: [accepted, handoff] }))).toEqual([
+        handoff.message,
+        accepted.message,
+      ]);
+      expect(visible(props({ pendingInputs: [accepted, handoff] }))).toEqual([
+        ...history,
+        handoff.message,
+        accepted.message,
+      ]);
+    },
+  );
+
+  it("preserves a local predecessor when a handoff first appears after it", () => {
+    const queue = [
+      {
+        id: "new-send",
+        text: nextUser.content,
+        createdAt: 1,
+        sendRunId: "next-run",
+        sendSubmittedAtMs: 1,
+        sendState: "submitting" as const,
+      },
+    ];
+    visible(props({ queue, pendingInputs: [] }));
+    const observed = visible(props({ queue }));
+    expect(observed.at(-1)).toBe(handoff.message);
+    const accepted = {
+      id: "new-send",
+      runId: "next-run",
+      acceptedAt: 50,
+      state: "queued" as const,
+      message: { ...nextUser, timestamp: 50, __openclaw: { id: "pending:new-send" } },
+    };
+    expect(visible(props({ pendingInputs: [handoff, accepted] }))).toEqual([
+      ...history,
+      accepted.message,
+      handoff.message,
+    ]);
+  });
+
+  it("keeps a forwarded custody promotion before its observed successor", () => {
+    const forwarded = { ...handoff, state: "queued" as const };
+    visible(props({ pendingInputs: [forwarded] }));
+    const queue = [
+      {
+        id: "new-send",
+        text: nextUser.content,
+        createdAt: 1,
+        sendRunId: "next-run",
+        sendSubmittedAtMs: 1,
+        sendState: "submitting" as const,
+      },
+    ];
+    visible(props({ pendingInputs: [forwarded], queue }));
+    const accepted = {
+      id: "new-send",
+      runId: "next-run",
+      acceptedAt: 1,
+      state: "queued" as const,
+      message: { ...nextUser, timestamp: 1, __openclaw: { id: "pending:new-send" } },
+    };
+    visible(props({ pendingInputs: [accepted, forwarded], queue }));
+    const promoted = {
+      ...forwarded.message,
+      __openclaw: {
+        id: forwarded.id,
+        seq: 3,
+        idempotencyKey: "handoff-run:user",
+        runId: "handoff-run",
+      },
+    };
+    expect(visible(props({ messages: [...history, promoted], pendingInputs: [accepted] }))).toEqual(
+      [...history, promoted, accepted.message],
+    );
+  });
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "keeps observed custody before its recovered reply (reply before acceptance: %s, search-hidden: %s)",
+    (replyBeforeAcceptance, searchHidden) => {
+      visible(props());
+      const search = searchHidden ? { searchOpen: true, searchQuery: "handoff" } : {};
+      const queue = [
+        {
+          id: "new-send",
+          text: nextUser.content,
+          createdAt: 1,
+          sendRunId: "next-run",
+          sendSubmittedAtMs: 1,
+          sendState: "submitting" as const,
+        },
+      ];
+      visible(props({ ...search, queue }));
+      const reply = message("assistant", "The follow-up is complete.", 4, "next-run");
+      const messages = [...history, reply];
+      if (replyBeforeAcceptance) {
+        visible(props({ ...search, messages, queue }));
+      }
+      const accepted = {
+        id: "new-send",
+        runId: "next-run",
+        acceptedAt: 1,
+        state: "queued" as const,
+        message: { ...nextUser, timestamp: 1, __openclaw: { id: "pending:new-send" } },
+      };
+      const pendingInputs = [accepted, handoff];
+      visible(
+        props({
+          ...search,
+          messages: replyBeforeAcceptance ? messages : history,
+          pendingInputs,
+          queue,
+        }),
+      );
+      expect(visible(props({ messages, pendingInputs, queue }))).toEqual([
+        ...history,
+        handoff.message,
+        accepted.message,
+        reply,
+      ]);
+    },
+  );
 
   it("keeps a handoff that first appears during search after all earlier history", () => {
     const matchingReply = message("assistant", "Earlier handoff reply", 2);
