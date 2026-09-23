@@ -2965,6 +2965,9 @@ export function createNodeTestShardBundles(
       { ...options, compactMode },
       compactMode,
     );
+    if (compactMode !== "pull-request") {
+      return jobs;
+    }
     // Apply physical sizing after provider placement. RunsOn selects its own
     // classes from the original plan; precise plans retain their original anchors.
     for (const job of jobs) {

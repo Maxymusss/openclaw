@@ -3048,7 +3048,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         // Capacity belongs to the workload even when timing changes reorder rows.
         const groups = plan.flatMap((shard) => shard.groups);
         const smallerJobs = plan.filter((job) => job.runner === "blacksmith-16vcpu-ubuntu-2404");
-        if (profile.name === "hybrid") {
+        if (mode === "push") {
+          expect(smallerJobs).toHaveLength(0);
+        } else if (profile.name === "hybrid") {
           expect(smallerJobs.length, `${mode} measured Gateway core placement`).toBeGreaterThan(0);
         }
         for (const job of smallerJobs) {

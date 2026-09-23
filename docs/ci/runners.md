@@ -110,7 +110,7 @@ other main CI placements retain the 16-class sizing.
 Native CI must establish the resulting execution and queue times.
 
 The measured exception is source-only, serial `agentic-gateway-core-1-hosted-*`
-rows whose children all retain an explicit two-worker ceiling. Their original
+PR rows whose children all retain an explicit two-worker ceiling. Their original
 360-second predicted envelopes can request the 16-class after provider placement.
 Envelopes containing the UI Vitest config retain the 32-class: native
 qualification exceeded both the 600-second PR and 720-second main budgets.
@@ -150,9 +150,17 @@ UI-bearing PR envelopes on 32, where they passed in 593/503 seconds. Its
 still measured a UI-bearing 16-class envelope at 754 seconds, exceeding 720.
 The identical non-UI inventories passed in 509 seconds on main and 484 seconds
 in the [PR-shaped run](https://github.com/openclaw/openclaw/actions/runs/35829833999).
-Only that non-UI family remains eligible, moving one hybrid row in each shape.
+Only that non-UI family remained eligible for further measurement.
 The rejected envelope had broad test slowdown without a retry or single stalled
 case; these observations do not establish the underlying variance's cause.
+
+A separate three-sample replay of the historical non-UI main row, which was
+outside the original top ten, measured 590/463/506 seconds on the 16-class versus
+410 seconds on the 32-class. The 506-second median is 23.4% slower, exceeding
+the 20% qualification limit despite staying below 720 seconds. Main therefore
+retains its original capacity. Only the PR class qualifies: its original-source
+median is 444 versus 449 seconds, a 0.989 ratio and about 50.6% lower list-price
+cost for that row. The current hybrid PR plan moves one row.
 
 At the historical $0.064/$0.032 per-minute list rates, these matched Gateway-core
 subsets save about 45%/47% of compute cost on main/PR while consuming 11%/6% more
