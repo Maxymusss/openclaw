@@ -13,10 +13,11 @@ import { gatewayHealthResponse } from "../../gateway/health-response.test-suppor
 import { acquireGatewayOwnerLease } from "../../infra/gateway-owner-lease.js";
 import { consumeGatewayRestartIntentPayloadSync } from "../../infra/restart-intent.js";
 import { acquireGatewayLifecycleCoordinator } from "../../infra/state-database-coordinator.js";
-import * as tempRoot from "../../infra/tmp-openclaw-dir.js";
+import * as openClawTmp from "../../infra/tmp-openclaw-dir.js";
 import { getUpdateRun } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { CommandProcessCleanupError } from "../../process/exec-result.js";
+import * as processIdentity from "../../shared/pid-alive.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { captureEnv } from "../../test-utils/env.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
@@ -86,7 +87,12 @@ export async function createServiceActivationFixture() {
   // Simulated manager identities must never address the host's shared handoff store.
   const runtimeTemp = path.join(root, ".runtime-temp");
   await fs.mkdir(runtimeTemp, { mode: 0o700 });
-  vi.spyOn(tempRoot, "resolvePreferredOpenClawTmpDir").mockReturnValue(runtimeTemp);
+  vi.spyOn(openClawTmp, "resolvePreferredOpenClawTmpDir").mockReturnValue(runtimeTemp);
+  const readProcessStartTime = processIdentity.getFileLockProcessStartTime;
+  // The service platform is simulated; only this live test process gets a fixed start identity.
+  vi.spyOn(processIdentity, "getFileLockProcessStartTime").mockImplementation((pid, ...args) =>
+    pid === process.pid ? 1_700_000_000 : readProcessStartTime(pid, ...args),
+  );
   vi.spyOn(os, "userInfo").mockReturnValue({ ...os.userInfo(), homedir: root });
   const keys = [
     "HOME",
@@ -175,7 +181,6 @@ export function registerRecoveryTests(params: {
     child: Mock<typeof import("../../process/exec.js").runCommandWithTimeout>;
     error: Mock;
     restart: Mock;
-    script: Mock;
     ports: Mock<typeof import("../../infra/ports-inspect.js").inspectPortUsage>;
     call: Mock<(opts: CallGatewayOptions) => Promise<unknown>>;
     configSnapshot: Mock<() => Promise<void>>;
@@ -424,7 +429,6 @@ export function registerRecoveryTests(params: {
           : []),
         pending ? "health: timeout" : "health: healthy",
       ]);
-      expect(mocks.script).not.toHaveBeenCalled();
       expect(mocks.restart).not.toHaveBeenCalled();
       if (startup === "unready" || startup === "slow") {
         expect(healthResults[0]?.elapsedMs).toBe(6_500);

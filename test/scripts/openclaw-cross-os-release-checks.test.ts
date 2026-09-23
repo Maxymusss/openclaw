@@ -116,7 +116,7 @@ import { toolingTsEntrypoints } from "./tooling-ts-runtime.test-support.js";
 
 vi.mock("node:net", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:net")>();
-  // Whole-module spies mutate shared native stream prototypes in non-isolated workers.
+  // Keep native socket/stream prototypes intact across shared-worker files.
   return {
     ...actual,
     createConnection: vi.fn(actual.createConnection),
