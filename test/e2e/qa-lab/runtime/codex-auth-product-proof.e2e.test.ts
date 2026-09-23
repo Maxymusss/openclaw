@@ -381,7 +381,7 @@ describe("Codex auth product proof", () => {
     },
   );
 
-  it.each([
+  it.for([
     {
       name: "the configured account",
       configuredProfileId: MISSING_PROFILE_ID,

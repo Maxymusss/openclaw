@@ -12,7 +12,7 @@ function token(accountId: string) {
   ].join(".");
 }
 
-it.each(["child", "worker"])(
+it.for(["child", "worker"])(
   "isolates catalog HTTP and rejects wrong auth in the %s",
   async (mode, context) => {
     const accountA = "qa-codex-configured-account";
