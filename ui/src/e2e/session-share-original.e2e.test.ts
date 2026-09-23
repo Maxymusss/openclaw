@@ -95,10 +95,12 @@ suite.define(() => {
           expect(await source.evaluate(() => window.opener)).toBeNull();
           expect(await source.evaluate(() => document.referrer)).toBe("");
           await source.close();
+          await page.bringToFront();
         }
         const row = page
           .locator("[data-catalog-session-key]")
           .filter({ hasText: "Shared planning" });
+        await row.hover();
         await row.getByRole("button", { name: "Open session menu" }).click();
         const menu = page.locator("openclaw-catalog-session-menu");
         await expect
@@ -111,7 +113,7 @@ suite.define(() => {
           ]),
         );
         expect(
-          gateway.requests.some(({ method }) =>
+          (await gateway.getRequests()).some(({ method }) =>
             [
               "sessions.catalog.continue",
               "chat.send",
