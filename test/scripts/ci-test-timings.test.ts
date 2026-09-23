@@ -716,6 +716,7 @@ function withSamplerFixture(
       dryRun?: boolean,
       count?: number,
       toolingRunIds?: number[],
+      releaseOnly?: boolean,
     ) => SpawnSyncReturns<string>;
     contents: () => string;
     requests: () => string[][];
@@ -791,7 +792,7 @@ if (args[1] === "--help") {
           .split("\n")
           .filter(Boolean)
           .map((line) => JSON.parse(line) as string[]),
-      invoke: (dryRun = false, count = 2, toolingRunIds = []) =>
+      invoke: (dryRun = false, count = 2, toolingRunIds = [], releaseOnly = false) =>
         spawnSync(
           process.execPath,
           [
@@ -808,6 +809,7 @@ if (args[1] === "--help") {
             "--out",
             output,
             ...toolingRunIds.flatMap((id) => ["--tooling-run", String(id)]),
+            ...(releaseOnly ? ["--release-only"] : []),
             ...(dryRun ? ["--dry-run"] : []),
           ],
           {
@@ -1040,6 +1042,24 @@ it.todo("retains todo coverage");
     const result = refitTestTimings([once, timingRun(2, [{ kind: "repoE2e", text }])]);
     expect(result.timings.repoE2eFileSeconds).toEqual({ [file]: 4 });
     expect(result.timings.uiE2e).toEqual({ fileSeconds: {}, perFileOverheadSeconds: 0 });
+  });
+
+  it("refits Gateway files from complete verbose-only release logs", () => {
+    const first = "src/gateway/first.e2e.test.ts";
+    const second = "test/gateway-second.e2e.test.ts";
+    const text = [
+      `2026-09-23T02:00:00.000Z  ✓ ${first} > first case 1200ms`,
+      `2026-09-23T02:00:01.000Z  ✓ ${first} > second case 800ms`,
+      `2026-09-23T02:00:02.000Z  ✓ ${second} > only case 3500ms`,
+      "2026-09-23T02:00:06.000Z    Duration  6s (transform 1s, tests 5.5s)",
+      `2026-09-23T02:00:07.000Z  ✓ test/unfinished.e2e.test.ts > ignored case 90s`,
+    ].join("\n");
+    const runs = [1, 2].map((id) => timingRun(id, [{ kind: "repoE2e", text }]));
+
+    expect(refitTestTimings(runs).timings.repoE2eFileSeconds).toEqual({
+      [first]: 2,
+      [second]: 4,
+    });
   });
 
   it("records per-file medians without outliers or one-run weights and measures excluded overhead", () => {
@@ -1883,8 +1903,8 @@ describe("CI timing sampler provenance", () => {
     },
   );
 
-  it("seeks compact contributors past docs-only and unparseable runs, preserving all attempts and unchanged bytes", () => {
-    const releaseRuns = [10, 11].map((id) =>
+  it("seeks timing contributors past docs-only and unparseable runs, preserving all attempts and unchanged bytes", () => {
+    const releaseRuns = [8, 9, 10, 11].map((id) =>
       samplerRun(id, {
         event: "workflow_dispatch",
         head_branch: "release-ci/frozen",
@@ -1920,7 +1940,7 @@ describe("CI timing sampler provenance", () => {
               log: compactLog(900),
             }),
           ]),
-          ...releaseRuns.map((run) =>
+          ...releaseRuns.slice(2).map((run) =>
             samplerJob(run.id * 10, run.id, {
               head_sha: "b".repeat(40),
               name: "Run repo/live E2E validation / Gateway E2E / Repo E2E (Gateway 1/4)",
@@ -1942,7 +1962,7 @@ describe("CI timing sampler provenance", () => {
         );
         const requests = fixture.requests();
         const runRequests = requests.filter((args) => args[1]?.includes("/workflows/"));
-        expect(runRequests).toHaveLength(4);
+        expect(runRequests).toHaveLength(5);
         for (const args of runRequests) {
           const params = new URL(args[1]!, "https://api.github.com").searchParams;
           expect(params.get("created")).toBe(`2026-08-21T12:00:00.000Z..${sampleNow}`);
@@ -1965,6 +1985,51 @@ describe("CI timing sampler provenance", () => {
         expect(unchanged.status, unchanged.stderr).toBe(0);
         expect(unchanged.stdout).toContain("No timing changes");
         expect(fixture.contents()).toBe(updated);
+      },
+    );
+  });
+
+  it("refits only release Gateway timings past empty release runs", () => {
+    const releaseRuns = [8, 9, 10, 11].map((id) =>
+      samplerRun(id, {
+        event: "workflow_dispatch",
+        head_branch: "release-ci/frozen",
+        head_sha: "b".repeat(40),
+      }),
+    );
+    const verboseLog = [
+      "2026-08-27T23:00:00Z  ✓ test/release.e2e.test.ts > measured case 4000ms",
+      "2026-08-27T23:00:05Z    Duration  5s (tests 4s)",
+    ].join("\n");
+    withSamplerFixture(
+      {
+        baseline: retained,
+        runs: [samplerRun(1), samplerRun(2)],
+        releaseRuns,
+        toolingRuns: [samplerRun(20), samplerRun(21)],
+        jobs: releaseRuns.slice(2).map((run) =>
+          samplerJob(run.id * 10, run.id, {
+            head_sha: "b".repeat(40),
+            name: "Run repo/live E2E validation / Repo E2E (Gateway 1/4)",
+            log: verboseLog,
+          }),
+        ),
+      },
+      (fixture) => {
+        const result = fixture.invoke(false, 2, [], true);
+        expect(result.status, result.stderr).toBe(0);
+        const timings = ciTestTimingsSchema.parse(JSON.parse(fixture.contents()));
+        expect(timings.repoE2eFileSeconds).toEqual({
+          "test/release.e2e.test.ts": 4,
+          "test/retained.e2e.test.ts": 50,
+        });
+        expect(timings.compactGroupSeconds).toEqual(retained.compactGroupSeconds);
+        expect(timings.runtimePlacementTimings).toEqual(retained.runtimePlacementTimings);
+        expect(timings.toolingFileSeconds).toEqual(retained.toolingFileSeconds);
+        expect(timings.uiE2e).toEqual(retained.uiE2e);
+        expect(fixture.requests().some((args) => args[1]?.includes("/workflows/ci.yml/runs"))).toBe(
+          false,
+        );
       },
     );
   });

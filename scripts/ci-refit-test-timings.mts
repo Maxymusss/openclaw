@@ -60,6 +60,7 @@ async function main() {
     options: {
       runs: { type: "string", default: "5" },
       "tooling-run": { type: "string", multiple: true },
+      "release-only": { type: "boolean", default: false },
       repo: { type: "string", default: "openclaw/openclaw" },
       "dry-run": { type: "boolean", default: false },
       out: {
@@ -73,6 +74,10 @@ async function main() {
     ...new Set((values["tooling-run"] ?? []).map((id) => parsePositiveInt(id, "--tooling-run"))),
   ];
   const seedTooling = toolingRunIds.length > 0;
+  const releaseOnly = values["release-only"];
+  if (seedTooling && releaseOnly) {
+    throw new Error("--release-only cannot be combined with --tooling-run");
+  }
   const repo = z
     .string()
     .regex(/^[\w.-]+\/[\w.-]+$/u)
@@ -302,14 +307,14 @@ async function main() {
           source === "main"
             ? compact
             : source === "tooling"
-              ? contributingRunIds.toolingBlacksmith.length +
-                  contributingRunIds.toolingGithub.length >
-                0
-              : contributingRunIds.repoE2e.length > 0;
+              ? timingRun.logs.some((entry) => entry.kind === "tooling")
+              : timingRun.logs.some((entry) => entry.kind === "repoE2e");
         if (contributes) {
           runs.push(timingRun);
         }
-        if (source !== "main" || compact) {
+        // Empty release/tooling runs do not consume the requested contributor
+        // budget. Keep scanning until this profile has actual timing evidence.
+        if (contributes) {
           sampled += 1;
         }
         if (sampled === count) {
@@ -353,6 +358,22 @@ async function main() {
     ) {
       throw new Error(
         "Explicit PR runs supplied no complete tooling measurements. No timing file written.",
+      );
+    }
+  } else if (releaseOnly) {
+    for (const workflow of [
+      "openclaw-release-checks.yml",
+      "openclaw-live-and-e2e-checks-reusable.yml",
+    ]) {
+      await sampleWorkflow(workflow, "release");
+    }
+    const fresh = refitTestTimings(runs);
+    if (
+      fresh.contributingRunIds.repoE2e.length < 2 ||
+      Object.keys(fresh.timings.repoE2eFileSeconds).length === 0
+    ) {
+      throw new Error(
+        `Found ${fresh.contributingRunIds.repoE2e.length} independent release Gateway contributors. Need at least two and a newly eligible repo E2E measurement in the frozen UTC window; retry after release checks have successful timing jobs. No timing file written.`,
       );
     }
   } else {

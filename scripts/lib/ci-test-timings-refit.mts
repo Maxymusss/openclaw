@@ -90,8 +90,14 @@ function seconds(value: string, unit: string): number {
   return Number(value) / (unit === "ms" ? 1000 : 1);
 }
 
-function readE2eLog(text: string, samples: Samples, overhead?: number[]) {
+function readE2eLog(
+  text: string,
+  samples: Samples,
+  overhead?: number[],
+  useVerboseCaseFallback = false,
+) {
   const files = new Map<string, number>();
+  const cases = new Map<string, number>();
   let hasParallelFiles = false;
   for (const line of text.split("\n")) {
     const file =
@@ -105,10 +111,20 @@ function readE2eLog(text: string, samples: Samples, overhead?: number[]) {
         file[1]?.includes("ui-e2e-standalone") === true ||
         file[1]?.includes("ui-e2e-real-gateway") === true;
     }
+    if (useVerboseCaseFallback) {
+      const test =
+        /^\s*(?:\d{4}-\d\d-\d\dT[\d:.]+Z\s+)?✓\s+(\S+\.test\.ts)\s+> .+\s+([\d.]+)(m?s)(?:\s|$)/u.exec(
+          line,
+        );
+      if (test) {
+        cases.set(test[1]!, (cases.get(test[1]!) ?? 0) + seconds(test[2]!, test[3]!));
+      }
+    }
     const summary = /\bDuration\s+([\d.]+)(m?s)(?:\s|$)/u.exec(line);
-    if (summary && files.size > 0) {
+    const observedFiles = files.size > 0 ? files : cases;
+    if (summary && observedFiles.size > 0) {
       // Commit complete native file times, including suite hooks, once per invocation.
-      for (const [name, duration] of files) {
+      for (const [name, duration] of observedFiles) {
         recordSample(samples, name, duration);
       }
       // V5 prints phase percentages, not absolute times. File durations include
@@ -116,14 +132,15 @@ function readE2eLog(text: string, samples: Samples, overhead?: number[]) {
       const legacyTests = /\btests\s+([\d.]+)(m?s)(?:[,\s)]|$)/u.exec(line);
       const testsSeconds = legacyTests
         ? seconds(legacyTests[1]!, legacyTests[2]!)
-        : [...files.values()].reduce((total, duration) => total + duration, 0);
-      const value = (seconds(summary[1]!, summary[2]!) - testsSeconds) / files.size;
+        : [...observedFiles.values()].reduce((total, duration) => total + duration, 0);
+      const value = (seconds(summary[1]!, summary[2]!) - testsSeconds) / observedFiles.size;
       // Vitest sums test time across workers, so wall-minus-tests measures
       // per-file overhead only for serial invocations.
       if (overhead && !hasParallelFiles && Number.isFinite(value)) {
         overhead.push(value);
       }
       files.clear();
+      cases.clear();
       hasParallelFiles = false;
     }
   }
@@ -449,7 +466,12 @@ export function refitTestTimings(
       } else if (log.kind === "compact") {
         readCompactLog(text, log.labels, current, currentRuntime, runtimeDescriptors);
       } else {
-        readE2eLog(text, current[log.kind], log.kind === "uiE2e" ? overhead : undefined);
+        readE2eLog(
+          text,
+          current[log.kind],
+          log.kind === "uiE2e" ? overhead : undefined,
+          log.kind === "repoE2e",
+        );
       }
     }
     for (const profile of ["blacksmith", "github"] as const) {
