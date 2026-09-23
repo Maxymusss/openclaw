@@ -636,6 +636,69 @@ describe("ChatComposerCapabilityHost", () => {
     expect(statusRequest).toHaveBeenCalledTimes(3);
   });
 
+  it.each(["explicit retry", "workspace change"] as const)(
+    "preserves a skill failure across rerenders until %s",
+    async (retry) => {
+      const context = createContext({ runtimeConfig: {} });
+      const state = createState();
+      let session = { key: "main", spawnedCwd: "/project/first" } as GatewaySessionRow;
+      const first = deferred<unknown>();
+      const recovery = deferred<unknown>();
+      const failed = deferred();
+      const loaded = deferred();
+      const statusRequest = vi
+        .fn()
+        .mockReturnValueOnce(first.promise)
+        .mockReturnValueOnce(recovery.promise);
+      const request = vi.fn((method: string) =>
+        method === "skills.status"
+          ? statusRequest()
+          : Promise.resolve({
+              entries: [],
+              profileId: null,
+              multipleProfiles: false,
+              defaultTarget: "workspace",
+              canManageWorkspace: true,
+              defaultSelectionLimit: 64,
+              session: { sessionKey: "main", selections: [], attachable: [] },
+            } satisfies SkillsLibraryListResult),
+      );
+      state.client = { request } as unknown as GatewayBrowserClient;
+      const host = new ChatComposerCapabilityHost(() => {
+        const props = host.props(context, state, session, "main");
+        if (props.skillsError && !props.skillsLoading) {
+          failed.resolve();
+        }
+        if (props.skills) {
+          loaded.resolve();
+        }
+      });
+      try {
+        host.props(context, state, session, "main", false, true);
+        first.reject(new Error("synthetic skill discovery failure"));
+        await failed.promise;
+        for (let render = 0; render < 3; render += 1) {
+          const props = host.props(context, state, session, "main", false, true);
+          expect(props.skillsError).toBe(true);
+          expect(props.skillsLoading).toBe(false);
+          expect(statusRequest).toHaveBeenCalledTimes(1);
+        }
+        if (retry === "explicit retry") {
+          host.props(context, state, session, "main").onLoadSkills?.();
+        } else {
+          session = { ...session, spawnedCwd: "/project/second" };
+          host.props(context, state, session, "main", false, true);
+        }
+        expect(statusRequest).toHaveBeenCalledTimes(2);
+        recovery.resolve({ skills: [] });
+        await loaded.promise;
+        expect(host.props(context, state, session, "main").skillsError).toBe(false);
+      } finally {
+        recovery.resolve({ skills: [] });
+      }
+    },
+  );
+
   it("records an unexpected effective-tools loader rejection", async () => {
     const notify = vi.fn();
     const host = new ChatComposerCapabilityHost(notify);

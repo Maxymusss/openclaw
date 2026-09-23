@@ -23,7 +23,6 @@ import { normalizeChatType } from "../../channels/chat-type.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../plugins/command-registry-state.js";
 import { resolveSkillsPrompt } from "../../skills/loading/workspace-skill-prompt.js";
-import { resolveSessionSkillWorkspaceDir } from "../../skills/loading/workspace-skill-roots.js";
 import { resolveEmbeddedRunSkillEntries } from "../../skills/runtime/embedded-run-entries.js";
 import { getRemoteSkillEligibility } from "../../skills/runtime/remote.js";
 import { resolveReusableWorkspaceSkillSnapshot } from "../../skills/runtime/session-snapshot.js";
@@ -229,8 +228,7 @@ export async function resolveCommandsSystemPromptBundle(
     sandboxed: sandboxRuntime.sandboxed,
     sessionKey: toolPolicySessionKey,
     workspaceDir,
-    executionWorkspaceDir:
-      resolveSessionSkillWorkspaceDir(targetSessionEntry, workspaceDir) ?? workspaceDir,
+    executionWorkspaceDir: targetSessionEntry?.worktree?.canonicalWorkspaceDir ?? workspaceDir,
     skillsSnapshot: targetSessionEntry?.skillsSnapshot,
   });
   const tools = (() => {

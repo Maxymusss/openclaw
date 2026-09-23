@@ -568,7 +568,7 @@ export class ChatComposerCapabilityHost {
         ? { client, connectionEpoch, sessionKey, agentId, isCurrent: current }
         : null,
     );
-    if (skillsOpen) {
+    if (skillsOpen && !this.skillCatalog.hasError(agentId, sessionKey)) {
       this.loadSkills(context, state, agentId);
     }
     if (skillsOpen && !this.library.result && !this.library.loading && !this.library.error) {

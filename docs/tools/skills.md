@@ -57,8 +57,8 @@ materialized copies, not the original host paths.
 Chat skill menus and skill commands use that session's workspace, including its
 project skills. The global Skills page remains an agent-level inventory; it does
 not combine skills from unrelated project sessions. Session-scoped
-`skills.status`, `commands.list`, and `chat.metadata` requests use the same
-project roots as the session's skill context.
+`skills.status`, `commands.list`, and `chat.metadata` requests include the
+selected project's skill roots.
 
 Managed worktree sessions keep their recorded canonical workspace as the skill
 source. A selected nested workspace stays nested: discovery does not walk up to

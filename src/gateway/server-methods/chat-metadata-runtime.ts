@@ -7,6 +7,7 @@ import {
   withPreparedModelRuntimeReadBatch,
 } from "../../agents/prepared-model-catalog.js";
 import { getPreparedModelFullCatalogAuth } from "../../agents/prepared-model-runtime-auth.js";
+import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
 import { getPreparedModelRuntimeStartupStatus } from "../../agents/prepared-model-runtime.startup-status.js";
 import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js";
 import { resolveRuntimeConfigCacheKey } from "../../config/runtime-snapshot.js";
@@ -53,16 +54,12 @@ import type {
 } from "./chat-startup-projection-contract.js";
 import type { GatewayModelCatalogContext } from "./models-list-context.js";
 
-type PreparedAgentMetadata = PreparedAgentFacts & {
-  swarmEnabled: boolean;
-};
-
 type PreparedProjection<T> = { read: () => T; isCurrent: () => boolean };
 
 type PreparedChatMetadataProjection = Awaited<
   ReturnType<ChatMetadataRuntimeDeps["buildProjection"]>
 > & {
-  agent: PreparedAgentMetadata;
+  agent: PreparedAgentFacts;
 };
 
 type AgentProjectionEntry =
@@ -72,7 +69,7 @@ type AgentProjectionEntry =
 type PreparedMetadataGeneration = {
   epoch: number;
   facts: PreparedGenerationFacts;
-  agentsById: Map<string, PreparedAgentMetadata>;
+  agentsById: Map<string, PreparedAgentFacts>;
   neutralProjectionByAgentId: Map<string, AgentProjectionEntry>;
   sessionProjectionByKey: Map<string, AgentProjectionEntry>;
   commandsByScope: Map<string, CommandProjectionEntry>;
@@ -156,6 +153,7 @@ function captureGenerationFacts(deps: ChatMetadataRuntimeDeps): PreparedGenerati
               // Failure is visible metadata; in-flight discovery does not invalidate usable rows.
               catalogRefreshFailed: catalog.refreshFailed === true,
               skillsVersion: deps.getSkillsVersion(workspaceDir),
+              swarmEnabled: resolveSwarmConfig(config, agentId).enabled,
             },
           ];
         }),
@@ -235,7 +233,7 @@ export function createGatewayChatMetadataRuntime(params: {
 
   const projectAgent = async (
     generation: PreparedMetadataGeneration,
-    agent: PreparedAgentMetadata,
+    agent: PreparedAgentFacts,
     sessionEntry?: ChatMetadataSessionEntry,
     requesterProfileId?: string,
     assertCurrent?: () => void,
@@ -325,24 +323,6 @@ export function createGatewayChatMetadataRuntime(params: {
     return projection;
   };
 
-  const prepareAgent = (generation: PreparedMetadataGeneration, agentId: string) => {
-    const existing = generation.agentsById.get(agentId);
-    if (existing) {
-      return existing;
-    }
-    const agent = generation.facts.agents.find((candidate) => candidate.agentId === agentId);
-    if (!agent) {
-      return undefined;
-    }
-    const prepared = {
-      ...agent,
-      swarmEnabled: resolveSwarmConfig(generation.facts.config, agentId).enabled,
-    };
-    generation.agentsById.set(agentId, prepared);
-    pruneMapToMaxSize(generation.agentsById, CHAT_METADATA_CACHE_MAX_ENTRIES);
-    return prepared;
-  };
-
   const prepareCommands = (
     generation: PreparedMetadataGeneration,
     readParams: ChatMetadataReadParams,
@@ -377,7 +357,7 @@ export function createGatewayChatMetadataRuntime(params: {
       current = {
         epoch: invalidationEpoch,
         facts,
-        agentsById: new Map(),
+        agentsById: new Map(facts.agents.map((agent) => [agent.agentId, agent])),
         neutralProjectionByAgentId: new Map(),
         sessionProjectionByKey: new Map(),
         commandsByScope: new Map(),
@@ -557,24 +537,36 @@ export function createGatewayChatMetadataRuntime(params: {
   const read = async (readParams: ChatMetadataReadParams): Promise<ChatMetadataResult> => {
     assertAgentDatabaseAdmitted(readParams.agentId);
     const draft = readParams.draftAccountSelection;
+    const isCurrent = readParams.isCurrent;
+    const assertCurrent = isCurrent
+      ? () => {
+          if (!isCurrent()) {
+            throw new PreparedModelRuntimePublicationSupersededError(
+              "Chat metadata access changed while preparing its metadata. Retry the request.",
+            );
+          }
+          draft?.assertCurrent();
+        }
+      : draft?.assertCurrent;
     const sessionEntry: ChatMetadataSessionEntry | undefined = draft
       ? { authProfileOverride: draft.authProfileId, authProfileOverrideSource: "user" }
       : readParams.sessionEntry;
     return await readCurrent(async (generation) => {
       const agentId = normalizeAgentId(readParams.agentId);
-      const agent = prepareAgent(generation, agentId);
+      const agent = generation.agentsById.get(agentId);
       if (!agent) {
         throw new ChatMetadataSnapshotUnavailableError(
           `prepared chat metadata is unavailable for agent "${agentId}"`,
         );
       }
+      readParams.assertCurrent?.();
       const commandsPromise = prepareCommands(generation, { ...readParams, sessionEntry });
       const projection = await projectAgent(
         generation,
         agent,
         sessionEntry,
         draft?.owner ?? readParams.requesterProfileId,
-        draft?.assertCurrent,
+        assertCurrent,
         // Existing sessions use their saved selection, never a viewer's newer default.
         !readParams.sessionKey && !readParams.sessionEntry,
       );
@@ -632,7 +624,7 @@ export function createGatewayChatMetadataRuntime(params: {
       generation: PreparedMetadataGeneration,
     ): Promise<PreparedProjection<ChatStartupProjectionResult>> => {
       const agentId = normalizeAgentId(readParams.agentId);
-      const agent = prepareAgent(generation, agentId);
+      const agent = generation.agentsById.get(agentId);
       if (!agent) {
         throw new ChatMetadataSnapshotUnavailableError(
           `prepared chat startup projection is unavailable for agent "${agentId}"`,
@@ -653,7 +645,10 @@ export function createGatewayChatMetadataRuntime(params: {
         read: () => assemble(readNeutral, readSession, commands),
       };
     };
-    if (readParams.readPolicy !== "ready" && hasSessionContext) {
+    if (
+      readParams.readPolicy !== "ready" &&
+      (hasSessionContext || readParams.sessionKey || readParams.sessionEntry)
+    ) {
       return readCurrent(projectStartup);
     }
     if (isUserModelAuthProfileId(profiles.preferredProfileId ?? "")) {

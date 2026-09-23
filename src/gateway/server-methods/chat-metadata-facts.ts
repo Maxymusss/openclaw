@@ -13,6 +13,7 @@ export type PreparedAgentFacts = ChatMetadataProjectionFacts & {
   authStoreRevision: string;
   catalogRefreshFailed: boolean;
   skillsVersion: number;
+  swarmEnabled: boolean;
 };
 
 export type PreparedGenerationFacts = {
