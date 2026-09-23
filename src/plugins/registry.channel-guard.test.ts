@@ -34,7 +34,7 @@ describe("plugin registry channel guard", () => {
     const conflicting = createPluginRecord({
       id: "conflicting-owner",
       contracts: {
-        get tools() {
+        get tools(): string[] {
           declarationReads += 1;
           throw new Error("conflicted declarations must not be read");
         },
