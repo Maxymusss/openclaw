@@ -61,13 +61,6 @@ function extractProviderFromModelRef(value: string): string | null {
   return normalizeProviderId(trimmed.slice(0, slash));
 }
 
-function hasConfiguredEmbeddedHarnessRuntime(
-  cfg: OpenClawConfig,
-  _env: NodeJS.ProcessEnv,
-): boolean {
-  return collectConfiguredAgentHarnessRuntimes(cfg).length > 0;
-}
-
 function resolveAgentHarnessOwnerPluginIds(
   registry: PluginManifestRegistry,
   runtime: string,
@@ -122,16 +115,6 @@ function isProviderConfigured(cfg: OpenClawConfig, providerId: string): boolean 
   return false;
 }
 
-function hasPluginOwnedWebSearchConfig(cfg: OpenClawConfig, pluginId: string): boolean {
-  const pluginConfig = cfg.plugins?.entries?.[pluginId]?.config;
-  return isRecord(pluginConfig) && isRecord(pluginConfig.webSearch);
-}
-
-function hasPluginOwnedWebFetchConfig(cfg: OpenClawConfig, pluginId: string): boolean {
-  const pluginConfig = cfg.plugins?.entries?.[pluginId]?.config;
-  return isRecord(pluginConfig) && isRecord(pluginConfig.webFetch);
-}
-
 function resolvePluginOwnedToolConfigKeys(plugin: PluginManifestRecord): string[] {
   if ((plugin.contracts?.tools?.length ?? 0) === 0) {
     return [];
@@ -152,22 +135,6 @@ function hasPluginOwnedToolConfig(cfg: OpenClawConfig, plugin: PluginManifestRec
   return resolvePluginOwnedToolConfigKeys(plugin).some((key) => pluginConfig[key] !== undefined);
 }
 
-function resolveProviderPluginsWithOwnedWebSearch(
-  registry: PluginManifestRegistry,
-): PluginManifestRecord[] {
-  return registry.plugins
-    .filter((plugin) => (plugin.providers?.length ?? 0) > 0)
-    .filter((plugin) => (plugin.contracts?.webSearchProviders?.length ?? 0) > 0);
-}
-
-function resolveProviderPluginsWithOwnedWebFetch(
-  registry: PluginManifestRegistry,
-): PluginManifestRecord[] {
-  return registry.plugins.filter(
-    (plugin) => (plugin.contracts?.webFetchProviders?.length ?? 0) > 0,
-  );
-}
-
 function resolvePluginIdsForConfiguredSpeechProvider(
   providerId: string,
   registry: PluginManifestRegistry,
@@ -186,44 +153,6 @@ function resolvePluginIdsForConfiguredSpeechProvider(
     .toSorted((left, right) => left.localeCompare(right));
 }
 
-function resolvePluginsWithOwnedToolConfig(
-  registry: PluginManifestRegistry,
-): PluginManifestRecord[] {
-  return registry.plugins.filter((plugin) => (plugin.contracts?.tools?.length ?? 0) > 0);
-}
-
-function resolvePluginIdForConfiguredWebFetchProvider(
-  providerId: string | undefined,
-  registry: PluginManifestRegistry,
-): string | undefined {
-  const normalizedProviderId = normalizeOptionalLowercaseString(providerId);
-  if (!normalizedProviderId) {
-    return undefined;
-  }
-  return registry.plugins.find(
-    (plugin) =>
-      plugin.origin === "bundled" &&
-      (plugin.contracts?.webFetchProviders ?? []).some(
-        (candidate) => normalizeOptionalLowercaseString(candidate) === normalizedProviderId,
-      ),
-  )?.id;
-}
-
-function resolvePluginIdForConfiguredWebSearchProvider(
-  providerId: string | undefined,
-  registry: PluginManifestRegistry,
-): string | undefined {
-  const normalizedProviderId = normalizeOptionalLowercaseString(providerId);
-  if (!normalizedProviderId) {
-    return undefined;
-  }
-  return registry.plugins.find((plugin) =>
-    (plugin.contracts?.webSearchProviders ?? []).some(
-      (candidate) => normalizeOptionalLowercaseString(candidate) === normalizedProviderId,
-    ),
-  )?.id;
-}
-
 function hasConfiguredWebSearchProviderSelection(cfg: OpenClawConfig): boolean {
   const provider = cfg.tools?.web?.search?.provider;
   return (
@@ -239,19 +168,11 @@ function hasConfiguredVoiceProviderSelection(cfg: OpenClawConfig): boolean {
   );
 }
 
-function hasConfiguredPluginConfigEntry(
-  cfg: OpenClawConfig,
-  configKey?: "webSearch" | "webFetch",
-): boolean {
+function hasConfiguredPluginConfigEntry(cfg: OpenClawConfig): boolean {
   const entries = asOptionalObjectRecord(cfg.plugins?.entries);
   return (
     entries !== undefined &&
-    Object.values(entries).some(
-      (entry) =>
-        isRecord(entry) &&
-        isRecord(entry.config) &&
-        (configKey === undefined || isRecord(entry.config[configKey])),
-    )
+    Object.values(entries).some((entry) => isRecord(entry) && isRecord(entry.config))
   );
 }
 
@@ -385,7 +306,7 @@ function hasPluginAllowlistWithMaterialEntries(cfg: OpenClawConfig): boolean {
   return Object.values(entries).some(hasMaterialPluginEntryConfig);
 }
 
-function hasConfiguredProviderModelOrHarness(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): boolean {
+function hasConfiguredProviderModelOrHarness(cfg: OpenClawConfig): boolean {
   if (getConfiguredDecisionProviderIds(cfg).length > 0) {
     return true;
   }
@@ -398,14 +319,23 @@ function hasConfiguredProviderModelOrHarness(cfg: OpenClawConfig, env: NodeJS.Pr
   if (collectConfiguredModelRefs(cfg, { includeChannelModelOverrides: false }).length > 0) {
     return true;
   }
-  return hasConfiguredEmbeddedHarnessRuntime(cfg, env);
+  return collectConfiguredAgentHarnessRuntimes(cfg).length > 0;
+}
+
+function hasConfiguredPluginProviders(cfg: OpenClawConfig): boolean {
+  return (
+    hasConfiguredProviderModelOrHarness(cfg) ||
+    hasConfiguredVoiceProviderSelection(cfg) ||
+    collectConfiguredWorkerProviderIds(cfg).length > 0 ||
+    hasConfiguredWebSearchProviderSelection(cfg)
+  );
 }
 
 function arePluginsGloballyDisabled(cfg: OpenClawConfig): boolean {
   return cfg.plugins?.enabled === false;
 }
 
-function configMayNeedPluginManifestRegistry(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): boolean {
+function configMayNeedPluginManifestRegistry(cfg: OpenClawConfig): boolean {
   if (arePluginsGloballyDisabled(cfg)) {
     return false;
   }
@@ -415,16 +345,7 @@ function configMayNeedPluginManifestRegistry(cfg: OpenClawConfig, env: NodeJS.Pr
   if (hasConfiguredPluginConfigEntry(cfg)) {
     return true;
   }
-  if (hasConfiguredProviderModelOrHarness(cfg, env)) {
-    return true;
-  }
-  if (hasConfiguredVoiceProviderSelection(cfg)) {
-    return true;
-  }
-  if (collectConfiguredWorkerProviderIds(cfg).length > 0) {
-    return true;
-  }
-  if (hasConfiguredWebSearchProviderSelection(cfg)) {
+  if (hasConfiguredPluginProviders(cfg)) {
     return true;
   }
   const configuredChannels = cfg.channels as Record<string, unknown> | undefined;
@@ -466,20 +387,7 @@ export function resolvePluginAutoEnableReadiness(
   if (configuredChannelIds.length > 0) {
     return { mayNeedAutoEnable: true, configuredChannelIds };
   }
-  if (hasConfiguredProviderModelOrHarness(cfg, env)) {
-    return { mayNeedAutoEnable: true, configuredChannelIds };
-  }
-  if (hasConfiguredVoiceProviderSelection(cfg)) {
-    return { mayNeedAutoEnable: true, configuredChannelIds };
-  }
-  if (collectConfiguredWorkerProviderIds(cfg).length > 0) {
-    return { mayNeedAutoEnable: true, configuredChannelIds };
-  }
-  if (
-    hasConfiguredWebSearchProviderSelection(cfg) ||
-    hasConfiguredPluginConfigEntry(cfg, "webSearch") ||
-    hasConfiguredPluginConfigEntry(cfg, "webFetch")
-  ) {
+  if (hasConfiguredPluginProviders(cfg)) {
     return { mayNeedAutoEnable: true, configuredChannelIds };
   }
   if (!hasSetupAutoEnableRelevantConfig(cfg)) {
@@ -583,57 +491,58 @@ export function resolveConfiguredPluginAutoEnableCandidates(
     }
   }
 
-  const webSearchConfig = params.config.tools?.web?.search;
-  const webSearchProvider =
-    webSearchConfig?.enabled !== false && typeof webSearchConfig?.provider === "string"
-      ? webSearchConfig.provider
-      : undefined;
-  const webSearchPluginId = resolvePluginIdForConfiguredWebSearchProvider(
-    webSearchProvider,
-    params.registry,
-  );
-  if (webSearchPluginId) {
-    changes.push({
-      pluginId: webSearchPluginId,
+  for (const selection of [
+    {
+      provider:
+        params.config.tools?.web?.search?.enabled !== false
+          ? params.config.tools?.web?.search?.provider
+          : undefined,
+      contract: "webSearchProviders",
       kind: "web-search-provider-selected",
-      providerId: normalizeOptionalLowercaseString(webSearchProvider) ?? "",
-    });
-  }
-
-  const webFetchProvider =
-    typeof params.config.tools?.web?.fetch?.provider === "string"
-      ? params.config.tools.web.fetch.provider
-      : undefined;
-  const webFetchPluginId = resolvePluginIdForConfiguredWebFetchProvider(
-    webFetchProvider,
-    params.registry,
-  );
-  if (webFetchPluginId) {
-    changes.push({
-      pluginId: webFetchPluginId,
+      bundledOnly: false,
+    },
+    {
+      provider: params.config.tools?.web?.fetch?.provider,
+      contract: "webFetchProviders",
       kind: "web-fetch-provider-selected",
-      providerId: normalizeOptionalLowercaseString(webFetchProvider) ?? "",
-    });
-  }
-
-  for (const plugin of resolveProviderPluginsWithOwnedWebSearch(params.registry)) {
-    const pluginId = plugin.id;
-    if (hasPluginOwnedWebSearchConfig(params.config, pluginId)) {
-      changes.push({ pluginId, kind: "plugin-web-search-configured" });
+      bundledOnly: true,
+    },
+  ] as const) {
+    const providerId = normalizeOptionalLowercaseString(selection.provider);
+    if (!providerId) {
+      continue;
+    }
+    const pluginId = params.registry.plugins.find(
+      (plugin) =>
+        (!selection.bundledOnly || plugin.origin === "bundled") &&
+        (plugin.contracts?.[selection.contract] ?? []).some(
+          (candidate) => normalizeOptionalLowercaseString(candidate) === providerId,
+        ),
+    )?.id;
+    if (pluginId) {
+      changes.push({ pluginId, kind: selection.kind, providerId });
     }
   }
 
-  for (const plugin of resolvePluginsWithOwnedToolConfig(params.registry)) {
-    const pluginId = plugin.id;
-    if (hasPluginOwnedToolConfig(params.config, plugin)) {
-      changes.push({ pluginId, kind: "plugin-tool-configured" });
-    }
-  }
-
-  for (const plugin of resolveProviderPluginsWithOwnedWebFetch(params.registry)) {
-    const pluginId = plugin.id;
-    if (hasPluginOwnedWebFetchConfig(params.config, pluginId)) {
-      changes.push({ pluginId, kind: "plugin-web-fetch-configured" });
+  for (const [contract, configKey, kind] of [
+    ["webSearchProviders", "webSearch", "plugin-web-search-configured"],
+    ["tools", null, "plugin-tool-configured"],
+    ["webFetchProviders", "webFetch", "plugin-web-fetch-configured"],
+  ] as const) {
+    for (const plugin of params.registry.plugins) {
+      if (
+        (plugin.contracts?.[contract]?.length ?? 0) === 0 ||
+        (contract === "webSearchProviders" && (plugin.providers?.length ?? 0) === 0)
+      ) {
+        continue;
+      }
+      const config = params.config.plugins?.entries?.[plugin.id]?.config;
+      const configured = configKey
+        ? isRecord(config) && isRecord(config[configKey])
+        : hasPluginOwnedToolConfig(params.config, plugin);
+      if (configured) {
+        changes.push({ pluginId: plugin.id, kind });
+      }
     }
   }
 
@@ -667,7 +576,7 @@ export function resolvePluginAutoEnableManifestRegistry(params: {
   if (params.manifestRegistry) {
     return params.manifestRegistry;
   }
-  if (!configMayNeedPluginManifestRegistry(params.config, params.env)) {
+  if (!configMayNeedPluginManifestRegistry(params.config)) {
     return EMPTY_PLUGIN_MANIFEST_REGISTRY;
   }
   const currentSnapshot = getCurrentPluginMetadataSnapshot({

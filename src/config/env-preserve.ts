@@ -56,58 +56,33 @@ function getArrayIdentityPathValue(value: unknown, path: ArrayIdentityPath): unk
   return current;
 }
 
-function collectStableArrayIdentityPaths(value: unknown): ArrayIdentityPath[] {
-  if (!isPlainObject(value)) {
-    return [];
-  }
-  for (const key of ["id", "agentId"]) {
-    const child = value[key];
-    if (typeof child === "string" && !hasEnvVarRef(child)) {
-      return [[key]];
-    }
-  }
-  return [];
-}
-
 function resolveStableArrayIdentityMatch(params: {
   incoming: unknown[];
   parsed: unknown[];
   parsedIndex: number;
 }): { kind: "none" } | { kind: "invalid" } | { kind: "match"; incomingIndex: number } {
   const parsedItem = params.parsed[params.parsedIndex];
-  const identityPaths = collectStableArrayIdentityPaths(parsedItem);
-  if (identityPaths.length === 0) {
+  if (!isPlainObject(parsedItem)) {
     return { kind: "none" };
   }
-
-  let incomingIndex: number | undefined;
-  let hasUniqueAuthoredIdentity = false;
-  for (const identityPath of identityPaths) {
-    const identityValue = getArrayIdentityPathValue(parsedItem, identityPath);
-    const authoredCount = params.parsed.filter((item) =>
-      isDeepStrictEqual(getArrayIdentityPathValue(item, identityPath), identityValue),
-    ).length;
-    if (authoredCount !== 1) {
-      continue;
-    }
-    hasUniqueAuthoredIdentity = true;
-    const incomingMatches = params.incoming.flatMap((item, index) =>
-      isDeepStrictEqual(getArrayIdentityPathValue(item, identityPath), identityValue)
-        ? [index]
-        : [],
-    );
-    if (
-      incomingMatches.length !== 1 ||
-      (incomingIndex !== undefined && incomingIndex !== incomingMatches[0])
-    ) {
-      return { kind: "invalid" };
-    }
-    incomingIndex = incomingMatches[0];
+  const identityKey = ["id", "agentId"].find(
+    (key) => typeof parsedItem[key] === "string" && !hasEnvVarRef(parsedItem[key]),
+  );
+  if (!identityKey) {
+    return { kind: "none" };
   }
-  if (incomingIndex !== undefined) {
-    return { kind: "match", incomingIndex };
+  const identityValue = parsedItem[identityKey];
+  const matchesIdentity = (item: unknown) =>
+    isPlainObject(item) && isDeepStrictEqual(item[identityKey], identityValue);
+  if (params.parsed.filter(matchesIdentity).length !== 1) {
+    return { kind: "none" };
   }
-  return hasUniqueAuthoredIdentity ? { kind: "invalid" } : { kind: "none" };
+  const incomingMatches = params.incoming.flatMap((item, index) =>
+    matchesIdentity(item) ? [index] : [],
+  );
+  return incomingMatches.length === 1
+    ? { kind: "match", incomingIndex: incomingMatches[0]! }
+    : { kind: "invalid" };
 }
 
 function collectLiteralArrayIdentityPaths(
