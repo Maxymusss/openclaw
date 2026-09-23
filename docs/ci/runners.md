@@ -109,6 +109,34 @@ registrations or hosted rows. Real-Gateway E2E also retains its 32-class request
 other main CI placements retain the 16-class sizing.
 Native CI must establish the resulting execution and queue times.
 
+The measured exception is source-only, serial `agentic-gateway-core-1-hosted-*`
+rows whose children all retain an explicit two-worker ceiling. Their original
+360-second predicted envelopes can request the 16-class after provider placement.
+Builds, SDK/compiler fixtures, measured-worker fallbacks, memory-gated children,
+overlapping plans, and denser envelopes retain their existing capacity. Precise
+changed-file plans keep their original anchors. The executor's worker policy is
+unchanged: the observed four-CPU/15.42-GiB allocation still admits both workers.
+
+Three independent replays at `22dff55f62aef4a74c1d86a81154fad6ff19504b`
+([sample 1](https://github.com/openclaw/openclaw/actions/runs/35818788758),
+[sample 2](https://github.com/openclaw/openclaw/actions/runs/35818791623),
+[sample 3](https://github.com/openclaw/openclaw/actions/runs/35818794007)) retained
+the original source, selectors, setup, and admission policy. The five sampled
+Gateway-core row/shape comparisons passed all 15 jobs. Their 16-class medians
+were 542/527 seconds on main and 551/544/444 seconds on PRs, versus
+506/458 and 510/493/449 seconds on the 32-class: ratios 1.071/1.151 and
+1.080/1.103/0.989. Other classes did not qualify as a group: the overlapping
+row slowed 67.9%, memory-gated rows lost their eight-worker allowance, and the
+storage/chat PR row exceeded 600 seconds. Across the complete 60-job experiment,
+57 jobs passed and three failed in fixture/database teardown; those failures
+are retained evidence, not successful timing samples.
+
+At the historical $0.064/$0.032 per-minute list rates, these matched Gateway-core
+subsets save about 45%/47% of compute cost on main/PR while consuming 11%/6% more
+machine-minutes. This does not establish a 40% whole-run reduction or a
+15-minute workflow wall. Fuller packing needs its own native qualification;
+rows above the measured prediction envelope are not downsized automatically.
+
 Compact groups with a memory-gated worker allowance also request the 32-class,
 including standalone serial bins. The isolated Gateway groups already request
 eight workers with a 28-GiB memory floor and a two-worker fallback. On main run

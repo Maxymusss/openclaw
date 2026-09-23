@@ -325,6 +325,7 @@ const EXCLUDED_PROJECT_CONFIGS = new Set([
 const DEFAULT_NODE_TEST_RUNNER = "blacksmith-8vcpu-ubuntu-2404";
 const BUNDLED_NODE_TEST_RUNNER = "blacksmith-4vcpu-ubuntu-2404";
 const EXTRA_LARGE_NODE_TEST_RUNNER = "blacksmith-32vcpu-ubuntu-2404";
+const MEASURED_GATEWAY_CORE_RUNNER = "blacksmith-16vcpu-ubuntu-2404";
 // Startup-core transforms the broad gateway graph before its assertions run.
 // Keep enough CPU here to avoid spending minutes in Vitest imports on 4 vCPU.
 const GATEWAY_STARTUP_CORE_RUNNER = DEFAULT_NODE_TEST_RUNNER;
@@ -2957,13 +2958,51 @@ export function createNodeTestShardBundles(
   const compactMode =
     options.compactMode ?? (options.compact === true ? "pull-request" : undefined);
   if (compactMode !== undefined) {
-    return createCompactNodeTestShardBundles(
+    const jobs = createCompactNodeTestShardBundles(
       // Keep complete owners for cost admission; compact projection below gives
       // a reduced tooling selection its own timing identity.
       createNodeTestShards({ ...options, includeReleaseOnlyToolingShards: true }),
       { ...options, compactMode },
       compactMode,
     );
+    // Apply physical sizing after provider placement. RunsOn selects its own
+    // classes from the original plan; precise plans retain their original anchors.
+    for (const job of jobs) {
+      if (
+        job.runner !== EXTRA_LARGE_NODE_TEST_RUNNER ||
+        job.planConcurrency !== 1 ||
+        job.requiresDist ||
+        job.pretestBuildMode ||
+        // Only the original 360-second envelopes have native 16-class proof.
+        (job.predictedSeconds ?? Infinity) > COMPACT_PARALLEL_NODE_TEST_JOB_SECONDS ||
+        !job.groups.some((group) =>
+          group.shard_name.startsWith("agentic-gateway-core-1-hosted-"),
+        ) ||
+        job.groups.some(
+          (group) =>
+            group.requiresDist ||
+            group.pretestBuildMode ||
+            group.fallbackMaxWorkers !== undefined ||
+            group.minTotalMemoryBytes !== undefined ||
+            group.configs.some(
+              (config) =>
+                config.startsWith("test/vitest/vitest.tooling") ||
+                config.startsWith("test/vitest/vitest.plugin-sdk"),
+            ) ||
+            group.includePatterns?.some((file) =>
+              TOOLING_DECLARATION_COMPILER_TEST_FILES.has(file),
+            ) ||
+            Math.min(
+              Number(job.env?.OPENCLAW_VITEST_MAX_WORKERS ?? Infinity),
+              Number(group.env?.OPENCLAW_VITEST_MAX_WORKERS ?? Infinity),
+            ) !== 2,
+        )
+      ) {
+        continue;
+      }
+      job.runner = MEASURED_GATEWAY_CORE_RUNNER;
+    }
+    return jobs;
   }
 
   const shards = createNodeTestShards(options);

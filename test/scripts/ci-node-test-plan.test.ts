@@ -3047,6 +3047,31 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       ] as const) {
         // Capacity belongs to the workload even when timing changes reorder rows.
         const groups = plan.flatMap((shard) => shard.groups);
+        const smallerJobs = plan.filter((job) => job.runner === "blacksmith-16vcpu-ubuntu-2404");
+        if (profile.name === "hybrid") {
+          expect(smallerJobs.length, `${mode} measured Gateway core placement`).toBeGreaterThan(0);
+        }
+        for (const job of smallerJobs) {
+          expect(job.planConcurrency).toBe(1);
+          expect(job.requiresDist).toBe(false);
+          expect(job.pretestBuildMode).toBeUndefined();
+          expect(job.predictedSeconds).toBeLessThanOrEqual(360);
+          expect(
+            job.groups.some((group) =>
+              group.shard_name.startsWith("agentic-gateway-core-1-hosted-"),
+            ),
+          ).toBe(true);
+          for (const group of job.groups) {
+            expect(group.fallbackMaxWorkers).toBeUndefined();
+            expect(group.minTotalMemoryBytes).toBeUndefined();
+            expect(
+              Math.min(
+                Number(job.env?.OPENCLAW_VITEST_MAX_WORKERS ?? Infinity),
+                Number(group.env?.OPENCLAW_VITEST_MAX_WORKERS ?? Infinity),
+              ),
+            ).toBe(2);
+          }
+        }
         for (const group of groups.filter((entry) =>
           entry.configs.includes("test/vitest/vitest.commands.config.ts"),
         )) {
@@ -3400,6 +3425,12 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         const nativeFullCli =
           !githubPullRequestCompact.includes(shard) &&
           shard.groups.some((group) => group.shard_name === "agentic-cli");
+        if (shard.runner === "blacksmith-16vcpu-ubuntu-2404") {
+          // The measured exception's complete capacity contract is checked above.
+          expect(blacksmithTooling).toBe(false);
+          expect(nativeFullCli).toBe(false);
+          continue;
+        }
         expect(shard.runner).toBe(
           originalHybridJob
             ? originalHybridJob.runner
