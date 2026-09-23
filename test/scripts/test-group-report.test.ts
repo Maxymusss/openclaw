@@ -125,7 +125,9 @@ describe("scripts/test-group-report aggregation", () => {
     const result = spawnSync(
       process.execPath,
       [
-        ...resolveRuntimeWorkerArgv(reportUrl, process.execPath),
+        "--import",
+        "./scripts/tsx.mjs",
+        "scripts/test-group-report.mts",
         "--report",
         input,
         "--output",
