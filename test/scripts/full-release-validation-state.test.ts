@@ -1471,25 +1471,38 @@ describe("release decision policy", () => {
   );
 
   it.each(["checks-node-core-test-nondist-shard", "checks-fast-core"])(
-    "keeps CI %s blocking alongside advisory native failures",
+    "records a failed CI %s lane as advisory alongside advisory native failures",
     (name) => {
-      const result = classifyReleaseSnapshot({
-        children: [
-          child("normalCi", {
-            conclusion: "failure",
-            jobs: [
-              ...nativeCiJobs,
-              { name, conclusion: "failure", status: "completed" },
-              { name: "openclaw/ci-gate", conclusion: "failure", status: "completed" },
-            ],
-            status: "completed",
-          }),
+      const snapshot = child("normalCi", {
+        conclusion: "failure",
+        jobs: [
+          ...nativeCiJobs,
+          { name, conclusion: "failure", status: "completed" },
+          { name: "openclaw/ci-gate", conclusion: "failure", status: "completed" },
         ],
+        status: "completed",
+      });
+      const result = classifyReleaseSnapshot({
+        children: [snapshot],
         releaseProfile: "stable",
         workflowRef: "main",
       });
-      expect(result.blockers.map((blocker) => blocker.job)).toEqual([name, "openclaw/ci-gate"]);
-      expect(result.state).toBe("blocked_complete");
+      expect(result).toMatchObject({ blockers: [], blockerCount: 0, errors: [], state: "passed" });
+      expect(
+        formatReleaseStateOutcome(
+          buildReleaseStateArtifact({
+            children: [snapshot],
+            decision: result,
+            executionPlan: { parentRunAttempt: 1, sha256: "x" },
+            expected: { parentRunAttempt: 1, parentRunId: "77", targetSha: TARGET_SHA },
+            mode: "decision",
+            releaseProfile: "stable",
+            rerunGroup: "all",
+          }),
+        ),
+      ).toContain(
+        `- Advisory: normalCi advisory lane ${name} ended failure; fix it in parallel, it does not block npm/ClawHub publication`,
+      );
     },
   );
 
