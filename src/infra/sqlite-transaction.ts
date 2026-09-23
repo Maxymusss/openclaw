@@ -7,6 +7,7 @@ import { readSqliteBusyTimeout, runWithSqliteBusyTimeout } from "./sqlite-busy-t
 import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
 import {
   assertTransactionUsable,
+  reportSqliteTransactionWarning,
   runSqliteTransactionSync,
   type SqliteTransactionOptions,
 } from "./sqlite-transaction-core.js";
@@ -28,7 +29,7 @@ export function logSlowSqliteCoordinatorWait(
   if (!isMainThread || elapsedMs <= 100) {
     return;
   }
-  transactionLog.warn("slow SQLite coordinator lock wait", {
+  reportSqliteTransactionWarning(transactionLog, "slow SQLite coordinator lock wait", {
     async: false,
     database: options.databaseLabel,
     elapsedMs,
