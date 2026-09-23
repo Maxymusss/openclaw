@@ -1037,7 +1037,7 @@ function applyCompactGroupWorkerPins(
     return {
       ...group,
       env: { ...group.env, ...PINNED_COMPACT_GROUP_ENV },
-      timing_key: `${group.shard_name}-parallel`,
+      timing_key: group.timing_key ?? `${group.shard_name}-parallel`,
     };
   }
   if (isParallelCommandsGroup(group)) {
