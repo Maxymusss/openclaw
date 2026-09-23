@@ -3,6 +3,7 @@ import { setImmediate } from "node:timers/promises";
 import { importSqliteSessionRowsBatch } from "../config/sessions/session-accessor.sqlite-import.js";
 import { normalizePersistedSessionEntryShape } from "../config/sessions/store-entry-shape.js";
 import type { SessionStoreTarget as ResolvedSessionStoreTarget } from "../config/sessions/targets.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import { prepareLegacyAcpMigrationSource } from "../infra/legacy-acp-migration-source.js";
 import {
   assertMigrationArtifactFingerprint,
@@ -12,7 +13,11 @@ import {
   type MigrationArtifactFingerprint,
   type MigrationArtifactIdentity,
 } from "../infra/session-sqlite-migration-artifact.js";
-import { canonicalMigrationFilePath } from "../infra/session-sqlite-migration-manifest.js";
+import {
+  canonicalMigrationFilePath,
+  updateMigrationManifestTarget,
+  type ActiveSessionSqliteMigrationRun,
+} from "../infra/session-sqlite-migration-manifest.js";
 import {
   countTranscriptEventsForPath,
   createTranscriptEventReader,
@@ -31,190 +36,217 @@ export async function importLegacySessionRecords(
   target: SessionStoreTarget,
   records: readonly LegacySessionRecord[],
   report: DoctorSessionSqliteTargetReport,
+  activeRun: ActiveSessionSqliteMigrationRun | undefined,
   replayRetainedPaths: Set<string>,
 ): Promise<void> {
   if (records.length === 0) {
     return;
   }
-  const completedIndexIdentity = records.find((record) => record.completedIndexReplay)
-    ?.completedIndexReplay?.indexIdentity;
-  if (
-    completedIndexIdentity &&
-    records.some(
-      (record) =>
-        record.completedIndexReplay &&
-        !sameMigrationArtifact(record.completedIndexReplay.indexIdentity, completedIndexIdentity),
-    )
-  ) {
-    throw new Error("Completed replay rows do not share one legacy index identity");
-  }
-  const completedIndexFingerprint = completedIndexIdentity
-    ? readMigrationArtifactFingerprint(target.storePath)
-    : undefined;
-  if (
-    completedIndexIdentity &&
-    completedIndexFingerprint &&
-    !sameMigrationArtifact(
-      readMigrationArtifactIdentity(target.storePath, 1n, completedIndexFingerprint),
-      completedIndexIdentity,
-    )
-  ) {
-    throw new Error("Restored legacy index no longer matches its completed import receipt");
-  }
-  const assertCompletedIndexCurrent = completedIndexFingerprint
-    ? () => assertMigrationArtifactFingerprint(target.storePath, completedIndexFingerprint)
-    : undefined;
-  const importedTranscriptSources = new Set<string>();
-  const existingSnapshot = readOnlySqliteValidationSnapshot(target);
-  for (let offset = 0; offset < records.length; offset += SESSION_IMPORT_BATCH_SIZE) {
-    const completedReplaySources = new Map<
-      string,
-      {
-        fingerprint: MigrationArtifactFingerprint;
-        identity?: MigrationArtifactIdentity;
-        key: string;
-        path: string;
-        result?: ReturnType<typeof countTranscriptEventsForPath>;
-        verifyOnly: boolean;
-      }
-    >();
-    const pending = records.slice(offset, offset + SESSION_IMPORT_BATCH_SIZE).flatMap((record) => {
-      const completedTranscriptIdentity =
-        record.completedIndexReplay && record.transcriptPath
-          ? record.completedIndexReplay.verifiedTranscriptIdentities.get(
-              canonicalMigrationFilePath(record.transcriptPath),
-            )
-          : undefined;
-      const verifyOnlyTranscriptArchive =
-        record.completedIndexReplay && record.transcriptPath
-          ? record.completedIndexReplay.verifyOnlyTranscriptArchives.get(
-              canonicalMigrationFilePath(record.transcriptPath),
-            )
-          : undefined;
-      const completedReplayPath =
-        completedTranscriptIdentity || !verifyOnlyTranscriptArchive
-          ? record.transcriptPath
-          : verifyOnlyTranscriptArchive.archivePath;
-      const completedReplaySourceKey =
-        record.completedIndexReplay && record.transcriptPath
-          ? `${record.entry.sessionId}\0${canonicalMigrationFilePath(record.transcriptPath)}`
-          : undefined;
-      let completedReplaySource = completedReplaySourceKey
-        ? completedReplaySources.get(completedReplaySourceKey)
-        : undefined;
-      const readCompletedReplaySource =
-        completedReplaySourceKey !== undefined && completedReplaySource === undefined;
-      if (
-        record.completedIndexReplay &&
-        record.transcriptPath &&
-        completedReplayPath &&
-        completedReplaySourceKey &&
-        !completedReplaySource
-      ) {
-        try {
-          const fingerprint = readMigrationArtifactFingerprint(completedReplayPath);
-          const identity = readMigrationArtifactIdentity(completedReplayPath, 1n, fingerprint);
-          const expectedIdentity =
-            completedTranscriptIdentity ?? verifyOnlyTranscriptArchive?.artifact?.identity;
-          if (!expectedIdentity || sameMigrationArtifact(identity, expectedIdentity)) {
-            completedReplaySource = {
-              fingerprint,
-              ...(expectedIdentity ? { identity: expectedIdentity } : {}),
-              key: completedReplaySourceKey,
-              path: completedReplayPath,
-              verifyOnly: completedTranscriptIdentity === undefined,
-            };
-            completedReplaySources.set(completedReplaySourceKey, completedReplaySource);
-          }
-        } catch {
-          completedReplaySource = undefined;
-        }
-      }
-      if (
-        record.completedIndexReplay &&
-        record.transcriptPath &&
-        (!completedReplaySource ||
-          (completedTranscriptIdentity !== undefined &&
-            (!completedReplaySource.identity ||
-              !sameMigrationArtifact(completedReplaySource.identity, completedTranscriptIdentity))))
-      ) {
-        record.completedIndexReplay.outcome = "unverified-source";
-        replayRetainedPaths.add(target.storePath);
-        for (const source of record.transcriptDependencies) {
-          replayRetainedPaths.add(source);
-        }
-        replayRetainedPaths.add(record.transcriptPath);
-        report.issues.push({
-          code: "historical_transcript_deferred",
-          sessionKey: record.sessionKey,
-          message: `${record.transcriptPath}: restored transcript has no matching completed import receipt; canonical session and source were preserved without replay.`,
-        });
-        return [];
-      }
-      const prepared = prepareLegacySessionImport(
-        target,
-        record,
-        report,
-        importedTranscriptSources,
-        existingSnapshot.ok ? existingSnapshot.snapshot : undefined,
-        completedReplaySource,
-        readCompletedReplaySource,
-      );
-      return prepared ? [{ ...prepared, record }] : [];
-    });
-    const pendingParams = pending.map((entry) => entry.params);
-    if (assertCompletedIndexCurrent && pendingParams[0]) {
-      const beforePersistentApply = pendingParams[0].beforePersistentApply;
-      pendingParams[0] = {
-        ...pendingParams[0],
-        beforePersistentApply: () => {
-          assertCompletedIndexCurrent();
-          beforePersistentApply?.();
-        },
-      };
+  try {
+    const completedIndexIdentity = records.find((record) => record.completedIndexReplay)
+      ?.completedIndexReplay?.indexIdentity;
+    if (
+      completedIndexIdentity &&
+      records.some(
+        (record) =>
+          record.completedIndexReplay &&
+          !sameMigrationArtifact(record.completedIndexReplay.indexIdentity, completedIndexIdentity),
+      )
+    ) {
+      throw new Error("Completed replay rows do not share one legacy index identity");
     }
-    const imported = await importSqliteSessionRowsBatch(pendingParams);
-    for (const [index, result] of imported.entries()) {
-      const record = pending[index]?.record;
-      if (record?.completedIndexReplay && result.completedIndexReplay) {
-        record.completedIndexReplay.outcome = result.completedIndexReplay;
-        if (
-          result.completedIndexReplay !== "appended" &&
-          result.completedIndexReplay !== "unchanged"
-        ) {
-          replayRetainedPaths.add(target.storePath);
-          for (const source of record.transcriptDependencies) {
-            replayRetainedPaths.add(source);
+    const completedIndexFingerprint = completedIndexIdentity
+      ? readMigrationArtifactFingerprint(target.storePath)
+      : undefined;
+    if (
+      completedIndexIdentity &&
+      completedIndexFingerprint &&
+      !sameMigrationArtifact(
+        readMigrationArtifactIdentity(target.storePath, 1n, completedIndexFingerprint),
+        completedIndexIdentity,
+      )
+    ) {
+      throw new Error("Restored legacy index no longer matches its completed import receipt");
+    }
+    const assertCompletedIndexCurrent = completedIndexFingerprint
+      ? () => assertMigrationArtifactFingerprint(target.storePath, completedIndexFingerprint)
+      : undefined;
+    const importedTranscriptSources = new Set<string>();
+    const existingSnapshot = readOnlySqliteValidationSnapshot(target);
+    for (let offset = 0; offset < records.length; offset += SESSION_IMPORT_BATCH_SIZE) {
+      const completedReplaySources = new Map<
+        string,
+        {
+          fingerprint: MigrationArtifactFingerprint;
+          identity?: MigrationArtifactIdentity;
+          key: string;
+          path: string;
+          result?: ReturnType<typeof countTranscriptEventsForPath>;
+          verifyOnly: boolean;
+        }
+      >();
+      const pending = records
+        .slice(offset, offset + SESSION_IMPORT_BATCH_SIZE)
+        .flatMap((record) => {
+          const completedTranscriptIdentity =
+            record.completedIndexReplay && record.transcriptPath
+              ? record.completedIndexReplay.verifiedTranscriptIdentities.get(
+                  canonicalMigrationFilePath(record.transcriptPath),
+                )
+              : undefined;
+          const verifyOnlyTranscriptArchive =
+            record.completedIndexReplay && record.transcriptPath
+              ? record.completedIndexReplay.verifyOnlyTranscriptArchives.get(
+                  canonicalMigrationFilePath(record.transcriptPath),
+                )
+              : undefined;
+          const completedReplayPath =
+            completedTranscriptIdentity || !verifyOnlyTranscriptArchive
+              ? record.transcriptPath
+              : verifyOnlyTranscriptArchive.archivePath;
+          const completedReplaySourceKey =
+            record.completedIndexReplay && record.transcriptPath
+              ? `${record.entry.sessionId}\0${canonicalMigrationFilePath(record.transcriptPath)}`
+              : undefined;
+          let completedReplaySource = completedReplaySourceKey
+            ? completedReplaySources.get(completedReplaySourceKey)
+            : undefined;
+          const readCompletedReplaySource =
+            completedReplaySourceKey !== undefined && completedReplaySource === undefined;
+          if (
+            record.completedIndexReplay &&
+            record.transcriptPath &&
+            completedReplayPath &&
+            completedReplaySourceKey &&
+            !completedReplaySource
+          ) {
+            try {
+              const fingerprint = readMigrationArtifactFingerprint(completedReplayPath);
+              const identity = readMigrationArtifactIdentity(completedReplayPath, 1n, fingerprint);
+              const expectedIdentity =
+                completedTranscriptIdentity ?? verifyOnlyTranscriptArchive?.artifact?.identity;
+              if (!expectedIdentity || sameMigrationArtifact(identity, expectedIdentity)) {
+                completedReplaySource = {
+                  fingerprint,
+                  ...(expectedIdentity ? { identity: expectedIdentity } : {}),
+                  key: completedReplaySourceKey,
+                  path: completedReplayPath,
+                  verifyOnly: completedTranscriptIdentity === undefined,
+                };
+                completedReplaySources.set(completedReplaySourceKey, completedReplaySource);
+              }
+            } catch {
+              completedReplaySource = undefined;
+            }
           }
-          if (record.transcriptPath) {
+          if (
+            record.completedIndexReplay &&
+            record.transcriptPath &&
+            (!completedReplaySource ||
+              (completedTranscriptIdentity !== undefined &&
+                (!completedReplaySource.identity ||
+                  !sameMigrationArtifact(
+                    completedReplaySource.identity,
+                    completedTranscriptIdentity,
+                  ))))
+          ) {
+            record.completedIndexReplay.outcome = "unverified-source";
+            replayRetainedPaths.add(target.storePath);
+            for (const source of record.transcriptDependencies) {
+              replayRetainedPaths.add(source);
+            }
             replayRetainedPaths.add(record.transcriptPath);
+            report.issues.push({
+              code: "historical_transcript_deferred",
+              sessionKey: record.sessionKey,
+              message: `${record.transcriptPath}: restored transcript has no matching completed import receipt; canonical session and source were preserved without replay.`,
+            });
+            return [];
           }
-          const reason =
-            result.completedIndexReplay === "history-not-appendable"
-              ? "is not an ordered suffix of current canonical history"
-              : result.completedIndexReplay === "unverified-source"
-                ? "could not be fully verified"
-                : `belongs to a ${result.completedIndexReplay.replaceAll("-", " ")} canonical session`;
-          report.issues.push({
-            code: "historical_transcript_deferred",
-            sessionKey: record.sessionKey,
-            message: `${record.sessionKey}: restored history ${reason}; current owner and source were preserved without replay.`,
-          });
+          const prepared = prepareLegacySessionImport(
+            target,
+            record,
+            report,
+            importedTranscriptSources,
+            existingSnapshot.ok ? existingSnapshot.snapshot : undefined,
+            completedReplaySource,
+            readCompletedReplaySource,
+          );
+          return prepared ? [{ ...prepared, record }] : [];
+        });
+      const pendingParams = pending.map((entry) => entry.params);
+      if (assertCompletedIndexCurrent && pendingParams[0]) {
+        const beforePersistentApply = pendingParams[0].beforePersistentApply;
+        pendingParams[0] = {
+          ...pendingParams[0],
+          beforePersistentApply: () => {
+            assertCompletedIndexCurrent();
+            beforePersistentApply?.();
+          },
+        };
+      }
+      const imported = await importSqliteSessionRowsBatch(pendingParams);
+      for (const [index, result] of imported.entries()) {
+        const record = pending[index]?.record;
+        if (record?.completedIndexReplay && result.completedIndexReplay) {
+          record.completedIndexReplay.outcome = result.completedIndexReplay;
+          if (
+            result.completedIndexReplay !== "appended" &&
+            result.completedIndexReplay !== "unchanged"
+          ) {
+            replayRetainedPaths.add(target.storePath);
+            for (const source of record.transcriptDependencies) {
+              replayRetainedPaths.add(source);
+            }
+            if (record.transcriptPath) {
+              replayRetainedPaths.add(record.transcriptPath);
+            }
+            const reason =
+              result.completedIndexReplay === "history-not-appendable"
+                ? "is not an ordered suffix of current canonical history"
+                : result.completedIndexReplay === "unverified-source"
+                  ? "could not be fully verified"
+                  : `belongs to a ${result.completedIndexReplay.replaceAll("-", " ")} canonical session`;
+            report.issues.push({
+              code: "historical_transcript_deferred",
+              sessionKey: record.sessionKey,
+              message: `${record.sessionKey}: restored history ${reason}; current owner and source were preserved without replay.`,
+            });
+          }
+        }
+        if (record && result.recovery) {
+          record.recovery = result.recovery;
         }
       }
-      if (record && result.recovery) {
-        record.recovery = result.recovery;
+      report.importedEntries += imported.filter(
+        (result) => result.completedIndexReplay === undefined,
+      ).length;
+      report.importedTranscriptEvents += imported.reduce(
+        (total, result) => total + result.transcriptEvents,
+        0,
+      );
+      report.issues.push(...pending.flatMap((entry) => (entry.issue ? [entry.issue] : [])));
+      await setImmediate();
+    }
+  } catch (error) {
+    const failures = [error];
+    report.issues.push({ code: "sqlite_import_failed", message: formatErrorMessage(error) });
+    if (activeRun) {
+      activeRun.manifest.failedAt = new Date().toISOString();
+      try {
+        updateMigrationManifestTarget(activeRun, report, report.issues);
+      } catch (recordError) {
+        failures.push(recordError);
       }
     }
-    report.importedEntries += imported.filter(
-      (result) => result.completedIndexReplay === undefined,
-    ).length;
-    report.importedTranscriptEvents += imported.reduce(
-      (total, result) => total + result.transcriptEvents,
-      0,
-    );
-    report.issues.push(...pending.flatMap((entry) => (entry.issue ? [entry.issue] : [])));
-    await setImmediate();
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        `${formatErrorMessage(error)}; could not record session SQLite migration failure: ${formatErrorMessage(failures[1])}`,
+        { cause: error },
+      );
+    }
+    throw error;
   }
 }
 

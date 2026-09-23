@@ -432,6 +432,7 @@ export async function runDoctorSessionSqlite(
     activeRun.manifest.completedAt = new Date().toISOString();
     if (hasBlockingIssues) {
       activeRun.manifest.failedAt = activeRun.manifest.completedAt;
+      writeSessionSqliteMigrationManifest(activeRun);
       const failureReports = writeSessionSqliteMigrationFailureReports(activeRun.manifestPath, {
         reason: "doctor import reported session SQLite migration issues",
       });
@@ -905,7 +906,13 @@ async function inspectOrMigrateTarget(params: {
   if (retainedImport) {
     countRetainedSessionSources(retained, records, report);
   } else if (params.mode === "import") {
-    await importLegacySessionRecords(params.target, records, report, replayRetainedPaths);
+    await importLegacySessionRecords(
+      params.target,
+      records,
+      report,
+      params.activeRun,
+      replayRetainedPaths,
+    );
   } else if (params.mode === "dry-run") {
     for (const record of records) {
       countLegacyTranscript(record, report);
