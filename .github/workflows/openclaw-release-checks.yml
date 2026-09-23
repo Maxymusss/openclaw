@@ -152,7 +152,7 @@ env:
 
 jobs:
   resolve_target:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -956,7 +956,7 @@ jobs:
     name: Prepare release package artifact
     needs: [resolve_target]
     if: needs.resolve_target.outputs.package_required == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 15
     permissions:
       actions: read
@@ -1379,6 +1379,7 @@ jobs:
       packages: read
     uses: ./.github/workflows/install-smoke-reusable.yml
     with:
+      runner_group: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP }}
       allow_frozen_target_scenario_omissions: ${{ inputs.allow_frozen_target_scenario_omissions }}
       allow_unreleased_changelog: ${{ needs.resolve_target.outputs.allow_unreleased_changelog == 'true' }}
       ref: ${{ needs.resolve_target.outputs.revision }}
@@ -1431,6 +1432,7 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/openclaw-live-and-e2e-checks-reusable.yml
     with:
+      runner_group: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP }}
       advisory: ${{ startsWith(github.ref, 'refs/heads/tideclaw/alpha/') }}
       allow_frozen_target_scenario_omissions: ${{ inputs.allow_frozen_target_scenario_omissions }}
       allow_unreleased_changelog: ${{ needs.resolve_target.outputs.allow_unreleased_changelog == 'true' }}
@@ -1508,6 +1510,7 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/openclaw-live-and-e2e-checks-reusable.yml
     with:
+      runner_group: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP }}
       advisory: ${{ startsWith(github.ref, 'refs/heads/tideclaw/alpha/') }}
       allow_frozen_target_scenario_omissions: ${{ inputs.allow_frozen_target_scenario_omissions }}
       allow_unreleased_changelog: ${{ needs.resolve_target.outputs.allow_unreleased_changelog == 'true' }}
@@ -1556,6 +1559,7 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/package-acceptance.yml
     with:
+      runner_group: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP }}
       advisory: false
       allow_frozen_target_scenario_omissions: ${{ inputs.allow_frozen_target_scenario_omissions }}
       workflow_ref: ${{ github.sha }}
@@ -1642,6 +1646,7 @@ jobs:
       contents: read
     uses: ./.github/workflows/maturity-scorecard.yml
     with:
+      runner_group: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP }}
       ref: ${{ needs.resolve_target.outputs.ref }}
       expected_sha: ${{ needs.resolve_target.outputs.revision }}
     secrets:
@@ -1654,7 +1659,7 @@ jobs:
     needs: [resolve_target]
     if: needs.resolve_target.outputs.qa_parity_scheduled == 'true'
     continue-on-error: true
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 30
     permissions:
       contents: read
@@ -1823,7 +1828,7 @@ jobs:
     needs: [resolve_target, qa_lab_parity_lane_release_checks]
     if: needs.resolve_target.outputs.qa_parity_scheduled == 'true'
     continue-on-error: true
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 20
     permissions:
       contents: read
@@ -1950,7 +1955,7 @@ jobs:
     needs: [resolve_target]
     if: needs.resolve_target.outputs.qa_parity_scheduled == 'true'
     continue-on-error: true
-    runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404' }}
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON(vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404'))) || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404') }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -2166,7 +2171,7 @@ jobs:
     needs: [resolve_target, qa_lab_runtime_pair_lane_release_checks]
     if: always() && needs.resolve_target.result == 'success' && needs.resolve_target.outputs.qa_parity_scheduled == 'true'
     continue-on-error: true
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 15
     permissions:
       actions: read
@@ -2282,7 +2287,7 @@ jobs:
     name: Enforce QA Lab runtime tool coverage
     needs: [resolve_target, qa_lab_runtime_parity_release_checks]
     if: needs.resolve_target.outputs.qa_parity_scheduled == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 15
     permissions:
       contents: read
@@ -2396,6 +2401,7 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/qa-live-transports-convex.yml
     with:
+      runner_group: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP }}
       ref: ${{ needs.resolve_target.outputs.revision }}
       expected_sha: ${{ needs.resolve_target.outputs.revision }}
       lock_scope: matrix
@@ -2415,6 +2421,7 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/qa-live-transports-convex.yml
     with:
+      runner_group: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP }}
       ref: ${{ needs.resolve_target.outputs.revision }}
       expected_sha: ${{ needs.resolve_target.outputs.revision }}
       lock_scope: buzz
@@ -2435,7 +2442,7 @@ jobs:
     outputs:
       conclusion: ${{ steps.dispatch.outputs.conclusion || steps.dispatch.outcome }}
       identity_verified: ${{ steps.dispatch.outputs.identity_verified }}
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 210
     permissions:
       actions: write
@@ -2574,7 +2581,7 @@ jobs:
     needs: [resolve_target]
     if: needs.resolve_target.outputs.qa_live_scheduled == 'true' && needs.resolve_target.outputs.qa_live_discord_enabled == 'true'
     continue-on-error: true
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -2690,7 +2697,7 @@ jobs:
     needs: [resolve_target]
     if: needs.resolve_target.outputs.qa_live_scheduled == 'true' && needs.resolve_target.outputs.qa_live_whatsapp_enabled == 'true'
     continue-on-error: true
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 60
     concurrency:
       group: qa-live-whatsapp-shared
@@ -2790,7 +2797,7 @@ jobs:
     needs: [resolve_target]
     if: needs.resolve_target.outputs.qa_live_scheduled == 'true' && needs.resolve_target.outputs.qa_live_slack_enabled == 'true'
     continue-on-error: true
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -2904,7 +2911,7 @@ jobs:
       - qa_live_whatsapp_release_checks
       - qa_live_slack_release_checks
     if: always()
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     permissions:
       actions: read
       contents: read

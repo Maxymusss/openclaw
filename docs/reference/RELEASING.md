@@ -403,6 +403,8 @@ This checklist is the public shape of the release flow. Private credentials and 
 
 ### Fast path (default)
 
+Optional `OPENCLAW_RELEASE_RUNNER_GROUP` reserves configured capacity for the validation parent and its workers without changing default labels. See [runner reservation](/ci) before configuring it; shared workers inherit the group from the release caller.
+
 After source admission, plugin compatibility readiness, and evidence reuse
 selection, normal CI, independent Plugin Prerelease, independent Release Checks,
 and performance start alongside the npm and Docker artifact producers. Candidate

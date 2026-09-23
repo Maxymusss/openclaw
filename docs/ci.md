@@ -98,6 +98,17 @@ Full Release Validation's exact-target UI job retains the current three native
 shards for both runtimes. Historical compatibility targets keep their original
 unsharded package command; see [UI job budgets](/ci/scope-and-routing/job-budgets).
 
+Set the repository variable `OPENCLAW_RELEASE_RUNNER_GROUP` to reserve a runner
+group for Full Release Validation and its artifact, validation, and reusable
+worker jobs. Provision eligible runners in that group with the existing Linux,
+Windows, and macOS labels, grant this repository access, and reserve capacity
+outside ordinary PR/main pools. The variable selects the group; it does not
+provision runners or increase concurrency limits. Missing group capacity queues
+jobs. Leaving the variable unset preserves current labels and routing. Shared
+workflows receive an optional `runner_group` from their release caller; ordinary
+CI, scheduled performance, and unrelated reusable callers retain their routing.
+The runner count, matrix caps, and default labels do not change.
+
 Full Release Validation starts source-only children alongside artifact producers
 after admission and reuse selection. Candidate consumers start as soon as the
 candidate is verified, while npm qualification and independent validation can

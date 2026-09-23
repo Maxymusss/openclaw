@@ -35,6 +35,7 @@ import {
   releaseWorkflowJobNeeds as jobNeeds,
 } from "../helpers/release-workflow-timeouts.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
+import { evaluateWorkflowRunner } from "./ci-workflow.test-support.js";
 
 const PACKAGE_ACCEPTANCE_WORKFLOW = ".github/workflows/package-acceptance.yml";
 const LIVE_E2E_WORKFLOW = ".github/workflows/openclaw-live-and-e2e-checks-reusable.yml";
@@ -10079,15 +10080,22 @@ describe("package artifact reuse", () => {
       ["validate_special_e2e", "blacksmith-32vcpu-ubuntu-2404"],
       ["validate_live_provider_suites", "blacksmith-8vcpu-ubuntu-2404"],
     ] as const) {
-      expect(workflowJob(LIVE_E2E_WORKFLOW, jobName)["runs-on"]).toBe(
-        `\${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || '${runner}' }}`,
+      expect(evaluateWorkflowRunner(workflowJob(LIVE_E2E_WORKFLOW, jobName)["runs-on"])).toBe(
+        runner,
       );
+      expect(
+        evaluateWorkflowRunner(workflowJob(LIVE_E2E_WORKFLOW, jobName)["runs-on"], {
+          useGithubHostedRunners: true,
+        }),
+      ).toBe("ubuntu-24.04");
     }
     for (const jobName of ["build", "test"]) {
-      expect(
-        workflowJob(".github/workflows/openclaw-repo-e2e-reusable.yml", jobName)["runs-on"],
-      ).toBe(
-        "${{ inputs.use_github_hosted_runners && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404' }}",
+      const selector = workflowJob(".github/workflows/openclaw-repo-e2e-reusable.yml", jobName)[
+        "runs-on"
+      ];
+      expect(evaluateWorkflowRunner(selector)).toBe("blacksmith-32vcpu-ubuntu-2404");
+      expect(evaluateWorkflowRunner(selector, { useGithubHostedRunners: true })).toBe(
+        "ubuntu-24.04",
       );
     }
     const repoE2eHarnessCheckout = workflowStep(
@@ -10192,8 +10200,12 @@ describe("package artifact reuse", () => {
     expect(workflow).toContain("suite_id: native-live-extensions-openai");
     expect(workflow).toContain("suite_id: native-live-extensions-o-z-other");
     expect(workflow).toContain("validate_live_media_provider_suites:");
-    expect(workflow).toMatch(
-      /validate_live_media_provider_suites:[\s\S]*?runs-on: \$\{\{ inputs\.use_github_hosted_runners && 'ubuntu-24\.04' \|\| 'blacksmith-8vcpu-ubuntu-2404' \}\}/u,
+    const mediaRunner = workflowJob(LIVE_E2E_WORKFLOW, "validate_live_media_provider_suites")[
+      "runs-on"
+    ];
+    expect(evaluateWorkflowRunner(mediaRunner)).toBe("blacksmith-8vcpu-ubuntu-2404");
+    expect(evaluateWorkflowRunner(mediaRunner, { useGithubHostedRunners: true })).toBe(
+      "ubuntu-24.04",
     );
     expect(workflow).toContain(`image: ${LIVE_MEDIA_RUNNER_IMAGE}`);
     expect(workflow).toContain("ffmpeg -version | head -1");
@@ -13324,15 +13336,14 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
   });
 
   it("keeps release QA and repo E2E lanes off scarce 32-core runners", () => {
-    const releaseChecksWorkflow = readFileSync(RELEASE_CHECKS_WORKFLOW, "utf8");
     const liveE2eWorkflow = readFileSync(LIVE_E2E_WORKFLOW, "utf8");
 
     for (const jobName of [
       "qa_lab_parity_lane_release_checks",
       "qa_lab_parity_report_release_checks",
     ]) {
-      expect(releaseChecksWorkflow).toMatch(
-        new RegExp(`${jobName}:[\\s\\S]*?runs-on: ubuntu-24\\.04`, "u"),
+      expect(evaluateWorkflowRunner(workflowJob(RELEASE_CHECKS_WORKFLOW, jobName)["runs-on"])).toBe(
+        "ubuntu-24.04",
       );
     }
     for (const jobName of [
@@ -13342,7 +13353,9 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
       "run_telegram",
       "advisory_status",
     ]) {
-      expect(workflowJob(RELEASE_TELEGRAM_QA_WORKFLOW, jobName)["runs-on"]).toBe("ubuntu-24.04");
+      expect(
+        evaluateWorkflowRunner(workflowJob(RELEASE_TELEGRAM_QA_WORKFLOW, jobName)["runs-on"]),
+      ).toBe("ubuntu-24.04");
     }
 
     expectTextToIncludeAll(liveE2eWorkflow, [

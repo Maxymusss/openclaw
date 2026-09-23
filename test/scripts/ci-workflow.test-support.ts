@@ -76,6 +76,8 @@ export function evaluateWorkflowExpression(
     ref?: string;
     resolveTargetOutputs?: Record<string, string>;
     releaseGate?: boolean;
+    releaseRunnerGroup?: string;
+    runnerGroup?: string;
     releaseScope?: string;
     repository: string;
     runCheck?: boolean;
@@ -134,7 +136,9 @@ export function evaluateWorkflowExpression(
       String(value).toLowerCase().endsWith(String(suffix).toLowerCase()),
     fromJSON: (value: string) => JSON.parse(value) as unknown,
     format: (value: string, ...args: unknown[]) =>
-      value.replace(/\{(\d+)\}/gu, (_match, index: string) => String(args[Number(index)])),
+      value.replace(/\{\{|\}\}|\{(\d+)\}/gu, (token, index: string | undefined) =>
+        index === undefined ? token[0]! : String(args[Number(index)]),
+      ),
     hashFiles: (file: string) => context.fileHashes?.[file] ?? "",
     startsWith: (value: unknown, prefix: unknown) => String(value).startsWith(String(prefix)),
     toJson: (value: unknown) => JSON.stringify(value),
@@ -171,6 +175,7 @@ export function evaluateWorkflowExpression(
     },
     inputs: {
       dispatch_id: context.dispatchId ?? "",
+      runner_group: context.runnerGroup ?? "",
       runner_backend: context.requestedRunnerBackend ?? "default",
       ci_shape: context.ciShape ?? "default",
       include_android: context.includeAndroid ?? false,
@@ -203,8 +208,23 @@ export function evaluateWorkflowExpression(
     vars: {
       MAINTAINER_COMMAND_REACTIONS: context.maintainerCommands ?? "",
       OPENCLAW_CI_RUNNER_BACKEND: context.runnerBackend ?? "",
+      OPENCLAW_RELEASE_RUNNER_GROUP: context.releaseRunnerGroup ?? "",
     },
   });
+}
+
+export function evaluateWorkflowRunner(
+  selector: unknown,
+  context: Partial<Parameters<typeof evaluateWorkflowExpression>[1]> = {},
+) {
+  return typeof selector === "string" && selector.startsWith("${{")
+    ? evaluateWorkflowExpression(selector, {
+        eventName: "workflow_dispatch",
+        repository: "openclaw/openclaw",
+        runAttempt: 1,
+        ...context,
+      })
+    : selector;
 }
 
 export function quoteShell(value: string): string {

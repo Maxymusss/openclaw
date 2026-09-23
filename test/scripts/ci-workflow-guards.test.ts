@@ -54,6 +54,7 @@ import {
   SETUP_GO_V6,
   UPLOAD_ARTIFACT_V7,
   evaluateWorkflowExpression,
+  evaluateWorkflowRunner,
   quoteShell,
   readAndroidToolchainAction,
   readBuildArtifactsTestboxWorkflow,
@@ -1094,7 +1095,7 @@ AFTER_CD
 
     const bugJob = staleWorkflow.jobs["stale-bug-verification"];
     expect(bugJob.permissions).toEqual({ issues: "write" });
-    expect(bugJob["runs-on"]).toBe("ubuntu-24.04");
+    expect(evaluateWorkflowRunner(bugJob["runs-on"])).toBe("ubuntu-24.04");
     const bugScript = String(
       (bugJob.steps as WorkflowStep[]).find(
         (step) => step.name === "Mark inactive bugs for ClawSweeper verification",
@@ -1401,7 +1402,7 @@ AFTER_CD
   it("starts Apple builds and screenshots directly on hosted capacity", () => {
     const workflow = readCiWorkflow();
     for (const jobName of ["macos-swift", "ios-build", "ios-screenshot-shard"]) {
-      expect(workflow.jobs[jobName]["runs-on"], jobName).toBe("xcode-27");
+      expect(evaluateWorkflowRunner(workflow.jobs[jobName]["runs-on"]), jobName).toBe("xcode-27");
     }
     expect(workflow.jobs["macos-swift"]["timeout-minutes"]).toBe(30);
   });
@@ -3208,7 +3209,7 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       "CodeQL Mermaid artifact download",
     );
 
-    expect(codeqlPrepare["runs-on"]).toBe("ubuntu-24.04");
+    expect(evaluateWorkflowRunner(codeqlPrepare["runs-on"])).toBe("ubuntu-24.04");
     expect(codeqlPrepare["timeout-minutes"]).toBe(10);
     expect(codeqlPrepare.permissions).toEqual({ contents: "read" });
     expect(codeqlPrepare.outputs["artifact-id"]).toBe("${{ steps.upload.outputs.artifact-id }}");
@@ -3250,7 +3251,7 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       codeqlPrepareSteps.indexOf(codeqlUpload),
     );
     expect(codeqlJob.needs).toBe("prepare-mermaid");
-    expect(codeqlJob["runs-on"]).toBe("macos-26-intel");
+    expect(evaluateWorkflowRunner(codeqlJob["runs-on"])).toBe("macos-26-intel");
     expect(codeqlJob["timeout-minutes"]).toBe(90);
     const codeqlCheckout = expectDefined(
       codeqlJob.steps.find((step: WorkflowStep) => step.name === "Checkout"),
@@ -3296,7 +3297,9 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
       const workflow = parse(readFileSync(workflowPath, "utf8"));
       for (const jobName of jobNames) {
         const job = workflow.jobs[jobName];
-        expect(job["runs-on"], `${workflowPath}: ${jobName}`).toBe("xcode-27");
+        expect(evaluateWorkflowRunner(job["runs-on"]), `${workflowPath}: ${jobName}`).toBe(
+          "xcode-27",
+        );
         const selection = expectDefined(
           job.steps.find((step: WorkflowStep) =>
             ["Select Xcode 27", "Verify Xcode"].includes(step.name ?? ""),
@@ -3611,7 +3614,7 @@ setImmediate(() => {
 
   it("keeps trusted hybrid controls on Blacksmith when optional hosted admission is closed", () => {
     const workflow = readCiWorkflow();
-    expect(workflow.jobs["ci-gate"]["runs-on"]).toBe("ubuntu-24.04");
+    expect(evaluateWorkflowRunner(workflow.jobs["ci-gate"]["runs-on"])).toBe("ubuntu-24.04");
     const context = {
       eventName: "pull_request",
       repository: "openclaw/openclaw",
@@ -3896,7 +3899,11 @@ setImmediate(() => {
       "docker-seed-e2e": "ubuntu-24.04",
     } as const;
     const configurableJobs = Object.entries(jobs)
-      .filter(([, job]) => String(job["runs-on"]).startsWith("${{"))
+      .filter(
+        ([, job]) =>
+          String(job["runs-on"]).includes("OPENCLAW_CI_RUNNER_BACKEND") ||
+          String(job["runs-on"]).includes("matrix.runner"),
+      )
       .map(([jobName]) => jobName)
       .toSorted();
     const canonicalPullRequest = {
@@ -3907,10 +3914,14 @@ setImmediate(() => {
       runAttempt: 1,
     } as const;
     expect(configurableJobs).toEqual(Object.keys(expectedHostedRunners).toSorted());
-    expect(jobs["check-lint-hosted-core-shard"]?.["runs-on"]).toBe("ubuntu-24.04");
-    expect(jobs["check-lint-hosted-extension-shard"]?.["runs-on"]).toBe("ubuntu-24.04");
+    expect(evaluateWorkflowRunner(jobs["check-lint-hosted-core-shard"]?.["runs-on"])).toBe(
+      "ubuntu-24.04",
+    );
+    expect(evaluateWorkflowRunner(jobs["check-lint-hosted-extension-shard"]?.["runs-on"])).toBe(
+      "ubuntu-24.04",
+    );
     // check-docs stays hosted in every mode: its ClawHub clone is unauthenticated by design.
-    expect(jobs["check-docs"]?.["runs-on"]).toBe("ubuntu-24.04");
+    expect(evaluateWorkflowRunner(jobs["check-docs"]?.["runs-on"])).toBe("ubuntu-24.04");
     for (const [jobName, hostedRunner] of Object.entries(expectedHostedRunners)) {
       const expression = jobs[jobName]?.["runs-on"];
       for (const [label, overrides, expectedRunner] of [
@@ -6292,7 +6303,7 @@ server.listen(0, "127.0.0.1", () => {
         );
       }
     }
-    expect(seed["runs-on"]).toBe("ubuntu-24.04");
+    expect(evaluateWorkflowRunner(seed["runs-on"])).toBe("ubuntu-24.04");
     const steps = seed.steps as WorkflowStep[];
     const install = expectDefined(
       steps.find((entry) => entry.run),
@@ -8831,7 +8842,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         ).toBe(expected);
       }
     }
-    expect(hostedCoreLint["runs-on"]).toBe("ubuntu-24.04");
+    expect(evaluateWorkflowRunner(hostedCoreLint["runs-on"])).toBe("ubuntu-24.04");
     expect(hostedCoreLint.strategy["fail-fast"]).toBe(false);
     expect(hostedCoreLint.strategy["max-parallel"]).toBe(5);
     const coreLintStep = hostedCoreLint.steps.find(
@@ -10743,7 +10754,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     const job = workflow.jobs.publish;
     expect(workflow.permissions).toEqual({});
     expect(workflow.on).toHaveProperty("workflow_dispatch");
-    expect(job["runs-on"]).toBe("ubuntu-24.04");
+    expect(evaluateWorkflowRunner(job["runs-on"])).toBe("ubuntu-24.04");
     expect(job.environment).toBe("qa-live-shared");
     expect(job["timeout-minutes"]).toBe(270);
     expect(job.permissions).toEqual({
@@ -11941,7 +11952,7 @@ it("pins simple release admission owners before selected checkout and preserves 
   expect(appImageTools).toMatch(/continuous[\s\S]*digest-pinned/u);
 
   const prLinux = parse(readFileSync(".github/workflows/linux-app.yml", "utf8"));
-  expect(prLinux.jobs.build["runs-on"]).toBe("ubuntu-22.04");
+  expect(evaluateWorkflowRunner(prLinux.jobs.build["runs-on"])).toBe("ubuntu-22.04");
   expect(prLinux.jobs.build.strategy).toBeUndefined();
   expect(prLinux.on.workflow_dispatch?.inputs).toBeUndefined();
   const abiScannerTest = expectDefined(
@@ -12005,7 +12016,7 @@ it("pins simple release admission owners before selected checkout and preserves 
       ({ name }) => name === "Build Linux companion bundles",
     )?.env,
   ).not.toHaveProperty("LDAI_RUNTIME_FILE");
-  expect(linux.jobs.build_linux["runs-on"]).toBe("ubuntu-22.04");
+  expect(evaluateWorkflowRunner(linux.jobs.build_linux["runs-on"])).toBe("ubuntu-22.04");
   expect(linux.jobs.build_linux.strategy).toBeUndefined();
   const finalizerSource = readFileSync("apps/linux/scripts/finalize-appimage.sh", "utf8");
   const postBuildVerifications =

@@ -48,6 +48,10 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   release branch. If the required main landing policy is blocked by unrelated
   main failures, report that blocker and keep independent release work moving
   instead of healing broader main.
+- `OPENCLAW_RELEASE_RUNNER_GROUP` optionally routes validation parents and workers
+  to reserved capacity with unchanged labels. Configure eligible runners and repo
+  access first; unset preserves ordinary routing. Shared workers inherit the
+  caller group; PR/main CI and unrelated scheduled work remain outside it.
 - Validate provider secrets before dispatching expensive full release matrices.
 - Linux (`ubuntu`) cross-OS lanes gate publication for beta, stable, and full.
   Windows/macOS cross-OS lanes run in parallel as advisory coverage. Record
