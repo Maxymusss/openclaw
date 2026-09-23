@@ -538,6 +538,8 @@ describe("Telegram preview and presentation delivery through HTTP", () => {
       await dispatchProgressTurn(
         async (options) => {
           reachedModel = true;
+          await waitForBotApiCall((call) => call.method === "sendChatAction");
+          await http.waitForTypingSend();
           await options?.onPartialReply?.({ text: partial });
           if (accepted) {
             await waitForBotApiCall(
