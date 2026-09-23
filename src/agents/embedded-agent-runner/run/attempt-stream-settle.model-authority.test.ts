@@ -1,7 +1,12 @@
 import { defaultLlmRuntime } from "@openclaw/ai/internal/runtime";
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { bindModelRequestRoute, bindStreamLlmRuntime } from "../../../llm/model-runtime-binding.js";
-import { attachModelProviderRuntimePluginHandle } from "../../../plugins/provider-hook-runtime.js";
+import {
+  attachModelProviderRuntimePluginHandle,
+  type ProviderRuntimePluginHandle,
+} from "../../../plugins/provider-hook-runtime.js";
+import type { ProviderPlugin } from "../../../plugins/provider-plugin.types.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import {
   createOperationalRunInstanceRef,
@@ -40,7 +45,36 @@ describe("prepared attempt credential callback model authority", () => {
     "deadline",
     "late-allowed-route",
   ] as const)("uses the production callback across held auth: %s", async (change) => {
-    const runtimeHandle = { provider: "fixture", modelId: "selected" };
+    const wrapperEntry = vi.fn();
+    const wrapStreamFn = vi.fn<NonNullable<ProviderPlugin["wrapStreamFn"]>>(
+      ({ streamFn: base }) => {
+        if (!base) {
+          throw new Error("Prepared provider delegate missing");
+        }
+        return inheritModelRequestBinding<StreamFn>((...args) => {
+          wrapperEntry();
+          return base(...args);
+        }, base);
+      },
+    );
+    const runtimeHandle: ProviderRuntimePluginHandle = {
+      provider: "fixture",
+      modelId: "selected",
+      plugin: {
+        id: "fixture",
+        label: "Fixture",
+        auth: [],
+        resolveModelRequestBindingSupport: ({ model: route, transport }) =>
+          route.provider === "fixture" &&
+          route.id === "vendor/selected" &&
+          route.api === "openai-completions" &&
+          route.baseUrl === "https://provider.example/v1" &&
+          transport === "sse"
+            ? { wrapStreamFn: "preserves-delegate" }
+            : undefined,
+        wrapStreamFn,
+      },
+    };
     const model = attachModelProviderRuntimePluginHandle(
       bindModelRequestRoute(
         makeProviderModelFixture({
@@ -158,6 +192,8 @@ describe("prepared attempt credential callback model authority", () => {
       expect(prepared.effectiveAgentTransport).toBe("sse");
       expect(prepared.effectiveExtraParams.transport).toBe("sse");
       expect(session.agent.transport).toBe("sse");
+      expect(wrapStreamFn).toHaveBeenCalledOnce();
+      expect(wrapStreamFn.mock.calls[0]?.[0].streamFn?.modelRequestBinding).toBe("wire-model-v1");
       expect(getApiKey).toHaveBeenCalledOnce();
       const stream = session.agent.streamFn;
       if (!stream) {
@@ -182,6 +218,7 @@ describe("prepared attempt credential callback model authority", () => {
         }),
       ]);
       expect(provider).not.toHaveBeenCalled();
+      expect(wrapperEntry).toHaveBeenCalledOnce();
       expect(release).not.toHaveBeenCalled();
       if (change === "retained-revoked") {
         retainedCancellation.abort(new Error("retained source revoked"));
@@ -208,6 +245,7 @@ describe("prepared attempt credential callback model authority", () => {
       await checked;
       expect(getApiKey).toHaveBeenCalledTimes(2);
       expect(provider).toHaveBeenCalledTimes(change === "mapped" ? 1 : 0);
+      expect(wrapperEntry).toHaveBeenCalledOnce();
       expect(release).not.toHaveBeenCalled();
     } finally {
       key.resolve("fixture-key");

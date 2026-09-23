@@ -216,6 +216,39 @@ async function fixture(
 }
 
 describe("explicit direct Responses continuation", () => {
+  it.each(
+    [false, true].flatMap((marked) =>
+      [false, true].map((acknowledged) => ({ marked, acknowledged })),
+    ),
+  )(
+    "preserves delegate qualification and no-ack identity ($marked, $acknowledged)",
+    async ({ marked, acknowledged }) => {
+      const base = vi.fn<StreamFn>();
+      if (marked) {
+        Object.assign(base, { modelRequestBinding: "wire-model-v1" as const });
+      }
+      const assertCurrent = vi.fn();
+      const acknowledgment = acknowledged
+        ? await issueProviderReviewAcknowledgment({
+            target,
+            reviewId: "review-1",
+            nextRunId: "next-run",
+            assertCurrent,
+          })
+        : undefined;
+      const wrapped = wrapStreamFnWithProviderReviewContinuation({
+        streamFn: base,
+        acknowledgment,
+        runId: "next-run",
+        assertCurrent,
+      });
+      expect(wrapped.modelRequestBinding).toBe(marked ? "wire-model-v1" : undefined);
+      expect(wrapped === base).toBe(!acknowledged);
+      expect(base).not.toHaveBeenCalled();
+      expect(store.entry?.providerReview?.id).toBe("review-1");
+    },
+  );
+
   it.each(["sse", "websocket"] as const)(
     "sends the literal steer and one-shot metadata over %s, then leaves later tool calls ordinary",
     async (transport) => {

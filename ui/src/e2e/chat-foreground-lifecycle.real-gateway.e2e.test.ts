@@ -8,6 +8,7 @@ import { isPidAlive } from "../../../src/shared/pid-alive.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import {
   allowedModel,
+  fixtureProvider,
   forbiddenModel,
   savedModelPreference,
   composer,
@@ -218,17 +219,51 @@ suite.define(() => {
               { ok: false, error: { code: "FORBIDDEN" } },
             );
             // A real staff mutation selects a model hidden from this guest's catalog.
-            // The next ordinary UI send must still be refused by the original caller policy.
+            // An explicit inline selection must be refused without changing the shared pin.
             expect(
               await rpc(staff, "sessions.patch", { key, model: forbiddenModel }),
             ).toMatchObject({ ok: true });
+            const readStaffPin = async () => {
+              const result = await rpc(staff, "sessions.list", {
+                agentId: "main",
+                label: `Foreground lifecycle fixture: ${key}`,
+              });
+              expect(result).toMatchObject({ ok: true });
+              const sessions = result.ok ? asNullableRecord(result.payload)?.sessions : undefined;
+              if (!Array.isArray(sessions)) {
+                throw new Error("Missing staff session list");
+              }
+              expect(sessions).toHaveLength(1);
+              const row = asNullableRecord(sessions[0]);
+              if (typeof row?.sessionId !== "string" || !row.sessionId) {
+                throw new Error("Missing pinned session identity");
+              }
+              return {
+                key: row.key,
+                sessionId: row.sessionId,
+                modelProvider: row.modelProvider,
+                model: row.model,
+                modelOverrideSource: row.modelOverrideSource,
+              };
+            };
+            const savedPin = await readStaffPin();
+            expect(savedPin).toEqual({
+              key,
+              sessionId: expect.any(String),
+              modelProvider: fixtureProvider,
+              model: "forbidden",
+              modelOverrideSource: "user",
+            });
             const beforeForbidden = fixture.provider.requests.length;
             const denied = await sendForegroundMessage(
               page,
               observed,
-              "Try the forbidden saved model",
+              `please reply /model ${forbiddenModel} /think off`,
             );
-            const forbiddenRun = asNullableRecord(denied.params)?.idempotencyKey;
+            const deniedParams = asNullableRecord(denied.params);
+            expect(deniedParams).toMatchObject({ sessionKey: key });
+            expect(deniedParams).not.toHaveProperty("model");
+            const forbiddenRun = deniedParams?.idempotencyKey;
             if (typeof forbiddenRun !== "string") {
               throw new Error("Missing forbidden selection run identity");
             }
@@ -236,18 +271,25 @@ suite.define(() => {
               ok: true,
               payload: { status: "started" },
             });
-            await withForegroundTurnDiagnostics(fixture, observed, forbiddenRun, undefined, () =>
-              expect.poll(() => hasTerminalEvent(observed, forbiddenRun)).toBe(true),
+            await withForegroundTurnDiagnostics(
+              fixture,
+              observed,
+              forbiddenRun,
+              undefined,
+              async () => {
+                await expect.poll(() => hasTerminalEvent(observed, forbiddenRun)).toBe(true);
+                await expect
+                  .poll(() =>
+                    thread(page)
+                      .getByText("Your operator role cannot use this model", { exact: false })
+                      .count(),
+                  )
+                  .toBeGreaterThan(0);
+              },
             );
-            await expect
-              .poll(() =>
-                thread(page)
-                  .getByText("Your operator role does not allow this model", { exact: false })
-                  .count(),
-              )
-              .toBeGreaterThan(0);
             await waitForReleasedThread(page, key);
             expect(fixture.provider.requests).toHaveLength(beforeForbidden);
+            expect(await readStaffPin()).toEqual(savedPin);
             expect(await rpc(staff, "sessions.patch", { key, model: allowedModel })).toMatchObject({
               ok: true,
             });

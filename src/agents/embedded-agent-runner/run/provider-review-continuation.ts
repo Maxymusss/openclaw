@@ -1,4 +1,5 @@
 import { responsesRequestLifecycle } from "@openclaw/ai/internal/openai";
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   acceptProviderReviewAcknowledgment,
@@ -34,7 +35,7 @@ export function wrapStreamFnWithProviderReviewContinuation(params: {
   }
   let pendingCallStarted = false;
   let acceptedByThisWrapper = false;
-  return async (model, context, options) => {
+  const wrapped: StreamFn = async (model, context, options) => {
     const transportSignals = new Set<AbortSignal>();
     const assertCurrent = () => {
       options?.signal?.throwIfAborted();
@@ -203,4 +204,5 @@ export function wrapStreamFnWithProviderReviewContinuation(params: {
       requestOptions,
     );
   };
+  return inheritModelRequestBinding(wrapped, params.streamFn);
 }

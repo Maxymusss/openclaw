@@ -38,6 +38,31 @@ function createResultStream(stopReason: "error" | "stop") {
 }
 
 describe("provider prompt state", () => {
+  it.each([false, true])(
+    "preserves only its delegate's binding qualification (marked: %s)",
+    async (marked) => {
+      const stream = createResultStream("stop");
+      const delegate = vi.fn<StreamFn>(() => stream);
+      if (marked) {
+        Object.assign(delegate, { modelRequestBinding: "wire-model-v1" as const });
+      }
+      const wrapped = wrapStreamFnWithProviderPromptState({
+        streamFn: delegate,
+        state: {},
+        effectiveContextTokenBudget: 128_000,
+      });
+      expect(wrapped).not.toBe(delegate);
+      expect(wrapped.modelRequestBinding).toBe(marked ? "wire-model-v1" : undefined);
+      const context: Context = { messages: [] };
+      expect(await wrapped(model, context, { transport: "sse" })).toBe(stream);
+      expect(delegate).toHaveBeenCalledExactlyOnceWith(
+        model,
+        context,
+        expect.objectContaining({ transport: "sse", onPayload: expect.any(Function) }),
+      );
+    },
+  );
+
   it("keeps state within one run id and drops it at the run boundary", () => {
     const first = getProviderPromptState("run-1");
     expect(getProviderPromptState("run-1")).toBe(first);

@@ -1,4 +1,5 @@
 import { responsesPromptObserver } from "@openclaw/ai/internal/openai";
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import { stableStringify } from "@openclaw/normalization-core";
 import { sha256Hex, sha256StableValue } from "@openclaw/normalization-core/node-crypto";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
@@ -85,7 +86,7 @@ export function wrapStreamFnWithProviderPromptState(params: {
   effectiveContextTokenBudget: number;
   recordEvent?: (type: string, data?: Record<string, unknown>) => void;
 }): StreamFn {
-  return async (model, context, options) => {
+  const wrapped: StreamFn = async (model, context, options) => {
     params.state.lastAttempt = undefined; // Custom transports must not leave a stale candidate.
     const originalOnPayload = options?.onPayload;
     const observedOptions: NonNullable<Parameters<StreamFn>[2]> = {
@@ -110,4 +111,5 @@ export function wrapStreamFnWithProviderPromptState(params: {
     }
     return params.streamFn(model, context, observedOptions);
   };
+  return inheritModelRequestBinding(wrapped, params.streamFn);
 }
