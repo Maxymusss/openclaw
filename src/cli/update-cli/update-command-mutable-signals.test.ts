@@ -352,9 +352,7 @@ async function assertOwnedSignal(
           child.pid,
           path.dirname(
             path.dirname(
-              fileURLToPath(
-                resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.handoffLease),
-              ),
+              fileURLToPath(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.handoffLease)),
             ),
           ),
         );
@@ -446,9 +444,7 @@ async function assertOwnedSignal(
               }
             : { env: { OPENCLAW_STATE_DIR: root } };
         const readRun = (runId: string) =>
-          withStateDatabaseCoordinatorRuntimeDirectory(control, () =>
-            getUpdateRun(runId, options),
-          );
+          withStateDatabaseCoordinatorRuntimeDirectory(control, () => getUpdateRun(runId, options));
         const actual = readRun(message.runId);
         if (mode === "fresh") {
           expect(actual).toMatchObject({
