@@ -410,7 +410,6 @@ describe("Codex auth product proof", () => {
         name: "qa-codex-missing-auth-profile",
         gatewayCommandPrefix: catalog.gatewayCommandPrefix,
         env: {
-          OPENCLAW_DIAGNOSTICS: "codex.model-catalog,model.runtime-choice",
           OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
           OPENCLAW_QA_CODEX_APP_SERVER_VERSION: CODEX_APP_SERVER_VERSION,
           OPENCLAW_SKIP_PROVIDERS: undefined,

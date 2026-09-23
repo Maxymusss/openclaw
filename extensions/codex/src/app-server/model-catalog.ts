@@ -1,10 +1,5 @@
-import { randomUUID } from "node:crypto";
 import type { AgentHarnessModelCatalogParams } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type { ModelCatalogEntry } from "openclaw/plugin-sdk/agent-runtime";
-import {
-  createSubsystemLogger,
-  isDiagnosticFlagEnabled,
-} from "openclaw/plugin-sdk/diagnostic-runtime";
 import {
   resolveCodexAppServerAuthProfileId,
   resolveCodexAppServerAuthProfileStore,
@@ -16,8 +11,7 @@ import { buildCodexRuntimeModelParams } from "./model-runtime.js";
 import { listAllCodexAppServerModels, type CodexAppServerModel } from "./models.js";
 import { probeCodexNativeAuth } from "./native-auth.js";
 import type { CodexGetAccountResponse } from "./protocol.js";
-import type { CodexControlRequestObservation } from "./request-observation.js";
-import { withCodexAppServerJsonClient, type CodexAppServerScopedRequest } from "./request.js";
+import { withCodexAppServerJsonClient } from "./request.js";
 import { captureSharedCodexAppServerCatalogLifetime } from "./shared-client.js";
 
 // Manifest contract (openclaw.plugin.json discovery.timeoutMs default): live model
@@ -25,7 +19,6 @@ import { captureSharedCodexAppServerCatalogLifetime } from "./shared-client.js";
 const DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS = 2500;
 type ModelInputType = NonNullable<ModelCatalogEntry["input"]>[number];
 const INPUT_TYPES: ReadonlySet<string> = new Set(["text", "image", "audio", "video", "document"]);
-const log = createSubsystemLogger("codex/model-catalog");
 
 function isModelInputType(value: string): value is ModelInputType {
   return INPUT_TYPES.has(value);
@@ -131,101 +124,18 @@ export function createCodexAppServerModelCatalog(runtime: string) {
       }
       const { start } = options;
       const timeoutMs = discovery?.timeoutMs ?? DEFAULT_MODEL_DISCOVERY_TIMEOUT_MS;
-      const traceId = isDiagnosticFlagEnabled("codex.model-catalog", params.config)
-        ? randomUUID()
-        : undefined;
-      const trace: Array<Record<string, string | number | null>> = [];
-      let observedRecords = 0;
-      let clientInstanceId: string | null = null;
-      let transportPid: number | null = null;
-      let acquisitionOrdinal = 0;
-      let requestOrdinal = 0;
-      let activeMethod: string | null = null;
-      const record = (event: string, fields: Record<string, string | number | null> = {}) => {
-        if (!traceId) {
-          return;
-        }
-        try {
-          trace.push({
-            sequence: ++observedRecords,
-            at: Date.now(),
-            event,
-            clientInstanceId,
-            transportPid,
-            acquisitionOrdinal,
-            requestOrdinal,
-            activeMethod,
-            ...fields,
-          });
-          if (trace.length > 64) {
-            trace.shift();
-          }
-        } catch {
-          // Observation must preserve the request result, including falsy rejection values.
-        }
-      };
-      const controlObservation: CodexControlRequestObservation | undefined = traceId
-        ? {
-            phase(phase) {
-              if (phase === "acquire-client") {
-                acquisitionOrdinal += 1;
-                clientInstanceId = null;
-                transportPid = null;
-              }
-              record("phase", { phase });
-            },
-            failed({ phase, category }) {
-              record("failure", { phase, category });
-            },
-            startup(event) {
-              if (event.boundary === "registered-client-observed") {
-                clientInstanceId = event.clientInstanceId;
-                transportPid = event.transportPid;
-              }
-              record("startup", { boundary: event.boundary });
-            },
-          }
-        : undefined;
       const result = await withCodexAppServerJsonClient(
         {
           startOptions: start,
           config: params.config,
           agentDir: params.agentDir,
           timeoutMs,
-          ...(controlObservation ? { controlObservation } : {}),
           ...(authProfileStore ? { authProfileStore, authProfileId } : {}),
         },
         async (request, client) => {
-          if (traceId) {
-            try {
-              clientInstanceId = client.getInstanceId();
-              transportPid = client.getTransportPid() ?? null;
-              record("client-acquired");
-            } catch {
-              // Unavailable identity stays unobserved; never infer it from a shared RPC id.
-            }
-          }
-          const observedRequest: CodexAppServerScopedRequest = async <T>(
-            input: Parameters<CodexAppServerScopedRequest>[0],
-          ) => {
-            activeMethod = input.method;
-            requestOrdinal += 1;
-            record("request-start");
-            try {
-              const response = await request<T>(input);
-              record("request-resolved");
-              return response;
-            } catch (error) {
-              record("request-rejected");
-              throw error;
-            } finally {
-              activeMethod = null;
-            }
-          };
-          const catalogRequest = traceId ? observedRequest : request;
           const isCurrent = captureSharedCodexAppServerCatalogLifetime(client);
           const listed = await listAllCodexAppServerModels({
-            request: catalogRequest,
+            request,
             limit: 100,
             includeHidden: true,
           });
@@ -236,7 +146,7 @@ export function createCodexAppServerModelCatalog(runtime: string) {
                 (ref) => ref.provider === "openai" && ref.model === model.id,
               ),
           );
-          const account = await catalogRequest<CodexGetAccountResponse>({
+          const account = await request<CodexGetAccountResponse>({
             method: "account/read",
             requestParams: { refreshToken: false },
           });
@@ -248,25 +158,7 @@ export function createCodexAppServerModelCatalog(runtime: string) {
             : undefined;
           return { models, isCurrent, accountType } as const;
         },
-      ).catch((error: unknown) => {
-        if (traceId) {
-          try {
-            log.warn(
-              `[codex-model-catalog-trace] ${JSON.stringify({
-                traceId,
-                observedRecords,
-                omittedRecords: observedRecords - trace.length,
-                records: trace,
-                rpcIds: "unobserved by scoped request API",
-                foregroundJoin: "unobserved",
-              })}`,
-            );
-          } catch {
-            // A diagnostic sink must never replace the original catalog rejection.
-          }
-        }
-        throw error;
-      });
+      );
       // Publish only after the bounded operation settles; a late timed-out callback cannot publish.
       if (disposed || observations.get(key) !== observation || !result.isCurrent()) {
         return [];

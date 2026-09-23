@@ -40,22 +40,6 @@ import { isPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalo
 import { resolveProviderIdForAuth } from "./provider-auth-aliases.js";
 import { resolveDefaultAgentWorkspaceDir } from "./workspace.js";
 
-export type ModelAuthOverlayObservation = {
-  before: ModelAuthAvailabilityEvaluation;
-  applied: boolean;
-  changed: boolean;
-  rejectionScope?: ProviderCatalogOutcome["rejectionScope"];
-  selectedProfileMatches?: boolean;
-};
-
-export type ModelRuntimeChoiceObservation = {
-  stage: string;
-  runtimeId?: string;
-  host?: ModelAuthAvailabilityEvaluation;
-  evaluation?: ModelAuthAvailabilityEvaluation;
-  current?: boolean;
-};
-
 function listEnabledSyntheticAuthProviderRefs(
   metadataSnapshot: PluginMetadataSnapshot,
   config: OpenClawConfig,
@@ -121,10 +105,6 @@ function createModelsListEntryEvaluator(params: {
   profileProvider?: string;
   runtimeOverride?: string;
   normalizeAuthProvider: (provider: string) => string;
-  observeOverlay?: (
-    result: ModelAuthAvailabilityEvaluation,
-    observation: ModelAuthOverlayObservation,
-  ) => void;
 }): (
   entry: Pick<ModelCatalogEntry, "provider" | "id" | "api" | "baseUrl">,
   routeVariants?: readonly ModelCatalogEntry[],
@@ -176,19 +156,14 @@ function createModelsListEntryEvaluator(params: {
       const provider = normalizeProviderId(entry.provider);
       // Stored credentials prove presence, not acceptance. Apply the live rejection only to the
       // profile discovery tested; widening it would hide routes backed by another valid profile.
-      let matched: ProviderCatalogOutcome | undefined;
       const applied =
-        params.providerOutcomes?.some((outcome) => {
-          const matches =
+        params.providerOutcomes?.some(
+          (outcome) =>
             outcome.status === "auth-rejected" &&
             outcome.rejectionScope !== "catalog" &&
             normalizeProviderId(outcome.provider) === provider &&
-            (outcome.profileId === undefined || outcome.profileId === resolved.selectedProfileId);
-          if (matches) {
-            matched = outcome;
-          }
-          return matches;
-        }) === true;
+            (outcome.profileId === undefined || outcome.profileId === resolved.selectedProfileId),
+        ) === true;
       const result: ModelAuthAvailabilityEvaluation = applied
         ? {
             ...resolved,
@@ -197,26 +172,6 @@ function createModelsListEntryEvaluator(params: {
             unavailableUntil: undefined,
           }
         : resolved;
-      if (params.observeOverlay) {
-        try {
-          // Attach the existing evaluation to its cached result; observing it never evaluates again.
-          params.observeOverlay(result, {
-            before: resolved,
-            applied,
-            changed:
-              result.availability !== resolved.availability ||
-              result.unavailableReason !== resolved.unavailableReason ||
-              result.unavailableUntil !== resolved.unavailableUntil,
-            rejectionScope: matched?.rejectionScope,
-            selectedProfileMatches:
-              matched?.profileId === undefined
-                ? undefined
-                : matched.profileId === resolved.selectedProfileId,
-          });
-        } catch {
-          // Temporary observation cannot replace the auth decision or its original failure.
-        }
-      }
       return result;
     });
     pending.set(cacheKey, next);
@@ -244,7 +199,6 @@ export type ModelCatalogDecisionParams = {
   runtimeOverride?: string;
   routeResolverFactory?: typeof createOpenAIModelRoutesResolver;
   isCurrent?: () => boolean;
-  captureAuthOverlay?: boolean;
 };
 
 /** Builds requester/session auth views without changing shared catalog or credential snapshots. */
@@ -366,15 +320,9 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
     workspaceDir,
     routeResolverFactory: params.routeResolverFactory,
   });
-  const authOverlayObservations = params.captureAuthOverlay
-    ? new WeakMap<ModelAuthAvailabilityEvaluation, ModelAuthOverlayObservation>()
-    : undefined;
   const evaluateStoredEntry = createModelsListEntryEvaluator({
     authResolver,
     providerOutcomes: params.snapshot.providerOutcomes,
-    observeOverlay: authOverlayObservations
-      ? (result, observation) => authOverlayObservations.set(result, observation)
-      : undefined,
     preferredProfilesByProvider,
     runtimeOverride: params.runtimeOverride,
     normalizeAuthProvider: (provider) =>
@@ -402,8 +350,6 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
   const isCurrent = () =>
     Date.now() < authValidUntil && (params.isCurrent?.() ?? params.observationConfig === undefined);
   return {
-    getAuthOverlayObservation: (evaluation: ModelAuthAvailabilityEvaluation) =>
-      authOverlayObservations?.get(evaluation),
     evaluateEntry,
     evaluateNative,
     snapshot,
@@ -413,17 +359,8 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
     async runtimeChoices(
       entry: ModelCatalogEntry,
       variants: readonly ModelCatalogEntry[] = [entry],
-      observer?: (event: ModelRuntimeChoiceObservation) => void,
     ): Promise<string[] | undefined> {
-      const observe = (event: ModelRuntimeChoiceObservation) => {
-        try {
-          observer?.(event);
-        } catch {
-          // A diagnostic observer must not change selection or its original failure.
-        }
-      };
       const initial = await evaluateEntry(entry, variants);
-      observe({ stage: "initial-host", host: initial });
       const selected = resolveCatalogDecisionRuntime({
         cfg: params.cfg,
         agentId: params.agentId,
@@ -452,12 +389,10 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
       for (const runtimeId of candidates) {
         const host = await evaluateEntry(entry, variants, runtimeId);
         const evaluation = evaluateNative(entry, host, runtimeId);
-        observe({ stage: "candidate-auth", runtimeId, host, evaluation });
         if (evaluation.availability === undefined) {
           unknown = true;
         }
         if (evaluation.availability !== true) {
-          observe({ stage: "candidate-auth-unavailable", runtimeId });
           continue;
         }
         const route = evaluation.selectedRoute;
@@ -471,16 +406,13 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
           requestTransportOverrides: route?.requestTransportOverrides,
         });
         if (policy.forcedByEnvironment && policy.runtime !== runtimeId) {
-          observe({ stage: "candidate-forced-runtime", runtimeId });
           continue;
         }
         const compatible = evaluation.selectedRoute?.runtimePolicy?.compatibleIds;
         if (compatible && !compatible.includes(runtimeId)) {
-          observe({ stage: "candidate-route-incompatible", runtimeId });
           continue;
         }
         if (evaluation.runtimeAuth && evaluation.runtimeAuth.id !== runtimeId) {
-          observe({ stage: "candidate-native-runtime-mismatch", runtimeId });
           continue;
         }
         if (
@@ -495,7 +427,6 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
             (registration) => registration.harness.id === runtimeId,
           )?.harness;
           if (!harness) {
-            observe({ stage: "candidate-harness-unobserved", runtimeId });
             unknown ||= params.pluginRegistry === undefined;
             continue;
           }
@@ -523,15 +454,12 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
             }),
           );
           if (!supported.supported) {
-            observe({ stage: "candidate-harness-unsupported", runtimeId });
             continue;
           }
         }
         choices.push(runtimeId);
-        observe({ stage: "candidate-included", runtimeId });
       }
       const current = isCurrent();
-      observe({ stage: "choices-currentness", current });
       if (!current) {
         throw new PreparedModelRuntimePublicationSupersededError(
           "Model catalog changed while selecting runtimes",

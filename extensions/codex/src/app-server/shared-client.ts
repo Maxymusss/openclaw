@@ -64,10 +64,6 @@ import {
 import { acquireCodexNativeConfigFence } from "./native-config-fence.js";
 import { nativeHookRelayUnregisterQueue } from "./native-hook-relay-state.js";
 import {
-  observeCodexClientStartup,
-  type CodexClientStartupObservation,
-} from "./request-observation.js";
-import {
   closeRetiredSharedClientEntry,
   closeRetiredSharedClientEntryIfIdle,
   createCodexAppServerStartupLifetime,
@@ -137,7 +133,6 @@ async function prepareCodexAppServerClient(options?: CodexAppServerClientOptions
     ownCodexStartup(lifetime, resolveCodexAppServerClientStartContext(options)),
     abandonSignal,
   );
-  observeCodexClientStartup(options?.startupObservation, "context-prepared");
   return { context, lifetime, abandonSignal, startedAt, assertCurrent };
 }
 
@@ -294,7 +289,6 @@ export type CodexAppServerClientOptions = {
   config?: Parameters<typeof resolveCodexAppServerAuthProfileIdForAgent>[0]["config"];
   onStartedClient?: (client: CodexAppServerClient) => void;
   abandonSignal?: AbortSignal;
-  startupObservation?: CodexClientStartupObservation;
   /** Caller authority for startup of an isolated, caller-owned client. */
   assertCurrent?: () => void;
 };
@@ -716,8 +710,6 @@ async function acquireSharedCodexAppServerClient(
       CODEX_APP_SERVER_INITIALIZE_TIMEOUT_MESSAGE,
       () => buildCodexAppServerInitializeTimeoutError(entry.client),
     );
-    // This acquisition observed initialization, including an already registered shared client.
-    observeCodexClientStartup(options?.startupObservation, "initialize-completed", entry.client);
     const client = await withCodexAppServerAcquireDeadline(
       timeoutMs,
       startup.ready,
@@ -897,8 +889,6 @@ export async function createIsolatedCodexAppServerClient(
         trackIsolatedCodexAppServerClient(client);
         options?.onStartedClient?.(client);
       },
-      onInitializedClient: () =>
-        observeCodexClientStartup(options?.startupObservation, "initialize-completed"),
     }),
   );
 }

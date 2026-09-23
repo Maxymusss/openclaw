@@ -1,5 +1,3 @@
-import type { CodexAppServerClient } from "./client.js";
-
 export type CodexControlRequestPhase =
   | "load-control"
   | "prepare"
@@ -57,34 +55,8 @@ export type CodexRequestWaiterSummary = {
 
 export type CodexRequestWaiterFinished = (summary: CodexRequestWaiterSummary) => void;
 
-export type CodexClientStartupObservation = (event: {
-  boundary: "context-prepared" | "registered-client-observed" | "initialize-completed";
-  clientInstanceId: string | null;
-  transportPid: number | null;
-}) => void;
-
-export function observeCodexClientStartup(
-  observation: CodexClientStartupObservation | undefined,
-  boundary: Parameters<CodexClientStartupObservation>[0]["boundary"],
-  client?: CodexAppServerClient,
-): void {
-  if (!observation) {
-    return;
-  }
-  try {
-    observation({
-      boundary,
-      clientInstanceId: client?.getInstanceId() ?? null,
-      transportPid: client?.getTransportPid() ?? null,
-    });
-  } catch {
-    // Observers cannot replace startup failures or interfere with lease cleanup.
-  }
-}
-
 export type CodexControlRequestObservation = {
   phase(phase: CodexControlRequestPhase): void;
   failed(failure: CodexControlRequestFailure): void;
   attemptWaiterFinished?: CodexRequestWaiterFinished;
-  startup?: CodexClientStartupObservation;
 };

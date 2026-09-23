@@ -2,7 +2,6 @@ import { statSync } from "node:fs";
 import fs from "node:fs/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect } from "vitest";
-import { createJsonlRequestTailer } from "../../../../scripts/e2e/lib/codex-media-path/jsonl-request-tail.mts";
 import { loadPersistedSharedAuthProfileStore } from "../../../../src/agents/auth-profiles/persisted.js";
 import type { OpenClawTestInstance } from "../../../helpers/openclaw-test-instance.js";
 
@@ -369,168 +368,6 @@ export async function captureCodexAuthFailure(params: {
         coverage: "original request-log cursor integrity only; no cross-client RPC attribution",
       };
     });
-    const fixtureRpc = observe(() => {
-      const diagnosticPath = `${params.requestLog}.diagnostic.jsonl`;
-      const fileBytes = statSync(diagnosticPath).size;
-      const byteLimit = 64 * 1024;
-      const recordLimit = 128;
-      const entries = createJsonlRequestTailer(diagnosticPath, {
-        maxReadBytes: byteLimit,
-        historyLimit: recordLimit,
-      }).read();
-      const records = entries.map((entry) =>
-        pick(isRecord(entry) ? entry.fixtureRpcObservation : undefined, [
-          "instanceId",
-          "pid",
-          "sequence",
-          "at",
-          "method",
-          "direction",
-          "rpcId",
-        ]),
-      );
-      return {
-        fileBytes,
-        byteLimit,
-        recordLimit,
-        byteTruncated: fileBytes > byteLimit,
-        recordLimitReached: entries.length === recordLimit,
-        omittedRecords: fileBytes > byteLimit || entries.length === recordLimit ? null : 0,
-        incompleteTrailingRecord: "unobserved by line tailer",
-        producerCapReached: records.some((record) => record.direction === "producer-cap-reached"),
-        records,
-        coverage:
-          "explicit fixture handlers only; default handlers and failed diagnostic writes are unobserved",
-        identity:
-          "fixture UUID and PID; correlate only with an observed owned client transport PID",
-        absence: "does not prove no RPC; producer count beyond its 256-record cap is unobserved",
-      };
-    });
-    const catalogRpc = observe(() => {
-      if (logs.status !== "observed") {
-        return { status: "unobserved" as const };
-      }
-      const marker = "[codex-model-catalog-trace] ";
-      const lines = logs.value.split("\n").filter((line) => line.includes(marker));
-      return {
-        status: "observed" as const,
-        observedTraceCount: lines.length,
-        omittedTraces: Math.max(0, lines.length - 4),
-        traces: lines.slice(-4).map((line) =>
-          observe(() => {
-            const json = line.slice(line.indexOf(marker) + marker.length);
-            const trace: unknown = JSON.parse(json.slice(0, json.lastIndexOf("}") + 1));
-            const records = isRecord(trace) && Array.isArray(trace.records) ? trace.records : [];
-            return {
-              ...pick(trace, ["traceId", "observedRecords", "omittedRecords"]),
-              captureOmittedRecords: Math.max(0, records.length - 64),
-              records: records
-                .slice(-64)
-                .map((record) =>
-                  pick(record, [
-                    "sequence",
-                    "at",
-                    "event",
-                    "clientInstanceId",
-                    "transportPid",
-                    "acquisitionOrdinal",
-                    "boundary",
-                    "requestOrdinal",
-                    "activeMethod",
-                    "phase",
-                    "category",
-                  ]),
-                ),
-            };
-          }),
-        ),
-        coverage: "failed catalog operations in the existing bounded Gateway log buffer",
-        rpcIds: "unobserved by scoped request API",
-        foregroundJoin: "unobserved",
-      };
-    });
-    const runtimeChoice = observe(() => {
-      if (logs.status !== "observed") {
-        return { status: "unobserved" as const };
-      }
-      const marker = "[model-runtime-choice-trace] ";
-      const lines = logs.value.split("\n").filter((line) => line.includes(marker));
-      return {
-        status: "observed" as const,
-        observedTraceCount: lines.length,
-        omittedTraces: Math.max(0, lines.length - 4),
-        traces: lines.slice(-4).map((line) =>
-          observe(() => {
-            const json = line.slice(line.indexOf(marker) + marker.length);
-            const trace: unknown = JSON.parse(json.slice(0, json.lastIndexOf("}") + 1));
-            const records = isRecord(trace) && Array.isArray(trace.records) ? trace.records : [];
-            return {
-              ...pick(trace, ["traceId", "observedRecords", "omittedRecords"]),
-              captureOmittedRecords: Math.max(0, records.length - 64),
-              records: records.slice(-64).map((record) => {
-                const choices: unknown = isRecord(record) ? record.choices : undefined;
-                const validChoices =
-                  Array.isArray(choices) &&
-                  choices.every((choice): choice is string => typeof choice === "string");
-                return Object.assign(
-                  pick(record, [
-                    "sequence",
-                    "at",
-                    "stage",
-                    "runtimeId",
-                    "current",
-                    "hostObserved",
-                    "hostAvailable",
-                    "hostReason",
-                    "hostMode",
-                    "hostRuntime",
-                    "hostRequestedProfileMatches",
-                    "hostOverlayObserved",
-                    "hostBeforeOverlayAvailable",
-                    "hostBeforeOverlayReason",
-                    "hostBeforeOverlayUntil",
-                    "hostBeforeOverlayMode",
-                    "hostBeforeOverlayRequestedProfileMatches",
-                    "hostOverlayApplied",
-                    "hostOverlayChanged",
-                    "hostOverlayRejectionScope",
-                    "hostOverlaySelectedProfileMatches",
-                    "nativeObserved",
-                    "nativeAvailable",
-                    "nativeReason",
-                    "nativeMode",
-                    "nativeRuntime",
-                    "nativeRequestedProfileMatches",
-                    "published",
-                    "requestedProfileObserved",
-                    "requestedUserPin",
-                    "requestedRuntime",
-                    "preferredRuntime",
-                    "present",
-                    "omittedChoices",
-                    "selectedRuntime",
-                  ]),
-                  {
-                    choices: validChoices ? choices.slice(0, 32) : null,
-                    choicesObservation:
-                      choices === undefined
-                        ? "absent"
-                        : choices === null
-                          ? "unobserved"
-                          : validChoices
-                            ? "observed"
-                            : "invalid",
-                    captureOmittedChoices: validChoices ? Math.max(0, choices.length - 32) : null,
-                  },
-                );
-              }),
-            };
-          }),
-        ),
-        coverage:
-          "actual unavailable returns and existing evaluations only; unexecuted fields are unobserved",
-      };
-    });
     const primaryError = observe(() =>
       scalar(params.error instanceof Error ? params.error.message : params.error),
     );
@@ -575,9 +412,6 @@ export async function captureCodexAuthFailure(params: {
       terminal,
       primaryError,
       requestCursor,
-      fixtureRpc,
-      catalogRpc,
-      runtimeChoice,
     });
     if (captured.chronology.status === "observed") {
       const value = captured.chronology.value;

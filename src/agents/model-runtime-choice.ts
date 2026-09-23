@@ -1,16 +1,9 @@
-import { randomUUID } from "node:crypto";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { isDiagnosticFlagEnabled } from "../infra/diagnostic-flags.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import { createLazyPromise } from "../shared/lazy-promise.js";
 import { FailoverError } from "./failover/error.js";
 import type { AgentHarness } from "./harness/types.js";
-import type {
-  ModelAuthOverlayObservation,
-  ModelRuntimeChoiceObservation,
-} from "./model-catalog-decisions.js";
 import { findModelInCatalog } from "./model-catalog-lookup.js";
 import { modelKey, type ModelRef } from "./model-ref-shared.js";
 import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
@@ -279,96 +272,6 @@ export async function preparePublishedModelRuntimeChoice(params: {
       validate: () => string | undefined;
     }
 > {
-  const diagnostic = isDiagnosticFlagEnabled("model.runtime-choice", params.cfg);
-  const traceId = diagnostic ? randomUUID() : undefined;
-  const records: Array<Record<string, unknown>> = [];
-  let observedRecords = 0;
-  const identifier = (value: string | undefined) =>
-    value === undefined
-      ? null
-      : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,95}$/u.test(value)
-        ? value
-        : "[redacted-id]";
-  const record = (stage: string, facts: Record<string, unknown> = {}) => {
-    if (!traceId) {
-      return;
-    }
-    try {
-      records.push({ sequence: ++observedRecords, at: Date.now(), stage, ...facts });
-      if (records.length > 64) {
-        records.shift();
-      }
-    } catch {
-      // Temporary diagnostics must not change runtime selection or cleanup.
-    }
-  };
-  const observeDiagnostic = (read: () => void) => {
-    if (!traceId) {
-      return;
-    }
-    try {
-      read();
-    } catch {
-      // Direct observations have the same nonthrowing contract as candidate callbacks.
-    }
-  };
-  const observeChoices = diagnostic
-    ? (event: ModelRuntimeChoiceObservation) =>
-        observeDiagnostic(() => {
-          const facts: Record<string, unknown> = {
-            runtimeId: identifier(event.runtimeId),
-            current: event.current ?? null,
-          };
-          for (const [prefix, value] of [
-            ["host", event.host],
-            ["native", event.evaluation],
-          ] as const) {
-            facts[`${prefix}Observed`] = value !== undefined;
-            facts[`${prefix}Available`] = value?.availability ?? null;
-            facts[`${prefix}Reason`] = value?.unavailableReason ?? null;
-            facts[`${prefix}Mode`] = identifier(value?.selectedAuthMode);
-            facts[`${prefix}Runtime`] = identifier(value?.runtimeAuth?.id);
-            facts[`${prefix}RequestedProfileMatches`] =
-              value?.selectedProfileId === undefined ||
-              params.sessionEntry?.authProfileOverride === undefined
-                ? null
-                : value.selectedProfileId === params.sessionEntry.authProfileOverride;
-          }
-          const overlay = event.host ? readAuthOverlay?.(event.host) : undefined;
-          facts.hostOverlayObserved = overlay !== undefined;
-          facts.hostBeforeOverlayAvailable = overlay?.before.availability ?? null;
-          facts.hostBeforeOverlayReason = overlay?.before.unavailableReason ?? null;
-          facts.hostBeforeOverlayUntil = overlay?.before.unavailableUntil ?? null;
-          facts.hostBeforeOverlayMode = identifier(overlay?.before.selectedAuthMode);
-          facts.hostBeforeOverlayRequestedProfileMatches =
-            overlay?.before.selectedProfileId === undefined ||
-            params.sessionEntry?.authProfileOverride === undefined
-              ? null
-              : overlay.before.selectedProfileId === params.sessionEntry.authProfileOverride;
-          facts.hostOverlayApplied = overlay?.applied ?? null;
-          facts.hostOverlayChanged = overlay?.changed ?? null;
-          facts.hostOverlayRejectionScope = overlay?.rejectionScope ?? null;
-          facts.hostOverlaySelectedProfileMatches = overlay?.selectedProfileMatches ?? null;
-          record(event.stage, facts);
-        })
-    : undefined;
-  const recordUnavailable = (stage: string) => {
-    record(stage);
-    if (traceId) {
-      try {
-        createSubsystemLogger("agents/model-runtime-choice").warn(
-          `[model-runtime-choice-trace] ${JSON.stringify({
-            traceId,
-            observedRecords,
-            omittedRecords: Math.max(0, observedRecords - records.length),
-            records,
-          })}`,
-        );
-      } catch {
-        // Failure to capture evidence must not replace the original refusal.
-      }
-    }
-  };
   const { getPublishedPreparedModelCatalogOwnerSnapshot, materializePreparedModelCatalogOwner } =
     await loadPreparedModelCatalog();
   const { getPreparedModelRuntimeAuthStore } = await loadPreparedRuntimeAuth();
@@ -379,22 +282,12 @@ export async function preparePublishedModelRuntimeChoice(params: {
     workspaceDir: params.workspaceDir,
   });
   const unavailable = `${params.runtimeId ? `Runtime "${params.runtimeId}"` : "A runtime"} is not available for ${params.provider}/${params.model}. Refresh the model catalog and choose again.`;
-  record("published-owner", {
-    published: published !== undefined,
-    requestedProfileObserved: params.sessionEntry?.authProfileOverride !== undefined,
-    requestedUserPin: params.sessionEntry?.authProfileOverrideSource === "user",
-    requestedRuntime: identifier(params.runtimeId),
-    preferredRuntime: identifier(params.preferredRuntimeId),
-  });
   if (!published) {
-    recordUnavailable("no-published-owner");
     return { kind: "unavailable", message: unavailable };
   }
   const owner = materializePreparedModelCatalogOwner(published);
   const authStore = getPreparedModelRuntimeAuthStore(owner);
-  record("prepared-auth-store", { present: authStore !== undefined });
   if (!authStore) {
-    recordUnavailable("no-prepared-auth-store");
     return { kind: "unavailable", message: unavailable };
   }
   const decisions = createModelCatalogDecisions({
@@ -408,30 +301,19 @@ export async function preparePublishedModelRuntimeChoice(params: {
     preparedRuntimeAuthModes: owner.authModes,
     pluginRegistry: owner.pluginRegistry,
     observationConfig: owner.observationConfig,
-    isCurrent: diagnostic
-      ? () => {
-          const current = owner.isCurrent();
-          record("published-owner-currentness", { current });
-          return current;
-        }
-      : owner.isCurrent,
+    isCurrent: owner.isCurrent,
     preferredProfileId: params.sessionEntry?.authProfileOverride,
     pinnedProfileId:
       params.sessionEntry?.authProfileOverrideSource === "user"
         ? params.sessionEntry.authProfileOverride
         : undefined,
     profileProvider: params.sessionEntry?.providerOverride ?? params.sessionEntry?.modelProvider,
-    captureAuthOverlay: diagnostic,
   });
-  const readAuthOverlay: (
-    host: NonNullable<ModelRuntimeChoiceObservation["host"]>,
-  ) => ModelAuthOverlayObservation | undefined = decisions.getAuthOverlayObservation;
   let entry =
     findModelInCatalog(decisions.snapshot.entries, params.provider, params.model) ??
     decisions.snapshot.entries.find(
       (row) => modelKey(row.provider, row.id) === modelKey(params.provider, params.model),
     );
-  record("catalog-entry", { present: entry !== undefined });
   if (!entry) {
     // Explicit selections may be outside finite browse inventory. The normal
     // resolver still owns the requested model's provider and physical route.
@@ -441,7 +323,7 @@ export async function preparePublishedModelRuntimeChoice(params: {
     const materializationRuntime =
       params.runtimeId ??
       (params.preferredRuntimeId &&
-      (await decisions.runtimeChoices(requestedEntry, [requestedEntry], observeChoices))?.includes(
+      (await decisions.runtimeChoices(requestedEntry, [requestedEntry]))?.includes(
         params.preferredRuntimeId,
       )
         ? params.preferredRuntimeId
@@ -451,12 +333,10 @@ export async function preparePublishedModelRuntimeChoice(params: {
       undefined,
       materializationRuntime,
     );
-    observeChoices?.({ stage: "materialization-host", host: selectedAuth });
     const authProfileMode = resolveProviderModelMaterializationAuthMode(
       selectedAuth.selectedAuthMode,
     );
     if (selectedAuth.availability !== true || !authProfileMode) {
-      recordUnavailable("materialization-auth-unavailable");
       return { kind: "unavailable", message: unavailable };
     }
     const resolved = await resolveModelAsync(
@@ -478,7 +358,6 @@ export async function preparePublishedModelRuntimeChoice(params: {
       },
     );
     if (!resolved.model) {
-      recordUnavailable("materialization-model-unavailable");
       return { kind: "unavailable", message: unavailable };
     }
     entry = modelCatalogRowToEntry(resolved.model);
@@ -488,25 +367,13 @@ export async function preparePublishedModelRuntimeChoice(params: {
   const variants = decisions.snapshot.routeVariants.filter(
     (row) => identityKey(row) === selectedIdentity,
   );
-  const choices = await decisions.runtimeChoices(
-    entry,
-    variants.length ? variants : [entry],
-    observeChoices,
-  );
+  const choices = await decisions.runtimeChoices(entry, variants.length ? variants : [entry]);
   const runtimeId =
     params.runtimeId ??
     (params.preferredRuntimeId && choices?.includes(params.preferredRuntimeId)
       ? params.preferredRuntimeId
       : choices?.[0]);
-  observeDiagnostic(() =>
-    record("computed-choices", {
-      choices: choices?.slice(0, 32).map(identifier) ?? null,
-      omittedChoices: choices === undefined ? null : Math.max(0, choices.length - 32),
-      selectedRuntime: identifier(runtimeId),
-    }),
-  );
   if (!runtimeId || !choices?.includes(runtimeId)) {
-    recordUnavailable("runtime-not-in-choices");
     return { kind: "unavailable", message: unavailable };
   }
   const host = await decisions.evaluateEntry(
@@ -514,19 +381,14 @@ export async function preparePublishedModelRuntimeChoice(params: {
     variants.length ? variants : [entry],
     runtimeId,
   );
-  observeChoices?.({ stage: "selected-runtime-host", runtimeId, host });
   const validate = () => {
     const current = decisions.isCurrent();
-    record("validate-currentness", { current });
     // Keep the original short-circuit: stale owners do not evaluate native availability.
     if (!current) {
-      recordUnavailable("validate-owner-not-current");
       return unavailable;
     }
     const evaluation = decisions.evaluateNative(entry, host, runtimeId);
-    observeChoices?.({ stage: "validate-native", runtimeId, evaluation });
     if (evaluation.availability !== true) {
-      recordUnavailable("validate-native-unavailable");
       return unavailable;
     }
     return undefined;
