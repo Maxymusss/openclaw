@@ -472,8 +472,8 @@ export async function captureCodexAuthFailure(params: {
                 const validChoices =
                   Array.isArray(choices) &&
                   choices.every((choice): choice is string => typeof choice === "string");
-                return {
-                  ...pick(record, [
+                return Object.assign(
+                  pick(record, [
                     "sequence",
                     "at",
                     "stage",
@@ -500,17 +500,19 @@ export async function captureCodexAuthFailure(params: {
                     "omittedChoices",
                     "selectedRuntime",
                   ]),
-                  choices: validChoices ? choices.slice(0, 32) : null,
-                  choicesObservation:
-                    choices === undefined
-                      ? "absent"
-                      : choices === null
-                        ? "unobserved"
-                        : validChoices
-                          ? "observed"
-                          : "invalid",
-                  captureOmittedChoices: validChoices ? Math.max(0, choices.length - 32) : null,
-                };
+                  {
+                    choices: validChoices ? choices.slice(0, 32) : null,
+                    choicesObservation:
+                      choices === undefined
+                        ? "absent"
+                        : choices === null
+                          ? "unobserved"
+                          : validChoices
+                            ? "observed"
+                            : "invalid",
+                    captureOmittedChoices: validChoices ? Math.max(0, choices.length - 32) : null,
+                  },
+                );
               }),
             };
           }),
