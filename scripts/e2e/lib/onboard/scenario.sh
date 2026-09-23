@@ -372,6 +372,14 @@ validate_guided_health_log() {
         echo "Guided onboarding did not report its reachable-but-unhealthy completion"
         return 1
       }
+      log_contains "https://docs.openclaw.ai/gateway/health" || {
+        echo "Guided onboarding health failure did not link the Gateway health documentation"
+        return 1
+      }
+      log_contains "https://docs.openclaw.ai/gateway/troubleshooting" || {
+        echo "Guided onboarding health failure did not link the Gateway troubleshooting documentation"
+        return 1
+      }
       log_contains "openclaw health" || {
         echo "Guided onboarding health failure did not name the recovery command"
         return 1
