@@ -8,7 +8,6 @@ import {
   getSubagentRunByRunId,
   resetSubagentRegistryForTests,
   resumeSubagentRun,
-  testing,
 } from "../agents/subagents/registry/subagent-registry.test-helpers.js";
 import {
   installGatewayTestHooks,
@@ -16,6 +15,14 @@ import {
   withGatewayServer,
   writeSessionStore,
 } from "./test-helpers.js";
+
+vi.mock("../agents/subagents/announce/subagent-announce.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../agents/subagents/announce/subagent-announce.js")>()),
+  runSubagentAnnounceFlow: async () => "retryable",
+}));
+vi.mock("../agents/subagents/announce/subagent-announce.requester-settle-wake.js", () => ({
+  maybeWakeRequesterAfterAllChildrenSettled: async () => false,
+}));
 
 installGatewayTestHooks({ scope: "suite" });
 
@@ -64,10 +71,6 @@ describe("subagent completion blocked Gateway E2E", () => {
         });
         settleSubagentCompletionDelivery({ subagent });
         addSubagentRunForTests(subagent);
-        testing.setDepsForTest({
-          runSubagentAnnounceFlow: async () => "retryable",
-          maybeWakeRequesterAfterAllChildrenSettled: async () => false,
-        });
 
         resumeSubagentRun(subagent.runId);
 
@@ -80,7 +83,6 @@ describe("subagent completion blocked Gateway E2E", () => {
         });
       });
     } finally {
-      testing.setDepsForTest();
       resetSubagentRegistryForTests({ persist: false });
       process.env.OPENCLAW_TEST_MINIMAL_GATEWAY = "1";
     }

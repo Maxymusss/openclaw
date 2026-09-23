@@ -11,11 +11,9 @@ import {
   createSqliteLifecycleAggregateError,
   runWithSqliteCoordinator,
 } from "../infra/sqlite-coordinator.js";
-import {
-  assertSqliteIntegrity,
-  isTerminalSqliteIntegrityError,
-} from "../infra/sqlite-integrity.js";
+import { isTerminalSqliteIntegrityError } from "../infra/sqlite-integrity.js";
 import { isSqliteSchemaVersionError } from "../infra/sqlite-user-version.js";
+import { createSqliteWalReclamationResult } from "../infra/sqlite-wal-reclamation.js";
 import {
   configureSqliteConnectionPragmas,
   configureSqlitePreSchemaPragmas,
@@ -33,6 +31,7 @@ import {
 } from "./openclaw-state-db-contract.js";
 import { openTrackedStateDatabase } from "./openclaw-state-db-handle.js";
 import { ensureOpenClawStatePermissions } from "./openclaw-state-db-permissions.js";
+import { assertStateIntegrityForSchemaMigration } from "./openclaw-state-db-schema-v19-task-source.js";
 import {
   assertSupportedStateSchemaVersion,
   readStateSchemaMigrationVersion,
@@ -60,7 +59,7 @@ function assertStateDatabaseIntegrityBeforeMutation(
   }
   if (contentVersion !== OPENCLAW_STATE_SCHEMA_VERSION) {
     // Every physical open proves the full file before schema mutation or exposure.
-    assertSqliteIntegrity(database, pathname);
+    assertStateIntegrityForSchemaMigration(database, pathname, contentVersion);
   }
 }
 
@@ -102,7 +101,11 @@ export function openUnpublishedStateDatabase(params: {
       return {
         db,
         path: params.pathname,
-        walMaintenance: { checkpoint: () => false, close: () => true },
+        walMaintenance: {
+          checkpoint: () => false,
+          close: () => true,
+          reclaimFreePages: createSqliteWalReclamationResult,
+        },
       };
     }
     const maintenance = runWithSqliteBusyTimeout(

@@ -1,3 +1,4 @@
+import { captureOperatorToolGatewayContinuationContext } from "../../../gateway/server-plugin-in-process-dispatch.js";
 import type { DeliveryQueueStoredStatus } from "../../../infra/delivery-queue-sqlite.kernel.js";
 import { scheduleSessionDelivery } from "../../../infra/session-delivery-queue-runtime.js";
 import { releaseSessionDeliveryClaim } from "../../../infra/session-delivery-queue-storage.js";
@@ -205,11 +206,25 @@ export async function retrySubagentCompletionDelivery(
     nextAttemptAt: undefined,
   });
   redrive.cleanupHandled = false;
-  settleSubagentCompletionDelivery({ subagent: redrive, databaseOptions });
-  publishCommittedRecords(redrive);
-  const { resumeSubagentRun } = await import("../registry/subagent-registry.js");
-  resumeSubagentRun(redrive.runId);
-  return { ok: true, run: subagentRuns.get(runId), duplicateRisk: true };
+  // An explicit retry is a fresh admitted operation, never a revival of the expired source.
+  const continuation = captureOperatorToolGatewayContinuationContext();
+  let transferred = false;
+  try {
+    settleSubagentCompletionDelivery({ subagent: redrive, databaseOptions });
+    // The committed new generation owns the caller before publication can schedule delivery.
+    if (continuation?.operatorAuthority) {
+      subagentRuns.bindCompletionAuthority(current, continuation);
+      transferred = true;
+    }
+    publishCommittedRecords(redrive);
+    const { resumeSubagentRun } = await import("../registry/subagent-registry.js");
+    resumeSubagentRun(redrive.runId);
+    return { ok: true, run: subagentRuns.get(runId), duplicateRisk: true };
+  } finally {
+    if (!transferred) {
+      continuation?.release();
+    }
+  }
 }
 
 export async function dismissSubagentCompletionDelivery(

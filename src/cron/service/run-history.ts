@@ -15,7 +15,7 @@ import { cronStoreKey } from "../store/key.js";
 import { recordCronRun } from "../store/run-history.js";
 import type { CronRunHistoryWrite } from "../store/run-history.types.js";
 import { bindCronRunReceiptExecution } from "../store/run-receipt-execution-binding.js";
-import type { CronRunReceiptHandle } from "../store/run-receipt-store.js";
+import type { CronRunReceiptHandle } from "../store/run-receipt.types.js";
 import type { CronCompletionStatus, CronJob, CronRunErrorClassification } from "../types.js";
 import type { CronEvent, CronExecutionIdentityAdmission, CronServiceState } from "./state.js";
 

@@ -10,7 +10,7 @@ import {
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { runWithGatewayDetachedWorkContinuation } from "../../../process/gateway-work-admission.js";
 import { removeInternalSessionEffectsSession } from "../../internal-session-effects.js";
-import type { AgentRunSessionTarget } from "../../run-session-target.js";
+import type { AgentRunSessionTarget } from "../../run-session-target.types.js";
 import { replaceRequesterCronAuthorityEntry } from "../requester-cron-authority.js";
 import {
   clearDeliveryState,
@@ -18,6 +18,7 @@ import {
   normalizeSubagentRunState,
 } from "./subagent-delivery-state.js";
 import { safeRemoveAttachmentsDir } from "./subagent-registry-helpers.js";
+import { subagentRuns } from "./subagent-registry-memory.js";
 import { commitSubagentRunReplacement } from "./subagent-registry-replacement-store.js";
 import { SubagentWaitManager } from "./subagent-registry-run-wait.js";
 import type { RequesterSettleWakeState, SubagentRunRecord } from "./subagent-registry.types.js";
@@ -176,6 +177,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     );
     clearDeliveryState(next);
 
+    const restoreCompletionAuthority = subagentRuns.transferCompletionAuthority(source, next);
     if (previousRunId !== nextRunId) {
       this.options.runs.delete(previousRunId);
     }
@@ -214,6 +216,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
         successor: next,
       });
     } catch (error) {
+      restoreCompletionAuthority();
       this.restoreKillReconciliationSnapshots(killReconciliationSnapshots);
       for (const [member, wake] of wakeSnapshots) {
         member.requesterSettleWake = wake;

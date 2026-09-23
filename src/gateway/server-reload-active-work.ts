@@ -1,5 +1,5 @@
 import { createGatewayActiveWorkSnapshot } from "../infra/gateway-active-work.js";
-import { resolveGatewayRestartDeferralTimeoutMs } from "../infra/restart.js";
+import { resolveGatewayRestartDeferralTimeoutMs } from "../infra/restart-budget.js";
 import type { ChannelKind } from "./config-reload-plan.js";
 import type { GatewayDeferredChannelReload } from "./config-reload-status.types.js";
 import type { GatewayReloadHandlerParams } from "./server-reload-contracts.js";

@@ -36,6 +36,10 @@ export const KEYBOARD_SHORTCUT_COMBOS = {
   zoomIn: { modifiers: [], key: "+" },
   zoomOut: { modifiers: [], key: "-" },
   zoomReset: { modifiers: [], key: "0" },
+  imagePanLeft: { modifiers: ["shift"], key: "ArrowLeft" },
+  imagePanRight: { modifiers: ["shift"], key: "ArrowRight" },
+  imagePanUp: { modifiers: ["shift"], key: "ArrowUp" },
+  imagePanDown: { modifiers: ["shift"], key: "ArrowDown" },
   // Display-only mouse chords; never keyboard-matched.
   toggleSessionSelect: { modifiers: ["alt"], key: "Click" },
   extendSessionSelect: { modifiers: ["shift"], key: "Click" },
@@ -63,6 +67,8 @@ export function formatKeyboardShortcutParts(
     Escape: applePlatform ? "esc" : "Esc",
     ArrowUp: "↑",
     ArrowDown: "↓",
+    ArrowLeft: "←",
+    ArrowRight: "→",
     Click: "Click",
   };
   return [
@@ -117,7 +123,9 @@ export function matchesShortcutCombo(combo: KeyboardShortcutCombo, event: Keyboa
     combo.key === "Enter" ||
     combo.key === "Escape" ||
     combo.key === "ArrowUp" ||
-    combo.key === "ArrowDown"
+    combo.key === "ArrowDown" ||
+    combo.key === "ArrowLeft" ||
+    combo.key === "ArrowRight"
   ) {
     return event.key === combo.key;
   }

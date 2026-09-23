@@ -1,6 +1,8 @@
 import type { DatabaseSync } from "node:sqlite";
+import { PRE_V19_TASK_SCHEMA_SQL } from "./openclaw-state-schema-v19.test-support.js";
 
 export function removePreparedWorkerOwnershipColumns(db: DatabaseSync): void {
+  db.exec(PRE_V19_TASK_SCHEMA_SQL);
   // Drop the constrained column first so the fixture has the actual pre-v17
   // worker shape, rather than only an older version marker.
   for (const column of [

@@ -82,7 +82,6 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     recordAcceptedRestartTarget,
     requestGatewayRestart,
     restoreConservativeRestartDebt,
-    retireRejectedRestartRequest,
     stopRestartRetries,
   } = createGatewayRestartCoordinator({
     params,
@@ -677,7 +676,6 @@ export function createGatewayReloadHandlers(params: GatewayReloadHandlerParams) 
     recordAcceptedRestartTarget,
     requestGatewayRestart,
     restoreConservativeRestartDebt,
-    retireRejectedRestartRequest,
     stopRestartRetries,
   };
 }

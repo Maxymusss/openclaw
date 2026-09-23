@@ -18,6 +18,7 @@ import {
   prepareCronRunReceiptClaim,
   releaseLocalCronRunReceiptOwnership,
 } from "../store/run-receipt-store.js";
+import { prepareCronRunReceiptWriteSchema } from "../store/run-receipt-write-admission.js";
 import { start, stop } from "./ops-lifecycle.js";
 import { list } from "./ops-read.js";
 import {
@@ -40,6 +41,7 @@ function claimReceipt(storePath: string, job: ReturnType<typeof createDueIsolate
   return runOpenClawStateWriteTransaction(({ db }) =>
     claimCronRunReceiptInDatabase({
       database: db,
+      receiptSchema: prepareCronRunReceiptWriteSchema(db),
       prepared,
       resolveAgentId: (current) => current.agentId ?? "main",
     }),
@@ -191,9 +193,10 @@ it("preserves foreign state while retrying an unrelated reservation", async () =
     { version: 1, jobs: [foreignRunning, pendingJob] },
     {
       transactionHooks: {
-        beforeWrite: (database) => {
+        beforeWrite: (database, receiptSchema) => {
           receipt = claimCronRunReceiptInDatabase({
             database,
+            receiptSchema,
             prepared,
             resolveAgentId: (job) => job.agentId ?? "main",
           });

@@ -12,7 +12,8 @@ type CronRunLogEntry = import("../cron/run-log-types.js").CronRunLogEntry;
 type CronDeliveryStatus = import("../cron/types.js").CronDeliveryStatus;
 type CronRunStatus = import("../cron/types.js").CronRunStatus;
 
-const CRON_RUN_LOG_TASK_IMPORT_MIGRATION_ID = "state:cron-run-logs-to-task-runs:v1";
+// Preserve the shipped ledger identity across the destination-table cutover.
+const CRON_RUN_LOG_IMPORT_MIGRATION_ID = "state:cron-run-logs-to-task-runs:v1";
 
 const CRON_RUN_LOG_IMPORT_BATCH_SIZE = 500;
 
@@ -38,15 +39,15 @@ type LegacyCronRunLogRow = {
   entry_json?: string | null;
 };
 
-type MirroredTask = {
-  source_id: string | null;
+type MirroredHistory = {
+  job_id: string | null;
   ended_at: number | bigint | null;
   detail_json: string | null;
 };
 
 type MirroredIdentity = { endedAt: number | null; runId?: string };
 
-type CronRunLogTaskImportResult = {
+type CronRunLogImportResult = {
   imported: number;
   alreadyMirrored: number;
   malformed: number;
@@ -67,26 +68,26 @@ function parseDetail(raw: string | null): Record<string, unknown> | undefined {
   return raw ? safeParseJsonRecord(raw) : undefined;
 }
 
-function collectMirroredTasks(db: DatabaseSync): Map<string, MirroredIdentity[]> {
+function collectMirroredHistory(db: DatabaseSync): Map<string, MirroredIdentity[]> {
   const rows = db
     .prepare(
-      `SELECT source_id, ended_at, detail_json
-       FROM task_runs
-       WHERE runtime = 'cron' AND source_id IS NOT NULL AND detail_json IS NOT NULL`,
+      `SELECT job_id, ended_at, detail_json
+       FROM cron_run_history
+       WHERE job_id IS NOT NULL AND detail_json IS NOT NULL`,
     )
-    .all() as MirroredTask[];
+    .all() as MirroredHistory[];
   const bySource = new Map<string, MirroredIdentity[]>();
   for (const row of rows) {
     const detail = parseDetail(row.detail_json);
-    if (!row.source_id || detail?.kind !== "cron-run") {
+    if (!row.job_id || detail?.kind !== "cron-run") {
       continue;
     }
-    const identities = bySource.get(row.source_id) ?? [];
+    const identities = bySource.get(row.job_id) ?? [];
     identities.push({
       endedAt: normalizeSqliteNumber(row.ended_at) ?? null,
       ...(typeof detail.runId === "string" && detail.runId ? { runId: detail.runId } : {}),
     });
-    bySource.set(row.source_id, identities);
+    bySource.set(row.job_id, identities);
   }
   return bySource;
 }
@@ -97,7 +98,7 @@ function hasMirroredIdentity(
   endedAt: number,
 ): boolean {
   // Mirroring is intentionally an existence check scoped only by source ID:
-  // store partitions and duplicate legacy rows do not consume task identities.
+  // store partitions and duplicate legacy rows do not consume history identities.
   return identities.some((identity) =>
     runId && identity.runId ? identity.runId === runId : identity.endedAt === endedAt,
   );
@@ -148,25 +149,20 @@ function ordinalKey(jobId: string, ts: number): string {
 }
 
 /** Runs inside the state schema transaction and removes the retired table after import. */
-export function migrateLegacyCronRunLogsToTaskRuns(db: DatabaseSync): CronRunLogTaskImportResult {
+export function migrateLegacyCronRunLogsToHistory(db: DatabaseSync): CronRunLogImportResult {
   if (!hasLegacyCronRunLogs(db)) {
     return { imported: 0, alreadyMirrored: 0, malformed: 0, skipped: true };
   }
 
-  const mirrored = collectMirroredTasks(db);
+  const mirrored = collectMirroredHistory(db);
   const ordinals = new Map<string, number>();
   const insert = db.prepare(`
-    INSERT INTO task_runs (
-      task_id, runtime, task_kind, source_id, requester_session_key, owner_key, scope_kind,
-      child_session_key, parent_flow_id, parent_task_id, agent_id, requester_agent_id, run_id,
-      label, task, status, delivery_status, notify_policy, created_at, started_at, ended_at,
-      last_event_at, cleanup_after, error, progress_summary, terminal_summary, terminal_outcome,
-      detail_json
+    INSERT INTO cron_run_history (
+      history_id, job_id, session_key, run_id, status, created_at, started_at, ended_at,
+      last_event_at, error, summary, detail_json
     ) VALUES (
-      @task_id, 'cron', NULL, @source_id, '', '', 'system', @child_session_key, NULL, NULL,
-      NULL, NULL, @run_id, NULL, @task, @status, 'not_applicable', 'silent', @created_at,
-      @started_at, @ended_at, @ended_at, NULL, @error, NULL, @terminal_summary,
-      @terminal_outcome, @detail_json
+      @history_id, @job_id, @session_key, @run_id, @status, @created_at, @started_at,
+      @ended_at, @ended_at, @error, @summary, @detail_json
     )
   `);
   let imported = 0;
@@ -199,21 +195,19 @@ export function migrateLegacyCronRunLogsToTaskRuns(db: DatabaseSync): CronRunLog
         alreadyMirrored++;
         continue;
       }
-      const taskId = `cron-runlog-import:${entry.jobId}:${entry.ts}:${ordinal}`;
+      const historyId = `cron-runlog-import:${entry.jobId}:${entry.ts}:${ordinal}`;
       const status = cronRunStorageStatus(entry);
       insert.run({
-        task_id: taskId,
-        source_id: entry.jobId,
-        child_session_key: entry.sessionKey?.trim() || null,
-        run_id: taskId,
-        task: entry.jobId,
+        history_id: historyId,
+        job_id: entry.jobId,
+        session_key: entry.sessionKey?.trim() || null,
+        run_id: historyId,
         status,
         created_at: entry.runAtMs ?? entry.ts,
         started_at: entry.runAtMs ?? null,
         ended_at: entry.ts,
         error: entry.error ?? null,
-        terminal_summary: entry.summary ?? null,
-        terminal_outcome: status === "succeeded" ? "succeeded" : null,
+        summary: entry.summary ?? null,
         detail_json: JSON.stringify(cronRunLogEntryToDetail(entry, { storeKey: row.store_key })),
       });
       imported++;
@@ -235,6 +229,6 @@ export function migrateLegacyCronRunLogsToTaskRuns(db: DatabaseSync): CronRunLog
        finished_at = excluded.finished_at,
        status = excluded.status,
        report_json = excluded.report_json`,
-  ).run(CRON_RUN_LOG_TASK_IMPORT_MIGRATION_ID, now, now, JSON.stringify(result));
+  ).run(CRON_RUN_LOG_IMPORT_MIGRATION_ID, now, now, JSON.stringify(result));
   return result;
 }

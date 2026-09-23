@@ -20,6 +20,7 @@ import {
   prepareCronRunReceiptClaim,
   releaseLocalCronRunReceiptOwnership,
 } from "../cron/store/run-receipt-store.js";
+import { prepareCronRunReceiptWriteSchema } from "../cron/store/run-receipt-write-admission.js";
 import { getFileLockProcessStartTime } from "../shared/pid-alive.js";
 import {
   beginAgentDeletionJournal,
@@ -205,6 +206,7 @@ describe("Claw serving monitor cleanup", () => {
         claimCronRunReceiptInDatabase({
           database: db,
           prepared,
+          receiptSchema: prepareCronRunReceiptWriteSchema(db),
           resolveAgentId: () => "worker",
         }),
       );

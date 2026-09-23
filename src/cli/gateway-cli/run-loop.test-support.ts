@@ -559,9 +559,9 @@ export function registerGatewayRestartOwnershipTests({
           await vi.advanceTimersByTimeAsync(5_000);
           expect(close).toHaveBeenCalledOnce();
           expect(runtime.exit).not.toHaveBeenCalled();
-          await vi.advanceTimersByTimeAsync(outcome === "completed" ? 1_000 : 5_001);
+          await vi.advanceTimersByTimeAsync(outcome === "completed" ? 1_000 : 80_001);
           await expect(exited).resolves.toBe(outcome === "completed" ? 0 : 1);
-          expect(cleanupDeadline).toBe(10_000);
+          expect(cleanupDeadline).toBe(55_000);
           expect(start).toHaveBeenCalledOnce();
         } finally {
           clock.mockRestore();
@@ -583,6 +583,7 @@ export function registerGatewayRestartOwnershipTests({
       consumeGatewayRestartIntent.mockReturnValueOnce({
         reason: "update.run",
         force: true,
+        waitMs: 300_000,
         successorOwner: managedUpdateSuccessorOwner,
       });
       isForegroundUpdateHandoff.mockReturnValue(true);

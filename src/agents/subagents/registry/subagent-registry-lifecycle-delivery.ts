@@ -237,6 +237,9 @@ export const freezeRunResultAtCompletion = async (
     completion.capturedAt = Date.now();
     return true;
   }
+  const owner = params.runs.get(entry.runId);
+  const generation = owner?.generation;
+  const execution = owner?.execution;
   let resultText: string | null;
   try {
     const transcriptTarget = entry.execution.transcriptTarget;
@@ -276,6 +279,10 @@ export const freezeRunResultAtCompletion = async (
   }
   const liveEntry = params.runs.get(entry.runId);
   if (
+    !owner ||
+    liveEntry !== owner ||
+    liveEntry.generation !== generation ||
+    liveEntry.execution !== execution ||
     entry.pauseReason === "sessions_yield" ||
     liveEntry?.pauseReason === "sessions_yield" ||
     context.newerGenerationOwnsSession(entry)

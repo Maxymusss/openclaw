@@ -8,7 +8,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   repairOpenClawStateDatabaseSchema,
-  repairOpenClawStateDatabaseSchemaIfNeeded,
+  prepareOpenClawStateDatabaseSchema,
 } from "./openclaw-state-db.js";
 
 function seedLegacyReplay(db: DatabaseSync) {
@@ -74,7 +74,6 @@ function withoutHistoricalPayloadReads<T>(pathname: string, operation: () => T):
     "acp_replay_events.update_json",
     "acp_replay_sessions.estimated_bytes",
     "subagent_runs.payload_json",
-    "task_runs.delivery_status",
     "operator_approvals.resolution_ref",
     "cron_jobs.job_json",
     "delivery_queue_entries.entry_json",
@@ -127,7 +126,7 @@ describe("ACP replay accounting repair", () => {
         closeOpenClawStateDatabaseForTest();
 
         if (entrance === "automatic") {
-          expect(repairOpenClawStateDatabaseSchemaIfNeeded(options).warnings).toEqual([]);
+          expect((await prepareOpenClawStateDatabaseSchema(options)).warnings).toEqual([]);
         }
         const upgraded = openOpenClawStateDatabase(options).db;
         expectAcpReplayUtf8Accounting(upgraded);
@@ -187,8 +186,10 @@ describe("ACP replay accounting repair", () => {
         closeOpenClawStateDatabaseForTest();
         if (entrance === "automatic") {
           expect(
-            withoutHistoricalPayloadReads(options.path, () =>
-              repairOpenClawStateDatabaseSchemaIfNeeded(options),
+            (
+              await withoutHistoricalPayloadReads(options.path, () =>
+                prepareOpenClawStateDatabaseSchema(options),
+              )
             ).warnings,
           ).toEqual([]);
         } else {

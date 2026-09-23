@@ -1429,15 +1429,10 @@ describe("createGatewayCloseHandler", () => {
       }
       return Promise.resolve(undefined);
     });
-    const stopPeriodicTasks = vi.fn(async () => {});
-    const maintenance = createGatewayCloseTestDeps().maintenance;
-    assert(maintenance);
-    maintenance.stopPeriodicTasks = stopPeriodicTasks;
-    const close = createGatewayCloseHandler(
-      createGatewayCloseTestDeps({
-        maintenance,
-      }),
-    );
+    const deps = createGatewayCloseTestDeps();
+    assert(deps.maintenance);
+    const { stopPeriodicTasks } = deps.maintenance;
+    const close = createGatewayCloseHandler(deps);
 
     const closePromise = close({ reason: "test shutdown" });
     try {
@@ -2668,25 +2663,21 @@ describe("createGatewayCloseHandler", () => {
     });
     const lifecycleUnsub = vi.fn();
     const transcriptUnsub = vi.fn();
-    const stopPeriodicTasks = vi.fn(async () => {});
-    const maintenance = createGatewayCloseTestDeps().maintenance;
-    assert(maintenance);
-    maintenance.stopPeriodicTasks = stopPeriodicTasks;
-    const close = createGatewayCloseHandler(
-      createGatewayCloseTestDeps({
-        tailscaleCleanup,
-        maintenance,
-        lifecycleUnsub,
-        transcriptUnsub,
-        httpServer: {
-          close: (callback: (err?: Error | null) => void) => {
-            closeOrder.push("http-server");
-            callback(null);
-          },
-          closeIdleConnections: vi.fn(),
-        } as never,
-      }),
-    );
+    const deps = createGatewayCloseTestDeps({
+      tailscaleCleanup,
+      lifecycleUnsub,
+      transcriptUnsub,
+      httpServer: {
+        close: (callback: (err?: Error | null) => void) => {
+          closeOrder.push("http-server");
+          callback(null);
+        },
+        closeIdleConnections: vi.fn(),
+      } as never,
+    });
+    assert(deps.maintenance);
+    const { stopPeriodicTasks } = deps.maintenance;
+    const close = createGatewayCloseHandler(deps);
 
     await close({ reason: "test shutdown" });
 

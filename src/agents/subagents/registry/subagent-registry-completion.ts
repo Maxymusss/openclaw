@@ -5,8 +5,6 @@
  */
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
-import { resolveRequiredCompletionTerminalResult } from "../../completion-result.js";
-import { resolveSubagentCompletionResultText } from "../completion/subagent-completion-result.js";
 import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
 import { SUBAGENT_KILL_TASK_ERROR, type SubagentTerminalState } from "./subagent-control.types.js";
 import {
@@ -47,7 +45,7 @@ export function resolveSubagentTaskTerminalStatus(
       : "failed";
 }
 
-/** Returns the complete task projection only after completion capture has settled. */
+/** Returns terminal execution facts only after completion capture has settled. */
 export function resolveFinalizedSubagentTaskState(
   entry: SubagentRunRecord,
 ): SubagentTerminalState | undefined {
@@ -62,40 +60,15 @@ export function resolveFinalizedSubagentTaskState(
   ) {
     return undefined;
   }
-  const progressSummary = resolveSubagentCompletionResultText(entry);
-  if (status === "cancelled") {
-    return {
-      status: "cancelled",
-      endedAt,
-      lastEventAt: endedAt,
-      error: SUBAGENT_KILL_TASK_ERROR,
-      progressSummary,
-      terminalSummary: null,
-    };
-  }
-  if (status === "succeeded") {
-    const terminal =
-      entry.expectsCompletionMessage !== true
-        ? {}
-        : entry.delivery?.disposition === "intentional_non_delivery"
-          ? { terminalOutcome: "succeeded" as const, terminalSummary: null }
-          : resolveRequiredCompletionTerminalResult(progressSummary);
-    return {
-      status: "succeeded",
-      endedAt,
-      lastEventAt: endedAt,
-      progressSummary,
-      terminalSummary: terminal.terminalSummary ?? null,
-      terminalOutcome: terminal.terminalOutcome,
-    };
-  }
   return {
     status,
     endedAt,
-    lastEventAt: endedAt,
-    error: outcome?.status === "error" ? outcome.error : undefined,
-    progressSummary,
-    terminalSummary: null,
+    error:
+      status === "cancelled"
+        ? SUBAGENT_KILL_TASK_ERROR
+        : outcome?.status === "error"
+          ? outcome.error
+          : undefined,
   };
 }
 

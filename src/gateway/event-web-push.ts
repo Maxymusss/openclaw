@@ -16,7 +16,6 @@ import {
 import {
   hasBoundWebPushSubscriptions,
   prepareWebPushNotificationSender,
-  withBoundWebPushSubscriptions,
   type BoundWebPushSubscription,
 } from "../infra/push-web.js";
 import { createSubsystemLogger, type SubsystemLogger } from "../logging/subsystem.js";
@@ -30,6 +29,7 @@ import type { GatewayBroadcastOpts } from "./server-broadcast-types.js";
 import { canReceiveSessionEvent } from "./session-sharing.js";
 import {
   listCurrentWebPushTargets,
+  withCurrentWebPushAuthority,
   webPushTargetClient,
   type CurrentWebPushTarget,
 } from "./web-push-authority.js";
@@ -87,21 +87,6 @@ function resolveEventWebPushNotification(
       title: "OpenClaw agent finished",
       body: "An agent completed its response.",
       tag: `openclaw-agent-finished-${runId}`,
-    };
-  }
-  if (event === "task" && value.action === "upserted") {
-    const task = isRecord(value.task) ? value.task : null;
-    if ((task?.status !== "failed" && task?.status !== "timed_out") || task.runtime === "cron") {
-      return null;
-    }
-    const taskId = normalizeWebPushDisplayLabel(task.id) ?? "failed";
-    const taskTitle = normalizeWebPushDisplayLabel(task.title);
-    return {
-      category: "background-task-failed",
-      title: "OpenClaw background task failed",
-      body: "A background task needs attention.",
-      ...(taskTitle ? { identifiedBody: `${taskTitle} needs attention.` } : {}),
-      tag: `openclaw-task-failed-${taskId}`,
     };
   }
   if (event === "cron" && value.action === "finished" && value.status === "error") {
@@ -169,9 +154,9 @@ export function createEventWebPushDelivery(params: {
         return;
       }
       const sender = await prepareWebPushNotificationSender(params.stateDir);
-      const groupedResults = await withBoundWebPushSubscriptions(
+      const groupedResults = await withCurrentWebPushAuthority(
         params.stateDir,
-        (subscriptions) => {
+        (subscriptions, pairedDevices) => {
           const cfg = params.getRuntimeConfig();
           const recipientProfileId = mention && resolveUserProfileId(mention.recipientProfileId);
           if (mention && !recipientProfileId) {
@@ -194,10 +179,7 @@ export function createEventWebPushDelivery(params: {
           if (mention && !sessionPath) {
             return undefined;
           }
-          const path =
-            notification.path ??
-            sessionPath?.slice(1) ??
-            (notification.category === "background-task-failed" ? "tasks" : "sessions");
+          const path = notification.path ?? sessionPath?.slice(1) ?? "sessions";
           const url = resolveControlUiWebPushUrl(cfg, path);
           const targets = listCurrentWebPushTargets({
             cfg,
@@ -207,7 +189,7 @@ export function createEventWebPushDelivery(params: {
                 ? [READ_SCOPE, QUESTIONS_SCOPE]
                 : [READ_SCOPE],
             ...(mention ? { visibilityScopes: [ADMIN_SCOPE] } : {}),
-            stateDir: params.stateDir,
+            pairedDevices,
           });
           const agentLabel = normalizeWebPushDisplayLabel(agentId);
           const groups = new Map<

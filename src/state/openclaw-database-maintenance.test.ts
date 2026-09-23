@@ -147,6 +147,31 @@ CREATE INDEX IF NOT EXISTS idx_web_push_approval_deliveries_subscription
     }
   });
 
+  it("keeps standing-grant generations compatible with the previous schema", () => {
+    const companionSchema = `CREATE TABLE IF NOT EXISTS operator_approval_standing_grant_generations (
+  grant_id TEXT NOT NULL PRIMARY KEY
+    REFERENCES operator_approval_standing_grants(grant_id) ON DELETE CASCADE,
+  job_definition_generation INTEGER NOT NULL CHECK (job_definition_generation >= 1)
+) STRICT;
+
+`;
+    const previousSchema = OPENCLAW_STATE_SCHEMA_SQL.replace(companionSchema, "")
+      .replace("  grant_definition_revision TEXT,\n", "")
+      .replace("  grant_definition_generation INTEGER,\n", "")
+      .replace("  grant_definition_updated_at INTEGER,\n", "");
+    const database = createGlobalDatabase();
+    try {
+      expect(previousSchema).not.toBe(OPENCLAW_STATE_SCHEMA_SQL);
+      expect(() =>
+        assertSqliteSchemaContains(database, "previous global schema", previousSchema, {
+          allowCompatibleAdditiveColumns: true,
+        }),
+      ).not.toThrow();
+    } finally {
+      database.close();
+    }
+  });
+
   it("keeps lifecycle bindings additive and keyed only by canonical owner identity", () => {
     const start = OPENCLAW_STATE_SCHEMA_SQL.indexOf(
       "CREATE TABLE IF NOT EXISTS execution_owner_lifecycle_bindings (",
@@ -364,15 +389,15 @@ CREATE INDEX IF NOT EXISTS idx_web_push_approval_deliveries_subscription
     const database = createGlobalDatabase();
     try {
       database.exec(`
-        DROP INDEX idx_task_runs_status;
-        CREATE INDEX idx_task_runs_status ON task_runs(task_id);
+        DROP INDEX idx_cron_run_history_job;
+        CREATE INDEX idx_cron_run_history_job ON cron_run_history(history_id);
       `);
 
       expect(() =>
         assertOpenClawStateDatabaseForMaintenance(database, {
           pathname: "global.sqlite",
         }),
-      ).toThrow("missing or drifted index idx_task_runs_status");
+      ).toThrow("missing or drifted index idx_cron_run_history_job");
     } finally {
       database.close();
     }
@@ -381,13 +406,15 @@ CREATE INDEX IF NOT EXISTS idx_web_push_approval_deliveries_subscription
   it("rejects a current global database with an unexpected unique index", () => {
     const database = createGlobalDatabase();
     try {
-      database.exec("CREATE UNIQUE INDEX idx_task_runs_unexpected_owner ON task_runs(owner_key);");
+      database.exec(
+        "CREATE UNIQUE INDEX idx_cron_run_history_unexpected_job ON cron_run_history(job_id);",
+      );
 
       expect(() =>
         assertOpenClawStateDatabaseForMaintenance(database, {
           pathname: "global.sqlite",
         }),
-      ).toThrow("unexpected unique index idx_task_runs_unexpected_owner");
+      ).toThrow("unexpected unique index idx_cron_run_history_unexpected_job");
     } finally {
       database.close();
     }

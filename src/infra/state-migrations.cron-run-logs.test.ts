@@ -8,11 +8,11 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   repairOpenClawStateDatabaseSchema,
-  repairOpenClawStateDatabaseSchemaIfNeeded,
+  prepareOpenClawStateDatabaseSchema,
 } from "../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 
-const CRON_RUN_LOG_TASK_IMPORT_MIGRATION_ID = "state:cron-run-logs-to-task-runs:v1";
+const CRON_RUN_LOG_IMPORT_MIGRATION_ID = "state:cron-run-logs-to-task-runs:v1";
 
 describe("cron run-log history import", () => {
   it("preserves legacy cron history on runtime refusal, then Doctor imports it once", async () => {
@@ -121,13 +121,10 @@ describe("cron run-log history import", () => {
             );
           }
           const insertMirrored = fixture.prepare(
-            `INSERT INTO task_runs (
-                task_id, runtime, source_id, requester_session_key, owner_key, scope_kind,
-                child_session_key, run_id, task, status, delivery_status, notify_policy, created_at,
-                started_at, ended_at, last_event_at, error, terminal_summary, terminal_outcome,
-                detail_json
-              ) VALUES (?, 'cron', ?, '', '', 'system', ?, ?, ?, ?, 'not_applicable', 'silent',
-                ?, ?, ?, ?, ?, ?, ?, ?)`,
+            `INSERT INTO cron_run_history (
+                history_id, job_id, session_key, run_id, status, created_at,
+                started_at, ended_at, last_event_at, error, summary, detail_json
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           );
           for (const [index, mirrored] of entries.slice(4).entries()) {
             const mirroredStatus = cronRunStorageStatus(mirrored);
@@ -136,7 +133,6 @@ describe("cron run-log history import", () => {
               jobId,
               mirrored.sessionKey ?? null,
               `cron:legacy-history-job:${mirrored.runAtMs}:mirrored`,
-              jobId,
               mirroredStatus,
               mirrored.runAtMs ?? mirrored.ts,
               mirrored.runAtMs ?? null,
@@ -144,7 +140,6 @@ describe("cron run-log history import", () => {
               mirrored.ts,
               mirrored.error ?? null,
               mirrored.summary ?? null,
-              mirroredStatus === "succeeded" ? "succeeded" : null,
               JSON.stringify(cronRunLogEntryToDetail(mirrored, { storeKey })),
             );
           }
@@ -159,7 +154,7 @@ describe("cron run-log history import", () => {
           fixture.close();
         }
 
-        expect(repairOpenClawStateDatabaseSchemaIfNeeded()).toEqual({
+        expect(await prepareOpenClawStateDatabaseSchema()).toEqual({
           changes: [],
           warnings: [expect.stringMatching(/legacy-cron-run-logs.*doctor --fix/u)],
         });
@@ -169,9 +164,11 @@ describe("cron run-log history import", () => {
           expect(preserved.prepare("SELECT COUNT(*) AS count FROM cron_run_logs").get()).toEqual({
             count: 8,
           });
-          expect(preserved.prepare("SELECT COUNT(*) AS count FROM task_runs").get()).toEqual({
-            count: 2,
-          });
+          expect(preserved.prepare("SELECT COUNT(*) AS count FROM cron_run_history").get()).toEqual(
+            {
+              count: 2,
+            },
+          );
         } finally {
           preserved.close();
         }
@@ -179,7 +176,7 @@ describe("cron run-log history import", () => {
         const reopened = openOpenClawStateDatabase();
         const report = reopened.db
           .prepare("SELECT report_json FROM migration_runs WHERE id = ?")
-          .get(CRON_RUN_LOG_TASK_IMPORT_MIGRATION_ID) as { report_json: string };
+          .get(CRON_RUN_LOG_IMPORT_MIGRATION_ID) as { report_json: string };
         expect(JSON.parse(report.report_json)).toEqual({
           imported: 4,
           alreadyMirrored: 3,
@@ -216,10 +213,10 @@ describe("cron run-log history import", () => {
         ).toBeUndefined();
         const imported = reopened.db
           .prepare(
-            "SELECT task_id, cleanup_after FROM task_runs WHERE task_id LIKE 'cron-runlog-import:%' ORDER BY task_id",
+            "SELECT history_id, cleanup_after FROM cron_run_history WHERE history_id LIKE 'cron-runlog-import:%' ORDER BY history_id",
           )
-          .all() as Array<{ task_id: string; cleanup_after: number | null }>;
-        expect(imported.map((row) => row.task_id)).toEqual([
+          .all() as Array<{ history_id: string; cleanup_after: number | null }>;
+        expect(imported.map((row) => row.history_id)).toEqual([
           "cron-runlog-import:legacy-history-job:1100:1",
           "cron-runlog-import:legacy-history-job:2100:1",
           "cron-runlog-import:legacy-history-job:2100:2",
@@ -229,13 +226,15 @@ describe("cron run-log history import", () => {
 
         closeOpenClawStateDatabaseForTest();
         const secondOpen = openOpenClawStateDatabase();
-        expect(secondOpen.db.prepare("SELECT COUNT(*) AS count FROM task_runs").get()).toEqual({
+        expect(
+          secondOpen.db.prepare("SELECT COUNT(*) AS count FROM cron_run_history").get(),
+        ).toEqual({
           count: 6,
         });
         expect(
           secondOpen.db
             .prepare("SELECT report_json FROM migration_runs WHERE id = ?")
-            .get(CRON_RUN_LOG_TASK_IMPORT_MIGRATION_ID),
+            .get(CRON_RUN_LOG_IMPORT_MIGRATION_ID),
         ).toEqual({ report_json: report.report_json });
       },
     );

@@ -5,7 +5,7 @@ import path from "node:path";
 import { parseCronRunLogEntryObject } from "../../../cron/run-history-detail.js";
 import type { CronRunLogEntry } from "../../../cron/run-log-types.js";
 import { cronStoreKey } from "../../../cron/store/key.js";
-import { migrateLegacyCronRunLogsToTaskRuns } from "../../../infra/state-migrations.cron-run-logs.js";
+import { migrateLegacyCronRunLogsToHistory } from "../../../infra/state-migrations.cron-run-logs.js";
 import { runOpenClawStateWriteTransaction } from "../../../state/openclaw-state-db.js";
 
 const LEGACY_CRON_RUN_LOG_ARCHIVE_SUFFIX = ".migrated";
@@ -44,7 +44,7 @@ function archiveLegacyCronRunLogSync(filePath: string): void {
   }
 }
 
-/** Import legacy per-job JSONL run logs into task_runs and archive migrated files. */
+/** Import legacy per-job JSONL run logs into cron_run_history and archive migrated files. */
 export async function migrateLegacyCronRunLogsToSqlite(
   storePath: string,
 ): Promise<{ importedFiles: number }> {
@@ -84,7 +84,7 @@ export async function migrateLegacyCronRunLogsToSqlite(
       for (const [index, entry] of entries.entries()) {
         insert.run(storeKey, jobId, index + 1, entry.ts, JSON.stringify(entry), Date.now());
       }
-      migrateLegacyCronRunLogsToTaskRuns(db);
+      migrateLegacyCronRunLogsToHistory(db);
     });
     archiveLegacyCronRunLogSync(filePath);
   }

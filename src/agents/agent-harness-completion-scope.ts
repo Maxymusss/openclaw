@@ -14,16 +14,10 @@ type ScopeRegistry = {
   hostIssuedScopes: WeakSet<object>;
 };
 
-type GlobalWithScopeRegistry = typeof globalThis & {
-  [scopeRegistryKey]?: ScopeRegistry;
-};
-
 function getScopeRegistry(): ScopeRegistry {
-  const globalState = globalThis as GlobalWithScopeRegistry;
-  globalState[scopeRegistryKey] ??= {
+  return resolveGlobalSingleton(scopeRegistryKey, () => ({
     hostIssuedScopes: new WeakSet<object>(),
-  };
-  return globalState[scopeRegistryKey];
+  }));
 }
 
 export type AgentHarnessCompletionScope = {

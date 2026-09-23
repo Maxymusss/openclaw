@@ -128,6 +128,7 @@ export async function completeSubagentRunAttempt(
     suppressSessionEffects ||= context.shouldSuppressSessionEffects(entry);
     params.clearPendingLifecycleError(completeParams.runId);
     const currentEntry = entry;
+    const ownerGeneration = currentEntry.generation;
     entrySnapshot = structuredClone(entry);
     const restoreEntrySnapshot = (snapshot?: SubagentRunRecord) => {
       if (!snapshot) {
@@ -426,6 +427,10 @@ export async function completeSubagentRunAttempt(
       completionOutcome.status === "ok" &&
       !terminalReply
     ) {
+      // An unproven success cannot replace the cancellation already owned by this run.
+      if (provisionalKillSnapshot) {
+        return;
+      }
       completionOutcome = { status: "error", error: MISSING_REQUIRED_FINAL_REPLY_ERROR };
       completionReason = SUBAGENT_ENDED_REASON_ERROR;
     }
@@ -515,7 +520,7 @@ export async function completeSubagentRunAttempt(
       entry.delivery?.disposition !== "intentional_non_delivery";
     if (closesAsIntentionalNonDelivery) {
       // Producer-owned empty success is a terminal fact, not a failed send.
-      // Close it before task finalization so no requester delivery can start.
+      // Close it before terminal persistence so no requester delivery can start.
       entry.delivery = {
         status: "not_required",
         disposition: "intentional_non_delivery",
@@ -534,7 +539,19 @@ export async function completeSubagentRunAttempt(
         mutated = true;
       }
     } else {
+      const executionBeforeCapture = currentEntry.execution;
       const didFreezeResult = await freezeRunResultAtCompletion(context, entry, executionOutcome);
+      // Native persistence is now the sole terminal commit. Capture must not give
+      // an old callback authority over a replacement row or a newer cancellation.
+      if (
+        params.runs.get(completeParams.runId) !== currentEntry ||
+        currentEntry.generation !== ownerGeneration ||
+        currentEntry.execution !== executionBeforeCapture ||
+        currentEntry.pauseReason === "sessions_yield" ||
+        completeParams.isRecoveryCurrent?.() === false
+      ) {
+        return;
+      }
       sessionSuperseded = context.newerGenerationOwnsSession(entry);
       if (sessionSuperseded) {
         const completion = ensureCompletionState(entry);
@@ -553,9 +570,8 @@ export async function completeSubagentRunAttempt(
       mutated = true;
     }
     if (provisionalKillSnapshot) {
-      // Keep the tombstone's superseded generation boundary through task
-      // commit. Clearing it on the canonical registry row must not let a
-      // late old-run result select a newer task sharing the session key.
+      // Capture may race cancellation on this exact physical execution.
+      // Recheck the live marker before replacing the staged native outcome.
       const stableTaskCancellation =
         currentEntry.killReconciliation?.taskCancellationAccepted === true;
       const cancellationEndedAt = resolveKilledSubagentTaskEndedAt(provisionalKillSnapshot);
@@ -586,8 +602,8 @@ export async function completeSubagentRunAttempt(
         restoreEntrySnapshot(liveBeforeCommit);
         throw error;
       }
-      // A provider result supersedes provisional cleanup only after both
-      // durable owners accept it. Rejected callbacks leave the kill tail live.
+      // A provider result supersedes provisional cleanup only after its native
+      // terminal commit. Rejected callbacks leave the kill tail live.
       context.bumpCleanupGeneration(entry);
     } else {
       try {

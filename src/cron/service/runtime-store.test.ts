@@ -22,6 +22,7 @@ import {
   finishCronRunReceipt,
   prepareCronRunReceiptClaim,
 } from "../store/run-receipt-store.js";
+import { prepareCronRunReceiptWriteSchema } from "../store/run-receipt-write-admission.js";
 import type { CronStoredJob } from "../types.js";
 import { stop } from "./ops-lifecycle.js";
 import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
@@ -130,6 +131,12 @@ describe("cron runtime row publication", () => {
     const after = database
       .prepare("SELECT * FROM cron_jobs WHERE store_key = ? ORDER BY sort_order")
       .all(storeKey);
+    const grantDefinitionProjection = (row: Record<string, unknown>) => ({
+      revision: row.grant_definition_revision,
+      generation: row.grant_definition_generation,
+      updatedAt: row.grant_definition_updated_at,
+    });
+    expect(after.map(grantDefinitionProjection)).toEqual(before.map(grantDefinitionProjection));
     expect(after.filter((row) => !committed.includes(row.job_id as string))).toEqual(
       before.filter((row) => !committed.includes(row.job_id as string)),
     );
@@ -185,6 +192,7 @@ describe("cron runtime row publication", () => {
     const handle = runOpenClawStateWriteTransaction(({ db }) =>
       claimCronRunReceiptInDatabase({
         database: db,
+        receiptSchema: prepareCronRunReceiptWriteSchema(db),
         prepared,
         resolveAgentId: (current) => current.agentId ?? "main",
       }),

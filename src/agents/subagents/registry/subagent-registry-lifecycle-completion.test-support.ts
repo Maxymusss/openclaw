@@ -1,16 +1,20 @@
 import { expect, it, vi, type Mock } from "vitest";
+import { createDeferredCore } from "../../../shared/deferred.js";
 import type {
   blockSubagentCompletionDelivery,
   settleRequesterCompletionBatch,
 } from "../completion/subagent-completion-admission.store.js";
-import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
+import {
+  SUBAGENT_ENDED_REASON_COMPLETE,
+  SUBAGENT_ENDED_REASON_KILLED,
+} from "./subagent-lifecycle-events.js";
 import { clearSubagentPendingDelivery } from "./subagent-registry-lifecycle-delivery.js";
 import type {
   SubagentLifecycleController,
   SubagentLifecycleOptions,
 } from "./subagent-registry-lifecycle.js";
 import { markRequesterTurnYieldedInRuns } from "./subagent-registry-requester-yield.js";
-import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 
 export function mockBlockedCompletionDeliveryOwner(completionDeliveryMocks: {
   blockSubagentCompletionDelivery: Mock<typeof blockSubagentCompletionDelivery>;
@@ -144,7 +148,7 @@ export function registerPrivateCompletionSettlementTests({
       const runSubagentAnnounceFlow = vi.fn<SubagentLifecycleOptions["runSubagentAnnounceFlow"]>(
         async (params) => {
           if (params.signal?.aborted) {
-            params.onDeliveryResult?.({ delivered: false, path: "none" });
+            await params.onDeliveryResult?.({ delivered: false, path: "none" });
             return "retryable";
           }
           return params.isCompletionOwnedByRequesterYield?.()
@@ -203,6 +207,99 @@ export function registerPrivateCompletionSettlementTests({
         expect(entry.delivery?.lastDropReason).toBeUndefined();
       } finally {
         controller.clearScheduledResumeTimers();
+      }
+    },
+  );
+}
+
+export function registerNativeCompletionAuthorityTest({
+  createRunEntry,
+  createLifecycleController,
+  completeRun,
+  helperMocks,
+}: {
+  createRunEntry: (overrides?: Partial<SubagentRunRecord>) => SubagentRunRecord;
+  createLifecycleController: (
+    options: { entry: SubagentRunRecord } & Partial<SubagentLifecycleOptions>,
+  ) => SubagentLifecycleController;
+  completeRun: (
+    controller: SubagentLifecycleController,
+    entry: SubagentRunRecord,
+    options?: Pick<SubagentCompletionRequest, "triggerCleanup" | "terminalReply" | "endedAt">,
+  ) => Promise<void>;
+  helperMocks: { persistSubagentSessionTiming: Mock<() => Promise<void>> };
+}) {
+  it("keeps provisional cancellation when a repeated success has no producer reply evidence", async () => {
+    const entry = createRunEntry({
+      expectsCompletionMessage: true,
+      execution: {
+        status: "terminal",
+        endedAt: 4_000,
+        outcome: { status: "error", error: "killed" },
+      },
+      endedReason: SUBAGENT_ENDED_REASON_KILLED,
+      suppressAnnounceReason: "killed",
+      killReconciliation: {
+        killedAt: 4_000,
+        taskCancellationAccepted: true,
+        suppressTaskDelivery: true,
+      },
+      completion: { required: true, resultText: null, capturedAt: 4_000 },
+    });
+    const marker = entry.killReconciliation;
+    const original = structuredClone(entry);
+    const controller = createLifecycleController({ entry });
+    await completeRun(controller, entry, {
+      endedAt: 4_001,
+      terminalReply: undefined,
+      triggerCleanup: false,
+    });
+    expect(entry).toEqual(original);
+    expect(entry.killReconciliation).toBe(marker);
+    expect(helperMocks.persistSubagentSessionTiming).not.toHaveBeenCalled();
+  });
+  it.each(["replacement", "cancellation"] as const)(
+    "does not commit a captured result after native %s takes ownership",
+    async (transition) => {
+      const entry = createRunEntry({ expectsCompletionMessage: false });
+      const runs = new Map([[entry.runId, entry]]);
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const persistOrThrow = vi.fn();
+      const controller = createLifecycleController({
+        entry,
+        runs,
+        persistOrThrow,
+        captureSubagentCompletionReply: async () => {
+          entered.resolve();
+          await release.promise;
+          return "old result";
+        },
+      });
+      const pending = completeRun(controller, entry, {
+        terminalReply: undefined,
+        triggerCleanup: false,
+      });
+      try {
+        await entered.promise;
+        const successor =
+          transition === "replacement" ? createRunEntry({ runId: entry.runId }) : entry;
+        successor.execution = {
+          status: "terminal",
+          endedAt: 5_000,
+          outcome: { status: "error", error: "cancelled" },
+        };
+        runs.set(entry.runId, successor);
+        const execution = successor.execution;
+        release.resolve();
+        await pending;
+        expect(runs.get(entry.runId)).toBe(successor);
+        expect(successor.execution).toBe(execution);
+        expect(persistOrThrow).not.toHaveBeenCalled();
+        expect(helperMocks.persistSubagentSessionTiming).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        await pending;
       }
     },
   );

@@ -27,7 +27,6 @@ import { normalizeChatType } from "../../channels/chat-type.js";
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import { createStructuredOutboundPayloadPlan } from "../../infra/outbound/payloads.js";
 import { shouldPreserveUserFacingSessionStateForInputProvenance } from "../../sessions/input-provenance.js";
-import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { BlockReplyContext, ReplyPayload } from "../types.js";
 import { createAgentLifecycleTerminalBackstop } from "./agent-lifecycle-terminal.js";
 import { resolveRunAuthProfile } from "./agent-runner-auth-profile.js";
@@ -40,10 +39,10 @@ import {
 import { buildCommandOutputFromToolResultEvent } from "./agent-runner-command-output.js";
 import type { AgentFallbackCandidateCommonParams } from "./agent-runner-fallback-cycle.types.js";
 import { resolveRunModelHasVision } from "./agent-runner-run-params.js";
+import { prepareCliReplyPayload } from "./cli-reply-payload.js";
 import { shouldBridgeCliPreambleEvents } from "./get-reply.types.js";
 import { hasInboundAudio } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
-import { parseReplyDirectives } from "./reply-directives.js";
 import { resolveReplyOperationTerminationFields } from "./reply-operation-abort.js";
 
 export async function runCliFallbackCandidate(
@@ -226,6 +225,7 @@ export async function runCliFallbackCandidate(
                     return;
                   }
                   await clearCliSessionInStore({
+                    agentId: turn.followupRun.run.agentId,
                     provider: params.cliExecutionProvider,
                     expectedCliSessionId: cliSessionBinding.sessionId,
                     expectedSessionId: sessionEntry?.sessionId,
@@ -253,6 +253,12 @@ export async function runCliFallbackCandidate(
                   ? false
                   : onPartialReply({ text: sanitized.text }),
             );
+          },
+          onCompletedReply: async (text, assistantMessageIndex) => {
+            params.runAbortSignal?.throwIfAborted();
+            assertSettlementCurrent();
+            const reply = prepareCliReplyPayload(text, cliCurrentMessageId, assistantMessageIndex);
+            await params.presentation.blockReplyHandler?.(reply, { completed: true });
           },
           onReasoningText: createCliReasoningStreamBridge(turn.opts?.onReasoningStream),
           onPlanUpdate: turn.opts?.onPlanUpdate,
@@ -324,21 +330,9 @@ export async function runCliFallbackCandidate(
                   if (bridgeCliDurableCommentary) {
                     // Block mode treats completed CLI text as an ordinary answer block so
                     // the existing pipeline owns coalescing and final-payload dedupe.
-                    const parsed = parseReplyDirectives(payload.text, {
-                      currentMessageId:
-                        turn.sessionCtx.MessageSidFull ?? turn.sessionCtx.MessageSid,
-                    });
-                    const reply: ReplyPayload = {
-                      text: parsed.text,
-                      mediaUrls: parsed.mediaUrls,
-                      replyToId: parsed.replyToId,
-                      replyToCurrent: parsed.replyToCurrent,
-                      ...(parsed.replyToTag ? { replyToTag: true } : {}),
-                      audioAsVoice: parsed.audioAsVoice,
-                      ...(turn.blockStreamingEnabled ? {} : { isCommentary: true }),
-                    };
-                    if (parsed.isSilent) {
-                      setReplyPayloadMetadata(reply, { silentReply: true });
+                    const reply = prepareCliReplyPayload(payload.text, cliCurrentMessageId);
+                    if (!turn.blockStreamingEnabled) {
+                      reply.isCommentary = true;
                     }
                     deliveries.push(params.presentation.blockReplyHandler?.(reply));
                   }
@@ -455,6 +449,7 @@ export async function runCliFallbackCandidate(
             messageChannel: turn.followupRun.originatingChannel ?? undefined,
             messageProvider: hookMessageProvider,
             clientCaps: turn.followupRun.run.clientCaps,
+            bootstrapUserProfileId: turn.followupRun.run.bootstrapUserProfileId,
             gatewayUiCommandTarget: turn.followupRun.run.gatewayUiCommandTarget,
             currentChannelId:
               turn.followupRun.originatingTo ?? turn.sessionCtx.OriginatingTo ?? turn.sessionCtx.To,
@@ -494,6 +489,7 @@ export async function runCliFallbackCandidate(
           // invalidation remains, and failure must retain the returned turn.
           return await settleCliSessionResult(candidateResult, async () => {
             await clearCliSessionInStore({
+              agentId: turn.followupRun.run.agentId,
               provider: params.cliExecutionProvider,
               expectedCliSessionId: cliSessionBinding?.sessionId,
               expectedSessionId: sessionEntry?.sessionId,
@@ -514,6 +510,7 @@ export async function runCliFallbackCandidate(
           )
         ) {
           return await persistCliSessionBindingResult({
+            agentId: turn.followupRun.run.agentId,
             provider: params.cliExecutionProvider,
             result: candidateResult,
             sessionKey,

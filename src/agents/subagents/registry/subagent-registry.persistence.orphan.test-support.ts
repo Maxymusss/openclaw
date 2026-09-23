@@ -13,12 +13,6 @@ export function registerSubagentOrphanTaskCases({
     persisted: Record<string, unknown>,
     opts?: { seedChildSessions?: boolean },
   ) => Promise<void>;
-  writeChildSessionEntry: (params: {
-    sessionKey: string;
-    sessionId?: string;
-    updatedAt?: number;
-    abortedLastRun?: boolean;
-  }) => Promise<string>;
   restartRegistry: () => void;
   waitForRegistryWork: (predicate: () => boolean | Promise<boolean>) => Promise<void>;
 }) {

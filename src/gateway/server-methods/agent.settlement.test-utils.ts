@@ -1,11 +1,11 @@
 // Register these cases from their original describes in the shared agent.test.ts graph.
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
+import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import type { AgentWaitResult } from "../../agents/run-wait.types.js";
-import type { SubagentRegistryDeps } from "../../agents/subagents/registry/subagent-registry-deps.js";
 import {
   addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
@@ -28,8 +28,8 @@ import { withTestDir } from "../../test-helpers/temp-dir.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 import { waitForAgentJob } from "../agent-turn/agent-job.js";
 import { observeCronContinuationLifetime } from "./agent.cron-continuation-lifetime.test-support.js";
+import { withPluginSubagentTestState } from "./agent.spawned-child.test-support.js";
 import {
-  applyGatewaySubagentRegistryTestDeps,
   backendGatewayClient,
   cronContinuationGatewayClient,
   cronMediaCompletionEvent,
@@ -39,7 +39,6 @@ import {
   invokeGatewaySuspendPrepare,
   makeContext,
   primeMainAgentRun,
-  requireValue,
   setupCronContinuationReleaseFixture,
   useTestStateDir,
   waitForAgentCommandCallAfter,
@@ -287,44 +286,41 @@ export function registerYieldedRequesterSettlementCase(
   mockSpawnedChildSessionEntry: (sessionKey: string, root: string) => void,
 ) {
   it("keeps one native run when a completed child wakes its requester before the yielded lifecycle ends", async () => {
-    await withTestDir({ prefix: "openclaw-gateway-yield-settlement-race-" }, async (root) => {
-      useTestStateDir(root);
-      resetSubagentRegistryForTests({ persist: false });
-      const requesterSessionKey = "agent:main:main";
-      const childSessionKey = "agent:main:subagent:settlement-orchestrator";
-      const workerSessionKey = "agent:main:subagent:settlement-worker";
-      const previousRunId = "orchestrator-yielding";
-      const nextRunId = "orchestrator-settle-continuation";
-      const workerRunId = "settled-worker";
-      const result = "The completed worker result has been checked.";
-      const completion = createDeferred<AgentWaitResult>();
-      const previousWait = createDeferred<AgentWaitResult>();
-      const announce = vi.fn<SubagentRegistryDeps["runSubagentAnnounceFlow"]>(
-        async () => "delivered",
-      );
-      let lifecycleHandler: Parameters<SubagentRegistryDeps["onAgentEvent"]>[0] | undefined;
-      let continuedAtDispatch: ReturnType<typeof getSubagentRunByChildSessionKey> | undefined;
-      const executionWork = new AsyncWorkScope();
-      const context = makeContext();
-      context.trackExecution = (run) => executionWork.track(run);
-      await using execution = {
-        work: executionWork,
-        async [Symbol.asyncDispose]() {
-          try {
-            await executionWork.runWhenIdle(() => flushPendingSessionsChangedEvents(context));
-          } finally {
-            await executionWork.drain();
+    await withPluginSubagentTestState(
+      "openclaw-gateway-yield-settlement-race-",
+      async ({ stateDir: root }) => {
+        resetSubagentRegistryForTests({ persist: false });
+        const requesterSessionKey = "agent:main:main";
+        const childSessionKey = "agent:main:subagent:settlement-orchestrator";
+        const workerSessionKey = "agent:main:subagent:settlement-worker";
+        const previousRunId = "orchestrator-yielding";
+        const nextRunId = "orchestrator-settle-continuation";
+        const workerRunId = "settled-worker";
+        const result = "The completed worker result has been checked.";
+        const completion = createDeferred<AgentWaitResult>();
+        const previousWait = createDeferred<AgentWaitResult>();
+        const announce = mocks.registryAnnounce.mockResolvedValue("delivered");
+        let continuedAtDispatch: ReturnType<typeof getSubagentRunByChildSessionKey> | undefined;
+        const executionWork = new AsyncWorkScope();
+        const context = makeContext();
+        context.trackExecution = (run) => executionWork.track(run);
+        await using execution = {
+          work: executionWork,
+          async [Symbol.asyncDispose]() {
+            try {
+              await executionWork.runWhenIdle(() => flushPendingSessionsChangedEvents(context));
+            } finally {
+              await executionWork.drain();
+            }
+          },
+        };
+        const wakeCompleted = createDeferred();
+        const wakeRespond = vi.fn((ok: boolean, payload?: { status?: string }) => {
+          if (!ok || payload?.status !== "accepted") {
+            wakeCompleted.resolve();
           }
-        },
-      };
-      const wakeCompleted = createDeferred();
-      const wakeRespond = vi.fn((ok: boolean, payload?: { status?: string }) => {
-        if (!ok || payload?.status !== "accepted") {
-          wakeCompleted.resolve();
-        }
-      });
-      const wake = vi.fn<SubagentRegistryDeps["maybeWakeRequesterAfterAllChildrenSettled"]>(
-        async (params) => {
+        });
+        const wake = mocks.registryWake.mockImplementation(async (params) => {
           if (params.requesterSessionKey !== childSessionKey) {
             return false;
           }
@@ -351,132 +347,124 @@ export function registerYieldedRequesterSettlementCase(
             },
           );
           return true;
-        },
-      );
-      applyGatewaySubagentRegistryTestDeps({
-        callGateway: (async ({ params }: { params?: { runId?: string } }) =>
-          await (params?.runId === previousRunId
-            ? previousWait.promise
-            : completion.promise)) as SubagentRegistryDeps["callGateway"],
-        runSubagentAnnounceFlow: announce,
-        maybeWakeRequesterAfterAllChildrenSettled: wake,
-        onAgentEvent: (handler) => {
-          lifecycleHandler = handler;
-          return () => {};
-        },
-      });
-      registerSubagentRun({
-        runId: previousRunId,
-        childSessionKey,
-        requesterSessionKey,
-        requesterAgentId: "main",
-        requesterDisplayKey: requesterSessionKey,
-        task: "Collect and verify the worker's result",
-        cleanup: "keep",
-        expectsCompletionMessage: true,
-      });
-      addSubagentRunForTests({
-        runId: workerRunId,
-        childSessionKey: workerSessionKey,
-        requesterSessionKey: childSessionKey,
-        requesterAgentId: "main",
-        requesterTurnRunId: previousRunId,
-        requesterDisplayKey: childSessionKey,
-        task: "Produce the worker result",
-        startedAt: Date.now() - 10,
-        endedAt: Date.now(),
-        outcome: { status: "ok" },
-        expectsCompletionMessage: true,
-        completion: {
-          required: true,
-          resultText: "Worker result is ready.",
-          capturedAt: Date.now(),
-        },
-        delivery: { status: "delivered" },
-        cleanupCompletedAt: Date.now(),
-      });
-      mockSpawnedChildSessionEntry(childSessionKey, root);
-      mocks.agentCommand.mockImplementation(async () => {
-        continuedAtDispatch = structuredClone(getSubagentRunByChildSessionKey(childSessionKey));
-        completion.resolve({
-          status: "ok",
-          startedAt: Date.now(),
-          endedAt: Date.now(),
-          terminalReply: { disposition: "visible", text: result },
         });
-        return { payloads: [{ text: result }], meta: { durationMs: 1 } };
-      });
-      expectRecordFields(getSubagentRunByChildSessionKey(childSessionKey)?.execution, {
-        status: "running",
-        endedAt: undefined,
-      });
-      expect(
-        markRequesterTurnYielded({
+        mocks.registryCallGateway.mockImplementation(
+          async ({ params }) =>
+            await (asOptionalRecord(params)?.runId === previousRunId
+              ? previousWait.promise
+              : completion.promise),
+        );
+        registerSubagentRun({
+          runId: previousRunId,
+          childSessionKey,
+          requesterSessionKey,
+          requesterAgentId: "main",
+          requesterDisplayKey: requesterSessionKey,
+          task: "Collect and verify the worker's result",
+          cleanup: "keep",
+          expectsCompletionMessage: true,
+        });
+        addSubagentRunForTests({
+          runId: workerRunId,
+          childSessionKey: workerSessionKey,
           requesterSessionKey: childSessionKey,
           requesterAgentId: "main",
           requesterTurnRunId: previousRunId,
-        }),
-      ).toBe(1);
-      expect(
-        settleRequesterAfterSessionSpawns({
-          requesterSessionKey: childSessionKey,
-          requesterAgentId: "main",
-          requesterTurnRunId: previousRunId,
-          requesterYielded: true,
-          acceptedSessionSpawns: [
-            {
-              runId: workerRunId,
-              childSessionKey: workerSessionKey,
-              expectsCompletionMessage: true,
-            },
-          ],
-        }),
-      ).toBe(true);
-      await wakeCompleted.promise;
-      expect(wake).toHaveBeenCalled();
-      await execution.work.runWhenIdle(() => {
-        expect(wakeRespond.mock.calls.find(([ok]) => !ok)).toBeUndefined();
-        expectRecordFields(context.dedupe.get(`agent:${nextRunId}`)?.payload, { status: "ok" });
-      });
-      expectRecordFields(continuedAtDispatch, {
-        runId: nextRunId,
-        taskRunId: previousRunId,
-        requesterSessionKey,
-        pauseReason: undefined,
-      });
-      await waitForAssertion(() => {
+          requesterDisplayKey: childSessionKey,
+          task: "Produce the worker result",
+          startedAt: Date.now() - 10,
+          endedAt: Date.now(),
+          outcome: { status: "ok" },
+          expectsCompletionMessage: true,
+          completion: {
+            required: true,
+            resultText: "Worker result is ready.",
+            capturedAt: Date.now(),
+          },
+          delivery: { status: "delivered" },
+          cleanupCompletedAt: Date.now(),
+        });
+        mockSpawnedChildSessionEntry(childSessionKey, root);
+        mocks.agentCommand.mockImplementation(async () => {
+          continuedAtDispatch = structuredClone(getSubagentRunByChildSessionKey(childSessionKey));
+          completion.resolve({
+            status: "ok",
+            startedAt: Date.now(),
+            endedAt: Date.now(),
+            terminalReply: { disposition: "visible", text: result },
+          });
+          return { payloads: [{ text: result }], meta: { durationMs: 1 } };
+        });
+        expectRecordFields(getSubagentRunByChildSessionKey(childSessionKey)?.execution, {
+          status: "running",
+          endedAt: undefined,
+        });
+        expect(
+          markRequesterTurnYielded({
+            requesterSessionKey: childSessionKey,
+            requesterAgentId: "main",
+            requesterTurnRunId: previousRunId,
+          }),
+        ).toBe(1);
+        expect(
+          settleRequesterAfterSessionSpawns({
+            requesterSessionKey: childSessionKey,
+            requesterAgentId: "main",
+            requesterTurnRunId: previousRunId,
+            requesterYielded: true,
+            acceptedSessionSpawns: [
+              {
+                runId: workerRunId,
+                childSessionKey: workerSessionKey,
+                expectsCompletionMessage: true,
+              },
+            ],
+          }),
+        ).toBe(true);
+        await wakeCompleted.promise;
+        expect(wake).toHaveBeenCalled();
+        await execution.work.runWhenIdle(() => {
+          expect(wakeRespond.mock.calls.find(([ok]) => !ok)).toBeUndefined();
+          expectRecordFields(context.dedupe.get(`agent:${nextRunId}`)?.payload, { status: "ok" });
+        });
+        expectRecordFields(continuedAtDispatch, {
+          runId: nextRunId,
+          taskRunId: previousRunId,
+          requesterSessionKey,
+          pauseReason: undefined,
+        });
+        await waitForAssertion(() => {
+          expectRecordFields(getSubagentRunByChildSessionKey(childSessionKey), {
+            runId: nextRunId,
+            cleanupCompletedAt: expect.any(Number),
+          });
+        });
+        const { emitAgentEvent } = await vi.importActual<
+          typeof import("../../infra/agent-events.js")
+        >("../../infra/agent-events.js");
+        emitAgentEvent({
+          runId: previousRunId,
+          sessionKey: childSessionKey,
+          stream: "lifecycle",
+          data: { phase: "end", endedAt: Date.now(), yielded: true },
+        });
+        await Promise.resolve();
         expectRecordFields(getSubagentRunByChildSessionKey(childSessionKey), {
           runId: nextRunId,
           cleanupCompletedAt: expect.any(Number),
         });
-      });
-      requireValue(
-        lifecycleHandler,
-        "registry lifecycle listener",
-      )({
-        runId: previousRunId,
-        sessionKey: childSessionKey,
-        seq: 1,
-        ts: Date.now(),
-        stream: "lifecycle",
-        data: { phase: "end", endedAt: Date.now(), yielded: true },
-      });
-      await Promise.resolve();
-      expectRecordFields(getSubagentRunByChildSessionKey(childSessionKey), {
-        runId: nextRunId,
-        cleanupCompletedAt: expect.any(Number),
-      });
-      expect(
-        listSubagentRunsForRequester(requesterSessionKey).map((entry) => entry.runId),
-      ).not.toContain(previousRunId);
-      expect(announce).toHaveBeenCalledTimes(1);
-      expect(announce).toHaveBeenCalledWith(
-        expect.objectContaining({
-          childRunId: nextRunId,
-          requesterSessionKey,
-          roundOneReply: result,
-        }),
-      );
-    });
+        expect(
+          listSubagentRunsForRequester(requesterSessionKey).map((entry) => entry.runId),
+        ).not.toContain(previousRunId);
+        expect(announce).toHaveBeenCalledTimes(1);
+        expect(announce).toHaveBeenCalledWith(
+          expect.objectContaining({
+            childRunId: nextRunId,
+            requesterSessionKey,
+            roundOneReply: result,
+          }),
+        );
+      },
+    );
   });
 }

@@ -1,4 +1,5 @@
 ---
+doc-schema-version: 1
 summary: "Shared state database schema versions, their changes, and their first releases"
 read_when:
   - "Looking up which release first shipped a state schema version"
@@ -29,6 +30,115 @@ Doctor completes recognized schema-1 databases that predate the audit ledger bef
 | 15      | Conversation bindings use exact target keys; redundant agent/session projections removed                                                                                                                                                                                                                                        | Unreleased          |
 | 16      | Skill Workshop ownership moves from workspace/provenance columns to per-agent directory containment                                                                                                                                                                                                                             | Unreleased          |
 | 17      | Prepared worker lifecycle facts and one-use node workspace bindings                                                                                                                                                                                                                                                             | Unreleased          |
+| 18      | Original requesting authority retained with shared GitHub publication receipts                                                                                                                                                                                                                                                  | Unreleased          |
+| 19      | Tasks and TaskFlow tables retired; cron history and exact released task-first native outcomes preserved                                                                                                                                                                                                                         | Pending             |
+
+### State schema 19
+
+Schema 19 drops `task_runs`, `task_delivery_state`, and `flow_runs`, including
+their indexes. This implements the
+[accepted retirement decision](https://github.com/openclaw/openclaw/pull/156532#issuecomment-5798987497).
+It builds on state schema 18 and leaves agent schema 23 unchanged. Its first
+release is pending.
+
+The required `STRICT` table `cron_run_history` retains 14 fields:
+`history_id`, `job_id`, `run_id`, `agent_id`, `session_key`, `created_at`,
+`started_at`, `ended_at`, `last_event_at`, `cleanup_after`, `status`, `error`,
+`summary`, and `detail_json`. Its primary key is `history_id`; the job index is
+nonunique. Migration copies every legacy `runtime = 'cron'` row before dropping
+Tasks. It preserves the original task ID as the history ID, duplicate or missing
+run IDs, unknown or deleted job IDs, nullable fields, timestamps, and raw detail
+JSON without decoding or re-encoding it. A missing historical `detail_json`
+column becomes `NULL`, not invented detail. Store-partition identity remains in
+the retained detail.
+
+Cron keeps the existing seven-day terminal history policy, one-day lost-run
+bound, and separate 2,000-row history and quiet-result caps for each store/job
+partition. Recorded cleanup deadlines retain their existing meaning. Queued and
+running rows are not pruned as terminal history. `cron_run_receipts` keeps its
+64-terminal-receipt bound and protections for active or pending reconciliation.
+Receipts, not history, continue to own execution, recovery, and cancellation
+authority. History migration never launches or adopts a run.
+
+Before dropping Tasks, the same transaction preserves exact released task-first
+native outcomes in `subagent_runs.payload_json`. It first applies existing native
+execution normalization and frozen-result promotion, then reconciles the narrow
+released crash window where a terminal Task result preceded native settlement
+of a provisional kill. Matching requires the retained native identity, child,
+requester, generation, and execution window; ambiguous or competing records are
+not used to infer an owner. Existing native result capture, including explicit
+silence or empty output, wins. Migration does not dispatch completion, rearm
+delivery, revive a registry, mint authority, or overwrite newer lifecycle fences.
+Other legacy Task and TaskFlow data is retired rather than converted into active
+work.
+
+Independent audit events and decision facts remain under their existing
+retention owners. Task/flow lifecycle binding and inspection joins are retired.
+Well-formed historical `t:` and `f:` audit cursors return a no-longer-retained
+error; they are not aliases for cron or generic decision pages. See
+[audit inspection](/cli/audit).
+
+Startup and `openclaw doctor --fix` run the migration inside the existing fenced
+schema transaction. Recognized released source layouts are required. Unknown
+attached objects, dependencies from retained tables/views/triggers, or conflicting
+cron history fail the transaction rather than discard unrelated state. Content
+and version facts commit together; a failed migration rolls them back. Reopening
+uses the applied content version and does not repeat the copy or recreate Task
+tables. The existing
+[2026.9.2 publication deferral](/reference/database-schemas/versioning#schema-bumps-and-older-updaters)
+can retain earlier published markers while content version 19 is applied. It
+does not authorize older code to use the migrated feature tables.
+
+Stop older writers and take a verified, WAL-aware backup before upgrading. Builds
+that support state schema 18 or earlier refuse published schema 19. Rollback
+requires the verified pre-migration backup and matching build in a separate state
+directory, not lowered markers or reconstructed Task tables. Restoring loses
+later local changes and does not undo externally accepted effects. Retired
+pre-June sidecar imports remain retired; use the documented
+[bridge-release migration](/install/updating#upgrading-very-old-versions) when those files still
+need importing.
+
+### State schema 18
+
+Schema 18 adds nullable `requester_authority_json TEXT` columns to
+`github_publication_session_lifecycles` and `github_repository_publication_requests`.
+Shared publication admission records its original requester, scope ceiling, and
+any required plugin grant identity and original alias-binding IDs in the existing request transaction. The
+snapshot survives deferral and restart; it does not replace current role, grant,
+session, or execution authority checks. Publisher selection, repository routing,
+human attribution, and receipt retention are unchanged.
+
+Startup and `openclaw doctor --fix` add the columns to existing tables without
+rebuilding or rewriting their rows. Historical values stay `NULL`: migration
+does not infer a requester from the publisher, session creator, or current
+assignee. Unproven pending requests cannot begin new effects. Terminal receipts
+remain readable, and observing an already-dispatched GitHub result does not
+authorize another operation. Unused publication tables remain absent until their
+normal first write, which creates the canonical schema.
+
+The profile schema owner adds nullable `binding_id TEXT` to the existing
+`user_profile_emails` table and initializes missing IDs in its own transaction.
+Each email-to-profile binding has an opaque UUID. Creation or an actual ownership
+change starts a new binding; same-owner refreshes retain it. Removing and later
+restoring an alias cannot restore its former ID. Publication snapshots retain
+only those original IDs, without copying email addresses or updating accepted
+receipt bytes. Initializing existing aliases does not backfill missing authority
+into historical publication requests.
+
+The publication column additions and version facts commit in one schema transaction; failure
+rolls them back together. Both published markers normally advance to 18. The
+existing [older-updater publication deferral](/reference/database-schemas/versioning#schema-bumps-and-older-updaters)
+can retain earlier published markers while recording applied content version 18.
+Reopening uses that content version and does not repeat migration.
+
+Older readers validate these optional tables exactly, so bare nullable columns
+do not make this a same-version addition. Builds supporting state schema 17 or
+earlier refuse schema 18. Stop older writers and create a verified, WAL-aware
+backup before upgrading. Rollback requires the matching build and pre-upgrade
+backup in a separate state directory, not lowered version markers or deleted
+authority fields. Keep the newer database and reconcile accepted GitHub effects
+with a compatible build before rollback: restoring a backup loses later local
+receipts and does not undo pushed commits or pull requests.
 
 ### State schema 17
 

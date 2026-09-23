@@ -9,9 +9,7 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   repairOpenClawStateDatabaseSchema,
-  repairOpenClawStateDatabaseSchemaIfNeeded,
 } from "./openclaw-state-db.js";
-import { removePreparedWorkerOwnershipColumns } from "./openclaw-state-schema-v17.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(() => {
@@ -46,39 +44,6 @@ function createDatabase() {
 }
 
 describe("Doctor historical row repair", () => {
-  it("refuses an automatic older-schema upgrade with invalid foreign keys without repairing rows", () => {
-    const stateDir = tempDirs.make("openclaw-automatic-upgrade-integrity-");
-    const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
-    const { db: initial, path: pathname } = openOpenClawStateDatabase(options);
-    initial.exec("PRAGMA foreign_keys = OFF;");
-    initial
-      .prepare("INSERT INTO task_delivery_state (task_id, requester_origin_json) VALUES (?, ?)")
-      .run("missing-task", '{"channel":"synthetic"}');
-    removePreparedWorkerOwnershipColumns(initial);
-    initial.exec("PRAGMA user_version = 16; UPDATE schema_meta SET schema_version = 16;");
-    closeOpenClawStateDatabaseForTest();
-
-    expect(repairOpenClawStateDatabaseSchemaIfNeeded(options)).toEqual({
-      changes: [],
-      warnings: [expect.stringMatching(/foreign_key_check failed.*task_delivery_state/iu)],
-    });
-    const preserved = new DatabaseSync(pathname, { readOnly: true });
-    try {
-      expect(preserved.prepare("PRAGMA user_version").get()).toEqual({ user_version: 16 });
-      expect(
-        preserved.prepare("SELECT task_id, requester_origin_json FROM task_delivery_state").all(),
-      ).toEqual([{ task_id: "missing-task", requester_origin_json: '{"channel":"synthetic"}' }]);
-      expect(
-        preserved
-          .prepare("PRAGMA table_info(worker_environments)")
-          .all()
-          .map((row) => row.name),
-      ).not.toContain("preparation_key");
-    } finally {
-      preserved.close();
-    }
-  });
-
   it("leaves retired history on open until Doctor removes it", () => {
     const stateDir = tempDirs.make("openclaw-retired-history-");
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
@@ -261,19 +226,13 @@ describe("repairLegacySubagentExecutionPayloads", () => {
 });
 
 describe("repairLegacySubagentRetainedResults", () => {
-  it("promotes shipped payload results, projects tasks, and is idempotent", () => {
+  it("promotes shipped payload results without a Task projection and is idempotent", () => {
     const db = new DatabaseSync(":memory:");
     db.exec(`
       CREATE TABLE subagent_runs (
         run_id TEXT PRIMARY KEY,
         payload_json TEXT NOT NULL,
         pending_final_delivery_payload_json TEXT
-      ) STRICT;
-      CREATE TABLE task_runs (
-        task_id TEXT PRIMARY KEY,
-        runtime TEXT NOT NULL,
-        run_id TEXT,
-        progress_summary TEXT
       ) STRICT;
     `);
     const legacyPayload = {
@@ -301,9 +260,6 @@ describe("repairLegacySubagentRetainedResults", () => {
       }),
       JSON.stringify(legacyPayload),
     );
-    db.prepare(
-      "INSERT INTO task_runs (task_id, runtime, run_id, progress_summary) VALUES (?, ?, ?, ?)",
-    ).run("task-id", "subagent", "task-run", "(no_reply)");
 
     repairLegacySubagentRetainedResults(db);
     const firstPass = db
@@ -332,9 +288,6 @@ describe("repairLegacySubagentRetainedResults", () => {
     });
     expect(payload.delivery.payload).toEqual({ requesterSessionKey: "agent:main:main" });
     expect(JSON.parse(firstPass.pending_final_delivery_payload_json)).toEqual(legacyPayload);
-    expect(
-      db.prepare("SELECT progress_summary FROM task_runs WHERE task_id = ?").get("task-id"),
-    ).toEqual({ progress_summary: "findings captured before wake" });
   });
 
   it("preserves newer canonical results over legacy payload copies", () => {
@@ -384,12 +337,6 @@ describe("repairLegacySubagentRetainedResults", () => {
         run_id TEXT PRIMARY KEY,
         payload_json TEXT NOT NULL
       ) STRICT;
-      CREATE TABLE task_runs (
-        task_id TEXT PRIMARY KEY,
-        runtime TEXT NOT NULL,
-        run_id TEXT,
-        progress_summary TEXT
-      ) STRICT;
     `);
     const legacyPayload = {
       frozenResultText: "NO_REPLY",
@@ -407,9 +354,6 @@ describe("repairLegacySubagentRetainedResults", () => {
         delivery: { status: "suspended", payload: legacyPayload },
       }),
     );
-    db.prepare(
-      "INSERT INTO task_runs (task_id, runtime, run_id, progress_summary) VALUES (?, ?, ?, ?)",
-    ).run("silent-task", "subagent", "silent-task-run", "NO_REPLY");
 
     repairLegacySubagentRetainedResults(db);
 
@@ -422,8 +366,5 @@ describe("repairLegacySubagentRetainedResults", () => {
       fallbackResultText: "older visible fallback",
       terminalReply: { disposition: "silent" },
     });
-    expect(
-      db.prepare("SELECT progress_summary FROM task_runs WHERE task_id = ?").get("silent-task"),
-    ).toEqual({ progress_summary: null });
   });
 });

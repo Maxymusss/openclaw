@@ -52,19 +52,25 @@ vi.mock("../infra/device-pairing.js", async () => {
   return actual;
 });
 
-vi.mock("../infra/device-pairing-store-readonly.js", async () => {
-  const actual = await vi.importActual<typeof import("../infra/device-pairing-store-readonly.js")>(
-    "../infra/device-pairing-store-readonly.js",
-  );
-  return { ...actual, listPairedDevicesReadOnly: () => listDevicePairingMock().paired };
-});
+vi.mock("../infra/device-pairing-worker.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../infra/device-pairing-worker.js")>()),
+  withCurrentDevicePairingSnapshot: async <T>(
+    _stateDir: string | undefined,
+    prepare: (
+      paired: import("../infra/device-pairing.types.js").PairedDevice[],
+    ) => { start: () => T } | undefined,
+  ) => prepare(listDevicePairingMock().paired)?.start(),
+}));
 
 vi.mock("../infra/push-web.js", () => ({
   listBoundWebPushSubscriptions: listBoundWebPushSubscriptionsMock,
   withBoundWebPushSubscriptions: async <T>(
     stateDir: string | undefined,
-    prepare: (subscriptions: BoundWebPushSubscription[]) => { start: () => T } | undefined,
-  ) => prepare(await listBoundWebPushSubscriptionsMock(stateDir))?.start(),
+    prepare: (
+      subscriptions: BoundWebPushSubscription[],
+      assertCurrent: () => void,
+    ) => { start: () => T } | undefined | Promise<{ start: () => T } | undefined>,
+  ) => (await prepare(await listBoundWebPushSubscriptionsMock(stateDir), () => {}))?.start(),
   hasBoundWebPushSubscriptions: hasBoundWebPushSubscriptionsMock,
   prepareWebPushNotificationSender: prepareWebPushNotificationSenderMock,
 }));
@@ -112,7 +118,6 @@ function boundSubscription(
         agentQuestion: true,
         humanMentioned: true,
         scheduledTaskFailed: true,
-        backgroundTaskFailed: true,
       },
     },
   };
@@ -189,14 +194,6 @@ describe("event Web Push classification", () => {
     {
       event: "chat",
       payload: { state: "final", runId: "run-1", sessionKey: "agent:research:thread.1" },
-      path: "chat/research/thread%2E1",
-    },
-    {
-      event: "task",
-      payload: {
-        action: "upserted",
-        task: { id: "task-1", runtime: "subagent", status: "failed" },
-      },
       path: "chat/research/thread%2E1",
     },
     {
@@ -339,20 +336,8 @@ describe("event Web Push classification", () => {
     },
   );
 
-  it("sends only failed task and cron terminal events", async () => {
+  it("sends only failed cron terminal events", async () => {
     const delivery = createEventWebPushDelivery({ getRuntimeConfig: () => ({}) });
-    delivery.handleEvent("task", {
-      action: "upserted",
-      task: { id: "task-1", title: "Build\u202E", status: "failed" },
-    });
-    await vi.waitFor(() => expect(preparedWebPushSendMock).toHaveBeenCalledOnce());
-    expect(preparedWebPushSendMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        payload: expect.objectContaining({ body: "Build\\u{202E} needs attention." }),
-      }),
-    );
-
-    preparedWebPushSendMock.mockClear();
     delivery.handleEvent("cron", { action: "finished", jobId: "cron-1", status: "ok" });
     expect(preparedWebPushSendMock).not.toHaveBeenCalled();
 
@@ -371,23 +356,15 @@ describe("event Web Push classification", () => {
   });
 
   it.each([false, true])(
-    "uses only the scheduled failure preference for cron tracking tasks (enabled: %s)",
+    "honors the scheduled failure preference (enabled: %s)",
     async (scheduledTaskFailed) => {
       const subscription = boundSubscription("browser-device");
       subscription.devicePreferences.categories = {
-        backgroundTaskFailed: true,
         scheduledTaskFailed,
       };
       listBoundWebPushSubscriptionsMock.mockResolvedValue([subscription]);
       const getRuntimeConfig = vi.fn(() => ({}));
       const delivery = createEventWebPushDelivery({ getRuntimeConfig });
-
-      delivery.handleEvent("task", {
-        action: "upserted",
-        task: { id: "task-cron", kind: "automation_run", runtime: "cron", status: "failed" },
-      });
-      await Promise.resolve();
-      expect(preparedWebPushSendMock).not.toHaveBeenCalled();
 
       delivery.handleEvent("cron", {
         action: "finished",

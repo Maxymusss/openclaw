@@ -1,6 +1,7 @@
 /** Read-side cron codec between cron history detail and the stable run-history wire shape.
  * Deliberately free of agent/runtime imports so history reads stay dependency-light;
  * the event->entry write codec lives in run-event-codec.ts. */
+import { safeParseJson } from "@openclaw/normalization-core/json-coercion";
 import {
   asSafeIntegerInRange,
   MAX_DATE_TIMESTAMP_MS,
@@ -8,10 +9,7 @@ import {
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { z } from "zod";
-import {
-  FAILOVER_REASONS,
-  type FailoverReason,
-} from "../../packages/gateway-protocol/src/failover-reasons.js";
+import { FAILOVER_REASONS } from "../../packages/gateway-protocol/src/failover-reasons.js";
 import { resolveCronCompletionStatus } from "./completion-status.js";
 import { isCronTimeoutErrorText } from "./execution-error-constants.js";
 import { normalizeCronRunDiagnosticsCore } from "./run-diagnostics-normalize.js";
@@ -23,7 +21,6 @@ type CronDeliveryStatus = import("./types.js").CronDeliveryStatus;
 type CronRunStatus = import("./types.js").CronRunStatus;
 
 const CRON_RUN_DETAIL_KIND = "cron-run";
-const CRON_FAILOVER_REASONS = new Set(FAILOVER_REASONS);
 const cronRunStatusSchema = z.enum(["ok", "error", "skipped"]);
 const cronCompletionStatusSchema = z.enum(["succeeded", "failed", "unknown"]);
 const cronDeliveryStatusSchema = z.enum(["delivered", "not-delivered", "unknown", "not-requested"]);
@@ -81,12 +78,7 @@ const cronRunLogEntrySchema = z.looseObject({
   status: cronRunStatusSchema.optional().catch(undefined),
   completionStatus: cronCompletionStatusSchema.optional().catch(undefined),
   error: optionalCronStringSchema,
-  errorReason: z
-    .custom<FailoverReason>(
-      (value) => typeof value === "string" && CRON_FAILOVER_REASONS.has(value as FailoverReason),
-    )
-    .optional()
-    .catch(undefined),
+  errorReason: z.enum(FAILOVER_REASONS).optional().catch(undefined),
   summary: optionalCronStringSchema,
   runId: optionalNonBlankCronStringSchema,
   diagnostics: z.unknown().optional(),
@@ -113,9 +105,37 @@ const cronRunLogEntrySchema = z.looseObject({
   sessionKey: optionalNonBlankCronStringSchema,
 });
 
+function isJsonValue(value: unknown): value is JsonValue {
+  const pending: unknown[] = [value];
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (
+      current === null ||
+      typeof current === "string" ||
+      typeof current === "boolean" ||
+      typeof current === "number"
+    ) {
+      continue;
+    }
+    if (!Array.isArray(current) && !isRecord(current)) {
+      return false;
+    }
+    for (const child of Object.values(current)) {
+      pending.push(child);
+    }
+  }
+  return true;
+}
+
+/** Native JSON parsing keeps released scalar/null and numeric-overflow semantics. */
+export function parseCronRunDetailJson(serialized: string): JsonValue | undefined {
+  const value = safeParseJson(serialized);
+  return isJsonValue(value) ? value : undefined;
+}
+
 function toJsonValue(value: unknown): JsonValue | undefined {
   const serialized = JSON.stringify(value);
-  return serialized === undefined ? undefined : (JSON.parse(serialized) as JsonValue);
+  return serialized === undefined ? undefined : parseCronRunDetailJson(serialized);
 }
 
 function isJsonObject(value: unknown): value is { [key: string]: JsonValue } {
@@ -311,7 +331,7 @@ export function cronRunRecordToScriptRunResult(
   };
 }
 
-/** Preserves the released history row status vocabulary for rollback. */
+/** Preserves the released history row status vocabulary. */
 export function cronRunStorageStatus(
   entry: Pick<CronRunLogEntry, "status" | "error"> & Partial<CronRunLogEntry>,
 ): "succeeded" | "failed" | "timed_out" {

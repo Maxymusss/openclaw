@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { AgentHarnessCompletionCustody } from "../agents/agent-harness-completion-custody.js";
+import type { AgentHarnessCompletionScope } from "../agents/agent-harness-completion-scope.js";
 import {
   assertHarnessCompletionSourceAdmission,
   createAgentHarnessCompletionScope,
@@ -10,6 +12,26 @@ const mocks = vi.hoisted(() => ({
   loadRequester: vi.fn(),
   reconcile: vi.fn(() => "unowned"),
   resolveCompletionOrigin: vi.fn(async () => undefined),
+  custodyCurrent: true,
+  isCustodyCurrent: vi.fn((custody: AgentHarnessCompletionCustody) => custody.isCurrent()),
+  runWithCustody: vi.fn(
+    <T>(
+      custody: AgentHarnessCompletionCustody,
+      _scope: AgentHarnessCompletionScope,
+      run: () => T,
+    ): T => {
+      if (!custody.isCurrent()) {
+        throw new Error("Completion custody retired");
+      }
+      return run();
+    },
+  ),
+}));
+vi.mock("../agents/agent-harness-completion-custody.js", () => ({
+  captureAgentHarnessCompletionCustody: vi.fn(),
+  createAgentHarnessCompletionEventSink: vi.fn(),
+  isAgentHarnessCompletionCustodyCurrent: mocks.isCustodyCurrent,
+  runWithAgentHarnessCompletionCustody: mocks.runWithCustody,
 }));
 vi.mock("../agents/agent-harness-completion-delivery.js", () => ({
   reconcileHarnessCompletionDelivery: mocks.reconcile,
@@ -23,6 +45,7 @@ vi.mock("../agents/subagents/announce/subagent-announce-origin.js", () => ({
   resolveAnnounceOrigin: () => ({ channel: "test", to: "requester" }),
   resolveSubagentCompletionOrigin: mocks.resolveCompletionOrigin,
 }));
+import * as completionSdk from "./agent-harness-completion.js";
 import { deliverAgentHarnessCompletion } from "./agent-harness-completion.js";
 
 const source = {
@@ -44,8 +67,21 @@ function params() {
     isSourceSessionAdmissionAllowed: () => true,
   };
 }
+function custodyFixture() {
+  const controller = new AbortController();
+  const custody: AgentHarnessCompletionCustody = {
+    signal: controller.signal,
+    isCurrent: () => mocks.custodyCurrent && !controller.signal.aborted,
+    retain: () => custody,
+    settleExecution: vi.fn(),
+    release: () => controller.abort(),
+  };
+  return { custody, controller };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.custodyCurrent = true;
   mocks.reconcile.mockReturnValue("unowned");
   mocks.resolveCompletionOrigin.mockImplementation(async () => undefined);
   mocks.loadRequester.mockReturnValue({
@@ -64,6 +100,72 @@ beforeEach(() => {
 });
 
 describe("SDK harness completion source admission", () => {
+  it("enters retained custody without exposing its internal execution callback", async () => {
+    const { custody } = custodyFixture();
+    const input = params();
+    mocks.deliver.mockImplementation(async () => {
+      expect(mocks.runWithCustody).toHaveBeenCalledExactlyOnceWith(
+        custody,
+        input.scope,
+        expect.any(Function),
+      );
+      assertHarnessCompletionSourceAdmission(source);
+      return { delivered: true, path: "direct" };
+    });
+    await expect(
+      deliverAgentHarnessCompletion({ ...input, completionCustody: custody }),
+    ).resolves.toMatchObject({ delivered: true });
+    expect(completionSdk.captureAgentHarnessCompletionCustody).toBeTypeOf("function");
+    expect(completionSdk.createAgentHarnessCompletionEventSink).toBeTypeOf("function");
+    expect(Object.hasOwn(completionSdk, "runWithAgentHarnessCompletionCustody")).toBe(false);
+  });
+
+  it("rejects custody retired during awaited origin resolution", async () => {
+    const { custody } = custodyFixture();
+    mocks.resolveCompletionOrigin.mockImplementation(async () => {
+      mocks.custodyCurrent = false;
+      return undefined;
+    });
+    await expect(
+      deliverAgentHarnessCompletion({ ...params(), completionCustody: custody }),
+    ).rejects.toThrow("custody retired");
+    expect(mocks.deliver).not.toHaveBeenCalled();
+  });
+
+  it.each(["custody-currentness", "custody-signal", "caller-signal"] as const)(
+    "fences %s at asynchronous admission and effect boundaries",
+    async (ending) => {
+      const { custody, controller } = custodyFixture();
+      const caller = new AbortController();
+      mocks.deliver.mockImplementation(async (delivery) => {
+        const assertCurrent = assertHarnessCompletionSourceAdmission(source);
+        expect(delivery.isSourceSessionAdmissionAllowed()).toBe(true);
+        expect(delivery.isSourceSessionEffectsAllowed()).toBe(true);
+        expect(delivery.signal.aborted).toBe(false);
+        await Promise.resolve();
+        if (ending === "custody-currentness") {
+          mocks.custodyCurrent = false;
+        } else if (ending === "custody-signal") {
+          controller.abort();
+        } else {
+          caller.abort();
+        }
+        expect(delivery.signal.aborted).toBe(ending !== "custody-currentness");
+        expect(delivery.isSourceSessionAdmissionAllowed()).toBe(false);
+        expect(delivery.isSourceSessionEffectsAllowed()).toBe(false);
+        expect(assertCurrent).toThrow("source owner retired");
+        return { delivered: false, path: "none" };
+      });
+      await expect(
+        deliverAgentHarnessCompletion({
+          ...params(),
+          completionCustody: custody,
+          signal: caller.signal,
+        }),
+      ).resolves.toMatchObject({ delivered: false });
+    },
+  );
+
   it("carries exact host authority through the registered delivery entrypoint and closes it afterward", async () => {
     let retained: (() => void) | undefined;
     mocks.deliver.mockImplementation(async () => {

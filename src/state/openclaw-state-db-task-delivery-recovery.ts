@@ -1,4 +1,9 @@
-// Doctor owns preservation-first recovery of delivery metadata whose task no longer exists.
+// Pre-upgrade update-ledger admission still runs while the old Gateway may serve.
+// It cannot retire Tasks or change schema markers before the managed stop/backup.
+// Retain this preservation-first repair only for that released upgrade contract;
+// schema-19 Doctor/runtime migration instead retires these rows atomically.
+// Its sole caller is existing-state updater admission, gated on content < 19.
+// Remove it only when that pre-retirement update admission contract is retired.
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -119,7 +124,8 @@ function syncAndHash(filePath: string) {
 }
 
 /**
- * Caller holds Doctor's ownership/schema fences and its immediate write transaction.
+ * Existing-state updater admission holds ownership/schema fences and its immediate
+ * write transaction; ordinary runtime and the v19 migration do not call this repair.
  * Foreign-key actions stay disabled: inbound dependents must fail the post-check,
  * never cascade into unrelated data. The caller rolls back any failed check.
  */
@@ -134,7 +140,9 @@ export function recoverOrphanTaskDeliveryRows(database: DatabaseSync, pathname: 
   assertRecoveryShape(database);
   const count = assertKnownOrphanIntegrity(database);
   if (!database.isTransaction) {
-    throw new Error("Orphan task delivery recovery requires the Doctor write transaction.");
+    throw new Error(
+      "Orphan task delivery recovery requires the admitted update write transaction.",
+    );
   }
 
   // The existing worker copies WAL/rollback state in another process. Opening and

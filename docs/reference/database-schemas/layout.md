@@ -1,4 +1,5 @@
 ---
+doc-schema-version: 1
 summary: "Which SQLite database holds what, and the tables behind individual features"
 read_when:
   - "Locating the global state database or a per-agent database on disk"
@@ -13,15 +14,23 @@ title: "Database layout"
 | Global control plane | `~/.openclaw/state/openclaw.sqlite`                        | Shared configuration state, registries, approvals, plugin state, and shared runtime state             |
 | Per-agent data plane | `~/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite` | Sessions, transcripts, memory indexes, auth state, conversation state, and agent-scoped runtime state |
 
-Legacy task tables remain in the shared state database for upgrade safety; cron owns its retained run-history rows. Runtime trajectory events live with their sessions in the per-agent database or a configured shared session SQLite store.
+State schema 19 removes the Tasks and TaskFlow tables. Cron owns retained run history in the required `cron_run_history` table; native subagent execution and completion remain in `subagent_runs`. Runtime trajectory events live with their sessions in the per-agent database or a configured shared session SQLite store. See [state schema 19](/reference/database-schemas/state-schema-history#state-schema-19) for the one-time migration and backup requirements.
 
-Doctor normalizes historical task run and child-session identifiers together
-with their related subagent bindings. Legacy sidecar imports use the same
-transactional repair. Native run readers consume stored identifiers without
-reviving the removed Tasks registry or repairing legacy rows on read. Schema
-versions and retention are unchanged. `openclaw update` runs Doctor before activation;
-after a direct binary replacement or using an older writer, run
-`openclaw doctor --fix` before starting the new Gateway.
+In agent schema 23, `transcript_events` retains original event JSON as either
+`event_json` TEXT or `event_zstd` BLOB, with byte counts and bounded navigation
+metadata for compressed rows. Use the transcript accessor or supported exports
+to reconstruct history; selecting `event_json` alone omits compressed events.
+Memory chunk/cache embeddings are little-endian Float64 BLOBs. See
+[compact agent payload storage](/reference/database-schemas/agent-schema-history#compact-agent-payload-storage).
+
+Migration copies retained cron rows and exact, released task-first native outcomes
+before dropping `task_runs`, `task_delivery_state`, and `flow_runs`. It does not
+restore a Tasks registry, dispatch work, or infer execution authority. Native
+readers use their own stored records after migration, not legacy Task repairs on
+read. Retired pre-June task, flow, and plugin sidecar imports remain retired;
+[upgrading very old versions](/install/updating#upgrading-very-old-versions) describes the bridge-release
+path. `openclaw update` runs Doctor before activation; after a direct binary
+replacement, run `openclaw doctor --fix` before starting the new Gateway.
 
 ### Activity session recaps
 
@@ -33,12 +42,13 @@ The latest recap survives restart and archival. Deleting the session removes it;
 
 ### Transcript search row ownership
 
-The per-agent `session_transcript_fts_rows` table maps each FTS `rowid` to its
-session. `fts_rowid` is the primary key, and `session_id` has a nonunique index.
-The projection's nullable `fts_row_count` distinguishes unknown legacy ownership
-from a complete mapping, including an empty index. The transcript projection
-owner maintains and removes these derived facts with the corresponding FTS rows.
-See [agent schema 22](/reference/database-schemas/agent-schema-history#transcript-fts-row-ownership)
+In agent schema 23, `session_transcript_fts_rows` maps each FTS `rowid` to its
+session and nullable message ID. `id` is the primary key; indexes on
+`session_id` and `(session_id, message_id)` support exact deletion and
+reconciliation. The transcript projection owner maintains these derived facts
+with their FTS rows. Migration preserves the FTS content and rowids while
+replacing schema 22's lazy mapping and completeness counter. See
+[compact agent payload storage](/reference/database-schemas/agent-schema-history#compact-agent-payload-storage)
 for migration, recovery and downgrade behavior.
 
 ### Cold transcript archives

@@ -372,6 +372,9 @@ export interface CronJobs {
   declaration_key: string | null;
   description: string | null;
   enabled: number;
+  grant_definition_generation: number | null;
+  grant_definition_revision: string | null;
+  grant_definition_updated_at: number | null;
   job_id: string;
   job_json: string;
   name: string;
@@ -383,6 +386,23 @@ export interface CronJobs {
   state_json: Generated<string>;
   store_key: string;
   updated_at: number;
+}
+
+export interface CronRunHistory {
+  agent_id: string | null;
+  cleanup_after: number | null;
+  created_at: number;
+  detail_json: string | null;
+  ended_at: number | null;
+  error: string | null;
+  history_id: string;
+  job_id: string | null;
+  last_event_at: number | null;
+  run_id: string | null;
+  session_key: string | null;
+  started_at: number | null;
+  status: string;
+  summary: string | null;
 }
 
 export interface CronRunReceipts {
@@ -601,28 +621,6 @@ export interface FleetCells {
   tenant_id: string;
 }
 
-export interface FlowRuns {
-  blocked_summary: string | null;
-  blocked_task_id: string | null;
-  cancel_requested_at: number | null;
-  controller_id: string | null;
-  created_at: number;
-  current_step: string | null;
-  ended_at: number | null;
-  flow_id: string;
-  goal: string;
-  notify_policy: string;
-  owner_key: string;
-  requester_origin_json: string | null;
-  revision: Generated<number>;
-  shape: string | null;
-  state_json: string | null;
-  status: string;
-  sync_mode: Generated<string>;
-  updated_at: number;
-  wait_json: string | null;
-}
-
 export interface GatewayBootLifecycle {
   boot_id: string;
   completed_at_ms: number | null;
@@ -769,6 +767,7 @@ export interface GithubPublicationSessionLifecycles {
   lifecycle_revision: string | null;
   publication_kind: string;
   request_id: string;
+  requester_authority_json: string | null;
 }
 
 export interface GithubRepositoryPublicationRequests {
@@ -805,6 +804,7 @@ export interface GithubRepositoryPublicationRequests {
   repository: string | null;
   request_digest: string;
   request_id: string;
+  requester_authority_json: string | null;
   run_id: string | null;
   session_id: string;
   session_key: string;
@@ -1037,6 +1037,11 @@ export interface OperatorApprovalExecutionIdentities {
   approval_id: string;
   source_context_id: string;
   source_execution_id: string;
+}
+
+export interface OperatorApprovalStandingGrantGenerations {
+  grant_id: string;
+  job_definition_generation: number;
 }
 
 export interface OperatorApprovalStandingGrants {
@@ -1425,48 +1430,6 @@ export interface SubagentRuns {
   run_id: string;
 }
 
-export interface TaskDeliveryState {
-  last_notified_event_at: number | null;
-  requester_origin_json: string | null;
-  task_id: string;
-}
-
-export interface TaskRuns {
-  agent_id: string | null;
-  child_session_key: string | null;
-  cleanup_after: number | null;
-  created_at: number;
-  delivery_status: string;
-  detail_json: string | null;
-  ended_at: number | null;
-  error: string | null;
-  execution_owner_host: string | null;
-  execution_owner_pid: number | null;
-  execution_owner_start_identity: number | null;
-  label: string | null;
-  last_event_at: number | null;
-  last_tool_name: string | null;
-  notify_policy: string;
-  owner_key: string;
-  parent_flow_id: string | null;
-  parent_task_id: string | null;
-  progress_summary: string | null;
-  requester_agent_id: string | null;
-  requester_session_key: string | null;
-  run_id: string | null;
-  runtime: string;
-  scope_kind: string;
-  source_id: string | null;
-  started_at: number | null;
-  status: string;
-  task: string;
-  task_id: string;
-  task_kind: string | null;
-  terminal_outcome: string | null;
-  terminal_summary: string | null;
-  tool_use_count: number | null;
-}
-
 export interface UpdateRuns {
   after_json: string;
   before_json: string;
@@ -1793,6 +1756,7 @@ export interface DB {
   cron_job_runtime_authorities: CronJobRuntimeAuthorities;
   cron_job_scratch: CronJobScratch;
   cron_jobs: CronJobs;
+  cron_run_history: CronRunHistory;
   cron_run_receipts: CronRunReceipts;
   cron_run_trigger_state_retirements: CronRunTriggerStateRetirements;
   current_conversation_bindings: CurrentConversationBindings;
@@ -1810,7 +1774,6 @@ export interface DB {
   execution_identity_contexts: ExecutionIdentityContexts;
   execution_owner_lifecycle_bindings: ExecutionOwnerLifecycleBindings;
   fleet_cells: FleetCells;
-  flow_runs: FlowRuns;
   gateway_boot_lifecycle: GatewayBootLifecycle;
   gateway_origin_device_tokens: GatewayOriginDeviceTokens;
   gateway_restart_handoff: GatewayRestartHandoff;
@@ -1838,6 +1801,7 @@ export interface DB {
   node_worker_turns: NodeWorkerTurns;
   official_external_plugin_catalog_snapshots: OfficialExternalPluginCatalogSnapshots;
   operator_approval_execution_identities: OperatorApprovalExecutionIdentities;
+  operator_approval_standing_grant_generations: OperatorApprovalStandingGrantGenerations;
   operator_approval_standing_grants: OperatorApprovalStandingGrants;
   operator_approvals: OperatorApprovals;
   outbound_media_provenance: OutboundMediaProvenance;
@@ -1869,8 +1833,6 @@ export interface DB {
   skill_workshop_proposals: SkillWorkshopProposals;
   state_leases: StateLeases;
   subagent_runs: SubagentRuns;
-  task_delivery_state: TaskDeliveryState;
-  task_runs: TaskRuns;
   update_runs: UpdateRuns;
   user_preferences: UserPreferences;
   web_push_approval_deliveries: WebPushApprovalDeliveries;

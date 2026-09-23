@@ -7,6 +7,8 @@ import {
 } from "../../agents/prepared-model-runtime-generation-scope.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { isWebchatClient } from "../../utils/message-channel.js";
+import { readGatewayAccessRevision } from "../gateway-access-revision.js";
+import * as sessionChange from "../server-methods/session-change-event.js";
 import { resolveAgentDeliveryPhase } from "./agent-delivery-phase.js";
 import { startAgentRunExecution } from "./agent-run-execution-phase.js";
 import type { AgentTurnPrincipal } from "./types.js";
@@ -47,7 +49,6 @@ function createExecution(options: { aborted?: boolean; assertContextCurrent?: ()
           controller,
           registered: false,
         },
-        dispatchTaskTrackingMode: "none",
         effectiveAllowModelOverride: false,
         lifecycleStorePath: "",
         operationalRunInstance: {},
@@ -99,8 +100,70 @@ function createExecution(options: { aborted?: boolean; assertContextCurrent?: ()
   };
 }
 
+function createVisibleExecution() {
+  const execution = createExecution();
+  const sessionKey = "agent:main:task-access-liveness";
+  Object.assign(execution.params, {
+    suppressVisibleSessionEffects: false,
+    requestedSessionKey: sessionKey,
+    resolvedSessionKey: sessionKey,
+  });
+  Object.assign(execution.params.context, {
+    getRuntimeConfig: () => ({}),
+    getSessionEventSubscriberConnIds: () => new Set(),
+  });
+  execution.params.prepared.activeRunAbort.markExecutionStarted = vi.fn(() => true);
+  execution.params.prepared.userTurn.recorder = {
+    finishPendingInput: vi.fn(),
+  } as unknown as NonNullable<typeof execution.params.prepared.userTurn.recorder>;
+  return execution;
+}
+
 describe("startAgentRunExecution Gateway ownership", () => {
-  beforeEach(() => dispatchAgentRunFromGateway.mockReset());
+  beforeEach(() => {
+    dispatchAgentRunFromGateway.mockReset();
+  });
+
+  it.each([false, true])(
+    "preserves access across liveness and invalidates creation (new session: %s)",
+    async (isNewSession) => {
+      const execution = createVisibleExecution();
+      execution.params.isNewSession = isNewSession;
+      const publish = sessionChange.emitSessionsChanged;
+      const notices: Array<{ reason: string; accessChanges: number }> = [];
+      const publisher = vi
+        .spyOn(sessionChange, "emitSessionsChanged")
+        .mockImplementation((...args) => {
+          const before = readGatewayAccessRevision();
+          publish(...args);
+          notices.push({
+            reason: args[1].reason,
+            accessChanges: readGatewayAccessRevision() - before,
+          });
+        });
+      dispatchAgentRunFromGateway.mockImplementationOnce(async (dispatch) => {
+        await dispatch.ingressOpts.onExecutionStarted();
+        dispatch.cleanupAbortController();
+      });
+
+      try {
+        await startAgentRunExecution(execution.params);
+
+        expect(dispatchAgentRunFromGateway).toHaveBeenCalledOnce();
+        expect(notices).toEqual([
+          ...(isNewSession ? [{ reason: "create", accessChanges: expect.any(Number) }] : []),
+          { reason: "send", accessChanges: 0 },
+          { reason: "agent.run.started", accessChanges: 0 },
+          { reason: "agent.input.settled", accessChanges: 0 },
+        ]);
+        if (isNewSession) {
+          expect(notices[0]?.accessChanges).toBeGreaterThan(0);
+        }
+      } finally {
+        publisher.mockRestore();
+      }
+    },
+  );
 
   it.each<{
     name: string;

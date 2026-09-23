@@ -18,11 +18,6 @@ const mediaActivityMocks = vi.hoisted(() => ({
   listMediaGenerationOperations: vi.fn(),
 }));
 
-const configMocks = vi.hoisted(() => ({
-  getRuntimeConfig: vi.fn(),
-}));
-vi.mock("../config/config.js", () => configMocks);
-
 const videoTaskStatusOwner = createMediaGenerationTaskStatusOwner({
   taskKind: "video_generation",
   toolName: "video_generate",
@@ -51,14 +46,6 @@ function makeTask(overrides: Partial<MediaGenerationOperation> = {}): MediaGener
 beforeEach(() => {
   resetRecentMediaGenerationDuplicateGuardsForTests();
   mediaActivityMocks.listMediaGenerationOperations.mockReset();
-  configMocks.getRuntimeConfig.mockReset().mockReturnValue({
-    session: { scope: "global", store: "/tmp/shared-sessions.sqlite" },
-    agents: {
-      ownership: "explicit",
-      defaults: { sessionStore: { agentId: "ops" } },
-      entries: { ops: {}, research: {} },
-    },
-  });
 });
 
 describe("media generation delivery-phase prompt guard", () => {

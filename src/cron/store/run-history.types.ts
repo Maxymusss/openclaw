@@ -9,7 +9,7 @@ export type CronJsonValue =
 /** Only cron's persisted history/recovery facts, not a generic execution registry. */
 export type CronRunRecord = {
   id: string;
-  jobId: string;
+  jobId: string | null;
   runId?: string;
   agentId?: string;
   sessionKey?: string;

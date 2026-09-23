@@ -1,5 +1,5 @@
 // Gateway early-startup runtime helpers.
-// Starts discovery, remote skills, completion recovery, and delayed maintenance setup.
+// Starts discovery, remote skills, and delayed maintenance setup.
 import { isNixMode } from "../config/paths.js";
 import type { GatewayTailscaleMode } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -60,10 +60,11 @@ export async function startGatewayEarlyRuntime(params: {
   getRuntimeConfig: () => OpenClawConfig;
   startupTrace?: GatewayStartupTrace;
 }) {
+  const startSideRuntimes = !params.minimalTestGateway && !params.updateCanary;
   // Startup failure can occur immediately after discovery; publish its owner first.
   params.swapDiscovery(
     await measureStartup(params.startupTrace, "runtime.early.discovery", async () => {
-      if (params.minimalTestGateway) {
+      if (!startSideRuntimes) {
         return null;
       }
       const machineDisplayName = await measureStartup(
@@ -91,7 +92,7 @@ export async function startGatewayEarlyRuntime(params: {
       );
     }),
   );
-  if (!params.minimalTestGateway) {
+  if (startSideRuntimes) {
     const { primeRemoteSkillsCache, setSkillsRemoteRegistry } = await measureStartup(
       params.startupTrace,
       "runtime.early.lazy-runtime-imports",
@@ -101,7 +102,7 @@ export async function startGatewayEarlyRuntime(params: {
     void primeRemoteSkillsCache();
   }
 
-  const skillsChangeUnsub = params.minimalTestGateway
+  const skillsChangeUnsub = !startSideRuntimes
     ? async () => {}
     : await measureStartup(params.startupTrace, "runtime.early.skills-listener", async () => {
         const skillsRuntimePromise = import("../skills/runtime/refresh.js");
@@ -146,7 +147,7 @@ export async function startGatewayEarlyRuntime(params: {
   const startMaintenance = async (activeWorkInspectors: Partial<GatewayActiveWorkInspectors>) => {
     // Defer periodic maintenance until the caller has finished ready-state
     // wiring, but keep the lazy import owned by this early-runtime bundle.
-    if (params.minimalTestGateway || params.isClosing()) {
+    if (!startSideRuntimes || params.isClosing()) {
       return null;
     }
     return await measureStartup(params.startupTrace, "post-ready.maintenance", async () => {

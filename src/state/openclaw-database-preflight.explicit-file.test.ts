@@ -157,8 +157,8 @@ describe("explicit copied shared-state preflight", () => {
     const database = new DatabaseSync(databasePath);
     try {
       database.exec(`
-        DROP INDEX idx_task_runs_status;
-        CREATE INDEX idx_task_runs_status ON task_runs(task_id);
+        DROP INDEX idx_cron_run_history_job;
+        CREATE INDEX idx_cron_run_history_job ON cron_run_history(history_id);
       `);
     } finally {
       database.close();
@@ -175,8 +175,8 @@ describe("explicit copied shared-state preflight", () => {
       issues: [
         {
           code: "missing-or-drifted-index",
-          message: "missing or drifted index idx_task_runs_status",
-          objectName: "idx_task_runs_status",
+          message: "missing or drifted index idx_cron_run_history_job",
+          objectName: "idx_cron_run_history_job",
         },
       ],
     });
@@ -191,11 +191,11 @@ describe("explicit copied shared-state preflight", () => {
       fs.mkdirSync(path.dirname(databasePath));
       fs.renameSync(initialPath, databasePath);
       const database = new (requireNodeSqlite().DatabaseSync)(databasePath);
-      database.exec(
-        "ALTER TABLE task_runs DROP COLUMN tool_use_count; ALTER TABLE task_runs DROP COLUMN last_tool_name; ALTER TABLE apns_registrations DROP COLUMN relay_origin;",
-      );
+      database.exec("ALTER TABLE apns_registrations DROP COLUMN relay_origin;");
       if (drift) {
-        database.exec("ALTER TABLE task_runs ADD COLUMN unrecognized INTEGER NOT NULL DEFAULT 0");
+        database.exec(
+          "ALTER TABLE cron_run_history ADD COLUMN unrecognized INTEGER NOT NULL DEFAULT 0",
+        );
       }
       database.close();
       const before = snapshotSourceFamily(databasePath);

@@ -15,7 +15,10 @@
 .cron-transcript-feed__time,
 .cron-transcript-feed__summary,
 .cron-transcript-feed__user,
-.cron-transcript-feed__block,
+.cron-transcript-feed__block {
+  color: var(--muted);
+}
+
 .cron-transcript-feed__icon svg {
   width: 16px;
   height: 16px;

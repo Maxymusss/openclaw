@@ -23,6 +23,7 @@ import {
   nativeCompletionNotification,
   closeAgentNotification,
   childTurnCompletedNotification,
+  turnStartedNotification,
   threadRead,
 } from "./native-subagent-monitor.test-support.js";
 import type { JsonObject } from "./protocol.js";
@@ -179,13 +180,14 @@ describe("CodexNativeSubagentMonitor", () => {
     monitor.dispose();
   });
 
-  it("keeps collab completion as progress while app-server recovery is authoritative", async () => {
+  it("leaves wait snapshots to receipts until the child turn authoritatively completes", async () => {
     const client = createClient();
     const runtime = createRuntime();
     const monitor = new CodexNativeSubagentMonitor(client as never, runtime);
-    registerParent(monitor, "parent-thread", "agent:main:main");
+    const parent = registerParent(monitor, "parent-thread", "agent:main:main");
 
     await notifyChildStarted(client, "parent-thread", "child-thread", "");
+    await client.notify(turnStartedNotification("child-turn"));
     await client.notify({
       method: "item/completed",
       params: {
@@ -204,6 +206,18 @@ describe("CodexNativeSubagentMonitor", () => {
       },
     });
 
+    expect(runtime.deliverAgentHarnessCompletion).not.toHaveBeenCalled();
+    await parent.unregister();
+    expect(runtime.deliverAgentHarnessCompletion).not.toHaveBeenCalled();
+    await client.notify(
+      childTurnCompletedNotification({
+        turnId: "child-turn",
+        status: "completed",
+        items: [{ type: "agentMessage", id: "child-final", text: "child final result" }],
+      }),
+    );
+    // The native wait receipt consumes the matching result without a duplicate fallback.
+    expect(runtime.deliverAgentHarnessCompletion).not.toHaveBeenCalled();
     monitor.dispose();
   });
 

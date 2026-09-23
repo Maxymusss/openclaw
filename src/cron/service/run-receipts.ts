@@ -29,12 +29,12 @@ import {
   prepareCronRunReceiptClaim,
   readCronRunReceiptCurrentJob,
   trackCronRunReceiptSettlement,
-  type CronRunReceiptHandle,
   type CronRunReceiptSettlementDisposition,
-  type CronRunReceiptStatus,
   type PreparedCronRunReceiptClaim,
 } from "../store/run-receipt-store.js";
 import { retireCronRunTriggerStateInDatabase } from "../store/run-receipt-trigger-state.js";
+import type { CronRunReceiptWriteSchema } from "../store/run-receipt-write-admission.js";
+import type { CronRunReceiptHandle, CronRunReceiptStatus } from "../store/run-receipt.types.js";
 import type { CronStoreTransactionHooks } from "../store/transaction-hooks.types.js";
 import type { CronJob, CronRunStatus, CronStoredJob } from "../types.js";
 import { isJobEnabled } from "./jobs-scheduling.js";
@@ -138,10 +138,12 @@ export function claimServiceCronRunReceiptInDatabase(
   state: CronServiceState,
   database: DatabaseSync,
   prepared: PreparedCronRunReceiptClaim,
+  receiptSchema: CronRunReceiptWriteSchema,
 ): CronRunReceiptHandle {
   return claimCronRunReceiptInDatabase({
     database,
     prepared,
+    receiptSchema,
     resolveAgentId: resolveAgentId(state),
   });
 }
@@ -204,7 +206,7 @@ export function cronRunReceiptMutationHooks(params: {
   }
   return {
     ...ownerHooks,
-    beforeWrite: (database) => {
+    beforeWrite: (database, receiptSchema) => {
       if (params.scheduleChangedJob) {
         const current = loadedCronStoreFromRows(
           loadCronRows(
@@ -224,7 +226,7 @@ export function cronRunReceiptMutationHooks(params: {
       if (params.triggerStateChanged) {
         retireServiceCronRunTriggerStateInDatabase({ ...params, database });
       }
-      ownerHooks?.beforeWrite?.(database);
+      ownerHooks?.beforeWrite?.(database, receiptSchema);
     },
     afterCommit: () => {
       ownerHooks?.afterCommit?.();
@@ -262,7 +264,7 @@ function retireServiceCronRunTriggerStateInDatabase(params: {
     return;
   }
   // Owner edits close execution authority before scheduler reconciliation.
-  // Only legacy markers without a receipt association need task-history fallback.
+  // Only legacy markers without a receipt association need history fallback.
   const receiptId =
     job.state.runningReceiptId ??
     findCronRunRecoveryInDatabase({
@@ -390,8 +392,10 @@ export function cronRunReceiptPersistHooks(params: {
       ? {
           afterWrite: (
             database: Parameters<NonNullable<CronStoreTransactionHooks["afterWrite"]>>[0],
+            receiptSchema: CronRunReceiptWriteSchema,
           ) => {
             finishCronRunReceiptInDatabase({
+              receiptSchema,
               database,
               ...terminal,
             });
@@ -420,8 +424,9 @@ export function cronRunReceiptSupersedeHooks(params: {
     return { afterCommit: () => finishReceiptAfterCommit(params.state, terminal) };
   }
   return {
-    afterWrite: (database) => {
+    afterWrite: (database, receiptSchema) => {
       finishCronRunReceiptInDatabase({
+        receiptSchema,
         database,
         ...terminal,
       });

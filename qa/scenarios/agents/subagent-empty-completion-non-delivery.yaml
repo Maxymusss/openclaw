@@ -29,6 +29,7 @@ scenario:
     - docs/help/testing.md
     - docs/channels/qa-channel.md
   codeRefs:
+    - extensions/qa-lab/src/execution-identity-storage-inspection.ts
     - src/agents/agent-run-terminal-reply.ts
     - src/agents/subagents/registry/subagent-registry-lifecycle-completion.ts
   execution:
@@ -87,7 +88,7 @@ flow:
           args:
             - lambda:
                 async: true
-                expr: "(async () => { const run = await readEmptyRun(); return run?.execution.status === 'terminal' ? run : undefined; })().catch(() => undefined)"
+                expr: "(async () => { await env.mock?.terminalRequesters?.settle(env.gateway); const run = await readEmptyRun(); return run?.execution.status === 'terminal' ? run : undefined; })().catch(() => undefined)"
             - 60000
             - 250
         - assert:

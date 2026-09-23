@@ -56,6 +56,7 @@ type KillSelection = {
   cfg: OpenClawConfig;
   runs: Iterable<SubagentRunRecord>;
   assertCurrent?: () => void;
+  prepareRead?: () => Promise<void> | undefined;
   ownsRoot?: (entry: SubagentRunRecord) => boolean;
   controller?: Pick<ResolvedSubagentController, "controllerSessionKey" | "controllerAgentId">;
 };
@@ -80,6 +81,7 @@ async function withSubagentKillScope<T>(
   const taskControl = captureCancellationControl();
   const cancellationControl = params.assertCurrent
     ? {
+        prepareRead: () => taskControl?.prepareRead?.() ?? params.prepareRead?.(),
         assertCurrent: () => {
           taskControl?.assertCurrent();
           params.assertCurrent?.();
@@ -290,6 +292,13 @@ async function killLatestSubagentRun(params: {
   result: Awaited<ReturnType<typeof killSubagentRun>>;
 }> {
   const { tree, scope } = params;
+  for (
+    let pending = scope.cancellationControl?.prepareRead?.();
+    pending;
+    pending = scope.cancellationControl?.prepareRead?.()
+  ) {
+    await pending;
+  }
   const matchesExpected = (entry: SubagentRunRecord) =>
     (params.expectedGeneration === undefined || entry.generation === params.expectedGeneration) &&
     (!params.expectedOwnerKey || entry.requesterSessionKey === params.expectedOwnerKey);
@@ -352,19 +361,31 @@ type KillTraversal = {
 };
 
 async function killSubagentRunTree(
-  params: KillTraversal & { trees: KillTree[] },
+  params: KillTraversal & { trees: KillTree[]; suppressCompletedWakes?: boolean },
 ): Promise<{ killed: number; labels: string[] }> {
-  const visits = new Map<KillTree, { label?: string; descendants: boolean }>();
-  const visit = async (tree: KillTree): Promise<void> => {
+  const visits = new Map<
+    KillTree,
+    { label?: string; descendants: boolean; suppressCompletedWakes: boolean }
+  >();
+  const visit = async (tree: KillTree, suppressCompletedWakes: boolean): Promise<void> => {
     let result = visits.get(tree);
     try {
       if (!result) {
-        result = { descendants: false };
+        result = { descendants: false, suppressCompletedWakes };
         visits.set(tree, result);
-        if (!tree.entry.execution.endedAt || tree.entry.pauseReason === "sessions_yield") {
+        if (
+          !tree.entry.execution.endedAt ||
+          tree.entry.pauseReason === "sessions_yield" ||
+          (params.suppressTaskDelivery && suppressCompletedWakes && tree.entry.requesterSettleWake)
+        ) {
           const stopped = await killLatestSubagentRun({ ...params, tree });
           if (stopped.result.error) {
             tree.errors.add(stopped.result.error);
+          }
+          if (stopped.result.error || stopped.result.declined) {
+            // A parent's failed Stop cannot retire the completion it still owns.
+            // Keep trying live descendants under the existing best-effort policy.
+            result.suppressCompletedWakes = false;
           }
           if (stopped.result.killed) {
             result.label = resolveSubagentLabel(stopped.entry);
@@ -376,7 +397,8 @@ async function killSubagentRunTree(
         result.descendants = true;
       }
       if (result.descendants && tree.canTraverse()) {
-        await Promise.all(tree.children.map(visit));
+        const suppressDescendantWakes = result.suppressCompletedWakes;
+        await Promise.all(tree.children.map((child) => visit(child, suppressDescendantWakes)));
       }
     } catch (error) {
       tree.errors.add(formatErrorMessage(error));
@@ -389,7 +411,9 @@ async function killSubagentRunTree(
   do {
     selected = params.scope.refresh();
     // First visits interrupt siblings together; descendants still wait for their parent.
-    await Promise.all(params.trees.map(visit));
+    await Promise.all(
+      params.trees.map((tree) => visit(tree, params.suppressCompletedWakes !== false)),
+    );
     // A sibling's drain can capture children beneath an already visited branch.
     // Complete that frontier before releasing holds, without stopping a session twice.
   } while (params.scope.refresh() !== selected);
@@ -409,7 +433,7 @@ async function killSubagentRoot(params: Parameters<typeof killLatestSubagentRun>
   };
   let cascade: Awaited<ReturnType<typeof killSubagentRunTree>> = { killed: 0, labels: [] };
   try {
-    // Root calls also reconcile finished tasks; the bulk walker skips that work.
+    // Explicit root cancellation also reconciles terminal execution state.
     stopped = await killLatestSubagentRun(params);
     if (stopped.result.error) {
       params.tree.errors.add(stopped.result.error);
@@ -419,6 +443,7 @@ async function killSubagentRoot(params: Parameters<typeof killLatestSubagentRun>
       cascade = await killSubagentRunTree({
         cfg: params.cfg,
         suppressTaskDelivery: params.suppressTaskDelivery,
+        suppressCompletedWakes: !stopped.result.error,
         scope: params.scope,
         trees: params.tree.children,
       });
@@ -514,6 +539,7 @@ export async function killSubagentRunAdmin(
   params: SubagentAdminKillParams,
   control?: {
     assertCurrent: () => void;
+    prepareRead?: () => Promise<void> | undefined;
     beforeSessionKill?: () => boolean;
     preparePublication?: KillPublicationPreparation;
   },
@@ -550,7 +576,12 @@ export async function killSubagentRunAdmin(
 
   let rootStopSuperseded = false;
   return withSubagentKillScope<SubagentAdminKillResult>(
-    { cfg: params.cfg, runs: [entry], assertCurrent: control?.assertCurrent },
+    {
+      cfg: params.cfg,
+      runs: [entry],
+      assertCurrent: control?.assertCurrent,
+      prepareRead: control?.prepareRead,
+    },
     async (scope, [tree]) => {
       if (!tree) {
         return { found: false as const, killed: false as const };

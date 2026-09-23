@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
+import { loadNodeExecAvailability } from "openclaw/plugin-sdk/node-selection-runtime";
 import {
   createAdmittedHostCapabilityTestFixture,
   createMockPluginRegistry,
@@ -30,9 +31,16 @@ import {
 import { attachSqliteSessionTarget } from "./sqlite-session.test-helpers.js";
 
 setupRunAttemptTestHooks();
+vi.mock("openclaw/plugin-sdk/node-selection-runtime", { spy: true });
 
 describe("native follow-up custody through the registered attempt", () => {
   beforeEach(() => {
+    // Native custody is exercised with no remote nodes. Discovery must not open
+    // an ambient Gateway connection or wait on its real I/O under this clock.
+    vi.mocked(loadNodeExecAvailability).mockResolvedValue({
+      cacheKey: "[]",
+      isAvailable: () => false,
+    });
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
   });
 
@@ -87,7 +95,9 @@ describe("native follow-up custody through the registered attempt", () => {
     initializeGlobalHookRunner(
       createMockPluginRegistry([{ hookName: "before_tool_call", handler: async () => undefined }]),
     );
-    const host = await createAdmittedHostCapabilityTestFixture(params);
+    const host = await createAdmittedHostCapabilityTestFixture(params, {
+      nativeModelPolicySupport: "exact",
+    });
     assert(
       host.agentHarnessCompletionScope,
       "Expected the session fixture to issue a task runtime scope",
@@ -113,7 +123,16 @@ describe("native follow-up custody through the registered attempt", () => {
     });
     let relayId: string | undefined;
     try {
-      await turnStarted.promise;
+      // Startup can settle before the fake server receives turn/start. Surface that
+      // outcome instead of waiting on a notification that can no longer arrive.
+      await Promise.race([
+        turnStarted.promise,
+        run.then((result) => {
+          throw new Error(`Codex attempt settled before turn/start (${result.terminal.kind})`, {
+            cause: readAttemptTerminal(result).promptError,
+          });
+        }),
+      ]);
       allowTurnStart.resolve();
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
@@ -348,10 +367,19 @@ describe("native follow-up custody through the registered attempt", () => {
     } finally {
       unsubscribe();
       allowTurnStart.resolve();
-      harness.close();
-      await nativeHookRelayUnregisterQueue.flush();
-      host.closeHost();
-      host.closeAdmission();
+      try {
+        harness.close();
+        // Attempt cleanup can enqueue relay retirement. Join it before flushing the
+        // queue or releasing the admitted host, without masking the original failure.
+        await Promise.allSettled([run]);
+        await nativeHookRelayUnregisterQueue.flush();
+      } finally {
+        try {
+          host.closeHost();
+        } finally {
+          host.closeAdmission();
+        }
+      }
     }
   });
 });

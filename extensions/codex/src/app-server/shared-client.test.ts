@@ -12,7 +12,6 @@ import type { CodexAppServerAuthHandoff, CodexAppServerPreparedAuth } from "./au
 import { CodexAppServerClient } from "./client.js";
 import type { CodexAppServerStartOptions } from "./config.js";
 import { acquireCodexNativeConfigFence } from "./native-config-fence.js";
-import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import { withCodexAppServerJsonClient } from "./request.js";
 import { createCodexTestBindingStore } from "./session-binding.test-helpers.js";
 import { retireSharedCodexAppServerClientsBeforeDesktopGeneration } from "./shared-client-lifecycle.js";
@@ -2347,93 +2346,6 @@ describe("shared Codex app-server client", () => {
       closed: true,
     });
     expect(second.process.stdin.destroyed).toBe(true);
-  });
-
-  it("keeps a retired one-shot client alive until native subagent completion", async () => {
-    const harness = createClientHarness();
-    vi.spyOn(CodexAppServerClient, "start").mockResolvedValueOnce(harness.client);
-
-    const clientPromise = getLeasedSharedCodexAppServerClient({ timeoutMs: 1000 });
-    await sendInitializeResult(harness, "openclaw/0.149.0 (Linux; test)");
-    const client = await clientPromise;
-    const deliverCompletion = vi.fn(async () => ({ delivered: true, path: "direct" as const }));
-    const retainClient = vi.fn(() => retainSharedCodexAppServerClientIfCurrent(client));
-    const monitor = new codexNativeSubagentMonitorRuntime.Monitor(
-      client,
-      {
-        deliverAgentHarnessCompletion: deliverCompletion,
-      },
-      { retainClient },
-    );
-    monitor.registerParent({
-      parentThreadId: "parent-thread",
-      requesterSessionKey: "agent:main:main",
-      completionScope: { requesterSessionKey: "agent:main:main", requesterAgentId: "main" },
-      agentId: "main",
-    });
-
-    harness.send({
-      method: "thread/started",
-      params: {
-        thread: {
-          id: "child-thread",
-          parentThreadId: "parent-thread",
-          preview: "inspect the repo",
-          source: {
-            subAgent: {
-              thread_spawn: {
-                parent_thread_id: "parent-thread",
-                depth: 1,
-                agent_path: "child-thread",
-              },
-            },
-          },
-        },
-      },
-    });
-    await vi.waitFor(() => expect(retainClient).toHaveBeenCalledTimes(1));
-
-    expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(true);
-    expect(retireSharedCodexAppServerClientIfCurrent(client)).toEqual({
-      activeLeases: 1,
-      closed: false,
-    });
-    expect(harness.process.stdin.destroyed).toBe(false);
-
-    // The ordinary lease is gone, but native completion still explicitly owns
-    // the detached process and repeated cleanup must not close that owner.
-    expect(releaseLeasedSharedCodexAppServerClient(client)).toBe(false);
-    expect(retireSharedCodexAppServerClientIfCurrent(client)).toEqual({
-      activeLeases: 1,
-      closed: false,
-    });
-    expect(harness.process.stdin.destroyed).toBe(false);
-
-    harness.send({
-      method: "turn/completed",
-      params: {
-        threadId: "child-thread",
-        turn: {
-          id: "child-turn",
-          status: "completed",
-          items: [
-            {
-              id: "child-final",
-              type: "agentMessage",
-              phase: "final_answer",
-              text: "child final result",
-            },
-          ],
-          error: null,
-        },
-      },
-    });
-
-    await vi.waitFor(() => expect(deliverCompletion).toHaveBeenCalledTimes(1));
-    expect(deliverCompletion).toHaveBeenCalledWith(
-      expect.objectContaining({ childSessionId: "child-thread", result: "child final result" }),
-    );
-    expect(harness.process.stdin.destroyed).toBe(true);
   });
 
   it("leases shared app-server clients before returning concurrent acquirers", async () => {

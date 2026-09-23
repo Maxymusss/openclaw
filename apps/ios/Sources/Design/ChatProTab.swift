@@ -132,7 +132,7 @@ struct ChatProTab: View {
                 }
             }
             .sheet(item: self.$transcriptShareItem) { item in
-                ChatTranscriptShareSheet(fileURL: item.fileURL)
+                OpenClawChatFileShareSheet(fileURL: item.fileURL)
             }
             .sheet(isPresented: self.$showsNewSessionOptions) {
                 if let viewModel {

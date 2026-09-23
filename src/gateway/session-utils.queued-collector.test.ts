@@ -1,6 +1,10 @@
 import "../agents/subagents/spawn/subagent-spawn-model.mocks.shared.js";
+// Preserve module setup before modules that consume it.
+// oxfmt-ignore
+import { useQueuedCollectorFixture } from "./session-utils.queued-collector.test-support.js";
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import * as subagentKill from "../agents/subagents/registry/subagent-control-kill.js";
 import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { isSubagentRunQueued } from "../agents/subagents/registry/subagent-registry-read.js";
@@ -33,7 +37,6 @@ import type { GatewayRequestContext } from "./server-methods/types.js";
 import { createLifecycleEventBroadcastHandler } from "./server-session-events.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
 import { loadGatewaySessionEntryReadOnly } from "./session-utils.js";
-import { useQueuedCollectorFixture } from "./session-utils.queued-collector.test-support.js";
 
 const {
   parentKey,
@@ -337,7 +340,7 @@ describe("queued collector session projection", () => {
     expect(isSubagentRunQueued(compact)).toBe(false);
     expect(isSubagentRunQueued(structuredClone(entry))).toBe(false);
 
-    registerSubagentRun(registration);
+    await registerSubagentRun(registration);
     const replacement = expectDefined(subagentRuns.get(entry.runId), "replacement record");
     expect(replacement).not.toBe(entry);
     expect(isSubagentRunQueued(entry)).toBe(false);
@@ -353,7 +356,7 @@ describe("queued collector session projection", () => {
       maxConcurrent: 1,
       activeRunIds: [],
     });
-    registerSubagentRun(registration);
+    await registerSubagentRun(registration);
     const current = expectDefined(subagentRuns.get(entry.runId), "new reservation owner");
     expect(isSubagentRunQueued(current)).toBe(true);
     expect((await exactChild())?.hasActiveSubagentRun).toBe(true);
@@ -420,7 +423,7 @@ describe("queued collector session projection", () => {
               maxConcurrent: 1,
               activeRunIds: [],
             });
-            registerSubagentRun(registration);
+            await registerSubagentRun(registration);
           }
           order.push(handoff);
           return result;
@@ -482,39 +485,45 @@ describe("queued collector session projection", () => {
     );
     let authorizationObserved = false;
     let accessRevoked = false;
+    const authorization = createDeferred();
+    // Preserve the post-authorization microtask race, but join queued registration's durable setup.
+    const mutation = authorization.promise.then(async () => {
+      if (!authorizationObserved) {
+        return;
+      }
+      if (failure === "parent replaced") {
+        context.chatAbortControllers.set("parent-turn", { ...parent });
+      }
+      if (failure === "parent closed") {
+        parent.controller.abort();
+      }
+      if (failure === "parent settled") {
+        parent.isAbortable = () => false;
+      }
+      if (failure === "parent lifecycle retired") {
+        parent.lifecycleGeneration = "retired";
+      }
+      if (failure === "session access revoked") {
+        accessRevoked = true;
+      }
+      if (failure === "reservation withdrawn") {
+        removeQueuedSwarmRun(entry.runId);
+      }
+      if (failure === "registry replaced") {
+        await registerSubagentRun(registration);
+      }
+    });
     const assertCurrent = () => {
       if (!authorizationObserved) {
         authorizationObserved = true;
-        queueMicrotask(() => {
-          if (failure === "parent replaced") {
-            context.chatAbortControllers.set("parent-turn", { ...parent });
-          }
-          if (failure === "parent closed") {
-            parent.controller.abort();
-          }
-          if (failure === "parent settled") {
-            parent.isAbortable = () => false;
-          }
-          if (failure === "parent lifecycle retired") {
-            parent.lifecycleGeneration = "retired";
-          }
-          if (failure === "session access revoked") {
-            accessRevoked = true;
-          }
-          if (failure === "reservation withdrawn") {
-            removeQueuedSwarmRun(entry.runId);
-          }
-          if (failure === "registry replaced") {
-            registerSubagentRun(registration);
-          }
-        });
+        authorization.resolve();
       }
       if (accessRevoked) {
         throw new Error("Session mutation authorization changed");
       }
     };
     const respond = vi.fn();
-    await expectDefined(
+    const abort = expectDefined(
       sessionAbortHandlers["sessions.abort"],
       "sessions.abort handler",
     )({
@@ -528,6 +537,7 @@ describe("queued collector session projection", () => {
       respond,
       sessionMutationAuthorization: { assertCurrent, assertTargetCurrent: assertCurrent },
     });
+    await Promise.all([Promise.resolve(abort).finally(() => authorization.resolve()), mutation]);
     expect(respond).toHaveBeenCalledWith(
       false,
       undefined,

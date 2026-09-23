@@ -48,7 +48,7 @@ function parameters(
     runId,
     getAdmittedSessionId: () => "child-session",
     assertResumeAdmissionCurrent: vi.fn(),
-    context: {},
+    context: { logGateway: { warn: vi.fn() } },
     ...overrides,
   };
 }

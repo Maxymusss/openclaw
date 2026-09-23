@@ -9,19 +9,19 @@ import {
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import acpxPlugin from "../../../../extensions/acpx/index.js";
 import {
   getAcpSessionManager,
   testing as acpManagerTesting,
 } from "../../../../src/acp/control-plane/manager.js";
-import { createTestAdmittedRunContext } from "../../../../src/agents/admitted-run-context.test-support.js";
+import type { AcpRunTurnInput } from "../../../../src/acp/control-plane/manager.types.js";
+import { prepareSystemAgentRunAdmission } from "../../../../src/agents/admitted-run-context.js";
 import { killSubagentRunAdmin } from "../../../../src/agents/subagents/registry/subagent-control.js";
 import { getSubagentRunByRunId } from "../../../../src/agents/subagents/registry/subagent-registry.js";
 import {
   addSubagentRunForTests,
   resetSubagentRegistryForTests,
-  testing as subagentRegistryTesting,
 } from "../../../../src/agents/subagents/registry/subagent-registry.test-helpers.js";
 import { createSubagentsTool } from "../../../../src/agents/tools/subagents-tool.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../../../src/config/config.js";
@@ -40,13 +40,17 @@ const TOKEN = "native-cancellation-e2e-token";
 const ROUTE_OWNER = "agent:main:native-authority-proof";
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-beforeEach(() => {
-  subagentRegistryTesting.setDepsForTest({
+vi.mock(
+  "../../../../src/agents/subagents/registry/subagent-registry-state.js",
+  async (importOriginal) => ({
+    ...(await importOriginal<
+      typeof import("../../../../src/agents/subagents/registry/subagent-registry-state.js")
+    >()),
     persistSubagentRunsToDisk: () => {},
     persistSubagentRunsToDiskOrThrow: () => {},
     restoreSubagentRunsFromDisk: () => 0,
-  });
-});
+  }),
+);
 
 afterEach(() => {
   clearConfigCache();
@@ -55,7 +59,6 @@ afterEach(() => {
   resetSubagentRegistryForTests({ persist: false });
   resetPluginStateStoreForTests();
   resetPluginRuntimeStateForTest();
-  subagentRegistryTesting.setDepsForTest();
 });
 
 function registerRunningSubagent(params: {
@@ -212,7 +215,10 @@ describe("native child cancellation authority", () => {
             runId: allowedRunId,
           });
           expect(allowed.details).toMatchObject({ found: true, killed: true });
-          expect(getSubagentRunByRunId(allowedRunId)?.execution.status).toBe("terminal");
+          expect(getSubagentRunByRunId(allowedRunId)).toMatchObject({
+            endedReason: "subagent-killed",
+            execution: { status: "terminal", endedAt: expect.any(Number) },
+          });
 
           const foreignRunId = "run-native-foreign";
           const foreignChild = "agent:main:subagent:native-foreign";
@@ -227,6 +233,7 @@ describe("native child cancellation authority", () => {
           });
           expect(foreign.details).toMatchObject({ status: "forbidden" });
           expect(getSubagentRunByRunId(foreignRunId)?.execution.status).toBe("running");
+          expect(getSubagentRunByRunId(foreignRunId)?.execution.endedAt).toBeUndefined();
 
           for (const sameId of [false, true]) {
             const childSessionKey = `agent:main:subagent:replacement-${sameId}`;
@@ -252,18 +259,38 @@ describe("native child cancellation authority", () => {
               }),
             ).toEqual({ found: false, killed: false });
             expect(getSubagentRunByRunId(replacementRunId)?.execution.status).toBe("running");
+            expect(getSubagentRunByRunId(replacementRunId)?.execution.endedAt).toBeUndefined();
           }
 
-          const acpChild = "agent:main:acp:webhook-replacement";
-          const reusedAcpRunId = "run-webhook-acp-reused";
+          const acpChild = "agent:main:acp:native-replacement";
+          const reusedAcpRunId = "run-native-acp-reused";
           const acpManager = getAcpSessionManager();
+          async function runAcpTurn(
+            input: Omit<AcpRunTurnInput, "admittedRunContext">,
+            onAdmitted?: (context: AcpRunTurnInput["admittedRunContext"]) => void,
+          ) {
+            const admission = prepareSystemAgentRunAdmission(
+              config,
+              input.requestId,
+              "main",
+              "native-cancellation-fixture",
+            );
+            try {
+              const admittedRunContext = await admission.admit("acp");
+              onAdmitted?.(admittedRunContext);
+              await acpManager.runTurn({ ...input, admittedRunContext });
+              return admittedRunContext;
+            } finally {
+              admission.close();
+            }
+          }
           replaceSessionEntrySync(
             {
               sessionKey: acpChild,
               storePath: resolveSessionStorePathCore(config.session?.store, { agentId: "main" }),
             },
             {
-              sessionId: "session-webhook-acp-replacement",
+              sessionId: "session-native-acp-replacement",
               updatedAt: Date.now(),
               spawnedBy: ROUTE_OWNER,
               parentSessionKey: ROUTE_OWNER,
@@ -276,9 +303,7 @@ describe("native child cancellation authority", () => {
             mode: "persistent",
             backendId: "acpx",
           });
-          const firstAcpAdmission = createTestAdmittedRunContext(reusedAcpRunId);
-          await acpManager.runTurn({
-            admittedRunContext: firstAcpAdmission,
+          const firstAcpAdmission = await runAcpTurn({
             cfg: config,
             sessionKey: acpChild,
             provenance: "system",
@@ -292,8 +317,7 @@ describe("native child cancellation authority", () => {
           });
           const elicitationEntered = createDeferred();
           const releaseElicitation = createDeferred();
-          const replacementAcpTurn = acpManager.runTurn({
-            admittedRunContext: createTestAdmittedRunContext(reusedAcpRunId),
+          const replacementAcpTurn = runAcpTurn({
             cfg: config,
             sessionKey: acpChild,
             provenance: "system",
@@ -327,15 +351,15 @@ describe("native child cancellation authority", () => {
             releaseElicitation.resolve();
             await replacementAcpTurn;
           }
-          const queuedAcpChild = "agent:main:acp:webhook-queued-successor";
-          const queuedAcpRunId = "run-webhook-acp-queued";
+          const queuedAcpChild = "agent:main:acp:native-queued-successor";
+          const queuedAcpRunId = "run-native-acp-queued";
           replaceSessionEntrySync(
             {
               sessionKey: queuedAcpChild,
               storePath: resolveSessionStorePathCore(config.session?.store, { agentId: "main" }),
             },
             {
-              sessionId: "session-webhook-acp-queued-successor",
+              sessionId: "session-native-acp-queued-successor",
               updatedAt: Date.now(),
               spawnedBy: ROUTE_OWNER,
               parentSessionKey: ROUTE_OWNER,
@@ -349,36 +373,43 @@ describe("native child cancellation authority", () => {
             backendId: "acpx",
           });
           const queuedTargetEntered = createDeferred();
+          const queuedTargetSubmitted = createDeferred();
           const queuedTurnOrder: string[] = [];
           const queuedTargetEvents: AcpRuntimeEvent[] = [];
-          const queuedAdmission = createTestAdmittedRunContext(queuedAcpRunId);
-          const queuedTargetTurn = acpManager.runTurn({
-            admittedRunContext: queuedAdmission,
-            cfg: config,
-            sessionKey: queuedAcpChild,
-            provenance: "system",
-            text: "Keep the target active while its same-id successor queues.",
-            mode: "prompt",
-            requestId: queuedAcpRunId,
-            onElicitation: async (_request, context) => {
-              queuedTargetEntered.resolve();
-              await new Promise<void>((resolve) => {
-                if (context.signal.aborted) {
-                  resolve();
-                  return;
+          const queuedAdmission = createDeferred<AcpRunTurnInput["admittedRunContext"]>();
+          const queuedTargetTurn = runAcpTurn(
+            {
+              cfg: config,
+              sessionKey: queuedAcpChild,
+              provenance: "system",
+              text: "Keep the target active while its same-id successor queues.",
+              mode: "prompt",
+              requestId: queuedAcpRunId,
+              onLifecycle: () => {
+                queuedTargetSubmitted.resolve();
+              },
+              onElicitation: async (_request, context) => {
+                queuedTargetEntered.resolve();
+                await new Promise<void>((resolve) => {
+                  if (context.signal.aborted) {
+                    resolve();
+                    return;
+                  }
+                  context.signal.addEventListener("abort", () => resolve(), { once: true });
+                });
+                return { action: "cancel" };
+              },
+              onEvent: (event) => {
+                queuedTargetEvents.push(event);
+                if (event.type === "done" && event.status === "cancelled") {
+                  queuedTurnOrder.push("target-cancelled");
                 }
-                context.signal.addEventListener("abort", () => resolve(), { once: true });
-              });
-              return { action: "cancel" };
+              },
             },
-            onEvent: (event) => {
-              queuedTargetEvents.push(event);
-              if (event.type === "done" && event.status === "cancelled") {
-                queuedTurnOrder.push("target-cancelled");
-              }
-            },
-          });
-          await queuedTargetEntered.promise;
+            queuedAdmission.resolve,
+          );
+          await Promise.all([queuedTargetEntered.promise, queuedTargetSubmitted.promise]);
+          const queuedTargetContext = await queuedAdmission.promise;
           const targetTurnStart = (await readAcpTrace(acpxTracePath)).findLast(
             (entry) => entry.method === "turn/start",
           );
@@ -392,8 +423,7 @@ describe("native child cancellation authority", () => {
           const queuedSuccessorEntered = createDeferred();
           const releaseQueuedSuccessor = createDeferred();
           const queuedSuccessorEvents: AcpRuntimeEvent[] = [];
-          const queuedSuccessorTurn = acpManager.runTurn({
-            admittedRunContext: createTestAdmittedRunContext(queuedAcpRunId),
+          const queuedSuccessorTurn = runAcpTurn({
             cfg: config,
             sessionKey: queuedAcpChild,
             provenance: "system",
@@ -414,7 +444,7 @@ describe("native child cancellation authority", () => {
             cfg: config,
             sessionKey: queuedAcpChild,
             expectedRunId: queuedAcpRunId,
-            expectedInstanceId: queuedAdmission.operationalRunInstance.instanceId,
+            expectedInstanceId: queuedTargetContext.operationalRunInstance.instanceId,
             expectedOwnerKey: ROUTE_OWNER,
           });
           await vi.waitFor(

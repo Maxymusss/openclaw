@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import type { Rolldown } from "vite";
 import { resolvedLocaleConfigHintsModulePrefix } from "./control-ui-locales.ts";
 
 const configDir = path.dirname(fileURLToPath(import.meta.url));
@@ -62,13 +63,23 @@ export function controlUiStableChunkName(id: string): string | undefined {
   }
 
   if (
+    normalized.endsWith("/ui/src/styles/chat/grouped.css") ||
+    normalized.endsWith("/ui/src/styles/chat/message-layout.css")
+  ) {
+    // Both routes load transcript styles; keep them outside the larger shared boot stylesheet.
+    return "chat-transcript-styles";
+  }
+
+  if (
     moduleIdIncludesPackage(id, "lit") ||
     moduleIdIncludesPackage(id, "lit-html") ||
     moduleIdIncludesPackage(id, "@lit/reactive-element")
   ) {
-    // The cache directive belongs to the deferred text-attachment renderer, not
-    // the shared startup vendor chunk. Let its consumer determine when it loads.
-    return normalized.endsWith("/directives/cache.js") ? undefined : "lit-runtime";
+    // Cache and async content directives have only deferred consumers. Keep
+    // their implementation and helpers with those consumers, outside startup.
+    return /\/directives\/(?:cache|until|private-async-helpers)\.js$/u.test(normalized)
+      ? undefined
+      : "lit-runtime";
   }
 
   if (
@@ -135,5 +146,21 @@ export const controlUiCodeSplitting = {
         maxSize: 1408 * 1024,
       };
     }),
+    {
+      name: (id: string, context: Rolldown.ChunkingContext) => {
+        const pages = new Set(
+          (context.getModuleInfo(id)?.importers ?? []).flatMap((importer) => {
+            const page = /^ui\/src\/pages\/([^/]+)\//u.exec(
+              controlUiBootManifestKey(importer),
+            )?.[1];
+            return page ? [page] : [];
+          }),
+        );
+        return pages.size ? "css-" + [...pages].toSorted().join("-") : null;
+      },
+      test: (id: string) => controlUiBootManifestKey(id).endsWith(".css"),
+      // Page-owned styles must not be absorbed by measured JavaScript boot groups.
+      priority: 9,
+    },
   ],
 };

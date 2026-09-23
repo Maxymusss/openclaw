@@ -27,6 +27,7 @@ import { registerChatAbortController } from "../../../gateway/chat-abort.js";
 import { withLocalGatewayRequestScope } from "../../../gateway/local-request-context.js";
 import { handleChatAbortRequest } from "../../../gateway/server-methods/chat-abort-handler.js";
 import { createSyntheticPluginRuntimeClient } from "../../../gateway/server-plugin-runtime-client.js";
+import { getSessionRowProjection } from "../../../gateway/session-row-projection-access.js";
 import {
   registerSessionBindingAdapter,
   unregisterSessionBindingAdapter,
@@ -34,12 +35,14 @@ import {
 } from "../../../infra/outbound/session-binding-service.js";
 import { flushLogger, resetLogger } from "../../../logging/logger.js";
 import { loadActivatedBundledPluginPublicSurfaceModule } from "../../../plugin-sdk/facade-runtime.js";
+import { getActivePluginRegistry } from "../../../plugins/runtime.js";
 import {
   bindGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
+import { createTestRegistry } from "../../../test-utils/channel-plugins.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import {
@@ -50,6 +53,7 @@ import {
 import { copyAgentToolMetadata } from "../../agent-tool-metadata.js";
 import { finalizeAgentTools } from "../../agent-tools.finalize.js";
 import type { AnyAgentTool } from "../../agent-tools.types.js";
+import { loadAgentRuntimePluginRegistryHandle } from "../../runtime-plugins.js";
 import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
@@ -60,12 +64,14 @@ import {
   settleSubagentRegistryPersistenceWork,
   writeSubagentSessionEntry,
 } from "../registry/subagent-registry.persistence.test-support.js";
-import {
-  testing as registryTesting,
-  resetSubagentRegistryForTests,
-} from "../registry/subagent-registry.test-helpers.js";
+import { resetSubagentRegistryForTests } from "../registry/subagent-registry.test-helpers.js";
 import * as acpSpawnRuntime from "./acp-spawn-runtime.js";
-import { setSubagentSpawnDepsForTest } from "./subagent-spawn-deps.js";
+import { testing as spawnTesting } from "./subagent-spawn.test-support.js";
+
+vi.mock("../../runtime-plugins.js", () => ({
+  loadAgentRuntimePluginRegistryHandle:
+    vi.fn<typeof import("../../runtime-plugins.js").loadAgentRuntimePluginRegistryHandle>(),
+}));
 
 const parentSessionKey = "agent:main:main";
 const parentRunId = "acp-spawn-parent";
@@ -110,15 +116,9 @@ beforeEach(async () => {
   });
   managerTesting.resetAcpSessionManagerForTests();
   resetSubagentRegistryForTests({ persist: false });
-  registryTesting.setDepsForTest({
-    loadAgentRuntimePluginRegistryHandle: () => undefined,
-    callGateway: async (request) => {
-      if (request.method !== "agent.wait") {
-        throw new Error(`Unexpected registry RPC ${request.method}`);
-      }
-      return await new Promise<never>(() => {});
-    },
-  });
+  vi.mocked(loadAgentRuntimePluginRegistryHandle).mockImplementation(
+    () => getActivePluginRegistry() ?? createTestRegistry([]),
+  );
 });
 
 afterEach(async () => {
@@ -130,8 +130,8 @@ afterEach(async () => {
     resetSubagentRegistryForTests({ persist: false });
     await cleanupSessionStateForTest({ stateDir });
   } finally {
-    registryTesting.setDepsForTest();
-    setSubagentSpawnDepsForTest();
+    vi.mocked(loadAgentRuntimePluginRegistryHandle).mockReset();
+    spawnTesting.setDepsForTest();
     vi.restoreAllMocks();
     clearRuntimeConfigSnapshot();
     clearConfigCache();
@@ -317,7 +317,7 @@ describe("pending ACP spawn authority", () => {
       registerAcpRuntimeBackend({ id: backendId, runtime });
       const dispatch = vi.fn();
       let acceptedRunId: string | undefined;
-      setSubagentSpawnDepsForTest({
+      spawnTesting.setDepsForTest({
         dispatchGatewayMethodInProcess: async <T>(
           method: string,
           params: Record<string, unknown>,
@@ -333,9 +333,12 @@ describe("pending ACP spawn authority", () => {
           return { runId: params.idempotencyKey, status: "accepted" } as T;
         },
       });
-      const socket = vi
-        .spyOn(gatewayCall, "callGateway")
-        .mockRejectedValue(new Error("Raw WebSocket transport is unavailable"));
+      const socket = vi.spyOn(gatewayCall, "callGateway").mockImplementation(async (request) => {
+        if (request.method === "agent.wait") {
+          return await new Promise<never>(() => {});
+        }
+        throw new Error("Raw WebSocket transport is unavailable");
+      });
       const source = createSessionsSpawnTool({
         config: cfg,
         agentSessionKey: parentSessionKey,
@@ -482,6 +485,9 @@ describe("pending ACP spawn authority", () => {
         admission.close();
         parent.cleanup();
         await work.drain();
+        const projection = getSessionRowProjection(context);
+        projection?.dispose();
+        await projection?.ensureMaterialized();
         if (stage === "thread") {
           unregisterSessionBindingAdapter({
             channel: "discord",

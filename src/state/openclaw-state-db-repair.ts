@@ -6,10 +6,11 @@ import {
   verifyAndRepairCanonicalSqliteIndexes,
 } from "../infra/sqlite-index-schema.js";
 import { assertSqliteIntegrity, assertSqliteTableIntegrity } from "../infra/sqlite-integrity.js";
+import { configureSqliteMaintenanceCache } from "../infra/sqlite-maintenance-cache.js";
 import { assertSqliteSchemaTablesPresent } from "../infra/sqlite-schema-contract.js";
 import { migrateSqliteSchemaToStrictInTransaction } from "../infra/sqlite-strict.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
-import { migrateLegacyCronRunLogsToTaskRuns } from "../infra/state-migrations.cron-run-logs.js";
+import { migrateLegacyCronRunLogsToHistory } from "../infra/state-migrations.cron-run-logs.js";
 import { clearOpenClawDatabaseQuarantine } from "./openclaw-quarantine-store.js";
 import { repairAuditEventsSchema } from "./openclaw-state-db-audit-migration.js";
 import { clearOpenClawStateDatabaseOpenFailure } from "./openclaw-state-db-cache.js";
@@ -47,13 +48,13 @@ import {
 } from "./openclaw-state-db-schema-repair.js";
 import { ensureOpenClawStateRuntimeSchema } from "./openclaw-state-db-schema-runtime.js";
 import { migrateSingletonStateFoldInV12 } from "./openclaw-state-db-schema-v12-foldin.js";
+import { assertStateIntegrityForSchemaMigration } from "./openclaw-state-db-schema-v19-task-source.js";
 import {
   readStateSchemaContentVersion,
   readStateSchemaMigrationVersion,
 } from "./openclaw-state-db-schema-version.js";
 import * as sessionWatchMigration from "./openclaw-state-db-session-watch-migration.js";
 import * as retirements from "./openclaw-state-db-table-retirements.js";
-import { recoverOrphanTaskDeliveryRows } from "./openclaw-state-db-task-delivery-recovery.js";
 import { describeAgentPathMigration } from "./openclaw-state-db.paths.js";
 import { OpenClawStateOwnershipError } from "./openclaw-state-ownership.js";
 import { getOpenClawStateRuntimeSchema } from "./openclaw-state-schema-compatibility.js";
@@ -106,7 +107,6 @@ export function repairStateSchema(
       db,
       pathname,
       () => {
-        applied.push(...recoverOrphanTaskDeliveryRows(db, pathname));
         const previousVersion = readStateSchemaMigrationVersion(db);
         const preAuditSchema = previousVersion === 1 && !tableExists(db, "audit_events");
         if (preAuditSchema) {
@@ -128,7 +128,7 @@ export function repairStateSchema(
           });
         } else {
           openClawStateMigrationAssertions.get(previousVersion)?.(db, { pathname });
-          assertSqliteIntegrity(db, pathname);
+          assertStateIntegrityForSchemaMigration(db, pathname, previousVersion);
         }
         dropLegacyStateTables(db);
         applied.push(...retirements.runRetiredStateTableMigrations(db, previousVersion));
@@ -171,7 +171,7 @@ export function repairStateSchema(
           executeCanonicalStateSchema(db, {
             includeVersionLazyAdditiveTables: previousVersion !== OPENCLAW_STATE_SCHEMA_VERSION,
           });
-          migrateLegacyCronRunLogsToTaskRuns(db);
+          migrateLegacyCronRunLogsToHistory(db);
           if (previousVersion < OPENCLAW_STATE_STRICT_SCHEMA_VERSION) {
             repairLegacyGatewayRestartHandoffsForStrictMigration(db);
             ensureFirstUseAdditiveStateColumnsForStrictMigration(db);
@@ -194,6 +194,7 @@ export function repairStateSchema(
             rebuiltIndexNames.add(name);
           }
         }
+        assertSqliteIntegrity(db, pathname);
         markCurrentStateSchemaVersion(db, {
           createMetadataIfMissing: previousVersion < OPENCLAW_STATE_SCHEMA_VERSION,
         });
@@ -212,6 +213,7 @@ export function repairStateSchema(
       },
       () => {
         applied.push(...repairAdmittedSchema());
+        configureSqliteMaintenanceCache(db);
       },
     );
     const quarantineCleared = clearOpenClawDatabaseQuarantine(pathname, { env });

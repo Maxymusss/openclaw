@@ -24,14 +24,45 @@ function toolResult(toolCallId: string, isError = false) {
 }
 
 describe("cron transcript feed", () => {
-  it("renders user text plainly and assistant markdown with links and code", () => {
+  it("preserves forwarded attribution beside plain user text and assistant markdown", () => {
     const container = mount([
       { role: "user", content: "Please **inspect** [the renderer](https://example.com)." },
+      {
+        role: "assistant",
+        senderLabel: "Forwarded from Daily report — café 雪 🦞",
+        senderSession: {
+          sessionKey: "agent:main:cron:daily-report:run:completed",
+          agentId: "main",
+          label: "Daily report — café 雪 🦞",
+        },
+        content: "Check the queue.",
+      },
+      {
+        role: "assistant",
+        senderSession: { agentId: "reviewer" },
+        content: "An agent sent this update.",
+      },
+      {
+        role: "assistant",
+        senderLabel: "Custom assistant",
+        content: "A named assistant is not a forwarded source.",
+      },
       {
         role: "assistant",
         content: "Found the [owner](https://example.com/owner).\n\n```ts\nconst ready = true;\n```",
       },
     ]);
+    const attributions = [...container.querySelectorAll(".chat-reply-attribution--forwarded")];
+    expect(attributions.map((entry) => entry.textContent?.replace(/\s+/gu, " ").trim())).toEqual([
+      "From Daily report — café 雪 🦞",
+      "Forwarded from reviewer",
+    ]);
+    for (const attribution of attributions) {
+      expect(attribution.querySelector("a, [role=link], [tabindex]")).toBeNull();
+    }
+    expect(
+      [...container.querySelectorAll(".sr-only")].map((entry) => entry.textContent?.trim()),
+    ).toEqual(["User:", "Assistant:", "Assistant:"]);
     const user = container.querySelector(".cron-transcript-feed__user");
     expect(user?.textContent).toContain("Please inspect the renderer.");
     expect(user?.querySelector("strong, a")).toBeNull();

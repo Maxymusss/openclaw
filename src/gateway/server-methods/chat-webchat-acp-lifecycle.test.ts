@@ -20,7 +20,11 @@ vi.mock("../../audit/audit-config.js", () => ({
   resolveAuditMessageMode: () => "off",
 }));
 vi.mock("../../audit/audit-recorder.js", () => ({
-  createAuditEventRecorder: () => ({ stop: vi.fn(async () => {}) }),
+  createAuditEventRecorder: () => ({
+    record: vi.fn(),
+    recordTool: vi.fn(),
+    stop: vi.fn(async () => {}),
+  }),
 }));
 vi.mock("../server-chat.js", () => ({
   createAgentEventHandler: (...args: unknown[]) => agentEventHandlerMocks.create(...args),

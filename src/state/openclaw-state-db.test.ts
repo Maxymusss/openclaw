@@ -28,6 +28,7 @@ import {
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import { listOpenFileDescriptorsForPath } from "../infra/open-file-descriptors.test-support.js";
 import { isPathInside } from "../infra/path-guards.js";
+import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { readStableSqliteFileGeneration } from "../infra/sqlite-file-generation.js";
 import { readSqliteNumberPragma } from "../infra/sqlite-pragma.test-support.js";
 import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.js";
@@ -38,6 +39,7 @@ import {
   readConfigMachineState,
   readConfigMachineStateWithMetadata,
 } from "./config-machine-state.js";
+import { stateNativeProcessEntrypoints } from "./native-process-runtime.test-support.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "./openclaw-agent-db-contract.js";
 import { listOpenClawRegisteredAgentDatabases } from "./openclaw-agent-db-registry.js";
 import { assertOpenClawDatabasesReady } from "./openclaw-database-preflight.js";
@@ -49,9 +51,11 @@ import {
   OPENCLAW_STATE_SCHEMA_VERSION,
 } from "./openclaw-state-db-contract.js";
 import { hasDanglingSkillWorkshopCollectionReviewIndex } from "./openclaw-state-db-doctor-schema.js";
+import { runHotRollbackJournalRecoveryProbe } from "./openclaw-state-db-hot-journal.test-support.js";
 import { prepareStateDatabaseSchemaRepair } from "./openclaw-state-db-maintenance.js";
 import { ensureGitHubPublicationSchema } from "./openclaw-state-db-schema-additive.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
+import { RETIRED_TASK_SCHEMA_SQL } from "./openclaw-state-db-schema-v19-task-source.js";
 import type { DB as OpenClawStateKyselyDatabase } from "./openclaw-state-db.generated.js";
 import {
   assertOpenClawStateDatabaseForMaintenance,
@@ -65,7 +69,7 @@ import {
   openOpenClawStateDatabase,
   repairOpenClawStateDatabaseReadabilityForDoctor,
   repairOpenClawStateDatabaseSchema,
-  repairOpenClawStateDatabaseSchemaIfNeeded,
+  prepareOpenClawStateDatabaseSchema,
   runWithOpenClawStateBusyTimeout,
   runOpenClawStateWriteTransaction,
   withOpenClawStateStartupMigrationCheckpointDatabase,
@@ -80,6 +84,7 @@ import {
   STATE_SCHEMA_13_TO_12_DOWNGRADE_SQL,
 } from "./openclaw-state-schema-v13-widerow.test-support.js";
 import { removePreparedWorkerOwnershipColumns } from "./openclaw-state-schema-v17.test-support.js";
+import { PRE_V19_TASK_SCHEMA_SQL } from "./openclaw-state-schema-v19.test-support.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.js";
 import { createUnsafeIndexDrift } from "./sqlite-index-drift.test-support.js";
 import {
@@ -156,12 +161,6 @@ function materializeV2026_7_1_2StateDatabase(stateDir: string): {
     databasePath,
     rawSha256: sha256(raw),
   };
-}
-
-function markStateDatabaseAsPreviousAppVersion(database: DatabaseSync): void {
-  database
-    .prepare("UPDATE schema_meta SET app_version = ? WHERE meta_key = 'primary'")
-    .run("2026.7.0");
 }
 
 function createInitialStateSchemaShape() {
@@ -292,6 +291,12 @@ const LEGACY_SESSION_WATCH_SCHEMA_VERSION = 3;
 const LEGACY_AMBIENT_WATCH_PREFIX = "ambient-group-watch:";
 // Synthetic pre-v8 databases must not retain the current placement-only index.
 function markStateDatabaseVersion(database: DatabaseSync, version: number): void {
+  if (version < 19) {
+    database.exec(
+      version < 3 ? RETIRED_TASK_SCHEMA_SQL.replaceAll(") STRICT;", ");") : RETIRED_TASK_SCHEMA_SQL,
+    );
+    database.exec("DROP TABLE IF EXISTS cron_run_history;");
+  }
   database.exec(`
     ${version < 8 ? "DROP INDEX IF EXISTS idx_worker_session_placements_environment;" : ""} PRAGMA user_version = ${version};
     UPDATE schema_meta SET schema_version = ${version} WHERE meta_key = 'primary';
@@ -830,6 +835,7 @@ function downgradeWorkerPlacementsToV7(db: DatabaseSync): void {
     .join(", ");
   db.exec("PRAGMA foreign_keys = OFF;");
   try {
+    db.exec(PRE_V19_TASK_SCHEMA_SQL);
     db.exec(`
       BEGIN IMMEDIATE;
       ${v7Create};
@@ -915,28 +921,28 @@ function insertAuditMarker(
   );
 }
 
-function createTaskRunStatusIndexPhysicalDrift(databasePath: string): void {
+function createCronHistoryIndexPhysicalDrift(databasePath: string): void {
   const { DatabaseSync } = requireNodeSqlite();
   const database = new DatabaseSync(databasePath);
   try {
-    insertTaskRunProbe(database, "task-index-repair");
+    insertCronHistoryProbe(database, "task-index-repair");
     database.exec(`
-      DROP INDEX idx_task_runs_status;
-      CREATE INDEX idx_task_runs_status ON task_runs(task_id);
+      DROP INDEX idx_cron_run_history_job;
+      CREATE INDEX idx_cron_run_history_job ON cron_run_history(history_id);
     `);
     database.enableDefensive?.(false);
     database.exec("PRAGMA writable_schema = ON;");
     database
       .prepare(
-        "UPDATE sqlite_schema SET sql = 'CREATE INDEX idx_task_runs_status ON task_runs(status)' WHERE name = 'idx_task_runs_status'",
+        "UPDATE sqlite_schema SET sql = 'CREATE INDEX idx_cron_run_history_job ON cron_run_history(job_id)' WHERE name = 'idx_cron_run_history_job'",
       )
       .run();
     const schemaVersion = readSqliteNumberPragma(database, "schema_version");
     database.exec(`PRAGMA writable_schema = OFF; PRAGMA schema_version = ${schemaVersion + 1};`);
-    expect(database.prepare("PRAGMA integrity_check('task_runs')").all()).toEqual(
+    expect(database.prepare("PRAGMA integrity_check('cron_run_history')").all()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          integrity_check: expect.stringMatching(/idx_task_runs_status/),
+          integrity_check: expect.stringMatching(/idx_cron_run_history_job/),
         }),
       ]),
     );
@@ -945,14 +951,10 @@ function createTaskRunStatusIndexPhysicalDrift(databasePath: string): void {
   }
 }
 
-function insertTaskRunProbe(database: DatabaseSync, taskId: string): void {
+function insertCronHistoryProbe(database: DatabaseSync, taskId: string): void {
   database
     .prepare(
-      `INSERT INTO task_runs (
-         task_id, runtime, owner_key, scope_kind, task, status,
-         delivery_status, notify_policy, created_at
-       ) VALUES (?, 'subagent', 'owner', 'session', 'sqlite read probe',
-                 'running', 'pending', 'summary', 1)`,
+      "INSERT INTO cron_run_history(history_id, job_id, created_at, status) VALUES (?, 'running', 1, 'running')",
     )
     .run(taskId);
 }
@@ -974,209 +976,6 @@ function createUnsafeSchemaMetaIndexDrift(databasePath: string): void {
   } finally {
     database.close();
   }
-}
-
-function runHotRollbackJournalRecoveryProbe(params: { moduleUrl: string; rootDir: string }): {
-  committedRowsAfterRecovery: number;
-  immutableDirtyRowsBeforeKill: number;
-  integrity: string;
-  journalBytesBeforeReadOnly: number;
-  journalExistsAfterReadOnly: boolean;
-  journalExistsAfterRecovery: boolean;
-  journalShaAfterReadOnly: string;
-  journalShaBeforeReadOnly: string;
-  readOnly: {
-    error: string | null;
-    opened: boolean;
-    uncommittedRows: number | null;
-  };
-} {
-  const probeSource = `
-    import { spawn } from "node:child_process";
-    import { createHash } from "node:crypto";
-    import fs from "node:fs";
-    import path from "node:path";
-    import { DatabaseSync } from "node:sqlite";
-    import { pathToFileURL } from "node:url";
-
-    const moduleUrl = ${JSON.stringify(params.moduleUrl)};
-    const databasePath = path.join(${JSON.stringify(params.rootDir)}, "hot-journal.sqlite");
-    const readyPath = path.join(${JSON.stringify(params.rootDir)}, "writer-ready");
-    const rowCount = 256;
-    const {
-      closeOpenClawStateDatabaseForTest,
-      openExistingOpenClawStateDatabaseReadOnly,
-      openOpenClawStateDatabase,
-    } = await import(moduleUrl);
-
-    const initial = openOpenClawStateDatabase({ path: databasePath });
-    initial.db.exec(\`
-      CREATE TABLE hot_journal_probe (
-        id INTEGER PRIMARY KEY,
-        value TEXT NOT NULL,
-        payload BLOB NOT NULL
-      );
-      WITH RECURSIVE rows(id) AS (
-        SELECT 1
-        UNION ALL
-        SELECT id + 1 FROM rows WHERE id < \${rowCount}
-      )
-      INSERT INTO hot_journal_probe (id, value, payload)
-      SELECT id, 'committed', zeroblob(8192) FROM rows;
-    \`);
-    closeOpenClawStateDatabaseForTest();
-
-    const rollbackMode = new DatabaseSync(databasePath);
-    rollbackMode.exec("PRAGMA journal_mode = DELETE;");
-    rollbackMode.close();
-
-    const writerSource = \`
-      import fs from "node:fs";
-      import { DatabaseSync } from "node:sqlite";
-
-      const database = new DatabaseSync(process.env.OPENCLAW_HOT_JOURNAL_DATABASE_PATH);
-      database.exec(
-        "PRAGMA journal_mode = DELETE; " +
-        "PRAGMA synchronous = FULL; " +
-        "PRAGMA cache_size = 2; " +
-        "PRAGMA cache_spill = ON; " +
-        "BEGIN IMMEDIATE; " +
-        "UPDATE hot_journal_probe SET value = 'uncommitted';",
-      );
-      fs.writeFileSync(process.env.OPENCLAW_HOT_JOURNAL_READY_PATH, "ready");
-      // Keep the transaction-owning connection live until the parent kills this process.
-      setInterval(() => {
-        void database.isOpen;
-      }, 1_000);
-    \`;
-    const writer = spawn(
-      process.execPath,
-      ["--input-type=module", "-e", writerSource],
-      {
-        env: {
-          ...process.env,
-          OPENCLAW_HOT_JOURNAL_DATABASE_PATH: databasePath,
-          OPENCLAW_HOT_JOURNAL_READY_PATH: readyPath,
-        },
-        stdio: ["ignore", "ignore", "pipe"],
-      },
-    );
-    let writerStderr = "";
-    writer.stderr.on("data", (chunk) => {
-      writerStderr += chunk;
-    });
-    const writerClosed = new Promise((resolve, reject) => {
-      writer.once("error", reject);
-      writer.once("close", (code, signal) => resolve({ code, signal }));
-    });
-
-    try {
-      const deadline = Date.now() + 15_000;
-      while (!fs.existsSync(readyPath)) {
-        if (writer.exitCode !== null || writer.signalCode !== null) {
-          throw new Error(\`writer exited before creating a hot journal: \${writerStderr}\`);
-        }
-        if (Date.now() >= deadline) {
-          throw new Error("timed out waiting for hot rollback journal writer");
-        }
-        await new Promise((resolve) => setTimeout(resolve, 2));
-      }
-      const journalPath = \`\${databasePath}-journal\`;
-      if (!fs.existsSync(journalPath) || fs.statSync(journalPath).size === 0) {
-        throw new Error("writer did not leave a rollback journal");
-      }
-      const immutable = new DatabaseSync(
-        \`\${pathToFileURL(databasePath).href}?mode=ro&immutable=1\`,
-        { readOnly: true },
-      );
-      const immutableDirty = immutable
-        .prepare("SELECT COUNT(*) AS count FROM hot_journal_probe WHERE value = 'uncommitted'")
-        .get();
-      immutable.close();
-      const immutableDirtyRowsBeforeKill = Number(immutableDirty?.count ?? 0);
-      if (immutableDirtyRowsBeforeKill === 0) {
-        throw new Error("writer did not spill uncommitted pages into the main database");
-      }
-      writer.kill("SIGKILL");
-      const outcome = await writerClosed;
-      if (outcome.signal !== "SIGKILL") {
-        throw new Error(\`writer was not killed: \${JSON.stringify(outcome)} \${writerStderr}\`);
-      }
-
-      const hashJournal = () =>
-        createHash("sha256").update(fs.readFileSync(journalPath)).digest("hex");
-      const journalBytesBeforeReadOnly = fs.statSync(journalPath).size;
-      const journalShaBeforeReadOnly = hashJournal();
-      let readOnly;
-      try {
-        const database = await openExistingOpenClawStateDatabaseReadOnly({ path: databasePath });
-        const readOnlyRow = database?.db
-          .prepare("SELECT COUNT(*) AS count FROM hot_journal_probe WHERE value = 'uncommitted'")
-          .get();
-        database?.walMaintenance.close();
-        readOnly = {
-          error: null,
-          opened: true,
-          uncommittedRows: Number(readOnlyRow?.count ?? 0),
-        };
-      } catch (error) {
-        readOnly = {
-          error: error instanceof Error ? error.message : String(error),
-          opened: false,
-          uncommittedRows: null,
-        };
-      }
-      const journalExistsAfterReadOnly = fs.existsSync(journalPath);
-      const journalShaAfterReadOnly = hashJournal();
-      const reopened = openOpenClawStateDatabase({ path: databasePath });
-      const row = reopened.db
-        .prepare("SELECT COUNT(*) AS count FROM hot_journal_probe WHERE value = 'committed'")
-        .get();
-      const integrity = reopened.db.prepare("PRAGMA integrity_check").get();
-      closeOpenClawStateDatabaseForTest();
-      console.log(JSON.stringify({
-        committedRowsAfterRecovery: Number(row?.count ?? 0),
-        immutableDirtyRowsBeforeKill,
-        integrity: integrity?.integrity_check,
-        journalBytesBeforeReadOnly,
-        journalExistsAfterReadOnly,
-        journalExistsAfterRecovery: fs.existsSync(journalPath),
-        journalShaAfterReadOnly,
-        journalShaBeforeReadOnly,
-        readOnly,
-      }));
-    } finally {
-      if (writer.exitCode === null && writer.signalCode === null) {
-        writer.kill("SIGKILL");
-        await writerClosed;
-      }
-      closeOpenClawStateDatabaseForTest();
-    }
-  `;
-  const output = execFileSync(
-    process.execPath,
-    ["--import", "tsx", "--input-type=module", "-e", probeSource],
-    { encoding: "utf8", timeout: 30_000 },
-  );
-  const resultLine = output.trim().split("\n").at(-1);
-  if (!resultLine) {
-    throw new Error("hot rollback journal recovery probe produced no result");
-  }
-  return JSON.parse(resultLine) as {
-    committedRowsAfterRecovery: number;
-    immutableDirtyRowsBeforeKill: number;
-    integrity: string;
-    journalBytesBeforeReadOnly: number;
-    journalExistsAfterReadOnly: boolean;
-    journalExistsAfterRecovery: boolean;
-    journalShaAfterReadOnly: string;
-    journalShaBeforeReadOnly: string;
-    readOnly: {
-      error: string | null;
-      opened: boolean;
-      uncommittedRows: number | null;
-    };
-  };
 }
 
 function expectNoncanonicalAuditSchemaRejected(
@@ -1253,6 +1052,7 @@ function runConcurrentSchemaProbe(params: {
     const rootDir = ${JSON.stringify(params.rootDir)};
     const mode = ${JSON.stringify(params.mode)};
     const workerSource = ${JSON.stringify(workerSource)};
+    const workerExecArgv = ${JSON.stringify(resolveRuntimeWorkerArgv(new URL(params.moduleUrl)).slice(0, -1))};
     const workerCount = 2;
     const roundCount = 1;
     const databasePaths = [];
@@ -1260,10 +1060,10 @@ function runConcurrentSchemaProbe(params: {
     const coordinatorContracts =
       mode === "fresh"
         ? await Promise.all([
-            import(new URL("../infra/boundary-path.ts", moduleUrl).href),
-            import(new URL("../infra/crypto-digest.ts", moduleUrl).href),
-            import(new URL("../infra/sqlite-coordinator.ts", moduleUrl).href),
-            import(new URL("./openclaw-state-db-contract.ts", moduleUrl).href),
+            import(${JSON.stringify(resolveRuntimeWorkerUrl(stateNativeProcessEntrypoints.boundaryPath).href)}),
+            import(${JSON.stringify(resolveRuntimeWorkerUrl(stateNativeProcessEntrypoints.cryptoDigest).href)}),
+            import(${JSON.stringify(resolveRuntimeWorkerUrl(stateNativeProcessEntrypoints.sqliteCoordinator).href)}),
+            import(${JSON.stringify(resolveRuntimeWorkerUrl(stateNativeProcessEntrypoints.stateDatabaseContract).href)}),
           ])
         : undefined;
 
@@ -1395,33 +1195,9 @@ function runConcurrentSchemaProbe(params: {
         closeOpenClawStateDatabaseForTest();
 
         const legacy = new DatabaseSync(databasePath);
-        legacy
-          .prepare(
-            \`INSERT INTO task_runs (
-               task_id, runtime, requester_session_key, owner_key, scope_kind,
-               child_session_key, agent_id, task, status, delivery_status,
-               notify_policy, created_at, last_event_at
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)\`,
-          )
-          .run(
-            \`legacy-concurrent-\${round}\`,
-            "subagent",
-            "agent:main:main",
-            "agent:main:main",
-            "session",
-            \`agent:worker:subagent:concurrent-\${round}\`,
-            "main",
-            "Verify concurrent schema upgrade",
-            "running",
-            "pending",
-            "done_only",
-            100,
-            100,
-          );
         legacy.exec(\`
           DROP TABLE worker_environment_credentials;
           ALTER TABLE gateway_boot_lifecycle DROP COLUMN startup_reason;
-          ALTER TABLE task_runs DROP COLUMN requester_agent_id;
           ALTER TABLE official_external_plugin_catalog_snapshots DROP COLUMN trust_mode;
           ALTER TABLE official_external_plugin_catalog_snapshots DROP COLUMN trust_key_id;
           ALTER TABLE official_external_plugin_catalog_snapshots DROP COLUMN trust_signature_count;
@@ -1453,7 +1229,7 @@ function runConcurrentSchemaProbe(params: {
       const workers = Array.from({ length: workerCount }, (_, index) => {
         return spawn(
           process.execPath,
-          ["--import", "tsx", "--input-type=module", "-e", workerSource],
+          [...workerExecArgv, "--input-type=module", "-e", workerSource],
           {
             env: {
               ...process.env,
@@ -1560,7 +1336,12 @@ function runConcurrentSchemaProbe(params: {
   `;
   const output = execFileSync(
     process.execPath,
-    ["--import", "tsx", "--input-type=module", "-e", orchestratorSource],
+    [
+      ...resolveRuntimeWorkerArgv(new URL(params.moduleUrl)).slice(0, -1),
+      "--input-type=module",
+      "-e",
+      orchestratorSource,
+    ],
     { encoding: "utf8", timeout: 60_000 },
   );
   const resultLine = output.trim().split("\n").at(-1);
@@ -1591,7 +1372,7 @@ afterEach(async () => {
 });
 
 describe("openclaw state database", () => {
-  it("migrates v15 Skill Workshop ownership through v16 and prepared workers to v17 without losing rows", () => {
+  it("migrates v15 Skill Workshop ownership and prepared workers without losing rows", () => {
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const legacy = openMaterializedCurrentStateDatabase(stateDir);
@@ -1697,6 +1478,7 @@ describe("openclaw state database", () => {
         ) VALUES ('review-v15', '/tmp/workspace', 'backup-v15', 1, '[]', '[]', '[]')`,
       )
       .run();
+    legacy.exec(PRE_V19_TASK_SCHEMA_SQL);
     legacy.exec(`
       PRAGMA user_version = 15;
       UPDATE schema_meta SET schema_version = 15 WHERE meta_key = 'primary';
@@ -1704,7 +1486,7 @@ describe("openclaw state database", () => {
     legacy.close();
 
     const migrated = openOpenClawStateDatabase(options);
-    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(17);
+    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(OPENCLAW_STATE_SCHEMA_VERSION);
     expect(migrated.db.prepare("PRAGMA table_info(skill_workshop_proposals)").all()).not.toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "workspace_dir" }),
@@ -1766,7 +1548,7 @@ describe("openclaw state database", () => {
 
   it.each([16, OPENCLAW_STATE_SCHEMA_VERSION])(
     "requires Doctor to repair the dangling Workshop review index in schema v%i",
-    (version) => {
+    async (version) => {
       const stateDir = createTempStateDir();
       const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
       const databasePath = materializeCurrentStateDatabase(stateDir);
@@ -1782,6 +1564,7 @@ describe("openclaw state database", () => {
         .run();
       if (version === 16) {
         removePreparedWorkerOwnershipColumns(database);
+        database.exec(PRE_V19_TASK_SCHEMA_SQL);
         database.exec(`
         PRAGMA user_version = 16;
         UPDATE schema_meta SET schema_version = 16 WHERE meta_key = 'primary';
@@ -1800,7 +1583,7 @@ describe("openclaw state database", () => {
       expect(() => openOpenClawStateDatabase(options)).toThrow(
         /legacy-workshop-review-index.*openclaw doctor --fix/u,
       );
-      expect(() => repairOpenClawStateDatabaseSchemaIfNeeded(options)).toThrow(
+      await expect(prepareOpenClawStateDatabaseSchema(options)).rejects.toThrow(
         /legacy-workshop-review-index.*openclaw doctor --fix/u,
       );
       expect(readDanglingSkillWorkshopReviewIndex(databasePath)).toMatchObject({ rootpage });
@@ -1811,6 +1594,7 @@ describe("openclaw state database", () => {
             ? expect.arrayContaining([
                 "Removed dangling legacy Skill Workshop review index",
                 "Recorded prepared worker ownership and one-use lifecycle (v17)",
+                "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
               ])
             : ["Removed dangling legacy Skill Workshop review index"],
         warnings: [],
@@ -2011,11 +1795,12 @@ describe("openclaw state database", () => {
     expect(readDanglingSkillWorkshopReviewIndex(databasePath)).toBeUndefined();
   });
 
-  it("upgrades a v15 store without Workshop tables through v16 and prepared workers to v17", () => {
+  it("upgrades a v15 store without Workshop tables through the current schema", () => {
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const legacy = openMaterializedCurrentStateDatabase(stateDir);
     removePreparedWorkerOwnershipColumns(legacy);
+    legacy.exec(PRE_V19_TASK_SCHEMA_SQL);
     legacy.exec(`
       PRAGMA foreign_keys = OFF;
       DROP TABLE skill_workshop_proposal_events;
@@ -2029,7 +1814,7 @@ describe("openclaw state database", () => {
     legacy.close();
 
     const migrated = openOpenClawStateDatabase(options);
-    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(17);
+    expect(readSqliteNumberPragma(migrated.db, "user_version")).toBe(OPENCLAW_STATE_SCHEMA_VERSION);
     for (const tableName of ["skill_workshop_proposals", "skill_workshop_collection_reviews"]) {
       expect(
         migrated.db
@@ -2056,6 +1841,7 @@ describe("openclaw state database", () => {
     const { DatabaseSync } = requireNodeSqlite();
     const damaged = new DatabaseSync(databasePath);
     removePreparedWorkerOwnershipColumns(damaged);
+    damaged.exec(PRE_V19_TASK_SCHEMA_SQL);
     damaged.exec(`
       DROP TABLE apns_registration_tombstones;
       PRAGMA user_version = 15;
@@ -2174,6 +1960,7 @@ describe("openclaw state database", () => {
           changes: [
             "Migrated cloud worker placements to execution modes",
             "Qualified historical cron creator attribution as unknown (v14)",
+            "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
           ],
           warnings: [],
         });
@@ -2257,6 +2044,7 @@ describe("openclaw state database", () => {
       insert.run("copied", copiedForeignPath, agentSchemaVersion);
       insert.run("preserved", preservedDefaultPath, agentSchemaVersion);
       insert.run("external", externalPath, agentSchemaVersion);
+      legacy.exec(PRE_V19_TASK_SCHEMA_SQL);
       legacy.exec(`
       PRAGMA user_version = 8;
       UPDATE schema_meta SET schema_version = 8 WHERE meta_key = 'primary';
@@ -2273,6 +2061,7 @@ describe("openclaw state database", () => {
           `Re-anchored agent database registry path ${copiedForeignPath} to the current state directory`,
           `Removed duplicate agent database registry path ${dualForeignPath}`,
           "Qualified historical cron creator attribution as unknown (v14)",
+          "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
         ],
         warnings: [],
       });
@@ -2341,6 +2130,7 @@ describe("openclaw state database", () => {
           changes: [
             "Retired six dead shared-state tables (v10)",
             "Qualified historical cron creator attribution as unknown (v14)",
+            "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
           ],
           warnings: [],
         });
@@ -2379,6 +2169,7 @@ describe("openclaw state database", () => {
       const legacy = new DatabaseSync(databasePath);
       legacy.exec(STATE_SCHEMA_12_TO_11_DOWNGRADE_SQL);
       legacy.exec(STATE_SCHEMA_11_TO_10_TABLES_SQL);
+      legacy.exec(PRE_V19_TASK_SCHEMA_SQL);
       legacy.exec(`
         ALTER TABLE skill_workshop_proposals
           ADD COLUMN workspace_dir TEXT NOT NULL DEFAULT '';
@@ -2428,6 +2219,7 @@ describe("openclaw state database", () => {
             "Folded singleton state tables into config_machine_state (v12)",
             "Qualified historical cron creator attribution as unknown (v14)",
             "Moved Skill Workshop ownership to per-agent directories (v16)",
+            "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
           ],
           warnings: [],
         });
@@ -2546,6 +2338,7 @@ describe("openclaw state database", () => {
           changes: [
             "Folded singleton state tables into config_machine_state (v12)",
             "Qualified historical cron creator attribution as unknown (v14)",
+            "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
           ],
           warnings: [],
         });
@@ -2836,6 +2629,7 @@ describe("openclaw state database", () => {
               : []),
             "Consolidated shared state tables (v13)",
             "Qualified historical cron creator attribution as unknown (v14)",
+            "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
           ],
           warnings: [],
         });
@@ -2860,8 +2654,8 @@ describe("openclaw state database", () => {
         "description",
         "enabled",
         "agent_id",
-        "payload_kind",
-        "job_json",
+        ..."payload_kind job_json".split(" "),
+        ...["revision", "generation", "updated_at"].map((name) => `grant_definition_${name}`),
         "state_json",
         "runtime_updated_at_ms",
         "schedule_identity",
@@ -3597,6 +3391,7 @@ describe("openclaw state database", () => {
             "Discarded retired shared-state commitments rows, table, and indexes",
             "Migrated cloud worker placements to execution modes",
             "Qualified historical cron creator attribution as unknown (v14)",
+            "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
           ],
           warnings: [],
         });
@@ -3893,6 +3688,7 @@ describe("openclaw state database", () => {
       { kind: "state-consolidation-v13", path: fixture.databasePath },
       { kind: "creator-namespace-v14", path: fixture.databasePath },
       { kind: "conversation-binding-targets-v15", path: fixture.databasePath },
+      { kind: "tasks-retirement-v19", path: fixture.databasePath },
       { kind: "audit-events-v2", path: fixture.databasePath },
       { kind: "strict-tables-v3", path: fixture.databasePath },
     ]);
@@ -3911,7 +3707,8 @@ describe("openclaw state database", () => {
         "Consolidated shared state tables (v13)",
         "Qualified historical cron creator attribution as unknown (v14)",
         "Removed redundant conversation binding target projections (v15)",
-        "Migrated shared state tables to SQLite STRICT typing (48)",
+        "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
+        "Migrated shared state tables to SQLite STRICT typing (45)",
       ],
       warnings: [],
     });
@@ -3998,36 +3795,24 @@ describe("openclaw state database", () => {
     expect(
       migrated.db
         .prepare(
-          `SELECT task_id, runtime, source_id, status, ended_at
-             FROM task_runs
-            WHERE runtime = 'cron' AND source_id = 'fixture-cron'`,
+          `SELECT history_id, job_id, status, ended_at
+             FROM cron_run_history
+            WHERE job_id = 'fixture-cron'`,
         )
         .get(),
     ).toEqual({
-      task_id: "cron-runlog-import:fixture-cron:1500:1",
-      runtime: "cron",
-      source_id: "fixture-cron",
+      history_id: "cron-runlog-import:fixture-cron:1500:1",
+      job_id: "fixture-cron",
       status: "succeeded",
       ended_at: 1500,
-    });
-    expect(
-      migrated.db
-        .prepare(
-          `SELECT task_runs.task_id, task_runs.status, task_delivery_state.last_notified_event_at
-             FROM task_runs
-             JOIN task_delivery_state USING (task_id)
-            WHERE task_runs.task_id = 'fixture-task'`,
-        )
-        .get(),
-    ).toEqual({
-      task_id: "fixture-task",
-      status: "completed",
-      last_notified_event_at: 1320,
     });
     for (const name of [
       ...RETIRED_COMMITMENT_SCHEMA_OBJECTS,
       ...RETIRED_STATE_TABLES_V10,
       "cron_run_logs",
+      "task_runs",
+      "task_delivery_state",
+      "flow_runs",
       "node_pairing_pending",
       "node_pairing_paired",
       "idx_diagnostic_events_scope_created",
@@ -4382,7 +4167,7 @@ describe("openclaw state database", () => {
     }
   });
 
-  it("skips exclusive repair when the automatic schema gate is already current", () => {
+  it("skips exclusive repair when the automatic schema gate is already current", async () => {
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const databasePath = materializeCurrentStateDatabase(stateDir);
@@ -4392,7 +4177,7 @@ describe("openclaw state database", () => {
     before.prepare("UPDATE schema_meta SET updated_at = 123 WHERE meta_key = 'primary'").run();
     before.close();
 
-    expect(repairOpenClawStateDatabaseSchemaIfNeeded(options)).toEqual({
+    expect(await prepareOpenClawStateDatabaseSchema(options)).toEqual({
       changes: [],
       warnings: [],
     });
@@ -4547,6 +4332,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
     expect(detectOpenClawStateDatabaseSchemaMigrations(options)).toEqual([
       { kind: "creator-namespace-v14", path: databasePath },
+      { kind: "tasks-retirement-v19", path: databasePath },
       { kind: "strict-tables-v3", path: databasePath },
       { kind: "session-watch-cursor-provenance-v4", path: databasePath },
     ]);
@@ -4555,6 +4341,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
         "Migrated cloud worker placements to execution modes",
         "Migrated shared state session watch cursors → provenance column (0 ambient, 0 sentinels removed)",
         "Qualified historical cron creator attribution as unknown (v14)",
+        "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
         "Migrated shared state tables to SQLite STRICT typing (1)",
       ],
       warnings: [],
@@ -4583,6 +4370,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
     expect(detectOpenClawStateDatabaseSchemaMigrations(options)).toEqual([
       { kind: "creator-namespace-v14", path: seeded.databasePath },
+      { kind: "tasks-retirement-v19", path: seeded.databasePath },
       { kind: "session-watch-cursor-provenance-v4", path: seeded.databasePath },
     ]);
     expect(repairOpenClawStateDatabaseSchema(options)).toEqual({
@@ -4590,6 +4378,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
         "Migrated cloud worker placements to execution modes",
         "Migrated shared state session watch cursors → provenance column (2 ambient, 5 sentinels removed)",
         "Qualified historical cron creator attribution as unknown (v14)",
+        "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
       ],
       warnings: [],
     });
@@ -5230,7 +5019,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     } finally {
       shippedSchema.close();
     }
-    createTaskRunStatusIndexPhysicalDrift(databasePath);
+    createCronHistoryIndexPhysicalDrift(databasePath);
 
     const reopened = openOpenClawStateDatabase({ env });
     const columns = reopened.db.prepare("PRAGMA table_info(claw_installs)").all() as Array<{
@@ -5245,7 +5034,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     expect(
       reopened.db
         .prepare(
-          "SELECT task_id FROM task_runs INDEXED BY idx_task_runs_status WHERE status = 'running'",
+          "SELECT history_id AS task_id FROM cron_run_history INDEXED BY idx_cron_run_history_job WHERE job_id = 'running'",
         )
         .all(),
     ).toEqual([{ task_id: "task-index-repair" }]);
@@ -5272,7 +5061,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
       } finally {
         shippedSchema.close();
       }
-      createTaskRunStatusIndexPhysicalDrift(databasePath);
+      createCronHistoryIndexPhysicalDrift(databasePath);
 
       const reopened = openOpenClawStateDatabase({ env });
       const columns = reopened.db.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{
@@ -5288,7 +5077,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
       expect(
         reopened.db
           .prepare(
-            "SELECT task_id FROM task_runs INDEXED BY idx_task_runs_status WHERE status = 'running'",
+            "SELECT history_id AS task_id FROM cron_run_history INDEXED BY idx_cron_run_history_job WHERE job_id = 'running'",
           )
           .all(),
       ).toEqual([{ task_id: "task-index-repair" }]);
@@ -5425,7 +5214,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
       const stateDir = createTempStateDir();
       const env = { OPENCLAW_STATE_DIR: stateDir };
       const databasePath = materializeCurrentStateDatabase(stateDir);
-      createTaskRunStatusIndexPhysicalDrift(databasePath);
+      createCronHistoryIndexPhysicalDrift(databasePath);
 
       if (repairPath === "doctor") {
         const { DatabaseSync } = requireNodeSqlite();
@@ -5457,7 +5246,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
       expect(
         reopened.db
           .prepare(
-            "SELECT task_id FROM task_runs INDEXED BY idx_task_runs_status WHERE status = 'running'",
+            "SELECT history_id AS task_id FROM cron_run_history INDEXED BY idx_cron_run_history_job WHERE job_id = 'running'",
           )
           .all(),
       ).toEqual([{ task_id: "task-index-repair" }]);
@@ -5756,6 +5545,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
 
     expect(detectOpenClawStateDatabaseSchemaMigrations(options)).toEqual([
+      { kind: "tasks-retirement-v19", path: databasePath },
       { kind: "audit-events-v2", path: databasePath },
       { kind: "strict-tables-v3", path: databasePath },
     ]);
@@ -5767,6 +5557,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     expect(repairOpenClawStateDatabaseSchema(options)).toEqual({
       changes: [
         "Migrated shared state audit event ledger → versioned message lifecycle schema",
+        "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
         "Migrated shared state tables to SQLite STRICT typing (3)",
       ],
       warnings: [],
@@ -6501,7 +6292,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     const stateDir = createTempStateDir();
     const writer = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: stateDir } });
     writer.db.exec("PRAGMA wal_checkpoint(TRUNCATE); PRAGMA wal_autocheckpoint = 0;");
-    insertTaskRunProbe(writer.db, "task-live-wal");
+    insertCronHistoryProbe(writer.db, "task-live-wal");
     expect(fs.existsSync(`${writer.path}-wal`)).toBe(true);
     expect(fs.existsSync(`${writer.path}-shm`)).toBe(true);
     const beforeMain = fs.readFileSync(writer.path);
@@ -6511,7 +6302,9 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
     const database = await openExistingOpenClawStateDatabaseReadOnly({ path: writer.path });
     expect(
-      database?.db.prepare("SELECT task_id FROM task_runs WHERE task_id = ?").get("task-live-wal"),
+      database?.db
+        .prepare("SELECT history_id AS task_id FROM cron_run_history WHERE history_id = ?")
+        .get("task-live-wal"),
     ).toEqual({ task_id: "task-live-wal" });
     const openedPath = database?.db.prepare("PRAGMA database_list").get() as
       | { file?: unknown }
@@ -6535,25 +6328,25 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     const drifted = new DatabaseSync(databasePath);
     try {
       drifted.exec(`
-        DROP INDEX idx_task_runs_status;
-        CREATE INDEX idx_task_runs_status ON task_runs(task_id);
+        DROP INDEX idx_cron_run_history_job;
+        CREATE INDEX idx_cron_run_history_job ON cron_run_history(history_id);
       `);
     } finally {
       drifted.close();
     }
 
     await expect(openExistingOpenClawStateDatabaseReadOnly(options)).rejects.toThrow(
-      /missing or drifted index idx_task_runs_status/iu,
+      /missing or drifted index idx_cron_run_history_job/iu,
     );
 
     const preserved = new DatabaseSync(databasePath, { readOnly: true });
     try {
       expect(
         preserved
-          .prepare("SELECT sql FROM sqlite_schema WHERE name = 'idx_task_runs_status'")
+          .prepare("SELECT sql FROM sqlite_schema WHERE name = 'idx_cron_run_history_job'")
           .get(),
       ).toEqual({
-        sql: "CREATE INDEX idx_task_runs_status ON task_runs(task_id)",
+        sql: "CREATE INDEX idx_cron_run_history_job ON cron_run_history(history_id)",
       });
     } finally {
       preserved.close();
@@ -6563,13 +6356,13 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
   it("rejects physical canonical-index corruption from read-only state", async () => {
     const stateDir = createTempStateDir();
     const databasePath = materializeCurrentStateDatabase(stateDir);
-    createTaskRunStatusIndexPhysicalDrift(databasePath);
+    createCronHistoryIndexPhysicalDrift(databasePath);
 
     await expect(
       openExistingOpenClawStateDatabaseReadOnly({
         env: { OPENCLAW_STATE_DIR: stateDir },
       }),
-    ).rejects.toThrow(/integrity_check failed.*idx_task_runs_status/iu);
+    ).rejects.toThrow(/integrity_check failed.*idx_cron_run_history_job/iu);
   });
 
   it("rejects unrelated current-schema index corruption before exposure", () => {
@@ -6645,235 +6438,11 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     );
   });
 
-  it.each(["current", "2026.7.1-2"])(
-    "preserves orphan delivery payload before Doctor recovery from %s",
-    (version) => {
-      const stateDir = createTempStateDir();
-      const databasePath =
-        version === "current"
-          ? materializeCurrentStateDatabase(stateDir)
-          : materializeV2026_7_1_2StateDatabase(stateDir).databasePath;
-      const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
-      const { DatabaseSync } = requireNodeSqlite();
-      const corrupted = new DatabaseSync(databasePath);
-      const payload = '  {"channel":"synthetic","to":"recover-me"}\n\u0000';
-      const timestamp = 9007199254740993n;
-      try {
-        corrupted.exec(
-          "PRAGMA foreign_keys = OFF; PRAGMA journal_mode = WAL; PRAGMA wal_autocheckpoint = 0;",
-        );
-        corrupted.exec(`INSERT INTO task_runs
-          (task_id,runtime,owner_key,scope_kind,task,status,delivery_status,notify_policy,created_at)
-          VALUES ('healthy-task','subagent','synthetic-owner','session','keep me','completed','delivered','silent',1);
-          INSERT INTO task_delivery_state(task_id) VALUES ('healthy-task');`);
-        const insert = corrupted.prepare(`INSERT INTO task_delivery_state
-          (task_id,requester_origin_json,last_notified_event_at) VALUES (?,?,?)`);
-        for (let index = 0; index < 18; index += 1) {
-          insert.run(`missing-task-${index}`, payload, timestamp);
-        }
-        expect(corrupted.prepare("PRAGMA integrity_check").get()).toEqual({
-          integrity_check: "ok",
-        });
-        expect(corrupted.prepare("PRAGMA foreign_key_check").all()).toHaveLength(18);
-        expect(fs.statSync(`${databasePath}-wal`).size).toBeGreaterThan(0);
-        const failure = /foreign_key_check failed.*task_delivery_state.*references task_runs/iu;
-        expect(() => openOpenClawStateDatabase(options)).toThrow(failure);
-        const checkpointCallback = vi.fn();
-        expect(() =>
-          withOpenClawStateStartupMigrationCheckpointDatabase(checkpointCallback, options),
-        ).toThrow(failure);
-        expect(checkpointCallback).not.toHaveBeenCalled();
-
-        const result = repairOpenClawStateDatabaseSchema(options);
-        expect(result.warnings).toEqual([]);
-        expect(result.changes).toContainEqual(
-          expect.stringContaining("Preserved and recovered 18 orphan task delivery rows"),
-        );
-        const recoveryDirs = fs
-          .readdirSync(path.dirname(databasePath))
-          .filter((name) => name.startsWith("openclaw-task-delivery-recovery-"));
-        expect(recoveryDirs).toHaveLength(1);
-        const recoveryDir = path.join(path.dirname(databasePath), recoveryDirs[0]!);
-        const backup = new DatabaseSync(path.join(recoveryDir, "database.sqlite"), {
-          readOnly: true,
-        });
-        try {
-          expect(backup.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
-          expect(backup.prepare("PRAGMA foreign_key_check").all()).toHaveLength(18);
-          const row = backup.prepare(
-            "SELECT requester_origin_json,last_notified_event_at FROM task_delivery_state WHERE task_id = ?",
-          );
-          row.setReadBigInts(true);
-          expect(row.get("missing-task-0")).toEqual({
-            requester_origin_json: payload,
-            last_notified_event_at: timestamp,
-          });
-        } finally {
-          backup.close();
-        }
-        const exported = fs
-          .readFileSync(path.join(recoveryDir, "orphan-rows.jsonl"), "utf8")
-          .trim()
-          .split("\n")
-          .map((line) => JSON.parse(line));
-        expect(exported).toHaveLength(18);
-        expect(exported[0]).toMatchObject({
-          requester_origin_json: payload,
-          last_notified_event_at: timestamp.toString(),
-        });
-        const repaired = openOpenClawStateDatabase(options);
-        expect(repaired.db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
-        expect(repaired.db.prepare("PRAGMA integrity_check").get()).toEqual({
-          integrity_check: "ok",
-        });
-        expect(repaired.db.prepare("SELECT task_id FROM task_delivery_state").all()).toContainEqual(
-          {
-            task_id: "healthy-task",
-          },
-        );
-        expect(
-          repaired.db
-            .prepare("SELECT 1 FROM task_delivery_state WHERE task_id LIKE 'missing-task-%'")
-            .all(),
-        ).toEqual([]);
-        expect(repairOpenClawStateDatabaseSchema(options).warnings).toEqual([]);
-        expect(
-          fs
-            .readdirSync(path.dirname(databasePath))
-            .filter((name) => name.startsWith("openclaw-task-delivery-recovery-")),
-        ).toEqual(recoveryDirs);
-      } finally {
-        corrupted.close();
-      }
-    },
-  );
-
-  it.each(["unrelated foreign key", "trigger", "generated column"])(
-    "refuses orphan delivery recovery with %s without changing data",
-    (variant) => {
-      const stateDir = createTempStateDir();
-      const databasePath = materializeCurrentStateDatabase(stateDir);
-      const { DatabaseSync } = requireNodeSqlite();
-      const seed = new DatabaseSync(databasePath);
-      try {
-        seed.exec(
-          "PRAGMA foreign_keys = OFF; INSERT INTO task_delivery_state(task_id, requester_origin_json) VALUES ('orphan', 'preserve me')",
-        );
-        if (variant === "unrelated foreign key") {
-          seed.exec(
-            "CREATE TABLE other_child(task_id TEXT REFERENCES task_runs(task_id)); INSERT INTO other_child VALUES ('unrelated-orphan')",
-          );
-        } else if (variant === "trigger") {
-          seed.exec(
-            "CREATE TRIGGER unknown_delivery_cleanup AFTER DELETE ON task_delivery_state BEGIN DELETE FROM task_runs; END",
-          );
-        } else {
-          seed.exec(
-            "ALTER TABLE task_delivery_state ADD COLUMN extra TEXT GENERATED ALWAYS AS (task_id) VIRTUAL",
-          );
-        }
-        const before = seed.prepare("PRAGMA foreign_key_check").all();
-        const result = repairOpenClawStateDatabaseSchema({ env: { OPENCLAW_STATE_DIR: stateDir } });
-        expect(result.changes).toEqual([]);
-        expect(result.warnings.join("\n")).toMatch(
-          variant === "unrelated foreign key"
-            ? /foreign_key_check failed/
-            : /refused an unrecognized/,
-        );
-        expect(
-          seed
-            .prepare(
-              "SELECT requester_origin_json FROM task_delivery_state WHERE task_id = 'orphan'",
-            )
-            .get(),
-        ).toEqual({ requester_origin_json: "preserve me" });
-        expect(seed.prepare("PRAGMA foreign_key_check").all()).toEqual(before);
-        expect(
-          fs
-            .readdirSync(path.dirname(databasePath))
-            .filter((name) => name.startsWith("openclaw-task-delivery-recovery-")),
-        ).toEqual([]);
-      } finally {
-        seed.close();
-      }
-    },
-  );
-
-  it.each(["export failure", "post-delete integrity failure", "CASCADE", "SET NULL"])(
-    "rolls back orphan delivery recovery after %s and retains the original backup",
-    (variant) => {
-      const stateDir = createTempStateDir();
-      const databasePath = materializeCurrentStateDatabase(stateDir);
-      const { DatabaseSync } = requireNodeSqlite();
-      const seed = new DatabaseSync(databasePath);
-      const openSync = fs.openSync;
-      const fileOpen = vi.spyOn(fs, "openSync");
-      try {
-        seed.exec(
-          "PRAGMA foreign_keys = OFF; INSERT INTO task_delivery_state(task_id, requester_origin_json) VALUES ('orphan', 'preserve me')",
-        );
-        if (variant === "export failure") {
-          fileOpen.mockImplementation((...args: Parameters<typeof fs.openSync>) => {
-            if (String(args[0]).endsWith("orphan-rows.jsonl")) {
-              throw new Error("ENOSPC: synthetic export failure");
-            }
-            return openSync(...args);
-          });
-        } else {
-          seed.exec(
-            `CREATE TABLE delivery_dependent(task_id TEXT REFERENCES task_delivery_state(task_id)${variant === "CASCADE" || variant === "SET NULL" ? ` ON DELETE ${variant}` : ""}); INSERT INTO delivery_dependent VALUES ('orphan')`,
-          );
-        }
-        const result = repairOpenClawStateDatabaseSchema({ env: { OPENCLAW_STATE_DIR: stateDir } });
-        expect(result.changes).toEqual([]);
-        expect(result.warnings.join("\n")).toMatch(
-          variant === "export failure" ? /ENOSPC/ : /foreign_key_check failed.*delivery_dependent/,
-        );
-        expect(
-          seed
-            .prepare(
-              "SELECT requester_origin_json FROM task_delivery_state WHERE task_id = 'orphan'",
-            )
-            .get(),
-        ).toEqual({ requester_origin_json: "preserve me" });
-        expect(seed.prepare("PRAGMA foreign_key_check").all()).toHaveLength(1);
-        if (variant !== "export failure") {
-          expect(seed.prepare("SELECT task_id FROM delivery_dependent").all()).toEqual([
-            { task_id: "orphan" },
-          ]);
-        }
-        const artifacts = fs
-          .readdirSync(path.dirname(databasePath))
-          .filter((name) => name.startsWith("openclaw-task-delivery-recovery-"));
-        expect(artifacts).toHaveLength(1);
-        const backup = new DatabaseSync(
-          path.join(path.dirname(databasePath), artifacts[0]!, "database.sqlite"),
-          { readOnly: true },
-        );
-        try {
-          expect(
-            backup
-              .prepare(
-                "SELECT requester_origin_json FROM task_delivery_state WHERE task_id = 'orphan'",
-              )
-              .get(),
-          ).toEqual({ requester_origin_json: "preserve me" });
-          expect(backup.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
-        } finally {
-          backup.close();
-        }
-      } finally {
-        fileOpen.mockRestore();
-        seed.close();
-      }
-    },
-  );
-
   it.skipIf(process.platform === "win32")(
     "recovers a hot rollback journal privately before writable recovery",
     () => {
       const result = runHotRollbackJournalRecoveryProbe({
-        moduleUrl: new URL("./openclaw-state-db.ts", import.meta.url).href,
+        moduleUrl: resolveRuntimeWorkerUrl(stateNativeProcessEntrypoints.stateDatabase).href,
         rootDir: createTempStateDir(),
       });
 
@@ -7053,7 +6622,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
   it.each(["target_machine_class", "target_os"])(
     "keeps placement-owned %s absent during generic repair and open",
-    (columnName) => {
+    async (columnName) => {
       const stateDir = createTempStateDir();
       const databasePath = materializeCurrentStateDatabase(stateDir);
       const previousSchema = OPENCLAW_STATE_SCHEMA_SQL.replace(`  ${columnName} TEXT,\n`, "");
@@ -7071,7 +6640,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
       legacyDb.close();
 
       const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
-      expect(repairOpenClawStateDatabaseSchemaIfNeeded(options).warnings).toEqual([]);
+      expect((await prepareOpenClawStateDatabaseSchema(options)).warnings).toEqual([]);
       const repairedDb = new DatabaseSync(databasePath, { readOnly: true });
       try {
         const repairedColumns = repairedDb
@@ -7095,6 +6664,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
     const stateDir = createTempStateDir();
     const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
     const legacyDb = openMaterializedCurrentStateDatabase(stateDir);
+    legacyDb.exec(PRE_V19_TASK_SCHEMA_SQL);
     legacyDb.exec(`
       ALTER TABLE worker_workspace_pending_results DROP COLUMN staged_result_ref;
       DROP INDEX idx_worker_session_placements_environment; PRAGMA user_version = 4;
@@ -7399,13 +6969,13 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
   it("serializes concurrent additive schema upgrades across processes", () => {
     const rootDir = createTempStateDir();
-    const moduleUrl = new URL("./openclaw-state-db.ts", import.meta.url).href;
+    const moduleUrl = resolveRuntimeWorkerUrl(stateNativeProcessEntrypoints.stateDatabase).href;
     const databasePaths = runConcurrentSchemaProbe({ mode: "upgrade", moduleUrl, rootDir });
     const expectedShape = createInitialStateSchemaShape();
     const { DatabaseSync } = requireNodeSqlite();
 
     expect(databasePaths).toHaveLength(1);
-    for (const [round, databasePath] of databasePaths.entries()) {
+    for (const databasePath of databasePaths) {
       const db = new DatabaseSync(databasePath, { readOnly: true });
       try {
         expect(db.prepare("PRAGMA integrity_check").get()).toEqual({ integrity_check: "ok" });
@@ -7414,14 +6984,6 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
         expect(
           db.prepare("SELECT schema_version FROM schema_meta WHERE meta_key = 'primary'").get(),
         ).toEqual({ schema_version: OPENCLAW_STATE_SCHEMA_VERSION });
-        expect(
-          db
-            .prepare("SELECT agent_id, requester_agent_id FROM task_runs WHERE task_id = ?")
-            .get(`legacy-concurrent-${round}`),
-        ).toEqual({
-          agent_id: "worker",
-          requester_agent_id: "main",
-        });
         expect(collectSqliteSchemaShape(db)).toEqual(expectedShape);
       } finally {
         db.close();
@@ -7431,7 +6993,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
   it("serializes concurrent fresh database initialization across processes", () => {
     const rootDir = createTempStateDir();
-    const moduleUrl = new URL("./openclaw-state-db.ts", import.meta.url).href;
+    const moduleUrl = resolveRuntimeWorkerUrl(stateNativeProcessEntrypoints.stateDatabase).href;
     const databasePaths = runConcurrentSchemaProbe({ mode: "fresh", moduleUrl, rootDir });
     const expectedShape = createInitialStateSchemaShape();
     const { DatabaseSync } = requireNodeSqlite();
@@ -7453,225 +7015,6 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
       }
     }
   }, 60_000);
-
-  it("migrates requester and executor attribution for existing cross-agent tasks", () => {
-    const stateDir = createTempStateDir();
-    const legacyDb = openMaterializedCurrentStateDatabase(stateDir);
-    legacyDb.exec("ALTER TABLE task_runs DROP COLUMN requester_agent_id");
-    legacyDb
-      .prepare(
-        `INSERT INTO task_runs (
-          task_id,
-          runtime,
-          requester_session_key,
-          owner_key,
-          scope_kind,
-          child_session_key,
-          agent_id,
-          task,
-          status,
-          delivery_status,
-          notify_policy,
-          created_at,
-          last_event_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        "legacy-cross-agent",
-        "subagent",
-        "agent:main:main",
-        "agent:main:main",
-        "session",
-        "agent:worker:subagent:child",
-        "main",
-        "Inspect worker state",
-        "running",
-        "pending",
-        "done_only",
-        100,
-        100,
-      );
-    legacyDb
-      .prepare(
-        `INSERT INTO task_runs (
-          task_id,
-          runtime,
-          requester_session_key,
-          owner_key,
-          scope_kind,
-          child_session_key,
-          agent_id,
-          task,
-          status,
-          delivery_status,
-          notify_policy,
-          created_at,
-          last_event_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        "legacy-global-cross-agent",
-        "subagent",
-        "global",
-        "global",
-        "session",
-        "agent:worker:subagent:global-child",
-        null,
-        "Inspect global worker state",
-        "running",
-        "pending",
-        "done_only",
-        110,
-        110,
-      );
-    markStateDatabaseVersion(legacyDb, 5);
-    legacyDb.close();
-
-    const reopened = openOpenClawStateDatabase({
-      env: { OPENCLAW_STATE_DIR: stateDir },
-    });
-    const columns = reopened.db.prepare("PRAGMA table_info(task_runs)").all() as Array<{
-      name?: string;
-    }>;
-    expect(columns.some((column) => column.name === "requester_agent_id")).toBe(true);
-    expect(
-      reopened.db
-        .prepare(
-          `SELECT agent_id, requester_agent_id
-           FROM task_runs
-           WHERE task_id = ?`,
-        )
-        .get("legacy-cross-agent"),
-    ).toEqual({
-      agent_id: "worker",
-      requester_agent_id: "main",
-    });
-    expect(
-      reopened.db
-        .prepare(
-          `SELECT agent_id, requester_agent_id
-           FROM task_runs
-           WHERE task_id = ?`,
-        )
-        .get("legacy-global-cross-agent"),
-    ).toEqual({
-      agent_id: null,
-      requester_agent_id: null,
-    });
-
-    reopened.db
-      .prepare(
-        `INSERT INTO task_runs (
-          task_id,
-          runtime,
-          requester_session_key,
-          owner_key,
-          scope_kind,
-          child_session_key,
-          agent_id,
-          requester_agent_id,
-          task,
-          status,
-          delivery_status,
-          notify_policy,
-          created_at,
-          last_event_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        "current-explicit-attribution",
-        "subagent",
-        "global",
-        "global",
-        "session",
-        "agent:worker:subagent:current",
-        "main",
-        null,
-        "Current explicit attribution",
-        "running",
-        "pending",
-        "done_only",
-        200,
-        200,
-      );
-    closeOpenClawStateDatabaseForTest();
-
-    const currentReopened = openOpenClawStateDatabase({
-      env: { OPENCLAW_STATE_DIR: stateDir },
-    });
-    expect(
-      currentReopened.db
-        .prepare(
-          `SELECT agent_id, requester_agent_id
-           FROM task_runs
-           WHERE task_id = ?`,
-        )
-        .get("current-explicit-attribution"),
-    ).toEqual({
-      agent_id: "main",
-      requester_agent_id: null,
-    });
-  });
-
-  it("leaves obsolete task delivery statuses unchanged until Doctor repairs them", async () => {
-    await withOpenClawTestState(
-      { layout: "state-only", prefix: "openclaw-state-task-delivery-status-" },
-      async ({ stateDir }) => {
-        const database = openMaterializedCurrentStateDatabase(stateDir);
-        const insert = database.prepare(
-          `INSERT INTO task_runs (
-            task_id, runtime, requester_session_key, owner_key, scope_kind, task, status,
-            delivery_status, notify_policy, created_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        );
-        for (const [taskId, deliveryStatus] of [
-          ["obsolete", "not-requested"],
-          ["canonical", "not_applicable"],
-          ["pending", "pending"],
-        ] as const) {
-          insert.run(
-            taskId,
-            "cron",
-            "",
-            `system:cron:${taskId}`,
-            "system",
-            `Task ${taskId}`,
-            "cancelled",
-            deliveryStatus,
-            "silent",
-            100,
-          );
-        }
-        markStateDatabaseAsPreviousAppVersion(database);
-        database.close();
-
-        const readStatuses = () =>
-          openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: stateDir } })
-            .db.prepare("SELECT task_id, delivery_status FROM task_runs ORDER BY task_id")
-            .all();
-        const expectedStatuses = [
-          { task_id: "canonical", delivery_status: "not_applicable" },
-          { task_id: "obsolete", delivery_status: "not_applicable" },
-          { task_id: "pending", delivery_status: "pending" },
-        ];
-
-        expect(readStatuses()).toEqual([
-          { task_id: "canonical", delivery_status: "not_applicable" },
-          { task_id: "obsolete", delivery_status: "not-requested" },
-          { task_id: "pending", delivery_status: "pending" },
-        ]);
-        closeOpenClawStateDatabaseForTest();
-        expect(
-          repairOpenClawStateDatabaseSchema({ env: { OPENCLAW_STATE_DIR: stateDir } }).warnings,
-        ).toEqual([]);
-        expect(readStatuses()).toEqual(expectedStatuses);
-
-        closeOpenClawStateDatabaseForTest();
-        expect(readStatuses()).toEqual(expectedStatuses);
-        closeOpenClawStateDatabaseForTest();
-      },
-    );
-  });
 
   it("adds hosted catalog snapshot trust columns to existing state databases", () => {
     const stateDir = createTempStateDir();
@@ -7703,105 +7046,6 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
       ]),
     );
     closeOpenClawStateDatabaseForTest();
-  });
-
-  it("adds task detail storage to an existing state database", () => {
-    const stateDir = createTempStateDir();
-    const legacyDb = openMaterializedCurrentStateDatabase(stateDir);
-    legacyDb.exec("ALTER TABLE task_runs DROP COLUMN detail_json");
-    markStateDatabaseVersion(legacyDb, 5);
-    legacyDb.close();
-
-    const reopened = openOpenClawStateDatabase({
-      env: { OPENCLAW_STATE_DIR: stateDir },
-    });
-    const columns = reopened.db.prepare("PRAGMA table_info(task_runs)").all() as Array<{
-      name?: string;
-    }>;
-    expect(columns.some((column) => column.name === "detail_json")).toBe(true);
-  });
-
-  it("rolls back the requester attribution column when its backfill fails", () => {
-    const stateDir = createTempStateDir();
-    const databasePath = materializeCurrentStateDatabase(stateDir);
-
-    const { DatabaseSync } = requireNodeSqlite();
-    const legacyDb = new DatabaseSync(databasePath);
-    legacyDb.exec(`
-      ALTER TABLE task_runs DROP COLUMN requester_agent_id;
-      CREATE TRIGGER reject_task_attribution_repair
-      BEFORE UPDATE ON task_runs
-      BEGIN
-        SELECT RAISE(ABORT, 'blocked task attribution repair');
-      END;
-    `);
-    legacyDb
-      .prepare(
-        `INSERT INTO task_runs (
-          task_id,
-          runtime,
-          requester_session_key,
-          owner_key,
-          scope_kind,
-          child_session_key,
-          agent_id,
-          task,
-          status,
-          delivery_status,
-          notify_policy,
-          created_at,
-          last_event_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        "blocked-cross-agent",
-        "subagent",
-        "agent:main:main",
-        "agent:main:main",
-        "session",
-        "agent:worker:subagent:blocked",
-        "main",
-        "Inspect blocked worker state",
-        "running",
-        "pending",
-        "done_only",
-        100,
-        100,
-      );
-    markStateDatabaseVersion(legacyDb, 5);
-    legacyDb.close();
-
-    expect(() =>
-      openOpenClawStateDatabase({
-        env: { OPENCLAW_STATE_DIR: stateDir },
-      }),
-    ).toThrow(/blocked task attribution repair/);
-
-    const interruptedDb = new DatabaseSync(databasePath);
-    const interruptedColumns = interruptedDb
-      .prepare("PRAGMA table_info(task_runs)")
-      .all() as Array<{
-      name?: string;
-    }>;
-    expect(interruptedColumns.some((column) => column.name === "requester_agent_id")).toBe(false);
-    interruptedDb.exec("DROP TRIGGER reject_task_attribution_repair");
-    interruptedDb.close();
-
-    const reopened = openOpenClawStateDatabase({
-      env: { OPENCLAW_STATE_DIR: stateDir },
-    });
-    expect(
-      reopened.db
-        .prepare(
-          `SELECT agent_id, requester_agent_id
-           FROM task_runs
-           WHERE task_id = ?`,
-        )
-        .get("blocked-cross-agent"),
-    ).toEqual({
-      agent_id: "worker",
-      requester_agent_id: "main",
-    });
   });
 
   it("opens databases with early cron tables before creating cron indexes", () => {
@@ -7927,9 +7171,9 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
         .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'cron_run_logs'")
         .get(),
     ).toBeUndefined();
-    expect(
-      database.db.prepare("SELECT source_id, ended_at FROM task_runs WHERE runtime = 'cron'").all(),
-    ).toEqual([{ source_id: "legacy-job", ended_at: 12345 }]);
+    expect(database.db.prepare("SELECT job_id, ended_at FROM cron_run_history").all()).toEqual([
+      { job_id: "legacy-job", ended_at: 12345 },
+    ]);
   });
 
   it("opens databases with early queue tables before creating newer indexes", async () => {
@@ -8622,12 +7866,11 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
   });
 
   it("keys explicit relative paths by resolved database pathname", () => {
-    const moduleUrl = new URL("./openclaw-state-db.ts", import.meta.url).href;
+    const moduleUrl = resolveRuntimeWorkerUrl(stateNativeProcessEntrypoints.stateDatabase);
     const output = execFileSync(
       process.execPath,
       [
-        "--import",
-        "tsx",
+        ...resolveRuntimeWorkerArgv(moduleUrl).slice(0, -1),
         "--input-type=module",
         "-e",
         `
@@ -8637,7 +7880,7 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
           import {
             closeOpenClawStateDatabaseForTest,
             openOpenClawStateDatabase,
-          } from ${JSON.stringify(moduleUrl)};
+          } from ${JSON.stringify(moduleUrl.href)};
 
           const root = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-state-db-relative-"));
           const firstDir = path.join(root, "first");
@@ -8764,37 +8007,6 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
 
     expect(ownershipSelects).toBe(12);
     expect(schemaReads).toBe(0);
-  });
-
-  it("discovers the ownership table for an injected handle at transaction admission", () => {
-    const options = { env: { OPENCLAW_STATE_DIR: createTempStateDir() } };
-    const pathname = openOpenClawStateDatabase(options).path;
-    closeOpenClawStateDatabaseForTest();
-    const { constants, DatabaseSync } = requireNodeSqlite();
-    const db = new DatabaseSync(pathname);
-    let schemaReads = 0;
-    db.setAuthorizer((actionCode, tableName) => {
-      if (actionCode === constants.SQLITE_READ && tableName === "sqlite_master") {
-        schemaReads += 1;
-      }
-      return constants.SQLITE_OK;
-    });
-
-    try {
-      runOpenClawStateWriteTransaction(() => undefined, {
-        ...options,
-        database: {
-          db,
-          path: pathname,
-          walMaintenance: { checkpoint: () => false, close: () => false },
-        },
-      });
-    } finally {
-      db.setAuthorizer(null);
-      db.close();
-    }
-
-    expect(schemaReads).toBe(4);
   });
 
   it("rejects Promise-returning write transactions", () => {

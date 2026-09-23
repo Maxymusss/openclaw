@@ -14,6 +14,7 @@ import {
   repairOpenClawStateDatabaseSchema,
 } from "./openclaw-state-db.js";
 import { removePreparedWorkerOwnershipColumns } from "./openclaw-state-schema-v17.test-support.js";
+import { PRE_V19_TASK_SCHEMA_SQL } from "./openclaw-state-schema-v19.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const now = Date.parse("2026-09-07T12:00:00Z");
@@ -51,6 +52,7 @@ function createV15Database(version: string | null = "2026.9.2") {
   const db = new DatabaseSync(databasePath);
   try {
     removePreparedWorkerOwnershipColumns(db);
+    db.exec(PRE_V19_TASK_SCHEMA_SQL);
     db.exec(`
       ALTER TABLE skill_workshop_proposals ADD COLUMN workspace_dir TEXT NOT NULL DEFAULT '';
       ALTER TABLE skill_workshop_proposals ADD COLUMN claim_released_time INTEGER;
@@ -113,6 +115,7 @@ describe("shared state schema publication", () => {
         INSERT INTO config_machine_state VALUES ('state.schema.contentVersion', '16', 1);
       `);
       if (marker === "published-v16") {
+        legacy.exec(PRE_V19_TASK_SCHEMA_SQL);
         legacy.exec("PRAGMA user_version = 16; UPDATE schema_meta SET schema_version = 16;");
       }
       legacy.close();
@@ -168,6 +171,7 @@ describe("shared state schema publication", () => {
         "INSERT INTO config_machine_state VALUES ('state.schema.contentVersion', '16', 1);",
       );
       if (marker === "published-v16") {
+        legacy.exec(PRE_V19_TASK_SCHEMA_SQL);
         legacy.exec("PRAGMA user_version = 16; UPDATE schema_meta SET schema_version = 16;");
       }
       legacy.close();
@@ -203,6 +207,7 @@ describe("shared state schema publication", () => {
     async (column) => {
       const { options, databasePath } = createV15Database();
       const legacy = new DatabaseSync(databasePath);
+      legacy.exec(PRE_V19_TASK_SCHEMA_SQL);
       legacy.exec(`
         DROP TABLE skill_workshop_collection_reviews;
         CREATE TABLE skill_workshop_collection_reviews (
@@ -247,6 +252,7 @@ describe("shared state schema publication", () => {
   ] as const)("preserves Workshop state when marker repair refuses %s", (damage) => {
     const { options, databasePath } = createV15Database(null);
     const legacy = new DatabaseSync(databasePath);
+    legacy.exec(PRE_V19_TASK_SCHEMA_SQL);
     legacy.exec("PRAGMA user_version = 16; UPDATE schema_meta SET schema_version = 16;");
     if (damage === "missing review column") {
       legacy.exec("ALTER TABLE skill_workshop_collection_reviews DROP COLUMN backup_id;");

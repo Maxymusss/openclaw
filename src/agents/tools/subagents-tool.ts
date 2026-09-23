@@ -1,21 +1,35 @@
 /** Lists, waits for, and cancels native subagent executions. */
+import { AsyncLocalStorage } from "node:async_hooks";
 import { Type } from "typebox";
 import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createAbortError } from "../../infra/abort-signal.js";
 import { sanitizeRunStatusText } from "../run-status-text.js";
 import { optionalPositiveIntegerSchema, optionalStringEnum } from "../schema/typebox.js";
-import { ensureSubagentControllerOwnsRun } from "../subagents/registry/subagent-control-scope.js";
+import {
+  ensureSubagentControllerOwnsRun,
+  listControlledSubagentRunFacts,
+} from "../subagents/registry/subagent-control-scope.js";
 import {
   DEFAULT_RECENT_MINUTES,
   killSubagentRunAdmin,
-  listControlledSubagentRuns,
+  buildControlledSubagentRunsReadContext,
   MAX_RECENT_MINUTES,
   resolveSubagentController,
 } from "../subagents/registry/subagent-control.js";
 import { observeSubagentExecution } from "../subagents/registry/subagent-execution-observation.js";
-import { buildSubagentList } from "../subagents/registry/subagent-list.js";
-import { onSubagentRegistryPersisted } from "../subagents/registry/subagent-registry-state.js";
+import {
+  buildSubagentList,
+  readSubagentListSessionEntries,
+} from "../subagents/registry/subagent-list.js";
+import { subagentRuns } from "../subagents/registry/subagent-registry-memory.js";
+import type { SubagentRunReadRecord } from "../subagents/registry/subagent-registry-read.types.js";
+import {
+  getSubagentSessionListReadSnapshotIdentity,
+  onSubagentRegistryPersisted,
+  prepareSubagentRunsSnapshotForRunIds,
+  prepareSubagentSessionListReadCache,
+} from "../subagents/registry/subagent-registry-state.js";
 import type { SubagentRunRecord } from "../subagents/registry/subagent-registry.types.js";
 import {
   jsonResult,
@@ -64,12 +78,14 @@ function mapRun(run: SubagentRunRecord) {
 }
 function waitForSelectedRuns(params: {
   runIds: string[];
-  readRuns: () => SubagentRunRecord[];
+  readRuns: (snapshot: ReadonlyMap<string, SubagentRunRecord>) => SubagentRunRecord[];
   timeoutMs: number;
   signal?: AbortSignal;
 }) {
-  const read = () => {
-    const visible = new Map(params.readRuns().map((task) => [task.runId, task]));
+  // A publisher's temporary scope must not own preparation started by its wake.
+  const inWaitContext = AsyncLocalStorage.snapshot();
+  const read = (snapshot: ReadonlyMap<string, SubagentRunRecord>) => {
+    const visible = new Map(params.readRuns(snapshot).map((task) => [task.runId, task]));
     const tasks = params.runIds.flatMap((runId) => {
       const task = visible.get(runId);
       return task ? [task] : [];
@@ -98,39 +114,75 @@ function waitForSelectedRuns(params: {
   };
   return new Promise<ReturnType<typeof read>>((resolve, reject) => {
     let settled = false;
+    let preparation: Promise<void> | undefined;
+    let prepared: Awaited<ReturnType<typeof prepareSubagentRunsSnapshotForRunIds>> | undefined;
+    let timedOut = params.timeoutMs === 0;
+    let abortError: Error | undefined;
     let unsubscribe = () => {};
-    const finish = (error?: Error, timeout = false) => {
-      if (settled) {
-        return;
-      }
-      try {
-        const state = error ? undefined : read();
-        if (!error && !timeout && !state?.reason) {
+    const cleanup = () => {
+      unsubscribe();
+      clearTimeout(timer);
+      params.signal?.removeEventListener("abort", onAbort);
+    };
+    const fail = (error: unknown) => {
+      settled = true;
+      cleanup();
+      reject(error instanceof Error ? error : new Error(String(error), { cause: error }));
+    };
+    const finish = () =>
+      inWaitContext(() => {
+        if (settled || preparation) {
           return;
         }
-        settled = true;
-        unsubscribe();
-        clearTimeout(timer);
-        params.signal?.removeEventListener("abort", onAbort);
-        if (error) {
-          reject(error);
-        } else if (state) {
+        try {
+          const compactReady = getSubagentSessionListReadSnapshotIdentity();
+          // Another reader's accepted recovery also keeps custody through abort.
+          if (!compactReady || !prepared) {
+            preparation = !compactReady
+              ? prepareSubagentSessionListReadCache()
+              : prepareSubagentRunsSnapshotForRunIds(subagentRuns, params.runIds).then(
+                  (snapshot) => {
+                    prepared = snapshot;
+                  },
+                );
+            void preparation.then(
+              () => {
+                preparation = undefined;
+                finish();
+              },
+              (error: unknown) => {
+                preparation = undefined;
+                fail(error);
+              },
+            );
+            return;
+          }
+          if (abortError) {
+            fail(abortError);
+            return;
+          }
+          const result = prepared.consume(read);
+          if (!result.ready) {
+            prepared = undefined;
+            finish();
+            return;
+          }
+          const state = result.value;
+          if (!timedOut && !state.reason) {
+            return;
+          }
+          settled = true;
+          cleanup();
           resolve({ ...state, reason: state.reason ?? "timeout" });
+        } catch (error) {
+          fail(error);
         }
-      } catch (readError) {
-        settled = true;
-        unsubscribe();
-        clearTimeout(timer);
-        params.signal?.removeEventListener("abort", onAbort);
-        reject(
-          readError instanceof Error
-            ? readError
-            : new Error(String(readError), { cause: readError }),
-        );
-      }
+      });
+    const onAbort = () => {
+      abortError = createAbortError("subagents wait aborted; tasks continue running.");
+      // Accepted preparation keeps custody until both the read and cleanup settle.
+      finish();
     };
-    const onAbort = () =>
-      finish(createAbortError("subagents wait aborted; tasks continue running."));
     let wakeQueued = false;
     const wake = () => {
       if (wakeQueued || settled) {
@@ -148,12 +200,15 @@ function waitForSelectedRuns(params: {
       unsubscribeSubagents();
     };
     params.signal?.addEventListener("abort", onAbort, { once: true });
-    const timer = setTimeout(() => finish(undefined, true), params.timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true;
+      finish();
+    }, params.timeoutMs);
     if (params.signal?.aborted) {
       onAbort();
     } else {
       // Subscribe before reading so completion cannot be lost between those operations.
-      finish(undefined, params.timeoutMs === 0);
+      finish();
     }
   });
 }
@@ -169,12 +224,12 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
     if (!controller.controllerAgentId) {
       throw new ToolInputError("Subagent controller agent required");
     }
-    const runs = listControlledSubagentRuns(
+    const runs = listControlledSubagentRunFacts(
       controller.controllerSessionKey,
       controller.controllerAgentId,
       cfg,
     );
-    const readable = new Map<string, SubagentRunRecord>();
+    const readable = new Map<string, SubagentRunReadRecord>();
     const controlled = new Set<string>();
     const pending = [{ owner: controller, entries: runs }];
     const visited = new Set<string>();
@@ -200,7 +255,7 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
         });
         pending.push({
           owner: childController,
-          entries: listControlledSubagentRuns(
+          entries: listControlledSubagentRunFacts(
             childController.controllerSessionKey,
             childController.controllerAgentId,
             cfg,
@@ -219,6 +274,10 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
     execute: async (_toolCallId, args, signal) => {
       const params = args as Record<string, unknown>;
       const action = readToolStringParam(params, "action") ?? "list";
+      while (!getSubagentSessionListReadSnapshotIdentity()) {
+        await prepareSubagentSessionListReadCache();
+      }
+      signal?.throwIfAborted();
       if (action === "wait") {
         const runIds = [...new Set(readStringArrayParam(params, "runIds", { required: true }))];
         if (runIds.length > 32) {
@@ -229,22 +288,30 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
           action,
           ...(await waitForSelectedRuns({
             runIds,
-            readRuns: () => readScope().readable,
+            readRuns: (snapshot) => {
+              const visible = new Set(readScope().readable.map((entry) => entry.runId));
+              return [...snapshot.values()].filter((entry) => visible.has(entry.runId));
+            },
             timeoutMs:
               Math.min(60, readNonNegativeIntegerParam(params, "timeoutSeconds") ?? 30) * 1000,
             signal,
           })),
         });
       }
-      const { cfg, controller, runs, readable, controlled } = readScope();
+      const { cfg, controller, readable, controlled } = readScope();
       if (action === "list") {
-        const list = buildSubagentList({
+        const readContext = await buildControlledSubagentRunsReadContext(
+          controller.controllerSessionKey,
+          controller.controllerAgentId,
           cfg,
-          runs,
-          recentMinutes: Math.min(
+          Math.min(
             MAX_RECENT_MINUTES,
             readPositiveIntegerParam(params, "recentMinutes") ?? DEFAULT_RECENT_MINUTES,
           ),
+        );
+        const list = buildSubagentList({
+          context: readContext.list,
+          sessionEntries: readSubagentListSessionEntries(cfg, readContext.list),
         });
         return jsonResult({
           status: "ok",
@@ -278,6 +345,10 @@ export function createSubagentsTool(opts: SubagentsToolOptions = {}): AnyAgentTo
             expectedOwnerKey: target.requesterSessionKey,
           },
           {
+            prepareRead: () =>
+              getSubagentSessionListReadSnapshotIdentity()
+                ? undefined
+                : prepareSubagentSessionListReadCache(),
             assertCurrent: () => {
               signal?.throwIfAborted();
               const current = readScope();

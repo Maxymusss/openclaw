@@ -24,12 +24,13 @@ type DashboardPane = TestChatPane & {
     board?: ResolvedBoardView,
   ) => BoardWidgetPageMenu | undefined;
   boardProvider: BoardProvider;
-  routeFace: "chat" | "dashboard";
+  routeFace: "chat" | "dashboard" | undefined;
   dashboardExpanded: boolean;
   narrow: boolean;
   paneWidth: number;
   resolveBoardView: () => ResolvedBoardView;
   syncRetainedBoardSession: (board: ResolvedBoardView) => void;
+  captureNavigationFace: () => "chat" | "dashboard" | undefined;
   commitSidebarPanelResize: (layout: SidebarLayout, columnId: string, size: number) => void;
   handleBoardCommand: (event: BoardCommandEvent) => void;
   saveDashboardDefault: (row: GatewaySessionRow, agentId: string | undefined) => Promise<void>;
@@ -75,6 +76,7 @@ export function createDashboardHarness(
         current = {
           ...current,
           ...(result.entry.updatedAt !== undefined ? { updatedAt: result.entry.updatedAt } : {}),
+          ...(result.entry.boardFace !== undefined ? { boardFace: result.entry.boardFace } : {}),
           ...(Object.hasOwn(result.entry, "boardPresentation")
             ? { boardPresentation: result.entry.boardPresentation }
             : {}),

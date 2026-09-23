@@ -1,4 +1,5 @@
 ---
+doc-schema-version: 1
 summary: "CLI reference for activity records, execution identity, and decision receipts"
 read_when:
   - You need to answer who ran an agent or tool, when it ran, and how it ended
@@ -116,8 +117,8 @@ view renders these sections:
    state.
 4. **Decisions**: bounded run-admission and authoritative action-decision
    receipts, including terminal operator approvals and exact-bound cron lifecycle
-   rows. Retained pre-removal task and flow rows remain inspectable as historical
-   attribution.
+   rows. Independent audit events and decision facts remain available under
+   their existing retention policies; task/flow lifecycle joins are retired.
 5. **Missing evidence** and **Next steps**.
 
 Every field includes `present`, `absent`, `unknown`, or `unsupported`; the CLI
@@ -129,15 +130,18 @@ identity-aware policy or grant evaluation was proven.
 
 Cron lifecycle rows from `cron_run_receipts` appear as owner-native,
 attribution-only receipts when their keyed lifecycle metadata carries the exact
-inspected context and execution ids. Retained legacy `task_runs` and `flow_runs`
-rows can still appear with their original exact bindings; new native agent runs
-do not create Tasks or TaskFlow records. They contain status and
-bounded record references, not prompts, task goals, hook payloads, paths, or raw
-errors. Their decision is `not-applicable` because lifecycle attribution does
-not prove authorization.
+inspected context and execution ids. They contain status and bounded record
+references, not prompts, task goals, hook payloads, paths, or raw errors. Their
+decision is `not-applicable` because lifecycle attribution does not prove
+authorization. Task and flow tables and their inspection joins are retired in
+[state schema 19](/reference/database-schemas/state-schema-history#state-schema-19);
+independent audit events and decision facts are not deleted or copied from those
+tables by this migration.
+
 Treat every decision cursor as opaque: numeric and `a:`, `m:`, and `g:` values
-remain compatible. Cron pages may return `c:`; retained legacy task and flow
-pages may still return `t:` or `f:`.
+remain compatible. Cron pages may return `c:`. A well-formed historical `t:` or
+`f:` cursor reports `decision cursor is no longer retained; restart inspection without --cursor`.
+It does not alias a retained source or silently start another page.
 
 For Gateway runs, a resolved authenticated profile can make the invoker
 `present` and coverage `attribution-only`. Paired devices and shared credentials
@@ -354,8 +358,8 @@ and no identity context; its required `decisionDisplays` array is empty until
 the caller selects an execution id.
 For one selected context, receipt paging starts with admission, then reads
 owner-native terminal approvals, merges outbound progress and terminal records,
-then reads generic facts and the cron, task, and flow lifecycle owners. The
-complete order is admission, approval, message, generic, cron, task, then flow.
+then reads generic facts and the cron lifecycle owner. The complete order is
+admission, approval, message, generic, then cron.
 The merge is deterministic across restart and rejects a cursor whose exact
 owner row has expired. Approval and message selectors use the opaque
 `approval-decision:` and `message-decision:` namespaces minted from the same

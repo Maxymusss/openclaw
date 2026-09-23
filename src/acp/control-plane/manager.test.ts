@@ -7,7 +7,6 @@ import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coerci
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { listSessionStateEventsSince } from "../../sessions/session-state-events.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import { isAcpTurnActive } from "./active-turns.js";
 import {
@@ -160,7 +159,6 @@ describe("AcpSessionManager", () => {
           payload: { outcome: "cancelled" },
         },
       ]);
-      closeOpenClawStateDatabaseForTest();
     });
   });
 

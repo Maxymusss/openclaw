@@ -1,6 +1,11 @@
 /**
  * Runtime SDK helpers for host-authorized agent harness completion delivery.
  */
+import {
+  isAgentHarnessCompletionCustodyCurrent,
+  runWithAgentHarnessCompletionCustody,
+  type AgentHarnessCompletionCustody,
+} from "../agents/agent-harness-completion-custody.js";
 import { reconcileHarnessCompletionDelivery } from "../agents/agent-harness-completion-delivery.js";
 import {
   assertAgentHarnessCompletionScope,
@@ -29,7 +34,11 @@ import {
   getGatewayContextResolver,
   withPluginRuntimeGatewayContextResolver,
 } from "../plugins/runtime/gateway-request-scope.js";
-export type { AgentHarnessCompletionScope };
+export {
+  captureAgentHarnessCompletionCustody,
+  createAgentHarnessCompletionEventSink,
+} from "../agents/agent-harness-completion-custody.js";
+export type { AgentHarnessCompletionCustody, AgentHarnessCompletionScope };
 
 /** Completion states a harness task can report to its requester. */
 export type AgentHarnessCompletionStatus = "succeeded" | "failed" | "cancelled";
@@ -44,6 +53,8 @@ const AGENT_HARNESS_COMPLETION_SOURCE_TOOL = "agent_harness_completion";
 /** Delivers a completed harness task result back to the requester or parent session. */
 export async function deliverAgentHarnessCompletion(params: {
   scope: AgentHarnessCompletionScope;
+  /** Retained during native admission and released by the assignment lifecycle owner. */
+  completionCustody?: AgentHarnessCompletionCustody;
   childSessionKey: string;
   childSessionId: string;
   announceId: string;
@@ -60,6 +71,10 @@ export async function deliverAgentHarnessCompletion(params: {
   expectedRequester?: { sessionId: string; lifecycleRevision?: string };
 }): Promise<AgentHarnessCompletionDelivery> {
   const scope = assertAgentHarnessCompletionScope(params.scope);
+  const completionCustody = params.completionCustody;
+  const signal = completionCustody
+    ? AbortSignal.any([completionCustody.signal, ...(params.signal ? [params.signal] : [])])
+    : params.signal;
   const requesterSessionKey = scope.requesterSessionKey;
   const childSessionKey = params.childSessionKey.trim();
   const childSessionId = params.childSessionId.trim();
@@ -72,6 +87,9 @@ export async function deliverAgentHarnessCompletion(params: {
   const requesterSessionId = requester.entry?.sessionId;
   const requesterLifecycleRevision = requester.entry?.lifecycleRevision;
   const isRequesterCurrent = () => {
+    if (completionCustody && !isAgentHarnessCompletionCustodyCurrent(completionCustody, scope)) {
+      return false;
+    }
     const current = loadRequesterSessionEntry(requesterSessionKey, scope.requesterAgentId).entry;
     return (
       Boolean(requesterSessionId) &&
@@ -83,7 +101,7 @@ export async function deliverAgentHarnessCompletion(params: {
     );
   };
   const isSourceSessionEffectsAllowed = () =>
-    isRequesterCurrent() && params.isSourceSessionAdmissionAllowed();
+    !signal?.aborted && isRequesterCurrent() && params.isSourceSessionAdmissionAllowed();
   const requesterIsSubagent = isInternalAnnounceRequesterSession(requesterSessionKey);
   let directOrigin = scope.requesterOrigin;
   if (!requesterIsSubagent) {
@@ -173,20 +191,24 @@ export async function deliverAgentHarnessCompletion(params: {
           directOrigin,
           sourceSessionKey: childSessionKey,
           sourceTool: AGENT_HARNESS_COMPLETION_SOURCE_TOOL,
-          isSourceSessionAdmissionAllowed: params.isSourceSessionAdmissionAllowed,
+          isSourceSessionAdmissionAllowed: isSourceSessionEffectsAllowed,
           targetRequesterSessionKey: requesterSessionKey,
           requesterIsSubagent,
           expectsCompletionMessage: true,
           bestEffortDeliver: true,
           directIdempotencyKey: buildAnnounceIdempotencyKey(params.announceId),
-          signal: params.signal,
+          signal,
         }),
     );
   };
   const resolveGatewayContext = getGatewayContextResolver(scope);
-  return resolveGatewayContext
-    ? await withPluginRuntimeGatewayContextResolver(resolveGatewayContext, deliver)
-    : await deliver();
+  const deliverInGateway = () =>
+    resolveGatewayContext
+      ? withPluginRuntimeGatewayContextResolver(resolveGatewayContext, deliver)
+      : deliver();
+  return completionCustody
+    ? await runWithAgentHarnessCompletionCustody(completionCustody, scope, deliverInGateway)
+    : await deliverInGateway();
 }
 
 function mapHarnessCompletionStatus(

@@ -58,13 +58,6 @@ describe("persisted subagent requester wakes", () => {
       .all();
   }
 
-  function rowCount(table: "task_runs"): number {
-    const row = database.db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get() as {
-      count: number;
-    };
-    return row.count;
-  }
-
   function reopenOwners() {
     closeOpenClawStateDatabaseForTest();
     subagentRuns.clear();
@@ -139,7 +132,6 @@ describe("persisted subagent requester wakes", () => {
     async (cut) => {
       const first = records();
       const second = records();
-      second.subagent.taskRunId = "task-run-second";
       second.subagent.runId = "completion-second";
       second.subagent.childSessionKey = "agent:main:subagent:second";
       const inputs = [first, second];
@@ -164,7 +156,7 @@ describe("persisted subagent requester wakes", () => {
         );
       }
       const snapshot = () =>
-        ["subagent_runs", "task_runs", "delivery_queue_entries"].map((table) =>
+        ["subagent_runs", "delivery_queue_entries"].map((table) =>
           database.db.prepare("SELECT * FROM " + table + " ORDER BY rowid").all(),
         );
       const before = snapshot();
@@ -233,7 +225,6 @@ describe("persisted subagent requester wakes", () => {
       vi.useFakeTimers();
       const input = armRequesterWake(records());
       const sibling = armRequesterWake(records());
-      sibling.subagent.taskRunId = "task-run-replay-sibling";
       sibling.subagent.runId = "replay-sibling";
       sibling.subagent.childSessionKey = sibling.subagent.childSessionKey =
         "agent:main:subagent:replay-sibling";
@@ -452,11 +443,9 @@ describe("persisted subagent requester wakes", () => {
       vi.useFakeTimers();
       const first = records();
       const second = records();
-      second.subagent.taskRunId = "task-run-second";
       second.subagent.runId = "completion-second";
       second.subagent.childSessionKey = "agent:main:subagent:second";
       const third = records();
-      third.subagent.taskRunId = "task-run-third";
       third.subagent.runId = "completion-third";
       third.subagent.childSessionKey = "agent:main:subagent:third";
       const inputs = [first, second, third];
@@ -737,7 +726,9 @@ describe("persisted subagent requester wakes", () => {
           expect(restored.completion).toEqual(before.completion);
           expect(restored.delivery).toEqual(before.delivery);
         }
-        expect(rowCount("task_runs")).toBe(0);
+        expect(
+          database.db.prepare("SELECT name FROM sqlite_schema WHERE name = 'task_runs'").get(),
+        ).toBeUndefined();
         expect(systemEvents()).toEqual([]);
       } finally {
         driver.controller.clearScheduledResumeTimers();

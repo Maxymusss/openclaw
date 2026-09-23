@@ -9,6 +9,7 @@ import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db-cach
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../state/openclaw-state-db-contract.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { claimOpenClawStateOwnership } from "../state/openclaw-state-ownership-operations.js";
+import { restorePreV19StateSchemaForTest } from "../state/openclaw-state-schema-v19.test-support.js";
 import {
   withOpenClawTestState,
   type OpenClawTestState,
@@ -67,14 +68,20 @@ function damageWorkshopIndex(databasePath: string): void {
 }
 
 describe("Doctor malformed Workshop catalog recovery", () => {
-  it("restores readability before the real config and schema repair chain", async () => {
+  it("restores readability before the real config and v19 migration chain", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const database = await seedState(state);
+      restorePreV19StateSchemaForTest(database.db);
       database.db.exec(`
-        DROP INDEX idx_task_runs_status;
+        DROP INDEX idx_audit_events_time;
         PRAGMA foreign_keys = OFF;
         INSERT INTO task_delivery_state (task_id, requester_origin_json)
-          VALUES ('orphan-preserved', 'preserve orphan payload');
+          VALUES ('orphan-retired', 'legacy delivery is retired');
+        INSERT INTO task_runs (
+          task_id, runtime, owner_key, scope_kind, task, status, delivery_status, notify_policy,
+          created_at, source_id, terminal_summary, detail_json
+        ) VALUES ('cron-retained', 'cron', 'global', 'global', 'retained history', 'succeeded',
+          'delivered', 'silent', 1, 'deleted-job', 'summary preserved', ' { "unknown": true } ');
         PRAGMA foreign_keys = ON;
       `);
       await closeOpenClawStateDatabaseAsync();
@@ -104,8 +111,32 @@ describe("Doctor malformed Workshop catalog recovery", () => {
             .get(),
         ).toBeUndefined();
         expect(
-          repaired.prepare("SELECT name FROM pragma_index_info('idx_task_runs_status')").all(),
-        ).toEqual([{ name: "status" }]);
+          repaired.prepare("SELECT name FROM pragma_index_info('idx_audit_events_time')").all(),
+        ).toEqual([{ name: "occurred_at" }, { name: "sequence" }]);
+        expect(
+          repaired
+            .prepare(
+              "SELECT name FROM sqlite_schema WHERE name IN ('task_runs', 'task_delivery_state', 'flow_runs')",
+            )
+            .all(),
+        ).toEqual([]);
+        expect(
+          repaired
+            .prepare("SELECT history_id, job_id, summary, detail_json FROM cron_run_history")
+            .all(),
+        ).toEqual([
+          {
+            history_id: "cron-retained",
+            job_id: "deleted-job",
+            summary: "summary preserved",
+            detail_json: ' { "unknown": true } ',
+          },
+        ]);
+        expect(
+          repaired
+            .prepare("SELECT schema_version FROM schema_meta WHERE meta_key = 'primary'")
+            .get(),
+        ).toEqual({ schema_version: OPENCLAW_STATE_SCHEMA_VERSION });
         expect(readSqliteNumberPragma(repaired, "user_version")).toBe(
           OPENCLAW_STATE_SCHEMA_VERSION,
         );
@@ -116,15 +147,9 @@ describe("Doctor malformed Workshop catalog recovery", () => {
         const recoveryDirs = fs
           .readdirSync(path.dirname(database.path))
           .filter((name) => name.startsWith("openclaw-task-delivery-recovery-"));
-        expect(recoveryDirs).toHaveLength(1);
-        const recovered = fs.readFileSync(
-          path.join(path.dirname(database.path), recoveryDirs[0]!, "orphan-rows.jsonl"),
-          "utf8",
-        );
-        expect(JSON.parse(recovered)).toMatchObject({
-          task_id: "orphan-preserved",
-          requester_origin_json: "preserve orphan payload",
-        });
+        // v19 retires these legacy rows in the schema transaction; it must not
+        // revive the removed Doctor export-and-repair path.
+        expect(recoveryDirs).toEqual([]);
       } finally {
         repaired.close();
       }

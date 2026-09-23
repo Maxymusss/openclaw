@@ -50,6 +50,7 @@ export class CodexNativeSubagentCompletionDelivery {
       return;
     }
     childState.deliveringCompletion = true;
+    let deferredToForeground = false;
     try {
       if (!this.prepareDelivery(state, childState)) {
         return;
@@ -57,11 +58,13 @@ export class CodexNativeSubagentCompletionDelivery {
       // Foreground parents receive native completion input. Only wake a detached
       // parent after its last owner leaves; native receipts deduplicate both paths.
       if (state.owners.size > 0 || !state.completionScope) {
+        deferredToForeground = state.owners.size > 0;
         return;
       }
       const historyOwner = childState.historyOwner;
       const delivery = await this.dependencies.deliver({
         scope: state.completionScope,
+        completionCustody: childState.completionCustody,
         ...(historyOwner
           ? {
               expectedRequester: {
@@ -134,6 +137,11 @@ export class CodexNativeSubagentCompletionDelivery {
         error: message,
       });
     } finally {
+      if (!deferredToForeground) {
+        // Keep the root through the first handoff, including a foreground parent's
+        // pending unregister. Once attempted, sleeping retries retain only delivery authority.
+        childState.completionCustody?.settleExecution();
+      }
       childState.deliveringCompletion = false;
     }
   }
@@ -204,6 +212,7 @@ export class CodexNativeSubagentCompletionDelivery {
   }
 
   release(childState: ChildState): void {
+    childState.completionCustody?.release();
     if (childState.completionDeliveryTimer) {
       clearTimeout(childState.completionDeliveryTimer);
     }
@@ -265,6 +274,9 @@ export class CodexNativeSubagentCompletionDelivery {
   }
 
   private claim(state: ParentState, childState: ChildState): boolean {
+    if (childState.completionCustody && !childState.completionCustody.isCurrent()) {
+      return false;
+    }
     const requesterSessionKey = state.requesterSessionKey?.trim();
     if (!requesterSessionKey) {
       return true;

@@ -19,9 +19,10 @@ import {
   finishCronRunReceipt,
   finishCronRunReceiptInDatabase,
   prepareCronRunReceiptClaim,
-  type CronRunReceiptHandle,
 } from "../store/run-receipt-store.js";
 import { inspectActiveCronRunReceipt } from "../store/run-receipt-store.test-support.js";
+import { prepareCronRunReceiptWriteSchema } from "../store/run-receipt-write-admission.js";
+import type { CronRunReceiptHandle } from "../store/run-receipt.types.js";
 import type { CronJob, CronRunStatus } from "../types.js";
 import { locked } from "./locked.js";
 import { start, stop } from "./ops-lifecycle.js";
@@ -163,6 +164,7 @@ describe.each([
           runOpenClawStateWriteTransaction(({ db }) =>
             finishCronRunReceiptInDatabase({
               database: db,
+              receiptSchema: prepareCronRunReceiptWriteSchema(db),
               handle: previous,
               status: "superseded",
               finishedAtMs: nowMs,
@@ -177,6 +179,7 @@ describe.each([
           successor = runOpenClawStateWriteTransaction(({ db }) =>
             claimCronRunReceiptInDatabase({
               database: db,
+              receiptSchema: prepareCronRunReceiptWriteSchema(db),
               prepared,
               resolveAgentId: () => "alpha",
             }),

@@ -21,6 +21,7 @@ import { loadCronJobsStoreWithConfigJobs, loadCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
 import * as runReceiptStore from "../store/run-receipt-store.js";
 import { inspectActiveCronRunReceipt } from "../store/run-receipt-store.test-support.js";
+import { prepareCronRunReceiptWriteSchema } from "../store/run-receipt-write-admission.js";
 import type { CronJob } from "../types.js";
 import { start, stop } from "./ops-lifecycle.js";
 import {
@@ -35,7 +36,7 @@ import { list, writeScratch } from "./ops-read.js";
 import { inspectManualRunDisposition } from "./ops-run-preparation.js";
 import { run } from "./ops-run.js";
 import * as taskRuns from "./run-history.js";
-import { proposeCronRunRecovery, recoverCronRunProposal } from "./run-recovery.js";
+import { observeCronRecoveryForTest, recoverCronRunForTest } from "./run-recovery.test-support.js";
 import type { CronAddResult, CronEvent } from "./state.js";
 import { runMissedJobs } from "./timer.js";
 
@@ -967,6 +968,7 @@ describe("cron service ops seam coverage", () => {
     const receipt = runOpenClawStateWriteTransaction(({ db }) =>
       runReceiptStore.claimCronRunReceiptInDatabase({
         database: db,
+        receiptSchema: prepareCronRunReceiptWriteSchema(db),
         prepared: preparedReceipt,
         resolveAgentId: (current) => current.agentId ?? "main",
       }),
@@ -982,15 +984,16 @@ describe("cron service ops seam coverage", () => {
       nowMs: () => now,
       runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
     });
-    const proposal = await proposeCronRunRecovery(state, job.id, undefined, startedAt);
+    const proposal = await observeCronRecoveryForTest(state, job.id, undefined, startedAt);
     await cronStoreModule.saveCronJobsStore(
       storePath,
       { version: 1, jobs: [completedJob] },
       {
         transactionHooks: {
-          afterWrite: (db) => {
+          afterWrite: (db, receiptSchema) => {
             runReceiptStore.finishCronRunReceiptInDatabase({
               database: db,
+              receiptSchema,
               handle: receipt,
               status: "ok",
               finishedAtMs: now,
@@ -1001,7 +1004,7 @@ describe("cron service ops seam coverage", () => {
     );
     runReceiptStore.releaseLocalCronRunReceiptOwnership(receipt);
 
-    expect(recoverCronRunProposal(state, proposal)).toEqual({ kind: "superseded" });
+    expect(await recoverCronRunForTest(state, proposal)).toEqual({ kind: "superseded" });
 
     await start(state);
 
@@ -1063,6 +1066,7 @@ describe("cron service ops seam coverage", () => {
           ? runOpenClawStateWriteTransaction(({ db }) =>
               runReceiptStore.claimCronRunReceiptInDatabase({
                 database: db,
+                receiptSchema: prepareCronRunReceiptWriteSchema(db),
                 prepared: preparedReceipt,
                 resolveAgentId: (current) => current.agentId ?? "main",
               }),
@@ -1202,6 +1206,7 @@ describe("cron service ops seam coverage", () => {
       const receipt = runOpenClawStateWriteTransaction(({ db }) =>
         runReceiptStore.claimCronRunReceiptInDatabase({
           database: db,
+          receiptSchema: prepareCronRunReceiptWriteSchema(db),
           prepared: preparedReceipt,
           resolveAgentId: (current) => current.agentId ?? "main",
         }),
@@ -1236,7 +1241,7 @@ describe("cron service ops seam coverage", () => {
       });
       runOpenClawStateWriteTransaction(({ db }) => {
         db.prepare(
-          "UPDATE task_runs SET created_at = -1, started_at = -1, ended_at = -1, last_event_at = -1 WHERE run_id = ?",
+          "UPDATE cron_run_history SET created_at = -1, started_at = -1, ended_at = -1, last_event_at = -1 WHERE run_id = ?",
         ).run(taskRunId);
       });
 

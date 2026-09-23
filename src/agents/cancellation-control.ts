@@ -1,7 +1,10 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 
-export type CancellationControl = { assertCurrent: () => void };
+export type CancellationControl = {
+  assertCurrent: () => void;
+  prepareRead?: () => Promise<void> | undefined;
+};
 const controls = resolveGlobalSingleton(
   Symbol.for("openclaw.executionCancellationControl"),
   () => new AsyncLocalStorage<CancellationControl>(),
@@ -16,13 +19,20 @@ export async function withCancellationControl<T>(
   }
   const inherited = controls.getStore();
   let active = true;
-  const scoped = {
+  const assertActive = () => {
+    if (!active) {
+      throw new Error("Cancellation is no longer authorized.");
+    }
+  };
+  const scoped: CancellationControl = {
     assertCurrent: () => {
-      if (!active) {
-        throw new Error("Cancellation is no longer authorized.");
-      }
+      assertActive();
       inherited?.assertCurrent();
       control.assertCurrent();
+    },
+    prepareRead: () => {
+      assertActive();
+      return inherited?.prepareRead?.() ?? control.prepareRead?.();
     },
   };
   try {

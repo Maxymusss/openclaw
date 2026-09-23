@@ -7,7 +7,7 @@ import { assertSqliteIntegrity } from "../infra/sqlite-integrity.js";
 import { migrateSqliteSchemaToStrictInTransaction } from "../infra/sqlite-strict.js";
 import { StartupMaintenanceRequiredError } from "../infra/startup-maintenance-required.js";
 import { withStateSchemaFence } from "../infra/state-database-coordinator.js";
-import { migrateLegacyCronRunLogsToTaskRuns } from "../infra/state-migrations.cron-run-logs.js";
+import { migrateLegacyCronRunLogsToHistory } from "../infra/state-migrations.cron-run-logs.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import {
   OPENCLAW_SQLITE_BUSY_TIMEOUT_MS,
@@ -41,6 +41,7 @@ import {
   repairLegacyGatewayRestartHandoffsForStrictMigration,
 } from "./openclaw-state-db-schema-repair.js";
 import { migrateSingletonStateFoldInV12 } from "./openclaw-state-db-schema-v12-foldin.js";
+import { assertStateIntegrityForSchemaMigration } from "./openclaw-state-db-schema-v19-task-source.js";
 import {
   assertSupportedStateSchemaVersion,
   readStateSchemaMigrationVersion,
@@ -116,7 +117,7 @@ export function ensureOpenClawStateRuntimeSchema(
         // Older schemas still need atomic content transforms before retiring their columns.
         openClawStateMigrationAssertions.get(previousVersion)?.(db, { pathname });
         // Automatic preparation enters without the physical opener's integrity preflight.
-        assertSqliteIntegrity(db, pathname);
+        assertStateIntegrityForSchemaMigration(db, pathname, previousVersion);
         dropLegacyStateTables(db);
         const changes = retirements.runRetiredStateTableMigrations(db, previousVersion);
         retiredTableChanges.push(...changes);
@@ -137,7 +138,7 @@ export function ensureOpenClawStateRuntimeSchema(
         migrateSessionWatchCursorProvenance(db);
         assertCanonicalStateSchemaShape(db, pathname);
         executeCanonicalStateSchema(db, { includeVersionLazyAdditiveTables: true });
-        migrateLegacyCronRunLogsToTaskRuns(db);
+        migrateLegacyCronRunLogsToHistory(db);
         if (previousVersion < OPENCLAW_STATE_STRICT_SCHEMA_VERSION) {
           repairLegacyGatewayRestartHandoffsForStrictMigration(db);
           ensureFirstUseAdditiveStateColumnsForStrictMigration(db);
@@ -155,6 +156,7 @@ export function ensureOpenClawStateRuntimeSchema(
         repairCanonicalSqliteIndexes(db, pathname, OPENCLAW_STATE_SCHEMA_SQL, {
           verifyPhysicalIntegrity: false,
         });
+        assertSqliteIntegrity(db, pathname);
         writeCurrentStateSchemaMetadata(db, now);
         assertOpenClawStateDatabaseForMaintenance(db, { pathname });
         warnAgentPathMigration(stateDbLog, pathMigration, pathname);

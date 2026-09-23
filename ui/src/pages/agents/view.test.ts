@@ -17,7 +17,8 @@ import {
   inertAgentFileControls,
   primaryModelPicker,
 } from "./agents-view.test-helpers.ts";
-import { renderAgentChannels, renderAgentFiles } from "./panels-status-files.ts";
+import { renderAgentFiles } from "./panels-files.ts";
+import { renderAgentChannels } from "./panels-status-files.ts";
 import { renderAgents } from "./view.ts";
 
 function createCronJob(id: string, overrides: Partial<CronJob> = {}): CronJob {
@@ -345,26 +346,30 @@ describe("renderAgents", () => {
             configFormDirty: false,
             lastError: null,
           },
-          modelCatalog: [
-            {
-              id: "claude-opus-4-8",
-              alias: "opus",
-              name: "Opus 4.8",
-              provider: "anthropic",
-            },
-            {
-              id: "claude-sonnet-5",
-              alias: "sonnet",
-              name: "Sonnet 5",
-              provider: "anthropic",
-            },
-            {
-              id: "moonshotai/kimi-k2.5",
-              alias: "Kimi K2.5 (NVIDIA)",
-              name: "Kimi K2.5",
-              provider: "nvidia",
-            },
-          ],
+          modelCatalog: {
+            hasSnapshot: true,
+            retired: false,
+            models: [
+              {
+                id: "claude-opus-4-8",
+                alias: "opus",
+                name: "Opus 4.8",
+                provider: "anthropic",
+              },
+              {
+                id: "claude-sonnet-5",
+                alias: "sonnet",
+                name: "Sonnet 5",
+                provider: "anthropic",
+              },
+              {
+                id: "moonshotai/kimi-k2.5",
+                alias: "Kimi K2.5 (NVIDIA)",
+                name: "Kimi K2.5",
+                provider: "nvidia",
+              },
+            ],
+          },
         }),
       ),
       container,

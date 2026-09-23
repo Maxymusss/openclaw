@@ -1,5 +1,7 @@
+import path from "node:path";
 import { expect, it } from "vitest";
 import { createControlUiE2eSuite } from "../../e2e/control-ui-e2e-suite.test-support.ts";
+import { createControlUiE2eArtifactDir } from "../../test-helpers/control-ui-e2e-artifacts.ts";
 import { installMockGateway } from "../../test-helpers/control-ui-e2e.ts";
 
 const suite = createControlUiE2eSuite({
@@ -54,7 +56,18 @@ suite.define(() => {
                 {
                   match: identity,
                   response: {
-                    messages: [{ role: "assistant", content: "Exact retained output" }],
+                    messages: [
+                      {
+                        role: "assistant",
+                        senderSession: {
+                          sessionKey: entry.sessionKey,
+                          agentId: "main",
+                          label: "Daily report — café 雪 🦞",
+                        },
+                        content: "Check the queue and report the result.",
+                      },
+                      { role: "assistant", content: "Exact retained output" },
+                    ],
                     nextCursor: "older",
                   },
                 },
@@ -72,6 +85,19 @@ suite.define(() => {
         await region.getByText("Exact retained output", { exact: true }).waitFor();
         await region.getByRole("button", { name: /Show earlier/ }).click();
         await region.getByText("Earlier prompt", { exact: true }).waitFor();
+        const attribution = region.locator(".chat-reply-attribution--forwarded");
+        expect(await attribution.count()).toBe(1);
+        expect(await attribution.textContent()).toContain("Daily report — café 雪 🦞");
+        expect(await attribution.locator("a, [role=link], [tabindex]").count()).toBe(0);
+        expect(await region.locator(".sr-only").allTextContents()).toEqual([
+          "User: ",
+          "Assistant: ",
+        ]);
+        expect(await attribution.evaluate((element) => getComputedStyle(element).display)).toBe(
+          "inline-flex",
+        );
+        const proof = createControlUiE2eArtifactDir("automation-attribution");
+        await page.screenshot({ path: path.join(proof, "automation-attribution.png") });
         expect(new URL(page.url()).pathname).toBe("/cron");
         expect(await gateway.getRequests("cron.history")).toMatchObject([
           { params: { ...identity, limit: 100 } },
@@ -81,6 +107,7 @@ suite.define(() => {
           expect(request.params).not.toHaveProperty("sessionKey");
         }
         await region.getByRole("button", { name: "Close", exact: true }).click();
+        expect(await button.evaluate((element) => element === document.activeElement)).toBe(true);
         await gateway.deferNext("cron.history", { ...identity, limit: 100 });
         await button.click();
         await expect.poll(async () => (await gateway.getRequests("cron.history")).length).toBe(3);

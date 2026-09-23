@@ -12,6 +12,7 @@ import { cronStoreKey } from "./store/key.js";
 import {
   collectExpiredCronRunIds,
   CRON_HISTORY_KEEP_PER_JOB,
+  pruneCronRunHistoryInDatabase,
   readCronRunRecordsInDatabase,
   recordCronRunInDatabase,
 } from "./store/run-history.kernel.js";
@@ -119,10 +120,26 @@ it("bounds quiet evaluations separately without evicting payload history or acti
     detail: outcome("store", "history").detail,
   };
   const active: CronRunRecord = { id: "active", jobId: "job", createdAt: 0, status: "running" };
-  expect(collectExpiredCronRunIds([...records, history, active], 3000)).toEqual(new Set(["0"]));
+  const otherStore = {
+    ...records[0]!,
+    id: "other-store",
+    detail: cronQuietTriggerDetail("other", { fired: false, stateChanged: false }),
+  };
+  const otherJob = { ...records[0]!, id: "other-job", jobId: "other" };
+  expect(
+    collectExpiredCronRunIds([...records, history, active, otherStore, otherJob], 3000),
+  ).toEqual(new Set(["0"]));
   expect(collectExpiredCronRunIds([history, active], 7 * 24 * 60 * 60_000)).toEqual(
     new Set(["history"]),
   );
+  const lost: CronRunRecord = {
+    ...history,
+    id: "lost",
+    status: "lost",
+    cleanupAfter: 7 * 24 * 60 * 60_000,
+  };
+  expect(collectExpiredCronRunIds([history, lost], 24 * 60 * 60_000 - 1)).toEqual(new Set());
+  expect(collectExpiredCronRunIds([history, lost], 24 * 60 * 60_000)).toEqual(new Set(["lost"]));
   expect(
     projectCronRunHistoryPage([...records, history], { storeKey: "store", jobId: "job" }).total,
   ).toBe(1);
@@ -156,4 +173,47 @@ it("reads released row fallback fields but never discloses internal recovery sta
   expect(entry).not.toHaveProperty("triggerState");
   expect(entry).not.toHaveProperty("futureInternal");
   expect(entry).not.toHaveProperty("storeKey");
+});
+
+it("retains legacy identities and raw details without inventing a store partition", async () => {
+  await withOpenClawTestState(
+    { layout: "state-only", prefix: "cron-history-legacy-" },
+    async () => {
+      runOpenClawStateWriteTransaction(({ db }) => {
+        const rawDetail = '{ "kind": "cron-run", "status": "ok", "future": [1, 2] }';
+        const insert = db.prepare(
+          "INSERT INTO cron_run_history (history_id, job_id, run_id, created_at, status, detail_json) VALUES (?, ?, ?, ?, ?, ?)",
+        );
+        insert.run("legacy-null", null, "shared-run", 10, "failed", rawDetail);
+        insert.run("legacy-empty", "", "shared-run", 10, "failed", "{");
+        insert.run("legacy-unpartitioned", "job", "shared-run", 10, "succeeded", rawDetail);
+        const records = readCronRunRecordsInDatabase(db);
+        expect(
+          records
+            .map(({ id, jobId, runId }) => ({ id, jobId, runId }))
+            .toSorted((a, b) => a.id.localeCompare(b.id)),
+        ).toEqual([
+          { id: "legacy-empty", jobId: "", runId: "shared-run" },
+          { id: "legacy-null", jobId: null, runId: "shared-run" },
+          { id: "legacy-unpartitioned", jobId: "job", runId: "shared-run" },
+        ]);
+        expect(projectCronRunHistoryPage(records, { storeKey: "current-store" }).entries).toEqual(
+          [],
+        );
+        expect(pruneCronRunHistoryInDatabase(db, 11)).toBe(0);
+        expect(
+          db
+            .prepare("SELECT detail_json FROM cron_run_history WHERE history_id = ?")
+            .get("legacy-null"),
+        ).toEqual({ detail_json: rawDetail });
+        expect(
+          db
+            .prepare("SELECT detail_json FROM cron_run_history WHERE history_id = ?")
+            .get("legacy-empty"),
+        ).toEqual({ detail_json: "{" });
+        expect(pruneCronRunHistoryInDatabase(db, 10 + 7 * 24 * 60 * 60_000)).toBe(3);
+        expect(readCronRunRecordsInDatabase(db)).toEqual([]);
+      });
+    },
+  );
 });

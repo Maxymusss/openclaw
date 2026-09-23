@@ -17,16 +17,30 @@ vi.mock("../subagents/registry/subagent-control.js", () => ({
     callerIsSubagent: false,
     controlScope: "children",
   }),
-  listControlledSubagentRuns: () => owner.runs,
+  buildControlledSubagentRunsReadContext: async () => ({ list: {} }),
   killSubagentRunAdmin: owner.cancel,
 }));
+vi.mock("../subagents/registry/subagent-control-scope.js", () => ({
+  ensureSubagentControllerOwnsRun: () => undefined,
+  listControlledSubagentRunFacts: (key: string) =>
+    owner.runs.filter((entry) => entry.requesterSessionKey === key),
+}));
 vi.mock("../subagents/registry/subagent-registry-state.js", () => ({
+  getSubagentSessionListReadSnapshotIdentity: () => "ready",
+  prepareSubagentSessionListReadCache: async () => {},
+  prepareSubagentRunsSnapshotForRunIds: async () => ({
+    consume: (read: (snapshot: ReadonlyMap<string, SubagentRunRecord>) => unknown) => ({
+      ready: true,
+      value: read(new Map(owner.runs.map((entry) => [entry.runId, entry]))),
+    }),
+  }),
   onSubagentRegistryPersisted: (listener: () => void) => {
     owner.listeners.add(listener);
     return () => owner.listeners.delete(listener);
   },
 }));
 vi.mock("../subagents/registry/subagent-list.js", () => ({
+  readSubagentListSessionEntries: () => new Map(),
   buildSubagentList: () => ({
     total: owner.runs.length,
     active: [],

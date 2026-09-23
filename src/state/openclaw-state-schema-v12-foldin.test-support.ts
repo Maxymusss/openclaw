@@ -1,3 +1,4 @@
+import { PRE_V19_TASK_SCHEMA_SQL } from "./openclaw-state-schema-v19.test-support.js";
 // Recreate the exact v11 table contracts so migration and pinned-reader proofs
 // can project a current database through the documented 12→11 downgrade.
 const FOLDED_STATE_TABLES_V12_FIXTURE_SQL = `
@@ -134,6 +135,7 @@ CREATE TABLE IF NOT EXISTS web_push_vapid_keys (
 `;
 
 export const STATE_SCHEMA_12_TO_11_DOWNGRADE_SQL = `${FOLDED_STATE_TABLES_V12_FIXTURE_SQL}
+${PRE_V19_TASK_SCHEMA_SQL}
 PRAGMA user_version = 11;
 UPDATE schema_meta SET schema_version = 11 WHERE meta_key = 'primary';
 `;

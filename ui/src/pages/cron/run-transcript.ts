@@ -16,6 +16,7 @@ type Scope = { client: GatewayBrowserClient; epoch: number; isCurrent: () => boo
 export class CronRunTranscript implements ReactiveController {
   private attempt = 0;
   private entry: CronRunLogEntry | null = null;
+  private trigger: HTMLButtonElement | null = null;
   private scope: Scope | null = null;
   private messages: unknown[] = [];
   private nextCursor: string | undefined;
@@ -35,7 +36,9 @@ export class CronRunTranscript implements ReactiveController {
     this.close();
   }
 
-  close() {
+  close(restoreFocus = false) {
+    const trigger = this.trigger;
+    this.trigger = null;
     this.attempt++;
     this.entry = null;
     this.scope = null;
@@ -46,15 +49,19 @@ export class CronRunTranscript implements ReactiveController {
     this.error = null;
     this.failedCursor = undefined;
     this.host.requestUpdate();
+    if (restoreFocus && trigger?.isConnected) {
+      trigger.focus();
+    }
   }
 
-  async open(entry: CronRunLogEntry) {
+  async open(entry: CronRunLogEntry, trigger: HTMLButtonElement) {
     this.close();
     const scope = this.capture();
     if (!scope) {
       return;
     }
     this.entry = entry;
+    this.trigger = trigger;
     this.scope = scope;
     await this.load();
     if (this.entry !== entry || this.scope !== scope || !scope.isCurrent()) {
@@ -131,7 +138,7 @@ export class CronRunTranscript implements ReactiveController {
     >
       <div class="row">
         <h2>${t("cron.runEntry.transcript")}</h2>
-        <button class="btn btn--sm" @click=${() => this.close()}>${t("common.close")}</button>
+        <button class="btn btn--sm" @click=${() => this.close(true)}>${t("common.close")}</button>
       </div>
       ${
         this.error

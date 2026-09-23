@@ -1,3 +1,4 @@
+import { PRE_V19_TASK_SCHEMA_SQL } from "./openclaw-state-schema-v19.test-support.js";
 // Exact schema of the six dead tables retired by state schema 10, matching the
 // documented 10→9 downgrade recipe in docs/reference/database-schemas.md.
 // Tests use it to rebuild v9-shaped databases: the v10 retirement regression
@@ -81,6 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_model_capability_cache_provider_updated
 
 // The documented downgrade rewinds both version markers in the same batch.
 export const STATE_SCHEMA_10_TO_9_DOWNGRADE_SQL = `${RETIRED_STATE_TABLES_V10_FIXTURE_SQL}
+${PRE_V19_TASK_SCHEMA_SQL}
 PRAGMA user_version = 9;
 UPDATE schema_meta SET schema_version = 9 WHERE meta_key = 'primary';
 `;

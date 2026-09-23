@@ -27,7 +27,10 @@ import {
   assertOpenClawStateSchemaRepairAllowed,
   isExistingOpenClawStateSchema,
 } from "./openclaw-state-db-schema-policy.js";
-import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
+import {
+  assertSupportedStateSchemaVersion,
+  readStateSchemaContentVersion,
+} from "./openclaw-state-db-schema-version.js";
 import { recoverOrphanTaskDeliveryRows } from "./openclaw-state-db-task-delivery-recovery.js";
 import {
   runCoordinatedStateTransaction,
@@ -141,6 +144,7 @@ export function runExistingOpenClawStateWriteTransaction<T>(
                 } catch (error) {
                   if (
                     !contract.recoverTaskDeliveryOrphans ||
+                    readStateSchemaContentVersion(db) >= 19 ||
                     !(error instanceof SqliteRepairableForeignKeyError)
                   ) {
                     throw error;

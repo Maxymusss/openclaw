@@ -16,6 +16,7 @@ import {
   prepareCronRunReceiptClaim,
 } from "./run-receipt-store.js";
 import { inspectActiveCronRunReceipt } from "./run-receipt-store.test-support.js";
+import { prepareCronRunReceiptWriteSchema } from "./run-receipt-write-admission.js";
 
 const { logger, makeStorePath } = setupCronServiceSuite({ prefix: "cron-pending-retention-" });
 
@@ -67,6 +68,7 @@ describe("pending cron receipt retention", () => {
       const receipt = runOpenClawStateWriteTransaction(({ db }) =>
         claimCronRunReceiptInDatabase({
           database: db,
+          receiptSchema: prepareCronRunReceiptWriteSchema(db),
           prepared,
           resolveAgentId: (current) => current.agentId!,
         }),

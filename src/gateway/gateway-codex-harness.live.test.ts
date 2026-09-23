@@ -19,6 +19,12 @@ import {
 } from "../../test/helpers/gateway-codex-harness-native-subagent.js";
 import {
   createCodexHarnessLiveInstance,
+  createCodexHarnessWorkspace as createLiveWorkspace,
+  parseCodexHarnessModelKey as parseModelKey,
+  buildCodexHarnessDenseContext,
+  buildCodexCompactionAppServerArgs,
+  CODEX_REDUCED_CONTEXT_AUTO_COMPACT_LIMIT,
+  type CodexCompactionStressMode,
   createCodexHarnessEventCapture,
   readCodexNativeUsageSnapshots,
   CODEX_HARNESS_CONTEXT_EVENT_PREFIXES,
@@ -112,10 +118,6 @@ const CODEX_HARNESS_RESUME_STRESS_RESTARTS = resolveBoundedPositiveIntEnv(
   3,
   10,
 );
-type CodexCompactionStressMode =
-  | { kind: "off" }
-  | { kind: "reduced" }
-  | { kind: "full"; modelCatalogPath: string };
 
 function resolveCodexCompactionStressMode(): CodexCompactionStressMode {
   if (isTruthyEnvValue(process.env.OPENCLAW_LIVE_CODEX_HARNESS_FULL_CONTEXT)) {
@@ -230,7 +232,6 @@ type CodexHarnessAgentResult = {
   usage?: CodexHarnessAttemptUsage;
 };
 
-const CODEX_REDUCED_CONTEXT_AUTO_COMPACT_LIMIT = 4_000;
 const CODEX_REDUCED_CONTEXT_PRESSURE_CHARS = 90_000;
 const CODEX_FULL_CONTEXT_AUTO_COMPACT_LIMIT = 700_000;
 const CODEX_FULL_CONTEXT_EFFECTIVE_WINDOW = 875_900;
@@ -416,62 +417,6 @@ async function subscribeCodexLiveDebugEvents(sessionKey: string): Promise<() => 
       data: event.data,
     });
   });
-}
-
-async function createLiveWorkspace(workspace: string): Promise<void> {
-  await fs.mkdir(workspace, { recursive: true });
-  await fs.writeFile(
-    path.join(workspace, "AGENTS.md"),
-    [
-      "# AGENTS.md",
-      "",
-      "Follow exact reply instructions from the user.",
-      "Do not add commentary when asked for an exact response.",
-    ].join("\n"),
-  );
-}
-
-function parseModelKey(modelKey: string): { provider: string; modelId: string } {
-  const [provider, ...modelParts] = modelKey.split("/");
-  const modelId = modelParts.join("/");
-  if (!provider?.trim() || !modelId.trim()) {
-    throw new Error(`invalid model key: ${modelKey}`);
-  }
-  return { provider: provider.trim(), modelId: modelId.trim() };
-}
-
-function buildCodexHarnessDenseContext(params: { marker: string; chars: number }): string {
-  const lines: string[] = [];
-  let length = 0;
-  for (let index = 0; length < params.chars; index += 1) {
-    const line =
-      `${params.marker}|Context stress record ${index}: the copper lighthouse tracks violet weather ` +
-      `while patient engineers preserve durable state across each compacted conversation.\n`;
-    lines.push(line);
-    length += line.length;
-  }
-  return lines.join("").slice(0, params.chars);
-}
-
-function buildCodexCompactionAppServerArgs(mode: CodexCompactionStressMode): string[] | undefined {
-  const overrides =
-    mode.kind === "full"
-      ? [
-          `model_catalog_json=${JSON.stringify(mode.modelCatalogPath)}`,
-          "model_context_window=922000",
-          "model_auto_compact_token_limit=700000",
-          "model_auto_compact_token_limit_scope=total",
-          "tool_output_token_limit=200000",
-        ]
-      : mode.kind === "reduced"
-        ? [
-            "model_auto_compact_token_limit_scope=body_after_prefix",
-            // Raw nested CodeMode output is not necessarily emitted to model context.
-            `model_auto_compact_token_limit=${CODEX_REDUCED_CONTEXT_AUTO_COMPACT_LIMIT}`,
-            "tool_output_token_limit=10000",
-          ]
-        : undefined;
-  return overrides ? buildCodexHarnessAppServerArgs(overrides) : undefined;
 }
 
 async function assertCodexHarnessSessionSelection(params: {

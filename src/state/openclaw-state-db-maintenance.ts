@@ -25,6 +25,8 @@ import {
 } from "./openclaw-state-db-doctor-schema.js";
 import { ensureColumn, tableExists, tableHasColumn } from "./openclaw-state-db-schema-helpers.js";
 import { migrateJsonCanonicalWideRowsV13 } from "./openclaw-state-db-schema-v13-widerow.js";
+import { migrateTasksRetirementV19 } from "./openclaw-state-db-schema-v19-task-retirement.js";
+import { RETIRED_TASK_SCHEMA_SQL } from "./openclaw-state-db-schema-v19-task-source.js";
 import {
   assertSupportedStateSchemaVersion,
   readStateSchemaContentVersion,
@@ -141,6 +143,7 @@ const STATE_V6_ADDITIVE_TABLES = [
   // v6-v12 databases may predate this former same-version lazy table.
   "gateway_origin_device_tokens",
   ...LAZY_ADDITIVE_STATE_TABLES,
+  "cron_run_history",
   "worker_session_tool_operations",
   "worker_turn_tool_authorities",
 ] as const;
@@ -172,10 +175,12 @@ const STATE_MIGRATION_ALLOWED_MISSING_TABLES = {
   10: STATE_V6_ADDITIVE_TABLES,
   11: STATE_V6_ADDITIVE_TABLES,
   12: STATE_V6_ADDITIVE_TABLES,
-  13: LAZY_ADDITIVE_STATE_TABLES,
-  14: LAZY_ADDITIVE_STATE_TABLES,
-  15: LAZY_ADDITIVE_STATE_TABLES,
-  16: LAZY_ADDITIVE_STATE_TABLES,
+  13: [...LAZY_ADDITIVE_STATE_TABLES, "cron_run_history"],
+  14: [...LAZY_ADDITIVE_STATE_TABLES, "cron_run_history"],
+  15: [...LAZY_ADDITIVE_STATE_TABLES, "cron_run_history"],
+  16: [...LAZY_ADDITIVE_STATE_TABLES, "cron_run_history"],
+  17: [...LAZY_ADDITIVE_STATE_TABLES, "cron_run_history"],
+  18: [...LAZY_ADDITIVE_STATE_TABLES, "cron_run_history"],
 } as const satisfies Record<number, readonly string[]>;
 type OpenClawStateMigrationVersion = keyof typeof STATE_MIGRATION_ALLOWED_MISSING_TABLES;
 
@@ -254,9 +259,14 @@ function assertOpenClawStateDatabaseVersionForMigration(
       `OpenClaw state database ${options.pathname} metadata schema version ${schemaVersion} does not match ${userVersion}; repair the ownership metadata before migrating it.`,
     );
   }
-  assertSqliteSchemaTablesPresent(database, options.pathname, OPENCLAW_STATE_SCHEMA_SQL, {
-    allowedMissingTables: STATE_MIGRATION_ALLOWED_MISSING_TABLES[options.version],
-  });
+  assertSqliteSchemaTablesPresent(
+    database,
+    options.pathname,
+    OPENCLAW_STATE_SCHEMA_SQL + RETIRED_TASK_SCHEMA_SQL,
+    {
+      allowedMissingTables: STATE_MIGRATION_ALLOWED_MISSING_TABLES[options.version],
+    },
+  );
 }
 
 /** Keep historical migration gates beside their version-specific ownership assertions. */
@@ -264,7 +274,7 @@ export const openClawStateMigrationAssertions = new Map<
   number,
   (database: DatabaseSync, options: { pathname: string }) => void
 >(
-  ([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16] as const).map(
+  ([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18] as const).map(
     (version) =>
       [
         version,
@@ -371,6 +381,26 @@ function migratePreparedWorkerOwnership(db: DatabaseSync, previousVersion: numbe
   // markers commit together, preserving inbound foreign keys and cleanup rows.
   for (const column of columns) {
     changed = ensureColumn(db, "worker_environments", column) || changed;
+  }
+  return changed;
+}
+
+/** Historical publication rows retain unknown requesters; first use still owns absent tables. */
+function migrateGitHubPublicationRequesterAuthority(
+  db: DatabaseSync,
+  previousVersion: number,
+): boolean {
+  if (previousVersion >= 18) {
+    return false;
+  }
+  let changed = false;
+  for (const table of [
+    "github_publication_session_lifecycles",
+    "github_repository_publication_requests",
+  ]) {
+    if (tableExists(db, table)) {
+      changed = ensureColumn(db, table, "requester_authority_json TEXT") || changed;
+    }
   }
   return changed;
 }
@@ -533,6 +563,15 @@ export const versionedStateMigrations: ReadonlyArray<{
   {
     migrate: migratePreparedWorkerOwnership,
     applied: "Recorded prepared worker ownership and one-use lifecycle (v17)",
+  },
+  {
+    migrate: migrateGitHubPublicationRequesterAuthority,
+    applied: "Added original requester authority to GitHub publication receipts (v18)",
+  },
+  {
+    migrate: migrateTasksRetirementV19,
+    applied:
+      "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
   },
 ];
 

@@ -154,6 +154,8 @@ export function dispatchAgentRunFromGateway(params: {
     );
   };
   const assertCurrent = () => {
+    // Preserve the run's recorded cancellation before a retired source rejects its authority.
+    params.abortController.signal.throwIfAborted();
     params.assertCurrent?.();
     params.abortController.signal.throwIfAborted();
   };

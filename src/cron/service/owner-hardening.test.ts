@@ -34,6 +34,7 @@ import {
   releaseLocalCronRunReceiptOwnership,
 } from "../store/run-receipt-store.js";
 import { inspectActiveCronRunReceipt } from "../store/run-receipt-store.test-support.js";
+import { prepareCronRunReceiptWriteSchema } from "../store/run-receipt-write-admission.js";
 import type { CronJob } from "../types.js";
 import { listForeignReceipts } from "./foreign-receipt-monitor.js";
 import { findCronRunRecoveryInDatabase } from "./run-history-recovery.js";
@@ -320,6 +321,7 @@ function claimMarkerlessReceipt(storePath: string, job: CronJob, startedAtMs: nu
   return runOpenClawStateWriteTransaction(({ db }) =>
     claimCronRunReceiptInDatabase({
       database: db,
+      receiptSchema: prepareCronRunReceiptWriteSchema(db),
       prepared,
       resolveAgentId: (current) => current.agentId!,
     }),

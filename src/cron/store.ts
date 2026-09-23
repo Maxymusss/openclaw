@@ -25,6 +25,7 @@ import {
   readCronJobsFingerprint,
 } from "./store/row-codec.js";
 import type { CronJobFamilyIdentity } from "./store/row-codec.js";
+import { prepareCronRunReceiptWriteSchema } from "./store/run-receipt-write-admission.js";
 import { CronJobsStoreChangedError, restoreCronSaveError } from "./store/save-error.js";
 import type {
   CronStoreSaveWorkerOperations,
@@ -38,7 +39,10 @@ import {
   saveCronStoreInDatabase,
 } from "./store/save.kernel.js";
 import type { CronStoreChangesOptions, CronStoreSaveOptions } from "./store/save.types.js";
-import type { CronStoreTransactionHooks } from "./store/transaction-hooks.types.js";
+import type {
+  CronAdmittedStoreTransactionHooks,
+  CronStoreTransactionHooks,
+} from "./store/transaction-hooks.types.js";
 import type { LoadedCronStore } from "./store/types.js";
 import type { CronStoreFile } from "./types.js";
 export { resolveCronJobsStorePath, resolveCronJobsStorePathFromConfig } from "./store/paths.js";
@@ -170,7 +174,10 @@ function publishCronStoreSaveRevision(storeKey: string, observedRevision: number
 
 function commitCronStoreNative<Value>(
   storeKey: string,
-  operation: (database: OpenClawStateDatabase) => Value,
+  operation: (
+    database: OpenClawStateDatabase,
+    admittedHooks: CronAdmittedStoreTransactionHooks | undefined,
+  ) => Value,
   hooks: CronStoreTransactionHooks | undefined,
   operationLabel?: string,
 ): CronStoreCommit<Value> {
@@ -179,7 +186,10 @@ function commitCronStoreNative<Value>(
   try {
     const value = runOpenClawStateWriteTransaction(
       (database) => {
-        const result = operation(database);
+        const admittedHooks = hooks
+          ? { hooks, receiptSchema: prepareCronRunReceiptWriteSchema(database.db) }
+          : undefined;
+        const result = operation(database, admittedHooks);
         deferSqlitePostCommitPublication(database.db, () => {
           committed = true;
         });
@@ -245,8 +255,8 @@ export function saveCronJobsStoreChangesWithRevisionNative(
   const { transactionHooks, ...options } = opts ?? {};
   return commitCronStoreNative(
     storeKey,
-    ({ db }) =>
-      saveCronStoreChangesInDatabase(db, storeKey, storeKey, prepared, options, transactionHooks),
+    ({ db }, admittedHooks) =>
+      saveCronStoreChangesInDatabase(db, storeKey, storeKey, prepared, options, admittedHooks),
     transactionHooks,
     "cron.config-mutation",
   );
@@ -298,8 +308,8 @@ export function saveCronJobsStoreWithRevisionNative(
   const { transactionHooks, ...options } = opts ?? {};
   return commitCronStoreNative(
     storeKey,
-    (database) => {
-      saveCronStoreInDatabase(database, storeKey, store, options, transactionHooks);
+    (database, admittedHooks) => {
+      saveCronStoreInDatabase(database, storeKey, store, options, admittedHooks);
       return undefined;
     },
     transactionHooks,

@@ -1,4 +1,4 @@
-// Exercises the automatic sender with real task/session stores and recording transport.
+// Exercises the automatic sender with real native completion/session stores and recording transport.
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
@@ -24,6 +24,8 @@ import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/c
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { reconcileHarnessCompletionDelivery } from "../agent-harness-completion-delivery.js";
 import { captureAdmittedHarnessCompletionForTest } from "../agent-harness-completion.test-support.js";
+import { resolveSourceReplyDelivery } from "../embedded-agent-runner/delivery-evidence.js";
+import type { EmbeddedAgentRunResult } from "../embedded-agent-runner/types.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
 import { deliverAgentCommandResult } from "./delivery.js";
 
@@ -94,6 +96,7 @@ describe("native completion final-send custody", () => {
           await replaceSessionEntry(target, admittedEntry);
           const payloads = [{ text: "The completed child result" }];
           const marker = await persistPendingFinalDeliveryMarker({
+            agentId: target.agentId,
             deliver: true,
             sessionStore: { [key]: admittedEntry },
             sessionKey: key,
@@ -273,7 +276,7 @@ describe("native completion final-send custody", () => {
           // Revocation must not leave a queued stale reply for a later drain.
           expect(await loadPendingDeliveries(state.stateDir)).toEqual([]);
           if (outcome === "unchanged") {
-            // Reopen task state as startup would: queue acknowledgment must not
+            // Reconcile native completion state as startup would: queue acknowledgment must not
             // be the only copy of the exact harness completion receipt.
             expect(
               reconcileHarnessCompletionDelivery({
@@ -287,4 +290,61 @@ describe("native completion final-send custody", () => {
       },
     );
   }
+});
+
+describe("message-tool source reply custody", () => {
+  it.each([
+    {
+      name: "confirmed source reply",
+      result: { didDeliverSourceReplyViaMessageTool: true },
+      expected: "delivered",
+    },
+    {
+      name: "current-source receipt",
+      result: { sourceReplyDelivered: true },
+      expected: "delivered",
+    },
+    {
+      name: "source final payload",
+      result: {
+        messagingToolSourceReplyPayloads: [{ text: "Done", sourceReplyFinal: true }],
+      },
+      expected: "delivered",
+    },
+    {
+      name: "source progress without a final",
+      result: {
+        sourceReplyDelivered: true,
+        messagingToolSourceReplyPayloads: [{ text: "Working", sourceReplyFinal: false }],
+      },
+      expected: "missing",
+    },
+    {
+      name: "pending source delivery",
+      result: { sourceReplyDeliveryState: "pending" },
+      expected: "pending",
+    },
+    {
+      name: "an unrelated outbound send",
+      result: { didSendViaMessagingTool: true, messagingToolSentTexts: ["Elsewhere"] },
+      expected: "missing",
+    },
+  ] satisfies Array<{ name: string; result: Partial<EmbeddedAgentRunResult>; expected: string }>)(
+    "preserves reply satisfaction for $name when automatic delivery is disabled",
+    async ({ result, expected }) => {
+      setActivePluginRegistry(createTestRegistry());
+      const delivered = await deliverAgentCommandResult({
+        cfg: {},
+        deps: {},
+        runtime: { log: () => {}, error: () => {}, exit: () => {} },
+        opts: { message: "Private completion", deliver: false },
+        outboundSession: undefined,
+        sessionEntry: undefined,
+        payloads: [],
+        result: { meta: { durationMs: 1 }, ...result },
+      });
+
+      expect(resolveSourceReplyDelivery(delivered)).toBe(expected);
+    },
+  );
 });

@@ -223,6 +223,7 @@ export class AcpSessionManager {
   }
 
   async getSessionStatus(params: {
+    assertActive?: () => void;
     cfg: OpenClawConfig;
     sessionKey: string;
     agentId?: string;
@@ -234,6 +235,7 @@ export class AcpSessionManager {
       target,
       async (isCurrentActor) =>
         await runManagerGetSessionStatus({
+          assertActive: params.assertActive,
           cfg: params.cfg,
           ...target,
           signal: params.signal,
@@ -248,6 +250,7 @@ export class AcpSessionManager {
   }
 
   async setSessionRuntimeMode(params: {
+    assertActive?: () => void;
     cfg: OpenClawConfig;
     sessionKey: string;
     agentId?: string;
@@ -258,6 +261,7 @@ export class AcpSessionManager {
 
     return await this.withSessionActor(target, async (isCurrentActor) => {
       return await runSetManagerSessionRuntimeMode({
+        assertActive: params.assertActive,
         cfg: params.cfg,
         ...target,
         runtimeMode,
@@ -267,6 +271,7 @@ export class AcpSessionManager {
   }
 
   async setSessionConfigOption(params: {
+    assertActive?: () => void;
     cfg: OpenClawConfig;
     sessionKey: string;
     agentId?: string;
@@ -280,6 +285,7 @@ export class AcpSessionManager {
 
     return await this.withSessionActor(target, async (isCurrentActor) => {
       return await runSetManagerSessionConfigOption({
+        assertActive: params.assertActive,
         cfg: params.cfg,
         ...target,
         key,
@@ -290,6 +296,7 @@ export class AcpSessionManager {
   }
 
   async updateSessionRuntimeOptions(params: {
+    assertActive?: () => void;
     cfg: OpenClawConfig;
     sessionKey: string;
     agentId?: string;
@@ -300,6 +307,7 @@ export class AcpSessionManager {
 
     return await this.withSessionActor(target, async (isCurrentActor) => {
       return await runUpdateManagerSessionRuntimeOptions({
+        assertActive: params.assertActive,
         cfg: params.cfg,
         ...target,
         patch: validatedPatch,
@@ -309,6 +317,7 @@ export class AcpSessionManager {
   }
 
   async resetSessionRuntimeOptions(params: {
+    assertActive?: () => void;
     cfg: OpenClawConfig;
     sessionKey: string;
     agentId?: string;
@@ -316,6 +325,7 @@ export class AcpSessionManager {
     const target = resolveAcpSessionTarget(params);
     return await this.withSessionActor(target, async (isCurrentActor) => {
       return await runResetManagerSessionRuntimeOptions({
+        assertActive: params.assertActive,
         cfg: params.cfg,
         ...target,
         ...this.runtimeOptionCommandServices(isCurrentActor),
@@ -356,6 +366,7 @@ export class AcpSessionManager {
   }
 
   async cancelSession(params: {
+    assertActive?: () => void;
     cfg: OpenClawConfig;
     sessionKey: string;
     agentId?: string;
@@ -366,6 +377,7 @@ export class AcpSessionManager {
   }): Promise<void> {
     const target = resolveAcpSessionTarget(params);
     await runManagerCancelSession({
+      assertActive: params.assertActive,
       cfg: params.cfg,
       ...target,
       reason: params.reason,

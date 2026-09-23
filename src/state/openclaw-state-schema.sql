@@ -299,8 +299,8 @@ CREATE INDEX IF NOT EXISTS execution_decision_facts_context_occurred_idx
 CREATE INDEX IF NOT EXISTS execution_decision_facts_run_occurred_idx
   ON execution_decision_facts (run_id, occurred_at, receipt_id);
 
--- Exact admission identity stays separate from owner-native lifecycle rows so
--- older readers retain byte-compatible cron/task/flow table definitions.
+-- Exact Cron admission identity stays separate from owner-native lifecycle rows.
+-- Schema 19 retires only the legacy task/flow bindings, not shared audit contexts.
 CREATE TABLE IF NOT EXISTS execution_owner_lifecycle_bindings (
   owner_kind TEXT NOT NULL,
   owner_id TEXT NOT NULL,
@@ -568,6 +568,12 @@ CREATE TABLE IF NOT EXISTS operator_approval_standing_grants (
 
 CREATE INDEX IF NOT EXISTS idx_operator_approval_standing_grants_binding
   ON operator_approval_standing_grants(agent_id, cron_job_id, operation_binding, created_at_ms DESC);
+
+CREATE TABLE IF NOT EXISTS operator_approval_standing_grant_generations (
+  grant_id TEXT NOT NULL PRIMARY KEY
+    REFERENCES operator_approval_standing_grants(grant_id) ON DELETE CASCADE,
+  job_definition_generation INTEGER NOT NULL CHECK (job_definition_generation >= 1)
+) STRICT;
 
 CREATE TABLE IF NOT EXISTS schema_meta (
   meta_key TEXT NOT NULL PRIMARY KEY,
@@ -1461,6 +1467,9 @@ CREATE TABLE IF NOT EXISTS cron_jobs (
   agent_id TEXT,
   payload_kind TEXT NOT NULL,
   job_json TEXT NOT NULL,
+  grant_definition_revision TEXT,
+  grant_definition_generation INTEGER,
+  grant_definition_updated_at INTEGER,
   state_json TEXT NOT NULL DEFAULT '{}',
   runtime_updated_at_ms INTEGER,
   schedule_identity TEXT,
@@ -1581,55 +1590,24 @@ CREATE INDEX IF NOT EXISTS idx_delivery_queue_target
   ON delivery_queue_entries(queue_name, status, channel, target, enqueued_at, id)
   WHERE channel IS NOT NULL AND target IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS task_runs (
-  task_id TEXT NOT NULL PRIMARY KEY,
-  runtime TEXT NOT NULL,
-  task_kind TEXT,
-  source_id TEXT,
-  requester_session_key TEXT,
-  owner_key TEXT NOT NULL,
-  scope_kind TEXT NOT NULL,
-  child_session_key TEXT,
-  parent_flow_id TEXT,
-  parent_task_id TEXT,
-  agent_id TEXT,
-  requester_agent_id TEXT,
+CREATE TABLE IF NOT EXISTS cron_run_history (
+  history_id TEXT NOT NULL PRIMARY KEY,
+  job_id TEXT,
   run_id TEXT,
-  execution_owner_host TEXT,
-  execution_owner_pid INTEGER,
-  execution_owner_start_identity INTEGER,
-  label TEXT,
-  task TEXT NOT NULL,
-  status TEXT NOT NULL,
-  delivery_status TEXT NOT NULL,
-  notify_policy TEXT NOT NULL,
+  agent_id TEXT,
+  session_key TEXT,
   created_at INTEGER NOT NULL,
   started_at INTEGER,
   ended_at INTEGER,
   last_event_at INTEGER,
   cleanup_after INTEGER,
-  tool_use_count INTEGER,
-  last_tool_name TEXT,
+  status TEXT NOT NULL,
   error TEXT,
-  progress_summary TEXT,
-  terminal_summary TEXT,
-  terminal_outcome TEXT,
+  summary TEXT,
   detail_json TEXT
 ) STRICT;
 
-CREATE INDEX IF NOT EXISTS idx_task_runs_run_id ON task_runs(run_id);
-CREATE INDEX IF NOT EXISTS idx_task_runs_status ON task_runs(status);
-CREATE INDEX IF NOT EXISTS idx_task_runs_runtime_status ON task_runs(runtime, status);
-CREATE INDEX IF NOT EXISTS idx_task_runs_cleanup_after ON task_runs(cleanup_after);
-CREATE INDEX IF NOT EXISTS idx_task_runs_last_event_at ON task_runs(last_event_at);
-CREATE INDEX IF NOT EXISTS idx_task_runs_owner_key ON task_runs(owner_key);
-CREATE INDEX IF NOT EXISTS idx_task_runs_parent_flow_id ON task_runs(parent_flow_id);
-CREATE INDEX IF NOT EXISTS idx_task_runs_child_session_key ON task_runs(child_session_key);
-CREATE INDEX IF NOT EXISTS idx_task_runs_requester_session_key ON task_runs(requester_session_key);
-CREATE INDEX IF NOT EXISTS idx_task_runs_runtime_source_ended
-  ON task_runs(runtime, source_id, ended_at, created_at, task_id);
-CREATE INDEX IF NOT EXISTS idx_task_runs_runtime_ended
-  ON task_runs(runtime, ended_at, created_at, task_id);
+CREATE INDEX IF NOT EXISTS idx_cron_run_history_job ON cron_run_history(job_id);
 
 CREATE TABLE IF NOT EXISTS subagent_runs (
   run_id TEXT NOT NULL PRIMARY KEY,
@@ -1686,39 +1664,6 @@ CREATE TABLE IF NOT EXISTS plugin_binding_approvals (
 
 CREATE INDEX IF NOT EXISTS idx_plugin_binding_approvals_plugin
   ON plugin_binding_approvals(plugin_id, approved_at DESC);
-
-CREATE TABLE IF NOT EXISTS task_delivery_state (
-  task_id TEXT NOT NULL PRIMARY KEY,
-  requester_origin_json TEXT,
-  last_notified_event_at INTEGER,
-  FOREIGN KEY (task_id) REFERENCES task_runs(task_id) ON DELETE CASCADE
-) STRICT;
-
-CREATE TABLE IF NOT EXISTS flow_runs (
-  flow_id TEXT NOT NULL PRIMARY KEY,
-  shape TEXT,
-  sync_mode TEXT NOT NULL DEFAULT 'managed',
-  owner_key TEXT NOT NULL,
-  requester_origin_json TEXT,
-  controller_id TEXT,
-  revision INTEGER NOT NULL DEFAULT 0,
-  status TEXT NOT NULL,
-  notify_policy TEXT NOT NULL,
-  goal TEXT NOT NULL,
-  current_step TEXT,
-  blocked_task_id TEXT,
-  blocked_summary TEXT,
-  state_json TEXT,
-  wait_json TEXT,
-  cancel_requested_at INTEGER,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL,
-  ended_at INTEGER
-) STRICT;
-
-CREATE INDEX IF NOT EXISTS idx_flow_runs_status ON flow_runs(status);
-CREATE INDEX IF NOT EXISTS idx_flow_runs_owner_key ON flow_runs(owner_key);
-CREATE INDEX IF NOT EXISTS idx_flow_runs_updated_at ON flow_runs(updated_at);
 
 -- Durable meeting-capture sessions are gateway-global rather than agent-session
 -- transcripts. JSON/JSONL files are doctor import inputs or explicit CLI exports.
@@ -2066,6 +2011,7 @@ CREATE TABLE IF NOT EXISTS github_repository_publication_requests (
   request_digest TEXT NOT NULL,
   session_id TEXT NOT NULL,
   session_lifecycle_revision TEXT,
+  requester_authority_json TEXT,
   session_key TEXT NOT NULL,
   agent_id TEXT NOT NULL,
   workspace_id TEXT NOT NULL,
@@ -2504,6 +2450,7 @@ CREATE TABLE IF NOT EXISTS github_publication_session_lifecycles (
   publication_kind TEXT NOT NULL CHECK (publication_kind IN ('shared', 'personal')),
   request_id TEXT NOT NULL,
   lifecycle_revision TEXT,
+  requester_authority_json TEXT,
   PRIMARY KEY (publication_kind, request_id)
 ) STRICT;
 

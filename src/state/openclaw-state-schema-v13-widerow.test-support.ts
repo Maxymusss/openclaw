@@ -1,4 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
+import { PRE_V19_TASK_SCHEMA_SQL } from "./openclaw-state-schema-v19.test-support.js";
 
 // Historical readers compare complete column definitions, so ALTER ADD defaults
 // cannot restore v12's NOT NULL columns; rebuild both exact original contracts.
@@ -463,6 +464,7 @@ SELECT 'shared', value_json, updated_at_ms
 DELETE FROM config_machine_state
  WHERE state_key IN ('authProfiles.store', 'authProfiles.state');
 
+${PRE_V19_TASK_SCHEMA_SQL}
 PRAGMA user_version = 12;
 UPDATE schema_meta SET schema_version = 12 WHERE meta_key = 'primary';
 COMMIT;

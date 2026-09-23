@@ -562,7 +562,13 @@ export const CORE_GATEWAY_METHOD_SPECS = [
     "2026.8",
     CONTROL_PLANE_WRITE,
   ],
-  ["sessions.github.publish", "sessions-github", "operator.write", "2026.8", CONTROL_PLANE_WRITE],
+  [
+    "sessions.github.publish",
+    "sessions-github",
+    "operator.sessions.write",
+    "2026.8",
+    CONTROL_PLANE_WRITE,
+  ],
   ["diagnostics.lanes", "diagnostics", "operator.read", "2026.8"],
   // Evidence-aware member projection is additive so legacy method indices and
   // its required `addedBy` response contract remain unchanged.
@@ -695,4 +701,13 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["controlUi.githubDetail", "control-ui", "operator.read", "2026.9"],
   ["progressCard.refresh", "progress-card", "operator.write", "2026.9"],
   ["cron.history", "cron", "operator.read", "2026.9"],
+  ["webSearch.status", "web-search", "operator.read", "2026.9"],
+  ["webSearch.test", "web-search", "operator.admin", "2026.9"],
+  ["sessions.providerReview.continue", "sessions-provider-review", "operator.write", "2026.9"],
+  ["users.linkChannelIdentity", "users", "operator.admin", "2026.9"],
+  ["users.unlinkChannelIdentity", "users", "operator.admin", "2026.9"],
+  ["users.listChannelIdentities", "users", "operator.admin", "2026.9"],
+  // Self-service personal instructions never authorize shared workspace writes.
+  ["users.personalFile.get", "users", "operator.read", "2026.9"],
+  ["users.personalFile.set", "users", "operator.read", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

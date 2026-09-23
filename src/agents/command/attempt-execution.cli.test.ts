@@ -586,15 +586,12 @@ describe("CLI attempt execution", () => {
       runCliAgentMock.mockResolvedValueOnce(makeCliResult("recovered"));
       runEmbeddedAgentMock.mockResolvedValueOnce({ meta: { durationMs: 1 } });
 
-      await runAgentAttempt({
+      await runStoredAttempt({
         providerOverride: runtime === "cli" ? "claude-cli" : "openai",
         modelOverride: runtime === "cli" ? "opus" : "gpt-5.4",
         sessionEntry,
         sessionKey,
         sessionStore,
-        storePath,
-        workspaceDir: tmpDir,
-        agentDir,
         opts: { pinnedWidgetAuthoring: true },
         runContext: { replyToMode: "all" },
       });
@@ -618,12 +615,11 @@ describe("CLI attempt execution", () => {
     onAgentEvent?: RunAgentAttemptParams["onAgentEvent"];
     classifyResult?: RunAgentAttemptParams["classifyResult"];
   }) {
-    await runAgentAttempt({
+    await runStoredAttempt({
       providerOverride: "claude-cli",
       modelOverride: "opus",
       sessionEntry: params.sessionEntry,
       sessionKey: params.sessionKey,
-      workspaceDir: tmpDir,
       cwd: params.cwd,
       body: params.body,
       classifyResult: params.classifyResult,
@@ -633,9 +629,7 @@ describe("CLI attempt execution", () => {
         abortSignal: params.abortSignal,
       },
       ...(params.onAgentEvent ? { onAgentEvent: params.onAgentEvent } : {}),
-      agentDir,
       sessionStore: params.sessionStore,
-      storePath,
     });
   }
 

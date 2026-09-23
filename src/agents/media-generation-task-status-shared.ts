@@ -11,9 +11,7 @@ import {
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import { getRuntimeConfig } from "../config/config.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
-import { resolveSessionAgentId } from "./agent-scope.js";
 import type { MediaGenerationOperation } from "./media-generation-activity.js";
 import { listMediaGenerationOperations } from "./media-generation-activity.js";
 import { sanitizeForPromptLiteral } from "./sanitize-for-prompt.js";
@@ -111,14 +109,7 @@ function resolveMediaGenerationTaskRequesterAgentId(
   if (parsed) {
     return parsed;
   }
-  if (!ownerKey) {
-    return undefined;
-  }
-  try {
-    return resolveSessionAgentId({ config: getRuntimeConfig(), sessionKey: ownerKey });
-  } catch {
-    return undefined;
-  }
+  return undefined;
 }
 
 function isTaskStillBlockingDuplicateGuard(task: MediaGenerationOperation): boolean {

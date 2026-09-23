@@ -5,12 +5,12 @@ import { callGateway } from "../../../gateway/call.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import { getActiveGatewayRootWorkCount } from "../../../process/gateway-work-admission.js";
 import { observeMainThreadSql } from "../../../test-utils/main-thread-sql-spies.js";
-import { subagentRegistryDeps } from "./subagent-registry-deps.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { SubagentRegistryWriteError } from "./subagent-registry-persistence.js";
 import { createSubagentRegistryRestorer } from "./subagent-registry-restore.js";
 import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
 import type { SubagentManagerOptions } from "./subagent-registry-run-wait.js";
+import { restoreSubagentRunsFromDisk } from "./subagent-registry-state.js";
 import type { SubagentRegistrationScope, SubagentRunRecord } from "./subagent-registry.types.js";
 
 const fixture = vi.hoisted(() => ({
@@ -25,6 +25,7 @@ vi.mock("../../../config/sessions/session-accessor.js", () => ({
   },
 }));
 vi.mock("../../../gateway/call.js", () => ({ callGateway: vi.fn() }));
+vi.mock("./subagent-registry-state.js", { spy: true });
 vi.mock("./subagent-session-reconciliation.js", () => ({
   loadSubagentSessionEntry: () => ({
     sessionId: fixture.sessionId,
@@ -37,6 +38,7 @@ beforeEach(() => {
   subagentRuns.clear();
 });
 afterEach(() => {
+  vi.mocked(restoreSubagentRunsFromDisk).mockReset();
   subagentRuns.clear();
 });
 
@@ -104,19 +106,14 @@ it.each(["restart", "restart with newer sibling", "confirmed Stop"] as const)(
     const cleaned = vi.fn();
     const resume = vi.fn();
     const startQueued = vi.fn(() => true);
+    vi.mocked(restoreSubagentRunsFromDisk).mockImplementation(({ runs }) => {
+      for (const [id, entry] of stored) {
+        runs.set(id, structuredClone(entry));
+      }
+      return stored.size;
+    });
     const restorer = createSubagentRegistryRestorer({
       runs: subagentRuns,
-      deps: () => ({
-        ...subagentRegistryDeps,
-        getRuntimeConfig: () => ({}),
-        callGateway: transport,
-        restoreSubagentRunsFromDisk: ({ runs }) => {
-          for (const [id, entry] of stored) {
-            runs.set(id, structuredClone(entry));
-          }
-          return stored.size;
-        },
-      }),
       getGatewayContextResolver: () => undefined,
       bindGatewayOwners: () => true,
       persist,

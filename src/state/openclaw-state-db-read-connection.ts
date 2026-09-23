@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
+import type { ExecutionIdentityInspectionSchemaFacts } from "../audit/execution-identity-context.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import {
   createSqliteLifecycleAggregateError,
@@ -9,7 +10,10 @@ import {
 import { SQLITE_IDLE_HANDLE_TTL_MS } from "../infra/sqlite-handle-lifecycle.js";
 import type { PreparedSqliteReadOnlyLocation } from "../infra/sqlite-readonly-location.types.js";
 import { acquireSqliteSnapshotReadToken } from "../infra/sqlite-snapshot-staging.js";
-import { assertTransactionUsable } from "../infra/sqlite-transaction.js";
+import {
+  assertTransactionUsable,
+  runSqliteDeferredTransactionSync,
+} from "../infra/sqlite-transaction.js";
 import {
   registerSqliteCacheExitClose,
   runInSqliteMaintenanceContext,
@@ -30,6 +34,36 @@ import { openTrackedStateDatabaseResult } from "./openclaw-state-db-handle.js";
 import { isExistingOpenClawStateSchema } from "./openclaw-state-db-schema-policy.js";
 import { assertSupportedStateSchemaVersion } from "./openclaw-state-db-schema-version.js";
 import type { OpenClawStateReadOnlyDatabase } from "./openclaw-state-read.types.js";
+
+type RequestedReadSchemaFacts = "executionIdentityInspection";
+type AdmittedReadSchemaFacts = Readonly<{
+  executionIdentityInspection?: ExecutionIdentityInspectionSchemaFacts;
+}>;
+type AdmittedReadOperation<T> = (
+  database: OpenClawStateReadOnlyDatabase,
+  schemaFacts: AdmittedReadSchemaFacts,
+) => T;
+
+/** Read admission owns optional feature presence; queries consume these facts. */
+function readExecutionIdentityInspectionSchemaFacts(
+  database: DatabaseSync,
+): ExecutionIdentityInspectionSchemaFacts {
+  // sqlite-allow-raw -- Audit-only read admission captures four feature-table facts in its read snapshot.
+  const names = new Set(
+    database
+      .prepare(
+        "SELECT name FROM sqlite_schema WHERE type = 'table' AND name IN ('execution_identity_contexts', 'audit_events', 'cron_run_receipts', 'execution_owner_lifecycle_bindings')",
+      )
+      .all()
+      .map((row) => row.name),
+  );
+  return {
+    executionIdentityContexts: names.has("execution_identity_contexts"),
+    auditEvents: names.has("audit_events"),
+    cronRunReceipts: names.has("cron_run_receipts"),
+    executionOwnerLifecycleBindings: names.has("execution_owner_lifecycle_bindings"),
+  };
+}
 
 export type OpenClawStateReadConnection = {
   database: Pick<OpenClawStateDatabase, "db" | "path">;
@@ -172,13 +206,14 @@ function assertStateReadSchemaForPolicy(
 }
 
 export function withOpenClawStateReadOnlyLocation<T>(
-  operation: (database: OpenClawStateReadOnlyDatabase) => T,
+  operation: AdmittedReadOperation<T>,
   pathname: string,
   source: string | PreparedSqliteReadOnlyLocation,
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
   expectedIdentity?: string,
   snapshotRoot?: string,
   retainConnection = false,
+  requestedSchemaFacts?: RequestedReadSchemaFacts,
 ): T {
   const result = readOpenClawStateReadOnlyLocation(
     operation,
@@ -188,6 +223,7 @@ export function withOpenClawStateReadOnlyLocation<T>(
     expectedIdentity,
     snapshotRoot,
     retainConnection,
+    requestedSchemaFacts,
   );
   if (result.status === "unavailable") {
     throw result.error;
@@ -197,13 +233,14 @@ export function withOpenClawStateReadOnlyLocation<T>(
 
 /** Return a failed read only after its native reader and admission have settled. */
 export function readOpenClawStateReadOnlyLocation<T>(
-  operation: (database: OpenClawStateReadOnlyDatabase) => T,
+  operation: AdmittedReadOperation<T>,
   pathname: string,
   source: string | PreparedSqliteReadOnlyLocation,
   openStateSchemaReadAdmission?: OpenClawStateSchemaReadAdmission,
   expectedIdentity?: string,
   snapshotRoot?: string,
   retainConnection = false,
+  requestedSchemaFacts?: RequestedReadSchemaFacts,
 ): OpenClawStateSettledRead<T> {
   const opening =
     retainConnection && source === pathname && !snapshotRoot && !process.versions.bun
@@ -221,8 +258,27 @@ export function readOpenClawStateReadOnlyLocation<T>(
     // Scope and path policy are authority, not ordinary schema SQL failure.
     const existingSchema = isExistingOpenClawStateSchema(pathname, opened.database.db);
     try {
-      assertStateReadSchemaForPolicy(opened.database.db, pathname, existingSchema);
-      result = { status: "available", value: operation(opened.database) };
+      const read = () => {
+        assertStateReadSchemaForPolicy(opened.database.db, pathname, existingSchema);
+        const schemaFacts: AdmittedReadSchemaFacts =
+          requestedSchemaFacts === "executionIdentityInspection"
+            ? {
+                executionIdentityInspection: readExecutionIdentityInspectionSchemaFacts(
+                  opened.database.db,
+                ),
+              }
+            : {};
+        return operation(opened.database, schemaFacts);
+      };
+      // A retained handle can predate first-use table allocation. Capture facts
+      // anew at requested read admission, in the same snapshot as their queries;
+      // no competing feature cache or probes on unrelated commands are needed.
+      result = {
+        status: "available",
+        value: requestedSchemaFacts
+          ? runSqliteDeferredTransactionSync(opened.database.db, read)
+          : read(),
+      };
     } catch (error) {
       result = { status: "unavailable", error };
     }

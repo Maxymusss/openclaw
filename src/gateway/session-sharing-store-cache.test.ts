@@ -1,11 +1,19 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as sessionsConfig from "../config/sessions.js";
 import * as sessionAccessor from "../config/sessions/session-accessor.js";
-import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
+import {
+  addSessionMember,
+  removeSessionMember,
+} from "../config/sessions/session-sharing-store.native.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import {
+  initializeSessionReadContext,
+  requestContext,
+} from "./server-methods/sessions-read-cache.test-support.js";
 import type { GatewayClient } from "./server-methods/types.js";
+import { getSessionRowProjection } from "./session-row-projection-access.js";
 import {
   authorizeResolvedSessionMutation,
   canReceiveSessionEvent,
@@ -442,6 +450,11 @@ describe("session mutation authorization store caches", () => {
         );
       }
 
+      const cfg = {};
+      const context = requestContext(cfg);
+      await initializeSessionReadContext(context);
+      await getSessionRowProjection(context)!.prepareMembership();
+
       const materializations = new Map<string, number>();
       const originalListSessionEntries = sessionAccessor.listSessionEntriesCore;
       vi.spyOn(sessionAccessor, "listSessionEntriesCore").mockImplementation((scope) => {
@@ -453,17 +466,13 @@ describe("session mutation authorization store caches", () => {
         return entries;
       });
       const discoverySpy = vi.spyOn(sessionsConfig, "resolveExistingAgentSessionStoreTargetsSync");
-      const cfg = {};
 
       expect(
         resolveSessionMutationAuthorization({
           client: identifiedClient("viewer@example.com"),
           method: "sessions.groups.delete",
           requestParams: { name: "Cache Test" },
-          context: {
-            chatAbortControllers: new Map(),
-            getRuntimeConfig: () => cfg,
-          } as never,
+          context,
         }).error,
       ).toBeNull();
 

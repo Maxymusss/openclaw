@@ -19,6 +19,7 @@ import {
 } from "./openclaw-state-db-schema-helpers.js";
 import { OpenClawStateDatabaseSchemaMigrationRequiredError } from "./openclaw-state-db-schema-migration-required.js";
 import { FOLDED_SINGLETON_STATE_TABLES_V12 } from "./openclaw-state-db-schema-v12-foldin.js";
+import { RETIRED_TASK_TABLES } from "./openclaw-state-db-schema-v19-task-source.js";
 import { readStateSchemaMigrationVersion } from "./openclaw-state-db-schema-version.js";
 import * as sessionWatchMigration from "./openclaw-state-db-session-watch-migration.js";
 import {
@@ -325,6 +326,14 @@ export function repairLegacyGatewayRestartHandoffsForStrictMigration(db: Databas
 }
 
 export function assertCanonicalStateSchemaShape(db: DatabaseSync, pathname: string): void {
+  if (
+    readStateSchemaMigrationVersion(db) >= 19 &&
+    RETIRED_TASK_TABLES.some((table) => tableExists(db, table))
+  ) {
+    throw new Error(
+      "OpenClaw state database " + pathname + " still contains retired Tasks tables at schema 19.",
+    );
+  }
   operatorApprovalMigration.assertCanonicalOperatorApprovalKinds(db, pathname);
   if (!hasCanonicalAgentDatabasesPrimaryKey(db)) {
     if (canRepairAgentDatabasesPrimaryKey(db)) {
@@ -424,6 +433,20 @@ export function detectOpenClawStateDatabaseSchemaMigrationsFromDatabase(
     !tableHasColumn(db, "worker_environments", "preparation_consumed_at_ms")
   ) {
     migrations.push({ kind: "prepared-worker-ownership-v17", path: pathname });
+  }
+  if (
+    userVersion < 18 &&
+    ["github_publication_session_lifecycles", "github_repository_publication_requests"].some(
+      (table) => tableExists(db, table) && !tableHasColumn(db, table, "requester_authority_json"),
+    )
+  ) {
+    migrations.push({ kind: "github-publication-requester-authority-v18", path: pathname });
+  }
+  if (
+    userVersion < 19 &&
+    (userVersion > 0 || RETIRED_TASK_TABLES.some((table) => tableExists(db, table)))
+  ) {
+    migrations.push({ kind: "tasks-retirement-v19", path: pathname });
   }
   if (!hasCanonicalAgentDatabasesPrimaryKey(db)) {
     migrations.push({ kind: "agent-databases-composite-primary-key", path: pathname });

@@ -11,8 +11,12 @@ import {
   recordUpdateRunStep,
 } from "../../infra/update-run-ledger.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "../../state/openclaw-state-db-contract.js";
-import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  repairOpenClawStateDatabaseSchema,
+} from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { restorePreV19StateSchemaForTest } from "../../state/openclaw-state-schema-v19.test-support.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "../../state/openclaw-state-schema.js";
 import { createUnsafeIndexDrift } from "../../state/sqlite-index-drift.test-support.js";
 import { admitUpdateCommandRun, completeUpdateCommandRun } from "./update-command-run.js";
@@ -27,6 +31,8 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+// This suite exercises the retained pre-stop updater admission contract on v18.
+// Doctor/runtime v19 retirement is a later, separately fenced migration.
 function seededOrphans() {
   const root = dirs.make("update-task-delivery-");
   vi.stubEnv("OPENCLAW_STATE_DIR", root);
@@ -40,13 +46,14 @@ function seededOrphans() {
   fs.mkdirSync(path.dirname(filename), { recursive: true });
   const db = new DatabaseSync(filename);
   db.exec(OPENCLAW_STATE_SCHEMA_SQL);
-  db.exec(`PRAGMA user_version = ${OPENCLAW_STATE_SCHEMA_VERSION}; PRAGMA foreign_keys = OFF;`);
-  db.prepare("INSERT INTO schema_meta VALUES ('primary','global',?,NULL,'2026.9.4',1,1)").run(
-    OPENCLAW_STATE_SCHEMA_VERSION,
-  );
+  db.prepare("INSERT INTO schema_meta VALUES ('primary','global',18,NULL,'2026.9.4',1,1)").run();
+  restorePreV19StateSchemaForTest(db);
+  db.exec("PRAGMA foreign_keys = OFF;");
   db.exec(`INSERT INTO task_runs
-    (task_id,runtime,owner_key,scope_kind,task,status,delivery_status,notify_policy,created_at)
-    VALUES ('kept-task','subagent','fixture','session','keep','completed','delivered','always',1);
+    (task_id,runtime,owner_key,scope_kind,task,status,delivery_status,notify_policy,created_at,
+     source_id,terminal_summary,detail_json)
+    VALUES ('kept-task','cron','fixture','global','keep','succeeded','delivered','silent',1,
+     'deleted-cron-job',' preserved summary ',' { "raw": "preserved" } ');
     INSERT INTO task_delivery_state (task_id) VALUES ('kept-task');`);
   const rows = Array.from({ length: 18 }, (_, index) => ({
     task_id: `missing-task-${index}`,
@@ -72,12 +79,16 @@ function inspect<T>(filename: string, run: (db: DatabaseSync) => T): T {
   }
 }
 
-it("keeps repairable task-delivery state unchanged during update preview", async () => {
+it("keeps frozen pre-v19 task-delivery state unchanged during update preview", async () => {
   const f = seededOrphans();
   await expect(
     admitUpdateCommandRun({ opts: { dryRun: true }, root: f.root }).then(() => "admitted"),
   ).rejects.toThrow(/repairable[\s\S]*openclaw doctor --fix/iu);
   inspect(f.filename, (db) => {
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 18 });
+    expect(
+      db.prepare("SELECT schema_version FROM schema_meta WHERE meta_key = 'primary'").get(),
+    ).toEqual({ schema_version: 18 });
     expect(db.prepare("PRAGMA foreign_key_check").all()).toHaveLength(18);
     expect(db.prepare("SELECT count(*) AS count FROM update_runs").get()).toEqual({ count: 0 });
   });
@@ -88,7 +99,7 @@ it("keeps repairable task-delivery state unchanged during update preview", async
   ).toEqual([]);
 });
 
-it("admits cascade-owned task-delivery orphans with preservation and a durable recovery record", async () => {
+it("preserves pre-v19 admission recovery, then retires Tasks through the v19 migration", async () => {
   const f = seededOrphans();
   const run = await admitUpdateCommandRun({ opts: {}, root: f.root });
   const directories = fs
@@ -113,6 +124,13 @@ it("admits cascade-owned task-delivery orphans with preservation and a durable r
     expect(db.prepare("PRAGMA foreign_key_check").all()).toHaveLength(18);
   });
   inspect(f.filename, (db) => {
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 18 });
+    expect(
+      db.prepare("SELECT schema_version FROM schema_meta WHERE meta_key = 'primary'").get(),
+    ).toEqual({ schema_version: 18 });
+    expect(
+      db.prepare("SELECT name FROM sqlite_schema WHERE name = 'cron_run_history'").get(),
+    ).toBeUndefined();
     expect(db.prepare("SELECT task_id FROM task_delivery_state").all()).toEqual([
       { task_id: "kept-task" },
     ]);
@@ -135,6 +153,50 @@ it("admits cascade-owned task-delivery orphans with preservation and a durable r
   expect(record?.steps.find((step) => step.step === "task-delivery-recovery")?.detail).toContain(
     directories[0],
   );
+
+  // The serving-generation admission above must not run the destructive schema
+  // migration. The later Doctor owner retires all Task delivery rows, retaining
+  // Cron history and the already-recorded recovery archive/receipt unchanged.
+  expect(repairOpenClawStateDatabaseSchema({ env: f.env }).warnings).toEqual([]);
+  inspect(f.filename, (db) => {
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({
+      user_version: OPENCLAW_STATE_SCHEMA_VERSION,
+    });
+    expect(
+      db.prepare("SELECT schema_version FROM schema_meta WHERE meta_key = 'primary'").get(),
+    ).toEqual({ schema_version: OPENCLAW_STATE_SCHEMA_VERSION });
+    expect(
+      db
+        .prepare(
+          "SELECT name FROM sqlite_schema WHERE name IN ('task_runs', 'task_delivery_state', 'flow_runs')",
+        )
+        .all(),
+    ).toEqual([]);
+    expect(
+      db.prepare("SELECT history_id, job_id, summary, detail_json FROM cron_run_history").all(),
+    ).toEqual([
+      {
+        history_id: "kept-task",
+        job_id: "deleted-cron-job",
+        summary: " preserved summary ",
+        detail_json: ' { "raw": "preserved" } ',
+      },
+    ]);
+    expect(db.prepare("SELECT count(*) AS count FROM cron_run_receipts").get()).toEqual({
+      count: 0,
+    });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+  expect(getUpdateRun(run.runId, { env: f.env })?.steps).toEqual(record?.steps);
+  expect(
+    fs
+      .readdirSync(path.dirname(f.filename))
+      .filter((name) => name.startsWith("openclaw-task-delivery-recovery-")),
+  ).toEqual(directories);
+  inspect(path.join(directory, "database.sqlite"), (db) => {
+    expect(db.prepare("PRAGMA user_version").get()).toEqual({ user_version: 18 });
+    expect(db.prepare("PRAGMA foreign_key_check").all()).toHaveLength(18);
+  });
 });
 
 it.each([

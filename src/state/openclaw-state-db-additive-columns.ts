@@ -36,12 +36,12 @@ const lazyColumns = [
   ["web_push_subscriptions", "device_id", "TEXT", true],
   ["web_push_subscriptions", "user_profile_id", "TEXT", true],
   ["web_push_subscriptions", "preferences_json", "TEXT", true],
-  ["task_runs", "execution_owner_host", "TEXT", true],
-  ["task_runs", "execution_owner_pid", "INTEGER", true],
-  ["task_runs", "execution_owner_start_identity", "INTEGER", true],
   ["session_watch_cursors", "watcher_store_path", "TEXT", true],
   ["subagent_runs", "requester_store_path", "TEXT", true],
   ["subagent_runs", "controller_store_path", "TEXT", true],
+  ["cron_jobs", "grant_definition_revision", "TEXT"],
+  ["cron_jobs", "grant_definition_generation", "INTEGER"],
+  ["cron_jobs", "grant_definition_updated_at", "INTEGER"],
 ] as const satisfies readonly LazyColumn[];
 
 function lazyColumnDefinitions(firstUseOnly?: boolean) {
@@ -135,7 +135,7 @@ export const ORDERED_STARTUP_ADDITIVE_STATE_COLUMNS = {
   originalMediaRoot: [
     ["managed_outgoing_image_records", "original_media_root TEXT NOT NULL DEFAULT ''"],
   ],
-  beforeTaskAttribution: [
+  beforeSubagentRepair: [
     ["managed_outgoing_image_records", "agent_id TEXT"],
     [
       "managed_outgoing_image_records",
@@ -159,12 +159,6 @@ export const ORDERED_STARTUP_ADDITIVE_STATE_COLUMNS = {
     ["official_external_plugin_catalog_snapshots", "trust_signature_count INTEGER"],
     ["official_external_plugin_catalog_snapshots", "trust_threshold INTEGER"],
     ["official_external_plugin_catalog_snapshots", "trust_verified_at TEXT"],
-  ],
-  taskRequester: [["task_runs", "requester_agent_id TEXT"]],
-  taskRunDetails: [
-    ["task_runs", "tool_use_count INTEGER"],
-    ["task_runs", "last_tool_name TEXT"],
-    ["task_runs", "detail_json TEXT"],
   ],
   workerEnvironments: [
     ["worker_environments", "bootstrap_bundle_hash TEXT"],

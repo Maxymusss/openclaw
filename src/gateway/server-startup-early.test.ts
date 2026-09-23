@@ -115,10 +115,20 @@ describe("startGatewayEarlyRuntime", () => {
     mocks.startGatewayMaintenanceTimers.mockClear();
   });
 
-  it("does not eagerly start the MCP loopback server", async () => {
-    const earlyRuntime = await startGatewayEarlyRuntime(earlyRuntimeInput());
+  it.each([
+    { minimalTestGateway: true, updateCanary: false },
+    { minimalTestGateway: false, updateCanary: true },
+  ])("skips side runtimes for $minimalTestGateway minimal / $updateCanary canary", async (mode) => {
+    const earlyRuntime = await startGatewayEarlyRuntime(earlyRuntimeInput(mode));
 
     expect(earlyRuntime).not.toHaveProperty("mcpServer");
+    expect(mocks.startGatewayDiscovery).not.toHaveBeenCalled();
+    expect(mocks.setSkillsRemoteRegistry).not.toHaveBeenCalled();
+    expect(mocks.primeRemoteSkillsCache).not.toHaveBeenCalled();
+    expect(mocks.registerSkillsChangeListener).not.toHaveBeenCalled();
+    expect(await earlyRuntime.startMaintenance({})).toBeNull();
+    expect(mocks.startGatewayMaintenanceTimers).not.toHaveBeenCalled();
+    await earlyRuntime.skillsChangeUnsub();
   });
 
   it.each([false, true])(

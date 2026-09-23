@@ -62,8 +62,14 @@ describe("native subagent completion admission", () => {
     database = openOpenClawStateDatabase({
       path: path.join(directories.make("subagent-native-admission-"), "state.sqlite"),
     });
-    // A native completion must remain functional without any generic task ledger.
-    database.db.exec("DROP TABLE task_delivery_state; DROP TABLE task_runs");
+    // Fresh schema admission must not recreate the retired generic Task ledger.
+    expect(
+      database.db
+        .prepare(
+          "SELECT name FROM sqlite_schema WHERE name IN ('task_runs', 'task_delivery_state', 'flow_runs')",
+        )
+        .all(),
+    ).toEqual([]);
   });
   afterEach(async () => {
     await closeOpenClawStateDatabaseAsync();

@@ -172,7 +172,7 @@ describe("gateway restart readiness preflight", () => {
 
       expect(requestRecoveryRestart).toHaveBeenCalledExactlyOnceWith(
         "config reload: gateway.port",
-        { force: true, reason: "config reload forced restart" },
+        { force: true, drainBudgetExhausted: true, reason: "config reload forced restart" },
       );
       expect(logReload.warn).toHaveBeenCalledWith(
         expect.stringContaining(

@@ -4,11 +4,7 @@ export const SUBAGENT_KILL_TASK_ERROR = "Subagent run killed.";
 export type SubagentTerminalState = {
   status: "succeeded" | "failed" | "timed_out" | "cancelled";
   endedAt: number;
-  lastEventAt?: number;
   error?: string;
-  progressSummary?: string;
-  terminalSummary?: string | null;
-  terminalOutcome?: "succeeded" | "blocked";
 };
 export type SubagentKillTargetState =
   | { state: "finalizing" }

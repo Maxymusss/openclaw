@@ -3,16 +3,19 @@ import type { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
+import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { createUpdateRun } from "../infra/update-run-ledger.js";
 import { VERSION } from "../version.js";
+import { stateNativeProcessEntrypoints } from "./native-process-runtime.test-support.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   reconcileOpenClawStateSchemaPublication,
   repairOpenClawStateDatabaseSchema,
-  repairOpenClawStateDatabaseSchemaIfNeeded,
+  prepareOpenClawStateDatabaseSchema,
 } from "./openclaw-state-db.js";
+import { PRE_V19_TASK_SCHEMA_SQL } from "./openclaw-state-schema-v19.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const migrationPaths = ["runtime open", "doctor repair"] as const;
@@ -64,6 +67,7 @@ function createVersion14Bindings() {
       }
     }
     // A compatible future column must survive; copying only canonical columns loses its data.
+    legacy.exec(PRE_V19_TASK_SCHEMA_SQL);
     legacy.exec(`
       ALTER TABLE current_conversation_bindings ADD COLUMN future_note TEXT;
       DROP INDEX idx_current_conversation_bindings_target;
@@ -126,9 +130,11 @@ async function holdGatewayLifecycle(databasePath: string): Promise<{
   child: ChildProcess;
   release: () => Promise<void>;
 }> {
-  const coordinatorUrl = new URL("../infra/state-database-coordinator.ts", import.meta.url).href;
+  const coordinatorUrl = resolveRuntimeWorkerUrl(
+    stateNativeProcessEntrypoints.stateDatabaseCoordinator,
+  );
   const source = `
-    import { acquireGatewayLifecycleCoordinator } from ${JSON.stringify(coordinatorUrl)};
+    import { acquireGatewayLifecycleCoordinator } from ${JSON.stringify(coordinatorUrl.href)};
     const coordinator = acquireGatewayLifecycleCoordinator({ databasePath: ${JSON.stringify(databasePath)}, busyTimeoutMs: 0 });
     process.stdout.write("ready\\n");
     process.stdin.resume();
@@ -136,7 +142,12 @@ async function holdGatewayLifecycle(databasePath: string): Promise<{
   `;
   const child = spawn(
     process.execPath,
-    ["--import", "tsx", "--input-type=module", "--eval", source],
+    [
+      ...resolveRuntimeWorkerArgv(coordinatorUrl).slice(0, -1),
+      "--input-type=module",
+      "--eval",
+      source,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   try {
@@ -194,7 +205,7 @@ describe("conversation binding target migration", () => {
     closeOpenClawStateDatabaseForTest();
     const holder = await holdGatewayLifecycle(initial.path);
     try {
-      expect(repairOpenClawStateDatabaseSchemaIfNeeded(options)).toEqual({
+      expect(await prepareOpenClawStateDatabaseSchema(options)).toEqual({
         changes: [],
         warnings: [],
       });

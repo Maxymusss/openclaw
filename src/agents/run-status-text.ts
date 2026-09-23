@@ -53,7 +53,7 @@ function sanitizeRunStatusValue(value: unknown, errorContext: boolean): unknown 
     return next.length > 0 ? next : undefined;
   }
   if (value && typeof value === "object") {
-    const nextEntries = Object.entries(value as Record<string, unknown>)
+    const nextEntries = Object.entries(value)
       .map(([key, entry]) => [key, sanitizeRunStatusValue(entry, errorContext)] as const)
       .filter(([, entry]) => entry !== undefined);
     if (nextEntries.length === 0) {

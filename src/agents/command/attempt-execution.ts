@@ -48,10 +48,7 @@ import { buildAgentRunTerminalOutcomeFromLifecycleEvent } from "../agent-run-ter
 import type { AgentRunTerminalReplySnapshot } from "../agent-run-terminal-reply.types.js";
 import { resolveAuthProfileOrder } from "../auth-profiles/order.js";
 import { ensureAuthProfileStore } from "../auth-profiles/store-runtime.js";
-import {
-  resizeExecApprovalContinuationPrompt,
-  type ExecApprovalContinuationPromptRange,
-} from "../bash-tools.exec-approval-output.js";
+import { resizeExecApprovalContinuationPrompt } from "../bash-tools.exec-approval-output.js";
 import { resolveBootstrapWarningSignaturesSeen } from "../bootstrap-budget.js";
 import { resolveCliBackendConfig } from "../cli-backends.js";
 import {
@@ -108,6 +105,7 @@ import {
   buildClaudeCliFallbackContextPrelude,
   claudeCliSessionTranscriptHasContent,
   resolveFallbackRetryPrompt,
+  rebaseExecApprovalContinuationPromptRange,
 } from "./attempt-execution.helpers.js";
 import { resolveAgentRunContext } from "./run-context.js";
 import {
@@ -123,24 +121,6 @@ export {
 } from "./attempt-execution.helpers.js";
 
 const log = createSubsystemLogger("agents/agent-command");
-
-function rebaseExecApprovalContinuationPromptRange(params: {
-  body: string;
-  prompt: string;
-  range?: ExecApprovalContinuationPromptRange;
-}): ExecApprovalContinuationPromptRange | undefined {
-  if (!params.range) {
-    return undefined;
-  }
-  if (!params.prompt.endsWith(params.body)) {
-    throw new Error("exec approval continuation prompt range could not be rebased");
-  }
-  const offset = params.prompt.length - params.body.length;
-  return {
-    start: offset + params.range.start,
-    end: offset + params.range.end,
-  };
-}
 
 function shouldSuppressEmbeddedLiveStreamOutput(params: { opts: AgentCommandOpts }): boolean {
   return params.opts.sessionEffects === "internal" && params.opts.deliver !== true;
@@ -659,6 +639,7 @@ export function runAgentAttempt(params: {
       async (assertSettlementCurrent) => {
         if (params.sessionKey && params.storePath) {
           params.sessionEntry = loadSessionEntry({
+            agentId: params.sessionAgentId,
             sessionKey: params.sessionKey,
             storePath: params.storePath,
             readConsistency: "latest",
@@ -719,6 +700,7 @@ export function runAgentAttempt(params: {
         const mutableCliSessionStore =
           params.sessionKey && params.sessionStore && params.storePath
             ? {
+                agentId: params.sessionAgentId,
                 sessionKey: params.sessionKey,
                 sessionStore: params.sessionStore,
                 storePath: params.storePath,
@@ -774,6 +756,12 @@ export function runAgentAttempt(params: {
           params.sessionKey,
           params.sessionAgentId,
         );
+        const hasNewMediaTask = () =>
+          hasNewGeneratedMediaTaskForSessionKey(
+            params.sessionKey,
+            mediaTaskIdsBefore,
+            params.sessionAgentId,
+          );
         const runCliWithSession = async (
           nextCliSessionId: string | undefined,
           activeCliSessionBinding = cliSessionBinding,
@@ -888,11 +876,7 @@ export function runAgentAttempt(params: {
               ? {
                   onBeforeForkedCliSessionRetry: async (retry) => {
                     if (
-                      hasNewGeneratedMediaTaskForSessionKey(
-                        params.sessionKey,
-                        mediaTaskIdsBefore,
-                        params.sessionAgentId,
-                      ) ||
+                      hasNewMediaTask() ||
                       retry.sessionId !== activeCliSessionBinding?.sessionId
                     ) {
                       return false;
@@ -914,13 +898,10 @@ export function runAgentAttempt(params: {
               ? {
                   onBeforeFreshCliSessionRetry: async (retry) => {
                     if (
-                      hasNewGeneratedMediaTaskForSessionKey(
-                        params.sessionKey,
-                        mediaTaskIdsBefore,
-                        params.sessionAgentId,
-                      ) ||
+                      hasNewMediaTask() ||
                       getCliSessionBinding(
                         loadSessionEntry({
+                          agentId: params.sessionAgentId,
                           sessionKey: mutableCliSessionStore.sessionKey,
                           storePath: mutableCliSessionStore.storePath,
                           readConsistency: "latest",
@@ -969,11 +950,7 @@ export function runAgentAttempt(params: {
               error: err,
               binding: failedCliSessionBinding,
               bindingReplacedDuringRun: failedCliSessionId !== activeCliSessionBinding?.sessionId,
-              hasNewGeneratedMediaTask: hasNewGeneratedMediaTaskForSessionKey(
-                params.sessionKey,
-                mediaTaskIdsBefore,
-                params.sessionAgentId,
-              ),
+              hasNewGeneratedMediaTask: hasNewMediaTask(),
             }) &&
             failedCliSessionId &&
             mutableCliSessionStore
@@ -997,6 +974,7 @@ export function runAgentAttempt(params: {
           (!classification || result.meta.agentMeta?.clearCliSessionBinding === true)
         ) {
           return await persistCliSessionBindingResult({
+            agentId: params.sessionAgentId,
             provider: cliExecutionProvider,
             result,
             sessionKey: params.sessionKey,

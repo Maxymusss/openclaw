@@ -5,7 +5,6 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
-import { Compile } from "typebox/compile";
 import {
   QA_EVIDENCE_FILENAME,
   type QaEvidenceSummaryJson,
@@ -15,18 +14,24 @@ import {
   type QaGatewayChild,
 } from "../../../../extensions/qa-lab/src/gateway-child.js";
 import { startQaMockOpenAiServer } from "../../../../extensions/qa-lab/src/providers/mock-openai/server.js";
-import {
-  AuditRunInspectResultSchema,
-  type AuditRunInspectResult,
-} from "../../../../packages/gateway-protocol/src/schema/audit-run.js";
 import { formatErrorMessage } from "../../../../src/infra/errors.js";
 import { stopQaGatewayFixture } from "../../../helpers/qa-gateway-cleanup.js";
+import {
+  countExecutionContexts,
+  createMappedWebhookProof,
+  hasSqliteColumns,
+  inspectExecution,
+  parseAuditInspection,
+  requireOwnerDisplay,
+  stateDatabasePath,
+  waitFor,
+  type ExactOwnerRow,
+} from "./autonomous-task-lifecycle-receipts.fixtures.js";
 import { createQaScriptEvidenceWriter, type QaScriptEvidenceStatus } from "./script-evidence.js";
 
 const SCENARIO_ID = "autonomous-task-lifecycle-receipts";
 const SNAPSHOT_FILE = `${SCENARIO_ID}-summary.json`;
 const HOOK_TOKEN = "qa-autonomous-hook-token";
-const auditRunInspectionValidator = Compile(AuditRunInspectResultSchema);
 
 type ProducerOptions = { artifactBase: string; repoRoot: string };
 type ProofResult = {
@@ -35,29 +40,6 @@ type ProofResult = {
   durationMs: number;
   status: QaScriptEvidenceStatus;
 };
-type ExactOwnerRow = {
-  context_id: string;
-  execution_id: string;
-  run_id: string;
-  status: string;
-};
-type OwnerDisplayProducer = "cron-lifecycle";
-
-function hasSqliteColumns(db: DatabaseSync, table: string, columns: readonly string[]): boolean {
-  const exists = db
-    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?")
-    .get(table);
-  if (!exists) {
-    return false;
-  }
-  const present = new Set(
-    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(
-      (row) => row.name,
-    ),
-  );
-  return columns.every((column) => present.has(column));
-}
-
 function parseOptions(argv: readonly string[]): ProducerOptions {
   const readValue = (name: string) => {
     const index = argv.indexOf(name);
@@ -73,44 +55,8 @@ function parseOptions(argv: readonly string[]): ProducerOptions {
   };
 }
 
-function parseAuditRunInspection(raw: string, label: string): AuditRunInspectResult {
-  let value: unknown;
-  try {
-    value = JSON.parse(raw);
-  } catch (error) {
-    throw new Error(`${label} was not JSON: ${formatErrorMessage(error)}`, { cause: error });
-  }
-  if (!auditRunInspectionValidator.Check(value)) {
-    throw new Error(`${label} did not match the audit run inspection schema`);
-  }
-  return value;
-}
-
 function sha256(value: string): string {
   return createHash("sha256").update(value).digest("hex");
-}
-
-function stateDatabasePath(gateway: QaGatewayChild): string {
-  const stateDir = gateway.runtimeEnv.OPENCLAW_STATE_DIR;
-  if (!stateDir) {
-    throw new Error("QA Gateway did not expose its isolated state directory");
-  }
-  return path.join(stateDir, "state", "openclaw.sqlite");
-}
-
-function countExecutionContexts(gateway: QaGatewayChild): number {
-  const db = new DatabaseSync(stateDatabasePath(gateway), { readOnly: true });
-  try {
-    if (!hasSqliteColumns(db, "execution_identity_contexts", ["context_id"])) {
-      return 0;
-    }
-    const row = db.prepare("SELECT COUNT(*) AS count FROM execution_identity_contexts").get() as {
-      count: number;
-    };
-    return row.count;
-  } finally {
-    db.close();
-  }
 }
 
 function readCronOwnerRows(
@@ -185,83 +131,30 @@ function readAgentIdentity(
   }
 }
 
-async function waitFor<T>(label: string, read: () => T | undefined): Promise<T> {
-  const deadline = Date.now() + 30_000;
-  while (Date.now() < deadline) {
-    const value = read();
-    if (value !== undefined) {
-      return value;
-    }
-    await delay(50);
-  }
-  throw new Error(`timed out waiting for ${label}`);
-}
-
-function requireOwnerDisplay(result: AuditRunInspectResult, producer: OwnerDisplayProducer) {
-  const receipt = result.decisionDisplays.find(
-    (candidate) =>
-      candidate.provenance.state === "verified" && candidate.provenance.producer === producer,
-  );
-  if (
-    !receipt ||
-    receipt.enforcement.coverageState !== "attribution-only" ||
-    receipt.decision.outcome !== "not-applicable"
-  ) {
-    throw new Error(`inspection omitted exact attribution-only ${producer} display`);
-  }
-  return receipt;
-}
-
-async function inspectExecution(params: {
-  gateway: QaGatewayChild;
-  executionId: string;
-  producers: OwnerDisplayProducer[];
-  privateSentinels: string[];
-}) {
-  const jsonRaw = await params.gateway.runCli([
-    "audit",
-    "--execution",
-    params.executionId,
-    "--explain",
-    "--json",
-  ]);
-  const json = parseAuditRunInspection(jsonRaw, "owner lifecycle inspection");
-  if (
-    json.identity.state !== "present" ||
-    json.identity.context.executionId !== params.executionId
-  ) {
+function requireExecutionIdentity(
+  result: Awaited<ReturnType<typeof inspectExecution>>["json"],
+  executionId: string,
+): void {
+  if (result.identity.state !== "present" || result.identity.context.executionId !== executionId) {
     throw new Error("inspection omitted the exact admitted execution identity");
   }
-  for (const producer of params.producers) {
-    requireOwnerDisplay(json, producer);
-  }
-  for (const sentinel of params.privateSentinels) {
-    if (jsonRaw.includes(sentinel)) {
-      throw new Error(`owner receipt leaked private sentinel ${sentinel}`);
-    }
-  }
-  const human = await params.gateway.runCli([
-    "audit",
-    "--execution",
-    params.executionId,
-    "--explain",
-  ]);
-  for (const producer of params.producers) {
-    if (!human.includes(`Display producer: ${producer}`)) {
-      throw new Error(`human inspection omitted ${producer}`);
-    }
-  }
-  return { json, jsonRaw, human };
 }
 
 async function runProof(options: ProducerOptions): Promise<string> {
   const mock = await startQaMockOpenAiServer();
   const gatewayOwner = createQaGatewayChild();
   let gateway: QaGatewayChild | undefined;
+  const webhook = createMappedWebhookProof(HOOK_TOKEN);
   try {
     gateway = await gatewayOwner.start({
       repoRoot: options.repoRoot,
       useRepoCli: true,
+      command: {
+        executablePath: process.execPath,
+        argsPrefix: [path.join(options.repoRoot, "dist/index.js")],
+        cwd: options.repoRoot,
+        usePackagedPlugins: true,
+      },
       providerBaseUrl: `${mock.baseUrl}/v1`,
       providerMode: "mock-openai",
       transportBaseUrl: "http://127.0.0.1",
@@ -276,6 +169,7 @@ async function runProof(options: ProducerOptions): Promise<string> {
           enabled: true,
           token: HOOK_TOKEN,
           mappings: [
+            webhook.mapping,
             {
               id: "qa-suppressed-source",
               match: { path: "suppressed" },
@@ -312,6 +206,8 @@ async function runProof(options: ProducerOptions): Promise<string> {
       throw new Error("pre-admission mapping suppression allocated execution identity");
     }
 
+    const webhookProof = await webhook.admit(gateway);
+
     const cronSentinel = `PRIVATE-CRON-${randomUUID()}`;
     const cronJob = (await gateway.call("cron.add", {
       name: "QA autonomous receipt",
@@ -340,7 +236,8 @@ async function runProof(options: ProducerOptions): Promise<string> {
       producers: ["cron-lifecycle"],
       privateSentinels: [cronSentinel],
     });
-    const cronCursorPage = parseAuditRunInspection(
+    requireExecutionIdentity(cronInspection.json, cronRows.cron.execution_id);
+    const cronCursorPage = parseAuditInspection(
       await gateway.runCli([
         "audit",
         "--execution",
@@ -386,9 +283,11 @@ async function runProof(options: ProducerOptions): Promise<string> {
       privateSentinels: [taskSentinel],
     });
 
+    requireExecutionIdentity(taskInspection.json, agentIdentity.execution_id);
     const beforeRestart = JSON.stringify({
       cron: cronInspection.json,
       task: taskInspection.json,
+      webhooks: webhookProof.inspections,
     });
     await gateway.restartAfterStateMutation(async () => {});
     const cronAfter = await inspectExecution({
@@ -397,13 +296,20 @@ async function runProof(options: ProducerOptions): Promise<string> {
       producers: ["cron-lifecycle"],
       privateSentinels: [cronSentinel],
     });
+    requireExecutionIdentity(cronAfter.json, cronRows.cron.execution_id);
     const taskAfter = await inspectExecution({
       gateway,
       executionId: agentIdentity.execution_id,
       producers: [],
       privateSentinels: [taskSentinel],
     });
-    const afterRestart = JSON.stringify({ cron: cronAfter.json, task: taskAfter.json });
+    requireExecutionIdentity(taskAfter.json, agentIdentity.execution_id);
+    const webhooksAfter = await webhookProof.verifyAfterRestart(gateway);
+    const afterRestart = JSON.stringify({
+      cron: cronAfter.json,
+      task: taskAfter.json,
+      webhooks: webhooksAfter.inspections,
+    });
     if (afterRestart !== beforeRestart) {
       throw new Error("owner lifecycle JSON changed across Gateway replacement");
     }
@@ -436,6 +342,8 @@ async function runProof(options: ProducerOptions): Promise<string> {
       `${JSON.stringify(
         {
           suppression: { httpStatus: 204, identityAllocation: 0 },
+          webhooks: webhookProof.contexts,
+          webhookAdmittedAfterRestart: webhooksAfter.admittedContext,
           cron: {
             contextId: cronRows.cron.context_id,
             executionId: cronRows.cron.execution_id,
@@ -451,7 +359,12 @@ async function runProof(options: ProducerOptions): Promise<string> {
           cursorCompatibility: { cronPrefixAccepted: true },
           genericDuplicateAbsent: true,
           byteEquivalentAfterRestart: true,
-          privacy: { cronPromptAbsent: true, taskPromptAbsent: true },
+          privacy: {
+            cronPromptAbsent: true,
+            taskPromptAbsent: true,
+            webhookMappingRequestAndBodyAbsent: true,
+            auditLogLinesChecked: webhooksAfter.auditLogLinesChecked,
+          },
           resultSha256: sha256(afterRestart),
         },
         null,

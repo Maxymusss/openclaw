@@ -1,4 +1,5 @@
 ---
+doc-schema-version: 1
 summary: "Removed SDK surfaces and the replacement for each removed or deprecated API"
 read_when:
   - A removed export, hook, or manifest field is breaking your plugin
@@ -357,6 +358,11 @@ timeline for current status.
     Use native subagent launch/wait/history APIs, cron run history, and the
     ordinary Lobster runner for their respective operations. Harness completion
     routing uses the completion-only `agent-harness-completion` subpath.
+    State schema 19 also drops the three Task/TaskFlow tables after preserving
+    cron history and exact released task-first native outcomes. This does not
+    create a compatibility runtime or grant completion authority from history.
+    See [state schema 19](/reference/database-schemas/state-schema-history#state-schema-19)
+    for the migration and verified-backup rollback contract.
   </Accordion>
 
   <Accordion title="Embedded extension factories -> agent tool-result middleware">

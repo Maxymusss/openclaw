@@ -9,6 +9,7 @@ import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
 import { registerPluginSubagentRunFromGateway } from "../server-methods/agent-subagent-registration.js";
 import { prepareParentSubagentResume } from "../session-subagent-resume.js";
+import { formatForLog } from "../ws-log.js";
 import type { AgentTurnContext, AgentTurnPrincipal } from "./types.js";
 
 export async function prepareGatewaySubagentRun(params: {
@@ -22,7 +23,9 @@ export async function prepareGatewaySubagentRun(params: {
   runId: string;
   getAdmittedSessionId: () => string;
   assertResumeAdmissionCurrent: () => void;
-  context: Pick<AgentTurnContext, "resolveGatewayContext">;
+  context: Pick<AgentTurnContext, "resolveGatewayContext"> & {
+    logGateway: Pick<AgentTurnContext["logGateway"], "warn">;
+  };
 }): Promise<{
   pluginSubagent: boolean;
   reactivateSubagent: boolean;
@@ -62,16 +65,26 @@ export async function prepareGatewaySubagentRun(params: {
   params.assertResumeAdmissionCurrent();
   if (pluginSubagent && sessionKey) {
     // Persist the actual execution owner before acknowledging a plugin dispatch.
-    await registerPluginSubagentRunFromGateway({
-      cfg: params.cfg,
-      runId: params.runId,
-      childSessionKey: sessionKey,
-      task: params.request.message.trim(),
-      requester: params.client?.internal?.pluginSubagentRequester,
-      pluginId: normalizeOptionalString(params.client?.internal?.pluginRuntimeOwnerId),
-      assertCurrent: params.assertResumeAdmissionCurrent,
-      gatewayContextResolver: params.context.resolveGatewayContext,
-    });
+    try {
+      await registerPluginSubagentRunFromGateway({
+        cfg: params.cfg,
+        runId: params.runId,
+        childSessionKey: sessionKey,
+        task: params.request.message.trim(),
+        requester: params.client?.internal?.pluginSubagentRequester,
+        pluginId: normalizeOptionalString(params.client?.internal?.pluginRuntimeOwnerId),
+        assertCurrent: params.assertResumeAdmissionCurrent,
+        gatewayContextResolver: params.context.resolveGatewayContext,
+      });
+    } catch (error) {
+      params.assertResumeAdmissionCurrent();
+      params.context.logGateway.warn(
+        `failed to register plugin subagent run ${params.runId}; rejecting untracked dispatch: ${formatForLog(error)}`,
+      );
+      throw new Error("plugin subagent registry persistence failed; run was not started", {
+        cause: error,
+      });
+    }
   }
   return {
     pluginSubagent,

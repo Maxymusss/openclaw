@@ -7,7 +7,7 @@ import {
   getSubagentRunByChildSessionKey,
   resetSubagentRegistryForTests,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
-import { withTestDir } from "../../test-helpers/temp-dir.js";
+import { withPluginSubagentTestState } from "./agent.spawned-child.test-support.js";
 import {
   backendGatewayClient,
   describe0AfterEach0,
@@ -15,7 +15,6 @@ import {
   getAgentTestMocks,
   invokeAgent,
   makeContext,
-  useTestStateDir,
   waitForAssertion,
 } from "./agent.test-harness.js";
 
@@ -27,8 +26,7 @@ describe("gateway agent follow-up activity", () => {
   it.each(["completed", "yielded"] as const)(
     "executes parent-sent work on a %s child without replacing its previous result or wait",
     async (previousState) => {
-      await withTestDir({ prefix: "openclaw-parent-followup-" }, async (root) => {
-        useTestStateDir(root);
+      await withPluginSubagentTestState("openclaw-parent-followup-", async ({ stateDir: root }) => {
         resetSubagentRegistryForTests({ persist: false });
         const requesterSessionKey = "agent:main:main";
         const childSessionKey = "agent:main:subagent:review";

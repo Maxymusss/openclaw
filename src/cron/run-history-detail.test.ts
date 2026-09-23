@@ -8,6 +8,7 @@ import {
   cronRunRecordToRunLogEntry,
   cronRunRecordToTriggerEval,
   parseCronRunLogEntryObject,
+  parseCronRunDetailJson,
 } from "./run-history-detail.js";
 import type { CronRunLogEntry } from "./run-log-types.js";
 import type { CronRunRecord } from "./store/run-history.types.js";
@@ -26,6 +27,19 @@ function recordFromEntry(entry: CronRunLogEntry, index: number, storeKey: string
   };
 }
 describe("cron history wire codec", () => {
+  it.each([
+    { serialized: "{", expected: undefined },
+    { serialized: "undefined", expected: undefined },
+    { serialized: "null", expected: null },
+    { serialized: "false", expected: false },
+    { serialized: "0", expected: 0 },
+    { serialized: '"retained"', expected: "retained" },
+    { serialized: '[1,{"state":[true,null]}]', expected: [1, { state: [true, null] }] },
+    { serialized: '{"overflow":1e400}', expected: { overflow: Infinity } },
+  ])("preserves stored JSON semantics for $serialized", ({ serialized, expected }) => {
+    expect(parseCronRunDetailJson(serialized)).toEqual(expected);
+  });
+
   it.each([
     { status: "ok", expectedStatus: "ok" },
     { status: "error", expectedStatus: "error" },

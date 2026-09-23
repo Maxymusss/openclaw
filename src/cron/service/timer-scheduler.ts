@@ -33,12 +33,10 @@ import {
 } from "./run-admission.js";
 import { skipCronJobsWithoutOwners } from "./run-owner.js";
 import { emitInterruptedCronRun } from "./run-recovery-events.js";
-import {
-  prepareNonTerminalCronRunRecovery,
-  recomputeUnownedCronSchedules,
-  recoverNonTerminalCronRunReceipts,
-} from "./run-recovery.js";
+import { recoverCronRunProposals } from "./run-recovery.js";
 import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
+import { recomputeUnownedCronSchedules } from "./schedule-maintenance.js";
+import type { InterruptedStartupRun } from "./startup-run-repair.js";
 import type { CronServiceState } from "./state.js";
 import { ensureLoaded, runPostPersistCronNotifications } from "./store.js";
 import { resolveCronJobTimeoutMs } from "./timeout-policy.js";
@@ -197,31 +195,42 @@ async function onAdmittedTimer(state: CronServiceState) {
   let allowEmptyCapacityRecheck = false;
   try {
     const dueJobs = await locked(state, async () => {
-      await ensureLoaded(state, { forceReload: true, skipRecompute: true });
+      await ensureLoaded(state, { forceReload: true });
       if (state.stopped || state.startupCatchup || state.lifecycleGeneration !== generation) {
         state.deps.log.warn({}, "cron: due job reservation skipped - scheduler unavailable");
         return [];
       }
-      // Timer-owned liveness reconciliation is bounded to durable non-terminal markers.
-      const proposals = await prepareNonTerminalCronRunRecovery(state);
-      if (
-        !proposals ||
-        state.stopped ||
-        state.startupCatchup ||
-        state.lifecycleGeneration !== generation
-      ) {
-        return [];
-      }
-      const leaseRecovery = recoverNonTerminalCronRunReceipts(state, proposals);
-      runPostPersistCronNotifications(state, leaseRecovery.notifications);
-      for (const receipt of leaseRecovery.receipts) {
-        enrollForeignReceipt(state, receipt);
-      }
-      if (leaseRecovery.repaired) {
-        await ensureLoaded(state, { forceReload: true, skipRecompute: true });
-      }
-      for (const interrupted of leaseRecovery.interruptedRuns) {
-        await emitInterruptedCronRun(state, interrupted);
+      const proposals = (state.store?.jobs ?? [])
+        .filter((job) => job.state.queuedAtMs !== undefined || job.state.runningAtMs !== undefined)
+        .map((job) => ({
+          jobId: job.id,
+          queuedAtMs: job.state.queuedAtMs,
+          runningAtMs: job.state.runningAtMs,
+        }));
+      let repaired = false;
+      const interruptedRuns: InterruptedStartupRun[] = [];
+      try {
+        await recoverCronRunProposals(state, proposals, {
+          isCurrent: () => !state.startupCatchup && state.lifecycleGeneration === generation,
+          onRecovery(_proposal, result) {
+            if (result.kind === "repaired") {
+              repaired = true;
+              runPostPersistCronNotifications(state, result.notifications);
+              if (result.interrupted) {
+                interruptedRuns.push(result.interrupted);
+              }
+            } else if (result.receipt && result.receipt.ownerPid !== process.pid) {
+              enrollForeignReceipt(state, result.receipt);
+            }
+          },
+        });
+      } finally {
+        if (repaired) {
+          await ensureLoaded(state, { forceReload: true });
+        }
+        for (const interrupted of interruptedRuns) {
+          await emitInterruptedCronRun(state, interrupted);
+        }
       }
       // These interruptions already committed; publish them before fencing new scheduling work.
       if (state.stopped || state.startupCatchup || state.lifecycleGeneration !== generation) {
@@ -241,13 +250,12 @@ async function onAdmittedTimer(state: CronServiceState) {
         const repairFuture = state.store.jobs.some((job) =>
           isStaleFutureCronSlot(job, dueCheckNow),
         );
-        const maintenance = recomputeUnownedCronSchedules(state, {
+        await recomputeUnownedCronSchedules(state, {
           recomputeExpired: true,
           nowMs: dueCheckNow,
           repairFutureCronNextRunAtMs: repairFuture,
         });
-        runPostPersistCronNotifications(state, maintenance.notifications);
-        applyCronRuntimeRowsToState(state, maintenance.jobs);
+
         return [];
       }
 
@@ -393,7 +401,7 @@ async function onAdmittedTimer(state: CronServiceState) {
                   state,
                   jobIds: [due.id],
                   operationLabel: "cron.skipped-reservation-cleanup",
-                  mutate: ({ database, jobs }) => {
+                  mutate: ({ database, jobs, receiptSchema }) => {
                     const current = jobs.get(due.id);
                     const ownership = state.queuedRunReservationsByJobId.get(due.id);
                     if (
@@ -404,6 +412,7 @@ async function onAdmittedTimer(state: CronServiceState) {
                       return { value: undefined };
                     }
                     finishCronRunReceiptInDatabase({
+                      receiptSchema,
                       database,
                       handle: ownership.runReceipt,
                       status: "skipped",

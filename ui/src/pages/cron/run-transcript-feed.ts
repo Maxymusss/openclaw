@@ -12,7 +12,7 @@ import { resolveAssistantMessagePhase } from "../../../../src/shared/chat-messag
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { redactToolPayloadText } from "../../lib/browser-redact.ts";
-import type { ToolCard } from "../../lib/chat/chat-types.ts";
+import type { NormalizedMessage, ToolCard } from "../../lib/chat/chat-types.ts";
 import {
   isStandaloneToolMessageForDisplay,
   normalizeMessage,
@@ -28,6 +28,7 @@ import {
 import { stripThinkingTags } from "../../lib/strip-thinking-tags.ts";
 import { buildMessageItems, rawMessageTimestamp } from "../chat/chat-thread-items.ts";
 import { coalesceToolActivityMessages } from "../chat/chat-tool-activity-coalesce.ts";
+import { renderForwardedAttribution } from "../chat/components/chat-forwarded-attribution.ts";
 import { renderMessageMarkdown } from "../chat/components/chat-message-text.ts";
 
 type Entry = { key: string; timestamp: number | null } & (
@@ -36,7 +37,11 @@ type Entry = { key: string; timestamp: number | null } & (
       calls: Array<{ key: string; card: ToolCard }>;
       activity: ReturnType<typeof readPreparedActivity>;
     }
-  | { kind: "user" | "assistant" | "block"; text: string }
+  | {
+      kind: "user" | "assistant" | "block";
+      text: string;
+      senderSession?: NormalizedMessage["senderSession"];
+    }
 );
 
 function toolLine(call: ToolCard): string {
@@ -115,6 +120,7 @@ function entries(messages: unknown[]): Entry[] {
           key,
           timestamp,
           text,
+          senderSession: normalized.role === "user" ? undefined : normalized.senderSession,
         };
         result.push(entry);
       } else {
@@ -221,6 +227,13 @@ export function renderCronTranscriptFeed(messages: unknown[]): TemplateResult {
           >${entry.kind === "tools" ? toolIcon(entry.calls[0]!.card) : entry.kind === "user" ? icons.users : entry.kind === "block" ? icons.paperclip : icons.messageSquare}</span
         >
         <div class="cron-transcript-feed__body">
+          ${
+            entry.kind === "assistant" && entry.senderSession
+              ? renderForwardedAttribution(entry, { linkSource: false })
+              : entry.kind === "user" || entry.kind === "assistant"
+                ? html`<span class="sr-only">${t(`sessionsView.${entry.kind}`)}: </span>`
+                : nothing
+          }
           ${
             entry.kind === "tools"
               ? renderToolGroup(entry)

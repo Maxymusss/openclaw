@@ -8,11 +8,11 @@ import {
   getDeliveryLastError,
   isDeliverySuspended,
 } from "./subagent-delivery-state.js";
-import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
 import {
   resolveAnnounceDeliveryDeadline,
   resolveCleanupCompletionReason,
   resolveDeferredCleanupDecision,
+  shouldSuspendPendingFinalDelivery,
 } from "./subagent-registry-cleanup.js";
 import {
   ANNOUNCE_COMPLETION_HARD_EXPIRY_MS,
@@ -43,6 +43,7 @@ import {
   maskLifecycleIdentifier,
   recordAnnounceDeliveryResult,
 } from "./subagent-registry-lifecycle-delivery.js";
+import { subagentRuns } from "./subagent-registry-memory.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { deleteSubagentSessionForCleanup } from "./subagent-session-cleanup.js";
 import { loadSubagentSessionEntry } from "./subagent-session-reconciliation.js";
@@ -50,11 +51,6 @@ import { loadSubagentSessionEntry } from "./subagent-session-reconciliation.js";
 type RunSubagentAnnounceFlow =
   (typeof import("../announce/subagent-announce.js"))["runSubagentAnnounceFlow"];
 type SubagentAnnounceFlowOutcome = Awaited<ReturnType<RunSubagentAnnounceFlow>>;
-
-const shouldSuspendPendingFinalDelivery = (entry: SubagentRunRecord) =>
-  entry.expectsCompletionMessage === true &&
-  entry.endedReason === SUBAGENT_ENDED_REASON_COMPLETE &&
-  entry.execution.outcome?.status === "ok";
 
 export const finalizeResumedAnnounceGiveUp = async (
   context: SubagentLifecycleAnnounceCleanupContext,
@@ -622,7 +618,7 @@ export const startSubagentAnnounceCleanupFlow = (
             }
           }
         : undefined,
-    onDeliveryResult: (delivery) => {
+    onDeliveryResult: async (delivery) => {
       const previousDropReason = entry.delivery?.lastDropReason;
       if (!context.isCleanupAttemptCurrent(runId, entry, cleanupGeneration)) {
         retireSupersededCleanupInBackground(context, runId, entry, cleanupGeneration);
@@ -715,10 +711,12 @@ export const startSubagentAnnounceCleanupFlow = (
         deadlineTimer.unref?.();
       }
       try {
-        announceOutcome = await params.runSubagentAnnounceFlow({
-          ...announceParams,
-          signal: deadline.signal,
-        });
+        announceOutcome = await subagentRuns.runWithCompletionAuthority(entry, () =>
+          params.runSubagentAnnounceFlow({
+            ...announceParams,
+            signal: deadline.signal,
+          }),
+        );
       } catch (error) {
         defaultRuntime.log(
           `[warn] Subagent announce flow failed during cleanup for run ${runId}: ${String(error)}`,

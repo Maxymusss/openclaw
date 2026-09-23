@@ -22,7 +22,7 @@ import {
   openExistingOpenClawStateDatabaseReadOnly,
   openOpenClawStateDatabase,
   repairOpenClawStateDatabaseSchema,
-  repairOpenClawStateDatabaseSchemaIfNeeded,
+  prepareOpenClawStateDatabaseSchema,
   runOpenClawStateWriteTransaction,
   withOpenClawStateStartupMigrationCheckpointDatabase,
 } from "./openclaw-state-db.js";
@@ -629,7 +629,7 @@ describe("external shared-state ownership", () => {
     const pending = openOpenClawStateDatabase({ env: fixture.externalEnv });
     pending.db.exec(`
       ALTER TABLE worktrees DROP COLUMN run_end_cleanup_json;
-      DROP INDEX idx_task_runs_status;
+      DROP INDEX idx_cron_run_history_job;
     `);
     closeOpenClawStateDatabaseForTest();
     if (process.platform !== "win32") {
@@ -656,7 +656,7 @@ describe("external shared-state ownership", () => {
     expect(
       repaired.db
         .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ?")
-        .get("idx_task_runs_status"),
+        .get("idx_cron_run_history_job"),
     ).toBeDefined();
   });
 
@@ -669,7 +669,7 @@ describe("external shared-state ownership", () => {
     try {
       drifted.exec(`
         ALTER TABLE worktrees DROP COLUMN run_end_cleanup_json;
-        DROP INDEX idx_task_runs_status;
+        DROP INDEX idx_cron_run_history_job;
       `);
     } finally {
       drifted.close();
@@ -728,7 +728,7 @@ describe("external shared-state ownership", () => {
       expect(
         verify
           .prepare("SELECT 1 FROM sqlite_schema WHERE type = 'index' AND name = ?")
-          .get("idx_task_runs_status"),
+          .get("idx_cron_run_history_job"),
       ).toBeUndefined();
     } finally {
       verify.close();
@@ -1012,7 +1012,7 @@ describe("external shared-state ownership", () => {
     expect(() => repairOpenClawStateDatabaseSchema({ env: fixture.unmarkedEnv })).toThrow(
       OpenClawStateOwnershipError,
     );
-    expect(() => repairOpenClawStateDatabaseSchemaIfNeeded({ env: fixture.unmarkedEnv })).toThrow(
+    await expect(prepareOpenClawStateDatabaseSchema({ env: fixture.unmarkedEnv })).rejects.toThrow(
       OpenClawStateOwnershipError,
     );
     expect(() =>

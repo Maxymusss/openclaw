@@ -1,5 +1,11 @@
-import { deliverAgentHarnessCompletion } from "openclaw/plugin-sdk/agent-harness-completion";
+import {
+  captureAgentHarnessCompletionCustody,
+  createAgentHarnessCompletionEventSink,
+  deliverAgentHarnessCompletion,
+} from "openclaw/plugin-sdk/agent-harness-completion";
+import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
+import { interruptCodexTurnAndWaitBestEffort } from "./attempt-client-cleanup.js";
 import {
   claimCodexAppServerLiveThread,
   hasCodexAppServerLiveThread,
@@ -12,26 +18,26 @@ import type {
   NativeSubagentMonitorClient,
   NativeSubagentMonitorRuntime,
   ParentState,
-  ParentOwner,
+  NativeModelToolInputRequest,
+  NativeModelMapping,
+  NativeModelSource,
+  NativeModelSourceCapture,
+  NativeModelSourceRequest,
 } from "./native-subagent-monitor-types.js";
-
-type ParentRegistration = Pick<
-  ParentState,
-  | "parentThreadId"
-  | "requesterSessionKey"
-  | "completionScope"
-  | "historyOwner"
-  | "agentId"
-  | "submissionStore"
-> &
-  Omit<ParentOwner, "turnId">;
+import type { NativeParentRegistration } from "./native-subagent-parent-owner.js";
 
 type NativeMonitor = {
-  registerParent(params: ParentRegistration): {
-    bindTurn: (turnId: string) => void;
+  registerParent(params: NativeParentRegistration): {
+    bindTurn: (turnId: string, mapping?: NativeModelMapping) => void;
     unregister: () => Promise<void>;
   };
   retireParent(parentThreadId: string): void;
+  captureModelSource(
+    request: NativeModelSourceRequest,
+  ): Promise<NativeModelSourceCapture | undefined>;
+  resolveModelThreadId(turnId: string): string | undefined;
+  prepareModelInput(request: NativeModelToolInputRequest): Promise<void>;
+  releasePendingModelInputs(threadId: string): void;
 };
 
 type NativeMonitorConstructor = new (
@@ -42,6 +48,8 @@ type NativeMonitorConstructor = new (
 
 export const defaultNativeSubagentMonitorRuntime: NativeSubagentMonitorRuntime = {
   deliverAgentHarnessCompletion,
+  captureAgentHarnessCompletionCustody,
+  createAgentHarnessCompletionEventSink,
 };
 
 export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorConstructor>(
@@ -63,7 +71,14 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
     claimDirectChild?: (threadId: string) => (() => void) | undefined;
     rejectPendingDirectChild?: (threadId: string, reason: string) => void;
     onDirectChildAccepted?: () => void;
-  }): { bindTurn: (turnId: string) => void; unregister: () => Promise<void> } {
+    modelSource?: NativeModelSource;
+    configurationQualification?: NativeParentRegistration["configurationQualification"];
+    unqualifiedModelExecution?: true;
+    onUnqualifiedModelCancelled?: NativeParentRegistration["onUnqualifiedModelCancelled"];
+  }): {
+    bindTurn: (turnId: string, mapping?: NativeModelMapping) => void;
+    unregister: () => Promise<void>;
+  } {
     let monitor = monitors.get(params.client);
     if (!monitor) {
       // Native start/completion can race; serialize each child so only its
@@ -84,6 +99,9 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
       };
       monitor = new Monitor(params.client, params.runtime ?? defaultNativeSubagentMonitorRuntime, {
         retainClient: params.retainClient,
+        interruptModelExecution: (threadId, turnId) => {
+          void interruptCodexTurnAndWaitBestEffort(params.client, { threadId, turnId });
+        },
         retainParentThread: params.retainParentThread,
         hasObservationBacking: (parentThreadId, childThreadId) =>
           hasCodexAppServerLiveThread(params.client, parentThreadId) ||
@@ -100,6 +118,18 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
                 childThreadOwnership.delete(threadId);
               }
               ownership = undefined;
+              void childThreadTransitions
+                .enqueue(threadId, async () => {
+                  if (!hasCodexAppServerLiveThread(params.client, threadId)) {
+                    monitor?.releasePendingModelInputs(threadId);
+                  }
+                })
+                .catch((error: unknown) => {
+                  embeddedAgentLog.warn("Failed to release Codex native input custody", {
+                    threadId,
+                    error: formatErrorMessage(error),
+                  });
+                });
             });
             if (ownership && !invalidated) {
               childThreadOwnership.set(threadId, ownership);
@@ -153,12 +183,33 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
       claimDirectChild: params.claimDirectChild,
       rejectPendingDirectChild: params.rejectPendingDirectChild,
       onDirectChildAccepted: params.onDirectChildAccepted,
+      configurationQualification: params.configurationQualification,
+      unqualifiedModelExecution: params.unqualifiedModelExecution,
+      onUnqualifiedModelCancelled: params.onUnqualifiedModelCancelled,
+      ...(Object.hasOwn(params, "modelSource") ? { modelSource: params.modelSource } : {}),
     });
   }
 
   return {
     Monitor,
     register: registerMonitor,
+    captureModelSource: ({
+      client,
+      ...request
+    }: NativeModelSourceRequest & { client: CodexAppServerClient }) =>
+      monitors.get(client)?.captureModelSource(request) ?? Promise.resolve(undefined),
+    resolveModelThreadId: ({ client, turnId }: { client: CodexAppServerClient; turnId: string }) =>
+      monitors.get(client)?.resolveModelThreadId(turnId),
+    prepareModelInput: ({
+      client,
+      ...request
+    }: NativeModelToolInputRequest & { client: CodexAppServerClient }) => {
+      const monitor = monitors.get(client);
+      if (!monitor) {
+        return Promise.reject(new Error("Codex native input has no admitted model source"));
+      }
+      return monitor.prepareModelInput(request);
+    },
     retireParent: (client: CodexAppServerClient, parentThreadId: string): void => {
       monitors.get(client)?.retireParent(parentThreadId);
     },

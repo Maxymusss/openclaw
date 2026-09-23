@@ -1,5 +1,7 @@
 import type {
   deliverAgentHarnessCompletion,
+  captureAgentHarnessCompletionCustody,
+  createAgentHarnessCompletionEventSink,
   AgentHarnessCompletionDelivery,
   AgentHarnessCompletionScope,
 } from "openclaw/plugin-sdk/agent-harness-completion";
@@ -9,6 +11,10 @@ import {
   createCodexNativeSubagentHistoryOwner,
   type CodexNativeSubagentHistoryOwner,
 } from "./native-subagent-history-owner.js";
+import type {
+  NativeModelSource,
+  NativeModelSourceCapture,
+} from "./native-subagent-monitor-types.js";
 import { codexNativeSubagentMonitorRuntime } from "./native-subagent-monitor.js";
 import type {
   CodexAppServerRequestResult,
@@ -77,6 +83,9 @@ export function createClient() {
   const threadTurns = new Map<string, JsonValue | Error>();
   let loadedThreads: readonly string[] | undefined;
   const fixture = createFakeCodexAppServerClient(async (method: string, params?: unknown) => {
+    if (method === "thread/unsubscribe") {
+      return {};
+    }
     if (method === "thread/loaded/list") {
       if (!loadedThreads) {
         throw new Error("loaded threads not configured");
@@ -143,6 +152,12 @@ export function createClient() {
 
 export function createRuntime() {
   return {
+    captureAgentHarnessCompletionCustody: vi.fn<typeof captureAgentHarnessCompletionCustody>(
+      () => undefined,
+    ),
+    createAgentHarnessCompletionEventSink: vi.fn<typeof createAgentHarnessCompletionEventSink>(() =>
+      vi.fn(),
+    ),
     deliverAgentHarnessCompletion: vi.fn(
       async (
         _params: Parameters<typeof deliverAgentHarnessCompletion>[0],
@@ -152,7 +167,7 @@ export function createRuntime() {
 }
 
 export function createCompletionScope(requesterSessionKey = "agent:main:discord:channel:C123") {
-  return { requesterSessionKey } as AgentHarnessCompletionScope;
+  return { requesterSessionKey, requesterAgentId: "main" } satisfies AgentHarnessCompletionScope;
 }
 
 export function nativeHistoryOwner(parentThreadId = "parent-thread") {
@@ -424,4 +439,37 @@ export function threadRead(
       ],
     },
   } as unknown as CodexThreadReadResponse;
+}
+export function createNativeModelSourceFixture(models: readonly string[]): NativeModelSource {
+  let released = false;
+  const assertCurrent = () => {
+    if (released) {
+      throw new Error("Test model source was released");
+    }
+  };
+  return {
+    assertCurrent,
+    sourceIdentity: {},
+    modelPolicyRequired: true,
+    bindModelExecution: (model) => {
+      assertCurrent();
+      if (model?.provider !== "test-provider" || !models.includes(model.model)) {
+        throw new Error("Test source does not admit this model");
+      }
+      return { signal: new AbortController().signal, assertCurrent, release: () => {} };
+    },
+    release: vi.fn(() => {
+      released = true;
+    }),
+  };
+}
+
+export function requireNativeModelSourceCapture(
+  capture: NativeModelSourceCapture | undefined,
+): NativeModelSourceCapture {
+  if (!capture) {
+    throw new Error("Expected admitted native model source");
+  }
+  onTestFinished(capture.release);
+  return capture;
 }

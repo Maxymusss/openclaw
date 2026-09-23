@@ -1,4 +1,3 @@
-import { expectDefined } from "@openclaw/normalization-core";
 /**
  * Tests that session abort requests stay scoped to the targeted agent.
  */
@@ -8,11 +7,12 @@ import {
   addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
   resetSubagentRegistryForTests,
-  testing as subagentRegistryTesting,
 } from "../../agents/subagents/registry/subagent-registry.test-helpers.js";
 import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { bindSessionRowProjection } from "../session-row-projection-access.js";
+import { createWorkerInferenceCancellationService } from "../worker-environments/inference-control.test-helpers.js";
+import { workerService } from "./environments.test-support.js";
 import type { GatewayClient, GatewayRequestContext, RespondFn } from "./types.js";
 
 const chatAbortMock = vi.fn();
@@ -36,13 +36,6 @@ vi.mock("./chat.js", () => ({
 
 vi.mock("./chat-abort-handler.js", () => ({
   handleChatAbortRequestWithLifecycle: (...args: unknown[]) => chatAbortMock(...args),
-}));
-
-vi.mock("../worker-environments/session-target.js", () => ({
-  resolveWorkerSessionTarget: () => ({
-    agentId: "work",
-    sessionKey: "agent:work:dashboard:worker",
-  }),
 }));
 
 vi.mock("../session-utils.js", async () => {
@@ -83,13 +76,7 @@ import {
   setActiveEmbeddedRun,
 } from "../../agents/embedded-agent-runner/runs.js";
 import { createSessionRowProjectionFixture } from "../session-row-projection.test-support.js";
-import { flushPendingSessionsChangedEvents } from "./session-change-event.js";
-import { sessionAbortHandlers } from "./sessions-abort.js";
-import { sessionCompactHandlers } from "./sessions-compact.js";
-import { sessionDeleteHandlers } from "./sessions-delete.js";
-import { sessionMutationHandlers } from "./sessions-mutations.js";
-import { sessionReadHandlers } from "./sessions-read.js";
-import { sessionSubscriptionHandlers } from "./sessions-subscriptions.js";
+import { callSessions } from "./sessions.abort-agent-scope.request.test-support.js";
 import {
   createActiveRun,
   createBetaRunContext,
@@ -97,45 +84,6 @@ import {
   createContext,
   type ActiveRun,
 } from "./sessions.abort-agent-scope.test-support.js";
-
-function createRespond(): RespondFn {
-  return vi.fn() as unknown as RespondFn;
-}
-
-const sessionHandlers = {
-  ...sessionAbortHandlers,
-  ...sessionCompactHandlers,
-  ...sessionDeleteHandlers,
-  ...sessionMutationHandlers,
-  ...sessionReadHandlers,
-  ...sessionSubscriptionHandlers,
-};
-
-async function callSessions(
-  method: keyof typeof sessionHandlers,
-  params: Record<string, unknown>,
-  options: {
-    context: GatewayRequestContext;
-    respond?: RespondFn;
-    reqId?: string;
-    client?: GatewayClient | null;
-  },
-): Promise<RespondFn> {
-  const respond = options.respond ?? createRespond();
-  await expectDefined(
-    sessionHandlers[method],
-    "sessionHandlers[method] test invariant",
-  )({
-    req: { id: options.reqId ?? `req-${method}` } as never,
-    params,
-    respond,
-    context: options.context,
-    client: options.client ?? null,
-    isWebchatConnect: () => false,
-  });
-  await flushPendingSessionsChangedEvents(options.context);
-  return respond;
-}
 
 function expectChatAbortParams(params: Record<string, unknown>): void {
   expect(chatAbortMock).toHaveBeenCalledTimes(1);
@@ -213,6 +161,14 @@ async function expectListedGlobalSessionActiveRun(params: {
   expectSessionsListActiveRun(respond, params.hasActiveRun);
 }
 
+vi.mock("../../agents/subagents/registry/subagent-registry-state.js", async (importOriginal) => ({
+  ...(await importOriginal<
+    typeof import("../../agents/subagents/registry/subagent-registry-state.js")
+  >()),
+  persistSubagentRunsToDisk: () => {},
+  persistSubagentRunsToDiskOrThrow: () => {},
+}));
+
 describe("sessions.abort agent scope", () => {
   afterEach(() => {
     for (const projection of projections) {
@@ -220,7 +176,6 @@ describe("sessions.abort agent scope", () => {
     }
     projections.clear();
     resetSubagentRegistryForTests({ persist: false });
-    subagentRegistryTesting.setDepsForTest();
   });
 
   beforeEach(() => {
@@ -232,10 +187,6 @@ describe("sessions.abort agent scope", () => {
     abortEmbeddedAgentRunMock.mockReset();
     clearSessionQueuesMock.mockReset();
     clearSessionQueuesMock.mockReturnValue({ followupCleared: 0, laneCleared: 0, keys: [] });
-    subagentRegistryTesting.setDepsForTest({
-      persistSubagentRunsToDisk: () => {},
-      persistSubagentRunsToDiskOrThrow: () => {},
-    });
   });
 
   it("does not abort an active run whose session key belongs to another requested agent", async () => {
@@ -436,11 +387,24 @@ describe("sessions.abort agent scope", () => {
   });
 
   it("resolves runId-only worker aborts to the owning session", async () => {
-    const resolveInferenceSessionForRunId = vi.fn(() => "session-worker");
     mockChatSuccess(chatAbortMock, { ok: true, aborted: true, runIds: ["run-worker"] });
     const context = createContext({
       extra: {
-        workerEnvironmentService: { resolveInferenceSessionForRunId } as never,
+        workerEnvironmentService: Object.assign(
+          createWorkerInferenceCancellationService("session-worker", ["run-worker"], () => [], {
+            agentId: "work",
+            sessionId: "session-worker",
+            sessionKey: "agent:work:dashboard:worker",
+            storePath: "/original-worker-store/sessions.json",
+          }),
+          workerService(),
+          {
+            startTunnel: async () => {
+              throw new Error("unexpected tunnel in cancellation fixture");
+            },
+            stopTunnel: async () => {},
+          },
+        ),
         dedupe: new Map(),
         getSessionEventSubscriberConnIds: () => new Set(),
       },
@@ -737,7 +701,7 @@ describe("sessions.abort agent scope", () => {
       { context, reqId: "req-key-only-queue-abort" },
     );
 
-    expect(clearSessionQueuesMock).toHaveBeenCalledWith([sessionKey, sessionKey]);
+    expect(clearSessionQueuesMock).toHaveBeenCalledWith([sessionKey, sessionKey, undefined]);
     expect(abortEmbeddedAgentRunMock).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
       true,
@@ -906,7 +870,9 @@ describe("sessions.abort agent scope", () => {
       },
     );
 
-    expect(subscribeSessionMessageEvents).toHaveBeenCalledWith("conn-work", "agent:work:global");
+    expect(subscribeSessionMessageEvents).toHaveBeenCalledWith("conn-work", "agent:work:global", {
+      provisional: true,
+    });
     expect(respond).toHaveBeenCalledWith(true, { subscribed: true, key: "global" }, undefined);
   });
 
@@ -927,7 +893,11 @@ describe("sessions.abort agent scope", () => {
       },
     );
 
-    expect(subscribeSessionMessageEvents).toHaveBeenCalledWith("conn-default", "agent:work:global");
+    expect(subscribeSessionMessageEvents).toHaveBeenCalledWith(
+      "conn-default",
+      "agent:work:global",
+      { provisional: true },
+    );
     expect(respond).toHaveBeenCalledWith(true, { subscribed: true, key: "global" }, undefined);
   });
 
@@ -951,6 +921,7 @@ describe("sessions.abort agent scope", () => {
     expect(subscribeSessionMessageEvents).toHaveBeenCalledWith(
       "conn-work-alias",
       "agent:work:global",
+      { provisional: true },
     );
     expect(respond).toHaveBeenCalledWith(true, { subscribed: true, key: "global" }, undefined);
   });

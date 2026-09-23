@@ -89,6 +89,7 @@ describe("gateway restart handoff state migration", () => {
 
     expect(detectOpenClawStateDatabaseSchemaMigrations(options)).toEqual([
       { kind: "creator-namespace-v14", path: databasePath },
+      { kind: "tasks-retirement-v19", path: databasePath },
       { kind: "strict-tables-v3", path: databasePath },
       { kind: "session-watch-cursor-provenance-v4", path: databasePath },
     ]);
@@ -97,6 +98,7 @@ describe("gateway restart handoff state migration", () => {
         "Migrated cloud worker placements to execution modes",
         "Migrated shared state session watch cursors → provenance column (0 ambient, 0 sentinels removed)",
         "Qualified historical cron creator attribution as unknown (v14)",
+        "Retired Tasks and TaskFlow tables after preserving Cron history and native outcomes (v19)",
         "Migrated shared state tables to SQLite STRICT typing (1)",
       ],
       warnings: [],

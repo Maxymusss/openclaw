@@ -24,6 +24,7 @@ import {
   finishCronRunReceipt,
   prepareCronRunReceiptClaim,
 } from "../store/run-receipt-store.js";
+import { prepareCronRunReceiptWriteSchema } from "../store/run-receipt-write-admission.js";
 import { run } from "./ops-run.js";
 import { createCronOwnerExecutionIdentityAdmission } from "./run-history.js";
 
@@ -161,6 +162,7 @@ describe("cron run execution binding", () => {
         const initial = runOpenClawStateWriteTransaction(({ db }) =>
           claimCronRunReceiptInDatabase({
             database: db,
+            receiptSchema: prepareCronRunReceiptWriteSchema(db),
             prepared,
             resolveAgentId: (current) => current.agentId!,
           }),
@@ -192,6 +194,7 @@ describe("cron run execution binding", () => {
         const replacement = runOpenClawStateWriteTransaction(({ db: transactionDb }) =>
           claimCronRunReceiptInDatabase({
             database: transactionDb,
+            receiptSchema: prepareCronRunReceiptWriteSchema(transactionDb),
             prepared: replacementPrepared,
             resolveAgentId: (current) => current.agentId!,
           }),

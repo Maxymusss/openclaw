@@ -6,6 +6,7 @@ import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.j
 import { mockProcessPlatform } from "../test-utils/vitest-spies.js";
 import { migrateAgentDatabaseRelativePaths } from "./openclaw-state-db-schema-repair.js";
 import type { AgentDatabases, DB } from "./openclaw-state-db.generated.js";
+import { PRE_V19_TASK_SCHEMA_SQL } from "./openclaw-state-schema-v19.test-support.js";
 
 vi.mock("node:path", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:path")>();
@@ -28,6 +29,7 @@ describe.each([String.raw`C:\OpenClaw`, String.raw`\\Server\Share\OpenClaw`])(
       ({ reverse, newest }) => {
         const db = new (requireNodeSqlite().DatabaseSync)(":memory:");
         try {
+          db.exec(PRE_V19_TASK_SCHEMA_SQL);
           db.exec(`
           CREATE TABLE agent_databases (
             agent_id TEXT NOT NULL,
