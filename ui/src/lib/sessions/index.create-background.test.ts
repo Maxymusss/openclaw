@@ -333,6 +333,68 @@ it("retires a created thinking claim before replacement state is published", asy
   sessions.dispose();
 });
 
+it("does not settle a replacement connection's suspended thinking claim", async () => {
+  const key = "agent:main:created-across-reconnect";
+  let resolveOldPatch: (result: unknown) => void = () => undefined;
+  const oldPatchResult = new Promise<unknown>((resolve) => {
+    resolveOldPatch = resolve;
+  });
+  const oldRequest = vi.fn(async (method: string) => {
+    if (method === "sessions.create") {
+      return { key, entry: { thinkingLevel: "xhigh", updatedAt: 1 } };
+    }
+    if (method === "sessions.list") {
+      return sessionsResult([{ key, kind: "direct", thinkingLevel: "high", updatedAt: 0 }], 1);
+    }
+    if (method === "sessions.patch") {
+      return await oldPatchResult;
+    }
+    if (method === "sessions.subscribe") {
+      return { subscribed: true };
+    }
+    throw new Error(`Unexpected old Gateway request: ${method}`);
+  });
+  const { gateway, publish } = createGatewayHarness({
+    request: oldRequest,
+  } as unknown as GatewayBrowserClient);
+  const sessions = createTestSessionCapability(gateway);
+
+  await sessions.createResult({ agentId: "main" });
+  const oldPatch = sessions.patch(key, { thinkingLevel: "medium" });
+
+  let resolveReplacementPatch: (result: unknown) => void = () => undefined;
+  const replacementPatchResult = new Promise<unknown>((resolve) => {
+    resolveReplacementPatch = resolve;
+  });
+  const replacementRequest = vi.fn(async (method: string) => {
+    if (method === "sessions.create") {
+      return { key, entry: { thinkingLevel: "low", updatedAt: 2 } };
+    }
+    if (method === "sessions.list") {
+      return sessionsResult([{ key, kind: "direct", thinkingLevel: "high", updatedAt: 1 }], 2);
+    }
+    if (method === "sessions.patch") {
+      return await replacementPatchResult;
+    }
+    if (method === "sessions.subscribe") {
+      return { subscribed: true };
+    }
+    throw new Error(`Unexpected replacement Gateway request: ${method}`);
+  });
+  publish(true, { request: replacementRequest } as unknown as GatewayBrowserClient);
+  await sessions.createResult({ agentId: "main" });
+  const replacementPatch = sessions.patch(key, { thinkingLevel: "high" });
+  expect(sessions.think(key)).toBeUndefined();
+
+  resolveOldPatch({ key, entry: { thinkingLevel: "medium", updatedAt: 2 } });
+  await oldPatch;
+  expect(sessions.think(key)).toBeUndefined();
+
+  resolveReplacementPatch({ key, entry: { thinkingLevel: "high", updatedAt: 3 } });
+  await replacementPatch;
+  sessions.dispose();
+});
+
 it("isolates delayed raw-global thinking claims by agent", async () => {
   const pendingList = new Promise<SessionsListResult>(() => {
     // Keep both agents in the create-to-roster handoff for the assertion.

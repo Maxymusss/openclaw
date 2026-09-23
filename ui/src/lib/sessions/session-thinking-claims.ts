@@ -19,6 +19,7 @@ export function createSessionThinkingClaims(
     readonly [value: string, updatedAt: number | undefined, afterRevision: number]
   >();
   const suspended = new Map<string, number>();
+  let generation = 0;
   const claimKey = (key: string, agentId?: string | null) => {
     const ownerAgentId =
       parseAgentSessionKey(key)?.agentId ??
@@ -37,8 +38,12 @@ export function createSessionThinkingClaims(
       if (!claims.has(resolvedKey)) {
         return undefined;
       }
+      const ownerGeneration = generation;
       suspended.set(resolvedKey, (suspended.get(resolvedKey) ?? 0) + 1);
       return (completed: boolean) => {
+        if (ownerGeneration !== generation) {
+          return;
+        }
         const remaining = suspended.get(resolvedKey)! - 1;
         if (completed) {
           claims.delete(resolvedKey);
@@ -51,6 +56,7 @@ export function createSessionThinkingClaims(
       };
     },
     reset: () => {
+      generation += 1;
       claims.clear();
       suspended.clear();
     },
