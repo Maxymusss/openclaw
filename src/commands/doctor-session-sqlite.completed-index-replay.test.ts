@@ -19,17 +19,22 @@ import {
   replaceSqliteTranscriptSuffixInTransaction,
 } from "../config/sessions/session-accessor.sqlite-transcript-suffix.js";
 import { appendTranscriptMessageSync } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
+import { recordDeferredPluginMigrations } from "../infra/deferred-plugin-migrations.js";
+import * as migrationArtifact from "../infra/session-sqlite-migration-artifact.js";
 import {
   openOpenClawAgentDatabase,
   runOpenClawAgentWriteTransaction,
 } from "../state/openclaw-agent-db.js";
-import * as migrationArtifact from "./doctor-session-sqlite-artifact.js";
 import * as sessionSqliteDiscovery from "./doctor-session-sqlite-discovery.js";
-import { runDoctorSessionSqlite } from "./doctor-session-sqlite.js";
+import {
+  runDoctorSessionSqlite,
+  settleRetainedDoctorSessionSources,
+} from "./doctor-session-sqlite.js";
 import {
   readMigrationManifest,
   useDoctorSessionSqliteTestFixture,
 } from "./doctor-session-sqlite.test-support.js";
+import { withDoctorSqliteMaintenanceLock } from "./doctor-sqlite-maintenance-lock.js";
 
 const { createLegacyStore } = useDoctorSessionSqliteTestFixture();
 
@@ -100,6 +105,24 @@ function copyCompletedSources(completed: Awaited<ReturnType<typeof prepareComple
   for (const move of [completed.indexMove, completed.transcriptMove]) {
     fs.copyFileSync(move.archivePath, move.sourcePath);
   }
+}
+
+function expectReplaySourcesRetained(
+  completed: Awaited<ReturnType<typeof prepareCompletedImport>>,
+  report: Awaited<ReturnType<typeof runDoctorSessionSqlite>>,
+): void {
+  const moves = readMigrationManifest(report.migrationRun?.manifestPath).targets.flatMap(
+    (target) => target.completedMoves,
+  );
+  for (const original of [completed.indexMove, completed.transcriptMove]) {
+    expect(fs.readFileSync(original.sourcePath)).toEqual(fs.readFileSync(original.archivePath));
+    expect(moves.some((move) => move.sourcePath === original.sourcePath)).toBe(false);
+  }
+  expect(report.totals).toMatchObject({
+    archivedLegacyStoreFiles: 0,
+    archivedTranscriptFiles: 0,
+    archivedUnreferencedJsonlFiles: 0,
+  });
 }
 
 function openCompletedDatabase(completed: Awaited<ReturnType<typeof prepareCompletedImport>>) {
@@ -363,84 +386,118 @@ describe("completed legacy index replay", () => {
     });
   });
 
-  it("lets the admitted alias append a verified tail after another alias is rejected", async () => {
-    const completed = await prepareCompletedImport(
-      [
-        JSON.stringify({ type: "session", id: "session-1", version: 3, cwd: "/fixture" }),
-        JSON.stringify({
-          type: "message",
-          id: "alias-root",
-          parentId: null,
-          message: { role: "user", content: "alias root" },
-        }),
-        JSON.stringify({
-          type: "message",
-          id: "alias-tail",
-          parentId: "alias-root",
-          message: { role: "assistant", content: "alias tail" },
-        }),
-      ],
-      true,
-    );
-    const database = openOpenClawAgentDatabase({ agentId: "main", env: completed.store.env });
-    removeTranscriptEvents(database, completed.scope, ["alias-tail"]);
-    await replaceSessionEntry(completed.scope, {
-      ...expectDefined(loadExactSessionEntry(completed.scope), "main owner").entry,
-      displayName: "new main generation",
-      label: "new main generation",
-      lifecycleRevision: "new-main-generation",
-      updatedAt: 9_000,
-    });
-    await replaceSessionEntry(completed.aliasScope, {
-      ...expectDefined(loadExactSessionEntry(completed.aliasScope), "alias owner").entry,
-      displayName: "current alias owner",
-      label: "current alias owner",
-      updatedAt: 9_001,
-    });
-    runOpenClawAgentWriteTransaction((transaction) => {
-      rehomeSessionWindows(transaction, completed.aliasScope.sessionKey, [
-        completed.scope.sessionKey,
-      ]);
-    }, completed.scope);
-    const entriesBefore = [
-      loadExactSessionEntry(completed.scope),
-      loadExactSessionEntry(completed.aliasScope),
-    ];
-    const windowBefore = database.db
-      .prepare("SELECT session_key FROM session_windows WHERE session_id = ?")
-      .get(completed.scope.sessionId);
-    expect(windowBefore).toEqual({ session_key: completed.aliasScope.sessionKey });
-    copyCompletedSources(completed);
+  it.each([false, true])(
+    "lets the admitted alias append while retaining refused replay sources (pending plugin: %s)",
+    async (pendingPlugin) => {
+      const completed = await prepareCompletedImport(
+        [
+          JSON.stringify({ type: "session", id: "session-1", version: 3, cwd: "/fixture" }),
+          JSON.stringify({
+            type: "message",
+            id: "alias-root",
+            parentId: null,
+            message: { role: "user", content: "alias root" },
+          }),
+          JSON.stringify({
+            type: "message",
+            id: "alias-tail",
+            parentId: "alias-root",
+            message: { role: "assistant", content: "alias tail" },
+          }),
+        ],
+        true,
+      );
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: completed.store.env });
+      removeTranscriptEvents(database, completed.scope, ["alias-tail"]);
+      await replaceSessionEntry(completed.scope, {
+        ...expectDefined(loadExactSessionEntry(completed.scope), "main owner").entry,
+        displayName: "new main generation",
+        label: "new main generation",
+        lifecycleRevision: "new-main-generation",
+        updatedAt: 9_000,
+      });
+      await replaceSessionEntry(completed.aliasScope, {
+        ...expectDefined(loadExactSessionEntry(completed.aliasScope), "alias owner").entry,
+        displayName: "current alias owner",
+        label: "current alias owner",
+        updatedAt: 9_001,
+      });
+      runOpenClawAgentWriteTransaction((transaction) => {
+        rehomeSessionWindows(transaction, completed.aliasScope.sessionKey, [
+          completed.scope.sessionKey,
+        ]);
+      }, completed.scope);
+      const entriesBefore = [
+        loadExactSessionEntry(completed.scope),
+        loadExactSessionEntry(completed.aliasScope),
+      ];
+      const windowBefore = database.db
+        .prepare("SELECT session_key FROM session_windows WHERE session_id = ?")
+        .get(completed.scope.sessionId);
+      expect(windowBefore).toEqual({ session_key: completed.aliasScope.sessionKey });
+      copyCompletedSources(completed);
+      if (pendingPlugin) {
+        recordDeferredPluginMigrations({
+          env: completed.store.env,
+          pending: [
+            {
+              pluginId: "fixture-plugin",
+              reason: "Plugin is unavailable.",
+              command: "openclaw doctor --fix",
+            },
+          ],
+        });
+      }
 
-    const replayed = await runDoctorSessionSqlite({
-      env: completed.store.env,
-      mode: "import",
-      store: completed.store.storePath,
-    });
+      const replayed = await runDoctorSessionSqlite({
+        env: completed.store.env,
+        mode: "import",
+        store: completed.store.storePath,
+      });
 
-    expect(replayed.targets[0]?.issues).toContainEqual(
-      expect.objectContaining({
-        code: "historical_transcript_deferred",
-        message: expect.stringContaining("generation changed"),
-        sessionKey: completed.scope.sessionKey,
-      }),
-    );
-    expect(replayed.totals).toMatchObject({ importedEntries: 0, importedTranscriptEvents: 1 });
-    expect([
-      loadExactSessionEntry(completed.scope),
-      loadExactSessionEntry(completed.aliasScope),
-    ]).toEqual(entriesBefore);
-    expect(
-      openCompletedDatabase(completed)
-        .db.prepare("SELECT session_key FROM session_windows WHERE session_id = ?")
-        .get(completed.scope.sessionId),
-    ).toEqual(windowBefore);
-    expect(
-      readCompletedTranscriptRows(completed).map(
-        (row) => (JSON.parse(row.eventJson) as { id?: unknown }).id,
-      ),
-    ).toContain("alias-tail");
-  });
+      expect(replayed.targets[0]?.issues).toContainEqual(
+        expect.objectContaining({
+          code: "historical_transcript_deferred",
+          message: expect.stringContaining("generation changed"),
+          sessionKey: completed.scope.sessionKey,
+        }),
+      );
+      expect(replayed.totals).toMatchObject({ importedEntries: 0, importedTranscriptEvents: 1 });
+      expectReplaySourcesRetained(completed, replayed);
+      if (pendingPlugin) {
+        await withDoctorSqliteMaintenanceLock({
+          env: completed.store.env,
+          operation: "completed replay plugin settlement",
+          protectedPaths: [completed.store.storePath],
+          run: async (authority) => {
+            await settleRetainedDoctorSessionSources(replayed, ["fixture-plugin"], authority, () =>
+              authority.assertCurrent(),
+            );
+            recordDeferredPluginMigrations({
+              env: completed.store.env,
+              pending: [],
+              resolvedPluginIds: ["fixture-plugin"],
+            });
+          },
+        });
+        expectReplaySourcesRetained(completed, replayed);
+      }
+      expect([
+        loadExactSessionEntry(completed.scope),
+        loadExactSessionEntry(completed.aliasScope),
+      ]).toEqual(entriesBefore);
+      expect(
+        openCompletedDatabase(completed)
+          .db.prepare("SELECT session_key FROM session_windows WHERE session_id = ?")
+          .get(completed.scope.sessionId),
+      ).toEqual(windowBefore);
+      expect(
+        readCompletedTranscriptRows(completed).map(
+          (row) => (JSON.parse(row.eventJson) as { id?: unknown }).id,
+        ),
+      ).toContain("alias-tail");
+    },
+  );
 
   it("keeps stale parentless history outside a reset active generation", async () => {
     const completed = await prepareCompletedImport();

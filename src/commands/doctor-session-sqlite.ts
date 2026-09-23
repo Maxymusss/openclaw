@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { getRuntimeConfig } from "../config/config.js";
-import { resolveStateDir } from "../config/paths.js";
 import {
   resolveTrajectoryPath,
   resolveTrajectoryPointerPath,
@@ -29,6 +28,33 @@ import {
 } from "../infra/deferred-plugin-session-sources.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { isPathInside } from "../infra/path-guards.js";
+import {
+  readMigrationArtifactIdentity,
+  sameMigrationArtifact,
+  moveMigrationArtifact,
+  type MigrationArtifactIdentity,
+} from "../infra/session-sqlite-migration-artifact.js";
+import type { DoctorSessionSqliteIssue } from "../infra/session-sqlite-migration-issues.js";
+import {
+  HISTORICAL_IMPORT_REASON,
+  canonicalMigrationFilePath,
+  assertSafeSessionSqliteMigrationMove,
+  createSessionSqliteMigrationRun,
+  recordCompletedMigrationMoves,
+  recordPlannedMigrationMoves,
+  updateMigrationManifestTarget,
+  writeSessionSqliteMigrationManifest,
+  type ActiveSessionSqliteMigrationRun,
+  type SessionSqliteMigrationTargetInput,
+  type SessionSqliteMigrationMove,
+} from "../infra/session-sqlite-migration-manifest.js";
+import {
+  countTranscriptEventsForPath,
+  readOnlySqliteValidationSnapshot,
+  readSqliteEntryCount,
+  resolveTargetSqlitePath,
+  type ReadOnlySqliteValidationSnapshot,
+} from "../infra/session-sqlite-migration-readers.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { LEGACY_IMPLICIT_AGENT_ID, normalizeAgentId } from "../routing/session-key.js";
 import { prepareActiveSqliteTranscriptSettlement } from "./doctor-session-sqlite-active.js";
@@ -36,12 +62,6 @@ import {
   planImportedTranscriptArtifactsToArchive,
   planSessionJsonlArchiveMove,
 } from "./doctor-session-sqlite-archive.js";
-import {
-  readMigrationArtifactIdentity,
-  sameMigrationArtifact,
-  moveMigrationArtifact,
-  type MigrationArtifactIdentity,
-} from "./doctor-session-sqlite-artifact.js";
 import {
   appendActiveSqliteTranscriptFileIssues,
   appendRetainedPluginSessionSourceIssue,
@@ -63,37 +83,20 @@ import {
 } from "./doctor-session-sqlite-discovery.js";
 import { writeSessionSqliteMigrationFailureReports } from "./doctor-session-sqlite-failure.js";
 import { importLegacySessionRecords } from "./doctor-session-sqlite-import.js";
-import {
-  HISTORICAL_IMPORT_REASON,
-  canonicalMigrationFilePath,
-  assertSafeSessionSqliteMigrationMove,
-  createSessionSqliteMigrationRun,
-  recordCompletedMigrationMoves,
-  recordPlannedMigrationMoves,
-  updateMigrationManifestTarget,
-  writeSessionSqliteMigrationManifest,
-  type ActiveSessionSqliteMigrationRun,
-  type SessionSqliteMigrationTargetInput,
-  type SessionSqliteMigrationMove,
-} from "./doctor-session-sqlite-migration-run.js";
 import { createMissingSessionIndexVerifier } from "./doctor-session-sqlite-missing-index.js";
-import {
-  countTranscriptEventsForPath,
-  readOnlySqliteValidationSnapshot,
-  readSqliteEntryCount,
-  resolveTargetSqlitePath,
-  type ReadOnlySqliteValidationSnapshot,
-} from "./doctor-session-sqlite-readers.js";
 import { recoverDoctorSessionSqliteTargets } from "./doctor-session-sqlite-recover-report.js";
 import { restoreDoctorSessionSqliteTargets } from "./doctor-session-sqlite-restore-report.js";
 import { reconcileSessionSqliteMigrationPublications } from "./doctor-session-sqlite-restore.js";
 import {
+  archiveConflictingRetainedSessionSources,
   countRetainedSessionSources,
   prepareRetainedSessionImport,
 } from "./doctor-session-sqlite-retained.js";
 import { settleDuplicateSessionSqliteArchives } from "./doctor-session-sqlite-retirement.js";
 import {
   filterLegacySessionStoreTargets,
+  resolveDoctorSessionSqliteMaintenancePaths,
+  resolveDoctorSessionSqliteMaintenanceRoots,
   resolveDoctorSessionSqliteTargets,
 } from "./doctor-session-sqlite-targets.js";
 import {
@@ -101,11 +104,11 @@ import {
   countBlockingSessionSqliteIssues,
   isRetainedSourceIssue,
   isInformationalMissingSessionIndex,
-  type DoctorSessionSqliteIssue,
   type DoctorSessionSqliteMode,
   type DoctorSessionSqliteOptions,
   type DoctorSessionSqliteReport,
   type DoctorSessionSqliteTargetReport,
+  type LegacyArchiveTarget,
 } from "./doctor-session-sqlite-types.js";
 import {
   assertDoctorSqliteMaintenancePathsNotAliased,
@@ -118,18 +121,6 @@ export type {
 } from "./doctor-session-sqlite-types.js";
 
 type SessionStoreTarget = ResolvedSessionStoreTarget & { sqlitePath?: string };
-
-type LegacyArchiveTarget = {
-  sourceTarget: SessionStoreTarget;
-  target: SessionSqliteMigrationTargetInput;
-  report: DoctorSessionSqliteTargetReport;
-  validated: boolean;
-  records: Array<Omit<LegacySessionRecord, "entry"> & { sessionId: string }>;
-  deferredPluginIds: string[];
-  retainedImportVerified: boolean;
-  sourceConflicts?: Set<string>;
-  verifiedSources?: DeferredPluginSessionImport["sources"];
-};
 
 const retainedArchivePlans = new WeakMap<
   DoctorSessionSqliteReport,
@@ -151,7 +142,11 @@ export async function runDoctorSessionSqlite(
   const cfg = resolveDoctorSessionSqliteConfig(options);
   const pendingPlugins = readDeferredPluginMigrations({ env });
   const verifyMissingIndex = createMissingSessionIndexVerifier({ cfg, env });
-  const candidates = resolveDoctorSessionSqliteTargets({ ...options, cfg, env });
+  const { targets: candidates, knownTargets } = resolveDoctorSessionSqliteTargets({
+    ...options,
+    cfg,
+    env,
+  });
   if (isDestructiveDoctorSessionSqliteMode(options.mode)) {
     assertDoctorSqliteMaintenancePathsNotAliased(
       `session SQLite ${options.mode}`,
@@ -233,12 +228,7 @@ export async function runDoctorSessionSqlite(
       : undefined;
   const coverage =
     options.mode === "import" || options.mode === "dry-run" || options.mode === "validate"
-      ? gatherLegacyArchiveCoverage(
-          cfg,
-          env,
-          targets,
-          options.allAgents && !options.agent && !options.store ? candidates : undefined,
-        )
+      ? gatherLegacyArchiveCoverage(cfg, env, targets, knownTargets)
       : undefined;
   const reports: DoctorSessionSqliteTargetReport[] = [];
   const archiveTargets: LegacyArchiveTarget[] = [];
@@ -274,18 +264,74 @@ export async function runDoctorSessionSqlite(
   }
   if (activeRun && coverage) {
     const deferredSourcePaths = new Set<string>();
+    // Replay refusals keep their original names, including paths also reported as
+    // plugin conflicts. Protect them before that separate owner may archive inputs.
+    for (const owner of archiveTargets) {
+      for (const source of owner.replayRetainedPaths ?? []) {
+        const canonical = canonicalMigrationFilePath(source);
+        coverage.retainedPaths.add(canonical);
+        deferredSourcePaths.add(canonical);
+        if (canonical === owner.target.storePath) {
+          coverage.selectedStorePaths.delete(canonical);
+        }
+      }
+    }
+    for (const owner of archiveTargets) {
+      if (
+        owner.sourceConflicts?.size &&
+        (!shouldFilterLegacySessionRecordsByTarget(owner.sourceTarget) ||
+          (options.allAgents &&
+            !options.agent &&
+            !options.store &&
+            (coverage.selectedStorePaths.has(owner.target.storePath) ||
+              coverage.incompleteDirectories.has(path.dirname(owner.target.storePath))) &&
+            coverage.knownTargets
+              .filter(
+                (known) => canonicalMigrationFilePath(known.storePath) === owner.target.storePath,
+              )
+              .every((known) =>
+                archiveTargets.some(
+                  (candidate) =>
+                    candidate.target.agentId === known.agentId &&
+                    candidate.target.storePath === owner.target.storePath &&
+                    candidate.validated,
+                ),
+              ))) &&
+        targets
+          .filter(
+            (target) => canonicalMigrationFilePath(target.storePath) === owner.target.storePath,
+          )
+          .every((target) =>
+            archiveTargets.some(
+              (candidate) => candidate.sourceTarget === target && candidate.validated,
+            ),
+          )
+      ) {
+        await archiveConflictingRetainedSessionSources(
+          {
+            cfg,
+            env,
+            target: owner.sourceTarget,
+            activeRun,
+            protectedPaths: coverage.retainedPaths,
+            expectedIndexIdentity: coverage.indexIdentities.get(owner.target.storePath),
+            targets: archiveTargets
+              .filter((candidate) => candidate.target.storePath === owner.target.storePath)
+              .map((candidate) => candidate.target),
+          },
+          owner.sourceConflicts,
+          owner.report,
+        );
+      }
+    }
     for (const target of reports.filter(isInformationalMissingSessionIndex)) {
       coverage.selectedStorePaths.delete(canonicalMigrationFilePath(target.storePath));
       coverage.retainedDirectories.add(path.dirname(canonicalMigrationFilePath(target.storePath)));
     }
     for (const owner of archiveTargets) {
-      for (const source of owner.sourceConflicts ?? []) {
-        const canonicalSource = canonicalMigrationFilePath(source);
-        coverage.retainedPaths.add(canonicalSource);
-        deferredSourcePaths.add(canonicalSource);
-        if (canonicalSource === owner.target.storePath) {
-          coverage.selectedStorePaths.delete(owner.target.storePath);
-        }
+      for (const source of owner.sourceConflicts?.keys() ?? []) {
+        coverage.retainedPaths.add(canonicalMigrationFilePath(source));
+        deferredSourcePaths.add(canonicalMigrationFilePath(source));
       }
     }
     const retainDeferredSources = () => {
@@ -589,7 +635,7 @@ export async function reconcileDoctorSessionSqlitePublication(
 ): Promise<void> {
   const env = options.env ?? process.env;
   const cfg = resolveDoctorSessionSqliteConfig(options);
-  const targets = resolveDoctorSessionSqliteTargets({ ...options, cfg, env });
+  const { targets } = resolveDoctorSessionSqliteTargets({ ...options, cfg, env });
   assertDoctorSqliteMaintenancePathsNotAliased(
     `session SQLite ${options.mode}`,
     resolveDoctorSessionSqliteMaintenancePaths(targets),
@@ -600,53 +646,6 @@ export async function reconcileDoctorSessionSqlitePublication(
     sourcePath,
     trustedTargets: targets.map(createMigrationTargetInput),
   });
-}
-
-function resolveDoctorSessionSqliteMaintenancePaths(
-  targets: readonly SessionStoreTarget[],
-): string[] {
-  const protectedPaths = new Set<string>();
-  for (const target of targets) {
-    for (const databasePath of resolveSqliteDatabaseFilePaths(resolveTargetSqlitePath(target))) {
-      protectedPaths.add(databasePath);
-    }
-  }
-  return [...protectedPaths];
-}
-
-function resolveDoctorSessionSqliteMaintenanceRoots(
-  targets: readonly SessionStoreTarget[],
-  env: NodeJS.ProcessEnv,
-): string[] {
-  const stateDir = path.resolve(resolveStateDir(env));
-  const roots = new Set([stateDir]);
-  for (const target of targets) {
-    const sqlitePath = resolveTargetSqlitePath(target);
-    if (isPathWithin(stateDir, target.storePath) && isPathWithin(stateDir, sqlitePath)) {
-      continue;
-    }
-    const commonRoot = commonPathAncestor(path.dirname(target.storePath), path.dirname(sqlitePath));
-    const parentRoot = path.dirname(commonRoot);
-    roots.add(parentRoot === path.parse(commonRoot).root ? commonRoot : parentRoot);
-  }
-  return [...roots];
-}
-
-function isPathWithin(rootPath: string, candidatePath: string): boolean {
-  return isPathInside(rootPath, path.resolve(candidatePath));
-}
-
-function commonPathAncestor(leftPath: string, rightPath: string): string {
-  let currentPath = path.resolve(leftPath);
-  const resolvedRightPath = path.resolve(rightPath);
-  while (!isPathWithin(currentPath, resolvedRightPath)) {
-    const parentPath = path.dirname(currentPath);
-    if (parentPath === currentPath) {
-      return currentPath;
-    }
-    currentPath = parentPath;
-  }
-  return currentPath;
 }
 
 // Direct store migrations are scoped by path; broader agent discovery needs runtime config.
@@ -678,15 +677,22 @@ async function inspectOrMigrateTarget(params: {
   // Exact SQLite locators are maintenance targets, never legacy import sources.
   // Keeping them out of the file path also prevents archiving a live database.
   const isSqliteStore = params.target.storePath.endsWith(".sqlite");
+  const report = createDoctorSessionSqliteTargetReport({
+    ...params.target,
+    sqlitePath: resolveTargetSqlitePath(params.target, params.env),
+    sqliteEntries: readSqliteEntryCount(params.target),
+    archivedLegacyStoreFiles: [],
+    issues,
+  });
   const retained = prepareRetainedSessionImport(params, issues);
   if (!retained) {
-    return createDoctorSessionSqliteTargetReport({
-      ...params.target,
-      sqlitePath: resolveTargetSqlitePath(params.target, params.env),
-      issues,
-    });
+    return report;
   }
   const { retainedImport, sourceConflicts, retainedIndexPath } = retained;
+  const replayRetainedPaths = new Set<string>();
+  if (params.mode === "recover" && !shouldFilterLegacySessionRecordsByTarget(params.target)) {
+    await archiveConflictingRetainedSessionSources(params, sourceConflicts, report);
+  }
   const migrationTarget = createMigrationTargetInput(params.target);
   const matchesTarget = (candidate: CompletedLegacyStoreReplay["target"]) =>
     candidate.agentId === migrationTarget.agentId &&
@@ -698,15 +704,16 @@ async function inspectOrMigrateTarget(params: {
       params.expectedIndexIdentity !== undefined &&
       sameMigrationArtifact(candidate.sourceIdentity, params.expectedIndexIdentity),
   );
-  const allRecords = isSqliteStore
-    ? []
-    : readLegacySessionRecords(params.target, issues, {
-        allowMissingStore: true,
-        ...(retainedIndexPath ? { sourcePath: retainedIndexPath } : {}),
-        verifiedSourcePaths: retainedImport
-          ? new Set(retainedImport.sources.map((source) => source.path))
-          : undefined,
-      });
+  const allRecords =
+    isSqliteStore || sourceConflicts.has(path.resolve(params.target.storePath))
+      ? []
+      : readLegacySessionRecords(params.target, issues, {
+          allowMissingStore: true,
+          ...(retainedIndexPath ? { sourcePath: retainedIndexPath } : {}),
+          verifiedSourcePaths: retainedImport
+            ? new Set(retainedImport.sources.map((source) => source.path))
+            : undefined,
+        });
   if (completedIndexReplay) {
     for (const record of allRecords) {
       record.completedIndexReplay = {
@@ -776,15 +783,9 @@ async function inspectOrMigrateTarget(params: {
   const referencedTranscriptFiles = new Set(
     allRecords.flatMap((record) => (record.transcriptPath ? [record.transcriptPath] : [])),
   );
-  const report = createDoctorSessionSqliteTargetReport({
-    agentId: params.target.agentId,
-    archivedLegacyStoreFiles: [],
-    issues,
+  Object.assign(report, {
     legacyEntries: records.length,
     referencedTranscriptFiles: referencedTranscriptFiles.size,
-    sqliteEntries: readSqliteEntryCount(params.target),
-    sqlitePath: resolveTargetSqlitePath(params.target),
-    storePath: params.target.storePath,
     unreferencedJsonlFiles: isSqliteStore
       ? []
       : listUnreferencedJsonlFiles(params.target.storePath, [...referencedTranscriptFiles]),
@@ -878,7 +879,7 @@ async function inspectOrMigrateTarget(params: {
   if (retainedImport) {
     countRetainedSessionSources(retained, records, report);
   } else if (params.mode === "import") {
-    await importLegacySessionRecords(params.target, records, report, sourceConflicts);
+    await importLegacySessionRecords(params.target, records, report, replayRetainedPaths);
   } else if (params.mode === "dry-run") {
     for (const record of records) {
       countLegacyTranscript(record, report);
@@ -1004,9 +1005,12 @@ async function inspectOrMigrateTarget(params: {
             report.sqliteEntries = readSqliteEntryCount(params.target);
             return report;
           }
-          throw new Error(
-            `Deferred plugin session inputs have no verified source index: ${params.target.storePath}. Preserve the session files and migration archives; restore the matching sessions.json from a backup, then run openclaw doctor --fix.`,
-          );
+          report.issues.push({
+            code: "plugin_migration_source_retained",
+            message: `Deferred plugin session inputs have no verified source index: ${params.target.storePath}. Core sessions were imported; originals remain protected for plugin(s): ${deferredPluginIds.join(", ")}.`,
+          });
+          report.sqliteEntries = readSqliteEntryCount(params.target);
+          return report;
         }
         recordDeferredPluginSessionImport({
           cfg: params.cfg,
@@ -1030,11 +1034,14 @@ async function inspectOrMigrateTarget(params: {
       deferredPluginIds,
       retainedImportVerified,
       sourceConflicts,
+      replayRetainedPaths,
       verifiedSources,
       records: records
         .filter(
           (record) =>
-            !record.historical?.archiveMove && !sourceConflicts.has(record.transcriptPath ?? ""),
+            !record.historical?.archiveMove &&
+            !sourceConflicts.has(record.transcriptPath ?? "") &&
+            !replayRetainedPaths.has(record.transcriptPath ?? ""),
         )
         .map(({ entry, ...record }) => Object.assign(record, { sessionId: entry.sessionId })),
     });

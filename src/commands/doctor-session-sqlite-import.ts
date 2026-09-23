@@ -11,16 +11,16 @@ import {
   sameMigrationArtifact,
   type MigrationArtifactFingerprint,
   type MigrationArtifactIdentity,
-} from "./doctor-session-sqlite-artifact.js";
-import type { LegacySessionRecord } from "./doctor-session-sqlite-discovery.js";
-import { canonicalMigrationFilePath } from "./doctor-session-sqlite-migration-run.js";
+} from "../infra/session-sqlite-migration-artifact.js";
+import { canonicalMigrationFilePath } from "../infra/session-sqlite-migration-manifest.js";
 import {
   countTranscriptEventsForPath,
   createTranscriptEventReader,
   readOnlySqliteValidationSnapshot,
   readTranscriptFingerprint,
   type ReadOnlySqliteValidationSnapshot,
-} from "./doctor-session-sqlite-readers.js";
+} from "../infra/session-sqlite-migration-readers.js";
+import type { LegacySessionRecord } from "./doctor-session-sqlite-discovery.js";
 import type { DoctorSessionSqliteTargetReport } from "./doctor-session-sqlite-types.js";
 
 type SessionStoreTarget = ResolvedSessionStoreTarget & { sqlitePath?: string };
@@ -31,7 +31,7 @@ export async function importLegacySessionRecords(
   target: SessionStoreTarget,
   records: readonly LegacySessionRecord[],
   report: DoctorSessionSqliteTargetReport,
-  sourceConflicts: Set<string>,
+  replayRetainedPaths: Set<string>,
 ): Promise<void> {
   if (records.length === 0) {
     return;
@@ -125,11 +125,11 @@ export async function importLegacySessionRecords(
           !sameMigrationArtifact(completedReplaySource.identity, completedTranscriptIdentity))
       ) {
         record.completedIndexReplay.outcome = "unverified-source";
-        sourceConflicts.add(target.storePath);
+        replayRetainedPaths.add(target.storePath);
         for (const source of record.transcriptDependencies) {
-          sourceConflicts.add(source);
+          replayRetainedPaths.add(source);
         }
-        sourceConflicts.add(record.transcriptPath);
+        replayRetainedPaths.add(record.transcriptPath);
         report.issues.push({
           code: "historical_transcript_deferred",
           sessionKey: record.sessionKey,
@@ -168,12 +168,12 @@ export async function importLegacySessionRecords(
           result.completedIndexReplay !== "appended" &&
           result.completedIndexReplay !== "unchanged"
         ) {
-          sourceConflicts.add(target.storePath);
+          replayRetainedPaths.add(target.storePath);
           for (const source of record.transcriptDependencies) {
-            sourceConflicts.add(source);
+            replayRetainedPaths.add(source);
           }
           if (record.transcriptPath) {
-            sourceConflicts.add(record.transcriptPath);
+            replayRetainedPaths.add(record.transcriptPath);
           }
           const reason =
             result.completedIndexReplay === "history-not-appendable"
