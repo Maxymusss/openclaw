@@ -2207,28 +2207,23 @@ describe("native hook relay registry", () => {
 
     const firstRecord = await waitForNativeHookRelayBridgeRecord(first.relayId);
     await waitForNativeHookRelayBridgeRecord(second.relayId);
-    await nativeHookRelayStore.writeNativeHookRelayBridgeRecord({
-      record: {
-        ...firstRecord,
-        relayId: second.relayId,
-        expiresAtMs: Date.now() + 10_000,
+    const mismatch = openDeferredNativeHookRelayBridgeRequest(firstRecord, {
+      provider: "codex",
+      relayId: second.relayId,
+      generation: second.generation,
+      event: "pre_tool_use",
+      rawPayload: {
+        hook_event_name: "PreToolUse",
+        tool_name: "Bash",
+        tool_input: { command: "pnpm test" },
       },
     });
-
-    await expect(
-      invokeNativeHookRelayBridge({
-        provider: "codex",
-        relayId: second.relayId,
-        generation: second.generation,
-        event: "pre_tool_use",
-        timeoutMs: 500,
-        rawPayload: {
-          hook_event_name: "PreToolUse",
-          tool_name: "Bash",
-          tool_input: { command: "pnpm test" },
-        },
-      }),
-    ).rejects.toThrow("native hook relay bridge target mismatch");
+    const response = Promise.all([mismatch.connected, mismatch.response]);
+    mismatch.sendBody();
+    await expect(response).resolves.toEqual([
+      undefined,
+      { ok: false, error: "native hook relay bridge target mismatch" },
+    ]);
     expect(testing.getNativeHookRelayInvocationsForTests()).toStrictEqual([]);
   });
 
