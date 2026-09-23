@@ -38,6 +38,9 @@ final class IOSChatViewModelOwner {
 
     @ObservationIgnored private weak var nativeActions: NativeActionRouter?
     private var presentationID: UUID?
+    #if DEBUG
+    @ObservationIgnored private var ordinarySyncAttempt: UInt64 = 0
+    #endif
 
     struct TaskIdentity: Equatable {
         let route: String
@@ -109,15 +112,32 @@ final class IOSChatViewModelOwner {
             self.authority = authority
         }
 
-        func isCurrent(appModel: NodeAppModel, presentation: Presentation) -> Bool {
-            self.ownerID == appModel.chatViewModelOwnerID &&
-                (self.agentID == nil || self.agentID == appModel.chatDeliveryAgentId) &&
-                (self.inputs == nil || self.inputs == appModel.activeGatewayConnectConfig?.controlUIInputs) &&
-                (self.accountGeneration == nil || self.accountGeneration == appModel.operatorAuthorityGeneration) &&
-                self.binding === presentation.binding && self.rootID == presentation.id &&
-                self.hadRouter == (presentation.router != nil) && self.router === presentation.router &&
-                (self.authority.map { presentation.router?.isCurrentPresentation($0) == true } ??
-                    (self.rootID == nil))
+        func isCurrent(
+            appModel: NodeAppModel,
+            presentation: Presentation,
+            observe: ((String, Bool) -> Void)? = nil) -> Bool
+        {
+            func recorded(_ name: String, _ value: Bool) -> Bool {
+                #if DEBUG
+                observe?(name, value)
+                #endif
+                return value
+            }
+            // Record operands where they run; a skipped clause is not a false result.
+            return recorded("owner", self.ownerID == appModel.chatViewModelOwnerID) &&
+                (recorded("agentNil", self.agentID == nil) ||
+                    recorded("agent", self.agentID == appModel.chatDeliveryAgentId)) &&
+                (recorded("inputsNil", self.inputs == nil) ||
+                    recorded("inputs", self.inputs == appModel.activeGatewayConnectConfig?.controlUIInputs)) &&
+                (recorded("accountNil", self.accountGeneration == nil) ||
+                    recorded("account", self.accountGeneration == appModel.operatorAuthorityGeneration)) &&
+                recorded("binding", self.binding === presentation.binding) &&
+                recorded("root", self.rootID == presentation.id) &&
+                recorded("routerPresence", self.hadRouter == (presentation.router != nil)) &&
+                recorded("router", self.router === presentation.router) &&
+                (self.authority.map {
+                    recorded("authority", presentation.router?.isCurrentPresentation($0, observe: observe) == true)
+                } ?? recorded("unregistered", self.rootID == nil))
         }
     }
 
@@ -188,9 +208,11 @@ final class IOSChatViewModelOwner {
     {
         let presentation = currentPresentation()
         #if DEBUG
+        if presentation.binding == nil { self.ordinarySyncAttempt &+= 1 }
+        let ordinarySyncAttempt = self.ordinarySyncAttempt
         func observeOrdinarySync(_ event: String) {
             guard presentation.binding == nil else { return }
-            presentation.router?.testLifetimeObservation?("ordinary-sync-\(event)")
+            presentation.router?.testLifetimeObservation?("ordinary-sync-\(event) attempt=\(ordinarySyncAttempt)")
         }
         observeOrdinarySync("entered")
         #endif
@@ -215,9 +237,25 @@ final class IOSChatViewModelOwner {
             #endif
             return
         }
-        guard origin.isCurrent(appModel: appModel, presentation: currentPresentation()) else {
+        #if DEBUG
+        var originFacts: [String] = []
+        var rejectedOriginClause: String?
+        let observeOrigin: ((String, Bool) -> Void)? = presentation.binding == nil ? { name, value in
+            originFacts.append("\(name)=\(value)")
+            let hasAuthorityFailure = rejectedOriginClause == "authorityRoot" ||
+                rejectedOriginClause == "authoritySelection"
+            if !value, name != "authority" || !hasAuthorityFailure { rejectedOriginClause = name }
+        } : nil
+        #else
+        let observeOrigin: ((String, Bool) -> Void)? = nil
+        #endif
+        guard origin.isCurrent(
+            appModel: appModel, presentation: currentPresentation(), observe: observeOrigin)
+        else {
             #if DEBUG
-            observeOrdinarySync("restore-origin-changed")
+            observeOrdinarySync(
+                "restore-origin-changed rejected=\(rejectedOriginClause ?? "unobserved") " +
+                    "facts={\(originFacts.joined(separator: " "))}")
             #endif
             return
         }
@@ -516,17 +554,40 @@ final class IOSChatViewModelOwner {
     func canPresentNativeSession(
         _ session: OpenClawNativeSessionRef,
         appModel: NodeAppModel,
-        binding: IOSNativeActionBinding? = nil) -> Bool
+        binding: IOSNativeActionBinding? = nil,
+        observe: ((String, Bool) -> Void)? = nil) -> Bool
     {
-        guard self.hasProtectedComposer(appModel: appModel) ||
-            self.viewModel?.canPreserveIdleTextDraft == false || self.captureIsActive(appModel: appModel)
+        func recorded(_ name: String, _ value: Bool) -> Bool {
+            #if DEBUG
+            observe?(name, value)
+            #endif
+            return value
+        }
+        func recordedFalse(_ name: String, _ value: Bool?) -> Bool {
+            #if DEBUG
+            observe?("\(name)Known", value != nil)
+            #endif
+            return recorded(name, value == false)
+        }
+        guard recorded("protected", self.hasProtectedComposer(appModel: appModel)) ||
+            recordedFalse("idleBlocked", self.viewModel?.canPreserveIdleTextDraft) ||
+            recorded("capture", self.captureIsActive(appModel: appModel))
         else { return true }
-        guard self.matchesNativeTarget(session, appModel: appModel) else { return false }
+        guard recorded("target", self.matchesNativeTarget(session, appModel: appModel)) else { return false }
         // A same-target reopen needs the history/account read before a new binding
         // exists. The second admission checks that verified binding against live state.
-        guard let binding else { return true }
-        return (self.matchesBinding(binding) && self.viewModel?.isQuestionAuthorityRetired == false) ||
-            self.preservedReopenedInput(binding, appModel: appModel) != nil
+        guard let binding else {
+            #if DEBUG
+            observe?("bindingPresent", false)
+            #endif
+            return true
+        }
+        #if DEBUG
+        observe?("bindingPresent", true)
+        #endif
+        return (recorded("bindingMatches", self.matchesBinding(binding)) &&
+            recordedFalse("questionCurrent", self.viewModel?.isQuestionAuthorityRetired)) ||
+            recorded("preservedInput", self.preservedReopenedInput(binding, appModel: appModel) != nil)
     }
 
     private func matchesNativeTarget(_ session: OpenClawNativeSessionRef, appModel: NodeAppModel) -> Bool {

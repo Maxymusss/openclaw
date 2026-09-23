@@ -137,8 +137,18 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         return PresentationAuthority(rootID: id, selectionID: self.selectionID)
     }
 
-    func isCurrentPresentation(_ authority: PresentationAuthority) -> Bool {
-        self.presentation?.id == authority.rootID && self.selectionID == authority.selectionID
+    func isCurrentPresentation(
+        _ authority: PresentationAuthority,
+        observe: ((String, Bool) -> Void)? = nil) -> Bool
+    {
+        func recorded(_ name: String, _ value: Bool) -> Bool {
+            #if DEBUG
+            observe?(name, value)
+            #endif
+            return value
+        }
+        return recorded("authorityRoot", self.presentation?.id == authority.rootID) &&
+            recorded("authoritySelection", self.selectionID == authority.selectionID)
     }
 
     func hasRegisteredChat(
@@ -462,6 +472,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         var account: AccountAuthority?
         var selection: UUID?
         var bindingRead: Bool?
+        var admissionFacts: String?
         var completed = false
 
         mutating func record(
@@ -487,12 +498,13 @@ final class NativeActionRouter: OpenClawNativeActionHost {
             let account = self.account.map { String($0 == router.currentAccountAuthority) } ?? "unobserved"
             let selection = self.selection.map { String($0 == router.selectionID) } ?? "unobserved"
             let bindingRead = self.bindingRead.map { String($0) } ?? "unobserved"
+            let admissionFacts = self.admissionFacts.map { " admissionFacts={\($0)}" } ?? ""
             router.testLifetimeObservation?(
                 "present-exit stage=\(self.stage) cancelled=\(Task.isCancelled) " +
                     "root=\(router.presentation?.id == rootID) " +
                     "navigation=\(router.navigationRevision == navigationRevision) " +
                     "generation=\(generation) account=\(account) " +
-                    "selection=\(selection) bindingRead=\(bindingRead)")
+                    "selection=\(selection) bindingRead=\(bindingRead)\(admissionFacts)")
         }
     }
     #endif
@@ -527,6 +539,9 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         #if DEBUG
         var diagnostic = PresentationDiagnostic()
         defer { diagnostic.recordExit(self, rootID: rootID, navigationRevision: navigationRevision) }
+        let observeAdmission: ((String) -> Void)? = { diagnostic.admissionFacts = $0 }
+        #else
+        let observeAdmission: ((String) -> Void)? = nil
         #endif
         /// Connection-owned target projection can retire a binding while switching
         /// Gateways. Explicit navigation and actual host departure cannot be adopted.
@@ -544,7 +559,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
             }
         }
         try requireOrigin()
-        try self.requirePreservedDraft(session)
+        try self.requirePreservedDraft(session, observe: observeAdmission)
         #if DEBUG
         diagnostic.stage = "prepare-route"
         #endif
@@ -598,7 +613,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         // The old Gateway's delayed projection may retire selection during reads.
         // Only the initiating navigation/root authority governs this pre-adoption phase.
         try requireOrigin()
-        try self.requirePreservedDraft(session, binding: binding)
+        try self.requirePreservedDraft(session, binding: binding, observe: observeAdmission)
         let receipt = try run.map {
             try RunPresentation(inspection: OpenClawChatNativeRunInspection.reduce(history, run: $0))
         }
@@ -727,9 +742,22 @@ final class NativeActionRouter: OpenClawNativeActionHost {
 
     private func requirePreservedDraft(
         _ session: OpenClawNativeSessionRef,
-        binding: IOSNativeActionBinding? = nil) throws
+        binding: IOSNativeActionBinding? = nil,
+        observe: ((String) -> Void)? = nil) throws
     {
-        if !self.appModel.chatPresentation.canPresentNativeSession(session, appModel: self.appModel, binding: binding) {
+        #if DEBUG
+        var facts: [String] = []
+        let observePredicate: ((String, Bool) -> Void)? = observe == nil
+            ? nil : { facts.append("\($0)=\($1)") }
+        #else
+        let observePredicate: ((String, Bool) -> Void)? = nil
+        #endif
+        if !self.appModel.chatPresentation.canPresentNativeSession(
+            session, appModel: self.appModel, binding: binding, observe: observePredicate)
+        {
+            #if DEBUG
+            observe?(facts.joined(separator: " "))
+            #endif
             throw OpenClawNativeActionError("Keep or send the current draft before opening a different session.")
         }
     }

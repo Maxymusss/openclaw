@@ -325,7 +325,7 @@ struct NativeActionRouterTests {
         let current = router.capturePresentationAuthority(second)
         lifetime.release()
         lifetime.release()
-        #expect(current.map(router.isCurrentPresentation) == true)
+        #expect(current.map { router.isCurrentPresentation($0) } == true)
         router.unregisterPresentation(second)
     }
 
@@ -336,13 +336,13 @@ struct NativeActionRouterTests {
         let root = router.registerPresentation(onRetire: { _ in }, { _, _, _ in })
         let original = router.capturePresentationAuthority(root)
         #expect(!router.userNavigationDidChange(presentationID: UUID()))
-        #expect(original.map(router.isCurrentPresentation) == true)
+        #expect(original.map { router.isCurrentPresentation($0) } == true)
         #expect(router.userNavigationDidChange(presentationID: root))
-        #expect(original.map(router.isCurrentPresentation) == false)
+        #expect(original.map { router.isCurrentPresentation($0) } == false)
         let successor = router.registerPresentation(onRetire: { _ in }, { _, _, _ in })
         let current = router.capturePresentationAuthority(successor)
         #expect(!router.userNavigationDidChange(presentationID: root))
-        #expect(current.map(router.isCurrentPresentation) == true)
+        #expect(current.map { router.isCurrentPresentation($0) } == true)
         router.unregisterPresentation(successor)
     }
 

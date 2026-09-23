@@ -22,6 +22,7 @@ final class NativeActionVisualProofTests: XCTestCase {
         var waitLine = 0
         var waitPhase = "unobserved"
         var waitFacts: String?
+        var composerFailureFacts: String?
     }
 
     private var failureObservation: FailureObservation?
@@ -359,12 +360,42 @@ final class NativeActionVisualProofTests: XCTestCase {
                 print(
                     "native-visual-lifetime total=\(lifetimeTotal) truncated=\(lifetimeTotal > 32) \(lifetimeRows.joined(separator: " | "))")
             }
+            var deepLinkDeclineStarted = false
+            var deepLinkReadCount = 0
+            var deepLinkReadOverflow = false
+            var deepLinkLastReadPresent: Bool?
+            var deepLinkFirstNilRead: Int?
+            var deepLinkFirstNilOverflow = false
             let originalLifetimeObservation = router.testLifetimeObservation
-            router.testLifetimeObservation = {
+            router.testLifetimeObservation = { observedTag in
+                // Getter observations must never reach the ledger's observable owner reads.
+                if observedTag.hasPrefix("deep-link-prompt-read ") {
+                    guard scenario == .agentDeepLink, deepLinkDeclineStarted else { return }
+                    let present: Bool
+                    switch observedTag {
+                    case "deep-link-prompt-read present=true": present = true
+                    case "deep-link-prompt-read present=false": present = false
+                    default: return
+                    }
+                    if deepLinkReadCount < 32 { deepLinkReadCount += 1 } else { deepLinkReadOverflow = true }
+                    deepLinkLastReadPresent = present
+                    if !present, deepLinkFirstNilRead == nil {
+                        deepLinkFirstNilRead = deepLinkReadCount
+                        deepLinkFirstNilOverflow = deepLinkReadOverflow
+                    }
+                    return
+                }
                 // Keep the existing bounded trace intact outside the missing ordinary setup evidence.
-                if $0.hasPrefix("ordinary-sync-"),
+                if observedTag.hasPrefix("ordinary-sync-"),
                    scenario != .sidebarNewChatOrdinary || lifetimePhase != "setup" { return }
-                observeLifetime($0)
+                var tag = observedTag
+                if tag.hasPrefix("present-exit "),
+                   scenario != .nativeAfterUserChat || lifetimePhase != "scenario",
+                   let admission = tag.range(of: " admissionFacts={")
+                {
+                    tag = String(tag[..<admission.lowerBound])
+                }
+                observeLifetime(tag)
             }
             defer { router.testLifetimeObservation = originalLifetimeObservation }
             let originalSelectionDidChange = model.chatSelectionDidChange
@@ -927,8 +958,10 @@ final class NativeActionVisualProofTests: XCTestCase {
                     try await self.waitForNavigationTitle("Pages", in: ownedWindow)
                     let sheet = try XCTUnwrap(hosting.presentedViewController)
                     if scenario == .pagesAdmissionCover || scenario == .pagesRemoval {
-                        try await self.waitUntil(failureFacts: { [weak hosting, weak ownedWindow] in
-                            self.coverFailureFacts(hosting: hosting, window: ownedWindow)
+                        try await self.waitUntil(failureFacts: { [weak hosting, weak ownedWindow, weak sheet] in
+                            let presented = hosting?.presentedViewController
+                            return self.modalFailureFacts(
+                                hosting: hosting, presented: presented, original: sheet, window: ownedWindow)
                         }) { hosting.view.window == nil }
                     }
                     // Pages uses ordinary departure. A cover can postpone idle VM
@@ -1220,8 +1253,10 @@ final class NativeActionVisualProofTests: XCTestCase {
                     if scenario == .chatModalNewOptionsCover {
                         // Compact height uses the actual full-screen adaptation. The UI
                         // transition owner survives cover; native permits do not.
-                        try await self.waitUntil(failureFacts: { [weak hosting, weak ownedWindow] in
-                            self.coverFailureFacts(hosting: hosting, window: ownedWindow)
+                        try await self.waitUntil(failureFacts: { [weak hosting, weak ownedWindow, weak sheet] in
+                            let presented = hosting?.presentedViewController
+                            return self.modalFailureFacts(
+                                hosting: hosting, presented: presented, original: sheet, window: ownedWindow)
                         }) { hosting.view.window == nil }
                     }
                     XCTAssertTrue(model.chatPresentation.viewModel === chat)
@@ -2012,15 +2047,27 @@ final class NativeActionVisualProofTests: XCTestCase {
                             XCTAssertEqual(model.pendingAgentDeepLinkPrompt, prompt)
                             XCTAssertTrue(hosting.presentedViewController === alert)
                             let declinedPromptID = prompt.id
+                            deepLinkDeclineStarted = true
                             model.declinePendingAgentDeepLinkPrompt()
-                            try await self.waitUntil(failureFacts: { [weak model, weak hosting, weak alert] in
+                            try await self.waitUntil(failureFacts: { [
+                                weak model,
+                                weak hosting,
+                                weak alert,
+                                weak ownedWindow,
+                            ] in
                                 let pendingID = model?.pendingAgentDeepLinkPrompt?.id
                                 let presented = hosting?.presentedViewController
                                 return "modelPresent=\(model != nil) promptPresent=\(pendingID != nil) " +
                                     "promptSame=\(pendingID != nil && pendingID == declinedPromptID) " +
                                     "hostPresent=\(hosting != nil) presented=\(presented != nil) " +
                                     "sameAlert=\(alert != nil && presented === alert) " +
-                                    "presentedIsAlert=\(presented is UIAlertController)"
+                                    "presentedIsAlert=\(presented is UIAlertController) " +
+                                    "bindingReads=\(deepLinkReadCount) bindingReadsOverflow=\(deepLinkReadOverflow) " +
+                                    "bindingLastPresent=\(deepLinkLastReadPresent.map { String($0) } ?? "unobserved") " +
+                                    "bindingFirstNilOrdinal=\(deepLinkFirstNilRead.map { String($0) } ?? "unobserved") " +
+                                    "bindingFirstNilOverflow=\(deepLinkFirstNilOverflow) " +
+                                    self.modalFailureFacts(
+                                        hosting: hosting, presented: presented, original: alert, window: ownedWindow)
                             }) {
                                 model.pendingAgentDeepLinkPrompt == nil && hosting.presentedViewController == nil
                             }
@@ -2260,18 +2307,28 @@ final class NativeActionVisualProofTests: XCTestCase {
         }
     }
 
-    private func coverFailureFacts(hosting: UIViewController?, window: UIWindow?) -> String {
+    private func modalFailureFacts(
+        hosting: UIViewController?,
+        presented: UIViewController?,
+        original: UIViewController?,
+        window: UIWindow?) -> String
+    {
         guard let hosting else { return "hostPresent=false" }
-        let presented = hosting.presentedViewController
         let presenter = presented?.presentingViewController
-        // Query only an active presentation: this UIKit getter can create a controller
-        // for a view controller that has not been presented.
-        let presentation = presenter != nil ? presented?.presentationController : nil
+        // The active controller includes adaptive presentation. These sampled flags
+        // describe current state, never transition history or completion.
+        let presentation = presenter != nil ? presented?.activePresentationController : nil
         let removesPresenter = presentation.map { String($0.shouldRemovePresentersView) } ?? "unobserved"
+        let beingPresented = presented.map { String($0.isBeingPresented) } ?? "unobserved"
+        let beingDismissed = presented.map { String($0.isBeingDismissed) } ?? "unobserved"
+        let hasTransition = presented.map { String($0.transitionCoordinator != nil) } ?? "unobserved"
         return "hostPresent=true presented=\(presented != nil) presenterPresent=\(presenter != nil) " +
+            "sameOriginal=\(original != nil && presented === original) " +
             "presenterIsHost=\(presenter != nil && presenter === hosting) " +
-            "presentationStyle=\(presentation?.presentationStyle.rawValue ?? -99) " +
-            "modalStyle=\(presented?.modalPresentationStyle.rawValue ?? -99) removesPresenter=\(removesPresenter) " +
+            "activePresentationStyle=\(presentation?.presentationStyle.rawValue ?? -99) " +
+            "modalStyle=\(presented?.modalPresentationStyle.rawValue ?? -99) " +
+            "activeRemovesPresenter=\(removesPresenter) " +
+            "beingPresented=\(beingPresented) beingDismissed=\(beingDismissed) transitionPresent=\(hasTransition) " +
             "hostInWindow=\(window != nil && hosting.viewIfLoaded?.window === window) " +
             "presentedInWindow=\(window != nil && presented?.viewIfLoaded?.window === window) " +
             "hostH=\(hosting.traitCollection.horizontalSizeClass.rawValue) " +
@@ -2292,7 +2349,7 @@ final class NativeActionVisualProofTests: XCTestCase {
             "other"
         }
         // These fresh failure-time facts do not identify an earlier predicate or state writer.
-        let fields = [
+        var fields = [
             "native-visual-failure scenario=\(observation.scenario) stage=\(observation.stage)",
             "lastWaitLine=\(observation.waitLine) lastWaitPhase=\(observation.waitPhase) cancellation=\(error is CancellationError)",
             "errorKind=\(errorKind) failureTime taskCancelled=\(Task.isCancelled) windowPresent=\(window != nil)",
@@ -2302,6 +2359,7 @@ final class NativeActionVisualProofTests: XCTestCase {
             "presented=\(hosting?.presentedViewController != nil)",
             "waitFailureFacts={\(observation.waitFacts ?? "unobserved")}",
         ]
+        if let facts = observation.composerFailureFacts { fields.append("composerFailureFacts={\(facts)}") }
         // One bounded row per failed scenario; never emit labels, identifiers, or object descriptions.
         print(String(fields.joined(separator: " ").prefix(2048)))
     }
@@ -2431,12 +2489,16 @@ final class NativeActionVisualProofTests: XCTestCase {
             while let view = pending.popLast() {
                 visited += 1
                 guard visited <= 512 else {
+                    self.failureObservation?.composerFailureFacts =
+                        "reason=hierarchy-limit visited=\(visited) inputs=\(inputs.count)"
                     throw OpenClawNativeActionError("Native visual hierarchy exceeds its bound")
                 }
                 if let input = view as? ChatComposerUITextView { inputs.append(input) }
                 pending.append(contentsOf: view.subviews)
             }
             guard inputs.count <= 1 else {
+                self.failureObservation?.composerFailureFacts =
+                    "reason=multiple-editors visited=\(visited) inputs=\(inputs.count)"
                 throw OpenClawNativeActionError("Native visual editor is ambiguous")
             }
             guard let input = inputs.first else { return false }
