@@ -332,6 +332,13 @@ and retain its run URL. Do not rotate credentials as part of a diagnostic check.
 
 ## Dispatch
 
+After source admission, plugin compatibility readiness, and evidence reuse
+selection, dispatch source-only children alongside npm and Docker artifact
+producers. Candidate acquisition consumes raw npm bytes while qualification
+continues; candidate Plugin Prerelease and Release Checks start immediately
+after candidate verification without waiting for independent validation or
+Docker. Preserve the immutable execution plan and final artifact qualification.
+
 An early standalone product-performance run is optional beta confidence. If
 useful, start it against the frozen Code SHA in parallel with release work:
 

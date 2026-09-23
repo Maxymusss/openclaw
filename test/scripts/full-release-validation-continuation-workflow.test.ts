@@ -249,6 +249,42 @@ describe("full release metadata checkouts", () => {
 });
 
 describe("full release same-parent recovery workflow", () => {
+  it("starts source validation with artifact producers and releases candidate consumers immediately", () => {
+    for (const job of [
+      "normal_ci",
+      "plugin_prerelease_independent",
+      "release_checks_independent",
+      "performance",
+      "prepare_npm_package",
+      "prepare_docker_release",
+    ]) {
+      expect(workflow.jobs[job], job).toHaveProperty("needs", [
+        "resolve_target",
+        "plugin_compatibility_readiness",
+        "evidence_reuse",
+      ]);
+    }
+    expect(workflow.jobs.candidate_acquisition).toHaveProperty("needs", [
+      "resolve_target",
+      "evidence_reuse",
+      "prepare_npm_package",
+    ]);
+    expect(step("prepare_npm_package", "Wait for publishable npm package").env).toMatchObject({
+      ARTIFACT_OUTPUT: "raw",
+    });
+    expect(workflow.jobs.plugin_prerelease_candidate).toHaveProperty("needs", [
+      "resolve_target",
+      "evidence_reuse",
+      "candidate_acquisition",
+    ]);
+    expect(workflow.jobs.release_checks_candidate).toHaveProperty("needs", [
+      "resolve_target",
+      "plugin_compatibility_readiness",
+      "evidence_reuse",
+      "candidate_acquisition",
+    ]);
+  });
+
   it.each(["failure", "success", "missing"])(
     "reports %s locale diagnostics without changing validation evidence",
     (conclusion) => {

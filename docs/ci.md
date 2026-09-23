@@ -73,6 +73,11 @@ Full Release Validation's exact-target UI job retains the current three native
 shards for both runtimes. Historical compatibility targets keep their original
 unsharded package command; see [UI job budgets](/ci/scope-and-routing/job-budgets).
 
+Full Release Validation starts source-only children alongside artifact producers
+after admission and reuse selection. Candidate consumers start as soon as the
+candidate is verified, while npm qualification and independent validation can
+continue; see the [release fast path](/reference/RELEASING#fast-path-default).
+
 Auto-reply reply tests run files in parallel with two workers per compact group. Their planner uses separate parallel timing identities; until those have measurements, serial group costs are divided by the effective worker count, with single-file groups retaining their full cost.
 
 The measured Gateway isolated/database-worker cohort uses at most eight workers

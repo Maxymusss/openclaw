@@ -403,6 +403,15 @@ This checklist is the public shape of the release flow. Private credentials and 
 
 ### Fast path (default)
 
+After source admission, plugin compatibility readiness, and evidence reuse
+selection, normal CI, independent Plugin Prerelease, independent Release Checks,
+and performance start alongside the npm and Docker artifact producers. Candidate
+acquisition consumes raw npm bytes while npm qualification continues. Candidate
+Plugin Prerelease and Release Checks start as soon as that candidate is verified;
+they do not wait for independent validation or Docker preparation. The immutable
+execution plan still binds every selected child, and publication still requires
+qualified artifacts.
+
 Flaky tests never block a release: rerun once, record, waive as advisory; only install smoke, upgrade-survivor proofs, pack budget and artifact children stay required.
 
 The default regular stable release is one cut, one validation parent, and one
