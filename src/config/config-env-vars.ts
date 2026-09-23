@@ -296,8 +296,9 @@ let pendingConfigRuntimeEnvPublication: PendingConfigRuntimeEnvPublication | nul
 function applyPublishedConfigRuntimeEnvRollback(
   publication: PendingConfigRuntimeEnvPublication,
 ): void {
+  let current: ReadonlyMap<string, EnvSnapshotEntry> | undefined;
   for (const [key, change] of publication.changes) {
-    const currentEntry = snapshotEnvByPlatformKey(process.env).get(key);
+    const currentEntry = (current ??= snapshotEnvByPlatformKey(process.env)).get(key);
     if (!envSnapshotEntriesEqual(currentEntry, change.after)) {
       continue;
     }
@@ -590,10 +591,11 @@ function prepareConfigRuntimeEnvPublication(params: {
         ...afterByPlatformKey.keys(),
         ...(previousPublication?.changes.keys() ?? []),
       ]);
+      let current: ReadonlyMap<string, EnvSnapshotEntry> | undefined;
       for (const key of keys) {
         const beforeEntry = before.get(key);
         const afterEntry = afterByPlatformKey.get(key);
-        const currentEntry = snapshotEnvByPlatformKey(targetEnv).get(key);
+        const currentEntry = (current ??= snapshotEnvByPlatformKey(targetEnv)).get(key);
         const previousChange = previousPublication?.changes.get(key);
         const continuesPreviousPublication =
           previousChange !== undefined &&
@@ -621,9 +623,12 @@ function prepareConfigRuntimeEnvPublication(params: {
       let processPublicationState: PendingConfigRuntimeEnvPublication | null = null;
       if (publicationGeneration !== null) {
         const ownedEnv: Record<string, string> = {};
+        let publishedEnv: ReadonlyMap<string, EnvSnapshotEntry> | undefined;
         for (const [key, value] of Object.entries(params.configState?.ownedEnv ?? {})) {
           const platformKey = envSnapshotKey(key);
-          const currentEntry = snapshotEnvByPlatformKey(targetEnv).get(platformKey);
+          const currentEntry = (publishedEnv ??= snapshotEnvByPlatformKey(targetEnv)).get(
+            platformKey,
+          );
           const preparedEntry = afterByPlatformKey.get(platformKey);
           const previousOwnedKey = findCaseInsensitiveEnvKey(previousOwnedEnv, key);
           if (
@@ -667,8 +672,9 @@ function prepareConfigRuntimeEnvPublication(params: {
           unwindRequestedConfigRuntimeEnvPublications();
           return;
         }
+        let current: ReadonlyMap<string, EnvSnapshotEntry> | undefined;
         for (const [key, publication] of published) {
-          const currentEntry = snapshotEnvByPlatformKey(targetEnv).get(key);
+          const currentEntry = (current ??= snapshotEnvByPlatformKey(targetEnv)).get(key);
           if (!envSnapshotEntriesEqual(currentEntry, publication.after)) {
             continue;
           }
