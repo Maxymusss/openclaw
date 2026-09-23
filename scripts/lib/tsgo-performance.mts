@@ -14,9 +14,13 @@ const SAMPLE_INTERVAL_MS = 100;
 const MAX_METADATA_BYTES = 32 * 1024 * 1024;
 
 function readFile(file: string | undefined): Buffer | null {
-  if (!file) return null;
+  if (!file) {
+    return null;
+  }
   try {
-    if (fs.statSync(file).size > MAX_METADATA_BYTES) return null;
+    if (fs.statSync(file).size > MAX_METADATA_BYTES) {
+      return null;
+    }
     return fs.readFileSync(file);
   } catch {
     return null;
@@ -46,8 +50,9 @@ export function parseTsgoProcessSample(stat: string, status: string, ticksPerSec
     systemTicks < 0 ||
     !Number.isFinite(ticksPerSecond) ||
     ticksPerSecond <= 0
-  )
+  ) {
     return null;
+  }
   return {
     startTicks,
     cpuMs: ((userTicks + systemTicks) / ticksPerSecond) * 1000,
@@ -76,19 +81,24 @@ export function createTsgoResourceSampler({
         : null;
   return {
     sample(pid: number) {
-      if (unavailableReason || ticksPerSecond === null) return;
+      if (unavailableReason || ticksPerSecond === null) {
+        return;
+      }
       try {
         const sample = parseTsgoProcessSample(
           read(`/proc/${pid}/stat`),
           read(`/proc/${pid}/status`),
           ticksPerSecond,
         );
-        if (!sample || (startTicks !== undefined && startTicks !== sample.startTicks)) return;
+        if (!sample || (startTicks !== undefined && startTicks !== sample.startTicks)) {
+          return;
+        }
         startTicks ??= sample.startTicks;
         samples += 1;
         cpuMs = Math.max(cpuMs ?? 0, sample.cpuMs);
-        if (sample.peakRssBytes !== null)
+        if (sample.peakRssBytes !== null) {
           peakRssBytes = Math.max(peakRssBytes ?? 0, sample.peakRssBytes);
+        }
       } catch {
         // Short-lived children, restricted procfs, and exit races leave missing samples.
       }
@@ -122,16 +132,21 @@ export function summarizeTsgoBuildInfo(before: Buffer | null, after: Buffer | nu
     transitiveFiles: null,
     unavailableReason: reason,
   });
-  if (!after) return missing("build-info-unavailable");
-  if (before?.equals(after)) return missing("build-info-unchanged");
+  if (!after) {
+    return missing("build-info-unavailable");
+  }
+  if (before?.equals(after)) {
+    return missing("build-info-unchanged");
+  }
   try {
     const info = JSON.parse(after.toString("utf8"));
     if (
       !Array.isArray(info.fileNames) ||
       !info.fileNames.every((name: unknown) => typeof name === "string") ||
       !Array.isArray(info.root)
-    )
+    ) {
       return missing("unsupported-build-info");
+    }
     const ranges: Array<[number, number]> = [];
     for (const entry of info.root) {
       const [start, end] = Array.isArray(entry) && entry.length === 2 ? entry : [entry, entry];
@@ -141,8 +156,9 @@ export function summarizeTsgoBuildInfo(before: Buffer | null, after: Buffer | nu
         start < 1 ||
         end < start ||
         end > info.fileNames.length
-      )
+      ) {
         return missing("unsupported-build-info");
+      }
       ranges.push([start, end]);
     }
     ranges.sort(([left], [right]) => left - right);
@@ -242,8 +258,9 @@ export async function runMeasuredTsgoCommand(command: Command, directory: string
       ...command,
       onReady(child) {
         const sample = () => {
-          if (child.pid && child.exitCode === null && child.signalCode === null)
+          if (child.pid && child.exitCode === null && child.signalCode === null) {
             sampler.sample(child.pid);
+          }
         };
         sample();
         if (process.platform === "linux" && ticksPerSecond !== null) {
