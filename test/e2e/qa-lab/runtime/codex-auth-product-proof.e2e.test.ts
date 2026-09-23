@@ -18,6 +18,7 @@ import {
   createOpenClawTestInstance,
   type OpenClawTestInstance,
 } from "../../../helpers/openclaw-test-instance.js";
+import { startCodexAuthCatalogFixture } from "./codex-auth-catalog.test-support.js";
 import {
   captureCodexAuthFailure,
   findCodexFixtureTurnAccountEvidence,
@@ -214,15 +215,19 @@ describe("Codex auth product proof", () => {
   it(
     "repairs mixed legacy auth into SQLite and sends the selected OAuth profile to app-server",
     { timeout: 180_000 },
-    async () => {
+    async (context) => {
       const { CODEX_APP_SERVER_VERSION } = await loadBundledPluginFacade<{
         CODEX_APP_SERVER_VERSION: string;
       }>({ pluginId: "codex", artifactBasename: "test-api.js" });
       const appServerFixture = fileURLToPath(
         new URL("./codex-auth-app-server.fixture.mjs", import.meta.url),
       );
+      const catalog = await startCodexAuthCatalogFixture(context, [
+        { accessToken: oauthAccess, accountId: ACCOUNT_ID },
+      ]);
       instance = await createOpenClawTestInstance({
         name: "qa-codex-auth-product-proof",
+        gatewayCommandPrefix: catalog.gatewayCommandPrefix,
         env: {
           OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
           OPENCLAW_QA_CODEX_APP_SERVER_VERSION: CODEX_APP_SERVER_VERSION,
@@ -337,6 +342,7 @@ describe("Codex auth product proof", () => {
         requiresOpenaiAuth: true,
       });
 
+      catalog.assertValidTraffic(instance.logs());
       console.log(
         `[qa-codex-auth-product-proof] ${JSON.stringify({
           selectedProfileId: canonicalStore?.order?.openai?.[0],
@@ -389,15 +395,20 @@ describe("Codex auth product proof", () => {
   ])(
     "returns bounded recovery after removing $name",
     { timeout: 180_000 },
-    async ({ configuredProfileId, configuredAccountId }) => {
+    async ({ configuredProfileId, configuredAccountId }, context) => {
       const { CODEX_APP_SERVER_VERSION } = await loadBundledPluginFacade<{
         CODEX_APP_SERVER_VERSION: string;
       }>({ pluginId: "codex", artifactBasename: "test-api.js" });
       const appServerFixture = fileURLToPath(
         new URL("./codex-auth-app-server.fixture.mjs", import.meta.url),
       );
+      const catalog = await startCodexAuthCatalogFixture(context, [
+        { accessToken: chatgptAccessToken(configuredAccountId), accountId: configuredAccountId },
+        { accessToken: chatgptAccessToken(ACCOUNT_ID), accountId: ACCOUNT_ID },
+      ]);
       instance = await createOpenClawTestInstance({
         name: "qa-codex-missing-auth-profile",
+        gatewayCommandPrefix: catalog.gatewayCommandPrefix,
         env: {
           OPENCLAW_DIAGNOSTICS: "codex.model-catalog,model.runtime-choice",
           OPENCLAW_AGENT_HARNESS_FALLBACK: "none",
@@ -686,6 +697,7 @@ describe("Codex auth product proof", () => {
             expect.objectContaining({ id: "gpt-5.6-luna", provider: "openai" }),
           ]),
         });
+        catalog.assertObservedAccount(configuredAccountId, testInstance.logs());
         await expect(
           client.request("sessions.patch", {
             key: sessionKey,
@@ -986,6 +998,7 @@ describe("Codex auth product proof", () => {
           );
         }
 
+        catalog.assertObservedAccount(configuredAccountId, testInstance.logs());
         console.log(
           `[qa-codex-missing-auth-profile] ${JSON.stringify({
             assistantOutput: SELECTED_AUTH_PROFILE_UNAVAILABLE_USER_TEXT,
