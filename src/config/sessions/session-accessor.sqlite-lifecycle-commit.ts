@@ -1,6 +1,6 @@
 import { executeSqliteQuerySync, sqliteStringSet } from "../../infra/kysely-sync.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
-import { SessionEntryLifecycleUpsertConflictError } from "./session-accessor.lifecycle-types.js";
+import { SessionEntryLifecycleUpsertConflictError } from "./session-accessor.lifecycle-error.js";
 import type { MaterializedSessionStateDeletePlan } from "./session-accessor.sqlite-archive-types.js";
 import { readExactSessionEntryRowForCanonicalRepair } from "./session-accessor.sqlite-canonical-repair.js";
 import type { SessionLifecycleArchivedTranscript } from "./session-accessor.sqlite-contract.js";
@@ -129,7 +129,7 @@ export function commitSessionEntryLifecycleInDatabase(
 ): SessionEntryLifecycleCommitted {
   const { projected, removalPlans, scope: resolved } = input;
   const removedSessionKeys: string[] = [];
-  let archivedTranscripts: SessionLifecycleArchivedTranscript[] = [];
+  const progressResetKeys: string[] = [];
   const beforeCount = readSessionEntryCount(transactionDb);
   const validatedRemovals = activeLifecycleRemovals(input).filter((removal) => {
     const entry = readProjectedRemovalEntry(transactionDb, removal, input.allowCanonicalRepair);
@@ -152,7 +152,7 @@ export function commitSessionEntryLifecycleInDatabase(
     }
     return shouldRemove;
   });
-  archivedTranscripts = deleteMaterializedSessionStatePlans(
+  const archivedTranscripts = deleteMaterializedSessionStatePlans(
     transactionDb,
     removalPlans,
     undefined,
@@ -191,7 +191,9 @@ export function commitSessionEntryLifecycleInDatabase(
     }
     if (resetBoundary && expectedEntry?.sessionId) {
       const boundaryScope = { ...resolved, sessionId: expectedEntry.sessionId, sessionKey };
-      appendSessionResetBoundary(transactionDb, boundaryScope, expectedEntry, resetBoundary);
+      if (appendSessionResetBoundary(transactionDb, boundaryScope, expectedEntry, resetBoundary)) {
+        progressResetKeys.push(sessionKey);
+      }
     }
     const written = writeSessionEntry(transactionDb, sessionKey, entry, {
       allowStoredAliases: input.allowCanonicalRepair === true,
@@ -264,6 +266,7 @@ export function commitSessionEntryLifecycleInDatabase(
     ],
     maintenancePlans: [maintenancePlan],
     archivedTranscripts,
+    progressResetKeys,
     beforeCount,
     removedSessionKeys,
   };

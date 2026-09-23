@@ -17,7 +17,7 @@ import {
 import { supportsOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../state-dir.js";
-import { type SessionArchivedTranscriptCleanupRule } from "./session-accessor.lifecycle-types.js";
+import type { SessionArchivedTranscriptCleanupRule } from "./session-accessor.lifecycle-types.js";
 import {
   prunePublishedSessionArchivesByRetention,
   publishSessionStateArchives,
@@ -364,11 +364,13 @@ export async function applySessionEntryLifecycleMutation(params: {
   const committed = preparedWrite.result;
 
   async function commitProjectedLifecycleMutation(assertSourceCurrent?: () => void) {
-    const maintenanceConfig = params.maintenanceOverride
-      ? { ...resolveMaintenanceConfig(), ...params.maintenanceOverride }
-      : resolveMaintenanceConfig();
+    const maintenanceConfig = params.skipMaintenance
+      ? undefined
+      : params.maintenanceOverride
+        ? { ...resolveMaintenanceConfig(), ...params.maintenanceOverride }
+        : resolveMaintenanceConfig();
     const maintenance =
-      params.skipMaintenance || maintenanceConfig.mode === "warn"
+      !maintenanceConfig || maintenanceConfig.mode === "warn"
         ? undefined
         : {
             activeSessionKey: params.activeSessionKey ?? "",
@@ -405,7 +407,7 @@ export async function applySessionEntryLifecycleMutation(params: {
       !isSessionLifecycleWorkerInputBounded(input)
     ) {
       result = await withSqliteSessionDatabase(databaseOptions, () => {
-        const committed = runOpenClawAgentWriteTransaction((transactionDb) => {
+        const nativeCommit = runOpenClawAgentWriteTransaction((transactionDb) => {
           if (
             workerPrepared &&
             readOpenClawAgentDatabaseIdentity(transactionDb).identity !== databaseIdentity
@@ -417,7 +419,7 @@ export async function applySessionEntryLifecycleMutation(params: {
           if (params.onLifecycleCommitted) {
             deferOpenClawAgentPostCommitPublication(transactionDb, params.onLifecycleCommitted);
           }
-          const result = commitSessionEntryLifecycleInDatabase(transactionDb, input, {
+          const transactionResult = commitSessionEntryLifecycleInDatabase(transactionDb, input, {
             afterUpsertsInTransaction: params.afterUpsertsInTransaction,
             afterFreshUpsertsInTransaction: params.afterFreshUpsertsInTransaction,
             maintenance: (database) =>
@@ -425,25 +427,23 @@ export async function applySessionEntryLifecycleMutation(params: {
                 activeSessionKey: params.activeSessionKey ?? "",
                 archiveDirectory: resolveSqliteTranscriptArchiveDirectory(resolved),
                 forceMaintenance: params.maintenanceOverride !== undefined,
-                maintenanceConfig: params.maintenanceOverride
-                  ? { ...resolveMaintenanceConfig(), ...params.maintenanceOverride }
-                  : undefined,
+                maintenanceConfig,
                 skipMaintenance: params.skipMaintenance,
                 storePath: params.storePath,
               }),
           });
           return {
-            result,
+            result: transactionResult,
             publish: prepareLifecycleIdentityPublication({
               database: transactionDb,
               agentId: resolved.agentId,
               projected,
-              removedSessionKeys: result.removedSessionKeys,
+              removedSessionKeys: transactionResult.removedSessionKeys,
             }),
           };
         }, databaseOptions);
-        committed.publish();
-        return committed.result;
+        nativeCommit.publish();
+        return nativeCommit.result;
       });
     } else {
       if (typeof databaseIdentity !== "string") {

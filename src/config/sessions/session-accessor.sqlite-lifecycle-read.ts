@@ -62,22 +62,21 @@ export function readSessionEntryLifecycleInDatabase(
     throw new Error("Session lifecycle read lost its prepared database");
   }
   const databaseIdentity = typeof identity === "string" ? identity : undefined;
-  switch (request.stage) {
-    case "snapshot":
-      return {
-        stage: request.stage,
-        snapshot: readSessionEntryLifecycleSnapshot(database, request.params),
-        databaseIdentity,
-      };
-    case "plans":
-      return {
-        stage: request.stage,
-        deletePlans: readSessionEntryLifecyclePlans(database, request.params),
-        databaseIdentity,
-      };
-    case "count":
-      return { stage: request.stage, count: readSessionEntryCount(database), databaseIdentity };
+  if (request.stage === "snapshot") {
+    return {
+      stage: request.stage,
+      snapshot: readSessionEntryLifecycleSnapshot(database, request.params),
+      databaseIdentity,
+    };
   }
+  if (request.stage === "plans") {
+    return {
+      stage: request.stage,
+      deletePlans: readSessionEntryLifecyclePlans(database, request.params),
+      databaseIdentity,
+    };
+  }
+  return { stage: request.stage, count: readSessionEntryCount(database), databaseIdentity };
 }
 
 /** Each preparation phase gets its own complete read snapshot; host builders hold no reader. */

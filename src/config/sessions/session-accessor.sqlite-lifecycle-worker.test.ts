@@ -5,7 +5,7 @@ import { sweepCronRunSessions } from "../../cron/session-reaper.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { SessionEntryLifecycleUpsertConflictError } from "./session-accessor.lifecycle-types.js";
+import { SessionEntryLifecycleUpsertConflictError } from "./session-accessor.lifecycle-error.js";
 import * as lifecycleArchives from "./session-accessor.sqlite-archive.js";
 import {
   readExactSessionEntryRow,

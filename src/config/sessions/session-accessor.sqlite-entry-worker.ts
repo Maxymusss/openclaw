@@ -4,6 +4,7 @@ import {
   type SqliteWorkerOperationAdmission,
 } from "../../infra/sqlite-worker-operation-admission.js";
 import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-worker-operation-settlement.js";
+import { emitSessionLifecycleEvent } from "../../sessions/session-lifecycle-events.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
 import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-contract.js";
 import {
@@ -161,6 +162,13 @@ async function commitSessionEntryMutationInWorker<TResult extends SessionEntryRe
       } finally {
         const published = publication.settle(receipt, settlement.kind === "unknown");
         if (published) {
+          for (const sessionKey of published.progressResetKeys ?? []) {
+            emitSessionLifecycleEvent({
+              agentId: publicationAgentId,
+              sessionKey,
+              reason: "progress-card-reset",
+            });
+          }
           publishCommittedSessionIdentity(
             publicationAgentId,
             published.previous,

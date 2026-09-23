@@ -1,6 +1,6 @@
 import { McpOAuthStoreCorruptionError } from "../agents/mcp-oauth-store-error.js";
 import { WorkspaceAliasRepointedError } from "../agents/workspace-state-identity.js";
-import { SessionEntryLifecycleUpsertConflictError } from "../config/sessions/session-accessor.lifecycle-types.js";
+import { SessionEntryLifecycleUpsertConflictError } from "../config/sessions/session-accessor.lifecycle-error.js";
 import { WorkerSessionAlreadyAttachedError } from "../gateway/worker-environments/session-attachment.js";
 import { SqliteCoordinatorError } from "../infra/sqlite-coordinator.js";
 import { SqliteSchemaVersionError } from "../infra/sqlite-user-version.js";

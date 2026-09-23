@@ -26,12 +26,13 @@ export async function projectSessionEntryLifecycleMutation(
     removals: readonly SessionEntryLifecycleRemoval[];
     upserts: readonly SessionEntryLifecycleUpsert[];
   },
-  useWorker: boolean,
+  workerEnabled: boolean,
 ): Promise<{
   projected: ProjectedLifecycleMutation;
   databaseIdentity?: string;
   useWorker: boolean;
 }> {
+  let useWorker = workerEnabled;
   const read = (request: SessionEntryLifecycleReadRequest) =>
     useWorker
       ? readSessionEntryLifecycleInWorker(databaseOptions, request)
