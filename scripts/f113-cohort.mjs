@@ -22,7 +22,7 @@ writeFileSync(
   ) + "\n",
 );
 const rows = [];
-for (const mode of ["normal", "wasm-stress"]) {
+for (const mode of ["normal"]) {
   for (let index = 1; index <= 20; index++) {
     const evidence = path.join(root, `${mode}-${index}`);
     mkdirSync(evidence, { recursive: true });

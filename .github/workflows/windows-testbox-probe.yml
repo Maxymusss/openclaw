@@ -985,10 +985,10 @@ jobs:
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 2
+      max-parallel: 1
       matrix:
         part: [1]
-        node: [24.19.0, 24.20.0]
+        node: [24.20.0]
     defaults:
       run:
         shell: bash
@@ -997,7 +997,7 @@ jobs:
       NODE_OPTIONS: --max-old-space-size=8192
       OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD: 1
       OPENCLAW_TEST_PROJECTS_PARALLEL: 1
-      OPENCLAW_VITEST_MAX_WORKERS: 4
+      OPENCLAW_VITEST_MAX_WORKERS: 8
       F113_NODE_VERSION: ${{ matrix.node }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
