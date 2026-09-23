@@ -10,13 +10,12 @@ declare module "vitest" {
   }
 }
 
-export type ControlUiE2eBuildIdentity = NonNullable<
-  ProvidedContext["controlUiE2ePrebuiltAssets"]
->["buildInfo"];
+export type ControlUiE2ePrebuiltAssets = NonNullable<ProvidedContext["controlUiE2ePrebuiltAssets"]>;
+export type ControlUiE2eBuildIdentity = ControlUiE2ePrebuiltAssets["buildInfo"];
 
 let sharedPreview: {
   baseUrl: string;
-  buildInfo: NonNullable<ProvidedContext["controlUiE2ePrebuiltAssets"]>["buildInfo"] | null;
+  buildInfo: ControlUiE2eBuildIdentity | null;
 } | null = null;
 
 export function getSharedControlUiE2ePreview() {
