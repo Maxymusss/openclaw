@@ -1,6 +1,6 @@
 // The first selected bundle consumer owns the invocation-wide build/preview and teardown.
 import type { TestProject } from "vitest/node";
-import type { ControlUiE2eBuildIdentity } from "../../ui/src/test-helpers/control-ui-e2e-shared-preview.ts";
+import type { ControlUiE2eBuildIdentity } from "../../ui/src/test-helpers/control-ui-e2e-context.js";
 import {
   startBuiltControlUiE2eServer,
   startBundledControlUiE2eServer,

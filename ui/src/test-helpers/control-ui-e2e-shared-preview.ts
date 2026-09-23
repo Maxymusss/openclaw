@@ -1,15 +1,4 @@
-import type { ControlUiBuildInfo } from "../build-info-types.ts";
-
-export type ControlUiE2eBuildIdentity = Pick<ControlUiBuildInfo, "buildId" | "version">;
-
-declare module "vitest" {
-  export interface ProvidedContext {
-    controlUiE2ePrebuiltAssets?: {
-      root: string;
-      buildInfo: ControlUiE2eBuildIdentity;
-    };
-  }
-}
+import type { ControlUiE2eBuildIdentity } from "./control-ui-e2e-context.js";
 
 let sharedPreview: {
   baseUrl: string;

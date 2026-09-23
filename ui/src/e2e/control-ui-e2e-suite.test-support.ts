@@ -57,7 +57,12 @@ type ControlUiE2eScenario<T> = {
   release?: () => Promise<void>;
   retainedState?: () => string | undefined;
 };
-type ControlUiE2eScenarioContext = Pick<TestContext, "signal" | "onTestFinished" | "task">;
+// Cleanup consumes result metadata, not Vitest's peer-specific task graph.
+type ControlUiE2eScenarioContext = {
+  readonly signal: TestContext["signal"];
+  readonly onTestFinished: (cleanup: () => void | Promise<void>, timeout?: number) => void;
+  readonly task: Pick<TestContext["task"], "result">;
+};
 type ControlUiE2eSuite = {
   readonly artifactDir: string;
   readonly browser: Browser;
