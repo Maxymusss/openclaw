@@ -87,9 +87,17 @@ async function catalogFixture() {
 }
 
 describe("session-share receiver catalog", () => {
-  it("builds exact source links only from receiver configuration and withdraws them on reload", async () => {
+  it.each([
+    [
+      "agent:research:dashboard:01234567-89ab-cdef-0123-456789abcdef",
+      "/chat/research/dashboard/01234567-89ab-cdef-0123-456789abcdef",
+    ],
+    ["agent:research:shared", "/chat/research/shared"],
+    ["agent:research:global", "/chat/research/~key/global"],
+    ["session-share:research:global", "/chat/research"],
+    ["global", undefined],
+  ])("builds source-owned links for %s and withdraws them on reload", async (threadId, path) => {
     const fixture = await catalogFixture();
-    const threadId = "agent:research:dashboard:01234567-89ab-cdef-0123-456789abcdef";
     fixture.invoke.mockResolvedValue({ sessions: [{ ...nativeSession, threadId }] });
     expect((await fixture.catalog.list({}))[0]?.sessions[0]?.originalUrl).toBeUndefined();
     fixture.configure({
@@ -104,9 +112,7 @@ describe("session-share receiver catalog", () => {
       },
     });
     const row = (await fixture.catalog.list({}))[0]?.sessions[0];
-    expect(row?.originalUrl).toBe(
-      "https://team.example.com/chat/research/dashboard/01234567-89ab-cdef-0123-456789abcdef",
-    );
+    expect(row?.originalUrl).toBe(path ? `https://team.example.com${path}` : undefined);
     expect(row?.canContinue).toBe(false);
     fixture.configure({});
     expect((await fixture.catalog.list({}))[0]?.sessions[0]?.originalUrl).toBeUndefined();

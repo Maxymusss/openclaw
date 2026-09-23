@@ -16,6 +16,7 @@ import {
   readSessionTranscriptCatalogTitle,
 } from "openclaw/plugin-sdk/session-transcript-runtime";
 import { sessionShareSelection } from "./config.js";
+import { sessionShareThreadId } from "./thread-id.js";
 
 export const SESSION_SHARE_LIST_COMMAND = "openclaw.sessions.list.v1";
 export const SESSION_SHARE_READ_COMMAND = "openclaw.sessions.read.v1";
@@ -101,7 +102,8 @@ export function createSessionShareNodeCommands(
           sessions.push({
             agentId,
             storePath,
-            threadId: sessionKey,
+            sessionKey,
+            threadId: sessionShareThreadId(agentId, sessionKey),
             name,
             entry,
             recencyAt: Math.max(
@@ -120,7 +122,7 @@ export function createSessionShareNodeCommands(
           for (const session of selected) {
             session.name = readSessionTranscriptCatalogTitle({
               agentId: session.agentId,
-              sessionKey: session.threadId,
+              sessionKey: session.sessionKey,
               storePath: session.storePath,
               entry: session.entry,
             });
@@ -178,7 +180,10 @@ export function createSessionShareNodeCommands(
           cursorMaxLength: 1200,
           messages: parameterMessages,
         });
-        const session = sharedEntries(api).find(({ sessionKey }) => sessionKey === params.threadId);
+        const session = sharedEntries(api).find(
+          ({ agentId, sessionKey }) =>
+            sessionShareThreadId(agentId, sessionKey) === params.threadId,
+        );
         if (!session) {
           throw new Error(
             "Session is not shared. The session must match the source operator's filters and stay eligible.",
@@ -204,7 +209,7 @@ export function createSessionShareNodeCommands(
         ) {
           throw new Error("Session is no longer shared. Refresh the session catalog.");
         }
-        return JSON.stringify({ threadId: session.sessionKey, ...page });
+        return JSON.stringify({ threadId: params.threadId, ...page });
       },
     },
   ];

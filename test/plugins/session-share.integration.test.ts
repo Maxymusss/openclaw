@@ -115,6 +115,70 @@ async function withCatalogFixture(
 }
 
 describe("session-share node commands", () => {
+  it("keeps global source agents distinct through catalog links and transcript reads", async () => {
+    await withCatalogFixture(async (receiver) => {
+      const source = commandFixture();
+      source.config.agents = { entries: { research: { default: true }, ops: {} } };
+      receiver.setConfig({
+        agents: { entries: { receiver: { default: true } } },
+        plugins: {
+          entries: {
+            "session-share": {
+              config: { nodes: { alpha: { controlUiOrigin: "https://team.example.com" } } },
+            },
+          },
+        },
+      });
+      receiver.invoke.mockImplementation(async ({ command, params }) => {
+        const handler = source.commands.find((candidate) => candidate.command === command)!;
+        return { payloadJSON: await handler.handle(JSON.stringify(params)) };
+      });
+      const cases = [
+        { agentId: "research", sessionKey: "global", path: "/chat/research" },
+        { agentId: "ops", sessionKey: "global", path: "/chat/ops" },
+        {
+          agentId: "research",
+          sessionKey: "agent:research:global",
+          path: "/chat/research/~key/global",
+        },
+        {
+          agentId: "research",
+          sessionKey: "agent:research:shared",
+          path: "/chat/research/shared",
+        },
+      ];
+      for (const [index, { agentId, sessionKey }] of cases.entries()) {
+        const scope = { agentId, sessionKey, sessionId: `source-${index}` };
+        await replaceSessionEntry(scope, {
+          sessionId: scope.sessionId,
+          updatedAt: Date.now(),
+          category: "Team",
+          label: scope.sessionId,
+        });
+        await appendSessionTranscriptMessageByIdentity({
+          ...scope,
+          message: { role: "user", content: `Message from ${scope.sessionId}` },
+        });
+      }
+      const rows = (await receiver.catalog.list({}))[0]?.sessions ?? [];
+      expect(rows).toHaveLength(cases.length);
+      expect(new Set(rows.map(({ threadId }) => threadId)).size).toBe(cases.length);
+      for (const [index, { path }] of cases.entries()) {
+        const row = rows.find(({ name }) => name === `source-${index}`)!;
+        expect(row.originalUrl).toBe(`https://team.example.com${path}`);
+        expect(row.canContinue).toBe(false);
+        const transcript = await receiver.catalog.read({
+          hostId: "node:alpha",
+          threadId: row.threadId,
+        });
+        expect(transcript.threadId).toBe(row.threadId);
+        expect(transcript.items).toEqual([
+          expect.objectContaining({ type: "userMessage", text: `Message from source-${index}` }),
+        ]);
+      }
+    });
+  });
+
   it("derives titles only for the requested page while preserving transcript-title search", async () => {
     await withCatalogFixture(async (receiver) => {
       const source = commandFixture();

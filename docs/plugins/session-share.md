@@ -114,6 +114,12 @@ you can do. The receiver still cannot continue the shared session, and this sett
 does not add node commands or grant source access. Without this setting, sharing
 remains view-only with no original-session action.
 
+Global sessions keep their source agent in the shared row identity, so two source
+agents do not share a link or transcript target. Both source and receiver must
+support this identity to offer **Open original** for global sessions; older source
+rows without agent context remain view-only. Ordinary qualified session keys and
+the v1 node commands are unchanged.
+
 ## Attribute the source node
 
 Receiver-side identity settings are optional and keyed by the node ID shown by `openclaw nodes list`:

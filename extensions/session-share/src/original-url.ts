@@ -1,4 +1,5 @@
 import { buildControlUiSessionPath } from "openclaw/plugin-sdk/session-discussion";
+import { sessionShareSourceSession } from "./thread-id.js";
 
 /** Only the receiver may select a source origin; never infer it from a node address. */
 export function sessionShareControlUiOrigin(value: unknown): string | undefined {
@@ -22,7 +23,7 @@ export function sessionShareOriginalUrl(
   }
   const path = buildControlUiSessionPath({
     namespace: "chat",
-    sessionKey: threadId,
+    ...sessionShareSourceSession(threadId),
     exactKey: true,
   });
   return path ? `${origin}${path}` : undefined;
