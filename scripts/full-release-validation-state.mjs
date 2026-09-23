@@ -4,8 +4,10 @@ import {
   appendFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
   readdirSync,
+  rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
@@ -51,6 +53,8 @@ import {
 } from "./full-release-validation-policy.mjs";
 import { sortJsonValueKeys } from "./lib/canonical-json.mjs";
 import { validateReusableReleaseChild } from "./lib/full-release-child-reuse.mjs";
+import { createReleasePublishInputs } from "./lib/release-publish-inputs.mjs";
+import { downloadFullReleaseNpmPreflight } from "./npm-preflight-tooling-identity.mjs";
 
 export * from "./full-release-validation-policy.mjs";
 
@@ -990,7 +994,7 @@ async function publicationMode(mode) {
   writeArtifact(admissionPath, record);
 }
 
-function writeManifestMode() {
+async function writeManifestMode() {
   const plan = readArtifact(process.env.RELEASE_EXECUTION_PLAN_PATH, "execution plan");
   const drain = readArtifact(process.env.DIAGNOSTIC_DRAIN_PATH, "diagnostic drain");
   const manifest = buildReleaseValidationManifest({
@@ -998,6 +1002,33 @@ function writeManifestMode() {
     drain,
     context: manifestContextFromEnvironment(plan.sourceAdmission),
   });
+  if (manifest.sourceAdmission?.validationPurpose === "publish" && manifest.rerunGroup === "all") {
+    const outputDir = mkdtempSync(
+      join(
+        requiredString(process.env.RUNNER_TEMP, "runner temporary directory"),
+        "sealed-npm-preflight-",
+      ),
+    );
+    try {
+      await downloadFullReleaseNpmPreflight({
+        manifest,
+        repository: manifest.sourceAdmission.repository,
+        runId: manifest.runId,
+        runAttempt: manifest.runAttempt,
+        sourceSha: manifest.targetSha,
+        toolingSha: manifest.workflowSha,
+        outputDir,
+        token: requiredString(process.env.GH_TOKEN, "GitHub token"),
+      });
+      manifest.publishInputs = await createReleasePublishInputs({
+        manifest,
+        npmManifest: JSON.parse(readFileSync(join(outputDir, "preflight-manifest.json"), "utf8")),
+        stableSoakWaiver: process.env.STABLE_SOAK_WAIVER ?? "",
+      });
+    } finally {
+      rmSync(outputDir, { recursive: true, force: true });
+    }
+  }
   writeArtifact(
     join(
       requiredString(process.env.RUNNER_TEMP, "runner temporary directory"),
@@ -1712,7 +1743,7 @@ async function main() {
     return;
   }
   if (mode === "write-manifest") {
-    writeManifestMode();
+    await writeManifestMode();
     return;
   }
   if (mode === "plan") {

@@ -4842,7 +4842,7 @@ function runReleaseChecksSummary(params: {
 }
 
 describe("package acceptance workflow", () => {
-  it("forwards Plugin SDK acknowledgement through the canonical publish dispatch", () => {
+  it("forwards sealed publication inputs through the canonical publish dispatch", () => {
     const workflow = readWorkflow(RELEASE_PUBLISH_WORKFLOW);
     const input = workflow.on?.workflow_dispatch?.inputs?.plugin_sdk_api_acknowledgement;
     const resolveJob = workflowJob(RELEASE_PUBLISH_WORKFLOW, "resolve_release_target");
@@ -4858,16 +4858,34 @@ describe("package acceptance workflow", () => {
     expect(input).toEqual({
       default: "",
       description:
-        "8-character digest from the Plugin SDK API diff report when the release changes the SDK",
+        "Optional override for the Plugin SDK API acknowledgement sealed by Full Release Validation",
       required: false,
       type: "string",
     });
+    expect(resolveJob.outputs).toMatchObject({
+      plugin_sdk_api_acknowledgement:
+        "${{ fromJSON(steps.full_manifest.outcome == 'success' && toJSON(steps.full_manifest.outputs.plugin_sdk_api_acknowledgement) || toJSON(inputs.plugin_sdk_api_acknowledgement)) }}",
+      npm_decisions: "${{ steps.full_manifest.outputs.npm_decisions }}",
+      stable_soak_waiver: "${{ steps.full_manifest.outputs.stable_soak_waiver }}",
+    });
     expect(dispatch.env?.PLUGIN_SDK_API_ACKNOWLEDGEMENT).toBe(
-      "${{ inputs.plugin_sdk_api_acknowledgement }}",
+      "${{ needs.resolve_release_target.outputs.plugin_sdk_api_acknowledgement }}",
     );
     expect(validateEvidence.env?.PLUGIN_SDK_API_ACKNOWLEDGEMENT).toBe(
-      "${{ inputs.plugin_sdk_api_acknowledgement }}",
+      "${{ fromJSON(steps.full_manifest.outcome == 'success' && toJSON(steps.full_manifest.outputs.plugin_sdk_api_acknowledgement) || toJSON(inputs.plugin_sdk_api_acknowledgement)) }}",
     );
+    for (const name of ["Start core npm publication", "Complete publish workflows"]) {
+      expect(workflowStep(publishJob, name).env?.PLUGIN_SDK_API_ACKNOWLEDGEMENT).toBe(
+        dispatch.env?.PLUGIN_SDK_API_ACKNOWLEDGEMENT,
+      );
+    }
+    expect(workflowStep(publishJob, "Start core npm publication").env?.STABLE_SOAK_WAIVER).toBe(
+      "${{ fromJSON(needs.resolve_release_target.outputs.stable_soak_waiver || toJSON(inputs.stable_soak_waiver)) }}",
+    );
+    expect(
+      workflowStep(resolveJob, "Summarize sealed npm publication decisions").env
+        ?.NPM_PUBLICATION_DECISIONS,
+    ).toBe("${{ steps.full_manifest.outputs.npm_decisions }}");
     expect(validateEvidence.env?.PLUGIN_SDK_API_VALIDATOR).toContain(
       "plugin-sdk-api-release-evidence.mjs",
     );
@@ -5720,7 +5738,9 @@ const fs=require("node:fs");fs.writeFileSync("install-proof.json",JSON.stringify
     const target = workflowJob(RELEASE_PUBLISH_WORKFLOW, "resolve_release_target");
     const expressions: Record<string, string> = {
       "${{ inputs.preflight_run_id }}": "111",
-      "${{ inputs.stable_soak_waiver }}": stableSoakWaiver,
+      "${{ fromJSON(needs.resolve_release_target.outputs.stable_soak_waiver || toJSON(inputs.stable_soak_waiver)) }}":
+        stableSoakWaiver,
+      "${{ needs.resolve_release_target.outputs.plugin_sdk_api_acknowledgement }}": "0123abcd",
       "${{ inputs.full_release_validation_run_id }}": fullReleaseRunId,
     };
     for (const [name, value] of Object.entries(target.outputs ?? {})) {
@@ -5835,6 +5855,7 @@ render_github_release_notes() { cp "$2" "$1"; printf '%s\\n' '{"verificationIncl
     const dispatch = fixture.events().find((event) => event.startsWith("dispatch:"));
     expect(dispatch).toContain("-f preflight_run_id=111");
     expect(dispatch).toContain(`-f stable_soak_waiver=${stableSoakWaiver}`);
+    expect(dispatch).toContain("-f plugin_sdk_api_acknowledgement=0123abcd");
     expect(dispatch).toContain(`-f full_release_validation_run_id=${fullReleaseRunId}`);
 
     const proof = fixture.run(
@@ -8416,6 +8437,10 @@ test "$package_manager" = "pnpm@12.1.0"
       "Write release validation manifest",
     );
     expect(manifestStep.env?.RELEASE_PROFILE).toBe("${{ inputs.release_profile }}");
+    expect(manifestStep.env?.STABLE_SOAK_WAIVER).toBe(
+      "${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}",
+    );
+    expect(manifestStep.env?.GH_TOKEN).toBe("${{ github.token }}");
     expect(manifestStep.run).toBe("node scripts/full-release-validation-state.mjs write-manifest");
   });
 
@@ -8445,6 +8470,9 @@ test "$package_manager" = "pnpm@12.1.0"
       });
     }
     expect(validationStep.env?.EXPECTED_RELEASE_PROFILE).toBe("${{ inputs.release_profile }}");
+    expect(validationStep.env?.PLUGIN_SDK_API_ACKNOWLEDGEMENT).toBe(
+      "${{ inputs.plugin_sdk_api_acknowledgement }}",
+    );
   });
 
   it("dispatches exact child identities without owning child completion", () => {

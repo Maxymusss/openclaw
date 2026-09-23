@@ -413,6 +413,14 @@ execution plan still binds every selected child, and publication still requires
 qualified artifacts. Non-proof execution lanes are advisory by default; performance
 never gates npm or ClawHub publication.
 
+The sealed manifest also carries `publishInputs`: the Plugin SDK API acknowledgement
+derived from the qualified npm artifact, each package's registry publication
+decision, and any `OPENCLAW_RELEASE_STABLE_SOAK_WAIVER` repository-variable text.
+Publishing and read-only preflight consume these defaults; the existing SDK and
+soak inputs are explicit overrides. Preflight reuses the sealed registry plan;
+publication still rechecks live authority, immutable bytes, and registry selectors
+at each mutation boundary. Clear a temporary soak-waiver variable after closeout.
+
 Validation children also upload immutable
 `full-release-child-evidence-<target-sha>-<role>-<run-id>-<attempt>` receipts.
 These retain dispatch inputs and attempt-composed job results independently of

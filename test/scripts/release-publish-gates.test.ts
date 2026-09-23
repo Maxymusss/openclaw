@@ -144,54 +144,82 @@ describe("release publication control admission", () => {
     ]);
   });
 
-  it("runs without installed dependencies and preserves escaped workflow waiver outputs", () => {
-    const root = tempRoots.make("release-publish-gates-");
-    const manifestPath = join(root, "manifest.json");
-    const output = join(root, "output");
-    const summary = join(root, "summary");
-    const waiver = 'Infrastructure 100% unavailable\nOperator "approved"';
-    writeFileSync(
-      manifestPath,
-      JSON.stringify({
-        ...manifest,
-        runReleaseSoak: "false",
-        controls: { performanceBlocking: false },
-      }),
-    );
-    const result = spawnSync(
-      process.execPath,
-      [
-        resolve("scripts/lib/release-publish-gates.mts"),
-        "--consumer",
-        "publisher",
-        "--manifest",
+  it.each(["legacy", "sealed", "whitespace"] as const)(
+    "resolves escaped workflow outputs without installed dependencies (sealed=%s)",
+    (mode) => {
+      const sealed = mode !== "legacy";
+      const root = tempRoots.make("release-publish-gates-");
+      const manifestPath = join(root, "manifest.json");
+      const output = join(root, "output");
+      const summary = join(root, "summary");
+      const waiver = 'Infrastructure 100% unavailable\nOperator "approved"';
+      writeFileSync(
         manifestPath,
-      ],
-      {
-        cwd: root,
-        encoding: "utf8",
-        env: {
-          PATH: process.env.PATH,
-          RELEASE_TAG: "v2026.9.5",
-          RELEASE_NPM_DIST_TAG: "latest",
-          EXPECTED_SHA: targetSha,
-          EXPECTED_RELEASE_PROFILE: "from-validation",
-          STABLE_SOAK_WAIVER: waiver,
-          GITHUB_OUTPUT: output,
-          GITHUB_STEP_SUMMARY: summary,
+        JSON.stringify({
+          ...manifest,
+          runReleaseSoak: "false",
+          controls: { performanceBlocking: false },
+          ...(sealed
+            ? {
+                sourceAdmission: {
+                  validationPurpose: "publish",
+                  publicationSelection: { npmDistTag: "latest" },
+                  projection: { packages: [] },
+                },
+                publishInputs: {
+                  version: 1,
+                  targetSha,
+                  npmDistTag: "latest",
+                  pluginSdkApiEvidenceDigest: "a".repeat(64),
+                  pluginSdkApiAcknowledgement: "aaaaaaaa",
+                  stableSoakWaiver: waiver,
+                  npmDecisions: [],
+                },
+              }
+            : {}),
+        }),
+      );
+      const result = spawnSync(
+        process.execPath,
+        [
+          resolve("scripts/lib/release-publish-gates.mts"),
+          "--consumer",
+          "publisher",
+          "--manifest",
+          manifestPath,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            PATH: process.env.PATH,
+            RELEASE_TAG: "v2026.9.5",
+            RELEASE_NPM_DIST_TAG: "latest",
+            EXPECTED_SHA: targetSha,
+            EXPECTED_RELEASE_PROFILE: "from-validation",
+            ...(mode === "whitespace"
+              ? { STABLE_SOAK_WAIVER: " \n\t", PLUGIN_SDK_API_ACKNOWLEDGEMENT: " \n\t" }
+              : sealed
+                ? {}
+                : { STABLE_SOAK_WAIVER: waiver }),
+            GITHUB_OUTPUT: output,
+            GITHUB_STEP_SUMMARY: summary,
+          },
         },
-      },
-    );
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('Infrastructure 100%25 unavailable%0AOperator "approved"');
-    expect(readFileSync(output, "utf8").split("\n")).toEqual([
-      `stable_soak_waiver=${JSON.stringify(waiver)}`,
-      "release_profile=stable",
-      "coverage_policy=full",
-      "",
-    ]);
-    expect(readFileSync(summary, "utf8")).toBe(`- Stable soak waived by operator: ${waiver}\n`);
-  });
+      );
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stdout).toContain('Infrastructure 100%25 unavailable%0AOperator "approved"');
+      expect(readFileSync(output, "utf8").split("\n")).toEqual([
+        `stable_soak_waiver=${JSON.stringify(waiver)}`,
+        `plugin_sdk_api_acknowledgement=${sealed ? "aaaaaaaa" : ""}`,
+        "npm_decisions=[]",
+        "release_profile=stable",
+        "coverage_policy=full",
+        "",
+      ]);
+      expect(readFileSync(summary, "utf8")).toBe(`- Stable soak waived by operator: ${waiver}\n`);
+    },
+  );
 });
 
 describe("operator lane waiver acknowledgement", () => {

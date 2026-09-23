@@ -2756,6 +2756,8 @@ jobs:
       - name: Write release validation manifest
         if: ${{ success() }}
         env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE_SOAK_WAIVER: ${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}
           TARGET_REF: ${{ startsWith(github.ref, 'refs/heads/release-ci/') && needs.resolve_target.outputs.sha || inputs.ref }}
           RELEASE_PROFILE: ${{ inputs.release_profile }}
           RERUN_GROUP: ${{ inputs.rerun_group }}

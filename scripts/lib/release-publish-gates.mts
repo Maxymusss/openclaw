@@ -3,6 +3,7 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { isRecord } from "./record-shared.mjs";
+import { resolveReleasePublishInputs } from "./release-publish-inputs.mjs";
 import { parseReleaseVersion } from "./release-version.mjs";
 
 export type ReleasePublishGate = {
@@ -47,7 +48,21 @@ export function evaluateReleasePublishGates(input: {
     });
   };
   const profile = scalar(field(manifest, "releaseProfile"));
-  const waiver = input.stableSoakWaiver?.trim();
+  let waiver = input.stableSoakWaiver?.trim();
+  try {
+    waiver = resolveReleasePublishInputs(manifest, {
+      stableSoakWaiver: input.stableSoakWaiver,
+      targetSha: input.expectedSha,
+      npmDistTag: input.npmDistTag,
+    }).stableSoakWaiver;
+  } catch (error) {
+    add(
+      "publish-inputs",
+      false,
+      error instanceof Error ? error.message : String(error),
+      "Reseal publication inputs for the exact release source and npm selector.",
+    );
+  }
   const rerunGroup = scalar(field(manifest, "rerunGroup"));
   const soak = field(manifest, "runReleaseSoak");
   if (consumer === "publisher") {
@@ -92,7 +107,7 @@ export function evaluateReleasePublishGates(input: {
       !soakRequired || soaked
         ? "Release soak requirement satisfied."
         : waiver
-          ? `Stable soak waived by operator: ${input.stableSoakWaiver}`
+          ? `Stable soak waived by operator: ${waiver}`
           : "Stable releases require Full Release Validation with runReleaseSoak=true.",
     remediation: "Run release soak or supply the operator's explicit reason in stable_soak_waiver.",
   });
@@ -205,12 +220,18 @@ function main() {
   }
   const manifest: unknown = JSON.parse(readFileSync(values.manifest, "utf8"));
   const env = process.env;
+  const resolved = resolveReleasePublishInputs(manifest, {
+    pluginSdkApiAcknowledgement: env.PLUGIN_SDK_API_ACKNOWLEDGEMENT,
+    stableSoakWaiver: env.STABLE_SOAK_WAIVER,
+    targetSha: env.EXPECTED_SHA,
+    npmDistTag: env.RELEASE_NPM_DIST_TAG,
+  });
   const gates = evaluateReleasePublishGates({
     manifest,
     consumer,
     releaseTag: env.RELEASE_TAG ?? "",
     npmDistTag: env.RELEASE_NPM_DIST_TAG ?? "",
-    stableSoakWaiver: env.STABLE_SOAK_WAIVER,
+    stableSoakWaiver: resolved.stableSoakWaiver,
     laneWaiver: env.LANE_WAIVER,
     expectedSha: env.EXPECTED_SHA,
     expectedReleaseProfile: env.EXPECTED_RELEASE_PROFILE,
@@ -230,12 +251,6 @@ function main() {
       .replaceAll("\r", "%0D")
       .replaceAll("\n", "%0A");
     console.log(`::warning::${warning}`);
-    if (consumer !== "stable-closeout" && env.GITHUB_OUTPUT) {
-      appendFileSync(
-        env.GITHUB_OUTPUT,
-        `stable_soak_waiver=${JSON.stringify(env.STABLE_SOAK_WAIVER)}\n`,
-      );
-    }
     if (
       consumer !== "stable-closeout" &&
       (gate.id.endsWith(".soak") || gate.id.endsWith(".lane-waiver")) &&
@@ -243,6 +258,12 @@ function main() {
     ) {
       appendFileSync(env.GITHUB_STEP_SUMMARY, `- ${gate.message}\n`);
     }
+  }
+  if (consumer !== "stable-closeout" && env.GITHUB_OUTPUT) {
+    appendFileSync(
+      env.GITHUB_OUTPUT,
+      `stable_soak_waiver=${JSON.stringify(resolved.stableSoakWaiver)}\nplugin_sdk_api_acknowledgement=${resolved.pluginSdkApiAcknowledgement}\nnpm_decisions=${JSON.stringify(resolved.npmDecisions ?? [])}\n`,
+    );
   }
   if (consumer === "publisher" && env.GITHUB_OUTPUT) {
     appendFileSync(

@@ -489,6 +489,13 @@ postpublish confidence with the exact published package and
 release soak. Native artifact publication still requires its own build,
 signing, notarization, and promotion gates. Use a narrow `rerun_group` after
 focused fixes; never widen automatically.
+At seal time the parent derives the SDK acknowledgement from the exact qualified
+npm receipt, resolves per-package npm plans against the registry, and captures
+`vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER` when configured. The manifest's
+`publishInputs` supplies publisher/preflight defaults; explicit SDK and soak
+inputs override them. Mutation owners still recheck live publication authority,
+registry selectors, and immutable bytes. Clear temporary waiver text at closeout.
+
 Publish with `openclaw-release-publish.yml` using `release_profile=from-validation`
 unless a maintainer intentionally wants to cross-check a specific profile; the
 publish workflow reads the effective profile from the full-validation manifest.

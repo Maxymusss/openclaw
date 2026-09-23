@@ -60,6 +60,7 @@ import {
   resolvePlainGhBin,
 } from "./lib/plain-gh.mjs";
 import { resolveReleaseContextIdentity } from "./lib/release-context.mjs";
+import { resolveReleasePublishInputs } from "./lib/release-publish-inputs.mjs";
 
 const sortReleaseJsonValueKeys = /** @type {<T>(value: T) => T} */ (sortJsonValueKeys); // Validated release JSON preserves its structural type.
 const DEFAULT_REPO = process.env.OPENCLAW_RELEASE_REPO || "openclaw/openclaw";
@@ -1294,6 +1295,8 @@ export function validateParentManifest(value, expected) {
   }
   const sourceAdmission = validatePublicationSourceBinding(value, expected);
   const publicationAdmission = validatePublicationAdmissionBinding(value, expected);
+  const publishInputs =
+    value.publishInputs === undefined ? undefined : resolveReleasePublishInputs(value);
   normalizeReleaseTelegramWaiver({
     ...validationInputs,
     candidateVersion: candidateBinding?.package.version,
@@ -1434,6 +1437,7 @@ export function validateParentManifest(value, expected) {
   }
   return {
     advisoryJobs,
+    ...(publishInputs ? { publishInputs } : {}),
     ...(value.knownFlakyJobs !== undefined
       ? { knownFlakyJobs, automaticRetries: value.automaticRetries }
       : {}),

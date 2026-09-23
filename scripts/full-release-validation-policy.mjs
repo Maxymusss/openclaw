@@ -64,6 +64,7 @@ export function buildReleaseValidationManifest({ plan, drain, context }) {
     targetSha: plan.targetSha,
     candidateBinding: plan.candidate,
     publicationArtifacts: context.publicationArtifacts ?? { npmPreflight: null, docker: null },
+    publishInputs: context.publishInputs,
     childEvidence,
     ...(plan.knownFlakyJobs !== undefined
       ? { knownFlakyJobs: plan.knownFlakyJobs, automaticRetries: drain?.automaticRetries ?? [] }
