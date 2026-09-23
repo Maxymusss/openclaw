@@ -11,6 +11,7 @@ import { createAgentLifecycleTerminalBackstop } from "../auto-reply/reply/agent-
 import { setRuntimeConfigSnapshot } from "../config/io.js";
 import {
   loadSessionEntry,
+  loadTranscriptEvents,
   patchSessionEntryCore,
   replaceSessionEntry,
 } from "../config/sessions/session-accessor.js";
@@ -514,6 +515,10 @@ it.each([
     let claimId: string | undefined;
     let subscriptions: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
     let heldWriter: Promise<unknown> | undefined;
+    let terminalPersistence: Promise<void> | undefined;
+    let persistenceSpy:
+      | MockInstance<typeof lifecycleState.persistGatewaySessionLifecycleEvent>
+      | undefined;
     persistenceTestWarnings.mockReset();
     routing.loadSessionEntry.mockImplementation(() => ({
       ...target,
@@ -564,6 +569,21 @@ it.each([
         refreshConnectedUserProfiles: vi.fn(),
       });
 
+      const persistLifecycleEvent = lifecycleState.persistGatewaySessionLifecycleEvent;
+      persistenceSpy = vi
+        .spyOn(lifecycleState, "persistGatewaySessionLifecycleEvent")
+        .mockImplementation((params) => {
+          const persistence = persistLifecycleEvent(params);
+          if (
+            params.event.runId === runId &&
+            params.event.sessionId === sessionId &&
+            params.event.data?.phase === phase
+          ) {
+            terminalPersistence = persistence;
+          }
+          return persistence;
+        });
+
       emitAgentEventForOwner(
         {
           runId,
@@ -587,13 +607,26 @@ it.each([
       expect(getAgentRunContextOwnerStatus(runId, terminalClaimId, lifecycleGeneration)).toBe(
         "active",
       );
+      if (!terminalPersistence) {
+        throw new Error("expected the terminal persistence operation");
+      }
       releaseWriter.resolve();
       await heldWriter;
-      await vi.waitFor(() => expect(loadSessionEntry(target)?.status).toBe(status));
-      await vi.waitFor(() =>
-        expect(getAgentRunContextOwnerStatus(runId, terminalClaimId, lifecycleGeneration)).toBe(
-          "clear-requested",
-        ),
+      await terminalPersistence;
+      expect(loadSessionEntry(target)?.status).toBe(status);
+      if (status === "failed") {
+        await expect(loadTranscriptEvents({ ...target, sessionId })).resolves.toContainEqual(
+          expect.objectContaining({
+            type: "custom_message",
+            customType: "run-failed-before-reply",
+            content: "This turn ended before a reply: Preparation failed",
+            display: true,
+            details: { runId, error: "Preparation failed" },
+          }),
+        );
+      }
+      expect(getAgentRunContextOwnerStatus(runId, terminalClaimId, lifecycleGeneration)).toBe(
+        "clear-requested",
       );
     } finally {
       releaseWriter.resolve();
@@ -603,6 +636,7 @@ it.each([
       subscriptions?.transcriptUnsub();
       subscriptions?.lifecycleUnsub();
       await subscriptions?.taskUnsub();
+      persistenceSpy?.mockRestore();
       releaseAgentRunContext(runId, claimId);
       routing.loadSessionEntry.mockReset();
       closeOpenClawAgentDatabasesForTest();
