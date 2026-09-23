@@ -148,12 +148,12 @@ describe("observed pending-input order", () => {
     visible(props());
     const completion = message("assistant", "Current work complete.", 3);
     const messages = [...history, completion];
-    const nextUser = message("user", "Continue from the handoff.", 4, "next-run");
+    const followingUser = message("user", "Continue from the handoff.", 4, "next-run");
     expect(visible(props({ messages }))).toEqual([...messages, handoff.message]);
-    expect(visible(props({ messages: [...messages, nextUser] }))).toEqual([
+    expect(visible(props({ messages: [...messages, followingUser] }))).toEqual([
       ...messages,
       handoff.message,
-      nextUser,
+      followingUser,
     ]);
   });
 
