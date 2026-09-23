@@ -389,7 +389,7 @@ struct NativeActionGatewayWireTests {
         struct Step: Decodable {
             let id: String
             let type: String
-            let title: String?
+            let message: String?
         }
 
         let sessionId: String?
@@ -438,18 +438,17 @@ struct NativeActionGatewayWireTests {
         try #require(available.contains { $0.id == authChoice })
         let data = try await context.request("models.authLogin", attempt.loginParams(sessionID: attempt.sessionID))
         let started = try JSONDecoder().decode(SignInReply.self, from: data)
-        try #require(started.sessionId == attempt.sessionID && started.status == "running")
-        let noteData = try await context.request("wizard.next", ["sessionId": .init(attempt.sessionID)])
-        let note = try JSONDecoder().decode(SignInReply.self, from: noteData)
-        let step = try #require(note.step)
-        try #require(note.done == false && step.type == "note" && step.title == "Provider sign-in")
-        // Acknowledge the real scope notice, then leave the provider's input pending.
-        let promptData = try await context.request("wizard.next", [
-            "sessionId": .init(attempt.sessionID),
-            "answer": .init(["stepId": OpenClawProtocol.AnyCodable(step.id)]),
-        ])
+        try #require(started.sessionId == attempt.sessionID)
+        try #require(started.status == "running")
+        // Gateway login skips the CLI scope notice. Keep the provider's input unanswered
+        // so profile and route retirement must cancel and settle the same admitted flow.
+        let promptData = try await context.request("wizard.next", ["sessionId": .init(attempt.sessionID)])
         let prompt = try JSONDecoder().decode(SignInReply.self, from: promptData)
-        try #require(prompt.done == false && prompt.step?.type == "text")
+        try #require(prompt.done == false)
+        try #require(prompt.status == "running")
+        let step = try #require(prompt.step)
+        try #require(step.type == "text")
+        try #require(step.message == "Native sign-in cancellation proof")
         return attempt
     }
 

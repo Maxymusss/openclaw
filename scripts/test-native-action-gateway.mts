@@ -81,7 +81,6 @@ const SIGN_IN_START = [
   ["models.authStatus", true],
   ["models.authLogin", true],
   ["wizard.next", true],
-  ["wizard.next", true],
 ] as const;
 const SIGN_IN_CLOSE = [
   ["wizard.cancel", true],
