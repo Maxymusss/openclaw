@@ -58,9 +58,6 @@ export const nativeUISelectors = {
   tablet: "NativeActionUITests/testSplitPagesControlsPreserveOwnerAuthority",
 } as const;
 export type NativeUIKind = keyof typeof nativeUISelectors;
-export type NativeWitnessID =
-  | keyof typeof nativePhoneWitnesses
-  | keyof typeof nativeTabletWitnesses;
 
 export function nativeUIPhases(kind: NativeUIKind): string[] {
   assert(kind === "phone" || kind === "tablet", "Unknown native UI inventory");
