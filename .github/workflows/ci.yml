@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       s4_probe:
-        description: Temporary S4 replay of the 20 frozen baseline rows on Blacksmith 16-class.
+        description: Temporary S4 candidate verification of one complete frozen CI row on its original Blacksmith class.
         required: false
         default: false
         type: boolean
@@ -6739,9 +6739,9 @@ jobs:
 
           exit "$failures"
 
-  # Temporary S4 benchmark only; never merge these frozen replays into normal CI.
+  # Disposable candidate CI-row verification; never merge this probe into normal CI.
   s4-probe-manifest:
-    name: S4 frozen baseline manifest
+    name: S4 frozen candidate CI-row manifest
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.s4_probe && github.run_attempt == 1 && github.repository == 'openclaw/openclaw' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -6750,48 +6750,63 @@ jobs:
     outputs:
       matrix: ${{ steps.samples.outputs.matrix }}
     steps:
-      - name: Checkout fixed sample descriptors
+      - name: Checkout fixed candidate row descriptor
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           ref: ${{ github.workflow_sha }}
-          sparse-checkout: /scripts/ci/s4-blacksmith-probe-rows.json
+          sparse-checkout: /scripts/ci/s4-candidate-ci-row.json
           sparse-checkout-cone-mode: false
           persist-credentials: false
-      - name: Load fixed samples
+      - name: Validate fixed candidate row
         id: samples
         shell: bash
         run: |
           python3 - <<'PY'
-          import json, os
-          from collections import Counter
+          import base64, gzip, json, os, re
           from pathlib import Path
-          rows = json.loads(Path("scripts/ci/s4-blacksmith-probe-rows.json").read_text())
-          assert len(rows) == 20
-          assert Counter(row["shape"] for row in rows) == {"main": 10, "pr": 10}
-          assert len({row["sample_id"] for row in rows}) == 20
-          for row in rows:
-              assert row["baseline_runner_label"] == "blacksmith-32vcpu-ubuntu-2404"
-              assert row["checkout_sha"] == row["workflow_sha"]
-              assert row["timeout_minutes"] == 60
-              assert row["environment"]["FROZEN_TARGET"] == "false"
-              print(f"S4_SAMPLE {row['sample_id']} {row['shape']} {row['check_name']} checkout={row['checkout_sha']}")
+          rows = json.loads(Path("scripts/ci/s4-candidate-ci-row.json").read_text())
+          assert len(rows) == 1
+          row = rows[0]
+          assert row["provisional"] is False, "Replace the provisional target with the final production commit before publication"
+          assert row["proof_kind"] == "candidate-ci-row"
+          assert re.fullmatch(r"[0-9a-f]{40}", row["checkout_sha"])
+          assert row["checkout_sha"] == row["workflow_sha"]
+          assert row["runner"] == "blacksmith-8vcpu-ubuntu-2404"
+          assert row["timeout_minutes"] == 60
+          assert row["plan_concurrency"] == 1
+          assert row["environment"]["FROZEN_TARGET"] == "false"
+          assert row["environment"]["OPENCLAW_CI_TEST_RUNTIME_POLICY"] == "bun-compatible"
+          assert row["environment"]["OPENCLAW_VITEST_MAX_WORKERS"] == "2"
+          assert not row.get("pretest_build_mode") and not row["requires_dist"]
+          assert not row["requires_bun"] and not row["requires_go"] and not row["requires_ripgrep"]
+          assert row["groups_gzip_base64"] == row["environment"]["OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64"]
+          groups = json.loads(gzip.decompress(base64.b64decode(row["groups_gzip_base64"])))
+          assert len(groups) == row["expected_group_count"] == 2
+          files = [file for group in groups for file in group["includePatterns"]]
+          assert len(files) == row["expected_file_count"] == 71
+          assert files.count(row["target"]) == 1
+          for group in groups:
+              assert group["configs"] == ["test/vitest/vitest.tooling.config.ts"]
+              assert group["env"]["OPENCLAW_VITEST_MAX_WORKERS"] == "2"
+              assert "fallbackMaxWorkers" not in group and "minTotalMemoryBytes" not in group
+          print(f"S4_CANDIDATE_ROW {row['check_name']} checkout={row['checkout_sha']} groups={len(groups)} files={len(files)} target_count=1")
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
               output.write("matrix=" + json.dumps({"include": rows}, separators=(",", ":")) + "\n")
           PY
   s4-probe-row:
-    name: ${{ format('s4-{0}-{1}', matrix.shape, matrix.check_name) }}
+    name: ${{ format('s4-candidate-ci-row-{0}', matrix.check_name) }}
     needs:
       - s4-probe-manifest
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.s4_probe && github.run_attempt == 1 && github.repository == 'openclaw/openclaw' }}
     permissions:
       contents: read
-    runs-on: blacksmith-16vcpu-ubuntu-2404
+    runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: ${{ matrix.timeout_minutes }}
     env:
       CHECKOUT_GIT_COMMITS_JSON: ${{ toJson(matrix.git_commits) }}
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 1
       matrix: ${{ fromJson(needs.s4-probe-manifest.outputs.matrix) }}
     steps:
       - name: Checkout
@@ -6815,25 +6830,24 @@ jobs:
       - name: Setup pinned Bun test runtime
         if: matrix.requires_bun == true
         uses: ./.ci-harness/.github/actions/setup-test-bun
-      - name: Record replay source and allocation
+      - name: Verify candidate source and record allocation
         shell: bash
         env:
-          S4_SAMPLE_ID: ${{ matrix.sample_id }}
           S4_CHECKOUT_SHA: ${{ matrix.checkout_sha }}
-          S4_BASELINE_RUN: ${{ matrix.run_id }}
-          S4_BASELINE_JOB: ${{ matrix.job_id }}
+          S4_ROW: ${{ matrix.check_name }}
         run: |
           test "$(git rev-parse HEAD)" = "$S4_CHECKOUT_SHA"
           python3 - <<'PY'
           import json, os, subprocess
           from pathlib import Path
+          workflow = Path(".github/workflows/ci.yml").read_text()
+          assert "s4-probe-manifest:" not in workflow, "Candidate tests must read normal production CI, not the disposable probe workflow"
           memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
-          print("S4_ALLOCATION " + json.dumps({
-              "sample_id": os.environ["S4_SAMPLE_ID"],
+          print("S4_CANDIDATE_ALLOCATION " + json.dumps({
+              "proof_kind": "candidate-ci-row",
               "checkout_sha": os.environ["S4_CHECKOUT_SHA"],
-              "baseline_run_id": os.environ["S4_BASELINE_RUN"],
-              "baseline_job_id": os.environ["S4_BASELINE_JOB"],
-              "runner_label": "blacksmith-16vcpu-ubuntu-2404",
+              "check_name": os.environ["S4_ROW"],
+              "runner_label": "blacksmith-8vcpu-ubuntu-2404",
               "nproc": int(subprocess.check_output(["nproc"], text=True)),
               "logical_cpus": os.cpu_count(),
               "cpu_affinity_count": len(os.sched_getaffinity(0)),
@@ -6909,69 +6923,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Observe load without altering the target-source shard executor or its admission.
-          cat > "$RUNNER_TEMP/s4-resource-sampler.py" <<'PY'
-          import json, signal, time
-          from pathlib import Path
-
-          running = True
-          def stop(_signal, _frame):
-              global running
-              running = False
-
-          signal.signal(signal.SIGTERM, stop)
-          signal.signal(signal.SIGINT, stop)
-
-          def integer(path):
-              try:
-                  return int(Path(path).read_text().strip())
-              except (FileNotFoundError, ValueError):
-                  return None
-
-          def cpu_usage():
-              path = Path("/sys/fs/cgroup/cpu.stat")
-              if not path.exists():
-                  return None
-              fields = dict(line.split() for line in path.read_text().splitlines())
-              return int(fields["usage_usec"]) if "usage_usec" in fields else None
-
-          started = time.monotonic()
-          initial_cpu = cpu_usage()
-          previous_cpu, previous_time = initial_cpu, started
-          peak_load = [0.0, 0.0, 0.0]
-          peak_memory, peak_busy_cores, samples = None, None, 0
-          while running:
-              now = time.monotonic()
-              load = [float(value) for value in Path("/proc/loadavg").read_text().split()[:3]]
-              peak_load = [max(old, new) for old, new in zip(peak_load, load)]
-              current_memory = integer("/sys/fs/cgroup/memory.current")
-              if current_memory is not None:
-                  peak_memory = max(peak_memory or 0, current_memory)
-              current_cpu = cpu_usage()
-              if samples > 0 and current_cpu is not None and previous_cpu is not None and now > previous_time:
-                  peak_busy_cores = max(peak_busy_cores or 0, (current_cpu - previous_cpu) / 1e6 / (now - previous_time))
-              previous_cpu, previous_time = current_cpu, now
-              samples += 1
-              time.sleep(1)
-          elapsed = time.monotonic() - started
-          final_cpu = cpu_usage()
-          print("S4_RESOURCE_PEAK " + json.dumps({
-              "sample_count": samples, "sampling_interval_seconds": 1,
-              "sampled_peak_load_average": peak_load,
-              "sampled_peak_cgroup_memory_bytes": peak_memory,
-              "cgroup_memory_peak_bytes": integer("/sys/fs/cgroup/memory.peak"),
-              "sampled_peak_cgroup_busy_cores": peak_busy_cores,
-              "average_cgroup_busy_cores": None if initial_cpu is None or final_cpu is None else (final_cpu - initial_cpu) / 1e6 / elapsed,
-              "elapsed_seconds": elapsed,
-          }), flush=True)
-          PY
-          python3 -u "$RUNNER_TEMP/s4-resource-sampler.py" &
-          sampler_pid=$!
-          finish_sampler() {
-            kill -TERM "$sampler_pid" 2>/dev/null || true
-            wait "$sampler_pid" || true
-          }
-          trap finish_sampler EXIT
           runner="scripts/ci-run-node-test-shard.mts"
           if [[ ! -f "$runner" ]]; then
             runner=".ci-workflow/${runner}"
