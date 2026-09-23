@@ -1419,6 +1419,7 @@ describe("runReleaseCiGh", () => {
   });
 
   it("propagates GitHub lookup timeouts", () => {
+    const wait = vi.spyOn(Atomics, "wait").mockReturnValue("timed-out");
     const timeoutError = Object.assign(new Error("spawnSync gh ETIMEDOUT"), {
       code: "ETIMEDOUT",
     });
@@ -1429,6 +1430,7 @@ describe("runReleaseCiGh", () => {
         },
       }),
     ).toThrow(timeoutError);
+    wait.mockRestore();
   });
 });
 

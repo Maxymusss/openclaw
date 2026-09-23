@@ -9,6 +9,7 @@ import { closeSync, mkdtempSync, openSync, readFileSync, rmSync, statSync } from
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import process from "node:process";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { validateFullReleaseCandidateBinding } from "./full-release-candidate-contract.mjs";
 import {
@@ -228,33 +229,69 @@ const HISTORICAL_MANIFEST_RERUN_GROUP_CHILD_KEYS = new Map([
   ["qa", ["releaseChecks"]],
 ]);
 
+function evidenceReadRetryDelay(args, error, attempt) {
+  // Only these argument shapes are GETs; fields, input, methods, and GraphQL
+  // can mutate state and must never acquire retries through this read wrapper.
+  const isGet =
+    args[0] === "api" &&
+    /^(?:repos\/|rate_limit$)/u.test(args[1] ?? "") &&
+    (args.length === 2 || (args.length === 3 && args[2] === "--allow-escape-sequences"));
+  const diagnostic = `${error?.message ?? ""}\n${error?.stderr ?? ""}`;
+  if (
+    !isGet ||
+    attempt >= 3 ||
+    /HTTP [1-4][0-9]{2}\b/u.test(diagnostic) ||
+    classifyReleaseGhTransportError(error) !== "transient"
+  ) {
+    throw error;
+  }
+  return 2_000 * 2 ** attempt;
+}
+
 export function runReleaseCiGh(args, params = {}) {
   const execFileSyncImpl = params.execFileSyncImpl ?? execFileSync;
   const timeoutMs = params.timeoutMs ?? GH_COMMAND_TIMEOUT_MS;
   const stdio = params.stdio ?? ["ignore", "pipe", "pipe"];
-  return execGhRead(
-    args,
-    {
-      encoding: "utf8",
-      killSignal: "SIGKILL",
-      maxBuffer: 64 * 1024 * 1024,
-      stdio,
-      timeout: timeoutMs,
-    },
-    { execFileSyncImpl },
-  );
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return execGhRead(
+        args,
+        {
+          encoding: "utf8",
+          killSignal: "SIGKILL",
+          maxBuffer: 64 * 1024 * 1024,
+          stdio,
+          timeout: timeoutMs,
+        },
+        { execFileSyncImpl },
+      );
+    } catch (error) {
+      Atomics.wait(
+        new Int32Array(new SharedArrayBuffer(4)),
+        0,
+        0,
+        evidenceReadRetryDelay(args, error, attempt),
+      );
+    }
+  }
 }
 
 function gh(args) {
   return runReleaseCiGh(args);
 }
 
-function ghAsync(args) {
-  return execGhReadAsync(args, {
-    killSignal: "SIGKILL",
-    maxBuffer: 64 * 1024 * 1024,
-    timeout: GH_COMMAND_TIMEOUT_MS,
-  });
+async function ghAsync(args) {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await execGhReadAsync(args, {
+        killSignal: "SIGKILL",
+        maxBuffer: 64 * 1024 * 1024,
+        timeout: GH_COMMAND_TIMEOUT_MS,
+      });
+    } catch (error) {
+      await sleep(evidenceReadRetryDelay(args, error, attempt));
+    }
+  }
 }
 
 function jsonGh(args) {
