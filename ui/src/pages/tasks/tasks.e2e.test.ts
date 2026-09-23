@@ -255,6 +255,8 @@ suite.define(() => {
       await page.screenshot({ path: path.join(actionArtifactDir, "01-blocked.png") });
 
       await page.setViewportSize({ width: 320, height: 844 });
+      // Resize schedules a shell render; visible buttons can still belong to its desktop grid.
+      await page.locator(".shell.shell--mobile-nav").waitFor();
       const recoveryActions = ["Copy result", "Retry delivery", "Dismiss delivery"];
       for (const name of recoveryActions) {
         const action = retryRow.getByRole("button", { name });
@@ -266,6 +268,7 @@ suite.define(() => {
       }
       await page.screenshot({ path: path.join(actionArtifactDir, "01-blocked-mobile.png") });
       await page.setViewportSize({ width: 1440, height: 900 });
+      await page.locator(".shell:not(.shell--mobile-nav)").waitFor();
 
       await gateway.deferNext("tasks.retry", { taskIds: [retryBlockedTask.taskId] });
       const retryButton = retryRow.getByRole("button", { name: "Retry delivery" });
