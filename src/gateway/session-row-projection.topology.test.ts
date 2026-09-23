@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { withTestTimeout } from "../../test/helpers/promise.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import * as stateReads from "../state/openclaw-state-db-readonly.js";
@@ -20,11 +21,13 @@ import { createSessionRowProjection } from "./session-row-projection.js";
 
 afterEach(() => vi.restoreAllMocks());
 
-it.each(["config", "dispose", "source"] as const)(
+it.each(["config", "identity scopes", "dispose", "source"] as const)(
   "does not publish a topology snapshot after its %s changes while reading",
   async (change) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      let cfg = { agents: { entries: { main: { identity: { name: "Original" } } } } };
+      let cfg: OpenClawConfig = {
+        agents: { entries: { main: { identity: { name: "Original" } } } },
+      };
       const query = { agentId: "main", key: "agent:main:topology" };
       replaceSessionEntrySync(
         { agentId: query.agentId, sessionKey: query.key },
@@ -61,6 +64,12 @@ it.each(["config", "dispose", "source"] as const)(
         if (change === "config") {
           cfg = { agents: { entries: { main: { identity: { name: "Replacement" } } } } };
           sessionChanges.emit({ all: true, scope: "config" });
+        } else if (change === "identity scopes") {
+          cfg = {
+            ...cfg,
+            gateway: { auth: { identityScopes: { "reader@example.test": ["operator.read"] } } },
+          };
+          sessionChanges.emit({ all: true, scope: "config" });
         } else if (change === "dispose") {
           projection.dispose();
         } else {
@@ -74,7 +83,7 @@ it.each(["config", "dispose", "source"] as const)(
           await expect(projection.prepareMembership()).rejects.toThrow();
         } else {
           expect(await settled).toEqual([{ status: "fulfilled", value: undefined }]);
-          if (change === "config") {
+          if (change === "config" || change === "identity scopes") {
             expect(projection.state.cfg).toBe(cfg);
             expect(projection.selectEntries().map((row) => row.entry.sessionId)).toEqual([
               "topology",

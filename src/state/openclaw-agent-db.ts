@@ -73,6 +73,7 @@ import {
   closeOpenClawAgentDatabases,
   refreshAgentDatabaseIdleTimer,
   retainAgentDatabase,
+  retainIncognitoSharedState,
   retainFailedAgentDatabaseClose,
   revokePendingAgentDatabaseOpen,
   type PendingAgentDatabaseOpen,
@@ -259,6 +260,7 @@ function* openOpenClawAgentDatabaseSteps(
     cache.unregisterExitClose ??= registerSqliteCacheExitClose(closeOpenClawAgentDatabases);
     cache.databases.set(pathname, database);
     cache.generation += 1;
+    retainIncognitoSharedState(db, options.env);
     getOpenClawDatabaseMaintenanceScope()?.own(database.db, "agent-handles", () =>
       closeMaintenanceAgentDatabase(database),
     );

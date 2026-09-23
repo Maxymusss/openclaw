@@ -8,7 +8,6 @@ import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { isInternalSessionEffectsKey } from "../config/sessions/internal-session-key.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import { resolveStateDir } from "../config/state-dir.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../routing/session-key.js";
 import {
   onSessionIdentityMutation,
@@ -17,7 +16,6 @@ import {
 import { sessionChanges, type SessionRowChange } from "../sessions/session-row-changes.js";
 import { prepareAgentDatabaseDeletionSnapshotRead } from "../state/agent-deletion-journal.read.js";
 import { retainUserProfileCatalog } from "../state/user-profile-list.js";
-import type { readSessionRowFacts } from "./server-methods/session-placement-read-projection.js";
 import { ensureSessionGroupCatalog } from "./session-group-catalog.js";
 import { createSessionMembershipProjection } from "./session-membership-projection.js";
 import { createSessionProjectionDrain, yieldSessionListWork } from "./session-projection-work.js";
@@ -38,6 +36,7 @@ import {
 } from "./session-row-projection-archive.js";
 import { createSessionRowProjectionBackfill } from "./session-row-projection-backfill.js";
 import { createSessionRowProjectionCatalog } from "./session-row-projection-catalog.js";
+import { isIdentityScopesOnlyConfigChange } from "./session-row-projection-config.js";
 import { createSessionRowProjectionContext } from "./session-row-projection-context.js";
 import { createSessionRowCreatorIndex } from "./session-row-projection-identities.js";
 import {
@@ -54,17 +53,9 @@ import {
   selectMatchingSessionRows,
   selectSessionRowEntries,
 } from "./session-row-scope.js";
-import type { WorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
 
 /** Committed publications own invalidation; each admitted physical store is hydrated once. */
-export async function createSessionRowProjection(params: {
-  cfg: OpenClawConfig;
-  getConfig?: () => OpenClawConfig;
-  modelCatalog?: records.Inputs["modelCatalog"];
-  getModelCatalog?: () => Promise<records.Inputs["modelCatalog"]>;
-  context?: Parameters<typeof readSessionRowFacts>[0]["context"];
-  placementFactsReader?: Pick<WorkerSessionPlacementStore, "readProjection">;
-}) {
+export async function createSessionRowProjection(params: records.ProjectionOptions) {
   // Publications may borrow startup admission; projection work retains its own authority.
   const inOwnerContext = AsyncLocalStorage.snapshot();
   const env = cloneEnvWithPlatformSemantics(process.env);
@@ -74,6 +65,7 @@ export async function createSessionRowProjection(params: {
     await prepareSubagentSessionListReadCache();
   }
   let cfg = params.getConfig?.() ?? params.cfg;
+  const getPolicyConfig = () => params.getPolicyConfig?.() ?? cfg;
   const rows = new Map<string, records.Row>();
   const creators = createSessionRowCreatorIndex();
   const membership = createSessionMembershipProjection();
@@ -222,9 +214,8 @@ export async function createSessionRowProjection(params: {
       archive,
     });
   }
-  function matching(query: records.Query, kind = "key") {
-    return selectMatchingSessionRows({ rows, indexes, scope }, query, kind);
-  }
+  const matching = (query: records.Query, kind = "key") =>
+    selectMatchingSessionRows({ rows, indexes, scope }, query, kind);
   const lookup = (query: records.Lookup) =>
     lookupSessionRow(query, { disposed, cfg, matching, storePaths: stores.keys() });
   function referenced(ref: string) {
@@ -282,6 +273,14 @@ export async function createSessionRowProjection(params: {
     }));
   }
   function mark(change: SessionRowChange) {
+    if ("all" in change && change.scope === "config" && !change.factsInvalidated) {
+      const next = inOwnerContext(() => params.getConfig?.() ?? cfg);
+      if (isIdentityScopesOnlyConfigChange(cfg, next)) {
+        cfg = next;
+        void ensureMaterialized().catch(() => {});
+        return;
+      }
+    }
     epoch++;
     const presentationOnly = metadata.invalidate(change) && !change.factsInvalidated;
     if (!presentationOnly) {
@@ -690,6 +689,7 @@ export async function createSessionRowProjection(params: {
     get needsMaterialization() {
       return needsMaterialization();
     },
+    getPolicyConfig,
     get state() {
       if (!disposed && !prepareRead()) {
         throw new Error("Session row topology changed; prepare current facts before reading");
@@ -698,6 +698,7 @@ export async function createSessionRowProjection(params: {
         // Include replacements and lifecycle-only removals as well as publications/materialization.
         revision: (revisionToken ??= {}),
         cfg,
+        policyConfig: getPolicyConfig(),
         modelCatalog: catalog.current,
         rowContext: metadata.current,
         scope: scope.select,
