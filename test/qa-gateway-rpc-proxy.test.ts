@@ -9,11 +9,13 @@ import {
   type Server,
   type ServerResponse,
 } from "node:http";
-import type { AddressInfo } from "node:net";
+import { type AddressInfo, connect as connectSocket, Server as NetServer, type Socket } from "node:net";
+import { connect as connectTLS } from "node:tls";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { WebSocket, WebSocketServer } from "ws";
+import { PROXY_FIXTURE_CERTIFICATE, PROXY_FIXTURE_KEY } from "../src/test-helpers/proxy-tls-fixture.js";
 import { startQaGatewayRpcProxy } from "./fixtures/qa-gateway-rpc-proxy.mjs";
 import {
   acquireGatewayTestWebSocket,
@@ -24,21 +26,21 @@ import { runQaGatewayFixture } from "./helpers/qa-gateway-cleanup.js";
 
 type Proxy = Awaited<ReturnType<typeof startQaGatewayRpcProxy>>;
 
-async function fixtureControl(proxy: Proxy, action: string, method?: string) {
+async function fixtureControl(proxy: Proxy, action: string, method?: string, selector?: Record<string, string>) {
   const response = await fetch(proxy.controlUrl, {
     method: "POST",
     headers: { "x-qa-fixture-token": "proxy-control-fixture" },
-    body: JSON.stringify({ action, method }),
+    body: JSON.stringify({ action, method, selector }),
   });
   expect(response.status).toBe(200);
   return (await response.json()) as ReturnType<Proxy["snapshot"]>;
 }
 
-async function expectFixtureControlRejected(proxy: Proxy, action: string, method?: string) {
+async function expectFixtureControlRejected(proxy: Proxy, action: string, method?: string, selector?: Record<string, string>) {
   const response = await fetch(proxy.controlUrl, {
     method: "POST",
     headers: { "x-qa-fixture-token": "proxy-control-fixture" },
-    body: JSON.stringify({ action, method }),
+    body: JSON.stringify({ action, method, selector }),
   });
   const body = await response.text();
   expect(response.status).toBe(500);
@@ -55,12 +57,14 @@ async function withProxy(
     server: ReturnType<typeof createServer>;
     backendConnections: () => number;
     reconnect: () => Promise<{ front: WebSocket; upstream: Promise<WebSocket> }>;
+    connectPeer: () => Promise<{ front: WebSocket; upstream: Promise<WebSocket> }>;
   }) => Promise<void>,
   captureReadiness = false,
   rejectUpgrade = false,
   mediaPaths: ReadonlySet<string> = new Set(),
   observeMobileHandoff = false,
   observeNativeActions = false,
+  tls = false,
 ) {
   const server = createServer();
   const sockets = new Set<Duplex>();
@@ -94,6 +98,8 @@ async function withProxy(
   });
   let proxy: Proxy | undefined;
   let front: WebSocket | undefined;
+  const additionalFronts = new Set<WebSocket>();
+  const clientOptions = tls ? { ca: PROXY_FIXTURE_CERTIFICATE } : undefined;
   await runQaGatewayFixture(
     async () => {
       const listening = once(server, "listening");
@@ -108,8 +114,9 @@ async function withProxy(
         observeNativeActions,
         mediaPaths,
         token: "proxy-control-fixture",
+        ...(tls ? { tls: { cert: PROXY_FIXTURE_CERTIFICATE, key: PROXY_FIXTURE_KEY } } : {}),
       });
-      front = new WebSocket(proxy.url);
+      front = new WebSocket(proxy.url, clientOptions);
       await acquireGatewayTestWebSocket(front, 5000);
       const proxyURL = proxy.url;
       await body({
@@ -124,13 +131,21 @@ async function withProxy(
             await closeGatewayTestWebSocket(front);
           }
           nextUpstream = createDeferred<WebSocket>();
-          front = new WebSocket(proxyURL);
+          front = new WebSocket(proxyURL, clientOptions);
           await acquireGatewayTestWebSocket(front, 5000);
           return { front, upstream: nextUpstream.promise };
+        },
+        connectPeer: async () => {
+          nextUpstream = createDeferred<WebSocket>();
+          const additional = new WebSocket(proxyURL, clientOptions);
+          additionalFronts.add(additional);
+          await acquireGatewayTestWebSocket(additional, 5000);
+          return { front: additional, upstream: nextUpstream.promise };
         },
       });
     },
     async () => {
+      await Promise.all([...additionalFronts].map(closeGatewayTestWebSocket));
       if (front) {
         await closeGatewayTestWebSocket(front);
       }
@@ -1660,6 +1675,9 @@ describe("QA Gateway proxy held responses", () => {
     { method: "users.self", captureReadiness: false, writeFails: false, stopBeforeWrite: false },
     { method: "users.self", captureReadiness: false, writeFails: true, stopBeforeWrite: false },
     { method: "chat.send", captureReadiness: true, writeFails: true, stopBeforeWrite: true },
+    { method: "sessions.create", captureReadiness: true, writeFails: false, stopBeforeWrite: false },
+    { method: "sessions.create", captureReadiness: true, writeFails: true, stopBeforeWrite: false },
+    { method: "sessions.create", captureReadiness: true, writeFails: true, stopBeforeWrite: true },
   ])(
     "waits for $method write completion (capture=$captureReadiness, failure=$writeFails, stop=$stopBeforeWrite)",
     async ({ method, captureReadiness, writeFails, stopBeforeWrite }) => {
@@ -1667,8 +1685,12 @@ describe("QA Gateway proxy held responses", () => {
         false,
         async ({ proxy, front, upstream, server }) => {
           const back = await upstream;
-          await fixtureControl(proxy, "hold-response", method);
-          const request = Buffer.from(JSON.stringify({ type: "req", id: "held-write", method }));
+          const selector = method === "sessions.create"
+            ? { expectedProfileId: "fixture-profile", agentId: "qa" } : undefined;
+          await fixtureControl(proxy, "hold-response", method, selector);
+          const request = Buffer.from(JSON.stringify({ type: "req", id: "held-write", method,
+            ...(selector ? { expectedProfileId: selector.expectedProfileId, params: { agentId: "qa" } } : {}),
+          }));
           const received = once(back, "message");
           front.send(request);
           expect((await received)[0]).toEqual(request);
@@ -1724,6 +1746,9 @@ describe("QA Gateway proxy held responses", () => {
               ).toBe(false);
               await expectFixtureControlRejected(proxy, "hold-response", "media.get");
               await expectFixtureControlRejected(proxy, "release-response");
+              if (method === "sessions.create") {
+                await expectFixtureControlRejected(proxy, "drop-response");
+              }
               if (stopBeforeWrite) {
                 assert(writeSocket);
                 const frontend = writeSocket;
@@ -1822,5 +1847,238 @@ describe("QA Gateway proxy held responses", () => {
         expect.objectContaining({ method: "chat.send", delivered: false }),
       ]);
     });
+  });
+});
+
+
+describe("QA Gateway proxy native UI producers", () => {
+  async function roundTrip(
+    front: WebSocket,
+    back: WebSocket,
+    request: object,
+    response: object,
+  ) {
+    const received = once(back, "message");
+    front.send(JSON.stringify(request));
+    expect((await received)[0].toString()).toBe(JSON.stringify(request));
+    const returned = once(front, "message");
+    back.send(JSON.stringify(response));
+    expect((await returned)[0].toString()).toBe(JSON.stringify(response));
+  }
+
+  it("holds only the selected profile and session response and retains its request identity", async () => {
+    await withProxy(false, async ({ proxy, front, upstream }) => {
+      const back = await upstream;
+      const selector = { expectedProfileId: "fixture-profile", sessionKey: "chosen-session" };
+      await expectFixtureControlRejected(proxy, "hold-response", "chat.history");
+      await fixtureControl(proxy, "hold-response", "chat.history", selector);
+      for (const [id, expectedProfileId, sessionKey] of [
+        ["other-profile", "other-profile", "chosen-session"],
+        ["other-session", "fixture-profile", "other-session"],
+      ]) {
+        await roundTrip(front, back,
+          { type: "req", id, method: "chat.history", expectedProfileId, params: { sessionKey } },
+          { type: "res", id, ok: true, payload: { messages: [] } });
+        expect(proxy.snapshot().heldResponse).toBeUndefined();
+      }
+      const request = { type: "req", id: "chosen", method: "chat.history",
+        expectedProfileId: selector.expectedProfileId, params: { sessionKey: selector.sessionKey } };
+      const received = once(back, "message");
+      front.send(JSON.stringify(request));
+      await received;
+      const response = JSON.stringify({ type: "res", id: "chosen", ok: true, payload: { messages: [] } });
+      const returned = once(front, "message");
+      back.send(response);
+      const held = await fixtureControl(proxy, "wait-held");
+      expect(held.heldResponse).toMatchObject({ method: "chat.history", requestId: "chosen", ...selector });
+      await expectFixtureControlRejected(proxy, "reset");
+      await expectFixtureControlRejected(proxy, "hold-response", "users.self");
+      await fixtureControl(proxy, "release-response");
+      expect((await returned)[0].toString()).toBe(response);
+    }, false, false, new Set(), false, true);
+  });
+
+  it("refuses one matching create before upstream admission and leaves the retry intact", async () => {
+    await withProxy(false, async ({ proxy, front, upstream }) => {
+      const back = await upstream;
+      const requests: string[] = [];
+      back.on("message", (data) => requests.push(data.toString()));
+      const selector = { expectedProfileId: "fixture-profile", agentId: "main" };
+      await fixtureControl(proxy, "reject-create", undefined, selector);
+      await expectFixtureControlRejected(proxy, "reject-create", undefined, selector);
+      await expectFixtureControlRejected(proxy, "reset");
+      await roundTrip(front, back,
+        { type: "req", id: "other", method: "sessions.create", expectedProfileId: "other-profile", params: { agentId: "main" } },
+        { type: "res", id: "other", ok: true, payload: { key: "other-session" } });
+      const rejected = once(front, "message");
+      front.send(JSON.stringify({ type: "req", id: "controlled", method: "sessions.create", ...selector, params: { agentId: "main" } }));
+      expect(JSON.parse((await rejected)[0].toString())).toEqual({ type: "res", id: "controlled", ok: false,
+        error: { code: "UNAVAILABLE", message: "Controlled fixture request refusal" } });
+      await roundTrip(front, back,
+        { type: "req", id: "retry", method: "sessions.create", expectedProfileId: "fixture-profile", params: { agentId: "main" } },
+        { type: "res", id: "retry", ok: true, payload: { key: "created-session" } });
+      // The retry is an ordered upstream barrier: the refused request never reached the backend.
+      expect(requests.map((raw) => JSON.parse(raw).id)).toEqual(["other", "retry"]);
+      expect(proxy.snapshot().events.filter(({ kind }) => kind === "controlled-refusal-written"))
+        .toEqual([expect.objectContaining({ requestId: "controlled", delivered: true })]);
+    }, false, false, new Set(), false, true);
+  });
+
+  it("joins only the selected node fault while the operator still completes a canonical RPC", async () => {
+    await withProxy(false, async ({ proxy, front, upstream, connectPeer }) => {
+      const back = await upstream;
+      await roundTrip(front, back,
+        { type: "req", id: "operator", method: "connect", params: { role: "operator" } },
+        { type: "res", id: "operator", ok: true, payload: {} });
+      const node = await connectPeer();
+      const nodeBack = await node.upstream;
+      await roundTrip(node.front, nodeBack,
+        { type: "req", id: "node", method: "connect", params: { role: "node" } },
+        { type: "res", id: "node", ok: true, payload: {} });
+      const nodeClosed = once(node.front, "close");
+      const nodeBackendClosed = once(nodeBack, "close");
+      const failed = await fixtureControl(proxy, "fail-node");
+      await Promise.all([nodeClosed, nodeBackendClosed]);
+      expect(failed.nodeFault).toBe(true);
+      expect(failed.connectedOperators).toBe(1);
+      await roundTrip(front, back,
+        { type: "req", id: "authority-after-fault", method: "users.self" },
+        { type: "res", id: "authority-after-fault", ok: true, payload: { user: { id: "fixture-user" } } });
+      const reconnect = await connectPeer();
+      const reconnectBack = await reconnect.upstream;
+      const forwarded: string[] = [];
+      reconnectBack.on("message", (data) => forwarded.push(data.toString()));
+      const refused = once(reconnect.front, "message");
+      reconnect.front.send(JSON.stringify({ type: "req", id: "node-retry", method: "connect", params: { role: "node" } }));
+      expect(JSON.parse((await refused)[0].toString())).toMatchObject({ id: "node-retry", ok: false });
+      await fixtureControl(proxy, "release-node");
+      await roundTrip(reconnect.front, reconnectBack,
+        { type: "req", id: "node-restored", method: "connect", params: { role: "node" } },
+        { type: "res", id: "node-restored", ok: true, payload: {} });
+      expect(forwarded.map((raw) => JSON.parse(raw).id)).toEqual(["node-restored"]);
+      expect(proxy.snapshot().connectedOperators).toBe(1);
+    }, false, false, new Set(), false, true);
+  });
+
+
+  it("records committed create identity before holding the selected delivery", async () => {
+    await withProxy(false, async ({ proxy, front, upstream }) => {
+      const back = await upstream;
+      const selector = { expectedProfileId: "fixture-profile", agentId: "qa" };
+      await fixtureControl(proxy, "hold-response", "sessions.create", selector);
+      await expectFixtureControlRejected(proxy, "drop-response");
+      const received = once(back, "message");
+      front.send(JSON.stringify({ type: "req", id: "held-create", method: "sessions.create",
+        expectedProfileId: selector.expectedProfileId, params: { agentId: "qa", key: "created-key" } }));
+      await received;
+      const returned = once(front, "message");
+      back.send(JSON.stringify({ type: "res", id: "held-create", ok: true, payload: { key: "created-key" } }));
+      const held = await fixtureControl(proxy, "wait-held");
+      expect(held.heldResponse).toMatchObject({ requestId: "held-create", ...selector });
+      expect(held.events.filter(({ kind }) => kind === "mutation-success"))
+        .toEqual([expect.objectContaining({ requestId: "held-create", key: "created-key" })]);
+      await fixtureControl(proxy, "release-response");
+      expect(JSON.parse((await returned)[0].toString()).payload.key).toBe("created-key");
+      await fixtureControl(proxy, "drop-response");
+      await expectFixtureControlRejected(proxy, "hold-response", "sessions.create", selector);
+    }, false, false, new Set(), false, true);
+  });
+
+  it("refuses a node fault after departure while its final close receipt is retained", async () => {
+    await withProxy(false, async ({ proxy, front, upstream, connectPeer, server }) => {
+      const back = await upstream;
+      await roundTrip(front, back,
+        { type: "req", id: "operator", method: "connect", params: { role: "operator" } },
+        { type: "res", id: "operator", ok: true, payload: {} });
+      const node = await connectPeer();
+      const nodeBack = await node.upstream;
+      await roundTrip(node.front, nodeBack,
+        { type: "req", id: "node", method: "connect", params: { role: "node" } },
+        { type: "res", id: "node", ok: true, payload: {} });
+      const backendURL = "ws://127.0.0.1:" + (server.address() as AddressInfo).port + "/";
+      const captured = createDeferred<void>();
+      let gate: ReturnType<typeof holdCloseNotification> | undefined;
+      let refusing: Promise<void> | undefined;
+      const originalTerminate = WebSocket.prototype.terminate;
+      const terminate = vi.spyOn(WebSocket.prototype, "terminate").mockImplementation(function (this: WebSocket) {
+        if (!gate && this.url === backendURL) {
+          gate = holdCloseNotification(this, [], "departed-node-close");
+          captured.resolve();
+        }
+        originalTerminate.call(this);
+      });
+      await runQaGatewayFixture(async () => {
+        await closeGatewayTestWebSocket(node.front);
+        await withTestTimeout(captured.promise, 5000, "departed node close owner was not captured");
+        assert(gate);
+        await withTestTimeout(gate.entered, 5000, "departed node close was not reached");
+        refusing = expectFixtureControlRejected(proxy, "fail-node");
+        void refusing.catch(() => {});
+        await withTestTimeout(refusing, 5000, "departed node was incorrectly admitted as a fault producer");
+        expect(proxy.snapshot().nodeFault).toBe(false);
+        expect(proxy.snapshot().events.some(({ kind }) => kind === "controlled-node-fault")).toBe(false);
+        await roundTrip(front, back,
+          { type: "req", id: "operator-still-current", method: "users.self" },
+          { type: "res", id: "operator-still-current", ok: true, payload: { user: { id: "fixture-user" } } });
+      }, () => gate?.release(), async () => {
+        await gate?.delivered;
+        await refusing;
+      }, () => { gate?.restore(); terminate.mockRestore(); });
+    }, false, false, new Set(), false, true);
+  });
+
+  it("joins TLS probe and pre-handshake sockets with one cached stop receipt", async () => {
+    await withProxy(false, async ({ proxy, front, upstream }) => {
+      const back = await upstream;
+      await roundTrip(front, back,
+        { type: "req", id: "secure", method: "users.self" },
+        { type: "res", id: "secure", ok: true, payload: { user: { id: "fixture-user" } } });
+      const port = Number(new URL(proxy.url).port);
+      const probe = connectTLS({ host: "127.0.0.1", port, ca: PROXY_FIXTURE_CERTIFICATE });
+      const probeClosed = new Promise<void>((resolve) => probe.once("close", () => resolve()));
+      let raw: Socket | undefined;
+      let rawClosed: Promise<void> | undefined;
+      let gate: ReturnType<typeof holdCloseNotification> | undefined;
+      let stopped: Promise<void> | undefined;
+      const order: string[] = [];
+      const admitted = createDeferred<Socket>();
+      const originalEmit = NetServer.prototype.emit;
+      const observe = vi.spyOn(NetServer.prototype, "emit").mockImplementation(function (this: NetServer, event, ...args) {
+        const address = this.address();
+        if (raw && event === "connection" && address && typeof address !== "string" && address.port === port) {
+          const socket = args[0] as Socket;
+          gate = holdCloseNotification(socket, order, "raw-close");
+          admitted.resolve(socket);
+        }
+        return Reflect.apply(originalEmit, this, [event, ...args]);
+      });
+      await runQaGatewayFixture(async () => {
+        await once(probe, "secureConnect");
+        expect(probe.authorized).toBe(true);
+        probe.destroy();
+        await probeClosed;
+        raw = connectSocket({ host: "127.0.0.1", port });
+        rawClosed = new Promise<void>((resolve) => raw!.once("close", () => resolve()));
+        await once(raw, "connect");
+        const accepted = await admitted.promise;
+        assert(gate);
+        expect(proxy.snapshot().acceptedConnections).toBeGreaterThanOrEqual(2);
+        const backendClosed = once(back, "close");
+        stopped = proxy.stop();
+        void stopped.then(() => order.push("stop"));
+        expect(proxy.stop()).toBe(stopped);
+        await withTestTimeout(Promise.all([gate.entered, backendClosed, rawClosed]), 5000,
+          "owned TLS sockets did not close");
+        expect(accepted.destroyed).toBe(true);
+        expect(order).toEqual([]);
+        gate.release();
+        await gate.delivered;
+        await stopped;
+        expect(order).toEqual(["raw-close", "stop"]);
+        expect(proxy.snapshot().acceptedConnections).toBe(0);
+      }, () => { gate?.release(); probe.destroy(); raw?.destroy(); }, async () => {
+        await Promise.all([probeClosed, rawClosed, stopped ?? proxy.stop()]);
+      }, () => { gate?.restore(); observe.mockRestore(); });
+    }, false, false, new Set(), false, false, true);
   });
 });

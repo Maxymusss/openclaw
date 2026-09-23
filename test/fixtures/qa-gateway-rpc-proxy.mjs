@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { createServer, request } from "node:http";
+import { createServer as createSecureServer } from "node:https";
 import { createRequire } from "node:module";
 import path from "node:path";
 import { finished } from "node:stream/promises";
@@ -34,7 +35,7 @@ const READINESS_ERROR_CODES = new Set([
  * @typedef {"CONNECTING" | "OPEN" | "CLOSING" | "CLOSED" | "none" | "other"} SocketState
  * @typedef {"none" | "hold-reconnect" | "request-limit" | "response-dropped" |
  *   "front-close" | "upstream-close" | "front-error" | "upstream-error" |
- *   "stop"} TerminationCause
+ *   "node-fault" | "stop"} TerminationCause
  * @typedef {"none" | "other" | "ECONNRESET" | "ECONNREFUSED" | "ETIMEDOUT" |
  *   "EHOSTUNREACH" | "ENETUNREACH" | "EPIPE"} SocketErrorCode
  * @typedef {{ state?: SocketState, localTermination?: TerminationCause,
@@ -53,7 +54,8 @@ const READINESS_ERROR_CODES = new Set([
  *   observeMobileHandoff?: boolean,
  *   observeNativeActions?: boolean,
  *   captureReadiness?: boolean,
- *   mediaPaths?: ReadonlySet<string>
+ *   mediaPaths?: ReadonlySet<string>,
+ *   tls?: { key: string, cert: string }
  * }} options
  */
 export async function startQaGatewayRpcProxy({
@@ -68,6 +70,7 @@ export async function startQaGatewayRpcProxy({
   observeNativeActions = false,
   captureReadiness = false,
   mediaPaths = new Set(),
+  tls,
 }) {
   const { WebSocket, WebSocketServer } = createRequire(path.join(repoRoot, "package.json"))("ws");
   // Installed proof retains bounded selector facts, never prompt or auth payloads.
@@ -77,6 +80,10 @@ export async function startQaGatewayRpcProxy({
     "chat.abort",
     "agent.wait",
     "chat.history",
+    "sessions.create",
+    "sessions.fork",
+    "sessions.reset",
+    "approval.get",
   ]);
   const observes = (method) =>
     observedMethods.includes(method) || (observeNativeActions && nativeMethods.has(method));
@@ -94,6 +101,35 @@ export async function startQaGatewayRpcProxy({
   let holdHello = false;
   let held;
   let holdMethod;
+  let holdSelector;
+  let rejectCreate;
+  let nodeFault = false;
+  const controlTasks = new Set();
+  const fixtureWrites = new Set();
+  const acceptedSockets = new Map();
+  const requestSelector = (frame) => ({
+    expectedProfileId: selector(frame.expectedProfileId),
+    sessionKey: selector(frame.params?.sessionKey),
+    agentId: selector(frame.params?.agentId),
+    runId: selector(frame.params?.runId),
+    approvalId: selector(frame.params?.id),
+    inputRunId: Array.isArray(frame.params?.inputRunIds) && frame.params.inputRunIds.length === 1
+      ? selector(frame.params.inputRunIds[0]) : undefined,
+  });
+  const matchesSelector = (facts, expected) =>
+    !expected || Object.entries(expected).every(([key, value]) => facts?.[key] === value);
+  const readSelector = (value) => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      throw new Error("missing fixture producer selector");
+    }
+    const keys = Object.keys(value);
+    if (!keys.length || keys.some((key) =>
+      !["expectedProfileId", "sessionKey", "agentId", "runId", "approvalId", "inputRunId"].includes(key) ||
+      typeof value[key] !== "string" || value[key].length === 0 || value[key].length > 512)) {
+      throw new Error("invalid fixture producer selector");
+    }
+    return { ...value };
+  };
   let heldResponse;
   /** @type {((error?: Error) => void) | undefined} */
   let heldWaiter;
@@ -299,6 +335,10 @@ export async function startQaGatewayRpcProxy({
     media: { ...media },
     held: Boolean(held),
     heldResponse: heldResponse?.summary,
+    nodeFault,
+    acceptedConnections: acceptedSockets.size,
+    connectedOperators: [...peers].filter((peer) => peer.role === "operator" && peer.connected &&
+      peer.front.readyState === WebSocket.OPEN && peer.back.readyState === WebSocket.OPEN).length,
     pid: process.pid,
   });
   const record = (kind, facts = {}) => {
@@ -314,13 +354,16 @@ export async function startQaGatewayRpcProxy({
   if (recordPath) {
     writeFileSync(recordPath, "");
   }
-  const server = createServer((req, res) => {
+  const handleRequest = (req, res) => {
     if (req.url === "/__fixture") {
       if (!token || req.headers["x-qa-fixture-token"] !== token) {
         res.writeHead(403).end();
         return;
       }
-      void (async () => {
+      const controlTask = (async () => {
+        if (stopping || controlTasks.size >= 8) {
+          throw new Error("fixture control admission closed");
+        }
         let text = "";
         for await (const chunk of req) {
           text += chunk;
@@ -331,6 +374,9 @@ export async function startQaGatewayRpcProxy({
         const input = text ? JSON.parse(text) : {};
         const action = input.action ?? "snapshot";
         if (action === "reset") {
+          if (holdMethod || heldResponse || responseReleaseTask || rejectCreate || fixtureWrites.size || nodeFault) {
+            throw new Error("cannot reset an active fixture producer");
+          }
           events = [];
           sequence = 0;
           dropResponse = false;
@@ -339,15 +385,31 @@ export async function startQaGatewayRpcProxy({
           }
         } else if (action === "hold-response") {
           if (
-            !["users.self", "chat.send", "media.get", "plugin.surface.refresh"].includes(
+            !["users.self", "chat.send", "chat.history", "sessions.create", "approval.get", "media.get", "plugin.surface.refresh"].includes(
               input.method,
             ) ||
             holdMethod ||
+            rejectCreate ||
+            fixtureWrites.size ||
             heldResponse ||
             mediaTask ||
             responseReleaseTask
           ) {
             throw new Error("invalid or overlapping response hold");
+          }
+          if (input.method === "sessions.create" && dropResponse) {
+            throw new Error("create delivery already has an injected loss");
+          }
+          const requiresSelector = ["chat.history", "sessions.create", "approval.get"].includes(input.method);
+          holdSelector = requiresSelector || input.selector !== undefined ? readSelector(input.selector) : undefined;
+          if (requiresSelector && !holdSelector.expectedProfileId) {
+            throw new Error("native hold requires the profile producer");
+          }
+          if (input.method === "chat.history" && !holdSelector.sessionKey) {
+            throw new Error("history hold requires its session producer");
+          }
+          if (input.method === "approval.get" && !holdSelector.approvalId) {
+            throw new Error("approval hold requires its exact producer");
           }
           holdMethod = input.method;
         } else if (action === "wait-held") {
@@ -386,7 +448,43 @@ export async function startQaGatewayRpcProxy({
             responseReleaseTask = undefined;
           });
           await responseReleaseTask;
+        } else if (action === "reject-create") {
+          if (rejectCreate || dropResponse || holdMethod || heldResponse || responseReleaseTask || mediaTask || fixtureWrites.size) {
+            throw new Error("overlapping controlled create fault");
+          }
+          rejectCreate = readSelector(input.selector);
+          if (!rejectCreate.expectedProfileId || !rejectCreate.agentId) {
+            rejectCreate = undefined;
+            throw new Error("create fault requires profile and agent");
+          }
+        } else if (action === "fail-node") {
+          const operators = [...peers].filter((peer) => peer.role === "operator" && peer.connected &&
+            peer.front.readyState === WebSocket.OPEN && peer.back.readyState === WebSocket.OPEN);
+          const nodes = [...peers].filter((peer) => peer.role === "node" && peer.connected &&
+            peer.front.readyState === WebSocket.OPEN && peer.back.readyState === WebSocket.OPEN);
+          if (nodeFault || operators.length !== 1 || nodes.length !== 1) {
+            throw new Error("node fault requires distinct live node and operator owners");
+          }
+          nodeFault = true;
+          record("controlled-node-fault", { connection: nodes[0].id, operatorConnection: operators[0].id });
+          for (const peer of nodes) {
+            recordFirstTermination(peer.id, "front", peer.front, "node-fault");
+            peer.front.terminate();
+            recordFirstTermination(peer.id, "upstream", peer.back, "node-fault");
+            peer.back.terminate();
+          }
+          await Promise.all(nodes.map((peer) => peer.closed));
+          if (operators[0].front.readyState !== WebSocket.OPEN || operators[0].back.readyState !== WebSocket.OPEN) {
+            throw new Error("operator authority did not survive the controlled node fault");
+          }
+        } else if (action === "release-node") {
+          if (!nodeFault) throw new Error("no controlled node fault");
+          nodeFault = false;
         } else if (action === "drop-response") {
+          if (holdMethod === "sessions.create" || heldResponse?.summary.method === "sessions.create" ||
+            responseReleaseTask || rejectCreate || fixtureWrites.size) {
+            throw new Error("create producer already has a controlled boundary");
+          }
           dropResponse = true;
         } else if (action === "hold-reconnect") {
           holdHello = true;
@@ -411,7 +509,12 @@ export async function startQaGatewayRpcProxy({
         }
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(snapshot()));
-      })().catch(() => res.writeHead(500).end("fixture control failed"));
+      })().catch(() => {
+        if (!res.headersSent) res.writeHead(500);
+        res.end("fixture control failed");
+      });
+      controlTasks.add(controlTask);
+      void controlTask.finally(() => controlTasks.delete(controlTask));
       return;
     }
     // Inspect only the pathname. Ticket queries and HTTP headers never enter evidence.
@@ -493,6 +596,15 @@ export async function startQaGatewayRpcProxy({
     upstream.once("close", () => httpRequests.delete(upstream));
     upstream.on("error", () => res.writeHead(503).end());
     req.pipe(upstream);
+  };
+  const server = tls ? createSecureServer(tls, handleRequest) : createServer(handleRequest);
+  // HTTPS closeAllConnections does not own sockets waiting for a TLS handshake.
+  // Install their close receipts at admission, before a cancelled probe can leave.
+  server.on("connection", (socket) => {
+    const closed = new Promise((resolve) => socket.once("close", resolve));
+    acceptedSockets.set(socket, closed);
+    void closed.then(() => acceptedSockets.delete(socket));
+    if (stopping) socket.destroy();
   });
   const sockets = new WebSocketServer({ server });
   sockets.on("connection", (front) => {
@@ -572,12 +684,13 @@ export async function startQaGatewayRpcProxy({
           }),
       ),
     );
-    const peer = { id, front, back, closed };
+    const peer = { id, front, back, closed, role: "other", connected: false };
     peers.add(peer);
     // The frontend can close before its upstream receiver finishes. Keep both
     // endpoints owned until their close handlers have run, including before stop.
     void closed.then(() => peers.delete(peer));
     const methods = new Map();
+    const requestSelectors = new Map();
     const diagnosticRequests = new Map();
     const sendUpstream = (raw, trace) => {
       if (trace) {
@@ -604,6 +717,7 @@ export async function startQaGatewayRpcProxy({
           return;
         }
         methods.set(frame.id, frame.method);
+        requestSelectors.set(frame.id, requestSelector(frame));
         if (diagnostic && READINESS_METHODS.has(frame.method)) {
           if (diagnostic.requests.length < 32) {
             trace = {
@@ -633,6 +747,7 @@ export async function startQaGatewayRpcProxy({
                   sessionKey: selector(frame.params?.sessionKey),
                   agentId: selector(frame.params?.agentId),
                   runId: selector(frame.params?.runId),
+                  approvalId: selector(frame.params?.id),
                   ...(frame.method === "chat.history"
                     ? {
                         inputRunIds: Array.isArray(frame.params?.inputRunIds)
@@ -652,6 +767,7 @@ export async function startQaGatewayRpcProxy({
         }
         if (frame.method === "connect") {
           nativeDeviceId = frame.params?.device?.id;
+          peer.role = ["node", "operator"].includes(frame.params?.role) ? frame.params.role : "other";
           recordFirstConnection(id, "connect-received");
           record("connect-request", {
             connection: id,
@@ -675,6 +791,26 @@ export async function startQaGatewayRpcProxy({
         if (frame.method === "sessions.create") {
           record("mutation-request", { connection: id, requestId: frame.id });
         }
+      }
+      const controlledCreate = frame.type === "req" && frame.method === "sessions.create" &&
+        rejectCreate && matchesSelector(requestSelectors.get(frame.id), rejectCreate);
+      const controlledNode = frame.type === "req" && frame.method === "connect" && peer.role === "node" && nodeFault;
+      if (controlledCreate || controlledNode) {
+        if (controlledCreate) rejectCreate = undefined;
+        methods.delete(frame.id);
+        requestSelectors.delete(frame.id);
+        diagnosticRequests.delete(frame.id);
+        record("controlled-request-refusal", { connection: id, requestId: frame.id, method: frame.method });
+        const write = new Promise((resolve) => front.send(JSON.stringify({
+          type: "res", id: frame.id, ok: false,
+          error: { code: "UNAVAILABLE", message: "Controlled fixture request refusal" },
+        }), (error) => {
+          record("controlled-refusal-written", { connection: id, requestId: frame.id, delivered: !error });
+          resolve();
+        }));
+        fixtureWrites.add(write);
+        void write.finally(() => fixtureWrites.delete(write));
+        return;
       }
       if (back.readyState === WebSocket.OPEN) {
         sendUpstream(raw, trace);
@@ -702,9 +838,11 @@ export async function startQaGatewayRpcProxy({
         recordFirstConnection(id, "challenge-received");
       }
       const method = methods.get(frame.id);
+      const producer = requestSelectors.get(frame.id);
       const trace = diagnosticRequests.get(frame.id);
       if (frame.type === "res") {
         methods.delete(frame.id);
+        requestSelectors.delete(frame.id);
         diagnosticRequests.delete(frame.id);
         if (trace) {
           trace.response = {
@@ -737,6 +875,7 @@ export async function startQaGatewayRpcProxy({
           });
         }
         if (method === "connect" && frame.ok) {
+          peer.connected = true;
           const auth = frame.payload?.auth;
           const handoff =
             observeMobileHandoff && auth?.method === "bootstrap-token"
@@ -797,11 +936,25 @@ export async function startQaGatewayRpcProxy({
             status: frame.payload?.status,
           });
         }
-        if (holdMethod && method === holdMethod) {
+        // Record the real producer outcome before holding its delivery. A controlled
+        // pre-upstream refusal never enters this authoritative response path.
+        if (method === "sessions.create") {
+          record(frame.ok ? "mutation-success" : "mutation-error", {
+            connection: id,
+            requestId: frame.id,
+            ...(frame.ok
+              ? { key: frame.payload?.key }
+              : {
+                  labelCollision: frame.error?.message?.startsWith("label already in use") === true,
+                }),
+          });
+        }
+        if (holdMethod && method === holdMethod && matchesSelector(producer, holdSelector)) {
           if (trace) {
             trace.held = true;
           }
           holdMethod = undefined;
+          holdSelector = undefined;
           heldResponse = {
             release: () => {
               if (front.readyState !== WebSocket.OPEN) {
@@ -823,6 +976,9 @@ export async function startQaGatewayRpcProxy({
             summary: {
               method,
               connection: id,
+              requestId: frame.id,
+              ...(producer ?? {}),
+              requestedRunId: producer?.runId,
               ok: frame.ok,
               runId: frame.payload?.runId,
               status: frame.payload?.status,
@@ -834,15 +990,6 @@ export async function startQaGatewayRpcProxy({
         }
       }
       if (frame.type === "res" && method === "sessions.create") {
-        record(frame.ok ? "mutation-success" : "mutation-error", {
-          connection: id,
-          requestId: frame.id,
-          ...(frame.ok
-            ? { key: frame.payload?.key }
-            : {
-                labelCollision: frame.error?.message?.startsWith("label already in use") === true,
-              }),
-        });
         if (frame.ok && dropResponse) {
           // A successful real response proves commit before the only injected loss.
           dropResponse = false;
@@ -949,6 +1096,7 @@ export async function startQaGatewayRpcProxy({
       heldResponse = undefined;
       const closingPeers = [...peers];
       const closingRequests = [...httpRequests];
+      const closingSockets = [...acceptedSockets];
       const requestsClosed = closingRequests.map(
         (upstream) =>
           new Promise((resolve) => {
@@ -965,9 +1113,13 @@ export async function startQaGatewayRpcProxy({
         upstream.destroy();
       }
       server.closeAllConnections();
+      for (const [socket] of closingSockets) socket.destroy();
       const results = await Promise.allSettled([
         mediaTask,
         responseReleaseTask,
+        ...controlTasks,
+        ...fixtureWrites,
+        ...closingSockets.map(([, closed]) => closed),
         websocketClosed,
         serverClosed,
         ...closingPeers.map((peer) => peer.closed),
@@ -990,8 +1142,8 @@ export async function startQaGatewayRpcProxy({
   });
   const address = server.address();
   return {
-    url: `ws://127.0.0.1:${address.port}`,
-    controlUrl: `http://127.0.0.1:${address.port}/__fixture`,
+    url: `${tls ? "wss" : "ws"}://127.0.0.1:${address.port}`,
+    controlUrl: `${tls ? "https" : "http"}://127.0.0.1:${address.port}/__fixture`,
     snapshot,
     readinessSnapshot,
     captureHistoryRequestMatcher,
