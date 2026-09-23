@@ -1,5 +1,5 @@
 # Temporary source-bound qualification. Never merge this harness.
-name: Temporary integrated FreeBSD fresh ARM qualification
+name: Temporary integrated FreeBSD native and released-updater qualification
 
 on:
   push:
@@ -16,31 +16,35 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: "f7ad18ddbeedd52c4520428c1f7aca8bf4173bb3"
-  SOURCE_TREE: "ad4a6a7fd0175b4c3d792ae305075737608067dc"
-  HARNESS_SHA: "faaa7142b7742ec27c06dd1dfd148fb9fca7a08e"
-  PRODUCER_TREE: "f1354e5d0403761d153de5e433aeb8d9bdfd31f0"
+  SOURCE_SHA: "37533d10807357a732881657db3595dd98bce0fc"
+  SOURCE_TREE: "56d269f299ee05bbf30e78d6db90f86ff6ff06d4"
+  HARNESS_SHA: "36128ef5c10d2f6b7e845f8ae0dda0be38f29f44"
+  PRODUCER_TREE: "5fe4a1cf3fd45515e8a753fdf36202f0c9145a61"
   CONSUMER_SHA: ${{ github.sha }}
-  CONSUMER_PARENT_SHA: "faaa7142b7742ec27c06dd1dfd148fb9fca7a08e"
-  CONSUMER_PARENT_TREE: "f1354e5d0403761d153de5e433aeb8d9bdfd31f0"
+  CONSUMER_PARENT_SHA: "36128ef5c10d2f6b7e845f8ae0dda0be38f29f44"
+  CONSUMER_PARENT_TREE: "5fe4a1cf3fd45515e8a753fdf36202f0c9145a61"
   WORKFLOW_SHA: ${{ github.workflow_sha }}
   PROOF_REPOSITORY: openclaw/openclaw
-  PROOF_RUN_ID: "35840977011"
+  PROOF_RUN_ID: "35872761481"
   PROOF_RUN_ATTEMPT: "1"
-  PROOF_JOB_ID: "107115669444"
-  PAYLOAD_ARTIFACT_ID: "10742330116"
-  PAYLOAD_ARTIFACT_DIGEST: "sha256:630553a8842aa27ae3d7a1a124ba4e5453cf213873cb19fde0750ce0c74e0480"
-  PAYLOAD_ARTIFACT_SIZE: "269861174"
-  MANIFEST_SHA: "54f002e8023f3a27db16eccf4fa59c0c9fb35a51ca7062a3b8eb69f930e86070"
-  ARCHIVE_SHA: "77ab76ad7f18c4034abe9d053ad80472b7a893f21389de64b815c72eeb3101c7"
+  PROOF_JOB_ID: "107220812638"
+  PAYLOAD_ARTIFACT_ID: "10757097474"
+  PAYLOAD_ARTIFACT_DIGEST: "sha256:5852fe4a246f6233f8553f8cae2bfce9c8e2bd5ad2c2b5c729cfea1aa133e303"
+  PAYLOAD_ARTIFACT_SIZE: "270113452"
+  MANIFEST_SHA: "e4eee19b04f4a17df5ec1aad7022a8861040d00f3a200a9da3f02c584faa9d97"
+  ARCHIVE_SHA: "1e2615c161f56228bf7fe901f96860c03497350a0f68a7827e67d4fbb1853c44"
   PACKAGE_VERSION: "2026.9.5"
-  BASELINE_SRI: sha512-lTQpEEe1Xm3u2PCHaPEr+vP8paGk1vLdHuzdItsNToaLI6hAqRVvgJYg+GxukJhETJp4tPy/S1Gftl4KuB8n7A==
-  SOURCE_PINS: '{"package.json":"871b3c9232120483d606294d97af5e9f8c0452804911f229c63d6ca6e70b3dc5","pnpm-lock.yaml":"6b7b9eb4522fef82e8741dcb07836b3cf2843a68a00bd932638bf5f057fad417","pnpm-workspace.yaml":"8cd6666eee1dba62d902b42fd06287b77b09429601b73a06168e57dd56d48be9",".npmrc":"f1d021e2abdf8817d83e35feb1f5d604e8c985aa0553bec3d417cf6f93e9c09c","scripts/freebsd-service-inspect.mjs":"6585523afc1b700b82b53e4b9881944a0f3d58f2dd47c5675252ec658a3a8f4d","scripts/lib/freebsd-service-discovery.mjs":"a18f1ba7022576545571ef033a0060c83343d8a047e380aec15e3dc0543e0d19","scripts/lib/freebsd-service-discovery.d.mts":"efb110b8164077569df27bb8a4ba931180d9438a6ae045cdd03752c26f75ba1f","scripts/install-smoke-candidate-payload.mts":"5f4de9d36236a4f23d769e0972a0f0904864711ff664ba3fad362137dc3902ac","packages/ai/package.json":"b0149f2738759517c06cf550a0ded043ca9fcb54024ba6ec025747b707500ca9","packages/markdown-core/package.json":"eb934f4829a87292edff90480e2c060e636afdd75d35a3ffc02a55581e37a548","packages/model-catalog-core/package.json":"4c53a2d17e2bc41f7011efff70cbd0306122af164c3df8e8e13a4e25c41cec28","packages/normalization-core/package.json":"2bfc2ae79211db8023b168e8dd6c5f378dd64e0890b32ae9a043d38c867683a5","packages/session-url-contract/package.json":"ce05f27abdafc0ff033aadf0d0944f8c48681d5eebcd5dec7485e64215abe827"}'
+  BASELINE_URL: https://registry.npmjs.org/openclaw/-/openclaw-2026.9.5.tgz
+  BASELINE_BYTES: "72453925"
+  BASELINE_SHA1: "734278f0f61d9fa9efa68edd11a3c97674f24e58"
+  BASELINE_SHA256: "1fb6ef4fae447af14f1e3b1028334f39146d181a66a4cce2848d4f741c636340"
+  BASELINE_SRI: sha512-TCO/ImVLh5HkF4tdfo7iriIa7kT6iYkIr/jR5ZOkePGFGhUx5Oe7DE716Y1DzzG2teRAVDdCjgJDu1A24Yta7w==
+  SOURCE_PINS: '{"package.json":"2bd4b24c3351f5b61ff389ad5e7654220f998965590b2bd26933bba76739ea30","pnpm-lock.yaml":"6b7b9eb4522fef82e8741dcb07836b3cf2843a68a00bd932638bf5f057fad417","pnpm-workspace.yaml":"8cd6666eee1dba62d902b42fd06287b77b09429601b73a06168e57dd56d48be9",".npmrc":"f1d021e2abdf8817d83e35feb1f5d604e8c985aa0553bec3d417cf6f93e9c09c","scripts/freebsd-service-inspect.mjs":"6585523afc1b700b82b53e4b9881944a0f3d58f2dd47c5675252ec658a3a8f4d","scripts/lib/freebsd-service-discovery.mjs":"a18f1ba7022576545571ef033a0060c83343d8a047e380aec15e3dc0543e0d19","scripts/lib/freebsd-service-discovery.d.mts":"efb110b8164077569df27bb8a4ba931180d9438a6ae045cdd03752c26f75ba1f","scripts/install-smoke-candidate-payload.mts":"5f4de9d36236a4f23d769e0972a0f0904864711ff664ba3fad362137dc3902ac","packages/ai/package.json":"b0149f2738759517c06cf550a0ded043ca9fcb54024ba6ec025747b707500ca9","packages/markdown-core/package.json":"eb934f4829a87292edff90480e2c060e636afdd75d35a3ffc02a55581e37a548","packages/model-catalog-core/package.json":"4c53a2d17e2bc41f7011efff70cbd0306122af164c3df8e8e13a4e25c41cec28","packages/normalization-core/package.json":"2bfc2ae79211db8023b168e8dd6c5f378dd64e0890b32ae9a043d38c867683a5","packages/session-url-contract/package.json":"ce05f27abdafc0ff033aadf0d0944f8c48681d5eebcd5dec7485e64215abe827"}'
 
 jobs:
   fixtures:
-    # One reviewed successor derives new fixtures and runs two isolated fresh ARM cases.
-    if: github.repository == 'openclaw/openclaw' && github.actor == 'vincentkoc' && github.event_name == 'push' && github.run_attempt == 1 && github.event.before == 'faaa7142b7742ec27c06dd1dfd148fb9fca7a08e' && !github.event.forced && !github.event.deleted
+    # One reviewed successor shares immutable fixtures across two fresh ARM cells and one released-updater x64 cell.
+    if: github.repository == 'openclaw/openclaw' && github.actor == 'vincentkoc' && github.event_name == 'push' && github.run_attempt == 1 && github.event.before == '36128ef5c10d2f6b7e845f8ae0dda0be38f29f44' && !github.event.forced && !github.event.deleted
     runs-on: ubuntu-latest
     timeout-minutes: 20
     outputs:
@@ -53,7 +57,7 @@ jobs:
           fetch-depth: 7
           persist-credentials: false
       - &admit
-        name: Bind the new source, successful producer, and two fresh ARM cases
+        name: Bind the source, successful producer, and selected native cells
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -65,8 +69,8 @@ jobs:
           test "$(git rev-parse "$CONSUMER_PARENT_SHA^{tree}")" = "$CONSUMER_PARENT_TREE"
           test "$CONSUMER_PARENT_SHA" = "$HARNESS_SHA"
           test "$(git rev-parse "$HARNESS_SHA^{tree}")" = "$PRODUCER_TREE"
-          test "$(git show -s --format=%P "$HARNESS_SHA")" = "5dea8004191b0c1ca9bc852c3205556c2cac9f64 $SOURCE_SHA"
-          test "$(git show -s --format=%P "$SOURCE_SHA")" = "6df9d25f09e53f65329d4292480ce17d665d8909 741a1c84cde99000a3fba8a67c1c96ecfda6fee4"
+          test "$(git show -s --format=%P "$HARNESS_SHA")" = "262e0642466765df520b5e5f358d55fc048c2b31 $SOURCE_SHA"
+          test "$(git show -s --format=%P "$SOURCE_SHA")" = "d165d04f2ff08946d9fbf5ae8d0a304f2da6e666 c86950ae33ea0eabe105bed6641c099f6ad3d6b7 41482a6873fde32686d6a27b8ac691aeec520f10"
           test "$(git rev-parse "$SOURCE_SHA^{tree}")" = "$SOURCE_TREE"
           test "$(git diff --name-only "$CONSUMER_PARENT_SHA" HEAD)" = .github/workflows/freebsd-integrated-native-proof.yml
           test "$(git diff --name-only "$SOURCE_SHA" HEAD)" = "$(printf '%s\n' .github/workflows/freebsd-integrated-native-proof.yml .github/workflows/freebsd-integrated-package-proof.yml .github/workflows/freebsd-refreshed-proof.yml)"
@@ -85,8 +89,11 @@ jobs:
           assert p['state']=='open' and p['draft'] is True and p['auto_merge'] is None
           assert p['head']['sha']==os.environ['CONSUMER_SHA'] and p['head']['repo']['full_name']==repo
           assert p['head']['ref']=='test/freebsd-integrated-package-proof' and p['user']['login']=='vincentkoc'
-          primary=api(f'repos/{repo}/pulls/149882')
-          assert primary['state']=='open' and primary['head']['sha']==os.environ['SOURCE_SHA'] and primary['head']['repo']['full_name']==repo
+          for number,head in [(149882,'d165d04f2ff08946d9fbf5ae8d0a304f2da6e666'),(156523,'c86950ae33ea0eabe105bed6641c099f6ad3d6b7'),(156547,'41482a6873fde32686d6a27b8ac691aeec520f10')]:
+              component=api(f'repos/{repo}/pulls/{number}')
+              assert component['state']=='open' and component['head']['sha']==head and component['head']['repo']['full_name']==repo
+          product=api(f'repos/{repo}/git/ref/heads/proof/freebsd-integrated-product-41482a68')
+          assert product['object']['type']=='commit' and product['object']['sha']==os.environ['SOURCE_SHA']
           r=api(f"repos/{repo}/actions/runs/{os.environ['PROOF_RUN_ID']}")
           assert r['head_sha']==os.environ['HARNESS_SHA'] and r['run_attempt']==1
           assert r['status']=='completed' and r['conclusion']=='success' and r['event']=='push'
@@ -98,7 +105,7 @@ jobs:
           assert not a['expired'] and a['workflow_run']['id']==r['id'] and a['workflow_run']['head_sha']==r['head_sha']
           assert a['name']==f"freebsd-integrated-package-{r['id']}-1"
           assert a['size_in_bytes']==int(os.environ['PAYLOAD_ARTIFACT_SIZE']) and a['digest']==os.environ['PAYLOAD_ARTIFACT_DIGEST']
-          out=dict(source=os.environ['SOURCE_SHA'],sourceTree=os.environ['SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],consumerRun=os.environ['GITHUB_RUN_ID'],consumerAttempt=1,producer=r['head_sha'],producerRun=r['id'],producerJob=j['id'],artifact=a['id'],digest=a['digest'],bytes=a['size_in_bytes'],cells=[['aarch64','root','fresh'],['aarch64','ordinary','fresh']],reusedSuccessfulJobs={})
+          out=dict(source=os.environ['SOURCE_SHA'],sourceTree=os.environ['SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],consumerRun=os.environ['GITHUB_RUN_ID'],consumerAttempt=1,producer=r['head_sha'],producerRun=r['id'],producerJob=j['id'],artifact=a['id'],digest=a['digest'],bytes=a['size_in_bytes'],cells=[['aarch64','root','fresh'],['aarch64','ordinary','fresh'],['x86_64','ordinary','seeded']],reusedSuccessfulJobs={})
           pathlib.Path('evidence/admission.json').write_text(json.dumps(out)+'\n');print(json.dumps(out))
           AUTH
       - &payload-download
@@ -143,14 +150,17 @@ jobs:
         run: |
           set -euo pipefail
           mkdir fixtures
-          npm pack openclaw@2026.9.4 --ignore-scripts --json --min-release-age=0 --registry=https://registry.npmjs.org/ --pack-destination fixtures > fixtures/published-pack.original.json
+          npm pack "$BASELINE_URL" --ignore-scripts --json --min-release-age=0 --registry=https://registry.npmjs.org/ --pack-destination fixtures > fixtures/published-pack.original.json
           node --input-type=module <<'BASELINE'
           import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
           const rows=JSON.parse(fs.readFileSync('fixtures/published-pack.original.json'));assert.equal(rows.length,1);
-          const r=rows[0];assert.equal(r.name,'openclaw');assert.equal(r.version,'2026.9.4');assert.equal(r.filename,'openclaw-2026.9.4.tgz');assert.equal(r.integrity,process.env.BASELINE_SRI);
-          const bytes=fs.readFileSync(`fixtures/${r.filename}`);assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`,process.env.BASELINE_SRI);
-          fs.renameSync(`fixtures/${r.filename}`,'fixtures/published-2026.9.4.tgz');
+          const r=rows[0];assert.equal(r.name,'openclaw');assert.equal(r.version,'2026.9.5');assert.equal(r.filename,'openclaw-2026.9.5.tgz');assert.equal(r.integrity,process.env.BASELINE_SRI);
+          const bytes=fs.readFileSync(`fixtures/${r.filename}`);assert.equal(bytes.length,Number(process.env.BASELINE_BYTES));
+          assert.equal(createHash('sha1').update(bytes).digest('hex'),process.env.BASELINE_SHA1);assert.equal(createHash('sha256').update(bytes).digest('hex'),process.env.BASELINE_SHA256);
+          assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`,process.env.BASELINE_SRI);
+          fs.renameSync(`fixtures/${r.filename}`,'fixtures/published-2026.9.5.tgz');
           BASELINE
+          tar -xOf proof-input/payload/candidate.tgz package/dist/update-compat-inventory.json | node --input-type=module -e 'import assert from "node:assert/strict";import fs from "node:fs";const matches=JSON.parse(fs.readFileSync(0,"utf8")).releases.filter(r=>r.version==="2026.9.5");assert.equal(matches.length,1);assert.equal(matches[0].integrity,process.env.BASELINE_SRI);'
           node scripts/e2e/lib/update-first-hop-package-fixtures.mjs first-hop-tarball "$PWD/proof-input/payload/candidate.tgz" "$PWD/fixtures/first-hop.tgz" 0 > fixtures/first-hop.json
           node --input-type=module <<'FIXTURE'
           import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
@@ -183,6 +193,10 @@ jobs:
         arch: [aarch64]
         account: [root, ordinary]
         mode: [fresh]
+        include:
+          - arch: x86_64
+            account: ordinary
+            mode: seeded
     env:
       PROOF_ACCOUNT: ${{ matrix.account }}
       PROOF_MODE: ${{ matrix.mode }}
@@ -213,17 +227,17 @@ jobs:
           import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
           const dir='operator-fixtures',r=JSON.parse(fs.readFileSync(`${dir}/complete.json`));
           assert.equal(r.source,process.env.SOURCE_SHA);assert.equal(r.consumer,process.env.CONSUMER_SHA);assert.equal(r.run,process.env.GITHUB_RUN_ID);assert.equal(r.attempt,1);
-          assert.deepEqual(r.files.map(f=>f.name).sort(),['first-hop.json','first-hop.tgz','published-2026.9.4.tgz','published-pack.original.json']);
+          assert.deepEqual(r.files.map(f=>f.name).sort(),['first-hop.json','first-hop.tgz','published-2026.9.5.tgz','published-pack.original.json']);
           assert.deepEqual(fs.readdirSync(dir).sort(),[...r.files.map(f=>f.name),'complete.json'].sort());
           for(const f of r.files){const stat=fs.lstatSync(`${dir}/${f.name}`);assert(stat.isFile());assert.equal(stat.size,f.bytes);assert.equal(createHash('sha256').update(fs.readFileSync(`${dir}/${f.name}`)).digest('hex'),f.sha256);}
-          const baseline=fs.readFileSync(`${dir}/published-2026.9.4.tgz`);assert.equal(`sha512-${createHash('sha512').update(baseline).digest('base64')}`,process.env.BASELINE_SRI);
+          const baseline=fs.readFileSync(`${dir}/published-2026.9.5.tgz`);assert.equal(`sha512-${createHash('sha512').update(baseline).digest('base64')}`,process.env.BASELINE_SRI);
           const target=JSON.parse(fs.readFileSync(`${dir}/first-hop.json`));assert.equal(target.sourceSha256,createHash('sha256').update(fs.readFileSync('proof-input/payload/candidate.tgz')).digest('hex'));
           console.log(JSON.stringify(r));
           FIXTURES
       - name: Place only authenticated fixtures beside the payload
         run: |
           set -euo pipefail
-          for name in first-hop.tgz first-hop.json published-2026.9.4.tgz; do
+          for name in first-hop.tgz first-hop.json published-2026.9.5.tgz; do
             test ! -e "proof-input/$name"
             cp "operator-fixtures/$name" "proof-input/$name"
           done
@@ -232,7 +246,7 @@ jobs:
           set -euo pipefail
           python3 - <<'STAGE'
           import hashlib,json,os,pathlib,shutil,stat,tempfile
-          files=['proof-input/source.tar.gz','proof-input/first-hop.tgz','proof-input/first-hop.json','proof-input/published-2026.9.4.tgz',
+          files=['proof-input/source.tar.gz','proof-input/first-hop.tgz','proof-input/first-hop.json','proof-input/published-2026.9.5.tgz',
                  *['proof-input/payload/'+name for name in ['candidate.tgz','candidate-pack.json','install.sh','install-cli.sh','install-smoke-candidate-payload.json']],
                  'scripts/install-smoke-candidate-payload.mts']
           stage=pathlib.Path(tempfile.mkdtemp(prefix='freebsd-native-stage.',dir=os.environ['RUNNER_TEMP']));rows=[]
@@ -299,7 +313,7 @@ jobs:
           VERIFY_STAGE
           cat evidence/native-transfer-guest.json
           echo 'authenticated guest input transfer complete'
-      - name: Run the cold installed Doctor and update flow
+      - name: Run the installed flow with the selected updater owner
         shell: freebsd {0}
         run: |
             set -eu
@@ -411,7 +425,7 @@ jobs:
                     for folder in [root / "reports", root / value["mode"] / "plugin-evidence"]:
                         if folder.is_symlink(): initial_omissions.append({"name":str(folder.relative_to(root)), "reason":"symlink-directory"})
                         elif folder.is_dir(): selected.extend(path for path in folder.rglob("*") if not path.is_dir())
-                    for name in ["doctor.log", "preview.json", "preview.stderr", "update.json", "update.stderr", "handoff-before.json", "bootstrap-before.json"]:
+                    for name in ["doctor.log", "post-update-doctor.log", "preview.json", "preview.stderr", "update.json", "update.stderr", "handoff-before.json", "bootstrap-before.json", "released-driver-before.json"]:
                         path = root / value["mode"] / name
                         if path.exists(): selected.append(path)
                     captured = []; omitted = initial_omissions; total = 0
@@ -477,7 +491,7 @@ jobs:
                     atomic_json(DEST / "context.json", value); context(DEST, expected); return
                 if mode == "record":
                     value, root = context(DEST, expected); phase, outcome = sys.argv[2:]
-                    assert phase in ["doctor", "preview", "update"] and (outcome == "started" or (outcome.isdecimal() and 0 <= int(outcome) <= 255))
+                    assert phase in ["doctor", "post-update-doctor", "preview", "update"] and (outcome == "started" or (outcome.isdecimal() and 0 <= int(outcome) <= 255))
                     file = root / "phase-status.json"; facts = json.loads(file.read_text()) if file.exists() else {}
                     if outcome == "started": assert phase not in facts; facts[phase] = {"exit":None}
                     else: assert facts[phase]["exit"] is None; facts[phase]["exit"] = int(outcome)
@@ -524,9 +538,9 @@ jobs:
             const root = process.env.INPUT_ROOT;
             const hash = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
             assert.equal(hash(`${root}/source.tar.gz`), process.env.ARCHIVE_SHA);
-            const baseline=fs.readFileSync(`${root}/published-2026.9.4.tgz`);
+            const baseline=fs.readFileSync(`${root}/published-2026.9.5.tgz`);
             assert.equal(`sha512-${createHash('sha512').update(baseline).digest('base64')}`,process.env.BASELINE_SRI);
-            console.log(JSON.stringify({publishedBootstrap:'openclaw@2026.9.4',integrity:process.env.BASELINE_SRI,size:baseline.length,sha256:hash(`${root}/published-2026.9.4.tgz`)}));
+            console.log(JSON.stringify({publishedBootstrap:'openclaw@2026.9.5',integrity:process.env.BASELINE_SRI,size:baseline.length,sha256:hash(`${root}/published-2026.9.5.tgz`)}));
             const receipt = JSON.parse(fs.readFileSync(`${root}/first-hop.json`));
             assert.equal(hash(`${root}/first-hop.tgz`), receipt.targetSha256);
             assert.equal(hash(`${root}/payload/candidate.tgz`), receipt.sourceSha256);
@@ -546,7 +560,7 @@ jobs:
             tar --no-same-permissions -xzf "$INPUT_ROOT/source.tar.gz" -C "$proof_root/source"
             tar -xzf "$INPUT_ROOT/payload/candidate.tgz" -C "$proof_root/package-view"
             tar -xzf "$INPUT_ROOT/first-hop.tgz" -C "$proof_root/target-view"
-            tar -xzf "$INPUT_ROOT/published-2026.9.4.tgz" -C "$proof_root/baseline-view"
+            tar -xzf "$INPUT_ROOT/published-2026.9.5.tgz" -C "$proof_root/baseline-view"
             source_root="$proof_root/source/openclaw"
             export SOURCE_ROOT="$source_root" PACKAGED_ROOT="$proof_root/package-view/package"
             python3 "$INPUT_ROOT/verify-source.py" before
@@ -665,11 +679,11 @@ jobs:
             compare();
             const manifest=JSON.parse(fs.readFileSync(`${installed}/package.json`));
             const actual=JSON.parse(fs.readFileSync(`${installed}/dist/build-info.json`));
-            assert.equal(manifest.version,phase==='published'?'2026.9.4':process.env.PACKAGE_VERSION); assert(actual.buildId);
-            assert.deepEqual(manifest.openclaw.schemaVersions,phase==='published'?{state:17,agent:19}:{state:18,agent:23});
+            assert.equal(manifest.version,phase==='published'?'2026.9.5':process.env.PACKAGE_VERSION); assert(actual.buildId);
+            assert.deepEqual(manifest.openclaw.schemaVersions,phase==='published'?{state:17,agent:21}:{state:18,agent:23});
             if(phase==='candidate') assert.equal(actual.commit,process.env.SOURCE_SHA);
             else assert.notEqual(actual.commit,process.env.SOURCE_SHA);
-            console.log(JSON.stringify({installedPhase:phase,build:actual,packageSha256:hash(`${installed}/package.json`),launcherSha256:hash(`${installed}/openclaw.mjs`),content:true}));
+            console.log(JSON.stringify({installedPhase:phase,resolvedLauncher:fs.realpathSync(`${process.env.npm_config_prefix}/bin/openclaw`),build:actual,packageSha256:hash(`${installed}/package.json`),launcherSha256:hash(`${installed}/openclaw.mjs`),content:true}));
             NODE
             cat > "$proof_root/verify-bootstrap.mjs" <<'NODE'
             import assert from 'node:assert/strict';
@@ -719,9 +733,14 @@ jobs:
             console.log(JSON.stringify({bootstrapPhase:phase,agent:id,sharedProvenance:'preserved',workspaceFiles:Object.keys(files).length,semanticSha256:createHash('sha256').update(JSON.stringify(snapshot)).digest('hex'),agentSchemaMigration:'not-claimed'}));
             NODE
             cd "$HOME"
+            released_driver=false
+            if [ "$EXPECTED_NODE_ARCH" = x64 ] && [ "$PROOF_ACCOUNT" = ordinary ] && [ "$cell" = seeded ]; then released_driver=true; fi
+            # Refuse inherited overrides before either updater can select its artifact.
+            test "${OPENCLAW_UPDATE_PACKAGE_SPEC+x}" != x
             if [ "$cell" = seeded ]; then
-            npm install --global "file:$INPUT_ROOT/published-2026.9.4.tgz" "--allow-scripts=file:$INPUT_ROOT/published-2026.9.4.tgz" --no-audit --no-fund
-            node "$proof_root/verify-installed.mjs" published "$BASELINE_ROOT"
+            npm install --global "file:$INPUT_ROOT/published-2026.9.5.tgz" "--allow-scripts=file:$INPUT_ROOT/published-2026.9.5.tgz" --no-audit --no-fund
+            node "$proof_root/verify-installed.mjs" published "$BASELINE_ROOT" > "$proof_root/released-driver-before.json"
+            cat "$proof_root/released-driver-before.json"
             export OPENCLAW_UPGRADE_SURVIVOR_RUNTIME_ROOT="$HOME"
             export OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT="$proof_root/plugin-evidence"
             mkdir "$OPENCLAW_UPGRADE_SURVIVOR_ARTIFACT_ROOT"
@@ -733,19 +752,25 @@ jobs:
             openclaw agents set-identity --agent bootstrap-proof --name 'Bootstrap proof' --emoji fox --json
             node "$proof_root/verify-bootstrap.mjs" published
             fi
-            # Manual npm replacement is the documented bootstrap for an old CLI;
-            # package/build/dist identities prove the published-to-candidate replacement.
+            # Fresh cells start with the candidate; the released-driver cell keeps 9.5 installed.
+            if [ "$released_driver" = false ]; then
             npm install --global "file:$INPUT_ROOT/payload/candidate.tgz" "--allow-scripts=file:$INPUT_ROOT/payload/candidate.tgz" --no-audit --no-fund
             node "$proof_root/verify-installed.mjs" candidate "$PACKAGED_ROOT"
-            # Doctor is the first candidate CLI in this independent prefix and state.
-            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record doctor started
-            if openclaw doctor --fix --non-interactive > "$proof_root/doctor.log" 2>&1; then doctor_status=0; else doctor_status=$?; fi
+            fi
+            # The released-driver cell reaches candidate Doctor only after its real update exits.
+            run_candidate_doctor() {
+            doctor_phase=$1
+            doctor_log=$2
+            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record "$doctor_phase" started
+            if openclaw doctor --fix --non-interactive > "$proof_root/$doctor_log" 2>&1; then doctor_status=0; else doctor_status=$?; fi
             pending_cli_status=$doctor_status
-            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record doctor "$doctor_status"
+            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record "$doctor_phase" "$doctor_status"
             echo "Doctor output (last 64 KiB, exit $doctor_status):"
-            tail -c 65536 "$proof_root/doctor.log"
+            tail -c 65536 "$proof_root/$doctor_log"
             if [ "$doctor_status" -ne 0 ]; then exit "$doctor_status"; fi
             if [ "$cell" = seeded ]; then node "$proof_root/verify-bootstrap.mjs" doctor; fi
+            }
+            if [ "$released_driver" = false ]; then run_candidate_doctor doctor doctor.log; fi
             # Measure installed dependency identity only after ordinary Doctor has exited.
             cat > "$proof_root/verify-installed-dependency.mjs" <<'DEPENDENCY'
             import assert from 'node:assert/strict';
@@ -788,7 +813,7 @@ jobs:
               inventorySha256:createHash('sha256').update(JSON.stringify(files)).digest('hex'),
               scope:'installed fs-safe package files, excluding nested dependencies; no addon loading probe or cross-stage byte equality claim'}));
             DEPENDENCY
-            node "$proof_root/verify-installed-dependency.mjs" candidate-after-doctor
+            if [ "$released_driver" = false ]; then node "$proof_root/verify-installed-dependency.mjs" candidate-after-doctor; fi
             node --input-type=module <<'NODE'
             import assert from 'node:assert/strict';
             import fs from 'node:fs';
@@ -815,6 +840,9 @@ jobs:
             fs.writeFileSync(`${process.env.PROOF_ROOT}/handoff-before.json`,JSON.stringify({physical,file,rows}),{flag:'wx',mode:0o600});
             console.log(JSON.stringify({handoffBaselineRows:rows.length,sha256:createHash('sha256').update(JSON.stringify(rows)).digest('hex'),installedScope:'absent'}));
             NODE
+            # The handoff baseline above belongs to whichever updater is installed.
+            # Candidate preview is a pre-update control only in the fresh cells.
+            if [ "$released_driver" = false ]; then
             python3 /var/tmp/openclaw-integrated-stage/collect-native.py record preview started
             if openclaw update --tag "file:$INPUT_ROOT/first-hop.tgz" --yes --dry-run --json > "$proof_root/preview.json" 2> "$proof_root/preview.stderr"; then preview_status=0; else preview_status=$?; fi
             pending_cli_status=$preview_status
@@ -832,6 +860,9 @@ jobs:
             console.log(JSON.stringify({defaultSyntaxPreview:true,account:process.env.PROOF_ACCOUNT,uid:process.getuid(),cell:process.env.PROOF_CELL,run:r.runId}));
             PREVIEW
             node "$proof_root/verify-installed.mjs" candidate "$PACKAGED_ROOT"
+            else
+            node "$proof_root/verify-installed.mjs" published "$BASELINE_ROOT"
+            fi
             python3 /var/tmp/openclaw-integrated-stage/collect-native.py record update started
             if openclaw update --tag "file:$INPUT_ROOT/first-hop.tgz" --yes --json > "$proof_root/update.json" 2> "$proof_root/update.stderr"; then update_status=0; else update_status=$?; fi
             pending_cli_status=$update_status
@@ -840,6 +871,8 @@ jobs:
             tail -c 65536 "$proof_root/update.json"
             echo 'Update stderr (last 64 KiB):'
             tail -c 65536 "$proof_root/update.stderr"
+            # A released-updater failure wins before any candidate probe is attempted.
+            if [ "$released_driver" = true ] && [ "$update_status" -ne 0 ]; then exit "$update_status"; fi
             # Check shared-store preservation before propagating the original CLI status.
             if node --input-type=module <<'NODE'
             import assert from 'node:assert/strict';
@@ -916,6 +949,7 @@ jobs:
             db.close();
             console.log(JSON.stringify({status:'passed',installedOperatorProof:'passed',account:process.env.PROOF_ACCOUNT,uid:process.getuid(),cell:process.env.PROOF_CELL,sourceNativeProof:process.arch==='x64'?(process.env.PROOF_MODE==='seeded'?'pending-after-installed-cell':'separate-seeded-job'):'unrun',arch:process.arch,source:process.env.SOURCE_SHA,buildId:actualBuild.buildId,version:target.targetVersion,runId:result.runId,completedMutation:true,launcher:true,content:true,executorLeaseAbsent:true}));
             NODE
+            if [ "$released_driver" = true ]; then run_candidate_doctor post-update-doctor post-update-doctor.log; fi
               )
             cd "$source_root"
             # Source suites run once per x64 account, after the seeded installed mode.
@@ -1014,7 +1048,7 @@ jobs:
               fs.writeFileSync(`${process.env.PROOF_ROOT}/dist-graph.json`,JSON.stringify(entries),{flag:'wx'});
               console.log(JSON.stringify({candidateDistGraph:createHash('sha256').update(JSON.stringify(entries)).digest('hex'),files:entries.length,roots:roots.map(([,target])=>target),aiExportTargets:[...new Set(targets)].sort(),source:process.env.SOURCE_SHA,candidateRebuilt:false}));
             NODE
-              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts                 src/cli/update-cli/update-command-freebsd-admission.test.ts                 src/cli/update-cli/update-command-freebsd-finalization.test.ts                 src/cli/update-cli/update-command-freebsd-preparation.test.ts                 src/cli/update-cli/update-command-freebsd-worker.test.ts                 src/cli/update-cli/update-command-mutable-signals.test.ts                 src/cli/update-cli/update-command-ledger.test.ts                 --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts"                 --outputFile.json="$proof_root/reports/lifecycle.json"
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts                 src/cli/update-cli/update-command-freebsd-admission.test.ts                 src/cli/update-cli/update-command-freebsd-finalization.test.ts                 src/cli/update-cli/update-command-freebsd-preparation.test.ts                 src/cli/update-cli/update-command-freebsd-worker.test.ts                 src/cli/update-cli/update-command-mutable-signals.test.ts                 src/cli/update-cli/update-command-ledger.test.ts                 src/cli/update-cli/update-command-failure-recovery.test.ts                 src/cli/update-cli/update-command-verification.test.ts                 --passWithNoTests=false                 --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts"                 --outputFile.json="$proof_root/reports/lifecycle.json"
               node scripts/run-vitest.mjs run --config test/vitest/vitest.cli.config.ts \
                 src/cli/update-cli/update-command-terminal-record.test.ts \
                 --testNamePattern 'refuses captured success while FreeBSD admission is pending and after it is revoked' \
@@ -1102,10 +1136,23 @@ jobs:
                 console.log(JSON.stringify({nativeAuthority:name,passed:passed.length,filtered:filtered.length,source:process.env.SOURCE_SHA,scope:'real Doctor and exact shared native custody owner; no late-fault finalizer E2E claim'}));
               }
             AUTHORITY
+              # Keep changed recovery and diagnostic owners in their canonical source-test projects.
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.cli-process.config.ts \
+                src/cli/update-cli/update-command-post-update-recovery.test.ts \
+                --passWithNoTests=false \
+                --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts" \
+                --outputFile.json="$proof_root/reports/recovery-post-update.json"
+              node scripts/run-vitest.mjs run --config test/vitest/vitest.commands.config.ts \
+                src/commands/doctor-lint-process.test.ts \
+                --passWithNoTests=false \
+                --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts" \
+                --outputFile.json="$proof_root/reports/doctor-lint-process.json"
               # Canonical schema-23 storage migration covers real schema21/22 fixtures.
               # This source-native control makes no old-CLI-created agent DB claim.
               node scripts/run-vitest.mjs run --config test/vitest/vitest.infra.config.ts \
                 src/state/openclaw-agent-db.storage-migration.test.ts \
+                src/infra/update-candidate-canary.lint.test.ts \
+                --passWithNoTests=false \
                 --reporter=default --reporter=json --reporter="$source_root/scripts/lib/vitest-report-capture.mts" \
                 --outputFile.json="$proof_root/reports/storage-migration.json"
               if [ "$(id -u)" -eq 0 ]; then
@@ -1116,16 +1163,36 @@ jobs:
               import assert from 'node:assert/strict';
               import fs from 'node:fs';
               import path from 'node:path';
-              for (const [name, modules] of [['lifecycle',6],['storage-migration',1],...(process.getuid()===0?[['service',1]]:[])]) {
+              const selections=[
+                ['lifecycle','cli',[
+                  'src/cli/update-cli/update-command-freebsd-admission.test.ts','src/cli/update-cli/update-command-freebsd-finalization.test.ts',
+                  'src/cli/update-cli/update-command-freebsd-preparation.test.ts','src/cli/update-cli/update-command-freebsd-worker.test.ts',
+                  'src/cli/update-cli/update-command-mutable-signals.test.ts','src/cli/update-cli/update-command-ledger.test.ts',
+                  'src/cli/update-cli/update-command-failure-recovery.test.ts','src/cli/update-cli/update-command-verification.test.ts',
+                ]],
+                ['storage-migration','infra',['src/state/openclaw-agent-db.storage-migration.test.ts','src/infra/update-candidate-canary.lint.test.ts']],
+                ['recovery-post-update','cli-process',['src/cli/update-cli/update-command-post-update-recovery.test.ts']],
+                ['doctor-lint-process','commands',['src/commands/doctor-lint-process.test.ts']],
+                ...(process.getuid()===0?[['service','cli',['src/cli/update-cli/update-command-freebsd-service-admission.test.ts']]]:[]),
+              ];
+              for (const [name, project, modules] of selections) {
                 const file=`${process.env.PROOF_ROOT}/reports/${name}.json`;
                 const report=JSON.parse(fs.readFileSync(file)),capture=JSON.parse(fs.readFileSync(`${file}.capture.json`));
                 assert.equal(report.success,true);assert(report.numPassedTests>0);assert.equal(report.numFailedTests,0);
-                assert.equal(report.numTodoTests,0);assert.equal(capture.modules.length,modules);
+                assert.equal(report.numTodoTests,0);assert.equal(report.numPendingTests,0);
+                assert.deepEqual(report.testResults.map(module=>path.relative(process.cwd(),module.name)).sort(),[...modules].sort());
+                assert.deepEqual(capture.modules.map(module=>path.relative(process.cwd(),module.file)).sort(),[...modules].sort());
+                assert.equal(capture.projects.length,1);
+                for(const owner of [...capture.projects,...capture.modules]) {
+                  assert.equal(owner.name,project);assert.equal(path.relative(process.cwd(),owner.config),`test/vitest/vitest.${project}.config.ts`);
+                }
+                if(name!=='service') assert.equal(capture.passWithNoTests,false);
+                for(const module of report.testResults) assert(module.assertionResults.length>0);
                 assert.equal(capture.processTimedOut,false);assert.equal(capture.ignoreUnhandledErrors,false);
                 for(const key of ['unhandledErrors','suiteErrors','failedModules']) assert.equal(capture.ended[key],0);
                 const rows=report.testResults.flatMap(module=>module.assertionResults);
                 if(name==='lifecycle') {
-                  assert.deepEqual(report.testResults.map(module=>path.basename(module.name)).sort(),['update-command-freebsd-admission.test.ts','update-command-freebsd-finalization.test.ts','update-command-freebsd-preparation.test.ts','update-command-freebsd-worker.test.ts','update-command-mutable-signals.test.ts','update-command-ledger.test.ts'].sort());
+                  assert.deepEqual(report.testResults.map(module=>path.basename(module.name)).sort(),['update-command-freebsd-admission.test.ts','update-command-freebsd-finalization.test.ts','update-command-freebsd-preparation.test.ts','update-command-freebsd-worker.test.ts','update-command-mutable-signals.test.ts','update-command-ledger.test.ts','update-command-failure-recovery.test.ts','update-command-verification.test.ts'].sort());
                   const worker=report.testResults.find(module=>module.name.endsWith('/update-command-freebsd-worker.test.ts'));
                   assert(worker);assert(worker.assertionResults.every(test=>test.status==='passed'));
                   const positives=worker.assertionResults.filter(test=>test.title.startsWith("the real finalizer completes its owning user's run"));
@@ -1220,8 +1287,13 @@ jobs:
               if r['exit']==0:
                   assert r['archiveKind']=='terminal' and not r['omittedFiles']
                   assert not r['remainingOwnedDescendants']
-                  assert {'source-before.json','source-after.json',*[f'{cell}/{name}' for cell in [os.environ['PROOF_MODE']] for name in ['doctor.log','preview.json','update.json','handoff-before.json']]}<=set(names)
+                  released_driver=os.environ['EXPECTED_NODE_ARCH']=='x64' and os.environ['PROOF_ACCOUNT']=='ordinary' and os.environ['PROOF_MODE']=='seeded'
+                  required=['update.json','handoff-before.json',*(['post-update-doctor.log','bootstrap-before.json','released-driver-before.json'] if released_driver else ['doctor.log','preview.json'])]
+                  assert {'source-before.json','source-after.json',*[f"{os.environ['PROOF_MODE']}/{name}" for name in required]}<=set(names)
+                  if released_driver: assert f"{os.environ['PROOF_MODE']}/preview.json" not in names
                   assert json.loads(t.extractfile('source-before.json').read())==json.loads(t.extractfile('source-after.json').read())
+                  if os.environ['EXPECTED_NODE_ARCH']=='x64' and os.environ['PROOF_MODE']=='seeded':
+                      assert {f'reports/{name}.json{suffix}' for name in ['lifecycle','storage-migration','recovery-post-update','doctor-lint-process'] for suffix in ['', '.capture.json']}<=set(names)
               for row in r['files']:
                   b=t.extractfile(row['name']).read();assert len(b)==row['bytes'];assert hashlib.sha256(b).hexdigest()==row['sha256']
           print(json.dumps(dict(bytes=p.stat().st_size,sha256=hashlib.sha256(p.read_bytes()).hexdigest(),original=r)))
