@@ -31,6 +31,7 @@ import { prepareUpdateRestart } from "./update-command-restart-context.js";
 import {
   markControlPlaneUpdateRestartSentinelFailureBestEffort,
   prepareUpdateServiceResult,
+  recordServiceReconciliationWarning,
   UpdateCommandFailure,
   UpdateCommandPendingRecoveryFailure,
   resolveAutomaticUpdateTriage,
@@ -447,6 +448,7 @@ export async function finishUpdate(
     // A replaced core keeps convergence in its original stopped interval.
     const deferPluginConvergence =
       shouldRestart &&
+      params.preManagedServiceStop?.serviceMutationAllowed !== false &&
       params.coreAlreadyCurrent === true &&
       params.preManagedServiceStop?.serviceUpdateVerdict?.kind === "owned";
     let resultWithPostUpdate = params.result;
@@ -454,6 +456,13 @@ export async function finishUpdate(
     if (!deferPluginConvergence) {
       ({ resultWithPostUpdate, postUpdateConfigSnapshot } = await convergePlugins());
       if (params.coreAlreadyCurrent) {
+        if (params.preManagedServiceStop?.serviceMutationSkipMessage) {
+          recordServiceReconciliationWarning(
+            resultWithPostUpdate,
+            params.preManagedServiceStop.serviceEnv ?? process.env,
+            params.preManagedServiceStop.serviceMutationSkipMessage,
+          );
+        }
         return await reportResult(resultWithPostUpdate);
       }
     }
