@@ -251,7 +251,13 @@ export function createUiBrowserVitestConfig(env = process.env): ViteUserConfig {
       setupFiles: ["./src/test-helpers/lit-warnings.setup.ts"],
       browser: {
         enabled: true,
-        provider: playwright(chromiumLaunchOptions ? { launchOptions: chromiumLaunchOptions } : {}),
+        provider: playwright({
+          launchOptions: {
+            ...chromiumLaunchOptions,
+            // Keep real canvas encoding without Chromium's idle-task watchdog in test pages.
+            args: ["--enable-blink-features=NoIdleEncodingForWebTests"],
+          },
+        }),
         instances: [{ browser: "chromium", name: "chromium" }],
         headless: true,
         ui: false,
