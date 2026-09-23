@@ -5,7 +5,7 @@ import { createScopedVitestConfig } from "./vitest.scoped-config.ts";
 import { sharedVitestConfig } from "./vitest.shared.config.ts";
 
 // Diagnostic branch only: Node reads this before the fork starts.
-process.env.NODE_DEBUG_NATIVE = "PLATFORM_VERBOSE";
+process.env.NODE_DEBUG_NATIVE = "PLATFORM_MINIMAL";
 
 export function createExtensionMsTeamsVitestConfig(env?: Record<string, string | undefined>) {
   return createScopedVitestConfig(

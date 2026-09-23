@@ -1,6 +1,6 @@
-import { afterAll } from "vitest";
+import { afterAll, expect } from "vitest";
 
 afterAll(() => {
   const capture = Reflect.get(globalThis, Symbol.for("f113.capture"));
-  if (typeof capture === "function") capture("afterAll");
+  if (typeof capture === "function") capture(`afterAll:${expect.getState().testPath}`);
 });

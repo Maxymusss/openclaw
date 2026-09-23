@@ -1,10 +1,12 @@
 import { createHook } from "node:async_hooks";
 import { appendFileSync, mkdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { isMainThread, threadId } from "node:worker_threads";
 
 const root = process.env.F113_EVIDENCE;
 if (root) {
+  const require = createRequire(import.meta.url);
   mkdirSync(root, { recursive: true });
   const output = path.join(root, `resources-${process.pid}-${threadId}.jsonl`);
   const resources = new Map();
@@ -25,7 +27,6 @@ if (root) {
     },
   }).enable();
   const capture = (phase) => {
-    const report = process.report.getReport();
     appendFileSync(
       output,
       JSON.stringify({
@@ -36,8 +37,7 @@ if (root) {
         argv: process.argv,
         resources: process.getActiveResourcesInfo(),
         tracked: [...resources.values()],
-        libuv: report.libuv,
-        sharedObjects: report.sharedObjects,
+        nativeAddons: Object.keys(require.cache).filter((file) => file.endsWith(".node")),
       }) + "\n",
     );
   };
