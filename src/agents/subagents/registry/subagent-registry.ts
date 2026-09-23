@@ -643,6 +643,8 @@ function addSubagentRunForTests(entry: SubagentRunRecord) {
 
 export const markSubagentRunTerminated = subagentRunManager.markSubagentRunTerminated;
 export const discardSubagentTerminalDelivery = SubagentLifecycleController.discardTerminalDelivery;
+export const cancelSubagentRequesterSettleWake =
+  subagentLifecycleController.cancelRequesterSettleWake;
 
 export { prependAgentSteeringPrompt };
 
