@@ -6,6 +6,7 @@ import {
 import { WorkerTaskError } from "../infra/worker-task-pool-core.js";
 import { isIncognitoSessionKey } from "../routing/session-key.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
+import { yieldSessionListWork } from "./session-projection-work.js";
 import { isColdArchivedSessionRow as isCold } from "./session-row-projection-archive.js";
 import { createSessionRowMaterializer } from "./session-row-projection-materialize.js";
 import { withSessionRowDatabaseFacts } from "./session-row-projection-read.js";
@@ -178,6 +179,13 @@ export function createSessionRowRefresh(
       await owner.catalog.refresh();
     }
     await owner.placementFacts.prepare();
+    // Capture one handoff; later exact traffic cannot starve resident readiness.
+    const exact = exactReads.values().next().value;
+    if (exact) {
+      // The exact caller owns its failure; either outcome releases this resident slice.
+      await exact.completion.promise.catch(() => {});
+      await yieldSessionListWork();
+    }
     for (
       let pending = owner.prepareRegistryFacts();
       pending;
@@ -186,6 +194,7 @@ export function createSessionRowRefresh(
       await pending;
     }
     if (
+      owner.state().disposed ||
       owner.state().topologyDirty ||
       owner.membership.needsPreparation ||
       owner.placementFacts.needsPreparation
