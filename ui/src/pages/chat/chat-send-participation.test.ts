@@ -31,6 +31,8 @@ describe("human discussion sends", () => {
       expect(findChatSendPayload(host)).not.toHaveProperty("deliver");
       expect(host.chatRunId).toBe(runId);
       expect(host.chatSending).toBe(false);
+      expect(host.chatError).toBeNull();
+      expect(JSON.stringify(host.chatMessages)).toContain("@Morgan please check it");
       expect(host.chatQueue).toHaveLength(0);
       expect(host.request).not.toHaveBeenCalledWith("chat.abort", expect.anything());
     },

@@ -18,6 +18,7 @@ import {
 import type { RealtimeTalkLevelSignal } from "../talk/level.ts";
 import type { RealtimeTalkStatus } from "../talk/session.ts";
 import type { RealtimeVoiceSelectionState } from "../talk/voice-selection.ts";
+import { renderChatAudienceAction } from "./chat-composer-audience.ts";
 import { renderRealtimeVoicePicker } from "./chat-realtime-controls.ts";
 import {
   renderChatVoiceStatus,
@@ -646,18 +647,7 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
         : props.onToggleVoice
           ? mobileTalkAction
           : sendAction;
-  const audienceAction =
-    props.onAlternateAudience && hasComposedContent
-      ? html`<button
-          type="button"
-          class="btn btn--sm"
-          ?disabled=${!props.canSend || props.sending || props.hasAttachments || Boolean(sendDisabledReason)}
-          @click=${props.onAlternateAudience}
-          title=${props.humanDiscussion ? t("chat.messages.discussion.ask") : t("chat.messages.discussion.hint")}
-        >
-          ${props.humanDiscussion ? t("chat.messages.discussion.ask") : t("chat.messages.discussion.post")}
-        </button>`
-      : nothing;
+  const audienceAction = renderChatAudienceAction(props, hasComposedContent, sendDisabledReason);
   const primaryActions =
     mobilePrimaryAction === desktopPrimaryAction
       ? html`<span class="chat-mobile-primary-action chat-desktop-primary-action"

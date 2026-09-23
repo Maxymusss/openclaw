@@ -10,7 +10,6 @@ import {
 import { personActivityRouting } from "../../components/person-activity-link.ts";
 import { isCloudWorkerPlacementState } from "../../components/session-row-badges.ts";
 import { t } from "../../i18n/index.ts";
-import { isModelIndependentChatCommand } from "../../lib/chat/commands.ts";
 import { isGatewayMethodAdvertised } from "../../lib/gateway-methods.ts";
 import {
   pickFreshestObserverDigest,
@@ -32,6 +31,7 @@ import { resolveChatMessageAccess } from "./chat-message-access.ts";
 import { resolveChatModelSetup } from "./chat-model-setup.ts";
 import { ChatPaneLayoutRender } from "./chat-pane-layout-render.ts";
 import { createChatPaneRails } from "./chat-pane-rails.ts";
+import { createChatPaneSendHandler } from "./chat-pane-send.ts";
 import {
   createChatPaneQueuedEditProps,
   createChatPaneSessionActionCallbacks,
@@ -587,23 +587,15 @@ export class ChatPane extends ChatPaneLayoutRender {
       onScrollToBottom: state.scrollToBottom,
       ...this.chatState.attachmentInputProps(state),
       onRemoveAttachment: this.removeBrowserAnnotation,
-      onSend: (followUpModeOverride, submissionAction, participation) =>
-        !composerAvailability.canSend ||
-        (modelRequiredReason &&
-          (state.chatAttachments.length > 0 || !isModelIndependentChatCommand(state.chatMessage)))
-          ? undefined
-          : catalogKey
-            ? this.continueCatalogSession(catalogKey)
-            : suggestionViewer
-              ? this.addCurrentSessionSuggestion()
-              : state.handleSendChat(
-                  undefined,
-                  {
-                    ...(followUpModeOverride ? { followUpMode: followUpModeOverride } : {}),
-                    ...(participation ? { participation } : {}),
-                  },
-                  submissionAction,
-                ),
+      onSend: createChatPaneSendHandler({
+        canSend: composerAvailability.canSend,
+        modelRequiredReason,
+        getDraft: () => state.chatMessage,
+        hasAttachments: () => state.chatAttachments.length > 0,
+        continueCatalog: catalogKey ? () => this.continueCatalogSession(catalogKey) : undefined,
+        addSuggestion: suggestionViewer ? () => this.addCurrentSessionSuggestion() : undefined,
+        send: state.handleSendChat,
+      }),
       onUseSystemDefaultMicrophone: state.realtimeTalkUseSystemDefault ?? undefined,
       onToggleRealtimeTalk: () => {
         if (!providerPaused) {

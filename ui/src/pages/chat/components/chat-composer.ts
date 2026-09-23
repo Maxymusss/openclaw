@@ -35,6 +35,7 @@ import { createComposerKeyDownHandler } from "./chat-composer-keydown.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.ts";
 import { resolveChatSlashCommandArgOptions, resolveComposerMenus } from "./chat-composer-menus.ts";
 import { resolveComposerQuestionPanel } from "./chat-composer-question.ts";
+import { createChatComposerSendHandler } from "./chat-composer-send.ts";
 import {
   isSkillMenuVisible,
   resetSkillMenuState,
@@ -443,29 +444,14 @@ export function renderChatComposer(props: ChatComposerProps) {
     }
     props.onTypingChange?.(false);
   };
-  const handleSend = (submissionAction?: Event, participation?: "agent" | "humans") => {
-    const draft = state.composerTextarea?.value ?? props.draft;
-    if (!canSubmitDraft(draft)) {
-      return;
-    }
-    state.composerComposing = false;
-    state.composingDraft = null;
-    commitComposerDraft(props, draft);
-    props.onTypingChange?.(false);
-    if (participation !== "humans" && !humanDiscussion && goalComposer.activateDraft(draft, true)) {
-      return;
-    }
-    if (goalComposer.active) {
-      void goalComposer.submit(submissionAction);
-      return;
-    }
-    if (participation || humanDiscussion) {
-      void props.onSend(undefined, submissionAction, participation ?? "humans");
-    } else {
-      void props.onSend(undefined, submissionAction);
-    }
-    syncComposerDraftAfterSend(state.composerTextarea);
-  };
+  const handleSend = createChatComposerSendHandler({
+    props,
+    state,
+    humanDiscussion,
+    canSubmitDraft,
+    goalComposer,
+    syncComposerDraftAfterSend,
+  });
   state.microphonePicker ??= new ComposerMicrophonePicker(requestUpdate);
   const devicePicker = state.microphonePicker;
   devicePicker.syncCatalog(props.gatewayClient ?? null, props.connected);

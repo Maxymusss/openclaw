@@ -29,6 +29,7 @@ import {
   readQueuedMessageById,
   removeQueuedMessageWithoutReleasing,
 } from "./chat-queue.ts";
+import { applyVisibleChatSendAck } from "./chat-send-ack-apply.ts";
 import { isTerminalFailureChatSendAck } from "./chat-send-ack.ts";
 import { cancelChatDelivery, restoreRejectedChatDelivery } from "./chat-send-composer.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
@@ -69,15 +70,9 @@ import { formatConnectError } from "./connect-error.ts";
 import { readChatSessionProjectionScope, reduceChatSessionProjection } from "./history-merge.ts";
 import { resetChatInputHistoryNavigation } from "./input-history.ts";
 import { controlUiNowMs, roundedControlUiDurationMs } from "./performance.ts";
-import {
-  adoptStartedChatRun,
-  hasDirectSessionRun,
-  isChatBusy,
-  reconcileChatRunLifecycle,
-} from "./run-lifecycle.ts";
+import { hasDirectSessionRun, isChatBusy, reconcileChatRunLifecycle } from "./run-lifecycle.ts";
 import { scheduleChatScroll } from "./scroll.ts";
 import { resetToolStream } from "./tool-stream-state.ts";
-import { buildLocalUserMessage } from "./user-message-content.ts";
 
 async function settleDeliverySettings(
   host: ChatHost,
@@ -446,76 +441,24 @@ async function sendPreparedChatMessage(
       removeQueuedMessageWithoutReleasing(host, id);
       retirementFailed = storageMode === "durable" && readQueuedMessageById(host, id) !== null;
     }
-    if (isVisible()) {
-      if (retireOnAck) {
-        const projectionScope = readChatSessionProjectionScope(host, {
-          sessionKey,
-          agentId: prepared.agentId,
-        });
-        const projectedMessage = buildLocalUserMessage({
-          ...prepared,
-          text: message,
-          mentions: submitted.mentions,
-          attachments,
-          createdAt: startedAt,
-          runId,
-        });
-        if (projectedMessage) {
-          reduceChatSessionProjection(
-            host,
-            { type: "sendPending", runId, message: projectedMessage },
-            { scope: projectionScope },
+    if (isVisible())
+      applyVisibleChatSendAck({
+        host,
+        ack,
+        prepared,
+        message,
+        mentions: submitted.mentions,
+        attachments,
+        startedAt,
+        runId,
+        sessionKey,
+        retireOnAck,
+        onCompleted: () => {
+          void loadChatHistory(host).then(() =>
+            flushStoredChatOutbox(host, chatOutboxDrainDependencies),
           );
-        }
-        if (ack.runId !== runId) {
-          reduceChatSessionProjection(
-            host,
-            { type: "sendAcknowledged", previousRunId: runId, runId: ack.runId },
-            { scope: projectionScope },
-          );
-        }
-      }
-      if (ack.status === "posted") {
-        // A committed discussion settles only its outbox row, never the active run.
-        void loadChatHistory(host, { deferBranches: true });
-      } else if (ack.status === "ok") {
-        reconcileChatRunLifecycle(host, {
-          outcome: "done",
-          sessionStatus: "done",
-          runId: ack.runId,
-          sessionKey,
-          clearLocalRun: true,
-          clearChatStream: true,
-          clearToolStream: true,
-          publishRunStatus: false,
-          armLocalTerminalReconcile: true,
-        });
-        void loadChatHistory(host).then(() =>
-          flushStoredChatOutbox(host, chatOutboxDrainDependencies),
-        );
-      } else if (isNonTerminalAgentRunStatus(ack.status)) {
-        // Accepted steering/queued custody identifies the input, not a replacement
-        // for the active model run. Only an explicit interrupt may replace it here;
-        // otherwise live execution events own adoption when the queued turn starts.
-        if (!host.chatRunId || prepared.queueMode === "interrupt") {
-          adoptStartedChatRun(host, ack.runId, startedAt);
-        }
-        // Hydrate approved custody during setup without changing ordinary send
-        // reconciliation or steering, whose ACK does not identify a new input.
-        const setupHeld =
-          prepared.sessionId &&
-          host.sessionsResult?.sessions.some(
-            (row) =>
-              row.sessionId === prepared.sessionId &&
-              ["requested", "provisioning", "syncing", "starting"].includes(
-                row.placement?.state ?? "",
-              ),
-          );
-        if (prepared.queueMode !== "steer" && ack.messageSeq === undefined && setupHeld) {
-          void loadChatHistory(host, { deferBranches: true });
-        }
-      }
-    }
+        },
+      });
     if (prepared.refreshSessions) {
       const target = { sessionKey, agentId: prepared.agentId };
       if (ack.status === "ok") {

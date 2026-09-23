@@ -51,9 +51,9 @@ import {
   publishPendingSendMessage,
   reconnectSafeQueuedSendState,
   setChatError,
-  waitForPendingChatSettings,
 } from "./chat-send-queue-state.ts";
 import { resolveDisplayedLeafEntryId } from "./chat-send-request.ts";
+import { waitForSubmittedRoute } from "./chat-send-route.ts";
 import {
   chatSendHoldReason,
   formatChatQueueAdmissionError,
@@ -103,14 +103,6 @@ export type ChatSendSubmitOptions = {
   /** Lets request-scoped UI actions recover from rejected local commands. */
   onLocalCommandSendRejected?: () => void;
 };
-
-async function waitForSubmittedRoute(host: ChatHost, sessionKey: string): Promise<boolean> {
-  const pending = getPendingChatPickerPatch(host, sessionKey);
-  if (pending && !(await waitForPendingChatSettings(host, sessionKey, pending))) {
-    return false;
-  }
-  return host.sessionKey === sessionKey;
-}
 
 export async function handleSendChat(
   host: ChatHost,
