@@ -10552,6 +10552,20 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       "UI initialization",
     );
     expect(evaluateWorkflowExpression(`\${{ ${uiInitialize.if} }}`, retainedUi)).toBe(false);
+    const uiProbe = {
+      ...retainedUi,
+      matrix: { ...retainedUi.matrix, runson_probe: true, shard: 11 },
+    };
+    expect(String(evaluateWorkflowExpression(uiJob["runs-on"], uiProbe))).toMatch(
+      /^runs-on=123-ui-e2e-11\/family=m8a\.xlarge\+m8azn\.xlarge\+c8a\.2xlarge\+m7a\.xlarge\+c7a\.2xlarge\/cpu=4\+8\/ram=16\/spot=false\/retry=false\//u,
+    );
+    expect(evaluateWorkflowExpression(`\${{ ${uiInitialize.if} }}`, uiProbe)).toBe(true);
+    expect(evaluateWorkflowExpression(uiSetup.with["dependency-cache"], uiProbe)).toBe("false");
+    expect(
+      evaluateWorkflowExpression(uiTest.env.OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64, uiProbe),
+    ).toBe("retained-groups");
+    expect(evaluateWorkflowExpression(uiTest.env.VITEST_SHARD_INDEX, uiProbe)).toBe(1);
+    expect(evaluateWorkflowExpression(uiTest.env.VITEST_SHARD_COUNT, uiProbe)).toBe(1);
     const bounded = {
       ...context,
       matrix: { runner: "runson-memory-32", check_name: "bounded-node", runson_spot: true },

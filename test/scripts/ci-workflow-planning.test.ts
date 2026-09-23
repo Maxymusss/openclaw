@@ -4079,6 +4079,59 @@ describe("ci workflow guards", () => {
     expect(manifest.outputs.hybrid_hosted_base_rows).toBe(baseline.outputs.hybrid_hosted_base_rows);
   });
 
+  it("adds a matched native UI counterpart only to main qualifications", () => {
+    const fixture = {
+      bundledPlanner: true,
+      historicalCompatibility: false,
+      eventName: "workflow_dispatch" as const,
+      releaseGate: true,
+      runnerBackend: "hybrid" as const,
+      nodeRunnerBackend: "runson" as const,
+      uiRetainedE2e: true,
+      changedPaths: [".github/workflows/ci.yml"],
+    };
+    const manifests = ["main", "default"].map((shape) =>
+      runCiManifestFixture({
+        ...fixture,
+        scopeEnv: {
+          OPENCLAW_CI_RUN_UI_TESTS: "true",
+          OPENCLAW_CI_QUALIFICATION: "true",
+          OPENCLAW_CI_SHAPE: shape,
+        },
+      }),
+    );
+    for (const manifest of manifests) {
+      expect(manifest.status, manifest.output).toBe(0);
+    }
+    const [main, pr] = manifests.map(
+      (manifest) =>
+        JSON.parse(expectDefined(manifest.outputs.ui_e2e_matrix, "UI matrix")).include as Record<
+          string,
+          unknown
+        >[],
+    );
+    const controls = main!.filter((row) => row.runson_probe);
+    expect(controls).toHaveLength(1);
+    const retained = expectDefined(
+      main!.find((row) => row.retained && !row.runson_probe),
+      "retained UI row",
+    );
+    expect(controls[0]).toEqual({
+      ...retained,
+      shard: Number(retained.shard) + 1,
+      shard_count: Number(retained.shard_count) + 1,
+      runson_probe: true,
+    });
+    expect(controls[0]).toMatchObject({
+      retained: true,
+      task: "control-ui",
+      vitest_shard_count: 1,
+      vitest_max_workers: 2,
+    });
+    expect(pr!.some((row) => row.runson_probe)).toBe(false);
+    expect(pr!.filter((row) => row.retained)).toHaveLength(1);
+  });
+
   it("admits Spot only when the forecast leaves launch and setup inside eight minutes", () => {
     const forecasts = [undefined, 0, -1, 330, 331, 900];
     const manifest = runCiManifestFixture({

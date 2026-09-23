@@ -243,6 +243,11 @@ previous AWS RPC timeout is unresolved. The UI inventory owner partitions the
 selected file list into disjoint ordinary and retained groups; no test is
 removed or tied to a numbered shard. Hybrid keeps its existing inventory.
 
+Main-shaped qualification adds one isolated RunsOn counterpart with the same
+selector, Node/browser toolchain and two-worker ceiling. Both jobs record the
+actual toolchain and capacity. The comparison is absent from production and PR
+qualification; its work remains included in the raw qualification wall and cost.
+
 Requests leave AZ selection unrestricted within the existing stack and specify
 `region=us-east-1`. The installed v3.3.1 release's built-in topology provisions two subnet AZs;
 native receipts show allocations in `us-east-1a` and `us-east-1b`. Live stack

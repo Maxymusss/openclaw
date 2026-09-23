@@ -1918,6 +1918,23 @@ jobs:
               : null;
           const retainedUiE2eGroups = uiTestGroups?.e2eBlacksmith;
           const retainUiE2e = Boolean(retainedUiE2eGroups?.some((group) => group.includePatterns?.length));
+          const retainedUiE2eRows = retainUiE2e ? [{
+            shard: uiE2eJobCount + 1,
+            shard_count: uiE2eJobCount + 1,
+            task: "control-ui",
+            retained: true,
+            vitest_shard_count: 1,
+            vitest_max_workers: 2,
+          }] : [];
+          if (retainUiE2e && mainQualification) {
+            // Compare the isolated spec on the actual CI providers without widening production.
+            retainedUiE2eRows.push({
+              ...retainedUiE2eRows[0],
+              shard: uiE2eJobCount + 2,
+              shard_count: uiE2eJobCount + 2,
+              runson_probe: true,
+            });
+          }
           const nodeTestGroupsCodec =
             (rawNodeTestShards.length > 0 || uiTestGroups !== null) &&
             existsSync(nodeTestGroupsCodecPath)
@@ -2164,14 +2181,7 @@ jobs:
                 vitest_shard_count: uiE2eJobCount - 1,
                 vitest_max_workers: compactUiE2e ? 3 : 2,
               };
-            }).concat(retainUiE2e ? [{
-              shard: uiE2eJobCount + 1,
-              shard_count: uiE2eJobCount + 1,
-              task: "control-ui",
-              retained: true,
-              vitest_shard_count: 1,
-              vitest_max_workers: 2,
-            }] : [])),
+            }).concat(retainedUiE2eRows)),
             run_native_i18n: runNativeI18n,
             run_skills_python_job: runSkillsPython,
             run_checks_windows: runWindows,
@@ -3147,14 +3157,14 @@ jobs:
   checks-ui-e2e:
     permissions:
       contents: read
-    name: checks-ui-e2e (${{ matrix.retained && 'github-projects' || format('{0}/{1}', matrix.shard, matrix.shard_count) }})
+    name: checks-ui-e2e (${{ matrix.runson_probe && 'github-projects-runson-control' || matrix.retained && 'github-projects' || format('{0}/{1}', matrix.shard, matrix.shard_count) }})
     needs: [preflight]
     # Compatibility targets pin a frozen Control UI whose e2e expectations track
     # that release, not current main.
     if: needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'
     # Only the browser-extension row can consume the optional hosted budget.
     # UI has no complete per-row forecast; use diversified on-demand capacity.
-    runs-on: ${{ needs.preflight.outputs.node_runner_backend == 'runson' && needs.preflight.outputs.frozen_target != 'true' && github.run_attempt == 1 && matrix.task == 'control-ui' && !matrix.retained && format('runs-on={0}-ui-e2e-{1}/family=m8a.xlarge+m8azn.xlarge+c8a.2xlarge+m7a.xlarge+c7a.2xlarge/cpu=4+8/ram=16/spot=false/retry=false/image=ubuntu24-full-x64/volume=80gb/region=us-east-1', github.run_id, matrix.shard) || (needs.preflight.outputs.node_runner_backend == 'runson' && needs.preflight.outputs.frozen_target == 'true' && matrix.task == 'control-ui') && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && needs.preflight.outputs.hybrid_hosted_offload == 'true' && matrix.task == 'browser-extension') && 'ubuntu-24.04' || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.task == 'control-ui' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
+    runs-on: ${{ needs.preflight.outputs.node_runner_backend == 'runson' && needs.preflight.outputs.frozen_target != 'true' && github.run_attempt == 1 && matrix.task == 'control-ui' && (!matrix.retained || matrix.runson_probe == true) && format('runs-on={0}-ui-e2e-{1}/family=m8a.xlarge+m8azn.xlarge+c8a.2xlarge+m7a.xlarge+c7a.2xlarge/cpu=4+8/ram=16/spot=false/retry=false/image=ubuntu24-full-x64/volume=80gb/region=us-east-1', github.run_id, matrix.shard) || (needs.preflight.outputs.node_runner_backend == 'runson' && needs.preflight.outputs.frozen_target == 'true' && matrix.task == 'control-ui') && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && needs.preflight.outputs.hybrid_hosted_offload == 'true' && matrix.task == 'browser-extension') && 'ubuntu-24.04' || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.task == 'control-ui' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     # Source-server and runtime-budget owners retain serial Chromium execution.
     timeout-minutes: 25
     env:
@@ -3167,12 +3177,12 @@ jobs:
       - *linux_node_checkout_step
       - &initialize_runson
         name: Initialize RunsOn
-        if: runner.environment == 'self-hosted' && (startsWith(matrix.runner, 'runson-') || (matrix.task == 'control-ui' && !matrix.retained && needs.preflight.outputs.node_runner_backend == 'runson' && needs.preflight.outputs.frozen_target != 'true' && github.run_attempt == 1))
+        if: runner.environment == 'self-hosted' && (startsWith(matrix.runner, 'runson-') || (matrix.task == 'control-ui' && (!matrix.retained || matrix.runson_probe == true) && needs.preflight.outputs.node_runner_backend == 'runson' && needs.preflight.outputs.frozen_target != 'true' && github.run_attempt == 1))
         uses: runs-on/action@efac073ea2507ec18797de3a81704201ade11d9d # v2
 
       - &record_runson_allocation
         name: Record RunsOn allocation
-        if: runner.environment == 'self-hosted' && (startsWith(matrix.runner, 'runson-') || (matrix.task == 'control-ui' && !matrix.retained && needs.preflight.outputs.node_runner_backend == 'runson' && needs.preflight.outputs.frozen_target != 'true' && github.run_attempt == 1))
+        if: runner.environment == 'self-hosted' && (startsWith(matrix.runner, 'runson-') || (matrix.task == 'control-ui' && (!matrix.retained || matrix.runson_probe == true) && needs.preflight.outputs.node_runner_backend == 'runson' && needs.preflight.outputs.frozen_target != 'true' && github.run_attempt == 1))
         env:
           EXPECTED_RUNSON_INSTANCE_TYPES: ${{ matrix.runner == 'runson-memory-32' && 'm8azn.3xlarge+m8a.2xlarge+c8a.4xlarge+m7a.2xlarge+c7a.4xlarge' || 'm8azn.xlarge+m8a.xlarge+c8a.2xlarge+m7a.xlarge+c7a.2xlarge' }}
           EXPECTED_RUNSON_MARKET: ${{ matrix.runson_spot && 'spot-or-on-demand' || 'on-demand' }}
@@ -3204,11 +3214,36 @@ jobs:
           cache-mode: ${{ needs.preflight.outputs.cache_mode }}
           node-version: "${{ needs.preflight.outputs.node_runner_backend == 'runson' && matrix.task == 'control-ui' && env.NODE_VERSION || '24.x' }}"
           install-bun: "false"
-          dependency-cache: ${{ (needs.preflight.outputs.node_runner_backend == 'runson' && matrix.task == 'control-ui' && !matrix.retained) && 'false' || ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || runner.environment != 'self-hosted' || (github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'false' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false') }}
+          dependency-cache: ${{ (needs.preflight.outputs.node_runner_backend == 'runson' && matrix.task == 'control-ui' && (!matrix.retained || matrix.runson_probe == true)) && 'false' || ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || runner.environment != 'self-hosted' || (github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'false' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false') }}
           restore-test-caches: ${{ (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid') && 'true' || 'false' }}
 
       - *cache_playwright_chromium
       - *install_playwright_chromium
+
+      - name: Record isolated UI toolchain
+        if: matrix.retained
+        run: |
+          cat /etc/os-release
+          node --input-type=module <<'NODE'
+          import { createRequire } from "node:module";
+          import { availableParallelism, release, totalmem } from "node:os";
+          import { chromium } from "playwright";
+          const require = createRequire(import.meta.url);
+          const browser = await chromium.launch();
+          try {
+            console.log("UI_TOOLCHAIN " + JSON.stringify({
+              node: process.version,
+              playwright: require("playwright/package.json").version,
+              chromium: browser.version(),
+              cpus: availableParallelism(),
+              memoryBytes: totalmem(),
+              platform: process.platform,
+              osRelease: release(),
+            }));
+          } finally {
+            await browser.close();
+          }
+          NODE
 
       - name: Test Control UI end-to-end
         if: matrix.task == 'control-ui'
