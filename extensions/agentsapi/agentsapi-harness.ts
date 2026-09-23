@@ -35,13 +35,22 @@ import {
   resolveOpenAIReasoningEffortMapping,
 } from "openclaw/plugin-sdk/llm";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
+import {
+  assertPluginCapabilitySecretAvailable,
+  normalizeResolvedSecretInputString,
+} from "openclaw/plugin-sdk/secret-input-runtime";
 import { createAgentsApiBindings } from "./agentsapi-bindings.js";
 import { AgentsApiClient } from "./agentsapi-client.js";
+import type { AgentsApiConfig } from "./agentsapi-config.js";
 import { createAgentsApiMessageProjection } from "./agentsapi-messages.js";
 import { createAgentsApiSession } from "./agentsapi-session.js";
 
 /** Agents API owns native protocol; the host harness runtime owns coordination. */
-export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
+export function createAgentsApiHarness(
+  runtime: PluginRuntime,
+  config: AgentsApiConfig = {},
+): AgentHarnessV2 {
+  const ownsCredential = config.apiKey !== undefined;
   let disposed = false;
   let closing = false;
   const runningSessions = new Map<string, number>();
@@ -56,10 +65,14 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
     id: "agentsapi",
     label: "OpenAI Agents API (MVP)",
     autoSelection: { providerIds: [] },
+    ...(ownsCredential ? { authBootstrap: "plugin" as const } : {}),
     deliveryDefaults: { visibleReplies: "automatic" },
     supports: (ctx) => {
       if (ctx.provider !== "openai") {
         return { supported: false, reason: "Agents API requires the OpenAI provider" };
+      }
+      if (ownsCredential) {
+        return { supported: true };
       }
       if (
         ctx.modelProvider?.preparedAuth?.requirement === "subscription" ||
@@ -75,6 +88,11 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
       assertCurrent();
       if (closing) {
         throw new Error("Agents API harness is closing");
+      }
+      params.hostCapabilities.assertActive();
+      const apiKey = ownsCredential ? readAgentsApiKey(params, config) : params.resolvedApiKey;
+      if (!apiKey) {
+        throw new Error("Agents API MVP requires an OpenAI API key");
       }
       const target = validateAgentsApiInput(params);
       const authority = captureNativeSessionGenerationAuthority({
@@ -113,6 +131,7 @@ export function createAgentsApiHarness(runtime: PluginRuntime): AgentHarnessV2 {
                 assertLeaseCurrent();
               },
               target,
+              apiKey,
             );
           },
         );
@@ -167,6 +186,7 @@ async function runAgentsApiSession(
   assertOwnerCurrent: () => void,
   assertHarnessCurrent: () => void,
   target: ReturnType<typeof validateAgentsApiInput>,
+  apiKey: string,
 ): Promise<AgentHarnessAttemptResult> {
   const startedAtMs = Date.now();
   const cancellationState = {
@@ -256,14 +276,14 @@ async function runAgentsApiSession(
     );
     assertCurrent();
     const fingerprint = createHash("sha256")
-      .update(JSON.stringify([params.model.id, params.resolvedApiKey]))
+      .update(JSON.stringify([params.model.id, apiKey]))
       .digest("hex");
     if (binding && binding.authFingerprint !== fingerprint) {
       throw new Error(
         "Agents API model or credential changed; reset the OpenClaw session before continuing",
       );
     }
-    const client = new AgentsApiClient(params.resolvedApiKey!, assertOwnerCurrent);
+    const client = new AgentsApiClient(apiKey, assertOwnerCurrent);
     const reasoningEffort = resolveAgentsApiReasoningEffort(params);
     if (!remoteSessionId) {
       remoteSessionId = await client.create(
@@ -292,7 +312,7 @@ async function runAgentsApiSession(
     native = createAgentsApiSession({
       client,
       // Admitted hosted work must still be retired when host run authority closes.
-      cleanupClient: new AgentsApiClient(params.resolvedApiKey!, assertHarnessCurrent),
+      cleanupClient: new AgentsApiClient(apiKey, assertHarnessCurrent),
       sessionId: remoteSessionId,
       signal: controller.signal,
       assertCurrent,
@@ -502,6 +522,23 @@ function resolveAgentsApiReasoningEffort(
   }
 }
 
+function readAgentsApiKey(params: AgentHarnessAttemptParamsV2, config: AgentsApiConfig) {
+  const path = "plugins.entries.agentsapi.config.apiKey";
+  assertPluginCapabilitySecretAvailable(path);
+  const value = params.config
+    ? params.config.plugins?.entries?.agentsapi?.config?.apiKey
+    : config.apiKey;
+  const apiKey = normalizeResolvedSecretInputString({
+    value,
+    defaults: params.config?.secrets?.defaults,
+    path,
+  });
+  if (!apiKey) {
+    throw new Error(`Agents API requires ${path}; resolve its configured secret before running`);
+  }
+  return apiKey;
+}
+
 function validateAgentsApiInput(params: AgentHarnessAttemptParamsV2) {
   const target = params.sessionTarget;
   if (
@@ -514,9 +551,6 @@ function validateAgentsApiInput(params: AgentHarnessAttemptParamsV2) {
     target.sessionKey !== params.sessionKey
   ) {
     throw new Error("Agents API requires a matching host-prepared session target");
-  }
-  if (!params.resolvedApiKey) {
-    throw new Error("Agents API MVP requires an OpenAI API key");
   }
   if (params.images?.length || params.sandbox) {
     throw new Error(

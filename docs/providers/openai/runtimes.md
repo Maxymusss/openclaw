@@ -77,10 +77,33 @@ only when you want API-key auth for an agent model.
 
 The separate Agents API plugin (`@openclaw/agentsapi`) registers the explicit
 `agentsapi` harness, alongside the Codex plugin. The OpenAI provider plugin
-continues to own model routes and API-key authentication.
+continues to own model routes. Agents API can use its own credential independently
+of the provider's Responses API configuration.
 Select a model in `agents.defaults.model.primary` and set its
 `agents.defaults.models["openai/<model>"].agentRuntime.id` to `"agentsapi"`.
-Use OpenAI API-key authentication. The harness sends the configured model to the
+Set `plugins.entries.agentsapi.config.apiKey` for dedicated API-key authentication:
+
+```json5 validate=false
+{
+  plugins: {
+    entries: {
+      agentsapi: {
+        config: { apiKey: "${AGENTS_API_KEY}" },
+      },
+    },
+  },
+}
+```
+
+This setting accepts a secret string or a [SecretRef](/gateway/secrets). OpenClaw
+prepares the secret before execution. When configured, Agents API does not select
+OpenAI provider credentials or auth profiles; an unavailable key fails without
+falling back to those credentials. Leave the Responses API configuration intact.
+Agents API uses the official SDK endpoint and does not require a URL setting.
+Existing configurations that omit the dedicated setting retain OpenAI provider
+API-key authentication.
+
+The harness sends the configured model to the
 Agents API without a model allowlist; unsupported models return the API error.
 Execution uses an OpenAI-hosted Linux VM. Reasoning follows the configured
 thinking level and model metadata: keep a supported effort, otherwise choose

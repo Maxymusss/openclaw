@@ -4,6 +4,31 @@ The `agentsapi` harness uses API-key authentication and an OpenAI-hosted Linux
 environment. Select it through `agents.defaults.agentRuntime.id` or an agent's
 `agentRuntime.id`. See the [harness configuration reference](https://docs.openclaw.ai/plugins/sdk-agent-harness/runtime-config).
 
+Configure a dedicated credential at `plugins.entries.agentsapi.config.apiKey`:
+
+```json5
+{
+  plugins: {
+    entries: {
+      agentsapi: {
+        config: { apiKey: "${AGENTS_API_KEY}" },
+      },
+    },
+  },
+}
+```
+
+The setting accepts a secret string or a standard SecretRef. Resolve it through
+OpenClaw's normal configuration and secret preparation before running a turn.
+When present, this credential owns Agents API authentication: a missing or
+unresolved value fails without selecting an OpenAI provider key or auth profile.
+The OpenAI provider still supplies model metadata. Its Responses API credential,
+adapter and endpoint remain independent. Agents API uses the official SDK's
+endpoint and has no URL setting.
+
+Omitting this setting preserves existing OpenAI API-key authentication for
+configurations created before the dedicated setting was available.
+
 Token accounting reads canonical native turn records after settlement, since
 completion stream events can omit usage. Each OpenClaw attempt counts its new
 coordinator turns once, including work superseded by steering. Earlier turns in

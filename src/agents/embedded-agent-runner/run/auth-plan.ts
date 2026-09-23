@@ -75,6 +75,7 @@ export async function prepareEmbeddedRunAuthPlan(params: {
   const runParams = params.runParams;
   const usesOpenAIAuthRouting = params.provider === OPENAI_PROVIDER_ID;
   const initialHarness = params.getAgentHarness();
+  const pluginConfiguredAuth = initialHarness.authBootstrap === "plugin";
   const initialPluginHarnessOwnsTransport = initialHarness.id !== "openclaw";
   const openClawNativeCodexResponsesNeedsAuthBootstrap =
     !initialPluginHarnessOwnsTransport &&
@@ -117,39 +118,43 @@ export async function prepareEmbeddedRunAuthPlan(params: {
   }
   params.markStage?.("scope");
 
-  const attemptAuthProfileStore = usesOpenAIAuthRouting
-    ? loadEmbeddedRunAuthProfileStore({
-        provider: params.provider,
-        agentDir: params.agentDir,
-        profileId: runParams.authProfileId,
-        config: runParams.config,
-        externalCliProviderIds: [OPENAI_PROVIDER_ID],
-      })
-    : initialPluginHarnessOwnsTransport
-      ? ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
-          migrationProvider: params.provider,
-          config: runParams.config,
+  const attemptAuthProfileStore: AuthProfileStore = pluginConfiguredAuth
+    ? { version: 1, profiles: {} }
+    : usesOpenAIAuthRouting
+      ? loadEmbeddedRunAuthProfileStore({
+          provider: params.provider,
+          agentDir: params.agentDir,
           profileId: runParams.authProfileId,
-          allowKeychainPrompt: false,
+          config: runParams.config,
+          externalCliProviderIds: [OPENAI_PROVIDER_ID],
         })
-      : externalCliAuthScope.providerIds
-        ? loadEmbeddedRunAuthProfileStore({
-            provider: params.provider,
-            agentDir: params.agentDir,
-            profileId: runParams.authProfileId,
-            config: runParams.config,
-            externalCliProviderIds: externalCliAuthScope.providerIds,
-          })
-        : (noExternalAuthStore ??
-          ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
+      : initialPluginHarnessOwnsTransport
+        ? ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
             migrationProvider: params.provider,
             config: runParams.config,
             profileId: runParams.authProfileId,
             allowKeychainPrompt: false,
-          }));
+          })
+        : externalCliAuthScope.providerIds
+          ? loadEmbeddedRunAuthProfileStore({
+              provider: params.provider,
+              agentDir: params.agentDir,
+              profileId: runParams.authProfileId,
+              config: runParams.config,
+              externalCliProviderIds: externalCliAuthScope.providerIds,
+            })
+          : (noExternalAuthStore ??
+            ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
+              migrationProvider: params.provider,
+              config: runParams.config,
+              profileId: runParams.authProfileId,
+              allowKeychainPrompt: false,
+            }));
   params.markStage?.("store");
 
-  const requestedProfileId = runParams.authProfileId?.trim() || undefined;
+  const requestedProfileId = pluginConfiguredAuth
+    ? undefined
+    : runParams.authProfileId?.trim() || undefined;
   const lockedProfileId = runParams.authProfileIdSource === "user" ? requestedProfileId : undefined;
   const preferredProfileId =
     externalCliAuthScope.ignoreAutoPreferredProfile && !lockedProfileId
@@ -157,7 +162,7 @@ export async function prepareEmbeddedRunAuthPlan(params: {
       : requestedProfileId;
   const createAuthPreparation = (): PreparedAgentRuntimeAuth => {
     const harness = params.getAgentHarness();
-    if (params.nativeSessionRuntime?.auth === "native") {
+    if (params.nativeSessionRuntime?.auth === "native" && harness.authBootstrap !== "plugin") {
       // Only the binding-owned connection bypasses host credentials and routes;
       // preserving a native model alone still uses the normal auth planner below.
       const plan = buildAgentRuntimeAuthPlan({
@@ -202,18 +207,22 @@ export async function prepareEmbeddedRunAuthPlan(params: {
         }),
     });
   };
-  const providerUsesProfileScopedModelMetadata = providerUsesCredentialScopedModelMetadata({
-    provider: params.provider,
-    modelId: params.modelId,
-    config: runParams.config,
-    agentDir: params.agentDir,
-    workspaceDir: params.workspaceDir,
-  });
-  const providerOwnsDynamicModelRefresh = providerOwnsDynamicModelPreparation({
-    provider: params.provider,
-    config: runParams.config,
-    workspaceDir: params.workspaceDir,
-  });
+  const providerUsesProfileScopedModelMetadata =
+    !pluginConfiguredAuth &&
+    providerUsesCredentialScopedModelMetadata({
+      provider: params.provider,
+      modelId: params.modelId,
+      config: runParams.config,
+      agentDir: params.agentDir,
+      workspaceDir: params.workspaceDir,
+    });
+  const providerOwnsDynamicModelRefresh =
+    !pluginConfiguredAuth &&
+    providerOwnsDynamicModelPreparation({
+      provider: params.provider,
+      config: runParams.config,
+      workspaceDir: params.workspaceDir,
+    });
   const { materialize: materializeAuthPlan, materializeUncached: materializeAuthPlanUncached } =
     createPreparedRuntimeModelMaterializer({
       provider: params.provider,
@@ -223,7 +232,7 @@ export async function prepareEmbeddedRunAuthPlan(params: {
       metadataSnapshot: params.preparedModelRuntime?.metadataSnapshot,
       getModel: params.getRuntimeModel,
       nativeModelOwned: params.nativeModelOwned,
-      requestedProfileId: runParams.authProfileId,
+      requestedProfileId: pluginConfiguredAuth ? undefined : runParams.authProfileId,
       providerUsesProfileScopedModelMetadata,
       providerOwnsDynamicModelRefresh,
       generationRouteModelMemo: params.preparedModelRuntime?.routeModelResolutionMemo,

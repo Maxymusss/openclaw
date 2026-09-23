@@ -178,6 +178,16 @@ set this capability on a harness that only sometimes owns authentication.
 This static bootstrap capability is distinct from ownership of an already-bound
 native session's model and connection.
 
+A harness that exclusively uses a plugin-configured credential may instead set
+`authBootstrap: "plugin"`. Core prepares a single implicit auth plan for that
+exact harness and supplies no provider key, auth-profile selection or profile
+store. Provider adapter, endpoint and billing-auth settings do not determine
+this plugin-owned credential route. The plugin must declare its secret inputs
+in its manifest, read the materialized attempt configuration, and reject an
+unavailable credential without ambient or provider-auth fallback. Omit this mode
+when the plugin credential is not configured, so existing provider-auth behavior
+remains available.
+
 ### Bound native session ownership
 
 The optional `resolveSessionRuntimeOwnership({ config, agentId, sessionId,

@@ -417,8 +417,11 @@ type AgentHarnessRunCapability<
     readPreviousSessionId?: () => string | undefined;
     assertCurrent: () => void;
   }): AgentHarnessSessionRuntimeOwnership | undefined;
-  /** Lets this harness resolve forwarded profiles or its own native credentials. */
-  authBootstrap?: "harness";
+  /**
+   * `harness` may resolve forwarded profiles or native credentials. `plugin`
+   * exclusively uses the plugin's configured credential and receives no host key/profile.
+   */
+  authBootstrap?: "harness" | "plugin";
   runAttempt(params: TAttemptParams): Promise<AgentHarnessAttemptResult>;
   /**
    * Produces one final answer from a settled tool transcript without exposing

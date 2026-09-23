@@ -52,6 +52,8 @@ export default definePluginEntry({
 `authBootstrap` is intentionally absent from this generic example. Add
 `authBootstrap: "harness"` only when the harness meets the
 [harness-owned auth bootstrap contract](/plugins/sdk-agent-harness/core-ownership#harness-owned-auth-bootstrap).
+Use `authBootstrap: "plugin"` from that contract when a configured plugin
+credential exclusively owns authentication and must not receive provider auth.
 
 ### Isolated completion
 

@@ -201,6 +201,8 @@ export async function resolveEmbeddedRunModelSetup(params: {
     );
   }
   const pluginHarnessOwnsTransport = agentHarness.id !== "openclaw";
+  const authProfileId =
+    agentHarness.authBootstrap === "plugin" ? undefined : runParams.authProfileId;
   const expectedHarnessArtifact = runParams.expectedAgentHarnessRuntimeArtifact;
   if (expectedHarnessArtifact && expectedHarnessArtifact.harnessId !== agentHarness.id) {
     throw new Error(
@@ -258,8 +260,8 @@ export async function resolveEmbeddedRunModelSetup(params: {
       provider,
       harnessRuntime: agentHarness.id,
       agentHarnessId: agentHarness.id,
-      authProfileProvider: runParams.authProfileId?.split(":", 1)[0],
-      authProfileId: runParams.authProfileId,
+      authProfileProvider: authProfileId?.split(":", 1)[0],
+      authProfileId,
       config: runParams.config,
       workspaceDir: params.workspaceDir,
     });
@@ -275,7 +277,7 @@ export async function resolveEmbeddedRunModelSetup(params: {
         : runParams.requestedRouteResolution,
       config: runParams.config,
       workspaceDir: params.workspaceDir,
-      authProfileId: runParams.authProfileId,
+      authProfileId,
       preparedModelRuntime: params.preparedModelRuntime,
       staticCatalogOwnsTransport: pluginHarnessOwnsTransport,
     });

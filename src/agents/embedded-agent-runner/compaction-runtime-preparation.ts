@@ -177,16 +177,6 @@ export async function prepareCompactionHarnessAuth(params: {
     }
   | { ok: false; error: unknown }
 > {
-  const runtimeAuthProfileStore = isOpenAIProvider(params.provider)
-    ? ensureAuthProfileStore(params.agentDir, {
-        profileId: params.authProfileId ?? params.reusableRuntimeAuthPlan?.forwardedAuthProfileId,
-        externalCliProviderIds: ["openai"],
-        allowKeychainPrompt: false,
-      })
-    : ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
-        profileId: params.authProfileId ?? params.reusableRuntimeAuthPlan?.forwardedAuthProfileId,
-        allowKeychainPrompt: false,
-      });
   const harnessSelectionParams = {
     provider: params.provider,
     modelId: params.modelId,
@@ -208,11 +198,26 @@ export async function prepareCompactionHarnessAuth(params: {
       ),
     });
   const initialHarness = params.reusableRuntimeAuthPlan
-    ? undefined
+    ? selectPreparedHarness([{ kind: "implicit", plan: params.reusableRuntimeAuthPlan }])
     : selectAgentHarness({
         ...harnessSelectionParams,
         modelProvider: projectPreparedModelProvider({ model: params.model }),
       });
+  const reusableRuntimeAuthPlan =
+    initialHarness.authBootstrap === "plugin" ? undefined : params.reusableRuntimeAuthPlan;
+  const runtimeAuthProfileStore: ReturnType<typeof ensureAuthProfileStore> =
+    initialHarness.authBootstrap === "plugin"
+      ? { version: 1, profiles: {} }
+      : isOpenAIProvider(params.provider)
+        ? ensureAuthProfileStore(params.agentDir, {
+            profileId: params.authProfileId ?? reusableRuntimeAuthPlan?.forwardedAuthProfileId,
+            externalCliProviderIds: ["openai"],
+            allowKeychainPrompt: false,
+          })
+        : ensureAuthProfileStoreWithoutExternalProfiles(params.agentDir, {
+            profileId: params.authProfileId ?? reusableRuntimeAuthPlan?.forwardedAuthProfileId,
+            allowKeychainPrompt: false,
+          });
   const prepare = (harness: AgentHarness) => {
     try {
       return {
@@ -243,21 +248,23 @@ export async function prepareCompactionHarnessAuth(params: {
       return { ok: false as const, error };
     }
   };
-  const initialAuth = params.reusableRuntimeAuthPlan
+  const initialAuth = reusableRuntimeAuthPlan
     ? {
         ok: true as const,
         auth: {
-          plan: params.reusableRuntimeAuthPlan,
-          attempts: [{ kind: "implicit", plan: params.reusableRuntimeAuthPlan }],
+          plan: reusableRuntimeAuthPlan,
+          attempts: [{ kind: "implicit", plan: reusableRuntimeAuthPlan }],
         } satisfies PreparedAgentRuntimeAuth,
       }
-    : prepare(initialHarness!);
+    : prepare(initialHarness);
   if (!initialAuth.ok) {
     return initialAuth;
   }
   let runtimeAuthPreparation: PreparedAgentRuntimeAuth = initialAuth.auth;
-  let selectedPreparedHarness = selectPreparedHarness(runtimeAuthPreparation.attempts);
-  if (!params.reusableRuntimeAuthPlan && selectedPreparedHarness.id !== initialHarness?.id) {
+  let selectedPreparedHarness = reusableRuntimeAuthPlan
+    ? initialHarness
+    : selectPreparedHarness(runtimeAuthPreparation.attempts);
+  if (!reusableRuntimeAuthPlan && selectedPreparedHarness.id !== initialHarness.id) {
     const preparedAuth = prepare(selectedPreparedHarness);
     if (!preparedAuth.ok) {
       return preparedAuth;
@@ -276,12 +283,14 @@ export async function prepareCompactionHarnessAuth(params: {
     runtimeAuthProfileStore,
     runtimeAuthPreparation,
     selectedPreparedHarness,
-    providerUsesProfileScopedModelMetadata: providerUsesCredentialScopedModelMetadata({
-      provider: params.metadataProvider ?? params.provider,
-      modelId: params.modelId,
-      config: params.config,
-      agentDir: params.agentDir,
-      workspaceDir: params.workspaceDir,
-    }),
+    providerUsesProfileScopedModelMetadata:
+      selectedPreparedHarness.authBootstrap !== "plugin" &&
+      providerUsesCredentialScopedModelMetadata({
+        provider: params.metadataProvider ?? params.provider,
+        modelId: params.modelId,
+        config: params.config,
+        agentDir: params.agentDir,
+        workspaceDir: params.workspaceDir,
+      }),
   };
 }

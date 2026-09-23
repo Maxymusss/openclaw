@@ -479,14 +479,14 @@ async function runIsolatedCompletionOwned(
               attempts: readonly PreparedAgentRuntimeAuthAttempt[];
             }
           | undefined;
-        if (harness.authBootstrap === "harness") {
+        if (harness.authBootstrap === "harness" || harness.authBootstrap === "plugin") {
           const resolution = await resolveModelAsync(provider, request.model, agentDir, config, {
             abortSignal: request.abortSignal,
             assertCurrent,
             ...lease.snapshot.createStores(),
             preparedModelRuntime: lease.snapshot,
             workspaceDir,
-            authProfileId: request.authProfileId,
+            authProfileId: harness.authBootstrap === "plugin" ? undefined : request.authProfileId,
             skipAgentDiscovery: true,
             allowBundledStaticCatalogFallback: true,
             preferBundledStaticCatalogTransport: true,
@@ -499,12 +499,15 @@ async function runIsolatedCompletionOwned(
             );
           }
           assertCurrent();
-          const authProfileStore = ensureAuthProfileStore(agentDir, {
-            profileId: request.authProfileId,
-            readOnly: true,
-            allowKeychainPrompt: false,
-            config,
-          });
+          const authProfileStore: ReturnType<typeof ensureAuthProfileStore> =
+            harness.authBootstrap === "plugin"
+              ? { version: 1, profiles: {} }
+              : ensureAuthProfileStore(agentDir, {
+                  profileId: request.authProfileId,
+                  readOnly: true,
+                  allowKeychainPrompt: false,
+                  config,
+                });
           const authParams = {
             provider: runtimeModel.provider,
             modelId: runtimeModel.id,
@@ -520,7 +523,9 @@ async function runIsolatedCompletionOwned(
             harnessRuntime: harness.id,
             harnessAuthBootstrap: harness.authBootstrap,
           } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
-          await reconcileAuthProfileQuotaBlocks(authParams);
+          if (harness.authBootstrap !== "plugin") {
+            await reconcileAuthProfileQuotaBlocks(authParams);
+          }
           assertCurrent();
           const authAttempts = prepareAgentRuntimeAuth(authParams).attempts;
           harnessAuth = { model: runtimeModel, store: authProfileStore, attempts: authAttempts };
@@ -657,6 +662,12 @@ async function runIsolatedCompletionOwned(
           throw new Error("No prepared auth attempt succeeded.", { cause: firstError });
         }
       } else {
+        if (harness.authBootstrap === "plugin") {
+          throw new IsolatedCompletionError(
+            "runtime-unavailable",
+            "Plugin-owned authentication requires isolated completion V2.",
+          );
+        }
         const authorization = await prepareHostAuthorization(request.authProfileId);
         const harnessParams: AgentHarnessIsolatedCompletionParams = {
           ...commonParams,

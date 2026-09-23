@@ -80,6 +80,66 @@ describe("embedded run auth plan provider pin", () => {
     await state.cleanup();
   });
 
+  it("prepares plugin-owned auth despite an unavailable host profile pin", async () => {
+    const harness: AgentHarness = {
+      ...openClawHarness,
+      id: "configured-plugin",
+      authBootstrap: "plugin",
+    };
+    const stores = modelRuntime.createEmptyAgentDiscoveryStores();
+    const prepared = await withPluginRuntimeGenerationScope(
+      { metadataSnapshot: createPluginMetadataSnapshotFixture() },
+      () =>
+        prepareEmbeddedRunAuthPlan({
+          assertCurrent: () => {},
+          runParams: {
+            sessionId: "plugin-auth-session",
+            runId: "plugin-auth-run",
+            workspaceDir: state.workspaceDir,
+            prompt: "Prepare the plugin's configured credential",
+            timeoutMs: 5_000,
+            authProfileId: "openai:unavailable",
+            authProfileIdSource: "user",
+            config: {
+              models: {
+                providers: {
+                  openai: {
+                    baseUrl: platformModel.baseUrl,
+                    api: platformModel.api,
+                    apiKey: "openai:unavailable",
+                    models: [],
+                  },
+                },
+              },
+            },
+          },
+          provider: "openai",
+          modelId: platformModel.id,
+          model: platformModel,
+          agentDir,
+          workspaceDir: state.workspaceDir,
+          nativeModelOwned: true,
+          ...stores,
+          getAgentHarness: () => harness,
+          setAgentHarness: () => {},
+          getRuntimeModel: () => platformModel,
+          getEffectiveModel: () => platformModel,
+          applyResolvedRuntimeModel: () => {},
+          selectHarnessForPreparedAttempts: () => harness,
+        }),
+    );
+    const expectedPlan = {
+      providerForAuth: "openai",
+      modelId: platformModel.id,
+      authProfileProviderForAuth: "openai",
+      harnessAuthProvider: harness.id,
+      credentialSource: { kind: "none" },
+    };
+    expect(prepared.activePreparedAuthPlan).toEqual(expectedPlan);
+    expect(prepared.preparedAuthAttempts).toEqual([{ kind: "implicit", plan: expectedPlan }]);
+    expect(prepared.attemptAuthProfileStore).toEqual({ version: 1, profiles: {} });
+  });
+
   it("prepares a LiteLLM turn while Anthropic credentials await migration", async () => {
     await state.writeJson("agents/main/agent/auth-profiles.json", {
       version: 1,

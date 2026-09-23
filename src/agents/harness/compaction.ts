@@ -99,6 +99,21 @@ async function resolveHarnessCompactApiKey(params: {
   runtimeAuthPlan?: AgentRuntimeAuthPlan;
 }> {
   const { agentDir, compactParams, initialHarness } = params;
+  const resolvePluginOwnedAuth = (harness: AgentHarness) => {
+    if (!compactParams.provider?.trim() || !compactParams.model?.trim()) {
+      return { harness };
+    }
+    const preparation = prepareAgentRuntimeAuth({
+      provider: compactParams.provider,
+      modelId: compactParams.model,
+      harnessId: harness.id,
+      harnessAuthBootstrap: "plugin",
+    });
+    return { harness, runtimeAuthPlan: preparation.plan };
+  };
+  if (initialHarness.authBootstrap === "plugin") {
+    return resolvePluginOwnedAuth(initialHarness);
+  }
   if (!compactParams.provider?.trim() || !compactParams.model?.trim()) {
     const existing = compactParams.resolvedApiKey?.trim();
     return existing ? { harness: initialHarness, apiKey: existing } : { harness: initialHarness };
@@ -156,6 +171,9 @@ async function resolveHarnessCompactApiKey(params: {
   if (reusableRuntimeAuthPlan) {
     const reusableAttempts = [{ kind: "implicit" as const, plan: reusableRuntimeAuthPlan }];
     const reusableHarness = selectPreparedHarness(reusableAttempts, callerRuntimeModel);
+    if (reusableHarness.authBootstrap === "plugin") {
+      return resolvePluginOwnedAuth(reusableHarness);
+    }
     if (
       (reusableHarness.authBootstrap === "harness" ||
         reusableRuntimeAuthPlan.harnessAuthProvider) &&
@@ -268,6 +286,9 @@ async function resolveHarnessCompactApiKey(params: {
       );
     }
     harness = confirmedHarness;
+  }
+  if (harness.authBootstrap === "plugin") {
+    return resolvePluginOwnedAuth(harness);
   }
   const materializeModel = async (input: {
     plan: AgentRuntimeAuthPlan;
@@ -492,10 +513,14 @@ export async function maybeCompactAgentHarnessSession(
   // Native runtimes own subscription login, but a provider-locked Platform
   // route must receive the exact host-prepared key selected for this attempt.
   const harnessOwnsAuth =
-    harness.authBootstrap === "harness" && !runtimePlanRequiresHostApiKey(resolvedRuntimeAuthPlan);
+    harness.authBootstrap === "plugin" ||
+    (harness.authBootstrap === "harness" &&
+      !runtimePlanRequiresHostApiKey(resolvedRuntimeAuthPlan));
   const resolvedApiKey = harnessOwnsAuth ? undefined : resolved.apiKey;
   const runtimeModel =
-    harnessOwnsAuth && !resolvedRuntimeAuthPlan ? undefined : resolved.runtimeModel;
+    harness.authBootstrap === "plugin" || (harnessOwnsAuth && !resolvedRuntimeAuthPlan)
+      ? undefined
+      : resolved.runtimeModel;
   const compactParamsWithResolvedAuth = resolvedRuntimeAuthPlan
     ? {
         ...compactParams,

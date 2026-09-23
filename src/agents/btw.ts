@@ -136,10 +136,14 @@ function resolveBtwAuthProfileStore(params: {
   workspaceDir?: string;
   authProfileId?: string;
   authProfileIdSource?: "auto" | "user";
+  harnessAuthBootstrap?: AgentHarness["authBootstrap"];
 }): {
   store: AuthProfileStore;
   ignoreAutoPreferredProfile: boolean;
 } {
+  if (params.harnessAuthBootstrap === "plugin") {
+    return { store: { version: 1, profiles: {} }, ignoreAutoPreferredProfile: true };
+  }
   if (isOpenAIProvider(params.provider)) {
     return {
       store: ensureAuthProfileStore(params.agentDir, {
@@ -451,19 +455,22 @@ async function resolveRuntimeModel(params: {
   const runtimeProvider = model.provider;
   const runtimeModelId = model.id;
 
-  const authSelection = await resolveSessionAuthSelection({
-    cfg,
-    provider: runtimeProvider,
-    modelId: runtimeModelId,
-    agentId: params.agentId,
-    harnessRuntime: params.harnessId,
-    agentDir,
-    sessionEntry: params.sessionEntry,
-    sessionStore: params.sessionStore,
-    sessionKey: params.sessionKey,
-    storePath: params.storePath,
-    isNewSession: params.isNewSession,
-  });
+  const authSelection =
+    params.harnessAuthBootstrap === "plugin"
+      ? undefined
+      : await resolveSessionAuthSelection({
+          cfg,
+          provider: runtimeProvider,
+          modelId: runtimeModelId,
+          agentId: params.agentId,
+          harnessRuntime: params.harnessId,
+          agentDir,
+          sessionEntry: params.sessionEntry,
+          sessionStore: params.sessionStore,
+          sessionKey: params.sessionKey,
+          storePath: params.storePath,
+          isNewSession: params.isNewSession,
+        });
   const authProfileId = authSelection?.profileId;
   const authProfileIdSource = authSelection?.source;
   const authProfileStoreSelection = resolveBtwAuthProfileStore({
@@ -475,6 +482,7 @@ async function resolveRuntimeModel(params: {
     workspaceDir,
     authProfileId,
     authProfileIdSource,
+    harnessAuthBootstrap: params.harnessAuthBootstrap,
   });
   const effectiveAuthProfileId =
     authProfileStoreSelection.ignoreAutoPreferredProfile && authProfileIdSource !== "user"
@@ -497,7 +505,9 @@ async function resolveRuntimeModel(params: {
     harnessRuntime: params.harnessId,
     harnessAuthBootstrap: params.harnessAuthBootstrap,
   } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
-  await reconcileAuthProfileQuotaBlocks(authParams);
+  if (params.harnessAuthBootstrap !== "plugin") {
+    await reconcileAuthProfileQuotaBlocks(authParams);
+  }
   const runtimeAuthPreparation = prepareAgentRuntimeAuth(authParams);
   model = await materializeBtwRuntimeModel({
     abortSignal: params.abortSignal,
@@ -877,6 +887,7 @@ export async function runBtwSideQuestion(
               workspaceDir,
               authProfileId: runtime.authProfileId,
               authProfileIdSource: runtime.authProfileIdSource,
+              harnessAuthBootstrap: selectedHarness.authBootstrap,
             });
       let runtimeAuthPreparation = runtime.runtimeAuthPreparation;
       if (authProfileStoreSelection) {
@@ -901,12 +912,15 @@ export async function runBtwSideQuestion(
           harnessRuntime: selectedHarness.id,
           harnessAuthBootstrap: selectedHarness.authBootstrap,
         } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
-        await reconcileAuthProfileQuotaBlocks(authParams);
+        if (selectedHarness.authBootstrap !== "plugin") {
+          await reconcileAuthProfileQuotaBlocks(authParams);
+        }
         runtimeAuthPreparation = prepareAgentRuntimeAuth(authParams);
       }
       const selectedAuthProfileStore = authProfileStoreSelection?.store ?? runtime.authProfileStore;
       const implicitHarnessAuthPlan =
-        selectedHarness.authBootstrap === "harness" &&
+        (selectedHarness.authBootstrap === "harness" ||
+          selectedHarness.authBootstrap === "plugin") &&
         runtimeAuthPreparation.attempts.length === 1 &&
         runtimeAuthPreparation.attempts[0]?.kind === "implicit" &&
         runtimeAuthPreparation.attempts[0].plan.harnessAuthProvider
