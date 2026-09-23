@@ -193,7 +193,7 @@ describe("action-bound plugin state", () => {
             const createAdmission = mutationAdmission.createSqliteWorkerOperationAdmission;
             const admission = vi
               .spyOn(mutationAdmission, "createSqliteWorkerOperationAdmission")
-              .mockImplementation((admit) =>
+              .mockImplementation((admit, attachment) =>
                 createAdmission((request, grant) => {
                   if (request.stage === "commit" && !heldCommit && submittedRenewals().length > 0) {
                     heldCommit = true;
@@ -201,7 +201,7 @@ describe("action-bound plugin state", () => {
                     vi.setSystemTime(previous.expiresAt + 1);
                   }
                   admit(request, grant);
-                }),
+                }, attachment),
               );
             try {
               const renewal = await invite.execute("renew", { email, days: 2 });
@@ -268,7 +268,7 @@ describe("action-bound plugin state", () => {
         const stages: string[] = [];
         const createAdmission = mutationAdmission.createSqliteWorkerOperationAdmission;
         vi.spyOn(mutationAdmission, "createSqliteWorkerOperationAdmission").mockImplementation(
-          (admit) =>
+          (admit, attachment) =>
             createAdmission((request, grant) => {
               stages.push(request.stage);
               if (request.stage === revocation) {
@@ -278,7 +278,7 @@ describe("action-bound plugin state", () => {
               if (request.stage === "commit" && revocation === "after commit") {
                 managerCurrent = false;
               }
-            }),
+            }, attachment),
         );
         if (revocation === "dispatch") {
           const postMessageSpy = vi.spyOn(Worker.prototype, "postMessage");
@@ -341,13 +341,13 @@ describe("action-bound plugin state", () => {
           });
           const createAdmission = mutationAdmission.createSqliteWorkerOperationAdmission;
           vi.spyOn(mutationAdmission, "createSqliteWorkerOperationAdmission").mockImplementation(
-            (admit) =>
+            (admit, attachment) =>
               createAdmission((request, grant) => {
                 admit(request, grant);
                 if (request.stage === "commit") {
                   current = false;
                 }
-              }),
+              }, attachment),
           );
           const reading =
             operation === "observe"
@@ -385,13 +385,13 @@ describe("action-bound plugin state", () => {
       await action.register("visitor@example.test", "original");
       const createAdmission = mutationAdmission.createSqliteWorkerOperationAdmission;
       vi.spyOn(mutationAdmission, "createSqliteWorkerOperationAdmission").mockImplementation(
-        (admit) =>
+        (admit, attachment) =>
           createAdmission((request, grant) => {
             if (request.stage === "commit") {
               runtimeCurrent = false;
             }
             admit(request, grant);
-          }),
+          }, attachment),
       );
       await expect(action.delete("visitor@example.test")).rejects.toMatchObject({
         code: "PLUGIN_STATE_WRITE_FAILED",

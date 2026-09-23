@@ -84,7 +84,10 @@ export function resolveControlUiSessionPrTarget(
   };
 }
 
-export type ControlUiSessionPrRead = () => ControlUiSessionPrTarget | undefined;
+export type ControlUiSessionPrRead = {
+  readCurrent: () => ControlUiSessionPrTarget | "pending" | undefined;
+  prepare: () => Promise<void>;
+};
 
 /** A watcher may follow a replaced target, but never a replacement person or access grant. */
 export function prepareControlUiSessionPrRead(params: {
@@ -111,8 +114,12 @@ export function prepareControlUiSessionPrRead(params: {
   const scopes = [...(client.connect.scopes ?? [])].toSorted().join("\0");
   const access = client.internal?.operatorAccessAuthority;
   const connectionSignal = client.connectionSignal;
+  const projection = getSessionRowProjection();
+  if (!projection) {
+    return undefined;
+  }
   let aliasRevision = -1;
-  const readCurrent = () => {
+  const readCurrent: ControlUiSessionPrRead["readCurrent"] = () => {
     try {
       const currentActor = resolveGatewayOperatorRoleActor(client);
       if (
@@ -154,18 +161,23 @@ export function prepareControlUiSessionPrRead(params: {
       if (!requested.ok) {
         return undefined;
       }
-      const projection = getSessionRowProjection();
-      if (!projection) {
+      if (getSessionRowProjection() !== projection) {
         return undefined;
       }
       const query = { key: sessionKey, agentId: requested.agentId };
       const selected = projection.capture(query);
+      const pending = projection.needsMembershipPreparation();
+      if (!selected?.entry) {
+        return pending ? "pending" : undefined;
+      }
       if (
-        !selected?.entry ||
         !projection.isCurrent(selected) ||
         createSessionListEntryFilter({ cfg, client })?.(selected.key, selected.entry) === false
       ) {
         return undefined;
+      }
+      if (pending) {
+        return "pending";
       }
       // Authorize transient private rows before preparing presentation; resident rows reuse it.
       const current = projection.describe(query, selected);
@@ -188,5 +200,14 @@ export function prepareControlUiSessionPrRead(params: {
       return undefined;
     }
   };
-  return readCurrent() ? readCurrent : undefined;
+  return readCurrent() === undefined
+    ? undefined
+    : {
+        readCurrent,
+        async prepare() {
+          while (readCurrent() === "pending") {
+            await projection.prepareMembership();
+          }
+        },
+      };
 }

@@ -93,13 +93,14 @@ it("waits for a cold projection without superseding its native integrity admissi
   });
   const entered = createDeferred();
   const createAdmission = admission.createSqliteWorkerOperationAdmission;
-  vi.spyOn(admission, "createSqliteWorkerOperationAdmission").mockImplementation((admit) =>
-    createAdmission((request, grant) => {
-      if (request.stage === "open") {
-        entered.resolve();
-      }
-      admit(request, grant);
-    }),
+  vi.spyOn(admission, "createSqliteWorkerOperationAdmission").mockImplementation(
+    (admit, attachment) =>
+      createAdmission((request, grant) => {
+        if (request.stage === "open") {
+          entered.resolve();
+        }
+        admit(request, grant);
+      }, attachment),
   );
   startSessionTranscriptIndexReconcile(options);
   await entered.promise;

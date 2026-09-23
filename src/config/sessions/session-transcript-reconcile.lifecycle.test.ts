@@ -86,7 +86,7 @@ function observeCanonicalWriterLeases() {
   const createAdmission = admission.createSqliteWorkerOperationAdmission;
   const spy = vi
     .spyOn(admission, "createSqliteWorkerOperationAdmission")
-    .mockImplementation((admit) =>
+    .mockImplementation((admit, attachment) =>
       createAdmission((request, grant) => {
         const facts = request.facts;
         if (
@@ -98,7 +98,7 @@ function observeCanonicalWriterLeases() {
           leases.set(facts.databasePath, facts.leaseId);
         }
         admit(request, grant);
-      }),
+      }, attachment),
     );
   return { leases, restore: () => spy.mockRestore() };
 }
@@ -737,7 +737,7 @@ describe("session transcript reconcile worker lifecycle", () => {
           const admissions: string[] = [];
           const admissionSpy = vi
             .spyOn(admission, "createSqliteWorkerOperationAdmission")
-            .mockImplementation((admit) =>
+            .mockImplementation((admit, attachment) =>
               createAdmission((request, grant) => {
                 if (request.stage === "transaction" || request.stage === "commit") {
                   admissions.push(request.stage);
@@ -746,7 +746,7 @@ describe("session transcript reconcile worker lifecycle", () => {
                   }
                 }
                 admit(request, grant);
-              }),
+              }, attachment),
             );
           const createWorker = vi.fn().mockImplementationOnce(() => {
             throw new Error("worker-create");

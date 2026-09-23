@@ -16,9 +16,11 @@ import {
   captureStateDatabaseCoordinatorRuntime,
   withStateDatabaseCoordinatorRuntimeDirectory,
 } from "../infra/state-database-coordinator.js";
+import { sessionChanges } from "../sessions/session-row-changes.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../state/openclaw-agent-db.js";
+import * as stateReadWorker from "../state/openclaw-state-read-worker.js";
 import { getSessionRepositoryWorkspaceStore } from "../state/session-repository-workspaces.js";
 import { ensureProfileForEmail, linkEmail, setUserProfileRole } from "../state/user-profiles.js";
 import {
@@ -226,7 +228,7 @@ async function createFixture(scope: OperatorScope, useDefaultLoader = false) {
     async close() {
       await subscriptions.stop();
       connections.clients.clear();
-      disposeSessionReadContexts();
+      await disposeSessionReadContexts();
     },
     async removeSessions() {
       for (const key of seeded) {
@@ -304,6 +306,122 @@ function expectedFrame(key: string, value: ControlUiSessionPullRequests = snapsh
 }
 
 describe("registered session PR subscriptions", () => {
+  it.each(["unchanged", "revoked"] as const)(
+    "prepares pending topology while preserving %s watcher authority",
+    async (authority) => {
+      await withFixture("operator.read", async (f) => {
+        await f.subscriptions.replace(f.client.connId!, [sessionKey]);
+        f.load.mockClear();
+        f.socket.send.mockClear();
+        const refreshed = { ...snapshot, branch: { ...branch, branch: "after-topology" } };
+        f.load.mockResolvedValue(refreshed);
+        const entered = createDeferredCore();
+        const release = createDeferredCore();
+        const createTransport = stateReadWorker.createOpenClawStateReadTransport;
+        let held = false;
+        const transport = vi
+          .spyOn(stateReadWorker, "createOpenClawStateReadTransport")
+          .mockImplementation((command) => {
+            const owned = createTransport(command);
+            if (held || command.type !== "agentDatabaseDeletion.snapshot") {
+              return owned;
+            }
+            held = true;
+            return {
+              ...owned,
+              async read(...args: Parameters<typeof owned.read>) {
+                const result = await owned.read(...args);
+                entered.resolve();
+                await release.promise;
+                return result;
+              },
+            };
+          });
+        sessionChanges.emit({ all: true, scope: "stores" });
+        const polling = f.subscriptions.pollNow();
+        try {
+          await Promise.race([
+            entered.promise,
+            polling.then(() => {
+              throw new Error("PR polling finished before its pending topology was prepared");
+            }),
+          ]);
+          expect(f.load).not.toHaveBeenCalled();
+          expect(frames(f.socket)).toEqual([]);
+          if (authority === "revoked") {
+            await f.changeReader("grant");
+          }
+          release.resolve();
+          await polling;
+          await f.subscriptions.pollNow();
+          expect(f.load).toHaveBeenCalledTimes(authority === "unchanged" ? 2 : 0);
+          expect(frames(f.socket)).toEqual(
+            authority === "unchanged" ? [expectedFrame(sessionKey, refreshed)] : [],
+          );
+        } finally {
+          release.resolve();
+          await polling;
+          transport.mockRestore();
+        }
+      });
+    },
+  );
+
+  it.each(["replace", "unsubscribe"] as const)(
+    "does not restore a pending watched set after a later %s",
+    async (operation) => {
+      const first = "agent:main:pending-first";
+      const second = "agent:main:current-second";
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      let ready = false;
+      const load = vi.fn<Load>(async () => snapshot);
+      const broadcast = vi.fn();
+      const subscriptions = createControlUiSessionPullRequestSubscriptions({
+        broadcastToConnIds: broadcast,
+        load,
+        prepareRead: (_connId, session) => ({
+          readCurrent: () =>
+            session.sessionKey === first && !ready
+              ? "pending"
+              : {
+                  params: { sessionKey: session.sessionKey, agentId: "main" },
+                  identity: session.sessionKey,
+                  readSource: { agentId: "main", path: "/synthetic/unused.sqlite" },
+                  source: null,
+                },
+          async prepare() {
+            if (session.sessionKey === first && !ready) {
+              entered.resolve();
+              await release.promise;
+              ready = true;
+            }
+          },
+        }),
+      });
+      const pending = subscriptions.replace("reader", [first]);
+      try {
+        await entered.promise;
+        if (operation === "replace") {
+          await subscriptions.replace("reader", [second]);
+        } else {
+          subscriptions.unsubscribe("reader");
+        }
+        release.resolve();
+        await pending;
+        await subscriptions.pollNow();
+        expect(load.mock.calls.map(([params]) => params.sessionKey)).toEqual(
+          operation === "replace" ? [second, second] : [],
+        );
+        expect(broadcast).toHaveBeenCalledTimes(operation === "replace" ? 1 : 0);
+      } finally {
+        release.resolve();
+        await pending;
+        await subscriptions.stop();
+      }
+    },
+  );
+
   it.each(["operator.read", "operator.write", "operator.admin"] as const)(
     "delivers the owned branch through the real broadcaster with %s",
     async (scope) => {

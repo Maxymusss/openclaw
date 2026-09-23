@@ -81,7 +81,7 @@ it.each([
       const createAdmission = admission.createSqliteWorkerOperationAdmission;
       const admissionSpy = vi
         .spyOn(admission, "createSqliteWorkerOperationAdmission")
-        .mockImplementation((admit) =>
+        .mockImplementation((admit, attachment) =>
           createAdmission((request, grant) => {
             if (
               request.stage === "open" &&
@@ -91,7 +91,7 @@ it.each([
               canonicalLeaseId = request.facts.leaseId;
             }
             admit(request, grant);
-          }),
+          }, attachment),
         );
       try {
         await persistSessionTranscriptTurn(scope, {

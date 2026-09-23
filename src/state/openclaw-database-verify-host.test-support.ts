@@ -61,12 +61,12 @@ await withOpenClawTestState(
             binding.authorize(request);
             context.admission.assertCurrent();
             assert.ok(grant(), "Synthetic database admission expired");
-          }),
+          }, binding.attachment),
         });
       },
     };
     try {
-      await generation.runExisting(source, (scope) =>
+      await generation.run(source, (scope) =>
         scope.execute({ type: "database.prepareWrite", input: undefined }),
       );
       const deadline = performance.now() + 20_000;

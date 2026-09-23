@@ -19,7 +19,7 @@ export function createTestControlUiSessionPrSubscriptions(
         readSource: { agentId: session.agentId ?? parsed?.agentId ?? "main", path: "unused" },
         source: null,
       };
-      return () => target;
+      return { readCurrent: () => target, prepare: async () => undefined };
     },
     ...deps,
   });

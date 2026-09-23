@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Selectable } from "kysely";
+import type { AcpSessionReadInput, AcpSessionRow } from "../acp/runtime/session-meta-keys.js";
 import type { McpOAuthReadOnlyOperations } from "../agents/mcp-oauth-store.kernel.js";
 import type {
   SandboxBrowserRegistryEntry,
@@ -63,6 +64,10 @@ import type {
   TaskRegistryStoreSnapshot,
 } from "../tasks/task-registry.store.types.js";
 import type {
+  AgentDatabaseDeletionSnapshot,
+  AgentDeletionJournalStatus,
+} from "./agent-deletion-journal.read.js";
+import type {
   GitHubPublicationReceiptTarget,
   GitHubPublicationRow,
   RepositoryGitHubPublicationReceiptTarget,
@@ -99,6 +104,7 @@ export type OpenClawStateReadAuthority = {
 };
 
 export type OpenClawStateReadCommand =
+  | { type: "acpSessions.metadata"; entries: readonly AcpSessionReadInput[] }
   | {
       [Kind in keyof McpOAuthReadOnlyOperations]: {
         type: Kind;
@@ -127,6 +133,8 @@ export type OpenClawStateReadCommand =
       };
     }[keyof SkillLibraryReadOnlyOperations]
   | { type: "agentDatabaseRegistry.read" }
+  | { type: "agentDatabaseDeletion.snapshot" }
+  | { type: "agentDeletionJournal.status"; agentId: string }
   | { type: "workerEnvironments.snapshot"; ids?: readonly string[] }
   | { type: "workerEnvironments.pruneCandidates"; input: WorkerEnvironmentPruneReadInput }
   | {
@@ -183,6 +191,18 @@ export type OpenClawStateReadRequest = {
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply = (
+  | {
+      ok: true;
+      type: "agentDeletionJournal.status";
+      sourceAdmitted: true;
+      status: AgentDeletionJournalStatus;
+    }
+  | {
+      ok: true;
+      type: "acpSessions.metadata";
+      sourceAdmitted: true;
+      rows: Array<AcpSessionRow | null>;
+    }
   | {
       [Kind in keyof McpOAuthReadOnlyOperations]: {
         ok: true;
@@ -292,6 +312,12 @@ export type OpenClawStateReadReply = (
       type: "agentDatabaseRegistry.read";
       sourceAdmitted?: true;
       result: OpenClawAgentDatabaseRegistryReadResult;
+    }
+  | {
+      ok: true;
+      type: "agentDatabaseDeletion.snapshot";
+      sourceAdmitted: true;
+      snapshot: AgentDatabaseDeletionSnapshot;
     }
   | {
       ok: true;
@@ -444,6 +470,8 @@ export type OpenClawStateReadOutcome =
 
 export type OpenClawStateReadPhase = "before-read" | "read" | "unobserved";
 export type OpenClawStateReadOptions = {
+  /** Cancellation abandons delivery only after the accepted read and cleanup settle. */
+  signal?: AbortSignal;
   /** Reuse the caller's captured authority instead of admitting a newer lifecycle. */
   context?: OpenClawStateWorkerContext;
   /** Publication and authority reads must not inherit an inspection snapshot. */

@@ -196,6 +196,13 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           respondInvalidRequest(respond, "Session rows are initializing; try again");
           return;
         }
+        do {
+          await projection.prepareMembership();
+        } while (projection.needsMembershipPreparation());
+        sessionMutationAuthorization?.assertCurrent();
+        if (getSessionRowProjection(context) !== projection) {
+          throw new Error("Session projection changed while resolving the conversation");
+        }
         const resolvedSession = resolveSessionKeyFromResolveParams({
           projection,
           client,

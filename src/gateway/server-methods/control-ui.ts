@@ -439,8 +439,13 @@ export function createControlUiHandlers(
           if (!client) {
             return resolveCheckDetailsSession(parsed.sessionKey, context, client);
           }
-          return reader?.() ?? null;
+          const current = reader?.readCurrent();
+          return current === "pending" ? null : (current ?? null);
         };
+        while (reader?.readCurrent() === "pending") {
+          await reader.prepare();
+          signal?.throwIfAborted();
+        }
         const binding = currentBinding();
         if (!binding) {
           throw new gitHubPublicApi.ControlUiGitHubError(404, "Session CI details unavailable");
@@ -469,6 +474,10 @@ export function createControlUiHandlers(
                 read: { target: binding, sourceIdentity, assertCurrent: assertReadCurrent },
               },
             );
+            while (reader?.readCurrent() === "pending") {
+              await reader.prepare();
+              assertSourceCurrent();
+            }
             assertReadCurrent();
             respond(true, result, undefined);
           },

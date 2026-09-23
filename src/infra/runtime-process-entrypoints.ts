@@ -179,6 +179,11 @@ export const runtimeProcessEntrypoints = {
     sourceWorkerName: "../config/sessions/session-transcript-projection-publication.worker",
     distWorkerPath: "config/sessions/session-transcript-projection-publication.worker.js",
   },
+  sessionTranscriptReports: {
+    currentModuleUrl,
+    sourceWorkerName: "../config/sessions/session-accessor.sqlite-transcript-reports.worker",
+    distWorkerPath: "config/sessions/session-accessor.sqlite-transcript-reports.worker.js",
+  },
   sessionTranscriptReconcile: {
     currentModuleUrl,
     sourceWorkerName: "../config/sessions/session-transcript-reconcile.worker",

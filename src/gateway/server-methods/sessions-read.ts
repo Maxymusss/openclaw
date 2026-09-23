@@ -402,13 +402,26 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       },
     );
   },
-  "sessions.resolve": ({ params, respond, context, client }) => {
+  "sessions.resolve": async ({
+    params,
+    respond,
+    context,
+    client,
+    sessionMutationAuthorization,
+  }) => {
     if (!assertValidParams(params, validateSessionsResolveParams, "sessions.resolve", respond)) {
       return;
     }
     const projection = getSessionRowProjection(context);
     if (!projection) {
       throw new Error("Session projection is unavailable before Gateway startup completes");
+    }
+    do {
+      await projection.prepareMembership();
+    } while (projection.needsMembershipPreparation());
+    sessionMutationAuthorization?.assertCurrent();
+    if (getSessionRowProjection(context) !== projection) {
+      throw new Error("Session projection changed while resolving the conversation");
     }
     const resolved = resolveSessionKeyFromResolveParams({
       projection,

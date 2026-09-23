@@ -8,7 +8,9 @@ import {
 } from "../infra/kysely-sync.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
+import { stageSqliteTransactionState } from "../infra/sqlite-post-commit.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import { captureAgentDatabasePreparationDeletion } from "./agent-database-admission.js";
 import { getAgentDeletionDatabaseCleanup } from "./agent-deletion-cleanup.js";
 import { parseAgentDeletionDatabasePaths } from "./agent-deletion-journal.read.js";
 import { deleteAgentProvenanceForAgent, ensureAgentProvenanceSchema } from "./agent-provenance.js";
@@ -375,6 +377,20 @@ export function beginAgentDeletionJournal(
   let persisted: AgentDeletionJournalEntry | undefined;
   ensureAgentProvenanceSchema(options);
   runOpenClawStateWriteTransaction((database) => {
+    const invalidatePreparation = captureAgentDatabasePreparationDeletion(
+      normalized.agentId,
+      database,
+    );
+    // State publication precedes observers and waits for the outermost successful commit.
+    if (
+      !stageSqliteTransactionState(database.db, {
+        stage() {},
+        rollback() {},
+        commit: invalidatePreparation,
+      })
+    ) {
+      throw new Error("Agent deletion journal requires a managed transaction");
+    }
     ensureAgentDeletionJournalSchema(database.db);
     const db = getNodeSqliteKysely<AgentDeletionDatabase>(database.db);
     const existing = executeSqliteQueryTakeFirstSync(

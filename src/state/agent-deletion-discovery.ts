@@ -6,6 +6,7 @@ import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import {
   readAgentDatabaseDeletionSnapshot,
+  type AgentDatabaseDeletionSnapshot,
   type AgentDeletionJournalDisposition,
 } from "./agent-deletion-journal.read.js";
 import {
@@ -15,6 +16,12 @@ import {
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 
 type Target = { agentId: string; path: string };
+type RetainedAgentDatabaseNamespace =
+  | "database"
+  | {
+      kind: "agent-directory" | "legacy-database";
+      readDatabasePaths: () => readonly string[];
+    };
 
 function hasSqliteFileFamily(pathname: string): boolean {
   return resolveSqliteDatabaseFilePaths(pathname).some(
@@ -83,14 +90,22 @@ export function createAgentDatabaseDeletionClassifier(params: {
 export function createRetainedAgentDatabaseMatcher(
   env: NodeJS.ProcessEnv,
   readConfiguredTargets: () => readonly Target[],
-  namespace:
-    | "database"
-    | {
-        kind: "agent-directory" | "legacy-database";
-        readDatabasePaths: () => readonly string[];
-      } = "database",
+  namespace: RetainedAgentDatabaseNamespace = "database",
 ) {
-  const snapshot = readAgentDatabaseDeletionSnapshot(env);
+  return createRetainedAgentDatabaseMatcherFromSnapshot(
+    env,
+    readConfiguredTargets,
+    readAgentDatabaseDeletionSnapshot(env),
+    namespace,
+  );
+}
+
+export function createRetainedAgentDatabaseMatcherFromSnapshot(
+  env: NodeJS.ProcessEnv,
+  readConfiguredTargets: () => readonly Target[],
+  snapshot: AgentDatabaseDeletionSnapshot | undefined,
+  namespace: RetainedAgentDatabaseNamespace = "database",
+) {
   const agentDirectories = namespace !== "database" && namespace.kind === "agent-directory";
   if (!snapshot && namespace !== "database") {
     // Legacy inputs can predate SQLite; any surviving family still has unknown history.

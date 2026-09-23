@@ -51,6 +51,13 @@ export async function handleChatStartupRequest(
     );
     return;
   }
+  do {
+    await projection.prepareMembership();
+  } while (projection.needsMembershipPreparation());
+  opts.sessionMutationAuthorization?.assertCurrent();
+  if (getSessionRowProjection(opts.context) !== projection) {
+    throw new Error("Session projection changed while resolving the conversation");
+  }
   const resolution = resolveSessionKeyFromResolveParams({
     projection,
     client: opts.client,

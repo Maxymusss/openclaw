@@ -1,6 +1,5 @@
 import { renameSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import * as agentIdentity from "../agents/identity.js";
 import * as catalogLookup from "../agents/model-catalog-lookup.js";
@@ -35,6 +34,7 @@ import {
 import { ensureProfileForEmail, linkEmail, setDisplayName } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import * as projectionWork from "./session-projection-work.js";
+import { withReadySessionRows } from "./session-row-prepared-read.js";
 import * as materialization from "./session-row-projection-materialize.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 import { listProjectedSessions } from "./session-utils-list.js";
@@ -229,10 +229,16 @@ it("hydrates a same-path replacement with a reused inode and retires its previou
           ),
         );
       try {
-        expect(projection.snapshot({ agentId: "main", key: "agent:main:new" }).row?.sessionId).toBe(
-          "new",
+        await withReadySessionRows(
+          projection,
+          () => [{ agentId: "main", key: "agent:main:new" }],
+          (read) => {
+            expect(read.describe({ agentId: "main", key: "agent:main:new" })?.entry.sessionId).toBe(
+              "new",
+            );
+            expect(projection.selectEntries().map((row) => row.key)).toEqual(["agent:main:new"]);
+          },
         );
-        expect(projection.selectEntries().map((row) => row.key)).toEqual(["agent:main:new"]);
         await projection.ensureMaterialized();
         expect(projection.selectEntries().map((row) => row.key)).toEqual(["agent:main:new"]);
         expect([...projection.sessionGroupTargets()]).toEqual([
@@ -374,12 +380,31 @@ it.each([
         );
       }
       const release = projectionWork.retainSessionListForegroundWork();
+      const drain = createDeferredCore();
+      const entryWorkRequested = createDeferredCore<never>();
+      let holdEntryWork = false;
+      const createDrain = projectionWork.createSessionProjectionDrain;
+      const drainFactory = vi
+        .spyOn(projectionWork, "createSessionProjectionDrain")
+        .mockImplementationOnce((params) => {
+          const ensure = createDrain(params);
+          return () => {
+            if (holdEntryWork && params.needsYield()) {
+              entryWorkRequested.reject(
+                new Error("Presentation-only lists requested a session-entry drain"),
+              );
+              return drain.promise;
+            }
+            return ensure();
+          };
+        });
       const projection = await createSessionRowProjection({
         cfg,
         modelCatalog: [{ provider: "unit-test", id: "model", name: "Model" }],
       });
       const opts = { limit: 20, archived: "all", search: "unit-test/model" } as const;
-      const drain = createDeferredCore();
+      let lists: Array<ReturnType<typeof listProjectedSessions>> = [];
+      let stopWorkerReadGuard = () => {};
       try {
         await listProjectedSessions({ projection, opts });
         const catalogReads = vi.spyOn(catalogLookup, "findModelCatalogEntry");
@@ -387,21 +412,36 @@ it.each([
         const warmCatalogLookups = catalogReads.mock.calls.length;
         catalogReads.mockClear();
         const reads = vi.spyOn(materialization, "readSessionRowEntry");
-        vi.spyOn(projectionWork, "yieldSessionListWork").mockReturnValue(drain.promise);
+        const readRowFacts = vi.fn(async () => {
+          throw new Error("Presentation-only lists read stored session-row facts");
+        });
+        const readDatabases = transcriptWorker.withSessionHistoryWorkerDatabases;
+        const workerReads = vi
+          .spyOn(transcriptWorker, "withSessionHistoryWorkerDatabases")
+          .mockImplementation((databases, consume) =>
+            readDatabases(databases, (owners) =>
+              consume(owners.map((owner) => ({ ...owner, readRowFacts }))),
+            ),
+          );
+        stopWorkerReadGuard = () => workerReads.mockRestore();
+        holdEntryWork = true;
         sessionChanges.emit({ all: true, scope });
-        const lists = Promise.all(
-          Array.from({ length: 8 }, () => listProjectedSessions({ projection, opts })),
-        );
-        const result = await Promise.race([lists, nextTurn().then(() => undefined)]);
-        expect(result?.map((list) => list.count)).toEqual(Array.from({ length: 8 }, () => 20));
+        lists = Array.from({ length: 8 }, () => listProjectedSessions({ projection, opts }));
+        const result = await Promise.race([Promise.all(lists), entryWorkRequested.promise]);
+        expect(result.map((list) => list.count)).toEqual(Array.from({ length: 8 }, () => 20));
         expect(reads).not.toHaveBeenCalled();
+        expect(readRowFacts).not.toHaveBeenCalled();
         // Presentation changes must not add catalog work beyond the warm request's defaults.
         expect(catalogReads.mock.calls.length).toBeLessThanOrEqual(warmCatalogLookups * 8);
         expect(projection.dirtyRowCount).toBe(0);
       } finally {
+        holdEntryWork = false;
+        stopWorkerReadGuard();
         drain.resolve();
+        await Promise.allSettled(lists);
         await projection.ensureMaterialized();
         projection.dispose();
+        drainFactory.mockRestore();
         release();
       }
     });

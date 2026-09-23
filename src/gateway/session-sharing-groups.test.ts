@@ -354,14 +354,14 @@ describe("session sharing group mutations", () => {
         const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
         const admissionSpy = vi
           .spyOn(workerAdmission, "createSqliteWorkerOperationAdmission")
-          .mockImplementation((admit) =>
+          .mockImplementation((admit, attachment) =>
             createAdmission((request, grant) => {
               if (request.stage === "commit") {
                 commitRequested = true;
                 writeRole.sessions.others = "none";
               }
               admit(request, grant);
-            }),
+            }, attachment),
           );
         try {
           await expect(

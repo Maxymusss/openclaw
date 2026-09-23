@@ -56,7 +56,7 @@ function observeCanonicalWriterLeases() {
   const createAdmission = admission.createSqliteWorkerOperationAdmission;
   const spy = vi
     .spyOn(admission, "createSqliteWorkerOperationAdmission")
-    .mockImplementation((admit) =>
+    .mockImplementation((admit, attachment) =>
       createAdmission((request, grant) => {
         const facts = request.facts;
         if (
@@ -68,7 +68,7 @@ function observeCanonicalWriterLeases() {
           leases.set(facts.databasePath, facts.leaseId);
         }
         admit(request, grant);
-      }),
+      }, attachment),
     );
   return { leases, restore: () => spy.mockRestore() };
 }

@@ -129,7 +129,9 @@ it.each(["reader-import", "between-polls", "queued-status", "during-close"] as c
             .get(scope.sessionId),
         ).toEqual({ needs_rebuild: 0 });
       } else if (boundary === "queued-status") {
-        const { historyPages } = await import("./session-transcript-worker-resources.js");
+        const {
+          historyLane: { pool: historyPages },
+        } = await import("./session-transcript-worker-resources.js");
         const { withSessionHistoryWorkerDatabase } =
           await import("./session-transcript-worker-runtime.js");
         const preparing = createDeferred();

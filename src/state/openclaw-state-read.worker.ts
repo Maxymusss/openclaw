@@ -1,4 +1,5 @@
 import { toStringifiedError } from "@openclaw/normalization-core/error-coercion";
+import { selectAcpSessionRowForRead } from "../acp/runtime/session-meta-keys.js";
 import {
   countMcpOAuthPrincipalsInDatabase,
   listMcpOAuthStoreKeysInDatabase,
@@ -65,6 +66,10 @@ import {
   readTaskRegistryMutationSnapshotInDatabase,
   readTaskRegistrySnapshot,
 } from "../tasks/task-registry.store.kernel.js";
+import {
+  readAgentDatabaseDeletionSnapshotInDatabase,
+  readAgentDeletionJournalStatusInDatabase,
+} from "./agent-deletion-journal.read.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
 import { readGitHubPublicationSessionLifecycle } from "./github-publication-session-lifecycles.js";
 import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";
@@ -179,6 +184,32 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
+                if (command.type === "agentDatabaseDeletion.snapshot") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    snapshot: readAgentDatabaseDeletionSnapshotInDatabase(db, input.databasePath),
+                  };
+                }
+                if (command.type === "agentDeletionJournal.status") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    status: readAgentDeletionJournalStatusInDatabase(db, command.agentId),
+                  };
+                }
+                if (command.type === "acpSessions.metadata") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    rows: command.entries.map(
+                      (entry) => selectAcpSessionRowForRead(db, entry) ?? null,
+                    ),
+                  };
+                }
                 if (command.type === "subagents.runs") {
                   const rows =
                     command.scope.kind === "session"

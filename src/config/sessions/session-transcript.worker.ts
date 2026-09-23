@@ -6,6 +6,7 @@ import type {
 import { serveOwnedWorkerTasks } from "../../infra/worker-task-server.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
+import { readSessionColdTranscript } from "./session-cold-storage-state.js";
 import type { SessionHistoryWorkerResult } from "./session-history-types.js";
 import {
   encodeSessionTranscriptWorkerError,
@@ -123,6 +124,23 @@ serveOwnedWorkerTasks(
       }
     }
     try {
+      if (request.kind === "cold-metadata") {
+        const { withOpenClawAgentDatabaseReadOnly } =
+          await import("../../state/openclaw-agent-db-readonly.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => {
+            const result = withOpenClawAgentDatabaseReadOnly(
+              (database) => readSessionColdTranscript(database.db, request.sessionId),
+              { ...request.database, env: cloneEnvWithPlatformSemantics(request.env) },
+            );
+            return {
+              kind: "cold-metadata" as const,
+              archive: result.found ? result.value : undefined,
+            };
+          })),
+        };
+      }
       if (request.kind === "transcript-search") {
         const { searchSessionTranscriptsReadOnlySync } =
           await import("./session-transcript-search.js");
@@ -158,6 +176,17 @@ serveOwnedWorkerTasks(
           ...(await withHistoryDatabase(request.database, () =>
             readSessionRowDatabaseFacts(request),
           )),
+        };
+      }
+      if (request.kind === "session-row-backfill") {
+        const { readSessionRowTranscriptFields } =
+          await import("../../gateway/session-row-transcript-backfill.kernel.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, () => ({
+            kind: "session-row-backfill" as const,
+            fields: readSessionRowTranscriptFields(request.params),
+          }))),
         };
       }
       if (request.kind === "session-target-inventory") {
@@ -445,6 +474,12 @@ serveOwnedWorkerTasks(
                         request.request.params.messageId,
                       ),
                     };
+                  }
+                  if (request.request.kind === "recent") {
+                    const { target, ...limits } = request.request.params;
+                    const { messages } =
+                      await options.readers.readRecentSessionMessagesWithStatsAsync(target, limits);
+                    return { kind: "recent", messages };
                   }
                   if (request.request.kind === "delta") {
                     const { prepareSessionHistoryDelta } =

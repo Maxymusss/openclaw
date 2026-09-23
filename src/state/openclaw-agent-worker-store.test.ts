@@ -266,14 +266,14 @@ describe.each(["borrowed", "captured"] as const)(
         let refused = 0;
         const interception = vi
           .spyOn(admission, "createSqliteWorkerOperationAdmission")
-          .mockImplementation((admit) =>
+          .mockImplementation((admit, attachment) =>
             create((request, grant) => {
               if (request.stage === "open") {
                 refused++;
                 throw new Error("controlled opening revocation");
               }
               admit(request, grant);
-            }),
+            }, attachment),
           );
         options = { ...options, path: path.join(root, "refused.sqlite") };
         const openMarker = path.join(root, "factory-entered");
@@ -311,7 +311,7 @@ describe.each(["borrowed", "captured"] as const)(
         let refusals = 0;
         const interception = vi
           .spyOn(admission, "createSqliteWorkerOperationAdmission")
-          .mockImplementation((admit) =>
+          .mockImplementation((admit, attachment) =>
             create((request, grant) => {
               if (refuseCleanup && request.stage === "prepare") {
                 refuseCleanup = false;
@@ -319,7 +319,7 @@ describe.each(["borrowed", "captured"] as const)(
                 throw new Error("controlled publication cleanup admission refusal");
               }
               admit(request, grant);
-            }),
+            }, attachment),
           );
         const first = worker.run(
           async (scope) => {
