@@ -10,7 +10,6 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { setCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata.test-support.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
-import { emitSessionIdentityMutation } from "../sessions/session-lifecycle-events.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { registerOpenClawAgentDatabase } from "../state/openclaw-agent-db-registry.js";
 import {
@@ -299,6 +298,48 @@ it("refreshes dirty canonical rows before presenting their main alias", async ()
   });
 });
 
+it("keeps a captured row when another physical store resets the same key and session ID", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const cfg = {
+      agents: { list: [{ id: "main", default: true }] },
+      session: { scope: "global" as const },
+    };
+    const query = {
+      agentId: "main",
+      key: "global",
+      storePath: resolveOpenClawAgentSqlitePath({ agentId: "main", env: state.env }),
+    };
+    const otherPath = state.statePath("secondary.sqlite");
+    const entry = { sessionId: "shared-id", lifecycleRevision: "original", updatedAt: 1 };
+    for (const storePath of [query.storePath, otherPath]) {
+      replaceSessionEntrySync({ agentId: query.agentId, sessionKey: query.key, storePath }, entry);
+      registerOpenClawAgentDatabase({ agentId: query.agentId, path: storePath });
+    }
+    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+    try {
+      await projection.ensureMaterialized();
+      const captured = projection.capture(query);
+      expect(captured).toBeDefined();
+      replaceSessionEntrySync(
+        { agentId: query.agentId, sessionKey: query.key, storePath: otherPath },
+        {
+          ...entry,
+          lifecycleRevision: "other-store-reset",
+          updatedAt: 2,
+        },
+      );
+      expect(projection.isCurrent(captured!)).toBe(true);
+      await projection.ensureMaterialized();
+      expect(projection.describe(query, captured)?.entry.lifecycleRevision).toBe("original");
+      expect(projection.describe({ ...query, storePath: otherPath })?.entry.lifecycleRevision).toBe(
+        "other-store-reset",
+      );
+    } finally {
+      projection.dispose();
+    }
+  });
+});
+
 it.each(["reset", "replace"] as const)(
   "keeps the committed same-key row after %s",
   async (kind) => {
@@ -307,28 +348,23 @@ it.each(["reset", "replace"] as const)(
       const cfg = { agents: { list: [{ id: "main", default: true }] } };
       replaceSessionEntrySync(
         { agentId: "main", sessionKey: key },
-        { sessionId: "old", updatedAt: 1 },
+        { sessionId: "old", lifecycleRevision: "original", updatedAt: 1 },
       );
       const projection = await createSessionRowProjection({ cfg });
       await projection.ensureMaterialized();
       try {
         const old = projection.describe({ agentId: "main", key });
+        const sessionId = kind === "reset" ? "old" : "new";
         replaceSessionEntrySync(
           { agentId: "main", sessionKey: key },
-          { sessionId: "new", updatedAt: 2 },
+          { sessionId, lifecycleRevision: "replacement", updatedAt: 2 },
         );
-        emitSessionIdentityMutation({
-          kind,
-          agentId: "main",
-          previous: { sessionId: "old", sessionKeys: [key] },
-          current: { sessionId: "new", sessionKeys: [key] },
-        });
         const current = projection.capture({ agentId: "main", key });
         expect(current).toBeDefined();
         await projection.ensureMaterialized();
         expect(projection.isCurrent(current!)).toBe(true);
         expect(projection.isCurrent(old!)).toBe(false);
-        expect(projection.snapshot({ agentId: "main", key }).row?.sessionId).toBe("new");
+        expect(projection.snapshot({ agentId: "main", key }).row?.sessionId).toBe(sessionId);
         expect(old?.entry.sessionId).toBe("old");
       } finally {
         projection.dispose();

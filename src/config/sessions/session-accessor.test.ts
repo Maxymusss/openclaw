@@ -3257,9 +3257,14 @@ describe("session accessor seam", () => {
     });
     unsubscribe();
 
+    const file = fs.statSync(
+      resolveSqliteTargetFromSessionStorePath(storePath, { agentId: "main" }).path,
+      { bigint: true },
+    );
     expect(result.removedEntries).toBe(1);
     expect(notify).toHaveBeenCalledWith({
       agentId: "main",
+      databaseIdentity: `${file.dev}:${file.ino}`,
       kind: "delete",
       previous: { sessionId: scope.sessionId, sessionKeys: [scope.sessionKey] },
     });

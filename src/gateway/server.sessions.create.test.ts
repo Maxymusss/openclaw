@@ -6309,6 +6309,10 @@ test("sessions.get reads selected global messages from the requested agent store
       storePath: workStorePath,
     });
 
+    const cfg = {
+      agents: { entries: { main: {}, work: {} } },
+      session: { scope: "global", store: storeTemplate },
+    };
     const result = await directSessionReq<{ messages?: unknown[] }>(
       "sessions.get",
       {
@@ -6317,10 +6321,7 @@ test("sessions.get reads selected global messages from the requested agent store
       },
       {
         context: {
-          getRuntimeConfig: () => ({
-            agents: { entries: { main: {}, work: {} } },
-            session: { scope: "global", store: storeTemplate },
-          }),
+          getRuntimeConfig: () => cfg,
         },
       },
     );
@@ -6968,7 +6969,14 @@ test("sessions.create clamps configured capacity to the selected child model win
       }),
     },
   });
-  const cfg = getRuntimeConfig();
+  const cfg = {
+    ...getRuntimeConfig(),
+    models: {
+      providers: {
+        openai: { models: [{ id: "gpt-selectable", contextTokens: 1_000_000 }] },
+      },
+    },
+  };
 
   const created = await directSessionReq(
     "sessions.create",
@@ -6981,14 +6989,7 @@ test("sessions.create clamps configured capacity to the selected child model win
     },
     {
       context: {
-        getRuntimeConfig: () => ({
-          ...cfg,
-          models: {
-            providers: {
-              openai: { models: [{ id: "gpt-selectable", contextTokens: 1_000_000 }] },
-            },
-          },
-        }),
+        getRuntimeConfig: () => cfg,
       },
     },
   );

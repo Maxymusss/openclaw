@@ -593,13 +593,14 @@ test.each([
   });
   const storePath = expectDefined(testState.sessionStorePath, "session store path");
 
+  const cfg = {
+    agents: scenario.agents,
+    session: { store: storePath },
+  };
   const { respond } = await invokeSessionsList({
     requestId: `req-sessions-list-fast-${scenario.label.replaceAll(" ", "-")}`,
     context: {
-      getRuntimeConfig: () => ({
-        agents: scenario.agents,
-        session: { store: storePath },
-      }),
+      getRuntimeConfig: () => cfg,
     },
   });
 

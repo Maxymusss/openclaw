@@ -152,7 +152,12 @@ export async function commitSessionEntryReplacementsInWorker(
       }
       const published = publication.settle(receipt, settlement.kind === "unknown");
       if (published) {
-        publishCommittedSessionIdentity(options.agentId, published.previous, published.current);
+        publishCommittedSessionIdentity(
+          options.agentId,
+          databaseIdentity,
+          published.previous,
+          published.current,
+        );
       }
     }
   }

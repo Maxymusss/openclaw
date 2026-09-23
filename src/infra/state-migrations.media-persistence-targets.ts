@@ -7,10 +7,8 @@ import { resolveStateDir } from "../config/paths.js";
 import { isSessionArchiveArtifactName } from "../config/sessions/artifacts.js";
 import { normalizeAgentId } from "../routing/session-key.js";
 import { createAgentDatabaseDeletionClassifier } from "../state/agent-deletion-discovery.js";
-import {
-  readAgentDatabaseDeletionSnapshot,
-  type AgentDeletionJournalDisposition,
-} from "../state/agent-deletion-journal.read.js";
+import { readAgentDatabaseDeletionSnapshot } from "../state/agent-deletion-journal.read.js";
+import type { AgentDeletionJournalDisposition } from "../state/agent-deletion-journal.types.js";
 import {
   createOpenClawAgentDatabasePathMatcher,
   isPersistentOpenClawAgentDatabasePath,

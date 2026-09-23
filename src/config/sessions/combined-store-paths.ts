@@ -3,7 +3,7 @@ import {
   createRetainedAgentDatabaseMatcher,
   createRetainedAgentDatabaseMatcherFromSnapshot,
 } from "../../state/agent-deletion-discovery.js";
-import type { AgentDatabaseDeletionSnapshot } from "../../state/agent-deletion-journal.read.js";
+import type { AgentDatabaseDeletionSnapshot } from "../../state/agent-deletion-journal.types.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-contract.js";
 import { resolveSessionStoreCompatibilityAgentId } from "../legacy.default-agent-owner.js";
 import type { OpenClawConfig } from "../types.openclaw.js";

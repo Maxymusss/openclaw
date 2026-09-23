@@ -2757,6 +2757,10 @@ describe("talk.session unified handlers", () => {
   it("passes managed-room spawnedBy visibility scope to session resolution", async () => {
     const createRespond = vi.fn();
     const config: OpenClawConfig = { agents: { entries: { worker: {} } } };
+    const projection = {
+      prepareMembership: async () => {},
+      needsMembershipPreparation: () => false,
+    } as SessionRowProjection;
     await callTalkHandler("talk.session.create", {
       params: {
         mode: "stt-tts",
@@ -2768,7 +2772,7 @@ describe("talk.session unified handlers", () => {
       respond: createRespond,
       context: {
         getRuntimeConfig: () => config,
-        ...bindSessionRowProjection({}, () => ({}) as SessionRowProjection),
+        ...bindSessionRowProjection({}, () => projection),
       },
     });
 
@@ -2777,7 +2781,7 @@ describe("talk.session unified handlers", () => {
       brain: "agent-consult",
     });
     expect(mocks.resolveSessionKeyFromResolveParams).toHaveBeenCalledWith({
-      projection: {},
+      projection,
       client: { connId: "conn-1", connect: { scopes: ["operator.write"] } },
       p: {
         key: "agent:worker:subagent:child",
@@ -2791,6 +2795,10 @@ describe("talk.session unified handlers", () => {
 
   it("resolves a bare managed-room session through the persisted fixed-store owner", async () => {
     const createRespond = vi.fn();
+    const projection = {
+      prepareMembership: async () => {},
+      needsMembershipPreparation: () => false,
+    } as SessionRowProjection;
     const config: OpenClawConfig = {
       session: { store: "/tmp/shared-sessions.sqlite", scope: "global" },
       agents: {
@@ -2809,7 +2817,7 @@ describe("talk.session unified handlers", () => {
       respond: createRespond,
       context: {
         getRuntimeConfig: () => config,
-        ...bindSessionRowProjection({}, () => ({}) as SessionRowProjection),
+        ...bindSessionRowProjection({}, () => projection),
       },
     });
 
@@ -2844,6 +2852,10 @@ describe("talk.session unified handlers", () => {
 
   it("keeps direct-tools managed-room sessions behind admin scope", async () => {
     const rejectedRespond = vi.fn();
+    const projection = {
+      prepareMembership: async () => {},
+      needsMembershipPreparation: () => false,
+    } as SessionRowProjection;
     await callTalkHandler("talk.session.create", {
       params: {
         mode: "stt-tts",
@@ -2877,7 +2889,7 @@ describe("talk.session unified handlers", () => {
       respond: createRespond,
       context: {
         getRuntimeConfig: () => ({}) as OpenClawConfig,
-        ...bindSessionRowProjection({}, () => ({}) as SessionRowProjection),
+        ...bindSessionRowProjection({}, () => projection),
       },
     });
 

@@ -9,6 +9,11 @@ import {
 } from "../infra/kysely-sync.js";
 import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js";
 import { normalizeAgentId } from "../routing/session-key.js";
+import type {
+  AgentDatabaseDeletionSnapshot,
+  AgentDeletionJournalDisposition,
+  AgentDeletionJournalStatus,
+} from "./agent-deletion-journal.types.js";
 import { readRegisteredAgentDatabaseRows } from "./openclaw-agent-db-registry.read.js";
 import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db-contract.js";
 import {
@@ -19,15 +24,6 @@ import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { DB } from "./openclaw-state-db.generated.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
-
-type RetainedAgentDeletion = { agentId: string; agentDir: string; databasePaths: string[] };
-export type AgentDeletionJournalDisposition = readonly RetainedAgentDeletion[] | "unavailable";
-export type AgentDatabaseDeletionSnapshot = {
-  retainedDeletions: AgentDeletionJournalDisposition;
-  registeredAgentDatabases: ReturnType<typeof readRegisteredAgentDatabaseRows>;
-};
-
-export type AgentDeletionJournalStatus = "absent" | "pending" | "complete";
 
 /** Completed cleanup still retains a deletion tombstone. */
 export function readAgentDeletionJournalStatusInDatabase(

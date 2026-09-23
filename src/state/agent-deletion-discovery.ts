@@ -4,11 +4,11 @@ import { hasErrnoCode } from "../infra/errno.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import {
-  readAgentDatabaseDeletionSnapshot,
-  type AgentDatabaseDeletionSnapshot,
-  type AgentDeletionJournalDisposition,
-} from "./agent-deletion-journal.read.js";
+import { readAgentDatabaseDeletionSnapshot } from "./agent-deletion-journal.read.js";
+import type {
+  AgentDatabaseDeletionSnapshot,
+  AgentDeletionJournalDisposition,
+} from "./agent-deletion-journal.types.js";
 import {
   createOpenClawAgentDatabasePathMatcher,
   isPersistentOpenClawAgentDatabasePath,

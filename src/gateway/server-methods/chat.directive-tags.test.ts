@@ -3274,6 +3274,8 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       });
       const respond = vi.fn();
       const context = createChatContext();
+      const cfg = context.getRuntimeConfig();
+      context.getRuntimeConfig = () => cfg;
       await initializeSessionReadContext(context);
 
       await expectDefined(

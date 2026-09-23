@@ -44,6 +44,8 @@ export function createSessionRowRefresh(
   const queuedExactReads = new Map<string, ExactRowPreparation>();
   let activeExactReads = 0;
   let exactReadBytes = 0;
+  let exactPreparations = 0;
+  let exactPreparationsIdle: Deferred | undefined;
   function releaseExactRead(id: string, read: ExactRowPreparation) {
     exactReads.delete(id);
     exactReadBytes -= read.bytes;
@@ -161,6 +163,13 @@ export function createSessionRowRefresh(
   }
   async function refreshBatch() {
     for (
+      let pending = exactPreparationsIdle;
+      pending && !owner.state().disposed;
+      pending = exactPreparationsIdle
+    ) {
+      await pending.promise;
+    }
+    for (
       let pending = owner.prepareRegistryFacts();
       pending;
       pending = owner.prepareRegistryFacts()
@@ -189,6 +198,7 @@ export function createSessionRowRefresh(
       await pending;
     }
     if (
+      exactPreparations > 0 ||
       owner.state().topologyDirty ||
       owner.membership.needsPreparation ||
       owner.placementFacts.needsPreparation
@@ -204,7 +214,24 @@ export function createSessionRowRefresh(
     refresh: materializer.refresh,
     refreshBatch,
     prepareExactRows,
+    retainExactPreparation(this: void) {
+      exactPreparations++;
+      exactPreparationsIdle ??= createDeferredCore();
+      let retained = true;
+      return () => {
+        if (!retained) {
+          return;
+        }
+        retained = false;
+        if (--exactPreparations === 0) {
+          const idle = exactPreparationsIdle;
+          exactPreparationsIdle = undefined;
+          idle?.resolve();
+        }
+      };
+    },
     dispose(this: void) {
+      exactPreparationsIdle?.resolve();
       for (const [id, read] of queuedExactReads) {
         read.completion.reject(new Error("Session row projection is no longer active"));
         releaseExactRead(id, read);

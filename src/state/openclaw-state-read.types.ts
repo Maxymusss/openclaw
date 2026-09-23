@@ -66,7 +66,7 @@ import type {
 import type {
   AgentDatabaseDeletionSnapshot,
   AgentDeletionJournalStatus,
-} from "./agent-deletion-journal.read.js";
+} from "./agent-deletion-journal.types.js";
 import type {
   GitHubPublicationReceiptTarget,
   GitHubPublicationRow,

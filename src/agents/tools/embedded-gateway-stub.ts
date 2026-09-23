@@ -74,8 +74,16 @@ async function handleSessionsList(params: Record<string, unknown>) {
 
 async function handleSessionsResolve(params: Record<string, unknown>) {
   const rt = await getRuntime();
+  const publication = sessionProjection;
+  const projection = await borrowSessionRowProjection();
+  do {
+    await projection.prepareMembership();
+  } while (projection.needsMembershipPreparation());
+  if (sessionProjection !== publication) {
+    throw new Error("Embedded session projection is unavailable");
+  }
   const resolved = rt.resolveSessionKeyFromResolveParams({
-    projection: await borrowSessionRowProjection(),
+    projection,
     client: null,
     p: params as SessionsResolveParams,
   });

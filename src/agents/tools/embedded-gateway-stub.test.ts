@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { SessionRowProjection } from "../../gateway/session-row-projection.js";
+import { createDeferredCore } from "../../shared/deferred.js";
 import {
   bindEmbeddedSessionRowProjection,
   createEmbeddedCallGateway,
@@ -57,8 +58,11 @@ const runtime = vi.hoisted(() => ({
 vi.mock("./embedded-gateway-stub.runtime.js", () => runtime);
 
 describe("embedded gateway stub", () => {
-  // The stub forwards this owner to the mocked shared operations without inspecting its rows.
-  const projection = {} as SessionRowProjection;
+  // The stub prepares metadata, then forwards this owner without inspecting its rows.
+  const projection = {
+    prepareMembership: async () => {},
+    needsMembershipPreparation: () => false,
+  } as SessionRowProjection;
   let unbindProjection: () => void;
   beforeEach(() => {
     unbindProjection = bindEmbeddedSessionRowProjection(Promise.resolve(projection));
@@ -122,6 +126,37 @@ describe("embedded gateway stub", () => {
       client: null,
       p: { sessionId: "sess-main", includeGlobal: true },
     });
+  });
+
+  it("rejects a host replacement while session resolution prepares membership", async () => {
+    const preparing = createDeferredCore();
+    const release = createDeferredCore();
+    const prepare = vi.spyOn(projection, "prepareMembership").mockImplementationOnce(async () => {
+      preparing.resolve();
+      await release.promise;
+    });
+    runtime.resolveSessionKeyFromResolveParams.mockReturnValue({
+      ok: true,
+      key: "agent:main:main",
+    });
+    const pending = createEmbeddedCallGateway()({
+      method: "sessions.resolve",
+      params: { sessionId: "sess-main" },
+    });
+    const settled = Promise.allSettled([pending]);
+    let unbindReplacement: (() => void) | undefined;
+    try {
+      await Promise.race([preparing.promise, pending]);
+      unbindReplacement = bindEmbeddedSessionRowProjection(Promise.resolve(projection));
+      release.resolve();
+      await expect(pending).rejects.toThrow("Embedded session projection is unavailable");
+      expect(runtime.resolveSessionKeyFromResolveParams).not.toHaveBeenCalled();
+    } finally {
+      release.resolve();
+      await settled;
+      prepare.mockRestore();
+      unbindReplacement?.();
+    }
   });
 
   it("preserves short-id ambiguity as a successful embedded response", async () => {

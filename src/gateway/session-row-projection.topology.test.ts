@@ -1,9 +1,25 @@
+import { symlinkSync } from "node:fs";
+import { copyFile, rename } from "node:fs/promises";
+import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { withTestTimeout } from "../../test/helpers/promise.js";
-import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { setRuntimeConfigSnapshot } from "../config/config.js";
+import { formatSqliteSessionFileMarker } from "../config/sessions/legacy-sqlite-marker.js";
+import { resolveSessionStorePathCore } from "../config/sessions/paths.js";
+import {
+  deleteSessionEntryLifecycle,
+  loadSessionEntry,
+  replaceSessionEntrySync,
+} from "../config/sessions/session-accessor.js";
+import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import {
+  closeOpenClawAgentDatabaseByPathAsync,
+  openOpenClawAgentDatabase,
+} from "../state/openclaw-agent-db.js";
 import * as stateReads from "../state/openclaw-state-db-readonly.js";
 import {
   closeOpenClawStateDatabaseByPathAsync,
@@ -15,11 +31,306 @@ import {
   requestContext,
   sessionReadHandlers,
 } from "./server-methods/sessions-read-cache.test-support.js";
+import {
+  createLifecycleEventBroadcastHandler,
+  createTranscriptUpdateBroadcastHandler,
+} from "./server-session-events.js";
 import { retainSessionListForegroundWork } from "./session-projection-work.js";
 import { bindSessionRowProjection } from "./session-row-projection-access.js";
 import { createSessionRowProjection } from "./session-row-projection.js";
 
 afterEach(() => vi.restoreAllMocks());
+
+it("publishes an initially unseen retired-agent event from its default store", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const cfg: OpenClawConfig = {
+      agents: { entries: { main: {} } },
+      session: { store: path.join(state.root, "configured", "{agentId}", "sessions.json") },
+    };
+    setRuntimeConfigSnapshot(cfg);
+    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+    const query = { agentId: "retired", key: "agent:retired:original" };
+    const storePath = resolveSessionStorePathCore(undefined, {
+      agentId: query.agentId,
+      env: state.env,
+    });
+    try {
+      replaceSessionEntrySync(
+        { agentId: query.agentId, sessionKey: query.key, storePath },
+        { sessionId: "retired-original", updatedAt: 1 },
+      );
+      sessionChanges.emit({ all: true, scope: "stores" });
+      expect(projection.capture(query)).toBeUndefined();
+      const broadcastToConnIds = vi.fn();
+      await createLifecycleEventBroadcastHandler({
+        broadcastToConnIds,
+        sessionEventSubscribers: { getAll: () => new Set(["subscriber"]) },
+        chatAbortControllers: new Map(),
+        getSessionRowProjection: () => projection,
+      })({ agentId: query.agentId, sessionKey: query.key, reason: "reactivated" });
+      expect(projection.selectEntries(query).map((row) => row.entry.sessionId)).toEqual([
+        "retired-original",
+      ]);
+      expect(broadcastToConnIds).toHaveBeenCalledWith(
+        "sessions.changed",
+        expect.objectContaining({ sessionKey: query.key, reason: "reactivated" }),
+        new Set(["subscriber"]),
+        expect.anything(),
+      );
+    } finally {
+      projection.dispose();
+    }
+  });
+});
+
+it("admits a committed update without host SQL while a marker awaits prepared membership", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    const cfg: OpenClawConfig = { agents: { entries: { main: {}, late: {} } } };
+    setRuntimeConfigSnapshot(cfg);
+    const known = { agentId: "main", sessionKey: "agent:main:known" };
+    const knownEntry = { sessionId: "known", lifecycleRevision: "known-original", updatedAt: 1 };
+    replaceSessionEntrySync(known, knownEntry);
+    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
+    await projection.ensureMaterialized();
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    const prepareMembership = projection.prepareMembership.bind(projection);
+    vi.spyOn(projection, "prepareMembership").mockImplementation(async () => {
+      await prepareMembership();
+      entered.resolve();
+      await release.promise;
+    });
+    const markerScope = {
+      agentId: "late",
+      sessionKey: "agent:late:marker",
+      sessionId: "marker",
+      storePath: resolveSessionStorePathCore(undefined, { agentId: "late", env: state.env }),
+    };
+    replaceSessionEntrySync(markerScope, { sessionId: markerScope.sessionId, updatedAt: 1 });
+    sessionChanges.emit({ all: true, scope: "stores" });
+    expect(projection.findBySessionId(markerScope)).toEqual([]);
+    const broadcastToConnIds = vi.fn();
+    const handler = createTranscriptUpdateBroadcastHandler({
+      broadcastToConnIds,
+      sessionEventSubscribers: { getAll: () => new Set(["subscriber"]) },
+      sessionMessageSubscribers: { get: () => new Set<string>() },
+      chatAbortControllers: new Map(),
+      getSessionRowProjection: () => projection,
+    });
+    const marker = handler({
+      sessionFile: formatSqliteSessionFileMarker(markerScope),
+      message: { role: "assistant", content: "marker" },
+      messageSeq: 1,
+    });
+    const tasks = [marker];
+    const settled = Promise.allSettled(tasks);
+    try {
+      await withTestTimeout(entered.promise, 2_000, "Marker membership did not prepare");
+      expect(projection.needsMembershipPreparation()).toBe(false);
+      sessionChanges.emit({ all: true, scope: "catalog" });
+      expect(projection.dirtyRowCount).toBeGreaterThan(0);
+      const sql = observeHostDataSql();
+      try {
+        tasks.push(
+          handler({
+            target: {
+              ...known,
+              sessionId: knownEntry.sessionId,
+              storePath: resolveSessionStorePathCore(undefined, {
+                agentId: known.agentId,
+                env: state.env,
+              }),
+            },
+            lifecycleRevision: knownEntry.lifecycleRevision,
+            message: { role: "assistant", content: "committed" },
+            messageSeq: 1,
+          }),
+        );
+        expect(sql.queries).toEqual([]);
+      } finally {
+        sql.restore();
+      }
+      release.resolve();
+      await Promise.all(tasks);
+      expect(
+        broadcastToConnIds.mock.calls.filter(([name]) => name === "session.message"),
+      ).toHaveLength(2);
+    } finally {
+      release.resolve();
+      await Promise.allSettled(tasks);
+      await settled;
+      projection.dispose();
+    }
+  });
+});
+
+it.each(
+  (["lifecycle", "marker"] as const).flatMap((kind) =>
+    (
+      [
+        "unchanged",
+        "replace",
+        "same-id-reset",
+        "delete",
+        "physical-store",
+        "dispose",
+        "unrelated-agent",
+        "unrelated-store",
+        "alias-reset",
+      ] as const
+    ).map((change) => ({ kind, change })),
+  ),
+)(
+  "keeps an unknown $kind event with its original generation across $change",
+  async ({ kind, change }) => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      let cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
+      setRuntimeConfigSnapshot(cfg);
+      const unrelated =
+        change === "unrelated-agent" || change === "unrelated-store"
+          ? {
+              agentId: change === "unrelated-agent" ? "other" : "main",
+              sessionKey:
+                change === "unrelated-agent" ? "agent:other:unrelated" : "agent:main:unrelated",
+              storePath: path.join(state.root, "unrelated.sqlite"),
+            }
+          : undefined;
+      if (unrelated) {
+        replaceSessionEntrySync(unrelated, {
+          sessionId: "event-original",
+          lifecycleRevision: "unrelated-original",
+          updatedAt: 1,
+        });
+      }
+      const projection = await createSessionRowProjection({
+        cfg,
+        getConfig: () => cfg,
+        modelCatalog: [],
+      });
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const originalRead = stateReads.executeExistingOpenClawStateRead;
+      let held = false;
+      vi.spyOn(stateReads, "executeExistingOpenClawStateRead").mockImplementation(
+        async (...args) => {
+          const reply = await originalRead(...args);
+          if (args[1].type === "agentDatabaseDeletion.snapshot" && !held) {
+            held = true;
+            entered.resolve();
+            await release.promise;
+          }
+          return reply;
+        },
+      );
+      const storePath = path.join(state.root, "deferred-events.sqlite");
+      cfg = { ...cfg, session: { store: storePath } };
+      setRuntimeConfigSnapshot(cfg);
+      const query = { agentId: "main", key: "agent:main:deferred-event" };
+      const scope = { agentId: query.agentId, sessionKey: query.key, storePath };
+      const entry = { sessionId: "event-original", lifecycleRevision: "original", updatedAt: 1 };
+      replaceSessionEntrySync(scope, entry);
+      let alias: string | undefined;
+      if (change === "alias-reset") {
+        const target = resolveSqliteTargetFromSessionStorePath(storePath, {
+          agentId: query.agentId,
+        });
+        const aliasDirectory = path.join(state.root, "source-alias");
+        symlinkSync(
+          path.dirname(target.path),
+          aliasDirectory,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+        alias = path.join(aliasDirectory, path.basename(target.path));
+        openOpenClawAgentDatabase({ agentId: query.agentId, path: alias });
+      }
+      sessionChanges.emit({ all: true, scope: "config" });
+      expect(projection.capture(query)).toBeUndefined();
+      const broadcastToConnIds = vi.fn();
+      const params = {
+        broadcastToConnIds,
+        sessionEventSubscribers: { getAll: () => new Set(["subscriber"]) },
+        sessionMessageSubscribers: { get: () => new Set<string>() },
+        chatAbortControllers: new Map(),
+        getSessionRowProjection: () => projection,
+      };
+      const pending =
+        kind === "lifecycle"
+          ? createLifecycleEventBroadcastHandler(params)({
+              sessionKey: query.key,
+              agentId: query.agentId,
+              reason: "reactivated",
+            })
+          : createTranscriptUpdateBroadcastHandler(params)({
+              sessionFile: formatSqliteSessionFileMarker({ ...scope, sessionId: entry.sessionId }),
+              message: { role: "assistant", content: [{ type: "text", text: "Original event" }] },
+              messageSeq: 1,
+            });
+      const settled = Promise.allSettled([pending]);
+      try {
+        await withTestTimeout(entered.promise, 2_000, "Event did not await original topology");
+        if (change === "replace" || change === "same-id-reset") {
+          const next = {
+            ...entry,
+            sessionId: change === "replace" ? "event-replacement" : entry.sessionId,
+            lifecycleRevision: "replacement",
+            updatedAt: 2,
+          };
+          replaceSessionEntrySync(scope, next);
+          expect(loadSessionEntry(scope)).toMatchObject(next);
+        } else if (change === "delete") {
+          await deleteSessionEntryLifecycle({
+            agentId: query.agentId,
+            storePath,
+            archiveTranscript: false,
+            target: { canonicalKey: query.key, storeKeys: [query.key] },
+          });
+          expect(loadSessionEntry(scope)).toBeUndefined();
+        } else if (change === "physical-store") {
+          const target = resolveSqliteTargetFromSessionStorePath(storePath, {
+            agentId: query.agentId,
+          });
+          await closeOpenClawAgentDatabaseByPathAsync(target.path, target.agentId);
+          await rename(target.path, `${target.path}.original`);
+          await copyFile(`${target.path}.original`, target.path);
+        } else if (change === "dispose") {
+          projection.dispose();
+        } else if (unrelated) {
+          replaceSessionEntrySync(unrelated, {
+            sessionId: entry.sessionId,
+            lifecycleRevision: "unrelated-reset",
+            updatedAt: 2,
+          });
+        } else if (change === "alias-reset") {
+          expect(alias).toBeDefined();
+          replaceSessionEntrySync(
+            { ...scope, storePath: alias },
+            {
+              ...entry,
+              lifecycleRevision: "alias-reset",
+              updatedAt: 2,
+            },
+          );
+        }
+        release.resolve();
+        const result = await settled;
+        if (change === "unchanged" || unrelated) {
+          expect(result).toEqual([{ status: "fulfilled", value: undefined }]);
+          expect(broadcastToConnIds).toHaveBeenCalledTimes(1);
+          expect(broadcastToConnIds.mock.calls[0]?.[0]).toBe(
+            kind === "lifecycle" ? "sessions.changed" : "session.message",
+          );
+          expect(broadcastToConnIds.mock.calls[0]?.[1]).toMatchObject({ sessionKey: query.key });
+        } else {
+          expect(broadcastToConnIds).not.toHaveBeenCalled();
+        }
+      } finally {
+        release.resolve();
+        await settled;
+        projection.dispose();
+      }
+    });
+  },
+);
 
 it.each(["config", "identity scopes", "dispose", "source"] as const)(
   "does not publish a topology snapshot after its %s changes while reading",

@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { expect, it, vi } from "vitest";
 import * as admission from "../../infra/sqlite-worker-operation-admission.js";
@@ -30,6 +31,7 @@ import {
 it("commits platform-normalized replacements without entering a caller-thread SQLite write transaction", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const database = openOpenClawAgentDatabase({ agentId: "main" });
+    const file = statSync(database.path, { bigint: true });
     const sessionKey = "agent:main:replacement-worker";
     writeSessionEntry(database, sessionKey, {
       sessionId: "replacement",
@@ -75,6 +77,7 @@ it("commits platform-normalized replacements without entering a caller-thread SQ
       expect(mutations).toEqual([
         {
           agentId: "main",
+          databaseIdentity: `${file.dev}:${file.ino}`,
           kind: "reset",
           previous: { sessionId: "replacement", sessionKeys: [sessionKey] },
           current: { sessionId: "replacement", sessionKeys: [sessionKey] },

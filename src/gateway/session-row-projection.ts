@@ -38,6 +38,7 @@ import { createSessionRowProjectionBackfill } from "./session-row-projection-bac
 import { createSessionRowProjectionCatalog } from "./session-row-projection-catalog.js";
 import { isIdentityScopesOnlyConfigChange } from "./session-row-projection-config.js";
 import { createSessionRowProjectionContext } from "./session-row-projection-context.js";
+import { createSessionRowGenerationObservations } from "./session-row-projection-generation.js";
 import { createSessionRowCreatorIndex } from "./session-row-projection-identities.js";
 import {
   lookupSessionRow,
@@ -273,6 +274,9 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     }));
   }
   function mark(change: SessionRowChange) {
+    if ("all" in change && (change.scope === "config" || change.scope === "stores")) {
+      generations.invalidate();
+    }
     if ("all" in change && change.scope === "config" && !change.factsInvalidated) {
       const next = inOwnerContext(() => params.getConfig?.() ?? cfg);
       if (isIdentityScopesOnlyConfigChange(cfg, next)) {
@@ -428,6 +432,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
     refresh,
     refreshBatch,
     prepareExactRows,
+    retainExactPreparation,
     assertExactRowsPrepared,
     dispose: disposeRefresh,
   } = createSessionRowRefresh({
@@ -489,34 +494,26 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       void ensureMaterialized().catch(() => {});
     },
   });
+  const generations = createSessionRowGenerationObservations({
+    config: () => inOwnerContext(() => params.getConfig?.() ?? cfg),
+    env,
+    isActive: () => !disposed,
+    stores: () => stores,
+    isCurrent,
+    matching,
+    markRelated,
+    put,
+    remove,
+    dirty,
+    mark,
+    ensureMaterialized,
+  });
   const stop = [
     retainUserProfileCatalog(),
     sessionChanges.subscribeFacts(membership.invalidate),
     sessionChanges.subscribeProjection(mark),
     onSessionLifecycleEvent(mark),
-    onSessionIdentityMutation((mutation) => {
-      for (const key of mutation.previous.sessionKeys) {
-        for (const row of matching({ key, agentId: mutation.agentId })) {
-          if (mutation.previous.sessionId && row.entry?.sessionId !== mutation.previous.sessionId) {
-            continue;
-          }
-          markRelated(row);
-          if ("current" in mutation && mutation.current.sessionKeys.includes(row.key)) {
-            put(records.renewGeneration(row));
-            dirty.add(records.identity(row));
-          } else {
-            remove(records.identity(row));
-          }
-        }
-      }
-      if ("current" in mutation) {
-        for (const sessionKey of mutation.current.sessionKeys) {
-          mark({ agentId: mutation.agentId, sessionKey });
-        }
-      } else {
-        void ensureMaterialized().catch(() => {});
-      }
-    }),
+    onSessionIdentityMutation(generations.mutate),
   ];
   function isCurrent(row: records.Row) {
     const current = isIncognitoSessionKey(row.key)
@@ -563,6 +560,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
   function dispose() {
     revisionToken = undefined;
     disposed = true;
+    generations.invalidate();
     disposeRefresh();
     catalog.dispose();
     membership.dispose();
@@ -629,6 +627,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       owner: (): SessionRowReadView & { isCurrent: typeof isCurrent } => projection,
     });
   const projection = {
+    observeGeneration: generations.observeGeneration,
     readPreparedRowContext: () =>
       disposed ? undefined : inOwnerContext(() => metadata.readPrepared(epoch)),
     capture(query: records.Lookup) {
@@ -650,6 +649,7 @@ export async function createSessionRowProjection(params: records.ProjectionOptio
       referenced,
       lookup,
       prepareExactRows,
+      retainExactPreparation,
       assertExactRowsPrepared,
       retainArchiveRows: archive.retainRows,
       describe,

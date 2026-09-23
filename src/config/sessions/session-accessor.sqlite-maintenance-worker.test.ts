@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
@@ -415,8 +416,8 @@ it.each(
       vi.spyOn(reclamation, "runSqliteSessionReclamation").mockImplementation((params) =>
         reclaim({
           ...params,
-          onWorkerResult: (result) => {
-            params.onWorkerResult?.(result);
+          onWorkerResult: (result, databaseIdentity) => {
+            params.onWorkerResult?.(result, databaseIdentity);
             if (changed && result.kind === "maintenance-plan") {
               adoptedAfterMutation.push(
                 ageFacts.readSessionEntryMaintenanceAgeFact(database.db, policy),
@@ -602,6 +603,7 @@ it.each(["no-op", "preservation", "statistics", "empty-finalization"] as const)(
       }
       const databaseOptions = { agentId: "main", env: state.env };
       const database = openOpenClawAgentDatabase(databaseOptions);
+      const originalFile = statSync(database.path, { bigint: true });
       const plan =
         operation === "statistics"
           ? reclamation.createSessionMaintenanceStatisticsOperation(databaseOptions)
@@ -646,7 +648,10 @@ it.each(["no-op", "preservation", "statistics", "empty-finalization"] as const)(
         expect(result.kind).toBe(
           operation === "preservation" ? "maintenance-preservation-required" : plan.kind,
         );
-        expect(completed).toHaveBeenCalledExactlyOnceWith(result);
+        expect(completed).toHaveBeenCalledExactlyOnceWith(
+          result,
+          `${originalFile.dev}:${originalFile.ino}`,
+        );
         expect(published).toEqual([]);
         if (operation === "preservation") {
           expect(loadSessionEntry(stale)?.archivedAt).toBeUndefined();
