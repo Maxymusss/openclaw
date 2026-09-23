@@ -4,7 +4,13 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { mergeIosScreenshotCaptures } from "../../scripts/merge-ios-screenshot-captures.mjs";
 
-function writeShard(root: string, family: "iphone" | "ipad-13", part: 1 | 2, partCount: 1 | 2 = 2) {
+function writeShard(
+  root: string,
+  family: "iphone" | "ipad-13",
+  part: 1 | 2,
+  partCount: 1 | 2 = 2,
+  runAttempt = 1,
+) {
   const shard = path.join(root, `${family}-${part}`);
   mkdirSync(path.join(shard, "screenshots"), { recursive: true });
   mkdirSync(path.join(shard, "xcresults", `${family}-${part}.xcresult`), { recursive: true });
@@ -28,6 +34,7 @@ function writeShard(root: string, family: "iphone" | "ipad-13", part: 1 | 2, par
     path.join(shard, "metadata.json"),
     JSON.stringify({
       deviceFamily: family,
+      runAttempt,
       part,
       partCount,
       xcodeVersion: "Xcode 27.0 Build version 18A1",
@@ -50,6 +57,7 @@ describe("mergeIosScreenshotCaptures", () => {
       family,
       inputRoot: root,
       outputRoot: path.join(root, "merged"),
+      runAttempt: 1,
     });
     expect(result).toEqual({
       attempts: 4,
@@ -76,6 +84,7 @@ describe("mergeIosScreenshotCaptures", () => {
           family,
           inputRoot: root,
           outputRoot: path.join(root, "merged"),
+          runAttempt: 1,
         }),
       ).toEqual({
         attempts: 4,
@@ -97,7 +106,22 @@ describe("mergeIosScreenshotCaptures", () => {
         family: "iphone",
         inputRoot: root,
         outputRoot: path.join(root, "merged"),
+        runAttempt: 1,
       }),
     ).toThrow("unique iphone parts 1 through 2");
+  });
+
+  it("rejects a capture from an earlier workflow attempt", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "ios-screenshot-merge-"));
+    writeShard(root, "iphone", 1, 2, 1);
+    writeShard(root, "iphone", 2, 2, 2);
+    expect(() =>
+      mergeIosScreenshotCaptures({
+        family: "iphone",
+        inputRoot: root,
+        outputRoot: path.join(root, "merged"),
+        runAttempt: 2,
+      }),
+    ).toThrow("run attempt 2");
   });
 });

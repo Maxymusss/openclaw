@@ -1329,10 +1329,12 @@ puts JSON.generate(results)
     expect(captureJob).toContain("outputs.artifact_name");
     expect(captureJob).toContain("tar -C apps/ios/build/SnapshotDerivedData -xzf");
     expect(captureJob).toContain("run: pnpm ios:screenshots");
+    expect(captureJob).toContain('--argjson runAttempt "${{ github.run_attempt }}"');
     expect(shardJob).toContain("needs: [preflight, ios-screenshot-capture]");
     expect(shardJob).toContain("device_family: [iphone, ipad-13]");
     expect(shardJob).toContain("runs-on: xcode-27");
     expect(shardJob).toContain("node .ci-harness/scripts/merge-ios-screenshot-captures.mjs");
+    expect(shardJob).toContain('--run-attempt "$RUN_ATTEMPT"');
     expect(shardJob).toContain("Package iOS screenshot shard evidence");
     expect(shardJob).toContain('if [[ "$DEVICE_FAMILY" == "ipad-13" ]]; then');
     expect(

@@ -6288,7 +6288,8 @@ jobs:
             --arg xcodeVersion "$xcode_version" \
             --arg fastlaneVersion "$fastlane_version" \
             --arg nodeVersion "$(node --version)" \
-            '{deviceFamily:$deviceFamily,part:$part,partCount:$partCount,xcodeVersion:$xcodeVersion,fastlaneVersion:$fastlaneVersion,nodeVersion:$nodeVersion}' \
+            --argjson runAttempt "${{ github.run_attempt }}" \
+            '{deviceFamily:$deviceFamily,part:$part,partCount:$partCount,runAttempt:$runAttempt,xcodeVersion:$xcodeVersion,fastlaneVersion:$fastlaneVersion,nodeVersion:$nodeVersion}' \
             > "$shard_root/metadata.json"
 
       - name: Upload iOS screenshot capture shard
@@ -6349,11 +6350,13 @@ jobs:
         id: merge_screenshot_captures
         env:
           DEVICE_FAMILY: ${{ matrix.device_family }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           node .ci-harness/scripts/merge-ios-screenshot-captures.mjs \
             --family "$DEVICE_FAMILY" \
             --input apps/ios/build/ScreenshotCaptureInputs \
-            --output apps/ios/build/ScreenshotCaptureMerged
+            --output apps/ios/build/ScreenshotCaptureMerged \
+            --run-attempt "$RUN_ATTEMPT"
 
       - name: Package iOS screenshot shard evidence
         env:

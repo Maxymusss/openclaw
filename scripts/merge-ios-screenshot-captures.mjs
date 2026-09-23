@@ -23,6 +23,14 @@ function requiredString(value, label) {
   return value.trim();
 }
 
+function requiredPositiveInteger(value, label) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} must be a positive integer`);
+  }
+  return parsed;
+}
+
 function copyUniqueEntries(source, destination, seen, label) {
   for (const entry of readdirSync(source, { withFileTypes: true })) {
     if (seen.has(entry.name)) {
@@ -33,13 +41,14 @@ function copyUniqueEntries(source, destination, seen, label) {
   }
 }
 
-export function mergeIosScreenshotCaptures({ family, inputRoot, outputRoot }) {
+export function mergeIosScreenshotCaptures({ family, inputRoot, outputRoot, runAttempt }) {
   if (!["iphone", "ipad-13"].includes(family)) {
     throw new Error(`unsupported screenshot family: ${family}`);
   }
   if (existsSync(outputRoot)) {
     throw new Error(`screenshot merge output already exists: ${outputRoot}`);
   }
+  const expectedRunAttempt = requiredPositiveInteger(runAttempt, "run attempt");
   const shardRoots = readdirSync(inputRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => path.join(inputRoot, entry.name));
@@ -51,13 +60,14 @@ export function mergeIosScreenshotCaptures({ family, inputRoot, outputRoot }) {
     const metadata = readJson(path.join(root, "metadata.json"), "capture metadata");
     if (
       metadata.deviceFamily !== family ||
+      metadata.runAttempt !== expectedRunAttempt ||
       metadata.partCount !== shardRoots.length ||
       !Number.isInteger(metadata.part) ||
       metadata.part < 1 ||
       metadata.part > metadata.partCount
     ) {
       throw new Error(
-        `capture metadata does not bind ${family} part ${metadata.part ?? "unknown"}/${shardRoots.length}`,
+        `capture metadata does not bind ${family} part ${metadata.part ?? "unknown"}/${shardRoots.length} to run attempt ${expectedRunAttempt}`,
       );
     }
     for (const key of ["xcodeVersion", "fastlaneVersion", "nodeVersion"]) {
@@ -75,6 +85,7 @@ export function mergeIosScreenshotCaptures({ family, inputRoot, outputRoot }) {
     deviceFamily: family,
     fastlaneVersion: shards[0].metadata.fastlaneVersion,
     nodeVersion: shards[0].metadata.nodeVersion,
+    runAttempt: expectedRunAttempt,
     xcodeVersion: shards[0].metadata.xcodeVersion,
   };
   for (const shard of shards.slice(1)) {
@@ -157,12 +168,14 @@ function main() {
       family: { type: "string" },
       input: { type: "string" },
       output: { type: "string" },
+      "run-attempt": { type: "string" },
     },
   });
   const result = mergeIosScreenshotCaptures({
     family: requiredString(values.family, "--family"),
     inputRoot: path.resolve(requiredString(values.input, "--input")),
     outputRoot: path.resolve(requiredString(values.output, "--output")),
+    runAttempt: requiredPositiveInteger(values["run-attempt"], "--run-attempt"),
   });
   process.stdout.write(`${JSON.stringify(result)}\n`);
 }
