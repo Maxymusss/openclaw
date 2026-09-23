@@ -51,6 +51,8 @@ export function createConfiguredProviderModelResolver<T extends { id: string }>(
   const canonicalize = (id: string) =>
     stripSelfProviderModelPrefix(provider, id) !== id ? id : canonicalizeModelId?.(id).trim() || id;
   let configuredModels: Map<string, T> | undefined;
+  let configuredModelsComplete = false;
+  let legacyRows: [string, T][] | undefined;
   return (modelId) => {
     const id = modelId.trim();
     if (!configuredModels) {
@@ -69,6 +71,7 @@ export function createConfiguredProviderModelResolver<T extends { id: string }>(
       for (const [candidate, row] of exactRows) {
         configuredModels.set(candidate, row);
       }
+      configuredModelsComplete = true;
     }
     const rows = configuredModels;
     const canonicalId = canonicalize(id);
@@ -78,9 +81,23 @@ export function createConfiguredProviderModelResolver<T extends { id: string }>(
     }
     // Declared equivalents precede legacy self-provider prefixes. The selected
     // namespace itself is never stripped or merged with a legacy row.
-    for (const [candidate, row] of rows) {
-      const legacy = stripSelfProviderModelPrefix(provider, candidate);
-      if (legacy !== candidate && (legacy === id || canonicalize(legacy.trim()) === canonicalId)) {
+    // Callbacks can observe a partial index or throw while building it; only
+    // completed indexes have a stable legacy projection.
+    if (configuredModelsComplete && !legacyRows) {
+      legacyRows = [];
+      for (const [candidate, row] of rows) {
+        const legacy = stripSelfProviderModelPrefix(provider, candidate);
+        if (legacy !== candidate) {
+          legacyRows.push([legacy, row]);
+        }
+      }
+    }
+    for (const [candidate, row] of legacyRows ?? rows) {
+      const legacy = legacyRows ? candidate : stripSelfProviderModelPrefix(provider, candidate);
+      if (
+        (legacyRows !== undefined || legacy !== candidate) &&
+        (legacy === id || canonicalize(legacy.trim()) === canonicalId)
+      ) {
         return row;
       }
     }
