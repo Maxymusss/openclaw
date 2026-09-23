@@ -48,11 +48,12 @@ describe("Agents API configured credentials", () => {
 
     const result = await harness.runAttempt(params);
 
-    expect(result.terminal).toMatchObject({ kind: "failed" });
-    if (result.terminal.kind !== "failed") {
-      throw new Error("Expected the fixture backend rejection");
-    }
-    expect(String(result.terminal.error)).toContain(backendMessage);
+    expect(result).toMatchObject({
+      terminal: {
+        kind: "failed",
+        error: expect.objectContaining({ message: expect.stringContaining(backendMessage) }),
+      },
+    });
     expect(fetchWithSsrFGuardMock).toHaveBeenCalledTimes(1);
     const call = fetchWithSsrFGuardMock.mock.calls[0]?.[0];
     if (!call) {
