@@ -70,7 +70,6 @@ type ArchiveTransition = Awaited<ReturnType<typeof prepareSessionPatchArchiveTra
 
 export async function executeSessionPatchMutations(params: {
   client: GatewayClient | null;
-  operatorAuthority?: AdmittedRunOperatorAuthority;
   context: GatewayRequestContext;
   diagnostics?: SessionPatchDiagnostics;
   operatorAuthority?: AdmittedRunOperatorAuthority;
