@@ -16,7 +16,7 @@ export const readToolInputSchema = Type.Object({
   ),
 });
 
-const readTruncationOutputSchema = Type.Object(
+export const readTruncationOutputSchema = Type.Object(
   {
     truncated: Type.Literal(true),
     truncatedBy: Type.Union([Type.Literal("lines"), Type.Literal("bytes")]),

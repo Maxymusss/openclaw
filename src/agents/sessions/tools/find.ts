@@ -41,7 +41,7 @@ function isInsideGitRepository(searchPath: string): boolean {
   }
 }
 
-const findSchema = Type.Object({
+export const findSchema = Type.Object({
   pattern: Type.String({
     description: "File glob, e.g. **/*.ts.",
   }),

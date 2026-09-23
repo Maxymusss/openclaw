@@ -21,7 +21,7 @@ import { formatFullOutputFooter, type BashToolDetails } from "./tool-contracts.j
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize } from "./truncate.js";
 
-const bashSchema = Type.Object({
+export const bashSchema = Type.Object({
   title: executionTitleSchema(),
   command: Type.String({ description: "Bash command." }),
   timeout: Type.Optional(Type.Number({ description: "Optional timeout seconds; default none." })),

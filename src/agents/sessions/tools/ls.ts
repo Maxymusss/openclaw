@@ -23,7 +23,7 @@ import type { LsToolDetails, LsToolInput } from "./tool-contracts.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import { DEFAULT_MAX_BYTES } from "./truncate.js";
 
-const lsSchema = Type.Object({
+export const lsSchema = Type.Object({
   path: Type.Optional(Type.String({ description: "Directory; default cwd." })),
   limit: Type.Optional(Type.Number({ description: "Max entries; default 500." })),
   after: Type.Optional(

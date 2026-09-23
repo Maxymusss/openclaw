@@ -63,7 +63,7 @@ const replaceEditSchema = Type.Object(
   {},
 );
 
-const editSchema = Type.Object(
+export const editSchema = Type.Object(
   {
     path: Type.String({
       description: "File path; relative/absolute.",
@@ -76,7 +76,7 @@ const editSchema = Type.Object(
   {},
 );
 
-const EditToolOutputSchema = Type.Union([
+export const EditToolOutputSchema = Type.Union([
   Type.Object({ changed: Type.Literal(false) }, { additionalProperties: false }),
   Type.Object(
     {

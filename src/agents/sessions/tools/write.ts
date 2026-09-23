@@ -39,14 +39,14 @@ import {
 import type { WriteToolDetails } from "./tool-contracts.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 
-const writeSchema = Type.Object({
+export const writeSchema = Type.Object({
   path: Type.String({
     description: "File path; relative/absolute.",
   }),
   content: Type.String({ description: "File content." }),
 });
 
-const WriteToolOutputSchema = Type.Union([
+export const WriteToolOutputSchema = Type.Union([
   Type.Object({ changed: Type.Literal(false) }, { additionalProperties: false }),
   Type.Object(
     {

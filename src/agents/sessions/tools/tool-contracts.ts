@@ -4,13 +4,20 @@
  * Keeps tool factories, renderers, and callers aligned on typed payload and metadata shapes.
  */
 import { Type, type Static } from "typebox";
-import type { Edit } from "./edit-diff.js";
+import type { bashSchema } from "./bash.js";
+import type { editSchema, EditToolOutputSchema } from "./edit.js";
+import type { findSchema } from "./find.js";
+import type { grepSchema } from "./grep.js";
+import type { lsSchema } from "./ls.js";
+import type {
+  readToolInputSchema,
+  readToolOutputSchema,
+  readTruncationOutputSchema,
+} from "./read-tool-contract.js";
 import type { TruncationResult } from "./truncate.js";
+import type { writeSchema, WriteToolOutputSchema } from "./write.js";
 
-export interface BashToolInput {
-  command: string;
-  timeout?: number;
-}
+export type BashToolInput = Static<typeof bashSchema>;
 
 export interface BashToolDetails {
   truncation?: TruncationResult;
@@ -21,30 +28,9 @@ export function formatFullOutputFooter(path: string): string {
   return `Full output: ${path}`;
 }
 
-export interface EditToolInput {
-  path: string;
-  edits: Edit[];
-}
-
-export type EditToolDetails =
-  | {
-      changed: false;
-    }
-  | {
-      changed: true;
-      /** Display-oriented diff of the changes made */
-      diff: string;
-      /** Standard unified patch of the changes made */
-      patch: string;
-      /** Line number of the first change in the new file (for editor navigation) */
-      firstChangedLine?: number;
-    };
-
-export interface FindToolInput {
-  pattern: string;
-  path?: string;
-  limit?: number;
-}
+export type EditToolInput = Static<typeof editSchema>;
+export type EditToolDetails = Static<typeof EditToolOutputSchema>;
+export type FindToolInput = Static<typeof findSchema>;
 
 // Keep one text payload; duplicate truncation content can exceed Code Mode value bounds.
 export interface FindToolDetails {
@@ -53,15 +39,7 @@ export interface FindToolDetails {
   resultLimitReached?: number;
 }
 
-export interface GrepToolInput {
-  pattern: string;
-  path?: string;
-  glob?: string;
-  ignoreCase?: boolean;
-  literal?: boolean;
-  context?: number;
-  limit?: number;
-}
+export type GrepToolInput = Static<typeof grepSchema>;
 
 export interface GrepToolDetails {
   content: string;
@@ -70,26 +48,15 @@ export interface GrepToolDetails {
   linesTruncated?: boolean;
 }
 
-export interface LsToolInput {
-  path?: string;
-  limit?: number;
-  after?: string;
-}
+export type LsToolInput = Static<typeof lsSchema>;
 
 export interface LsToolDetails {
   content: string;
   nextAfter?: string;
 }
 
-export interface ReadToolInput {
-  path: string;
-  offset?: number;
-  limit?: number;
-  cursor?: number;
-  optional?: true;
-}
-
-export type ReadToolTruncationDetails = Omit<TruncationResult, "content">;
+export type ReadToolInput = Static<typeof readToolInputSchema>;
+export type ReadToolTruncationDetails = Static<typeof readTruncationOutputSchema>;
 
 const readContinuationFields = {
   offset: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
@@ -113,41 +80,6 @@ export const ReadToolContinuationSchema = Type.Union([
 
 export type ReadToolContinuation = Static<typeof ReadToolContinuationSchema>;
 
-export type ReadToolDetails =
-  | { kind: "text"; content: string }
-  | { kind: "image"; content: string; mimeType: string }
-  | {
-      kind: "truncated";
-      content: string;
-      truncation: ReadToolTruncationDetails;
-      continuation: ReadToolContinuation;
-    }
-  | {
-      kind: "not_found";
-      status: "not_found";
-      path: string;
-      optional: true;
-    };
-
-export interface WriteToolInput {
-  path: string;
-  content: string;
-}
-
-export type WriteToolDetails =
-  | { changed: false }
-  | {
-      changed: true;
-      created: true;
-      diff: string;
-      patch: string;
-      firstChangedLine?: number;
-    }
-  | {
-      changed: true;
-      created: false;
-      diff: string;
-      patch: string;
-      firstChangedLine?: number;
-    }
-  | { changed: true; created?: boolean };
+export type ReadToolDetails = Static<typeof readToolOutputSchema>;
+export type WriteToolInput = Static<typeof writeSchema>;
+export type WriteToolDetails = Static<typeof WriteToolOutputSchema>;
