@@ -4,7 +4,7 @@ on:
 permissions:
   contents: read
 jobs:
-  npm-lock-proof:
+  npm-lock-owner-proof:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -13,45 +13,5 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 1
-      - name: Execute exact helper on real Git fixtures
-        id: proof
-        run: python3 scripts/npm-lock-hosted-proof.py
-      - name: Synthetic setup sentinel irrelevant
-        id: irrelevant
-        if: steps.proof.outputs.irrelevant != 'true'
-        run: echo 'Synthetic setup selected; no dependencies installed.'
-      - name: Synthetic setup sentinel relevant
-        id: relevant
-        if: steps.proof.outputs.relevant != 'true'
-        run: echo 'Synthetic setup selected; no dependencies installed.'
-      - name: Synthetic setup sentinel unknown
-        id: unknown
-        if: steps.proof.outputs.unknown != 'true'
-        run: echo 'Synthetic setup selected; no dependencies installed.'
-      - name: Synthetic setup sentinel manual
-        id: manual
-        if: steps.proof.outputs.manual != 'true'
-        run: echo 'Synthetic setup selected; no dependencies installed.'
-      - name: Synthetic setup sentinel mismatch
-        id: mismatch
-        if: steps.proof.outputs.mismatch != 'true'
-        run: echo 'Synthetic setup selected; no dependencies installed.'
-      - name: Synthetic setup sentinel historical
-        id: historical
-        if: steps.proof.outputs.historical != 'true'
-        run: echo 'Synthetic setup selected; no dependencies installed.'
-      - name: Verify hosted selection
-        env:
-          IRRELEVANT: ${{ steps.irrelevant.outcome }}
-          RELEVANT: ${{ steps.relevant.outcome }}
-          UNKNOWN: ${{ steps.unknown.outcome }}
-          MANUAL: ${{ steps.manual.outcome }}
-          MISMATCH: ${{ steps.mismatch.outcome }}
-          HISTORICAL: ${{ steps.historical.outcome }}
-        run: |
-          test "$IRRELEVANT" = skipped
-          test "$RELEVANT" = success
-          test "$UNKNOWN" = success
-          test "$MANUAL" = success
-          test "$MISMATCH" = success
-          test "$HISTORICAL" = success
+      - name: Actual owner depth-one export and production check shell
+        run: python3 scripts/npm-lock-hosted-owner-proof.py
