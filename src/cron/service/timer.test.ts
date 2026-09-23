@@ -1,6 +1,6 @@
 // Cron service timer tests cover timer scheduling, cancellation, and wakeups.
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { setupCronServiceSuite, writeCronStoreSnapshot } from "../../cron/service.test-harness.js";
@@ -8,14 +8,9 @@ import { createCronServiceState as createCronServiceStateBase } from "../../cron
 import { onTimer } from "../../cron/service/timer.test-support.js";
 import { loadCronStore } from "../../cron/store.js";
 import type { CronJob } from "../../cron/types.js";
-import { getActiveGatewayRootWorkCount } from "../../process/gateway-work-admission.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import * as taskExecutor from "../../tasks/task-executor.js";
-import { findTaskByRunId, listTaskRecords } from "../../tasks/task-registry.js";
-import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers.js";
-import { formatTaskStatusDetail } from "../../tasks/task-status.js";
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
-import { getSuspensionVisibleCronTaskRunCount } from "./active-run-cancellation.js";
+import { findCronRunForTests, readCronRunRecordsForTests } from "../run-history.test-support.js";
 import { start, stop } from "./ops-lifecycle.js";
 import { add as addJob, update as updateJob } from "./ops-mutations.js";
 import { status as cronStatus } from "./ops-read.js";
@@ -108,14 +103,10 @@ function createDueScriptJob(params: {
 
 function findCronTaskByBaseRunId(baseRunId: string) {
   return (
-    findTaskByRunId(baseRunId) ??
-    listTaskRecords().find((task) => task.runId?.startsWith(`${baseRunId}:`))
+    findCronRunForTests(baseRunId) ??
+    readCronRunRecordsForTests().find((task) => task.runId?.startsWith(`${baseRunId}:`))
   );
 }
-
-afterEach(() => {
-  resetTaskRegistryForTests();
-});
 
 describe("cron service timer seam coverage", () => {
   it.each(["timer", "startup"] as const)("%s ignores stale event schedule slots", async (entry) => {
@@ -279,18 +270,11 @@ describe("cron service timer seam coverage", () => {
     if (!task) {
       throw new Error("expected cron task ledger record");
     }
-    expect(task.runtime).toBe("cron");
-    expect(task.sourceId).toBe("main-heartbeat-job");
+    expect(task.jobId).toBe("main-heartbeat-job");
     expect(task.agentId).toBe("ops");
-    expect(task.ownerKey).toBe("");
-    expect(task.scopeKind).toBe("system");
-    expect(task.childSessionKey).toBeUndefined();
+    expect(task.sessionKey).toBeUndefined();
     expect(task.runId).toMatch(new RegExp(`^cron:main-heartbeat-job:${now}:`));
-    expect(task.label).toBe("main heartbeat job");
-    expect(task.task).toBe("main heartbeat job");
     expect(task.status).toBe("succeeded");
-    expect(task.deliveryStatus).toBe("not_applicable");
-    expect(task.notifyPolicy).toBe("silent");
     expect(task.startedAt).toBe(now);
     expect(task.lastEventAt).toBe(now);
     expect(task.endedAt).toBe(now);
@@ -945,9 +929,9 @@ describe("cron service timer seam coverage", () => {
     if (!task) {
       throw new Error("expected isolated cron task ledger record");
     }
-    expect(task.childSessionKey).toBe("agent:finn:cron:isolated-agent-job:run:run-1");
+    expect(task.sessionKey).toBe("agent:finn:cron:isolated-agent-job:run:run-1");
     expect(task.status).toBe("succeeded");
-    expect(task.terminalSummary).toBe("done");
+    expect(task.summary).toBe("done");
     expect(task.detail).toMatchObject({
       kind: "cron-run",
       status: "ok",
@@ -998,103 +982,7 @@ describe("cron service timer seam coverage", () => {
     if (!task) {
       throw new Error("expected current-bound cron task ledger record");
     }
-    expect(task.childSessionKey).toBe("agent:finn:cron:isolated-agent-job:run:run-1");
+    expect(task.sessionKey).toBe("agent:finn:cron:isolated-agent-job:run:run-1");
     expect(task.status).toBe("succeeded");
-  });
-
-  it("seeds active scheduled cron task progress for status surfaces", async () => {
-    const { storePath } = await makeStorePath();
-    const now = Date.parse("2026-03-23T12:00:00.000Z");
-    const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
-    const runResult = createDeferred<{ status: "ok"; summary: string }>();
-    const runIsolatedAgentJob = vi.fn(() => runResult.promise);
-
-    await writeCronStoreSnapshot({
-      storePath,
-      jobs: [createDueIsolatedAgentJob({ now })],
-    });
-
-    const state = createCronServiceState({
-      storePath,
-      cronEnabled: true,
-      log: logger,
-      nowMs: () => now,
-      enqueueSystemEvent,
-      requestHeartbeat,
-      runIsolatedAgentJob,
-    });
-
-    const timerRun = onTimer(state);
-    try {
-      await vi.waitFor(() => {
-        expect(runIsolatedAgentJob).toHaveBeenCalledTimes(1);
-      });
-
-      const task = findCronTaskByBaseRunId(`cron:isolated-agent-job:${now}`);
-      if (!task) {
-        throw new Error("expected active cron task ledger record");
-      }
-      expect(task.status).toBe("running");
-      expect(task.progressSummary).toBe("Running automation.");
-      expect(formatTaskStatusDetail(task)).toBe("Running automation.");
-
-      runResult.resolve({ status: "ok", summary: "done" });
-      await timerRun;
-    } finally {
-      // Stop new ticks and settle this core before the shared hooks reset its state.
-      stop(state);
-      runResult.resolve({ status: "ok", summary: "done" });
-      try {
-        await timerRun;
-      } finally {
-        await vi.waitFor(() => {
-          expect(getSuspensionVisibleCronTaskRunCount()).toBe(0);
-          expect(getActiveGatewayRootWorkCount()).toBe(0);
-        });
-      }
-    }
-  });
-
-  it("keeps scheduler progress when task ledger creation fails", async () => {
-    const { storePath } = await makeStorePath();
-    const now = Date.parse("2026-03-23T12:00:00.000Z");
-    const enqueueSystemEvent = vi.fn();
-    const requestHeartbeat = vi.fn();
-    const ledgerError = new Error("disk full");
-
-    await writeCronStoreSnapshot({
-      storePath,
-      jobs: [createDueMainJob({ now, wakeMode: "next-heartbeat" })],
-    });
-
-    const createTaskRecordSpy = vi
-      .spyOn(taskExecutor, "createRunningTaskRunCore")
-      .mockImplementation(() => {
-        throw ledgerError;
-      });
-
-    const state = createCronServiceState({
-      storePath,
-      cronEnabled: true,
-      log: logger,
-      nowMs: () => now,
-      enqueueSystemEvent,
-      requestHeartbeat,
-      runIsolatedAgentJob: vi.fn(async () => ({ status: "ok" as const })),
-    });
-
-    await onTimer(state);
-
-    expect(logger.warn).toHaveBeenCalledWith(
-      { jobId: "main-heartbeat-job", error: ledgerError },
-      "cron: failed to create task ledger record",
-    );
-    expect(enqueueSystemEvent).toHaveBeenCalledWith("heartbeat seam tick", {
-      agentId: "main",
-      contextKey: "cron:main-heartbeat-job",
-    });
-
-    createTaskRecordSpy.mockRestore();
   });
 });

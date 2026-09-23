@@ -168,7 +168,7 @@ export async function scanStatusJsonGateway(
         ...(!status
           ? [
               {
-                fields: ["agents", "sessions", "heartbeat", "tasks", "taskAudit"],
+                fields: ["agents", "sessions", "heartbeat"],
                 reason: projectionError,
               },
             ]

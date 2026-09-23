@@ -1,10 +1,7 @@
-/** Reset overlap must preserve the successor task through the real maintenance decision. */
-import { afterEach, describe, expect, it } from "vitest";
-import {
-  requireTaskByRunId,
-  withAcpManagerTaskStateDir,
-} from "../../../test/helpers/acp-manager-task-state.js";
+/** Reset overlap must preserve the native successor until its provider stream settles. */
+import { describe, expect, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import { isAcpTurnActive } from "./active-turns.js";
 import { getAcpSessionResetControls } from "./manager.reset-controls.js";
 import {
@@ -15,23 +12,12 @@ import {
   installAcpSessionManagerTestLifecycle,
   mockParentedAcpSessionEntries,
 } from "./manager.test-helpers.js";
-import { resolveAcpSessionTarget } from "./manager.utils.js";
 
-afterEach(async () => {
-  const maintenance = await import("../../tasks/task-registry.maintenance.js");
-  await maintenance.stopTaskRegistryMaintenance();
-  maintenance.resetTaskRegistryMaintenanceRuntimeForTests();
-});
-
-describe("ACP reset successor task liveness", () => {
+describe("ACP reset successor liveness", () => {
   installAcpSessionManagerTestLifecycle();
 
-  it("retains a silent successor through maintenance after the retired predecessor settles", async () => {
-    await withAcpManagerTaskStateDir(async () => {
-      const { runTaskRegistryMaintenance } =
-        await import("../../tasks/task-registry.maintenance.js");
-      const { createTaskRegistryMaintenanceHarness } =
-        await import("../../tasks/task-registry.maintenance.test-support.js");
+  it("retains a silent successor after the retired predecessor settles", async () => {
+    await withStateDirEnv("openclaw-acp-manager-", async () => {
       const sessionKey = "agent:codex:acp:reset-liveness";
       const runtimeState = createRuntime();
       const oldEntered = createDeferred();
@@ -92,19 +78,8 @@ describe("ACP reset successor task liveness", () => {
           }),
         ]);
         expect(ensureCount).toBe(2);
-        const successor = requireTaskByRunId("successor-turn");
-        expect(successor.status).toBe("running");
-        const staleAt = Date.now() - 10 * 60_000;
-        const { currentTasks } = createTaskRegistryMaintenanceHarness({
-          tasks: [{ ...successor, createdAt: staleAt, startedAt: staleAt, lastEventAt: staleAt }],
-          hasActiveAcpTurn: (key, agentId) =>
-            isAcpTurnActive(resolveAcpSessionTarget({ cfg: baseCfg, sessionKey: key, agentId })),
-        });
         releaseOld.resolve();
         await oldSettled;
-        const maintenance = await runTaskRegistryMaintenance();
-        expect(currentTasks.get(successor.taskId)?.status).toBe("running");
-        expect(maintenance.reconciled).toBe(0);
         expect(isAcpTurnActive({ sessionKey, agentId: "codex" })).toBe(true);
         releaseFresh.resolve();
         await fresh;

@@ -1,6 +1,6 @@
+import { captureCancellationControl } from "../../agents/cancellation-control.js";
 /** Cancellation path for active ACP turns and idle runtime handles. */
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { captureTaskCancellationControl } from "../../tasks/task-cancellation-context.js";
 import {
   AcpRuntimeError,
   toAcpRuntimeError,
@@ -33,7 +33,7 @@ export async function runManagerCancelSession(params: {
   ensureRuntimeHandle: EnsureManagerRuntimeHandle;
   setSessionState: SetManagerSessionState;
 }): Promise<void> {
-  const cancellationControl = captureTaskCancellationControl();
+  const cancellationControl = captureCancellationControl();
   const actorKey = acpSessionActorKey(params);
   const expectedRunId = params.expectedRunId?.trim();
   const expectedInstanceId = params.expectedInstanceId?.trim();

@@ -5,7 +5,7 @@
  * source id, duplicate-guard timing, and prompt/status wording.
  */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { listFreshTasksForOwnerKey } from "../tasks/runtime-internal.js";
+import { listMediaGenerationOperations } from "./media-generation-activity.js";
 import {
   buildActiveMediaGenerationTaskPromptContext,
   createMediaGenerationTaskStatusOwner,
@@ -91,7 +91,7 @@ export async function buildMediaTaskRuntimeContext(params: {
     return undefined;
   }
   const sessionKey = normalizeOptionalString(params.sessionKey);
-  const tasks = sessionKey ? await listFreshTasksForOwnerKey(sessionKey) : [];
+  const tasks = sessionKey ? listMediaGenerationOperations(sessionKey, params.agentId) : [];
   const facts = enabled.map(
     ([tool, taskKind]) =>
       buildActiveMediaGenerationTaskPromptContext({

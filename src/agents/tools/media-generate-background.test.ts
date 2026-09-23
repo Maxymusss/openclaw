@@ -1,3 +1,10 @@
+import { admitMediaHandle } from "../media-generation-activity.test-support.js";
+vi.mock("../media-generation-activity.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../media-generation-activity.js")>();
+  const { observeMediaActivity } =
+    await import("../media-generation-activity.observer.test-support.js");
+  return { ...observeMediaActivity(actual, taskExecutorMocks) };
+});
 // Media generation background tests cover detached task creation, progress
 // updates, and completion wake delivery for generated media results.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -19,9 +26,6 @@ import {
   taskDeliveryRuntimeMocks,
   taskExecutorMocks,
 } from "./media-generate-background.test-support.js";
-
-vi.mock("../../tasks/detached-task-runtime.js", () => taskExecutorMocks);
-vi.mock("../../tasks/task-registry-delivery-runtime.js", () => taskDeliveryRuntimeMocks);
 vi.mock("../subagents/announce/subagent-announce-delivery.js", () => announceDeliveryMocks);
 
 const {
@@ -41,7 +45,7 @@ describe("image generate background helpers", () => {
   });
 
   it("creates a running task with queued progress text", () => {
-    taskExecutorMocks.createRunningTaskRun.mockReturnValue({
+    taskExecutorMocks.createOperation.mockReturnValue({
       taskId: "task-123",
     });
 
@@ -71,12 +75,12 @@ describe("image generate background helpers", () => {
 
   it("records task progress updates", () => {
     imageGenerationTaskLifecycle.recordTaskProgress({
-      handle: {
+      handle: admitMediaHandle({
         taskId: "task-123",
         runId: "tool:image_generate:abc",
         requesterSessionKey: "agent:main:discord:direct:123",
         taskLabel: "small watercolor robot",
-      },
+      }),
       progressSummary: "Saving generated image",
     });
 
@@ -103,8 +107,6 @@ describe("image generate background helpers", () => {
         mediaUrls: ["/tmp/generated-robot.png"],
       }),
     });
-
-    expect(taskDeliveryRuntimeMocks.sendMessage).not.toHaveBeenCalled();
     expectFallbackMediaAnnouncement({
       deliverAnnouncementMock: announceDeliveryMocks.deliverSubagentAnnouncement,
       requesterSessionKey: "agent:main:discord:direct:123",
@@ -137,8 +139,6 @@ describe("image generate background helpers", () => {
         statusLabel: "failed",
       }),
     ).resolves.toEqual({ status: "permanent_failure" });
-
-    expect(taskDeliveryRuntimeMocks.sendMessage).not.toHaveBeenCalled();
     expect(announceDeliveryMocks.deliverSubagentAnnouncement).toHaveBeenCalledTimes(1);
   });
 });
@@ -167,7 +167,7 @@ describe("music generate background helpers", () => {
   });
 
   it("creates a running task with queued progress text", () => {
-    taskExecutorMocks.createRunningTaskRun.mockReturnValue({
+    taskExecutorMocks.createOperation.mockReturnValue({
       taskId: "task-123",
     });
 
@@ -197,12 +197,12 @@ describe("music generate background helpers", () => {
 
   it("records task progress updates", () => {
     musicGenerationTaskLifecycle.recordTaskProgress({
-      handle: {
+      handle: admitMediaHandle({
         taskId: "task-123",
         runId: "tool:music_generate:abc",
         requesterSessionKey: "agent:main:discord:direct:123",
         taskLabel: "night-drive synthwave",
-      },
+      }),
       progressSummary: "Saving generated music",
     });
 
@@ -227,8 +227,6 @@ describe("music generate background helpers", () => {
         mediaUrls: ["/tmp/generated-night-drive.mp3"],
       }),
     });
-
-    expect(taskDeliveryRuntimeMocks.sendMessage).not.toHaveBeenCalled();
     expect(announceDeliveryMocks.deliverSubagentAnnouncement).toHaveBeenCalledTimes(1);
   });
 
@@ -305,8 +303,6 @@ describe("music generate background helpers", () => {
         statusLabel: "failed",
       }),
     ).resolves.toEqual({ status: "permanent_failure" });
-
-    expect(taskDeliveryRuntimeMocks.sendMessage).not.toHaveBeenCalled();
     expect(announceDeliveryMocks.deliverSubagentAnnouncement).toHaveBeenCalledTimes(1);
   });
 });
@@ -329,7 +325,7 @@ describe("video generate background helpers", () => {
   });
 
   it("creates a running task with queued progress text", () => {
-    taskExecutorMocks.createRunningTaskRun.mockReturnValue({
+    taskExecutorMocks.createOperation.mockReturnValue({
       taskId: "task-123",
     });
 
@@ -356,12 +352,12 @@ describe("video generate background helpers", () => {
 
   it("records task progress updates", () => {
     videoGenerationTaskLifecycle.recordTaskProgress({
-      handle: {
+      handle: admitMediaHandle({
         taskId: "task-123",
         runId: "tool:video_generate:abc",
         requesterSessionKey: "agent:main:discord:direct:123",
         taskLabel: "friendly lobster surfing",
-      },
+      }),
       progressSummary: "Saving generated video",
     });
 
@@ -373,7 +369,7 @@ describe("video generate background helpers", () => {
   });
 
   it("keeps the detached video tool run context registered until terminal status", () => {
-    taskExecutorMocks.createRunningTaskRun.mockReturnValue({
+    taskExecutorMocks.createOperation.mockReturnValue({
       taskId: "task-123",
     });
 
@@ -419,8 +415,6 @@ describe("video generate background helpers", () => {
         mediaUrls: ["/tmp/generated-lobster.mp4"],
       }),
     });
-
-    expect(taskDeliveryRuntimeMocks.sendMessage).not.toHaveBeenCalled();
     expect(announceDeliveryMocks.deliverSubagentAnnouncement).toHaveBeenCalledTimes(1);
   });
 
@@ -443,8 +437,6 @@ describe("video generate background helpers", () => {
         statusLabel: "failed",
       }),
     ).resolves.toEqual({ status: "permanent_failure" });
-
-    expect(taskDeliveryRuntimeMocks.sendMessage).not.toHaveBeenCalled();
     expect(announceDeliveryMocks.deliverSubagentAnnouncement).toHaveBeenCalledTimes(1);
   });
 
@@ -465,7 +457,6 @@ describe("video generate background helpers", () => {
     });
 
     expect(announceDeliveryMocks.deliverSubagentAnnouncement).toHaveBeenCalledTimes(1);
-    expect(taskDeliveryRuntimeMocks.sendMessage).not.toHaveBeenCalled();
     const replyInstruction = String(getDeliveredInternalEvents().at(0)?.replyInstruction);
     expect(replyInstruction).toContain("current visible-reply contract");
     expect(replyInstruction).toContain("concise user-facing failure");

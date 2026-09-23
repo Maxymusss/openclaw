@@ -146,9 +146,6 @@ class CronPage extends OpenClawLightDomElement {
             this.gateway.connected &&
             this.gateway.client
           ) {
-            if (event.event === "task") {
-              this.runTranscript.observe(event.payload);
-            }
             if (event.event === "cron") {
               void this.refreshCron({ tableFilters: true, coalesce: true });
             } else if (

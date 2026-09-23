@@ -16,7 +16,6 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
-import { upsertTaskWithDeliveryStateToSqlite } from "../tasks/task-registry.store.sqlite.js";
 import { runStartupSessionMigration } from "./server-startup-session-migration.js";
 
 const stateDir = process.env.OPENCLAW_STATE_DIR!;
@@ -120,21 +119,24 @@ try {
           "INSERT INTO subagent_runs(run_id,child_session_key,requester_session_key,created_at,payload_json) VALUES(?,?,?,?,?)",
         )
         .run("malformed-owner", key("malformed-owner"), "agent:main:main", Date.now(), "{}");
-      upsertTaskWithDeliveryStateToSqlite({
-        task: {
-          taskId: "retained-task",
-          runtime: "subagent",
-          requesterSessionKey: "agent:main:main",
-          ownerKey: "agent:main:main",
-          childSessionKey: key("retained-task"),
-          scopeKind: "session",
-          task: "retained completion",
-          status: "succeeded",
-          deliveryStatus: "pending",
-          notifyPolicy: "done_only",
-          createdAt: Date.now(),
-        },
-      });
+      // Retained legacy rows are inert upgrade data, not an execution owner.
+      openOpenClawStateDatabase()
+        .db.prepare(
+          "INSERT INTO task_runs(task_id,runtime,requester_session_key,owner_key,child_session_key,scope_kind,task,status,delivery_status,notify_policy,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        )
+        .run(
+          "retained-task",
+          "subagent",
+          "agent:main:main",
+          "agent:main:main",
+          key("retained-task"),
+          "session",
+          "retained completion",
+          "succeeded",
+          "pending",
+          "done_only",
+          Date.now(),
+        );
     } else if (mode === "successor" || mode === "embedded") {
       await replaceSessionEntry(scope("incognito-control"), {
         sessionId: "incognito",

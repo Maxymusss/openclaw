@@ -146,8 +146,6 @@ public final class OpenClawChatViewModel {
     public private(set) var streamingAssistantText: String?
 
     public private(set) var toolActivities: [OpenClawChatPendingToolCall] = []
-    var subagentActivities: [ChatSubagentActivity] = []
-    var hiddenWorkingSubagentCount = 0
     private(set) var timelineRevision: UInt64 = 0
     /// Setter is module-internal for the transcript-cache extension only.
     public internal(set) var sessions: [OpenClawChatSessionEntry] = [] {
@@ -498,11 +496,6 @@ public final class OpenClawChatViewModel {
         }
     }
 
-    @ObservationIgnored
-    var subagentActivityState = ChatSubagentActivityState()
-    @ObservationIgnored
-    var subagentActivityCleanupTask: Task<Void, Never>?
-
     var lastHealthPollAt: Date?
 
     public init(
@@ -611,7 +604,6 @@ public final class OpenClawChatViewModel {
         }
         self.outboxChangesTask?.cancel()
         self.activeSessionRunIndicatorTimeoutTask?.cancel()
-        self.subagentActivityCleanupTask?.cancel()
         for (_, task) in self.pendingRunOwnerTasks {
             task.cancel()
         }
@@ -935,7 +927,6 @@ extension OpenClawChatViewModel {
 
             Task { [weak self] in await self?.refreshQuestions() }
             Task { [weak self] in await self?.refreshSwarmCapability(sessionSnapshot: context.session) }
-            Task { [weak self] in await self?.refreshSubagentActivities(sessionSnapshot: context.session) }
 
             let payload = try await transport.requestHistory(sessionKey: context.session.key)
             guard self.isCurrentBootstrap(context) else { return }
@@ -1276,7 +1267,6 @@ extension OpenClawChatViewModel {
         resetOutboxPresentationForSessionSwitch()
         self.sessionId = nil
         self.turnToolCallsById = [:]
-        self.clearSubagentActivities()
         self.updateStreamingAssistantText(nil)
         self.clearProgressCard()
         self.updateActiveSessionRunWithoutChatSnapshot(false)

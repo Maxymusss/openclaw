@@ -135,22 +135,20 @@ export function renderTurnRecapRow(
     typeof recap.outputTokens === "number" ? outputTokensLabel(recap.outputTokens) : null;
   return html`
     <div
-      class="chat-tasks-status chat-turn-recap ${
-        continuation ? "chat-turn-recap--continuation" : ""
-      }"
+      class="chat-turn-recap ${continuation ? "chat-turn-recap--continuation" : ""}"
       role="status"
     >
       ${
         continuation
           ? nothing
-          : html`<span class="chat-tasks-status__claw" aria-hidden="true">${icons.claw}</span>`
+          : html`<span class="chat-turn-recap__claw" aria-hidden="true">${icons.claw}</span>`
       }
       <span>${t("chat.turnRecap.doneIn", { duration })}</span>
       ${
         tokens === null
           ? nothing
           : html`
-              <span class="chat-tasks-status__sep" aria-hidden="true">·</span>
+              <span class="chat-turn-recap__sep" aria-hidden="true">·</span>
               <span>${tokens}</span>
             `
       }

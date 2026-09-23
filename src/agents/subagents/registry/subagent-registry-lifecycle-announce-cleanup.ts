@@ -10,8 +10,8 @@ import {
 } from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_COMPLETE } from "./subagent-lifecycle-events.js";
 import {
-  resolveCleanupCompletionReason,
   resolveAnnounceDeliveryDeadline,
+  resolveCleanupCompletionReason,
   resolveDeferredCleanupDecision,
 } from "./subagent-registry-cleanup.js";
 import {
@@ -42,7 +42,6 @@ import {
   markPendingFinalDelivery,
   maskLifecycleIdentifier,
   recordAnnounceDeliveryResult,
-  safeSetSubagentTaskDeliveryStatus,
 } from "./subagent-registry-lifecycle-delivery.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { deleteSubagentSessionForCleanup } from "./subagent-session-cleanup.js";
@@ -90,11 +89,6 @@ export const finalizeResumedAnnounceGiveUp = async (
     failedDelivery.attemptCount = retryCount;
     failedDelivery.lastAttemptAt = completedAt ?? Date.now();
   }
-  safeSetSubagentTaskDeliveryStatus(params, {
-    entry,
-    deliveryStatus: "failed",
-    deliveryError,
-  });
   entry.wakeOnDescendantSettle = undefined;
   const completion = ensureCompletionState(entry);
   completion.fallbackResultText = undefined;
@@ -268,13 +262,6 @@ const finalizeSubagentCleanup = async (
       delivery.createdAt = undefined;
       delivery.attemptCount = undefined;
       delivery.nextAttemptAt = undefined;
-    }
-    if (!options?.skipDeliveryStatus) {
-      safeSetSubagentTaskDeliveryStatus(params, {
-        entry,
-        deliveryStatus: delivery.status,
-        deliveryError: terminalNonDelivery ? getDeliveryLastError(entry) : undefined,
-      });
     }
     entry.wakeOnDescendantSettle = undefined;
     const completion = ensureCompletionState(entry);
@@ -650,6 +637,25 @@ export const startSubagentAnnounceCleanupFlow = (
       if (!delivery.delivered && requesterTookCompletion()) {
         return;
       }
+      if (
+        !delivery.delivered &&
+        delivery.reason === "message_tool_delivery_missing" &&
+        delivery.disposition === "permanent_failure" &&
+        shouldSuspendPendingFinalDelivery(entry)
+      ) {
+        // Keep the live preimage unchanged until the native owner atomically
+        // verifies it and commits the failure facts with the blocked receipt.
+        latestDeliveryError = formatAnnounceDeliveryError(delivery);
+        suspendPendingFinalDelivery(context, {
+          runId,
+          entry,
+          reason: "permanent_failure",
+          error: latestDeliveryError,
+          lastDropReason: delivery.reason,
+          enqueuedAt: delivery.enqueuedAt,
+        });
+        return;
+      }
       recordAnnounceDeliveryResult(entry, delivery, params.runs);
       if (delivery.delivered) {
         const deliveryState = ensureDeliveryState(entry);
@@ -661,10 +667,6 @@ export const startSubagentAnnounceCleanupFlow = (
         // Identified platform delivery precedes best-effort transcript
         // mirroring; task ownership must become durable at that same edge.
         params.persist(runId);
-        safeSetSubagentTaskDeliveryStatus(params, {
-          entry,
-          deliveryStatus: "delivered",
-        });
         latestDeliveryError = undefined;
         return;
       }
@@ -677,21 +679,6 @@ export const startSubagentAnnounceCleanupFlow = (
         deliveryState.status = "failed";
       }
       latestDeliveryError = formatAnnounceDeliveryError(delivery);
-      if (
-        delivery.reason === "message_tool_delivery_missing" &&
-        delivery.disposition === "permanent_failure" &&
-        shouldSuspendPendingFinalDelivery(entry)
-      ) {
-        // Commit the recoverable block at the execution-result edge, before
-        // best-effort mirrors or the detached announce tail can stall.
-        suspendPendingFinalDelivery(context, {
-          runId,
-          entry,
-          reason: "permanent_failure",
-          error: latestDeliveryError,
-        });
-        return;
-      }
       if (
         deliveryState.lastError !== latestDeliveryError ||
         deliveryState.lastDropReason !== previousDropReason

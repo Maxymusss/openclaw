@@ -4,7 +4,6 @@ import path from "node:path";
 import type { AcpRuntime } from "@openclaw/acp-core/runtime/types";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
-import { createBackgroundTaskRecord } from "../../../acp/control-plane/manager.background-task.js";
 import {
   getAcpSessionManager,
   testing as managerTesting,
@@ -21,8 +20,8 @@ import {
   clearRuntimeConfigSnapshot,
   getRuntimeConfig,
 } from "../../../config/config.js";
-import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
 import * as sessionAccessor from "../../../config/sessions/session-accessor.js";
+import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
 import * as gatewayCall from "../../../gateway/call.js";
 import { registerChatAbortController } from "../../../gateway/chat-abort.js";
 import { withLocalGatewayRequestScope } from "../../../gateway/local-request-context.js";
@@ -41,8 +40,6 @@ import {
   withPluginRuntimeGatewayRequestScope,
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { AsyncWorkScope } from "../../../shared/async-work-scope.js";
-import { listTasksForRelatedSessionKey } from "../../../tasks/task-registry-query.js";
-import { resetTaskRegistryForTests } from "../../../tasks/task-registry.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import {
@@ -64,8 +61,8 @@ import {
   writeSubagentSessionEntry,
 } from "../registry/subagent-registry.persistence.test-support.js";
 import {
-  resetSubagentRegistryForTests,
   testing as registryTesting,
+  resetSubagentRegistryForTests,
 } from "../registry/subagent-registry.test-helpers.js";
 import * as acpSpawnRuntime from "./acp-spawn-runtime.js";
 import { setSubagentSpawnDepsForTest } from "./subagent-spawn-deps.js";
@@ -113,7 +110,6 @@ beforeEach(async () => {
   });
   managerTesting.resetAcpSessionManagerForTests();
   resetSubagentRegistryForTests({ persist: false });
-  resetTaskRegistryForTests({ persist: false });
   registryTesting.setDepsForTest({
     loadAgentRuntimePluginRegistryHandle: () => undefined,
     callGateway: async (request) => {
@@ -132,7 +128,6 @@ afterEach(async () => {
     unregisterAcpRuntimeBackend(backendId);
     await settleSubagentRegistryPersistenceWork();
     resetSubagentRegistryForTests({ persist: false });
-    resetTaskRegistryForTests({ persist: false });
     await cleanupSessionStateForTest({ stateDir });
   } finally {
     registryTesting.setDepsForTest();
@@ -321,7 +316,7 @@ describe("pending ACP spawn authority", () => {
       };
       registerAcpRuntimeBackend({ id: backendId, runtime });
       const dispatch = vi.fn();
-      let acceptedTaskId: string | undefined;
+      let acceptedRunId: string | undefined;
       setSubagentSpawnDepsForTest({
         dispatchGatewayMethodInProcess: async <T>(
           method: string,
@@ -334,22 +329,7 @@ describe("pending ACP spawn authority", () => {
           if (typeof params.sessionKey !== "string" || typeof params.idempotencyKey !== "string") {
             throw new Error("Accepted ACP work requires session and run identities");
           }
-          const task = createBackgroundTaskRecord(
-            {
-              agentId: "fixture",
-              requesterAgentId: "main",
-              requesterSessionKey: parentSessionKey,
-              childSessionKey: params.sessionKey,
-              runId: params.idempotencyKey,
-              task: "bounded child",
-            },
-            Date.now(),
-            `accepted:${params.idempotencyKey}`,
-          );
-          if (!task) {
-            throw new Error("The accepting Gateway must own its ACP task");
-          }
-          acceptedTaskId = task.taskId;
+          acceptedRunId = params.idempotencyKey;
           return { runId: params.idempotencyKey, status: "accepted" } as T;
         },
       });
@@ -470,12 +450,10 @@ describe("pending ACP spawn authority", () => {
           expect(result).toMatchObject({ details: { status: "accepted", childSessionKey } });
           expect(dispatch).toHaveBeenCalledOnce();
           expect(subagentRuns.size).toBe(1);
-          expect(
-            listTasksForRelatedSessionKey(childSessionKey).map((task) => ({
-              taskId: task.taskId,
-              runtime: task.runtime,
-            })),
-          ).toEqual([{ taskId: acceptedTaskId, runtime: "acp" }]);
+          expect(subagentRuns.get(acceptedRunId!)).toMatchObject({
+            childSessionKey,
+            requesterSessionKey: parentSessionKey,
+          });
           expect(closeRuntime).not.toHaveBeenCalled();
         } else {
           expect

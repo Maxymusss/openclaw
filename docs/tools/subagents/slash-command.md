@@ -32,16 +32,14 @@ finished but still owe completion delivery; they are not necessarily executing.
 “Current activity unavailable” means no current execution is observable, not that
 the task failed. These observations do not change retained active/done counts.
 
-In the Control UI, subagent runs appear in inline transcript activity rows, the
-chat **Tasks** tab, and the [Tasks page](/automation/tasks#control-ui). They do not
+In the Control UI, subagent runs appear in their session transcripts. They do not
 appear as sidebar rows or add an expand control to their parent. The parent's
 activity ring, counts, unread attention, and child-failure warnings still include
 their work. Persistent spawned sessions and forks keep their sidebar nesting.
-Chat activity rows identify each subagent by its task name beside its status and
-latest activity; selecting a task opens its details and transcript in **Review**.
-Parent-sent follow-up turns also appear in these activity rows while they run,
-including after the original child task completed. They preserve the original
-result and any pending child wait; replies still follow `sessions_send` delivery.
+Use `/subagents list`, `/subagents info`, and `/subagents log` in the parent
+conversation to inspect native runs. Parent-sent follow-up turns preserve the
+original result and any pending child wait; replies still follow `sessions_send`
+delivery.
 Failed or timed-out
 children retain a bounded failure reason, including failures during worktree
 preparation before any model reply. The child's transcript includes a durable
@@ -105,7 +103,6 @@ explicitly unsupported even though the ACP spawn and child are observable.
     - Automatic completion delivery retries for up to 30 minutes, starting around 15 seconds and capping the backoff at 5 minutes. Permanent failure or deadline expiry leaves the successful child task visibly blocked instead of discarding its result.
     - Missing or empty external delivery receipts remain unconfirmed and follow that bounded retry policy. An adapter-reported unconfirmed send remains ambiguous, never intentional suppression. Empty requester output still uses the existing completion fallback; it is not an outbound-hook cancellation. A confirmed message-tool send to the requester still counts as delivery.
     - If an outbound hook intentionally suppresses a completion, the child can remain completed while its task delivery is marked `failed` with the suppression reason. OpenClaw does not retry or start another requester turn to bypass that decision. Inspect the task error and hook policy before manually retrying.
-    - Blocked canonical results are retained for 7 days. Operators can retry or intentionally dismiss them from the Tasks page or with `openclaw tasks retry` / `openclaw tasks dismiss`; retry can duplicate a visible result after an ambiguous provider acknowledgement.
     - Delivery keeps the resolved requester route: thread-bound or conversation-bound completion routes win when available. If the completion origin only provides a channel, OpenClaw fills the missing target/account from the requester session's recorded delivery context so direct delivery still works.
 
   </Accordion>

@@ -4,6 +4,10 @@ import { readStringField as readString } from "openclaw/plugin-sdk/string-coerce
 import { projectNormalizedToolItem } from "./event-projector-events.js";
 import { readItem } from "./event-projector-values.js";
 import {
+  codexNativeSubagentRunId,
+  readCodexNativeSubagentRunId,
+} from "./native-subagent-assignment.js";
+import {
   normalizeIdentifier,
   readLastAgentMessage,
   readNativeTurnEnd,
@@ -11,10 +15,6 @@ import {
 } from "./native-subagent-history-recovery.js";
 import type { ChildState, NativeExecutionWait } from "./native-subagent-monitor-types.js";
 import type { CodexNativeSubagentCompletion } from "./native-subagent-notification.js";
-import {
-  codexNativeSubagentRunId,
-  readCodexNativeSubagentRunId,
-} from "./native-subagent-task-ids.js";
 import type { CodexServerNotification, JsonObject } from "./protocol.js";
 import { isJsonObject } from "./protocol.js";
 

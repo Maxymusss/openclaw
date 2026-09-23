@@ -1,6 +1,8 @@
 // Media generation background test support centralizes task/announcement mocks
 // and assertions shared by image, video, and music generation tests.
 import { expect, vi } from "vitest";
+import { resetGeneratedMediaTaskActivityForTests } from "../media-generation-activity.js";
+import { admitMediaHandle } from "../media-generation-activity.test-support.js";
 
 type MockWithReset = {
   mockReset(): void;
@@ -9,10 +11,10 @@ type MockWithReset = {
 };
 
 export const taskExecutorMocks = {
-  createRunningTaskRun: vi.fn(),
-  recordTaskRunProgressByRunId: vi.fn(),
-  completeTaskRunByRunId: vi.fn(),
-  failTaskRunByRunId: vi.fn(),
+  createOperation: vi.fn(),
+  recordProgress: vi.fn(),
+  completeOperation: vi.fn(),
+  failOperation: vi.fn(),
 };
 
 export const announceDeliveryMocks = {
@@ -25,10 +27,10 @@ export const taskDeliveryRuntimeMocks = {
 };
 
 type TaskExecutorBackgroundMocks = {
-  createRunningTaskRun: MockWithReset;
-  recordTaskRunProgressByRunId: MockWithReset;
-  completeTaskRunByRunId: MockWithReset;
-  failTaskRunByRunId: MockWithReset;
+  createOperation: MockWithReset;
+  recordProgress: MockWithReset;
+  completeOperation: MockWithReset;
+  failOperation: MockWithReset;
 };
 
 type TaskDeliveryBackgroundMocks = {
@@ -103,7 +105,7 @@ export function createMediaCompletionFixture({
   taskLabel,
 }: CompletionFixtureParams) {
   return {
-    handle: {
+    handle: admitMediaHandle({
       taskId: "task-123",
       runId,
       requesterSessionKey: "agent:main:discord:direct:123",
@@ -113,7 +115,7 @@ export function createMediaCompletionFixture({
         threadId: "thread-1",
       },
       taskLabel,
-    },
+    }),
     status: "ok" as const,
     statusLabel: "completed successfully",
     result,
@@ -126,10 +128,11 @@ export function resetMediaBackgroundMocks({
   taskDeliveryRuntimeMocks: taskDeliveryRuntimeMocksLocal,
   announceDeliveryMocks: announceDeliveryMocksLocal,
 }: MediaBackgroundResetMocks): void {
-  taskExecutorMocksResult.createRunningTaskRun.mockReset();
-  taskExecutorMocksResult.recordTaskRunProgressByRunId.mockReset();
-  taskExecutorMocksResult.completeTaskRunByRunId.mockReset();
-  taskExecutorMocksResult.failTaskRunByRunId.mockReset();
+  resetGeneratedMediaTaskActivityForTests();
+  taskExecutorMocksResult.createOperation.mockReset();
+  taskExecutorMocksResult.recordProgress.mockReset();
+  taskExecutorMocksResult.completeOperation.mockReset();
+  taskExecutorMocksResult.failOperation.mockReset();
   taskDeliveryRuntimeMocksLocal.sendMessage.mockReset();
   taskDeliveryRuntimeMocksLocal.sendMessage.mockResolvedValue?.({
     channel: "discord",
@@ -150,8 +153,8 @@ export function expectQueuedTaskRun({
   progressSummary,
 }: QueuedTaskExpectation): void {
   const params = requireMockFirstParam(
-    taskExecutorMocksValue.createRunningTaskRun,
-    "createRunningTaskRun params",
+    taskExecutorMocksValue.createOperation,
+    "createOperation params",
   );
   expect(params.taskKind).toBe(taskKind);
   expect(params.sourceId).toBe(sourceId);
@@ -164,8 +167,8 @@ export function expectRecordedTaskProgress({
   progressSummary,
 }: ProgressExpectation): void {
   const params = requireMockFirstParam(
-    taskExecutorMocksLocal.recordTaskRunProgressByRunId,
-    "recordTaskRunProgressByRunId params",
+    taskExecutorMocksLocal.recordProgress,
+    "recordProgress params",
   );
   expect(params.runId).toBe(runId);
   expect(params.progressSummary).toBe(progressSummary);

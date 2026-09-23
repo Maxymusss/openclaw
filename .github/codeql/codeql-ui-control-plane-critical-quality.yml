@@ -17,7 +17,7 @@ paths:
   - ui/src/main.ts
   - ui/src/local-storage.ts
   - ui/src/ui
-  - src/tasks/task-registry-control*.ts
+  - src/agents/subagents/registry/subagent-control*.ts
 
 paths-ignore:
   - "**/node_modules"

@@ -1,3 +1,4 @@
+import { getOwedHarnessCompletionTask } from "../../agents/agent-harness-completion-recovery.js";
 import type { SessionWriterDeliveryAuthority } from "../../auto-reply/reply-payload.js";
 import { resolveMessageReceiptPrimaryId } from "../../channels/message/receipt.js";
 import {
@@ -28,7 +29,6 @@ import { isSameOpenClawAgentDatabasePath } from "../../state/openclaw-agent-db-r
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import type { OpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.types.js";
-import { getOwedHarnessCompletionTask } from "../../tasks/agent-harness-completion-recovery.js";
 import {
   resolveDeliveryQueueStateEnv,
   type DeliveryQueueStateContext,

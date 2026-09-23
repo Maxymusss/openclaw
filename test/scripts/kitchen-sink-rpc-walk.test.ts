@@ -497,7 +497,6 @@ describe("kitchen-sink RPC gateway teardown", () => {
 
     expect(child.kill).toHaveBeenCalledOnce();
   });
-
   it("treats failed gateway kill signals as already exited", async () => {
     const child = new EventEmitter() as EventEmitter & {
       exitCode: number | null;
@@ -1248,7 +1247,6 @@ describe("kitchen-sink RPC payload unwrapping", () => {
         'warning: ignored trailing diagnostic {"ok":false,"result":{"stale":true}}',
       ].join("\n"),
     );
-
     expect(parsed).toEqual({ ok: true, result: { current: true } });
   });
 
@@ -1401,7 +1399,6 @@ describe("kitchen-sink RPC command catalog assertions", () => {
         "agents.list",
         "sessions.list",
         "cron.list",
-        "tasks.list",
         "usage.status",
         "voicewake.routing.get",
         "talk.catalog",
@@ -1792,8 +1789,6 @@ describe("kitchen-sink RPC health/status assertions", () => {
         },
         channelSummary: [],
         queuedSystemEvents: [],
-        tasks: {},
-        taskAudit: {},
         sessions: {
           paths: [],
           count: 0,

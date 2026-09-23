@@ -41,10 +41,6 @@ import { resolveSessionPinnedHarnessId } from "../../sessions/agent-harness-sess
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import type { SkillSnapshot } from "../../skills/types.js";
-import {
-  getGeneratedMediaTaskIdsForSessionKey,
-  hasNewGeneratedMediaTaskForSessionKey,
-} from "../../tasks/task-status-access.js";
 import { resolveUserPath } from "../../utils.js";
 import { resolveMessageChannel } from "../../utils/message-channel.js";
 import type { PreparedAgentRunAdmission } from "../admitted-run-context.js";
@@ -83,6 +79,10 @@ import type { ContextEngineLogicalTurnLease } from "../harness/context-engine-lo
 import type { ContextEngineTurnAttemptFacts } from "../harness/context-engine-turn-attempt.js";
 import { resolveAvailableAgentHarnessPolicy } from "../harness/selection.js";
 import { AGENT_LANE_SUBAGENT } from "../lanes.js";
+import {
+  getGeneratedMediaTaskIdsForSessionKey,
+  hasNewGeneratedMediaTaskForSessionKey,
+} from "../media-generation-activity.js";
 import type { ModelFallbackResultClassification } from "../model-fallback-attempt.js";
 import type { ModelFallbackAttemptProvenance } from "../model-fallback.types.js";
 import { resolveCliRuntimeExecutionProvider } from "../model-runtime-aliases.js";
@@ -770,7 +770,10 @@ export function runAgentAttempt(params: {
           // strips the candidate and starves reseed, losing warm-stdin continuity.
           return cliSessionBinding;
         };
-        const mediaTaskIdsBefore = getGeneratedMediaTaskIdsForSessionKey(params.sessionKey);
+        const mediaTaskIdsBefore = getGeneratedMediaTaskIdsForSessionKey(
+          params.sessionKey,
+          params.sessionAgentId,
+        );
         const runCliWithSession = async (
           nextCliSessionId: string | undefined,
           activeCliSessionBinding = cliSessionBinding,
@@ -888,6 +891,7 @@ export function runAgentAttempt(params: {
                       hasNewGeneratedMediaTaskForSessionKey(
                         params.sessionKey,
                         mediaTaskIdsBefore,
+                        params.sessionAgentId,
                       ) ||
                       retry.sessionId !== activeCliSessionBinding?.sessionId
                     ) {
@@ -913,6 +917,7 @@ export function runAgentAttempt(params: {
                       hasNewGeneratedMediaTaskForSessionKey(
                         params.sessionKey,
                         mediaTaskIdsBefore,
+                        params.sessionAgentId,
                       ) ||
                       getCliSessionBinding(
                         loadSessionEntry({
@@ -967,6 +972,7 @@ export function runAgentAttempt(params: {
               hasNewGeneratedMediaTask: hasNewGeneratedMediaTaskForSessionKey(
                 params.sessionKey,
                 mediaTaskIdsBefore,
+                params.sessionAgentId,
               ),
             }) &&
             failedCliSessionId &&

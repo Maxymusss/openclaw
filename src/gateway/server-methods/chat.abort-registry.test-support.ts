@@ -11,13 +11,6 @@ import {
 import { testing as schedulerTesting } from "../../agents/subagents/swarm/swarm-scheduler.test-support.js";
 import { clearConfigCache, clearRuntimeConfigSnapshot } from "../../config/config.js";
 import { LegacyContextEngine } from "../../context-engine/legacy.js";
-import { resetTaskFlowRegistryForTests } from "../../tasks/task-flow-registry.test-support.js";
-import * as taskControlRuntime from "../../tasks/task-registry-control.runtime.js";
-import {
-  resetTaskRegistryForTests,
-  setTaskRegistryControlRuntimeForTests,
-  resetTaskRegistryControlRuntimeForTests,
-} from "../../tasks/task-registry.test-support.js";
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
 
@@ -37,8 +30,6 @@ export function useChatAbortRegistryFixture() {
     );
     clearConfigCache();
     clearRuntimeConfigSnapshot();
-    // Supply the real ESM owner through the existing CJS runtime seam.
-    setTaskRegistryControlRuntimeForTests(taskControlRuntime);
     testing.setDepsForTest({
       // These cancellation fixtures own no browser sessions; browser cleanup has its own tests.
       cleanupBrowserSessionsForLifecycleEnd: async () => {},
@@ -56,10 +47,7 @@ export function useChatAbortRegistryFixture() {
     try {
       await settleSubagentRegistryPersistenceWork();
       resetSubagentRegistryForTests({ persist: false });
-      resetTaskRegistryForTests({ persist: false });
-      resetTaskFlowRegistryForTests({ persist: false });
       schedulerTesting.reset();
-      resetTaskRegistryControlRuntimeForTests();
       await cleanupSessionStateForTest({ stateDir });
       testing.setDepsForTest();
       clearConfigCache();

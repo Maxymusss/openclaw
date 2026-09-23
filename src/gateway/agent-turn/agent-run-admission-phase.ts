@@ -4,7 +4,6 @@ import {
   type OperationalRunInstanceRef,
   type AdmittedRunOperatorAuthority,
 } from "../../agents/admitted-run-context.js";
-import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
 import {
   clearEmbeddedAgentRunAbortabilityForRunId,
   isEmbeddedAgentRunAbortableForRunId,
@@ -15,7 +14,6 @@ import {
   type MainSessionRecoveryPendingTarget,
 } from "../../agents/main-session-recovery/main-session-recovery-store.js";
 import { resolvePersistedOverrideModelRef } from "../../agents/model-selection.js";
-import { withPreparedModelRuntimePluginGenerationScope } from "../../agents/prepared-model-runtime-generation-scope.js";
 import {
   acquireAgentRunPreparedModelRuntime,
   loadPublishedGatewayReplyDispatchRuntime,
@@ -29,11 +27,7 @@ import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { claimAgentRunContext } from "../../infra/agent-run-registry.js";
-import {
-  annotateInterSessionPromptText,
-  isSubagentCoordinationInputProvenance,
-} from "../../sessions/input-provenance.js";
-import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
+import { isSubagentCoordinationInputProvenance } from "../../sessions/input-provenance.js";
 import { registerChatAbortController, resolveAgentRunExpiresAtMs } from "../chat-abort.js";
 import { retainGatewayDeviceRevocation } from "../device-revocation.js";
 import { errorShapeFromError } from "../error-shape.js";
@@ -54,13 +48,7 @@ import type {
   PrepareAgentRunDispatchParams,
   PreparedAgentRunDispatch,
 } from "./agent-run-admission-types.js";
-import {
-  prepareAgentRunTaskTracking,
-  registerSessionFollowupTask,
-  settleUnstartedGatewayAgentTask,
-  type GatewayAgentDispatchTaskTracking,
-  type RegisteredGatewayAgentTask,
-} from "./agent-run-task-tracking.js";
+import { prepareGatewaySubagentRun } from "./agent-run-subagent.js";
 import {
   prepareAgentRunUserTurn,
   recordAgentRunUserTurnParticipant,
@@ -272,43 +260,22 @@ export async function prepareAgentRunDispatch(
   let preparedModelRuntimeLease: PreparedModelRuntimeLease | undefined;
   let releaseCallerAuthority: (() => void) | undefined;
   let operatorAuthority: AdmittedRunOperatorAuthority | undefined;
-  let registeredFollowupTask: RegisteredGatewayAgentTask | undefined;
-  const cleanupPreaccept = async (admissionReleased = false, failure?: string) => {
+  const cleanupPreaccept = async (admissionReleased = false) => {
     const lease = preparedModelRuntimeLease;
     preparedModelRuntimeLease = undefined;
-    const task = registeredFollowupTask;
-    registeredFollowupTask = undefined;
     try {
-      if (task) {
-        await settleUnstartedGatewayAgentTask({
-          tracking: task,
-          runId: params.runId,
-          admittedRunEntry: activeRunAbort.entry,
-          context: params.context,
-          outcome: buildAgentRunTerminalOutcome({
-            status: activeRunAbort.controller.signal.aborted ? "timeout" : "error",
-            stopReason: activeRunAbort.controller.signal.aborted
-              ? (activeRunAbort.entry?.abortStopReason ?? "rpc")
-              : undefined,
-            error: failure ?? "Follow-up admission ended before acceptance.",
-          }),
-        });
-      }
+      await lease?.[Symbol.asyncDispose]();
     } finally {
-      try {
-        await lease?.[Symbol.asyncDispose]();
-      } finally {
-        releaseCallerAuthority?.();
-        activeRunAbort.cleanup();
-        if (!admissionReleased) {
-          activeGatewayWorkAdmission.release();
-        }
+      releaseCallerAuthority?.();
+      activeRunAbort.cleanup();
+      if (!admissionReleased) {
+        activeGatewayWorkAdmission.release();
       }
     }
   };
   const rejectPreaccept = async (error: ReturnType<typeof errorShape>) => {
     try {
-      await cleanupPreaccept(false, error.message);
+      await cleanupPreaccept(false);
     } finally {
       params.io.emitAcceptance([false, undefined, error]);
     }
@@ -393,9 +360,9 @@ export async function prepareAgentRunDispatch(
           model: activeModel.model,
         })
       : undefined;
-  let taskTracking: Awaited<ReturnType<typeof prepareAgentRunTaskTracking>>;
+  let subagentAdmission: Awaited<ReturnType<typeof prepareGatewaySubagentRun>>;
   try {
-    taskTracking = await prepareAgentRunTaskTracking({
+    subagentAdmission = await prepareGatewaySubagentRun({
       ...params,
       assertResumeAdmissionCurrent: () => {
         params.assertAdmissionCurrent?.();
@@ -411,7 +378,7 @@ export async function prepareAgentRunDispatch(
   } catch (err) {
     return rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, err));
   }
-  const { taskTrackingMode, adoptParentResume } = taskTracking;
+  const { pluginSubagent, reactivateSubagent, adoptParentResume } = subagentAdmission;
   let restoreAdmittedRestartRecoveryInterrupted:
     | (() => Promise<MainSessionRecoveryPendingTarget | undefined>)
     | undefined;
@@ -553,7 +520,7 @@ export async function prepareAgentRunDispatch(
     agentId: params.activeSessionAgentId,
     status: "accepted" as const,
     acceptedAt: Date.now(),
-    ...(taskTrackingMode === "plugin_subagent" ? { runtime: resolvedRuntime } : {}),
+    ...(pluginSubagent ? { runtime: resolvedRuntime } : {}),
     ...(parentResume ? { taskRunId: parentResume.taskRunId } : {}),
   };
   const completedInput = reconcileAgentRunUserTurnCompletion(
@@ -565,55 +532,6 @@ export async function prepareAgentRunDispatch(
   if (completedInput) {
     await completedInput;
     return undefined;
-  }
-  let dispatchTaskTrackingMode: GatewayAgentDispatchTaskTracking =
-    taskTrackingMode === "cli" ? "cli" : "none";
-  if (typeof taskTrackingMode === "object") {
-    try {
-      const sessionKey = params.resolvedSessionKey;
-      if (!sessionKey) {
-        throw new Error("Follow-up session is unavailable; run was not started.");
-      }
-      registeredFollowupTask = await activeGatewayWorkAdmission.run(() =>
-        withPreparedModelRuntimePluginGenerationScope(
-          replyDispatchRuntime.pluginGeneration,
-          () =>
-            registerSessionFollowupTask({
-              followup: taskTrackingMode,
-              runId: params.runId,
-              sessionKey,
-              task: annotateInterSessionPromptText(userTurn.message, userTurn.inputProvenance),
-              requesterOrigin: normalizeDeliveryContext({
-                channel: params.delivery.originMessageChannel
-                  ? params.delivery.resolvedChannel
-                  : undefined,
-                to: params.delivery.resolvedTo,
-                accountId: params.delivery.resolvedAccountId,
-                threadId: resolvedThreadId,
-              }),
-              assertCurrent: () => {
-                assertInputOwnerCurrent();
-                params.assertGatewayWorkAdmissionAllowed();
-                activeRunAbort.controller.signal.throwIfAborted();
-              },
-            }),
-          () => preparedModelRuntimeLease?.snapshot,
-        ),
-      );
-      const taskAdmission = revalidateAdmission();
-      if (taskAdmission !== true) {
-        try {
-          return await taskAdmission;
-        } finally {
-          releasePreparedAgentRunUserTurn(userTurn, "interrupted");
-        }
-      }
-      assertInputOwnerCurrent();
-      dispatchTaskTrackingMode = registeredFollowupTask;
-    } catch (error) {
-      const failure = releasePreparedAgentRunUserTurnAfterFailure(userTurn, error);
-      return rejectPreaccept(errorShapeFromError(ErrorCodes.UNAVAILABLE, failure));
-    }
   }
   try {
     // The transport request ends at acceptance; execution retains this exact caller.
@@ -690,7 +608,7 @@ export async function prepareAgentRunDispatch(
       restoredCronContinuationLifecycleRevision: params.restoredCronContinuation?.lifecycleRevision,
       lifecycleStorePath,
       resolvedThreadId,
-      dispatchTaskTrackingMode,
+      reactivateSubagent,
       preparedModelRuntimeLease,
       replyDispatchRuntime,
       unpersistedOffloadedRefs: userTurn.recorder ? [] : params.offloadedRefs,

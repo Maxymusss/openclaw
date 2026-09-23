@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { readCronRunHistoryPage } from "./run-history.test-support.js";
 import type { CronEvent } from "./service.js";
 import { CronService } from "./service.js";
 import { setupCronServiceSuite } from "./service.test-harness.js";
@@ -11,7 +12,6 @@ import { createCronServiceState, type CronServiceDeps } from "./service/state.js
 import { loadCronStore } from "./store.js";
 import { cronStoreKey } from "./store/key.js";
 import { inspectActiveCronRunReceipt } from "./store/run-receipt-store.test-support.js";
-import { readCronTaskRunHistoryPage } from "./task-run-history.js";
 import type { CronJobCreate } from "./types.js";
 
 const { logger, makeStorePath } = setupCronServiceSuite({ prefix: "cron-trigger-eval-" });
@@ -125,7 +125,7 @@ async function finishWatcherRun(params: {
   }
 
   const readHistory = () =>
-    readCronTaskRunHistoryPage({ storeKey: cronStoreKey(harness.storePath), jobId }).entries;
+    readCronRunHistoryPage({ storeKey: cronStoreKey(harness.storePath), jobId }).entries;
   const history = readHistory();
   // The payload has durably succeeded, but its separate scheduler write failed.
   expect(history).toEqual([
@@ -297,7 +297,7 @@ describe("cron trigger evaluation", () => {
         job: { state: { nextRunAtMs: persisted?.state.nextRunAtMs } },
       });
       expect(
-        readCronTaskRunHistoryPage({
+        readCronRunHistoryPage({
           storeKey: cronStoreKey(harness.storePath),
           jobId: job.id,
         }).entries,
@@ -337,7 +337,7 @@ describe("cron trigger evaluation", () => {
         throw new Error("missing finished event");
       }
       expect(
-        readCronTaskRunHistoryPage({
+        readCronRunHistoryPage({
           storeKey: cronStoreKey(harness.storePath),
           jobId: job.id,
         }).entries,
@@ -459,7 +459,7 @@ describe("cron trigger evaluation", () => {
       expect(finished?.delivered).toBeUndefined();
       expect(finished?.deliveryError).toBeUndefined();
 
-      const history = readCronTaskRunHistoryPage({
+      const history = readCronRunHistoryPage({
         storeKey: cronStoreKey(harness.storePath),
         jobId: job.id,
       }).entries;
@@ -641,7 +641,7 @@ describe("cron trigger evaluation", () => {
           expectedReceiptStatus: ownerEdit === "none" ? "ok" : "interrupted",
           editAfterTask: async () => {
             expect(
-              readCronTaskRunHistoryPage({
+              readCronRunHistoryPage({
                 storeKey: cronStoreKey(harness.storePath),
                 jobId: job.id,
               }).entries[0]?.nextRunAtMs,

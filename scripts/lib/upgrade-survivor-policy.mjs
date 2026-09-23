@@ -27,7 +27,6 @@ const TRUSTED_HARNESS_OWNED_SCENARIOS = new Set([
   "abandoned-update",
   "projects-doctor",
   "projects-startup-migration",
-  "taskflow-restoration",
   "workshop-doctor-recovery",
 ]);
 
@@ -48,7 +47,6 @@ const aggregateScenarios = UPGRADE_SURVIVOR_SCENARIOS.filter(
     scenario !== "missing-load-path" &&
     scenario !== "projects-doctor" &&
     scenario !== "projects-startup-migration" &&
-    scenario !== "taskflow-restoration" &&
     scenario !== "workshop-doctor-recovery" &&
     scenario !== "mobile-pairing-reconnect" &&
     scenario !== "watchos-direct-node" &&
@@ -145,11 +143,7 @@ function comparePublishedReleaseVersion(a, b) {
 
 export function supportsUpgradeSurvivorScenarioAtBaseline(scenario, baselineSpec) {
   const version = parsePublishedReleaseVersion(baselineSpec);
-  if (
-    scenario === "projects-doctor" ||
-    scenario === "projects-startup-migration" ||
-    scenario === "taskflow-restoration"
-  ) {
+  if (scenario === "projects-doctor" || scenario === "projects-startup-migration") {
     return baselineSpec === "openclaw@2026.9.4";
   }
   if (scenario === "abandoned-update") {

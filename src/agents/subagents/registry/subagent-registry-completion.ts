@@ -5,18 +5,15 @@
  */
 import { createSubsystemLogger } from "../../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
-import {
-  SUBAGENT_KILL_TASK_ERROR,
-  type DetachedTaskTerminalState,
-} from "../../../tasks/detached-task-runtime-contract.js";
-import { resolveRequiredCompletionTerminalResult } from "../../../tasks/task-completion-contract.js";
+import { resolveRequiredCompletionTerminalResult } from "../../completion-result.js";
 import { resolveSubagentCompletionResultText } from "../completion/subagent-completion-result.js";
 import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
+import { SUBAGENT_KILL_TASK_ERROR, type SubagentTerminalState } from "./subagent-control.types.js";
 import {
-  SUBAGENT_ENDED_REASON_KILLED,
   SUBAGENT_ENDED_OUTCOME_ERROR,
   SUBAGENT_ENDED_OUTCOME_OK,
   SUBAGENT_ENDED_OUTCOME_TIMEOUT,
+  SUBAGENT_ENDED_REASON_KILLED,
   SUBAGENT_TARGET_KIND_SUBAGENT,
   type SubagentLifecycleEndedOutcome,
   type SubagentLifecycleEndedReason,
@@ -28,7 +25,7 @@ const log = createSubsystemLogger("agents/subagent-registry-completion");
 /** Classify execution independently of reply capture, including cancelled yielded runs. */
 export function resolveSubagentTaskTerminalStatus(
   entry: SubagentRunRecord,
-): DetachedTaskTerminalState["status"] | undefined {
+): SubagentTerminalState["status"] | undefined {
   const outcome = entry.execution.outcome;
   if (
     typeof entry.execution.endedAt !== "number" ||
@@ -53,7 +50,7 @@ export function resolveSubagentTaskTerminalStatus(
 /** Returns the complete task projection only after completion capture has settled. */
 export function resolveFinalizedSubagentTaskState(
   entry: SubagentRunRecord,
-): DetachedTaskTerminalState | undefined {
+): SubagentTerminalState | undefined {
   const endedAt = entry.execution.endedAt;
   const outcome = entry.execution.outcome;
   const completion = entry.completion;

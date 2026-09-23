@@ -11,7 +11,6 @@ import {
   createSessionCapabilityFixture,
   createTestChatPane,
 } from "./chat-pane.test-support.ts";
-import { createBackgroundTasksProps } from "./components/chat-background-tasks.ts";
 import { createSessionWorkspaceProps } from "./components/chat-session-workspace.ts";
 
 vi.mock("../../lib/toast.ts", () => ({ showToast: vi.fn() }));
@@ -40,7 +39,6 @@ describe("chat pane session menu boundary", () => {
       render(
         pane.renderPaneHeader(
           createSessionWorkspaceProps(state),
-          createBackgroundTasksProps(state),
           session,
           false,
           undefined,
@@ -146,7 +144,6 @@ describe("chat pane session menu boundary", () => {
     render(
       pane.renderPaneHeader(
         createSessionWorkspaceProps(state),
-        createBackgroundTasksProps(state),
         session,
         false,
         undefined,

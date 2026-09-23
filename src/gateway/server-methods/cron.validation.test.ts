@@ -21,9 +21,12 @@ import {
 } from "../../commands/doctor/cron/legacy-repair.js";
 import type { SessionCreatedActor } from "../../config/sessions/session-entry-provenance.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { cronRunLogEntryToDetail } from "../../cron/run-history-detail.js";
 import { CronService } from "../../cron/service.js";
 import { createCronStoreHarness, createNoopLogger } from "../../cron/service.test-harness.js";
 import { loadCronStore, saveCronStore } from "../../cron/store.js";
+import { cronStoreKey } from "../../cron/store/key.js";
+import type { CronRunRecord } from "../../cron/store/run-history.types.js";
 import type { CronDelivery, CronJob } from "../../cron/types.js";
 import {
   claimAgentRunDelegatedAuthority,
@@ -71,7 +74,13 @@ const loadGatewaySessionEntry = vi.hoisted(() =>
     } => ({ canonicalKey: sessionKey, entry: undefined }),
   ),
 );
-const cronTaskRunHistoryPageOverride = vi.hoisted(() => vi.fn());
+const cronRunRecordsOverride = vi.hoisted(() =>
+  vi.fn<
+    (
+      ...args: Parameters<typeof import("../../cron/store/read-only.js").readCronRunRecords>
+    ) => Promise<CronRunRecord[]> | undefined
+  >(),
+);
 const resolveCronDeliveryPreview = vi.hoisted(() =>
   vi.fn(async () => ({ label: "not requested", detail: "not requested" })),
 );
@@ -83,14 +92,14 @@ const resolveCronDeliveryPreviews = vi.hoisted(() =>
   ),
 );
 
-vi.mock("../../cron/task-run-history.js", async () => {
-  const actual = await vi.importActual<typeof import("../../cron/task-run-history.js")>(
-    "../../cron/task-run-history.js",
+vi.mock("../../cron/store/read-only.js", async () => {
+  const actual = await vi.importActual<typeof import("../../cron/store/read-only.js")>(
+    "../../cron/store/read-only.js",
   );
   return {
     ...actual,
-    readCronTaskRunHistoryPage: (...args: Parameters<typeof actual.readCronTaskRunHistoryPage>) =>
-      cronTaskRunHistoryPageOverride(...args) ?? actual.readCronTaskRunHistoryPage(...args),
+    readCronRunRecords: (...args: Parameters<typeof actual.readCronRunRecords>) =>
+      cronRunRecordsOverride(...args) ?? actual.readCronRunRecords(...args),
   };
 });
 
@@ -611,7 +620,7 @@ describe("cron method validation", () => {
   );
   beforeEach(() => {
     getRuntimeConfig.mockReset().mockReturnValue({} as OpenClawConfig);
-    cronTaskRunHistoryPageOverride.mockReset().mockReturnValue(undefined);
+    cronRunRecordsOverride.mockReset();
     resolveCronDeliveryPreview
       .mockReset()
       .mockResolvedValue({ label: "not requested", detail: "not requested" });
@@ -4360,15 +4369,23 @@ describe("cron method validation", () => {
   });
 
   it("preserves deleted-job history without listing unrelated cron jobs", async () => {
-    cronTaskRunHistoryPageOverride.mockReturnValue({
-      entries: [{ jobId: "deleted-cron", action: "finished", status: "ok", ts: 1 }],
-      total: 1,
-      offset: 0,
-      limit: 50,
-      hasMore: false,
-      nextOffset: null,
-    });
     const context = createCronContext();
+    cronRunRecordsOverride.mockResolvedValue([
+      {
+        id: "deleted-cron-history",
+        jobId: "deleted-cron",
+        runId: "cron:deleted-cron:1:receipt",
+        agentId: "main",
+        createdAt: 1,
+        startedAt: 1,
+        endedAt: 1,
+        status: "succeeded",
+        detail: cronRunLogEntryToDetail(
+          { jobId: "deleted-cron", action: "finished", status: "ok", ts: 1 },
+          { storeKey: cronStoreKey(context.cronStorePath) },
+        ),
+      },
+    ]);
 
     const { respond } = await invokeCron("cron.runs", { id: "deleted-cron" }, { context });
 
@@ -4376,7 +4393,21 @@ describe("cron method validation", () => {
     expect(context.cron.list).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
       true,
-      expect.objectContaining({ entries: expect.any(Array) }),
+      {
+        entries: [
+          expect.objectContaining({
+            jobId: "deleted-cron",
+            action: "finished",
+            status: "ok",
+            ts: 1,
+          }),
+        ],
+        total: 1,
+        offset: 0,
+        limit: 50,
+        hasMore: false,
+        nextOffset: null,
+      },
       undefined,
     );
   });

@@ -1,14 +1,14 @@
-/** Tests ACP spawn planning, policy gates, bindings, cleanup, and parent stream setup. */
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+/** Tests ACP spawn planning, policy gates, bindings, cleanup, and parent stream setup. */
 import type { AcpRuntime } from "@openclaw/acp-core/runtime/types";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpInitializeSessionInput } from "../../../acp/control-plane/manager.types.js";
 import {
-  registerAcpRuntimeBackend,
   testing as acpRuntimeRegistryTesting,
+  registerAcpRuntimeBackend,
 } from "../../../acp/runtime/registry.js";
 import { createExecutionIdentityAdmissionToken } from "../../../audit/execution-identity-admission.js";
 import type { ThinkLevel } from "../../../auto-reply/thinking.shared.js";
@@ -24,8 +24,8 @@ import {
   releaseAgentRunDelegatedAuthority,
 } from "../../../infra/agent-run-registry.js";
 import {
-  testing as sessionBindingServiceTesting,
   registerSessionBindingAdapter,
+  testing as sessionBindingServiceTesting,
   type SessionBindingAdapter,
   type SessionBindingPlacement,
   type SessionBindingRecord,
@@ -266,10 +266,6 @@ vi.mock("../registry/subagent-registry.js", () => ({
 
 vi.mock("../registry/subagent-registry-read.js", () => ({
   getSubagentRunByChildSessionKey: hoisted.getSubagentRunByChildSessionKeyMock,
-}));
-
-vi.mock("../../../tasks/runtime-internal.js", () => ({
-  listTasksForOwnerKey: hoisted.listTasksForOwnerKeyMock,
 }));
 
 const { spawnAcpDirect } = await import("./acp-spawn.js");

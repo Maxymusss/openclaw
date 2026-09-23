@@ -1,10 +1,10 @@
-// Legacy cron JSONL run-log migration into the authoritative task ledger.
+// Legacy cron JSONL run-log migration into the cron-owned history store.
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { parseCronRunLogEntryObject } from "../../../cron/run-history-detail.js";
 import type { CronRunLogEntry } from "../../../cron/run-log-types.js";
 import { cronStoreKey } from "../../../cron/store/key.js";
-import { parseCronRunLogEntryObject } from "../../../cron/task-run-detail.js";
 import { migrateLegacyCronRunLogsToTaskRuns } from "../../../infra/state-migrations.cron-run-logs.js";
 import { runOpenClawStateWriteTransaction } from "../../../state/openclaw-state-db.js";
 
@@ -40,7 +40,7 @@ function archiveLegacyCronRunLogSync(filePath: string): void {
   try {
     fsSync.renameSync(filePath, archivePath);
   } catch {
-    // Best-effort cleanup after durable task-ledger import.
+    // Best-effort cleanup after durable cron-history import.
   }
 }
 

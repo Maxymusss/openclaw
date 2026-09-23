@@ -91,21 +91,6 @@ export async function clearCommandRecoveryClaim(params: {
           shouldPersistRestartRecoveryCleanup(current, params.runOwnedSessionId, runId),
       });
     }
-    // Finalization may already have cleared the active claim before this finally.
-    // Its durable receipt, not the transient monitor waiter, settles the task.
-    if (
-      (sessionStore[sessionKey] ?? entry)?.restartRecoveryTerminalDeliveryEvidence?.some(
-        (receipt) => receipt.harnessCompletion,
-      )
-    ) {
-      const { reconcileSessionHarnessCompletionDeliveries } =
-        await import("../agent-harness-completion-delivery.js");
-      reconcileSessionHarnessCompletionDeliveries({
-        agentId: params.prepared.sessionAgentId,
-        sessionKey,
-        storePath,
-      });
-    }
   } catch (error) {
     log.warn(
       `failed to clear restart recovery delivery context for ${sessionKey}: ${coerceErrorMessage(error)}`,

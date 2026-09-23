@@ -336,7 +336,6 @@ describe("chat sidebar region", () => {
         onDesktopFocusTargetChange: vi.fn(),
         dashboard: nothing,
         workspace: html`<div data-panel="workspace">Workspace panel</div>`,
-        tasks: nothing,
         renderDetail: () => html``,
         digest: null,
         activeRunId: null,
@@ -353,8 +352,6 @@ describe("chat sidebar region", () => {
         onCompanionVisibilityChange: vi.fn(),
         connected: false,
         onClearCompanion: vi.fn(),
-        onRefreshTasks: vi.fn(),
-        tasksLoading: false,
         discussion: null,
         discussionAvailable: false,
         discussionOpenUrl: null,
@@ -602,7 +599,6 @@ describe("chat sidebar region", () => {
       ["terminal", "Terminal"],
       ["workspace", "Files"],
       ["companion", "Side chat"],
-      ["tasks", "Tasks"],
       ["discussion", "Discussion"],
     ] as const) {
       region.layout = openSlot({ columns: [] }, slot);
@@ -626,7 +622,6 @@ describe("chat sidebar region", () => {
       "browser",
       "workspace",
       "companion",
-      "tasks",
       "desktop",
       "discussion",
       "dashboard",

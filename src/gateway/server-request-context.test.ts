@@ -107,7 +107,6 @@ describe("createGatewayRequestContext", () => {
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
         chatAbortControllers: new Map(),
         restartRecoveryCandidates: new Map(),
-        terminalSessions: { closeTaskSessions: vi.fn() },
         refreshConnectedUserProfiles: () => context.refreshConnectedUserProfile?.(),
       });
       try {
@@ -145,7 +144,6 @@ describe("createGatewayRequestContext", () => {
         subscriptions.heartbeatUnsub();
         subscriptions.transcriptUnsub();
         await subscriptions.agentUnsub();
-        await subscriptions.taskUnsub();
       }
     });
   });

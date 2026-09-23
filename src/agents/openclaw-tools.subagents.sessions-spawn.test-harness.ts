@@ -412,15 +412,6 @@ vi.mock("../config/sessions.js", async () => ({
   },
 }));
 
-vi.mock("../tasks/detached-task-runtime.js", () => ({
-  completeTaskRunByRunId: vi.fn(),
-  createQueuedTaskRun: vi.fn(() => ({})),
-  createRunningTaskRun: vi.fn(() => ({})),
-  failTaskRunByRunId: vi.fn(),
-  findDetachedTaskRun: vi.fn(() => ({ lookup: "available" as const })),
-  setDetachedTaskDeliveryStatusByRunId: vi.fn(),
-}));
-
 // Same module, different specifier (used by tools under src/agents/tools/*).
 vi.mock("../../config/config.js", () => ({
   getRuntimeConfig: () => hoisted.state.configOverride,

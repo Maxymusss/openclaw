@@ -1530,7 +1530,7 @@ await import('./scripts/check-docker-e2e-boundaries.mts');`,
     ).toContain(name);
   });
 
-  it.each(["projects-doctor", "projects-startup-migration", "taskflow-restoration"])(
+  it.each(["projects-doctor", "projects-startup-migration"])(
     "plans %s only for its exact published writer without registry or credential fixtures",
     (scenario) => {
       const plan = planFor({

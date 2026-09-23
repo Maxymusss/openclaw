@@ -19,7 +19,7 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
       await Promise.all(pools.map((pool) => pool.rotate()));
       for (const pool of pools) {
         expect(pool.isClosed).toBe(false);
-        expect(pool.getSnapshot()).toMatchObject({ workers: 0, activeTasks: 0, pendingTasks: 0 });
+        expect(pool.getSnapshot()).toMatchObject({ workers: 0, agentRuns: 0, pendingTasks: 0 });
       }
       cleanup();
     } finally {

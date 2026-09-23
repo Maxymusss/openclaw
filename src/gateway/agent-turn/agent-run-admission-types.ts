@@ -18,7 +18,6 @@ import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
 import type { GatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import type { AgentDeliveryPhaseResult } from "./agent-delivery-phase.js";
 import type { RestoredCronContinuation } from "./agent-handler-helpers.js";
-import type { GatewayAgentDispatchTaskTracking } from "./agent-run-task-tracking.js";
 import type { PreparedAgentRunUserTurn } from "./agent-run-user-turn.js";
 import type { RequesterSettleWakeReplay } from "./internal-facade.types.js";
 import type { AgentTurnContext, AgentTurnIo, AgentTurnPrincipal } from "./types.js";
@@ -38,7 +37,7 @@ export type PreparedAgentRunDispatch = {
   restoredCronContinuationLifecycleRevision?: string;
   lifecycleStorePath: string;
   resolvedThreadId?: string | number;
-  dispatchTaskTrackingMode: GatewayAgentDispatchTaskTracking;
+  reactivateSubagent: boolean;
   preparedModelRuntimeLease: PreparedModelRuntimeLease;
   replyDispatchRuntime: PreparedReplyDispatchRuntime;
   unpersistedOffloadedRefs: OffloadedRef[];

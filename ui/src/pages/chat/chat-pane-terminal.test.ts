@@ -6,7 +6,6 @@ import { decodeResumeHandoff } from "../../../../src/shared/resume-handoff.js";
 import type { GatewayBrowserClient, GatewayHelloOk } from "../../api/gateway.ts";
 import type { GatewaySessionRow } from "../../api/types.ts";
 import { createSessionCapabilityFixture, createTestChatPane } from "./chat-pane.test-support.ts";
-import { createBackgroundTasksProps } from "./components/chat-background-tasks.ts";
 import { createSessionWorkspaceProps } from "./components/chat-session-workspace.ts";
 import { openSlot } from "./sidebar-layout.ts";
 
@@ -40,7 +39,6 @@ describe("chat pane terminal action", () => {
         render(
           pane.renderPaneHeader(
             createSessionWorkspaceProps(state),
-            createBackgroundTasksProps(state),
             selected,
             false,
             undefined,
@@ -105,15 +103,7 @@ describe("chat pane terminal action", () => {
     const container = document.createElement("div");
 
     render(
-      pane.renderPaneHeader(
-        createSessionWorkspaceProps(state),
-        createBackgroundTasksProps(state),
-        row,
-        false,
-        undefined,
-        false,
-        null,
-      ),
+      pane.renderPaneHeader(createSessionWorkspaceProps(state), row, false, undefined, false, null),
       container,
     );
 
@@ -149,7 +139,6 @@ describe("chat pane terminal action", () => {
               ? () => state.updateSidebarLayout(openSlot(state.sidebarLayout, "terminal"))
               : undefined,
           },
-          createBackgroundTasksProps(state),
           session,
           false,
           undefined,
@@ -191,7 +180,6 @@ describe("chat pane terminal action", () => {
       render(
         pane.renderPaneHeader(
           createSessionWorkspaceProps(state),
-          createBackgroundTasksProps(state),
           session,
           false,
           undefined,
@@ -218,7 +206,6 @@ describe("chat pane terminal action", () => {
       render(
         pane.renderPaneHeader(
           { ...createSessionWorkspaceProps(state), onToggleDesktop },
-          createBackgroundTasksProps(state),
           session,
           false,
           undefined,
@@ -285,7 +272,7 @@ describe("chat pane terminal action", () => {
     }
   });
 
-  it("keeps Browser and Tasks reachable in the topbar", () => {
+  it("keeps Browser reachable in the topbar", () => {
     const client = { request: vi.fn() } as unknown as GatewayBrowserClient;
     const { pane, state } = createTestChatPane({
       client,
@@ -297,16 +284,10 @@ describe("chat pane terminal action", () => {
       updatedAt: 0,
     } satisfies GatewaySessionRow;
     const container = document.createElement("div");
-    const onToggleTasks = vi.fn();
-    const backgroundTasks = {
-      ...createBackgroundTasksProps(state),
-      onToggleCollapsed: onToggleTasks,
-    };
     const renderHeader = () =>
       render(
         pane.renderPaneHeader(
           createSessionWorkspaceProps(state),
-          backgroundTasks,
           session,
           false,
           undefined,
@@ -326,15 +307,12 @@ describe("chat pane terminal action", () => {
     renderHeader();
     expect(container.querySelector(".chat-browser-panel-toggle")).toBeNull();
     expect(panelActionIds()).not.toContain("browser");
-    container.querySelector<HTMLButtonElement>(".chat-tasks-toggle")?.click();
-    expect(onToggleTasks).toHaveBeenCalledOnce();
 
     state.browserPanelAvailable = true;
     const onToggleBrowser = vi.fn();
     render(
       pane.renderPaneHeader(
         { ...createSessionWorkspaceProps(state), onToggleBrowser },
-        backgroundTasks,
         session,
         false,
         undefined,

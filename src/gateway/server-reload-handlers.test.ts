@@ -290,15 +290,7 @@ type StopGmailWatcher = () => Promise<void>;
 const hoisted = vi.hoisted(() => ({
   startGmailWatcherWithLogs: vi.fn<StartGmailWatcherWithLogs>(async () => {}),
   stopGmailWatcher: vi.fn<StopGmailWatcher>(async () => {}),
-  activeTaskCount: { value: 0 },
-  activeTaskBlockers: [] as Array<{
-    taskId: string;
-    status: "queued" | "running";
-    runtime: "subagent" | "acp" | "cli" | "cron";
-    runId?: string;
-    label?: string;
-    title?: string;
-  }>,
+  activeAgentRunCount: { value: 0 },
   activeEmbeddedRunCount: { value: 0 },
   activeEmbeddedRunSessionIds: [] as string[],
   activeEmbeddedRunSessionKeys: [] as string[],
@@ -348,36 +340,10 @@ vi.mock("../hooks/gmail-watcher-lifecycle.js", () => ({
   startGmailWatcherWithLogs: hoisted.startGmailWatcherWithLogs,
 }));
 
-vi.mock("../tasks/task-registry.maintenance.js", async () => {
-  const actual = await vi.importActual<typeof import("../tasks/task-registry.maintenance.js")>(
-    "../tasks/task-registry.maintenance.js",
-  );
-  return {
-    ...actual,
-    getInspectableActiveTaskRestartBlockers: () => hoisted.activeTaskBlockers,
-    getInspectableTaskRegistrySummary: () => ({
-      total: hoisted.activeTaskCount.value,
-      active: hoisted.activeTaskCount.value,
-      terminal: 0,
-      failures: 0,
-      byStatus: {
-        queued: 0,
-        running: hoisted.activeTaskCount.value,
-        succeeded: 0,
-        failed: 0,
-        timed_out: 0,
-        cancelled: 0,
-        lost: 0,
-      },
-      byRuntime: {
-        subagent: hoisted.activeTaskCount.value,
-        acp: 0,
-        cli: 0,
-        cron: 0,
-      },
-    }),
-  };
-});
+vi.mock(import("../infra/agent-run-registry.js"), async (importOriginal) => ({
+  ...(await importOriginal()),
+  getActiveAgentRunContextCount: () => hoisted.activeAgentRunCount.value,
+}));
 
 vi.mock("../agents/embedded-agent-runner/active-run-projections.js", () => ({
   getActiveEmbeddedRunCount: () => hoisted.activeEmbeddedRunCount.value,
@@ -571,17 +537,6 @@ function makePreparedSecretsSnapshot(
     webTools: createEmptyRuntimeWebToolsMetadata(),
     ...overrides,
     authStores: prepareRuntimeAuthProfileStoreSnapshots(overrides.authStores ?? []),
-  };
-}
-
-function makeActiveTaskBlocker(
-  overrides: Partial<(typeof hoisted.activeTaskBlockers)[number]> = {},
-): (typeof hoisted.activeTaskBlockers)[number] {
-  return {
-    taskId: "task-blocking-reload",
-    status: "running",
-    runtime: "subagent",
-    ...overrides,
   };
 }
 
@@ -991,8 +946,7 @@ afterEach(() => {
   resetProcessRegistryForTests();
   hoisted.startGmailWatcherWithLogs.mockClear();
   hoisted.stopGmailWatcher.mockClear();
-  hoisted.activeTaskCount.value = 0;
-  hoisted.activeTaskBlockers.length = 0;
+  hoisted.activeAgentRunCount.value = 0;
   hoisted.activeEmbeddedRunCount.value = 0;
   hoisted.activeEmbeddedRunSessionIds.length = 0;
   hoisted.activeEmbeddedRunSessionKeys.length = 0;
@@ -3947,9 +3901,7 @@ describe("gateway restart deferral preflight", () => {
     const channels = {
       stop: vi.fn(async () => {}),
       start: vi.fn(async () => {
-        hoisted.activeTaskBlockers.push(
-          makeActiveTaskBlocker({ taskId: "discord-recovery-blocker" }),
-        );
+        hoisted.activeAgentRunCount.value = 1;
         throw new Error("discord restart failed");
       }),
     };
@@ -4008,7 +3960,7 @@ describe("gateway restart deferral preflight", () => {
       // Hot C supersedes and retires B's config-owned restart. Recovery A must
       // remain independently debt-eligible until a real restart is accepted.
       pauseGatewayRestartForConfigCandidate();
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await vi.advanceTimersByTimeAsync(500);
       expect(requestRecoveryRestart).not.toHaveBeenCalled();
 
@@ -4030,7 +3982,7 @@ describe("gateway restart deferral preflight", () => {
         ["config reload: hot reload recovery: channel restart (discord)"],
       ]);
     } finally {
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       stopRestartRetries();
     }
   });
@@ -4042,9 +3994,7 @@ describe("gateway restart deferral preflight", () => {
     const channels = {
       stop: vi.fn(async () => {}),
       start: vi.fn(async () => {
-        hoisted.activeTaskBlockers.push(
-          makeActiveTaskBlocker({ taskId: "discord-recovery-clear-blocker" }),
-        );
+        hoisted.activeAgentRunCount.value = 1;
         throw new Error("discord restart failed");
       }),
     };
@@ -4093,7 +4043,7 @@ describe("gateway restart deferral preflight", () => {
       replacement.settle("committed");
       replacementLifecycle.settle("committed");
 
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await vi.advanceTimersByTimeAsync(500);
       expect(requestRecoveryRestart).toHaveBeenCalledOnce();
       expect(requestRecoveryRestart).toHaveBeenCalledWith("config reload: gateway.port", undefined);
@@ -4103,7 +4053,7 @@ describe("gateway restart deferral preflight", () => {
       expect(accepted).toEqual({ retireRejectedRestart: true });
       expect(hasOutstandingGatewayRestart()).toBe(false);
     } finally {
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       stopRestartRetries();
     }
   });
@@ -4445,22 +4395,14 @@ describe("gateway restart deferral preflight", () => {
     expect(getDeferredChannelReloads?.()).toEqual([]);
   });
 
-  it("logs active task run ids before waiting and when forcing after timeout", async () => {
+  it("reports admitted run blockers before waiting and when forcing after timeout", async () => {
     restartTesting.resetRestartSignalState();
     const logReload = { info: vi.fn(), warn: vi.fn() };
     const { requestGatewayRestart } = createReloadHandlersForTest(logReload);
-    hoisted.activeTaskCount.value = 1;
+    hoisted.activeAgentRunCount.value = 1;
     hoisted.activeEmbeddedRunSessionIds.push("session-issue-82433");
     hoisted.activeEmbeddedRunSessionKeys.push("agent:main:issue-82433");
-    hoisted.activeTaskBlockers.push(
-      makeActiveTaskBlocker({
-        taskId: "task-nightly",
-        runId: "run-nightly",
-        runtime: "cron",
-        label: "nightly sync",
-        title: "refresh all accounts",
-      }),
-    );
+    hoisted.activeAgentRunCount.value = 1;
     const signalSpy = vi.fn();
     process.once("SIGUSR2", signalSpy);
     vi.useFakeTimers();
@@ -4473,10 +4415,7 @@ describe("gateway restart deferral preflight", () => {
       expect(logReload.warn.mock.calls).toEqual(
         expect.arrayContaining([
           [
-            "config change requires gateway restart (gateway.port) — deferring until 1 background task run(s) complete",
-          ],
-          [
-            "restart blocked by active background task run(s): taskId=task-nightly runId=run-nightly status=running runtime=cron label=nightly sync title=refresh all accounts",
+            "config change requires gateway restart (gateway.port) — deferring until 1 admitted agent run(s) complete",
           ],
         ]),
       );
@@ -4493,18 +4432,15 @@ describe("gateway restart deferral preflight", () => {
       expect(logReload.warn.mock.calls).toEqual(
         expect.arrayContaining([
           [
-            "config change requires gateway restart (gateway.port) — deferring until 1 background task run(s) complete",
+            "config change requires gateway restart (gateway.port) — deferring until 1 admitted agent run(s) complete",
           ],
           [
-            "restart blocked by active background task run(s): taskId=task-nightly runId=run-nightly status=running runtime=cron label=nightly sync title=refresh all accounts",
-          ],
-          [
-            "restart timeout after 300000ms with 1 background task run(s) still active (taskId=task-nightly runId=run-nightly status=running runtime=cron label=nightly sync title=refresh all accounts); forcing restart",
+            "restart timeout after 300000ms with 1 admitted agent run(s) still active; forcing restart",
           ],
         ]),
       );
     } finally {
-      hoisted.activeTaskCount.value = 0;
+      hoisted.activeAgentRunCount.value = 0;
       vi.useRealTimers();
       process.removeListener("SIGUSR2", signalSpy);
       restartTesting.resetRestartSignalState();
@@ -4514,8 +4450,8 @@ describe("gateway restart deferral preflight", () => {
   it("uses the default restart deferral timeout when config omits deferralTimeoutMs", async () => {
     restartTesting.resetRestartSignalState();
     const { requestGatewayRestart } = createReloadHandlersForTest();
-    hoisted.activeTaskCount.value = 1;
-    hoisted.activeTaskBlockers.push(makeActiveTaskBlocker({ taskId: "task-running-1" }));
+    hoisted.activeAgentRunCount.value = 1;
+    hoisted.activeAgentRunCount.value = 1;
     const signalSpy = vi.fn();
     process.once("SIGUSR2", signalSpy);
     vi.useFakeTimers();
@@ -4530,7 +4466,7 @@ describe("gateway restart deferral preflight", () => {
       await Promise.resolve();
       expect(signalSpy).toHaveBeenCalledTimes(1);
     } finally {
-      hoisted.activeTaskCount.value = 0;
+      hoisted.activeAgentRunCount.value = 0;
       process.removeListener("SIGUSR2", signalSpy);
       vi.useRealTimers();
       restartTesting.resetRestartSignalState();
@@ -5969,7 +5905,7 @@ describe("gateway Gmail hot reload handlers", () => {
   it("cancels a deferred restart when a newer config fails required SecretRef preflight", async () => {
     vi.useFakeTimers();
     const harness = await createManagedRestartSequenceHarness();
-    hoisted.activeTaskBlockers.push(makeActiveTaskBlocker({ taskId: "restart-sequence-blocker" }));
+    hoisted.activeAgentRunCount.value = 1;
 
     try {
       const deferredPromotion = harness.nextPromotion();
@@ -6003,7 +5939,7 @@ describe("gateway Gmail hot reload handlers", () => {
         "invalid-b",
       );
 
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await vi.advanceTimersByTimeAsync(5_000);
       expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
       expect(harness.reloader.isConfigReloadSettled()).toBe(false);
@@ -6038,7 +5974,7 @@ describe("gateway Gmail hot reload handlers", () => {
         ["config reload: gateway.port, gateway.auth.mode", undefined],
       ]);
     } finally {
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await harness.reloader.stop();
     }
   });
@@ -6206,7 +6142,7 @@ describe("gateway Gmail hot reload handlers", () => {
         diffConfigPaths(harness.deferredConfig, invalidConfig),
       );
       expect(invalidPlan.restartGateway).toBe(false);
-      hoisted.activeTaskBlockers.push(makeActiveTaskBlocker({ taskId: "hot-noop-secret-blocker" }));
+      hoisted.activeAgentRunCount.value = 1;
 
       try {
         const deferredPromotion = harness.nextPromotion();
@@ -6221,7 +6157,7 @@ describe("gateway Gmail hot reload handlers", () => {
           "config reload failed: Error: required SecretRef MISSING_HOT_TOKEN is unavailable",
         );
 
-        hoisted.activeTaskBlockers.length = 0;
+        hoisted.activeAgentRunCount.value = 0;
         await vi.advanceTimersByTimeAsync(5_000);
         expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
 
@@ -6238,7 +6174,7 @@ describe("gateway Gmail hot reload handlers", () => {
 
         expect(harness.requestRecoveryRestart).toHaveBeenCalledOnce();
       } finally {
-        hoisted.activeTaskBlockers.length = 0;
+        hoisted.activeAgentRunCount.value = 0;
         await harness.reloader.stop();
       }
     },
@@ -6291,9 +6227,7 @@ describe("gateway Gmail hot reload handlers", () => {
   it("revalidates deferred restart SecretRefs again before emission and retry", async () => {
     vi.useFakeTimers();
     const harness = await createManagedRestartSequenceHarness();
-    hoisted.activeTaskBlockers.push(
-      makeActiveTaskBlocker({ taskId: "restart-emission-preflight-blocker" }),
-    );
+    hoisted.activeAgentRunCount.value = 1;
 
     try {
       const promotion = harness.nextPromotion();
@@ -6302,7 +6236,7 @@ describe("gateway Gmail hot reload handlers", () => {
       await promotion;
 
       harness.setSecretUnavailable("RESTART_A_TOKEN");
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       const retryScheduled = harness.nextReloadWarning(
         "gateway restart recovery emission failed; retrying",
       );
@@ -6321,7 +6255,7 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(harness.assertRestartReady).toHaveBeenCalledTimes(2);
       expect(harness.activateRuntimeSecrets).toHaveBeenCalledTimes(3);
     } finally {
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await harness.reloader.stop();
     }
   });
@@ -6345,7 +6279,7 @@ describe("gateway Gmail hot reload handlers", () => {
       }
       return await originalActivateRuntimeSecrets(...args);
     });
-    hoisted.activeTaskBlockers.push(makeActiveTaskBlocker({ taskId: "restart-pre-emit-blocker" }));
+    hoisted.activeAgentRunCount.value = 1;
 
     try {
       const deferredPromotion = harness.nextPromotion();
@@ -6354,7 +6288,7 @@ describe("gateway Gmail hot reload handlers", () => {
       await expect(deferredPromotion).resolves.toBe("deferred-a");
       await deferredAdvance;
 
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       const emissionAdvance = vi.advanceTimersByTimeAsync(500);
       await emissionPreflightStarted;
 
@@ -6370,7 +6304,7 @@ describe("gateway Gmail hot reload handlers", () => {
       expect(hoisted.markRestartAbortedMainSessions).not.toHaveBeenCalled();
     } finally {
       releaseEmissionPreflight();
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await harness.reloader.stop();
     }
   });
@@ -6378,7 +6312,7 @@ describe("gateway Gmail hot reload handlers", () => {
   it("revalidates paused restart secrets before rearming an exact config revert", async () => {
     vi.useFakeTimers();
     const harness = await createManagedRestartSequenceHarness();
-    hoisted.activeTaskBlockers.push(makeActiveTaskBlocker({ taskId: "restart-sequence-blocker" }));
+    hoisted.activeAgentRunCount.value = 1;
 
     try {
       const deferredPromotion = harness.nextPromotion();
@@ -6392,7 +6326,7 @@ describe("gateway Gmail hot reload handlers", () => {
       await replacementError;
       expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
 
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await vi.advanceTimersByTimeAsync(5_000);
       harness.setSecretUnavailable("RESTART_A_TOKEN");
 
@@ -6415,7 +6349,7 @@ describe("gateway Gmail hot reload handlers", () => {
       );
       expect(harness.terminalPolicy.isEnabled()).toBe(false);
     } finally {
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await harness.reloader.stop();
     }
   });
@@ -6423,7 +6357,7 @@ describe("gateway Gmail hot reload handlers", () => {
   it("lets a newer valid restart config replace the deferred restart owner", async () => {
     vi.useFakeTimers();
     const harness = await createManagedRestartSequenceHarness();
-    hoisted.activeTaskBlockers.push(makeActiveTaskBlocker({ taskId: "restart-sequence-blocker" }));
+    hoisted.activeAgentRunCount.value = 1;
 
     try {
       const deferredPromotion = harness.nextPromotion();
@@ -6443,7 +6377,7 @@ describe("gateway Gmail hot reload handlers", () => {
       });
       expect(harness.requestRecoveryRestart).not.toHaveBeenCalled();
 
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await vi.advanceTimersByTimeAsync(500);
       await harness.restartEmitted;
 
@@ -6451,7 +6385,7 @@ describe("gateway Gmail hot reload handlers", () => {
         ["config reload: gateway.bind", undefined],
       ]);
     } finally {
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await harness.reloader.stop();
     }
   });
@@ -7280,7 +7214,7 @@ describe("deferred channel reload abort generation", () => {
   });
 
   afterEach(() => {
-    hoisted.activeTaskCount.value = 0;
+    hoisted.activeAgentRunCount.value = 0;
     vi.useRealTimers();
     delete process.env.OPENCLAW_SKIP_CHANNELS;
     delete process.env.OPENCLAW_SKIP_PROVIDERS;
@@ -7306,7 +7240,7 @@ describe("deferred channel reload abort generation", () => {
     const nextChannels = { start: vi.fn(async () => new Map()), stop: vi.fn(async () => {}) };
     const logChannels = { info: vi.fn(), error: vi.fn() };
     const oldHandlers = createTestHandlers(logChannels, oldChannels);
-    hoisted.activeTaskBlockers.push(makeActiveTaskBlocker());
+    hoisted.activeAgentRunCount.value = 1;
     vi.useFakeTimers();
     const oldReload = oldHandlers
       .applyHotReload(abortChannelReloadPlan, {})
@@ -7319,7 +7253,7 @@ describe("deferred channel reload abort generation", () => {
       ]);
       resetGatewayRestartStateForInProcessRestart();
       expect(oldHandlers.getDeferredChannelReloads?.()).toEqual([]);
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       const nextHandlers = createTestHandlers(logChannels, nextChannels);
       expect(nextHandlers.getDeferredChannelReloads?.()).toEqual([]);
       const nextReload = nextHandlers
@@ -7345,7 +7279,7 @@ describe("deferred channel reload abort generation", () => {
         skipUnavailableAccounts: true,
       });
     } finally {
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await vi.advanceTimersByTimeAsync(500);
       await oldReload;
     }
@@ -7359,7 +7293,7 @@ describe("deferred channel reload abort generation", () => {
     };
     const { applyHotReload } = createTestHandlers(logChannels, channels);
 
-    hoisted.activeTaskBlockers.push(makeActiveTaskBlocker());
+    hoisted.activeAgentRunCount.value = 1;
     vi.useFakeTimers();
 
     try {
@@ -7377,7 +7311,7 @@ describe("deferred channel reload abort generation", () => {
       expect(channels.stop).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
     }
   });
 
@@ -7408,9 +7342,7 @@ describe("deferred channel reload abort generation", () => {
         channels,
         { reloadPlugins, logReload },
       );
-      hoisted.activeTaskBlockers.push(
-        makeActiveTaskBlocker({ taskId: "task-blocking-superseded-reload" }),
-      );
+      hoisted.activeAgentRunCount.value = 1;
       let transactionCurrent = true;
       vi.useFakeTimers();
 
@@ -7475,7 +7407,7 @@ describe("deferred channel reload abort generation", () => {
         }
       } finally {
         vi.useRealTimers();
-        hoisted.activeTaskBlockers.length = 0;
+        hoisted.activeAgentRunCount.value = 0;
       }
     },
   );
@@ -7829,7 +7761,7 @@ describe("deferred channel reload abort generation", () => {
     // Create gen 2 — should not carry over the abort from gen 1
     const h2 = createTestHandlers(logChannels, channels);
 
-    hoisted.activeTaskBlockers.push(makeActiveTaskBlocker({ taskId: "task-blocking-reload-g2" }));
+    hoisted.activeAgentRunCount.value = 1;
     vi.useFakeTimers();
 
     try {
@@ -7843,7 +7775,7 @@ describe("deferred channel reload abort generation", () => {
       );
 
       // Drain active work → should proceed to stop/start channels normally
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
       await vi.advanceTimersByTimeAsync(500); // wake up, see active=0, drain complete
       await expect(reloadPromise).resolves.toBe("applied");
 
@@ -7857,7 +7789,7 @@ describe("deferred channel reload abort generation", () => {
       });
     } finally {
       vi.useRealTimers();
-      hoisted.activeTaskBlockers.length = 0;
+      hoisted.activeAgentRunCount.value = 0;
     }
   });
 

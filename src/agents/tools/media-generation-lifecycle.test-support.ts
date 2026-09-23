@@ -9,8 +9,8 @@ import type { createImageGenerateTool } from "./image-generate-tool.js";
 type MediaKind = "image" | "video" | "music";
 type ToolOptions = NonNullable<Parameters<typeof createImageGenerateTool>[0]>;
 type TaskMocks = {
-  createRunningTaskRun: ReturnType<typeof vi.fn>;
-  completeTaskRunByRunId: ReturnType<typeof vi.fn>;
+  createOperation: ReturnType<typeof vi.fn>;
+  completeOperation: ReturnType<typeof vi.fn>;
 };
 type ToolContract = {
   kind: MediaKind;
@@ -55,7 +55,7 @@ export function defineMediaGenerationCancellationTests(
     `does not start $mode ${kind} generation when its caller aborts during preparation`,
     async ({ agentSessionKey: sessionKey }) => {
       const { primary, generate } = params.setup("preparation");
-      tasks.createRunningTaskRun.mockReturnValue({ taskId: `task-${kind}-aborted` });
+      tasks.createOperation.mockReturnValue({ taskId: `task-${kind}-aborted` });
       const scheduleBackgroundWork = vi.fn();
       const tool = createTool(primary, { agentSessionKey: sessionKey, scheduleBackgroundWork });
       const controller = new AbortController();
@@ -69,7 +69,7 @@ export function defineMediaGenerationCancellationTests(
       controller.abort(abortReason);
 
       await expect(pending).rejects.toBe(abortReason);
-      expect(tasks.createRunningTaskRun).not.toHaveBeenCalled();
+      expect(tasks.createOperation).not.toHaveBeenCalled();
       expect(scheduleBackgroundWork).not.toHaveBeenCalled();
       expect(generate).not.toHaveBeenCalled();
     },
@@ -84,7 +84,7 @@ export function defineMediaGenerationCancellationTests(
       contentType: "image/png",
     });
     loadMedia.mockImplementationOnce(() => reference.promise);
-    tasks.createRunningTaskRun.mockReturnValue({ taskId: `task-${kind}-references` });
+    tasks.createOperation.mockReturnValue({ taskId: `task-${kind}-references` });
     const scheduleBackgroundWork = vi.fn();
     const tool = createTool(primary, {
       workspaceDir: process.cwd(),
@@ -108,7 +108,7 @@ export function defineMediaGenerationCancellationTests(
 
     await expect(pending).rejects.toBe(abortReason);
     expect(loadMedia).toHaveBeenCalledOnce();
-    expect(tasks.createRunningTaskRun).not.toHaveBeenCalled();
+    expect(tasks.createOperation).not.toHaveBeenCalled();
     expect(scheduleBackgroundWork).not.toHaveBeenCalled();
     expect(generate).not.toHaveBeenCalled();
     const loadOptions = loadMedia.mock.calls[0]?.[1];
@@ -123,7 +123,7 @@ export function defineMediaGenerationCancellationTests(
 
   it(`keeps an accepted detached ${kind} task running after its requester aborts`, async () => {
     const { primary, generate } = params.setup("accepted");
-    tasks.createRunningTaskRun.mockReturnValue({ taskId: `task-${kind}-accepted` });
+    tasks.createOperation.mockReturnValue({ taskId: `task-${kind}-accepted` });
     const controller = new AbortController();
     const scheduled: Array<() => Promise<void>> = [];
     const tool = createTool(primary, {
@@ -141,7 +141,7 @@ export function defineMediaGenerationCancellationTests(
     expect(scheduled).toHaveLength(1);
     await scheduled[0]!();
     expect(generate).toHaveBeenCalledOnce();
-    expect(tasks.completeTaskRunByRunId).toHaveBeenCalledOnce();
+    expect(tasks.completeOperation).toHaveBeenCalledOnce();
   });
 }
 
@@ -168,7 +168,7 @@ export function defineMediaGenerationDuplicateTests(
       params.setupProviders();
       const now = Date.now();
       const taskId = `task-${testCase.defaultModel ? "recent" : "model-only"}-${kind}`;
-      tasks.createRunningTaskRun.mockReturnValue({ taskId });
+      tasks.createOperation.mockReturnValue({ taskId });
       const scheduled: Array<() => Promise<void>> = [];
       const tool = params.createTool({
         config: mediaConfig(kind, testCase.primary, testCase.timeoutMs),
@@ -178,22 +178,17 @@ export function defineMediaGenerationDuplicateTests(
         scheduleBackgroundWork: (work) => scheduled.push(work),
       });
       await tool.execute("call-model-only-start", testCase.request);
-      const createdTask = tasks.createRunningTaskRun.mock.calls[0]?.[0];
+      const createdTask = tasks.createOperation.mock.calls[0]?.[0];
       expect(createdTask?.runId).toMatch(new RegExp(`^tool:${kind}_generate:`));
       params.listTasks.mockReturnValue([
         {
           taskId,
           runId: createdTask.runId,
-          runtime: "cli",
           taskKind: `${kind}_generation`,
           sourceId: `${kind}_generate:google`,
           requesterSessionKey: agentSessionKey,
-          ownerKey: agentSessionKey,
-          scopeKind: "session",
           task: testCase.request.prompt,
           status: "succeeded",
-          deliveryStatus: "not_applicable",
-          notifyPolicy: "silent",
           createdAt: now - 20_000,
           endedAt: now - 10_000,
           progressSummary: testCase.progressSummary,
@@ -208,7 +203,7 @@ export function defineMediaGenerationDuplicateTests(
           model,
         });
         expect(scheduled).toHaveLength(1);
-        expect(tasks.createRunningTaskRun).toHaveBeenCalledTimes(1);
+        expect(tasks.createOperation).toHaveBeenCalledTimes(1);
         expect(result.content[0]).toMatchObject({
           type: "text",
           text: expect.stringContaining(`${title} generation task ${taskId} recently succeeded`),

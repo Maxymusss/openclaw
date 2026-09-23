@@ -44,15 +44,15 @@ platform-send start use a lazy progress companion, while terminal message rows
 remain in the activity ledger. Run inspection merges both sources directly;
 neither is copied into the generic decision-fact table.
 
-Scheduled runs, background tasks, and task flows are owner-native sources too.
-After exact run admission, a lazy lifecycle metadata table binds the admitted
-context and execution ids to the canonical `cron_run_receipts`, `task_runs`, or
-`flow_runs` row. Inspection joins that metadata to the owner row directly and
-preserves its status, including skipped, failed, timed-out, cancelled, blocked,
-and lost outcomes. A `runId` alone never joins one of these rows to an
-execution. Legacy, missing, deleted, corrupt, or mismatched bindings remain
-unknown or absent; they never change task behavior and are never copied into
-`execution_decision_facts`.
+Scheduled runs are an owner-native source too. After exact run admission, a lazy
+lifecycle metadata table binds the admitted context and execution ids to the
+canonical `cron_run_receipts` row. Inspection joins that metadata to the receipt
+directly and preserves its recorded status. Retained pre-removal `task_runs` and
+`flow_runs` rows can still explain historical executions through their exact
+bindings; new native agent runs do not create Tasks or TaskFlow records. A `runId`
+alone never joins an owner row to an execution. Missing, deleted, corrupt, or
+mismatched bindings remain unknown or absent; they never change execution
+behavior and are never copied into `execution_decision_facts`.
 
 ## Run identity inspection
 
@@ -251,11 +251,12 @@ message-policy, or turn-capability denial that changed the result is
 `enforced`. Portable actions and early suppressions without a durable owner
 record use the generic fact owner on the same audit-writer FIFO.
 
-Cron, task, and flow lifecycle receipts are `attribution-only` and have a
+Cron and retained legacy task and flow lifecycle receipts are `attribution-only` and have a
 `not-applicable` decision outcome. They report what the authoritative lifecycle
 owner retained; they do not claim an authorization decision. Their cursors are
 opaque and source-specific. Existing numeric cursors and `a:`, `m:`, and `g:`
-cursors remain accepted; newer owner stages use `c:`, `t:`, and `f:`.
+cursors remain accepted. Cron uses `c:`; historical task and flow stages retain
+`t:` and `f:`.
 
 When the same `runId` has a retained terminal row in `operator_approvals`, the
 inspector also reads its owner-local `operator_approval_execution_identities`

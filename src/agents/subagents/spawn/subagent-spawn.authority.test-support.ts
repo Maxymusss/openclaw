@@ -27,13 +27,6 @@ import {
   setActivePluginRegistry,
 } from "../../../plugins/runtime.js";
 import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
-import { resetTaskFlowRegistryForTests } from "../../../tasks/task-flow-registry.test-support.js";
-import * as taskControlRuntime from "../../../tasks/task-registry-control.runtime.js";
-import {
-  resetTaskRegistryForTests,
-  setTaskRegistryControlRuntimeForTests,
-  resetTaskRegistryControlRuntimeForTests,
-} from "../../../tasks/task-registry.test-support.js";
 import {
   createChannelTestPluginBase,
   createTestRegistry,
@@ -51,8 +44,8 @@ import {
   writeSubagentSessionEntry,
 } from "../registry/subagent-registry.persistence.test-support.js";
 import {
-  resetSubagentRegistryForTests,
   testing as registryTesting,
+  resetSubagentRegistryForTests,
 } from "../registry/subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "../registry/subagent-registry.types.js";
 import { testing as schedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
@@ -238,10 +231,6 @@ export function installSpawnAuthorityFixture() {
     clearConfigCache();
     clearRuntimeConfigSnapshot();
     resetSubagentRegistryForTests({ persist: false });
-    resetTaskRegistryForTests({ persist: false });
-    resetTaskFlowRegistryForTests({ persist: false });
-    // The source test supplies the real ESM owner through the existing CJS runtime seam.
-    setTaskRegistryControlRuntimeForTests(taskControlRuntime);
     registryTesting.setDepsForTest({
       loadAgentRuntimePluginRegistryHandle: () => undefined,
       callGateway: async (request) => {
@@ -256,10 +245,7 @@ export function installSpawnAuthorityFixture() {
   afterEach(async () => {
     await settleSubagentRegistryPersistenceWork();
     resetSubagentRegistryForTests({ persist: false });
-    resetTaskRegistryForTests({ persist: false });
-    resetTaskFlowRegistryForTests({ persist: false });
     schedulerTesting.reset();
-    resetTaskRegistryControlRuntimeForTests();
     await cleanupSessionStateForTest({ stateDir });
     registryTesting.setDepsForTest();
     spawnTesting.setDepsForTest();

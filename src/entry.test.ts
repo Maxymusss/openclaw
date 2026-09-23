@@ -246,7 +246,7 @@ describe("entry precomputed command help fast path", () => {
     expect(outputPrecomputedNodesHelpTextCalls).toBe(1);
   });
 
-  it.each(["config", "doctor", "gateway", "plugins", "sessions", "tasks"])(
+  it.each(["config", "doctor", "gateway", "plugins", "sessions"])(
     "renders precomputed %s help from startup metadata without importing the full program",
     async (commandName) => {
       const outputPrecomputedSubcommandHelpTextCalls: string[] = [];

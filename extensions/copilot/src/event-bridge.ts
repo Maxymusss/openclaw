@@ -66,12 +66,6 @@ interface EventBridgeOptions {
     stream: "item" | "plan";
     data: Record<string, unknown>;
   }) => void | Promise<void>;
-  onNativeSubagentEvent?: (
-    event: Extract<
-      SessionEvent,
-      { type: "subagent.started" | "subagent.completed" | "subagent.failed" }
-    >,
-  ) => void;
   onCompactionComplete?: (payload: {
     messagesRemoved?: number;
     success: boolean;
@@ -487,18 +481,6 @@ export function attachEventBridge(
     });
   });
 
-  registerListener(session, unsubscribeFns, "subagent.started", (event) => {
-    forwardNativeSubagentEvent(event);
-  });
-
-  registerListener(session, unsubscribeFns, "subagent.completed", (event) => {
-    forwardNativeSubagentEvent(event);
-  });
-
-  registerListener(session, unsubscribeFns, "subagent.failed", (event) => {
-    forwardNativeSubagentEvent(event);
-  });
-
   registerListener(session, unsubscribeFns, "session.compaction_start", (event) => {
     if (!isRootCompactionEvent(event)) {
       return;
@@ -831,19 +813,6 @@ export function attachEventBridge(
     }
     const invoke = () => callback(event);
     agentEventChain = agentEventChain.then(invoke, invoke).catch(() => undefined);
-  }
-
-  function forwardNativeSubagentEvent(
-    event: Extract<
-      SessionEvent,
-      { type: "subagent.started" | "subagent.completed" | "subagent.failed" }
-    >,
-  ): void {
-    try {
-      options.onNativeSubagentEvent?.(event);
-    } catch {
-      // Native task mirroring must not corrupt the Copilot turn.
-    }
   }
 
   async function awaitStableCompaction(): Promise<void> {

@@ -12,7 +12,7 @@ import {
 import { describeUnavailableCronAgent } from "../agent-availability.js";
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { cronStoreKey } from "../store/key.js";
-import { loadedCronStoreFromRows, loadCronRows } from "../store/row-codec.js";
+import { loadCronRows, loadedCronStoreFromRows } from "../store/row-codec.js";
 import {
   activateCronRunReceiptInDatabase,
   adjudicateActiveCronRunReceiptInDatabase,
@@ -21,18 +21,18 @@ import {
   assertCronRunReceiptOwnedInDatabase,
   claimCronRunReceiptInDatabase,
   CronRunReceiptRevisionError,
+  findActiveCronRunReceiptInDatabase,
   finishCronRunReceipt,
   finishCronRunReceiptInDatabase,
-  findActiveCronRunReceiptInDatabase,
   isCronRunReceiptSettlementPending,
   prepareCronRunReceiptAdjudication,
   prepareCronRunReceiptClaim,
   readCronRunReceiptCurrentJob,
   trackCronRunReceiptSettlement,
-  type PreparedCronRunReceiptClaim,
   type CronRunReceiptHandle,
-  type CronRunReceiptStatus,
   type CronRunReceiptSettlementDisposition,
+  type CronRunReceiptStatus,
+  type PreparedCronRunReceiptClaim,
 } from "../store/run-receipt-store.js";
 import { retireCronRunTriggerStateInDatabase } from "../store/run-receipt-trigger-state.js";
 import type { CronStoreTransactionHooks } from "../store/transaction-hooks.types.js";
@@ -42,8 +42,8 @@ import {
   resolveCronJobMessageActionAuthorityInputs,
   resolveCronJobMessageToolAuthorityInputs,
 } from "./jobs-tool-policy.js";
+import { findCronRunRecoveryInDatabase } from "./run-history-recovery.js";
 import type { CronServiceState } from "./state.js";
-import { findCronTaskRunRecoveryInDatabase } from "./task-runs.js";
 import { runsDetachedFromMainSession } from "./timer-execution-timeout.js";
 
 function currentDefaultAgentId(state: CronServiceState): string | undefined {
@@ -265,7 +265,7 @@ function retireServiceCronRunTriggerStateInDatabase(params: {
   // Only legacy markers without a receipt association need task-history fallback.
   const receiptId =
     job.state.runningReceiptId ??
-    findCronTaskRunRecoveryInDatabase({
+    findCronRunRecoveryInDatabase({
       database,
       jobId,
       storeKey,

@@ -5,7 +5,6 @@ import {
   nativeHookRelayTesting,
   onAgentEvent,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
-import { createAgentHarnessTaskRuntime } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
 import {
@@ -90,20 +89,14 @@ describe("native follow-up custody through the registered attempt", () => {
     );
     const host = await createAdmittedHostCapabilityTestFixture(params);
     assert(
-      host.agentHarnessTaskRuntimeScope,
+      host.agentHarnessCompletionScope,
       "Expected the session fixture to issue a task runtime scope",
     );
     params.hostCapabilities = host.hostCapabilities;
-    params.agentHarnessTaskRuntimeScope = host.agentHarnessTaskRuntimeScope;
-    const taskRuntime = createAgentHarnessTaskRuntime({
-      runtime: "subagent",
-      taskKind: "codex-native",
-      runIdPrefix: "codex-thread:",
-      scope: host.agentHarnessTaskRuntimeScope,
-    });
-    // Keep the real scoped persistence and registered monitor; isolate final user delivery.
+    params.agentHarnessCompletionScope = host.agentHarnessCompletionScope;
+    // Keep the real admitted host and registered monitor; isolate final user delivery.
     const delivery = vi
-      .spyOn(defaultNativeSubagentMonitorRuntime, "deliverAgentHarnessTaskCompletion")
+      .spyOn(defaultNativeSubagentMonitorRuntime, "deliverAgentHarnessCompletion")
       .mockResolvedValue({ delivered: true, path: "direct" });
     const notify = async (method: string, notificationParams: JsonObject) => {
       await harness.notify({ method, params: notificationParams } as CodexServerNotification);
@@ -170,14 +163,6 @@ describe("native follow-up custody through the registered attempt", () => {
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
-      const previous = taskRuntime.listTaskRecords().find((task) => task.runId === runA);
-      expect(previous).toMatchObject({
-        status: "succeeded",
-        deliveryStatus: "delivered",
-        terminalSummary: "A result",
-      });
-      const previousSnapshot = structuredClone(previous);
-
       // A completed A and not-yet-mirrored B cannot authorize sessions_yield.
       // This independently running sibling supplies a real pending completion.
       await notify("thread/started", {
@@ -281,7 +266,6 @@ describe("native follow-up custody through the registered attempt", () => {
       if (scenario === "delayed-success" || scenario === "opaque-steer") {
         await childStart();
       }
-      const startedRows = taskRuntime.listTaskRecords();
       const claimedAfterStart = isCodexAppServerLiveThreadClaimed(harness.client, childThreadId);
       if (!accepted) {
         await expect(
@@ -335,7 +319,6 @@ describe("native follow-up custody through the registered attempt", () => {
       await new Promise<void>((resolve) => {
         setImmediate(resolve);
       });
-      const finalRows = taskRuntime.listTaskRecords();
       const claimedAfterCompletion = isCodexAppServerLiveThreadClaimed(
         harness.client,
         childThreadId,
@@ -343,22 +326,12 @@ describe("native follow-up custody through the registered attempt", () => {
       const relayAfterCompletion = Boolean(
         nativeHookRelayTesting.getNativeHookRelayRegistrationForTests(relayId),
       );
-      expect.soft(finalRows.find((task) => task.runId === runA)).toEqual(previousSnapshot);
       if (accepted) {
-        expect
-          .soft(startedRows.find((task) => task.runId === runB))
-          .toMatchObject({ status: "running" });
-        expect.soft(finalRows.find((task) => task.runId === runB)).toMatchObject({
-          status: "succeeded",
-          deliveryStatus: "delivered",
-          terminalSummary: "B result",
-        });
         expect
           .soft(delivery.mock.calls.filter(([call]) => call.childSessionKey === runB))
           .toEqual([[expect.objectContaining({ childSessionKey: runB, result: "B result" })]]);
         expect.soft(claimedAfterStart).toBe(true);
       } else {
-        expect.soft(finalRows.find((task) => task.runId === runB)).toBeUndefined();
         expect
           .soft(delivery.mock.calls.filter(([call]) => call.childSessionKey === runB))
           .toHaveLength(0);

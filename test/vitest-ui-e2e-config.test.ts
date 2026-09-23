@@ -247,8 +247,7 @@ function probeOwnership(
       root: ${JSON.stringify(repoRoot)}, config: ${JSON.stringify(configFile)},
       configLoader: "runner", watch: false, project: ${JSON.stringify(options.project ?? [])},
     });
-    const readEvents = () => fs.existsSync(${JSON.stringify(eventsFile)})
-      ? fs.readFileSync(${JSON.stringify(eventsFile)}, "utf8").trim().split("\\n").map(JSON.parse) : [];
+    const readEvents = () => fs.existsSync(${JSON.stringify(eventsFile)})      ? fs.readFileSync(${JSON.stringify(eventsFile)}, "utf8").trim().split("\\n").map(JSON.parse) : [];
     if (${JSON.stringify(options.failure)} === "provide") {
       const root = ctx.getRootProject();
       const provide = root.provide;
@@ -352,11 +351,8 @@ describe("Control UI E2E resource ownership", () => {
     },
     { filters: [standaloneFile, bundledFile], files: [standaloneFile, bundledFile], leases: 1 },
     {
-      filters: ["ui/src/pages/tasks"],
-      files: [
-        "ui/src/pages/tasks/tasks-transcript.e2e.test.ts",
-        "ui/src/pages/tasks/tasks.e2e.test.ts",
-      ],
+      filters: ["ui/src/pages/cron"],
+      files: ["ui/src/pages/cron/run-transcript.e2e.test.ts"],
       leases: 1,
     },
     {

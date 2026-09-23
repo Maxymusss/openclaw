@@ -1,7 +1,6 @@
 import { afterEach, expect, it } from "vitest";
 import { beginDoctorMaintenance } from "../commands/doctor-maintenance.js";
 import { acquireGatewayLock } from "../infra/gateway-lock.js";
-import { buildFlowRecord } from "../tasks/task-flow-registry.records.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "./openclaw-agent-db-resources.js";
 import {
@@ -19,39 +18,40 @@ afterEach(async () => {
 });
 
 function createSharedWorkerClient(env: NodeJS.ProcessEnv) {
-  const ownerKey = "agent:main:maintenance-resource";
-  const flowIds = new Map<string, string>();
+  const namespace = { pluginId: "maintenance-resources-fixture", namespace: "shared" };
   return {
     async register(key: string, value: { value: string }) {
-      const flow = buildFlowRecord({
-        ownerKey,
-        controllerId: "tests/maintenance-resources",
-        goal: key,
-        stateJson: value,
+      const result = await executeOpenClawStateWorker(captureOpenClawStateWorkerContext({ env }), {
+        type: "pluginState.register",
+        input: {
+          ...namespace,
+          key,
+          valueJson: JSON.stringify(value),
+          maxEntries: 10,
+          overflowPolicy: "reject-new",
+        },
       });
-      await executeOpenClawStateWorker(captureOpenClawStateWorkerContext({ env }), {
-        type: "flows.createManaged",
-        input: { flow },
-      });
-      flowIds.set(key, flow.flowId);
+      expect(result).toEqual({ ok: true, value: undefined });
     },
     async lookup(key: string) {
-      const flowId = flowIds.get(key);
-      if (flowId === undefined) {
-        return undefined;
-      }
-      const flow = await executeOpenClawStateWorker(captureOpenClawStateWorkerContext({ env }), {
-        type: "flows.current",
-        input: { flowId },
+      const result = await executeOpenClawStateWorker(captureOpenClawStateWorkerContext({ env }), {
+        type: "pluginState.lookup",
+        input: { ...namespace, key },
       });
-      return flow?.stateJson;
+      if (!result.ok) {
+        throw new Error("Synthetic shared-state lookup failed", { cause: result.error });
+      }
+      return result.value;
     },
     async entries() {
-      const flows = await executeOpenClawStateWorker(captureOpenClawStateWorkerContext({ env }), {
-        type: "flows.list",
-        input: { ownerKey },
+      const result = await executeOpenClawStateWorker(captureOpenClawStateWorkerContext({ env }), {
+        type: "pluginState.entries",
+        input: namespace,
       });
-      return flows.map((flow) => ({ key: flow.goal, value: flow.stateJson }));
+      if (!result.ok) {
+        throw new Error("Synthetic shared-state listing failed", { cause: result.error });
+      }
+      return result.value;
     },
   };
 }

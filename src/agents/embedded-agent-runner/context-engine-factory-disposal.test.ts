@@ -11,10 +11,6 @@ import {
   trackAsyncWork,
 } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import {
-  resetTaskFlowRegistryForTests,
-  resetTaskRegistryForTests,
-} from "../../tasks/task-runtime.test-helpers.js";
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import {
   runContextEngineMaintenance,
@@ -39,8 +35,6 @@ it.each([
 ] as const)("joins every factory lifetime for $name", async ({ ids, releaseFailure }) => {
   await withStateDirEnv("openclaw-factory-disposal-", async ({ stateDir }) => {
     resetCommandQueueStateForTest();
-    resetTaskRegistryForTests({ persist: false });
-    resetTaskFlowRegistryForTests({ persist: false });
     const db = new DatabaseSync(path.join(stateDir, "factory.sqlite"));
     db.exec("CREATE TABLE answer(value INTEGER); INSERT INTO answer VALUES (42)");
     const context = new AsyncLocalStorage<string>();
@@ -232,8 +226,6 @@ it.each([
       db.close();
       warn.mockRestore();
       resetCommandQueueStateForTest();
-      resetTaskRegistryForTests({ persist: false });
-      resetTaskFlowRegistryForTests({ persist: false });
     }
   });
 });

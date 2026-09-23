@@ -145,9 +145,6 @@ export const gatewayServerBackedHttpTestFiles = [
 export const gatewayMethodsIsolatedTestFiles = [
   // Heap scans should not traverse objects from unrelated test files.
   "src/gateway/server-methods/chat-metadata-runtime.cache.test.ts",
-  "src/gateway/server-methods/tasks.access.test.ts",
-  "src/gateway/server-methods/tasks.test.ts",
-  "src/gateway/server-methods/agent.task-runtime.test.ts",
   "src/gateway/server-methods/agent.test.ts",
   "src/gateway/server-methods/board.runtime-boundaries.test.ts",
   "src/gateway/server-methods/chat.reset-visible-yield.test.ts",

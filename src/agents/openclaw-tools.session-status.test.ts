@@ -14,8 +14,6 @@ import { normalizeLegacySessionEntryDelivery } from "../infra/state-migrations.l
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { MODEL_SELECTION_LOCKED_MESSAGE } from "../sessions/model-overrides.js";
 import { resolvePreferredSessionKeyForSessionIdMatches } from "../sessions/session-id-resolution.js";
-import type { TaskRecord } from "../tasks/task-registry.types.js";
-import { buildTaskStatusSnapshot } from "../tasks/task-status.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import { compactToolOutputHint } from "./tool-schema-hints.js";
 
@@ -28,12 +26,6 @@ const buildStatusMessageMock = vi.hoisted(() =>
 );
 const resolveQueueSettingsMock = vi.hoisted(() =>
   vi.fn((_params?: unknown) => ({ mode: "interrupt" })),
-);
-const listTasksForRelatedSessionKeyForOwnerMock = vi.hoisted(() =>
-  vi.fn(
-    (_params: { relatedSessionKey: string; callerOwnerKey: string }) =>
-      [] as Array<Record<string, unknown>>,
-  ),
 );
 const resolveEnvApiKeyMock = vi.hoisted(() =>
   vi.fn((_provider?: string, _env?: NodeJS.ProcessEnv) => null),
@@ -72,7 +64,6 @@ const createMockConfig = () => ({
 });
 
 let mockConfig: Record<string, unknown> = createMockConfig();
-const TASK_STATUS_SNAPSHOT_NOW = 1_000_000_000_000;
 
 function createScopedSessionStores() {
   // Two stores simulate per-agent session files selected by scoped status lookups.
@@ -259,14 +250,8 @@ function formatPrimaryModelLabel(provider: string | undefined, model: string): s
   return provider ? `${provider}/${model}` : model;
 }
 
-function formatStatusLines(primary: string, taskLineOverride: string | undefined): string {
-  return taskLineOverride
-    ? `OpenClaw\n🧠 Model: ${primary}\n${taskLineOverride}`
-    : `OpenClaw\n🧠 Model: ${primary}`;
-}
-
 function createCommandsStatusRuntimeModuleMock() {
-  // Status text mock keeps model/task/session routing observable in one place.
+  // Status text mock keeps model and session routing observable in one place.
   return {
     buildStatusText: async (params: {
       sessionKey: string;
@@ -278,7 +263,6 @@ function createCommandsStatusRuntimeModuleMock() {
       workspaceDir?: string;
       primaryModelLabelOverride?: string;
       includeTranscriptUsage?: boolean;
-      taskLineOverride?: string;
       resolveDefaultThinkingLevel?: () => unknown;
     }) => {
       resolveQueueSettingsMock({
@@ -319,7 +303,7 @@ function createCommandsStatusRuntimeModuleMock() {
         includeTranscriptUsage: params.includeTranscriptUsage,
         workspaceDir: params.workspaceDir,
       });
-      return formatStatusLines(primary, params.taskLineOverride);
+      return `OpenClaw\n🧠 Model: ${primary}`;
     },
   };
 }
@@ -363,19 +347,6 @@ vi.mock("../auto-reply/group-activation.js", () => ({
 vi.mock("../auto-reply/reply/queue.js", () => ({
   getFollowupQueueDepth: () => 0,
   resolveQueueSettings: resolveQueueSettingsMock,
-}));
-vi.mock("../tasks/task-owner-access.js", () => ({
-  listTasksForRelatedSessionKeyForOwner: (params: {
-    relatedSessionKey: string;
-    callerOwnerKey: string;
-  }) => listTasksForRelatedSessionKeyForOwnerMock(params),
-  buildTaskStatusSnapshotForRelatedSessionKeyForOwner: (params: {
-    relatedSessionKey: string;
-    callerOwnerKey: string;
-  }) =>
-    buildTaskStatusSnapshot(listTasksForRelatedSessionKeyForOwnerMock(params) as TaskRecord[], {
-      now: TASK_STATUS_SNAPSHOT_NOW,
-    }),
 }));
 vi.mock("../sessions/session-state-events.js", () => ({
   getSessionStateVersion: (sessionKey: string, agentId: string) =>
@@ -423,8 +394,6 @@ function resetSessionStore(inputStore: Record<string, SessionEntry>) {
   callGatewayMock.mockClear();
   agentToolGatewayCallMock.mockReset();
   agentToolGatewayCallMock.mockImplementation((opts: unknown) => callGatewayMock(opts));
-  listTasksForRelatedSessionKeyForOwnerMock.mockClear();
-  listTasksForRelatedSessionKeyForOwnerMock.mockReturnValue([]);
   getSessionStateVersionMock.mockReset();
   getSessionStateVersionMock.mockReturnValue(0);
   listSessionStateEventsSinceMock.mockReset();
@@ -582,20 +551,6 @@ function getSessionStatusTool(
   });
   expect(tool.name).toBe("session_status");
   return tool;
-}
-
-async function renderTaskStatus(tasks: Array<Record<string, unknown>>, callId: string) {
-  resetSessionStore({
-    "agent:main:main": { sessionId: "sess-main", updatedAt: Date.now() },
-  });
-  listTasksForRelatedSessionKeyForOwnerMock.mockReturnValue(tasks);
-  const result = await createSessionStatusTool({ agentSessionKey: "agent:main:main" }).execute(
-    callId,
-    {
-      sessionKey: "agent:main:main",
-    },
-  );
-  return (result.content?.[0] as { text: string } | undefined)?.text ?? "";
 }
 
 describe("session_status tool", () => {
@@ -1705,155 +1660,6 @@ describe("session_status tool", () => {
     await expect(
       tool.execute("call-current-non-literal", { sessionKey: "definitely-not-current" }),
     ).rejects.toThrow("Unknown sessionId: definitely-not-current");
-  });
-
-  it("includes background task context in session_status output", async () => {
-    const text = await renderTaskStatus(
-      [
-        {
-          taskId: "task-1",
-          runtime: "acp",
-          requesterSessionKey: "agent:main:main",
-          task: "Summarize inbox backlog",
-          status: "running",
-          deliveryStatus: "pending",
-          notifyPolicy: "done_only",
-          createdAt: Date.now() - 5_000,
-          progressSummary: "Indexing the latest threads",
-        },
-      ],
-      "tc-1",
-    );
-
-    expect(text).toContain("📌 Tasks: 1 active");
-    expect(text).toContain("acp");
-    expect(text).toContain("Summarize inbox backlog");
-    expect(text).toContain("Indexing the latest threads");
-  });
-
-  it("hides stale completed task rows from session_status output", async () => {
-    const text = await renderTaskStatus(
-      [
-        {
-          taskId: "task-stale",
-          runtime: "cron",
-          requesterSessionKey: "agent:main:main",
-          task: "stale completed task",
-          status: "succeeded",
-          deliveryStatus: "delivered",
-          notifyPolicy: "done_only",
-          createdAt: Date.now() - 15 * 60_000,
-          terminalSummary: "finished long ago",
-        },
-        {
-          taskId: "task-live",
-          runtime: "subagent",
-          requesterSessionKey: "agent:main:main",
-          task: "live task",
-          status: "running",
-          deliveryStatus: "pending",
-          notifyPolicy: "done_only",
-          createdAt: Date.now() - 5_000,
-          progressSummary: "still working",
-        },
-      ],
-      "tc-stale",
-    );
-
-    expect(text).toContain("📌 Tasks: 1 active");
-    expect(text).toContain("live task");
-    expect(text).not.toContain("stale completed task");
-    expect(text).not.toContain("finished long ago");
-  });
-
-  it("shows blocked completion outcomes in session_status output", async () => {
-    const text = await renderTaskStatus(
-      [
-        {
-          taskId: "task-blocked",
-          runtime: "cron",
-          requesterSessionKey: "agent:main:main",
-          task: "blocked task",
-          status: "succeeded",
-          terminalOutcome: "blocked",
-          notifyPolicy: "done_only",
-          createdAt: Date.now() - 5_000,
-          terminalSummary: "Additional input required.",
-        },
-      ],
-      "tc-blocked",
-    );
-
-    expect(text).toContain("📌 Tasks: 1 recent failure · blocked");
-    expect(text).toContain("blocked task");
-    expect(text).toContain("Additional input required.");
-  });
-
-  it("truncates long task titles and details in session_status output", async () => {
-    const text = await renderTaskStatus(
-      [
-        {
-          taskId: "task-long",
-          runtime: "subagent",
-          requesterSessionKey: "agent:main:main",
-          task: "This is a deliberately long task prompt that should never be emitted in full by session_status because it can include internal instructions and file paths that are not appropriate for user-visible task summaries.",
-          status: "running",
-          deliveryStatus: "pending",
-          notifyPolicy: "done_only",
-          createdAt: Date.now() - 5_000,
-          progressSummary:
-            "This progress detail is also intentionally long so the session_status tool proves it truncates verbose task context instead of dumping a long internal update into the tool response.",
-        },
-      ],
-      "tc-truncated",
-    );
-
-    expect(text).toContain(
-      "This is a deliberately long task prompt that should never be emitted in full by…",
-    );
-    expect(text).toContain(
-      "This progress detail is also intentionally long so the session_status tool proves it truncates verbose task context ins…",
-    );
-    expect(text).not.toContain("internal instructions and file paths");
-    expect(text).not.toContain("dumping a long internal update");
-  });
-
-  it("prefers failure context over newer success context in session_status output", async () => {
-    const text = await renderTaskStatus(
-      [
-        {
-          taskId: "task-failed",
-          runtime: "cron",
-          requesterSessionKey: "agent:main:main",
-          task: "failing task",
-          status: "failed",
-          deliveryStatus: "pending",
-          notifyPolicy: "done_only",
-          createdAt: Date.now() - 60_000,
-          endedAt: Date.now() - 30_000,
-          error: "permission denied",
-        },
-        {
-          taskId: "task-succeeded",
-          runtime: "subagent",
-          requesterSessionKey: "agent:main:main",
-          task: "successful task",
-          status: "succeeded",
-          deliveryStatus: "delivered",
-          notifyPolicy: "done_only",
-          createdAt: Date.now() - 10_000,
-          endedAt: Date.now(),
-          terminalSummary: "all done",
-        },
-      ],
-      "tc-failed-priority",
-    );
-
-    expect(text).toContain("📌 Tasks: 1 recent failure");
-    expect(text).toContain("failing task");
-    expect(text).toContain("permission denied");
-    expect(text).not.toContain("successful task");
-    expect(text).not.toContain("all done");
   });
 
   it("resolves current as the requester alias before a colliding session id", async () => {

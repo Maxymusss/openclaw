@@ -32,7 +32,6 @@ import { readStableSqliteFileGeneration } from "../infra/sqlite-file-generation.
 import { readSqliteNumberPragma } from "../infra/sqlite-pragma.test-support.js";
 import { assertSqliteSchemaContains } from "../infra/sqlite-schema-contract.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
-import { loadTaskRegistryStateFromSqlite } from "../tasks/task-registry.store.sqlite.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { VERSION } from "../version.js";
 import {
@@ -7666,16 +7665,6 @@ INSERT INTO macos_port_guardian_records VALUES (4242, 18789, '/usr/bin/ssh', 're
           repairOpenClawStateDatabaseSchema({ env: { OPENCLAW_STATE_DIR: stateDir } }).warnings,
         ).toEqual([]);
         expect(readStatuses()).toEqual(expectedStatuses);
-        expect(
-          [...loadTaskRegistryStateFromSqlite().tasks.values()].map((task) => ({
-            taskId: task.taskId,
-            deliveryStatus: task.deliveryStatus,
-          })),
-        ).toEqual([
-          { taskId: "canonical", deliveryStatus: "not_applicable" },
-          { taskId: "obsolete", deliveryStatus: "not_applicable" },
-          { taskId: "pending", deliveryStatus: "pending" },
-        ]);
 
         closeOpenClawStateDatabaseForTest();
         expect(readStatuses()).toEqual(expectedStatuses);

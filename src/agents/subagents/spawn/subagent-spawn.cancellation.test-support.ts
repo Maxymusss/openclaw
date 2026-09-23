@@ -1,6 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { it, expect, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../../../config/config.js";
 import type { CallGatewayOptions } from "../../../gateway/call.js";
@@ -20,20 +20,16 @@ import {
   startSessionWorkAdmissionInterruption,
   type SessionWorkAdmissionLease,
 } from "../../../sessions/session-lifecycle-admission.js";
-import { getDetachedTaskLifecycleRuntime } from "../../../tasks/detached-task-runtime.js";
-import {
-  setDetachedTaskLifecycleRuntime,
-  resetDetachedTaskLifecycleRuntimeForTests,
-} from "../../../tasks/detached-task-runtime.test-support.js";
-import { findTaskByRunId, getTaskById } from "../../../tasks/runtime-internal.js";
-import { onTaskRegistryChange } from "../../../tasks/task-registry.store.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
 import { createSubagentsTool } from "../../tools/subagents-tool.js";
+import * as nativeControl from "../registry/subagent-control.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
+import { onSubagentRegistryPersisted } from "../registry/subagent-registry-state.js";
 import {
   registerSubagentRun,
   testing as registryTesting,
 } from "../registry/subagent-registry.test-helpers.js";
+import { resolveSubagentSessionStatus } from "../registry/subagent-session-metrics.js";
 
 type GatewayRuntime = ReturnType<typeof createGatewayInstanceRuntime>;
 
@@ -179,7 +175,6 @@ export function registerNativeCancellationCases<
         cleanup: "keep",
         expectsCompletionMessage: false,
       });
-      const task = expectDefined(findTaskByRunId(targetRunId), "selected task");
       const target = expectDefined(context.chatAbortControllers.get(targetRunId), "target run");
       const onAbort = vi.fn(() => entered.resolve());
       target.controller.signal.addEventListener("abort", onAbort, { once: true });
@@ -197,19 +192,16 @@ export function registerNativeCancellationCases<
           reason: createAgentRunDirectAbortError(),
         });
       }
-      if (transition === "before interruption") {
-        const taskRuntime = getDetachedTaskLifecycleRuntime();
-        setDetachedTaskLifecycleRuntime({
-          ...taskRuntime,
-          cancelDetachedTaskRunById: async (params) => {
-            entered.resolve();
-            await releaseCancellation.promise;
-            return taskRuntime.cancelDetachedTaskRunById(params);
-          },
-        });
-      }
+      const killNative = nativeControl.killSubagentRunAdmin;
+      vi.spyOn(nativeControl, "killSubagentRunAdmin").mockImplementation(async (...args) => {
+        if (transition === "before interruption") {
+          entered.resolve();
+          await releaseCancellation.promise;
+        }
+        return killNative(...args);
+      });
       const tool = createSubagentsTool({ config: bound.cfg, agentSessionKey: requester });
-      pending = tool.execute("native-cancel", { action: "cancel", taskId: task.taskId });
+      pending = tool.execute("native-cancel", { action: "cancel", runId: targetRunId });
       await entered.promise;
       if (transition === "already interrupted") {
         let cancellationSettled = false;
@@ -244,13 +236,6 @@ export function registerNativeCancellationCases<
           requesterSessionKey: requester,
         });
       }
-      expect(getTaskById(task.taskId)).toMatchObject({
-        taskId: task.taskId,
-        runId: task.runId,
-        childSessionKey: task.childSessionKey,
-        ownerKey: task.ownerKey,
-        detail: task.detail,
-      });
       const accepted = transition === "after interruption";
       const interrupted = transition !== "before interruption";
       if (interrupted) {
@@ -273,22 +258,21 @@ export function registerNativeCancellationCases<
         const cancellation = await pending;
         expect(subagentRuns.get(targetRunId)?.killIntent).toBe(originalClaim);
         expect(cancellation.details).toMatchObject({
-          status: "error",
-          cancelled: false,
-          reason: expect.stringContaining("cleanup is pending"),
+          killed: false,
+          error: expect.stringContaining("cleanup is pending"),
         });
         expect(blockedAdmission?.isActive()).toBe(true);
-        expect(getTaskById(task.taskId)?.status).toBe("running");
+        expect(resolveSubagentSessionStatus(subagentRuns.get(targetRunId))).toBe("running");
         const settled = createDeferred();
-        stopObserving = onTaskRegistryChange(() => {
-          if (getTaskById(task.taskId)?.status === "cancelled") {
+        stopObserving = onSubagentRegistryPersisted(() => {
+          if (resolveSubagentSessionStatus(subagentRuns.get(targetRunId)) === "killed") {
             settled.resolve();
           }
         });
         blockedAdmission?.release();
         releaseTerminal.resolve();
         await settled.promise;
-        expect(getTaskById(task.taskId)?.status).toBe("cancelled");
+        expect(resolveSubagentSessionStatus(subagentRuns.get(targetRunId))).toBe("killed");
         expect(subagentRuns.get(targetRunId)?.killIntent).toBeUndefined();
         expect(subagentRuns.get(targetRunId)?.killReconciliation).toMatchObject({
           killedAt: originalClaim.requestedAt,
@@ -296,10 +280,12 @@ export function registerNativeCancellationCases<
         });
         assertNoModelExecution();
       } else {
-        expect((await pending).details).toMatchObject({ cancelled: accepted });
+        expect((await pending).details).toMatchObject({ killed: accepted });
         expect(target.controller.signal.aborted).toBe(interrupted);
         expect(onAbort).toHaveBeenCalledTimes(Number(interrupted));
-        expect(getTaskById(task.taskId)?.status).toBe(accepted ? "cancelled" : "running");
+        expect(resolveSubagentSessionStatus(subagentRuns.get(targetRunId))).toBe(
+          accepted ? "killed" : "running",
+        );
         expect(subagentRuns.get(targetRunId)?.killIntent).toBeUndefined();
         assertNoModelExecution();
         releaseTerminal.resolve();
@@ -320,7 +306,6 @@ export function registerNativeCancellationCases<
       if (pending) {
         await pending.catch((error: unknown) => failures.push(error));
       }
-      resetDetachedTaskLifecycleRuntimeForTests();
       failures.push(...(await closeBoundGateway(bound, runtime, targetRunId)));
       throwBoundFailures(failures);
     }

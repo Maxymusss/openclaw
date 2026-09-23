@@ -350,24 +350,13 @@ timeline for current status.
 
   </Accordion>
 
-  <Accordion title="runtime.tasks.flow -> runtime.tasks.managedFlows">
-    **Old**: `runtime.tasks.flow` (singular) returned a live task-flow
-    accessor.
-
-    **New**: `runtime.tasks.managedFlows` keeps the managed TaskFlow mutation
-    runtime for plugins that create, update, cancel, or run child tasks from a
-    flow. Use `runtime.tasks.flows` when the plugin only needs DTO-based
-    reads.
-
-    ```typescript
-    // Before
-    const flow = api.runtime.tasks.flow.fromToolContext(ctx);
-    // After
-    const flow = api.runtime.tasks.managedFlows.fromToolContext(ctx);
-    ```
-
-    The legacy aliases were removed in July 2026.
-
+  <Accordion title="Tasks and TaskFlow APIs removed">
+    The Tasks registry and TaskFlow orchestration APIs have been removed,
+    including `api.runtime.tasks`, `registerDetachedTaskRuntime`, and the
+    `agent-harness-task-runtime` SDK subpath. No compatibility facade remains.
+    Use native subagent launch/wait/history APIs, cron run history, and the
+    ordinary Lobster runner for their respective operations. Harness completion
+    routing uses the completion-only `agent-harness-completion` subpath.
   </Accordion>
 
   <Accordion title="Embedded extension factories -> agent tool-result middleware">

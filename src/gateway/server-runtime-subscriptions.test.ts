@@ -33,8 +33,6 @@ import {
   emitSessionTranscriptUpdate,
   type InternalSessionTranscriptUpdate,
 } from "../sessions/transcript-events.js";
-import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
-import { installInMemoryTaskRegistryRuntime } from "../test-utils/task-registry-runtime.js";
 import {
   waitForChatAbortControllerRemoval,
   waitForChatAbortTerminalPersistence,
@@ -50,8 +48,6 @@ import {
   createSessionMessageSubscriberRegistry,
 } from "./server-chat-state.js";
 import type { AgentEventHandlerOptions } from "./server-chat.js";
-import { registerTaskEventSubscriptionTests } from "./server-runtime-subscriptions.task-events.test-support.js";
-import { registerTaskSubscriptionOwnershipTests } from "./server-runtime-subscriptions.task-ownership.test-support.js";
 import { lifecycleState, readLifecycleState } from "./server-runtime-subscriptions.test-support.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 
@@ -214,7 +210,6 @@ function createParams(): SubscriptionParams {
     sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
     chatAbortControllers: new Map(),
     restartRecoveryCandidates: new Map(),
-    terminalSessions: { closeTaskSessions: vi.fn() },
     refreshConnectedUserProfiles: vi.fn(),
   };
 }
@@ -240,7 +235,6 @@ describe("startGatewayEventSubscriptions", () => {
     agentEventHandlerMocks.create.mockReset().mockImplementation(() => {
       throw new Error("server-chat lazy load failure");
     });
-    installInMemoryTaskRegistryRuntime();
   });
 
   afterEach(async () => {
@@ -249,18 +243,9 @@ describe("startGatewayEventSubscriptions", () => {
     unsubs?.heartbeatUnsub();
     unsubs?.transcriptUnsub();
     unsubs?.lifecycleUnsub();
-    await unsubs?.taskUnsub();
     resetAgentEventsForTest();
-    resetTaskRegistryForTests({ persist: false });
     configureExecutionIdentityAdmissionSink(() => false)();
   });
-
-  registerTaskSubscriptionOwnershipTests(
-    (broadcast, terminalSessions = { closeTaskSessions: vi.fn(() => 1) }) => {
-      unsubs = startGatewayEventSubscriptions({ ...createParams(), broadcast, terminalSessions });
-      return { taskUnsub: unsubs.taskUnsub, closeTaskSessions: terminalSessions.closeTaskSessions };
-    },
-  );
 
   it.each([
     "same-id reset",
@@ -949,9 +934,4 @@ describe("startGatewayEventSubscriptions", () => {
       expect.objectContaining({ sessionKey: "agent:main:main" }),
     );
   });
-
-  registerTaskEventSubscriptionTests((overrides) => {
-    unsubs = startGatewayEventSubscriptions({ ...createParams(), ...overrides });
-    return unsubs;
-  }, mockLog);
 });

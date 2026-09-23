@@ -81,7 +81,7 @@ describe("SidebarSessionNarrationController", () => {
 
   afterEach(() => {
     // isolate:false shares the worker clock: a leaked fake timer deterministically
-    // times out unrelated later files (seen: chat-background-tasks 60s hangs).
+    // times out unrelated later files.
     vi.useRealTimers();
   });
 

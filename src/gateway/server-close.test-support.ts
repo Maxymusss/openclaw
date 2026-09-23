@@ -64,7 +64,6 @@ export function createGatewayCloseTestDepsFactory(mocks: GatewayCloseFixtureMock
       cron: { stop: vi.fn() },
       heartbeatRunner: { stop: vi.fn() } as never,
       updateCheckStop: null,
-      stopTaskRegistryMaintenance: null,
       nodePresenceTimers: new Map(),
       broadcast: vi.fn(),
       maintenance: {
@@ -75,7 +74,6 @@ export function createGatewayCloseTestDepsFactory(mocks: GatewayCloseFixtureMock
       },
       stopMediaCleanup: vi.fn(async () => "drained" as const),
       agentUnsub: null,
-      taskUnsub: null,
       heartbeatUnsub: null,
       transcriptUnsub: null,
       lifecycleUnsub: null,

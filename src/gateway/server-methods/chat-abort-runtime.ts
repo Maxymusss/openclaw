@@ -10,6 +10,7 @@ import {
   killAllControlledSubagentRuns,
   resolveSubagentController,
 } from "../../agents/subagents/registry/subagent-control.js";
+import { SUBAGENT_KILL_TASK_ERROR } from "../../agents/subagents/registry/subagent-control.types.js";
 import {
   getLatestLiveSubagentRunByChildSessionKey,
   isSubagentRunQueued,
@@ -17,7 +18,6 @@ import {
 } from "../../agents/subagents/registry/subagent-registry-read.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
-import { SUBAGENT_KILL_TASK_ERROR } from "../../tasks/detached-task-runtime-contract.js";
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import {
   abortChatRunById,

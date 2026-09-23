@@ -50,8 +50,6 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
-import { loadTaskFlowRegistryStateFromSqlite } from "../tasks/task-flow-registry.store.sqlite.js";
-import { loadTaskRegistryStateFromSqlite } from "../tasks/task-registry.store.sqlite.js";
 import { createLegacyAgentDatabaseRegistry } from "./doctor-state-migrations.agent-registry.test-support.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -3720,27 +3718,39 @@ describe("doctor legacy state migrations", () => {
     expect(fs.existsSync(`${flowRunsPath}.migrated`)).toBe(true);
 
     await withStateDir(root, async () => {
-      const taskState = loadTaskRegistryStateFromSqlite();
-      const task = taskState.tasks.get("legacy-task");
-      expect(task).toMatchObject({
-        taskId: "legacy-task",
-        ownerKey: "system:cron:nightly",
-        scopeKind: "system",
-        requesterSessionKey: "",
-        agentId: "ops",
-        runId: "legacy-task-run",
+      const db = openOpenClawStateDatabase().db;
+      expect(
+        db
+          .prepare(
+            "SELECT task_id, owner_key, scope_kind, requester_session_key, agent_id, run_id FROM task_runs WHERE task_id = ?",
+          )
+          .get("legacy-task"),
+      ).toEqual({
+        task_id: "legacy-task",
+        owner_key: "system:cron:nightly",
+        scope_kind: "system",
+        requester_session_key: "",
+        agent_id: "ops",
+        run_id: "legacy-task-run",
       });
-      expect(taskState.deliveryStates.get("legacy-task")).toMatchObject({
-        taskId: "legacy-task",
-        lastNotifiedEventAt: 120,
-      });
-
-      const flowState = loadTaskFlowRegistryStateFromSqlite();
-      expect(flowState.flows.get("legacy-flow")).toMatchObject({
-        flowId: "legacy-flow",
-        ownerKey: "agent:main:legacy-flow",
-        syncMode: "managed",
-        controllerId: "core/legacy-restored",
+      expect(
+        db
+          .prepare(
+            "SELECT task_id, last_notified_event_at FROM task_delivery_state WHERE task_id = ?",
+          )
+          .get("legacy-task"),
+      ).toEqual({ task_id: "legacy-task", last_notified_event_at: 120 });
+      expect(
+        db
+          .prepare(
+            "SELECT flow_id, owner_key, sync_mode, controller_id, revision FROM flow_runs WHERE flow_id = ?",
+          )
+          .get("legacy-flow"),
+      ).toEqual({
+        flow_id: "legacy-flow",
+        owner_key: "agent:main:legacy-flow",
+        sync_mode: "managed",
+        controller_id: "core/legacy-restored",
         revision: 0,
       });
     });
@@ -3837,7 +3847,11 @@ describe("doctor legacy state migrations", () => {
     expect(fs.readFileSync(`${walPath}.migrated`)).toEqual(pendingWalState);
 
     await withStateDir(root, async () => {
-      expect(loadTaskRegistryStateFromSqlite().tasks.get("legacy-task")).toMatchObject({
+      expect(
+        openOpenClawStateDatabase()
+          .db.prepare("SELECT label FROM task_runs WHERE task_id = ?")
+          .get("legacy-task"),
+      ).toMatchObject({
         label: "Pending WAL task",
       });
     });
@@ -3872,10 +3886,20 @@ describe("doctor legacy state migrations", () => {
     expect(fs.existsSync(`${taskRunsPath}.migrated`)).toBe(true);
 
     await withStateDir(root, async () => {
-      const taskState = loadTaskRegistryStateFromSqlite();
-      expect(taskState.tasks.has("legacy-task")).toBe(true);
-      expect(taskState.deliveryStates.has("legacy-task")).toBe(true);
-      expect(taskState.deliveryStates.has("missing-task")).toBe(false);
+      const sharedDb = openOpenClawStateDatabase().db;
+      expect(
+        sharedDb.prepare("SELECT task_id FROM task_runs WHERE task_id = ?").get("legacy-task"),
+      ).toBeDefined();
+      expect(
+        sharedDb
+          .prepare("SELECT task_id FROM task_delivery_state WHERE task_id = ?")
+          .get("legacy-task"),
+      ).toBeDefined();
+      expect(
+        sharedDb
+          .prepare("SELECT task_id FROM task_delivery_state WHERE task_id = ?")
+          .get("missing-task"),
+      ).toBeUndefined();
     });
   });
 
@@ -3894,8 +3918,16 @@ describe("doctor legacy state migrations", () => {
     expect(fs.existsSync(`${flowRunsPath}.migrated`)).toBe(true);
 
     await withStateDir(root, async () => {
-      expect(loadTaskRegistryStateFromSqlite().tasks.has("legacy-task")).toBe(true);
-      expect(loadTaskFlowRegistryStateFromSqlite().flows.has("legacy-flow")).toBe(true);
+      expect(
+        openOpenClawStateDatabase()
+          .db.prepare("SELECT task_id FROM task_runs WHERE task_id = ?")
+          .get("legacy-task"),
+      ).toBeDefined();
+      expect(
+        openOpenClawStateDatabase()
+          .db.prepare("SELECT flow_id FROM flow_runs WHERE flow_id = ?")
+          .get("legacy-flow"),
+      ).toBeDefined();
     });
   });
 
@@ -3923,9 +3955,11 @@ describe("doctor legacy state migrations", () => {
     ).toEqual({ delivery_status: "not_applicable" });
 
     await withStateDir(root, async () => {
-      const tasks = loadTaskRegistryStateFromSqlite().tasks;
-      expect(tasks.get("legacy-not-requested")?.deliveryStatus).toBe("not_applicable");
-      expect(tasks.get("legacy-task")?.deliveryStatus).toBe("not_applicable");
+      expect(
+        openOpenClawStateDatabase()
+          .db.prepare("SELECT delivery_status FROM task_runs WHERE task_id = ?")
+          .get("legacy-task"),
+      ).toEqual({ delivery_status: "not_applicable" });
     });
   });
 
@@ -3942,12 +3976,18 @@ describe("doctor legacy state migrations", () => {
     expect(result.changes).toContain("Migrated 2 task registry sidecar rows → shared SQLite state");
 
     await withStateDir(root, async () => {
-      expect(loadTaskRegistryStateFromSqlite().tasks.get("legacy-cross-agent")).toMatchObject({
-        taskId: "legacy-cross-agent",
-        agentId: "worker",
-        requesterAgentId: "main",
-        requesterSessionKey: "agent:main:main",
-        childSessionKey: "agent:worker:subagent:child",
+      expect(
+        openOpenClawStateDatabase()
+          .db.prepare(
+            "SELECT task_id, agent_id, requester_agent_id, requester_session_key, child_session_key FROM task_runs WHERE task_id = ?",
+          )
+          .get("legacy-cross-agent"),
+      ).toEqual({
+        task_id: "legacy-cross-agent",
+        agent_id: "worker",
+        requester_agent_id: "main",
+        requester_session_key: "agent:main:main",
+        child_session_key: "agent:worker:subagent:child",
       });
     });
   });
@@ -3958,7 +3998,7 @@ describe("doctor legacy state migrations", () => {
     appendLegacyCrossAgentTask(taskRunsPath);
 
     await withStateDir(root, async () => {
-      loadTaskRegistryStateFromSqlite();
+      openOpenClawStateDatabase();
       closeOpenClawStateDatabaseForTest();
       const sqlite = requireNodeSqlite();
       const db = new sqlite.DatabaseSync(path.join(root, "state", "openclaw.sqlite"));

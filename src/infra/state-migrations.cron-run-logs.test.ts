@@ -1,21 +1,20 @@
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
+import { cronRunLogEntryToDetail, cronRunStorageStatus } from "../cron/run-history-detail.js";
+import { readCronRunHistoryPage } from "../cron/run-history.test-support.js";
 import type { CronRunLogEntry } from "../cron/run-log-types.js";
 import { cronStoreKey } from "../cron/store/key.js";
-import { cronRunLogEntryToTaskDetail, cronRunStatusToTaskStatus } from "../cron/task-run-detail.js";
-import { readCronTaskRunHistoryPage } from "../cron/task-run-history.js";
 import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
   repairOpenClawStateDatabaseSchema,
   repairOpenClawStateDatabaseSchemaIfNeeded,
 } from "../state/openclaw-state-db.js";
-import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 
 const CRON_RUN_LOG_TASK_IMPORT_MIGRATION_ID = "state:cron-run-logs-to-task-runs:v1";
 
-describe("cron run-log task import", () => {
+describe("cron run-log history import", () => {
   it("preserves legacy cron history on runtime refusal, then Doctor imports it once", async () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-cron-run-log-import-" },
@@ -131,7 +130,7 @@ describe("cron run-log task import", () => {
                 ?, ?, ?, ?, ?, ?, ?, ?)`,
           );
           for (const [index, mirrored] of entries.slice(4).entries()) {
-            const mirroredStatus = cronRunStatusToTaskStatus(mirrored);
+            const mirroredStatus = cronRunStorageStatus(mirrored);
             insertMirrored.run(
               `already-mirrored-${index}`,
               jobId,
@@ -146,7 +145,7 @@ describe("cron run-log task import", () => {
               mirrored.error ?? null,
               mirrored.summary ?? null,
               mirroredStatus === "succeeded" ? "succeeded" : null,
-              JSON.stringify(cronRunLogEntryToTaskDetail(mirrored, { storeKey })),
+              JSON.stringify(cronRunLogEntryToDetail(mirrored, { storeKey })),
             );
           }
           fixture
@@ -187,7 +186,7 @@ describe("cron run-log task import", () => {
           malformed: 1,
           skipped: false,
         });
-        const ledgerEntries = readCronTaskRunHistoryPage({
+        const ledgerEntries = readCronRunHistoryPage({
           storeKey,
           jobId,
           limit: 50,
@@ -238,7 +237,6 @@ describe("cron run-log task import", () => {
             .prepare("SELECT report_json FROM migration_runs WHERE id = ?")
             .get(CRON_RUN_LOG_TASK_IMPORT_MIGRATION_ID),
         ).toEqual({ report_json: report.report_json });
-        resetTaskRegistryForTests({ persist: false });
       },
     );
   });

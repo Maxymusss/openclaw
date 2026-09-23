@@ -1,9 +1,8 @@
 // Gateway RPC handlers for cron job CRUD, run logs, wake, and delivery previews.
 import { parseBoolean } from "@openclaw/normalization-core/boolean-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { Value } from "typebox/value";
 import {
-  type CronListParams,
-  type CronRunsParams,
   ErrorCodes,
   errorShape,
   GatewayErrorDetailCodes,
@@ -18,7 +17,10 @@ import {
   validateCronStatusParams,
   validateCronUpdateParams,
   validateWakeParams,
+  type CronListParams,
+  type CronRunsParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { CronHistoryParamsSchema } from "../../../packages/gateway-protocol/src/schema/cron.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { bindCronSelfRemovalCommitGuard } from "../../cron/active-jobs.js";
 import { tryResolveCronJobEffectiveAgentId } from "../../cron/agent-id.js";
@@ -32,6 +34,7 @@ import { assertCronDeliveryInputNonBlankFields } from "../../cron/delivery-targe
 import { cronJobReadView } from "../../cron/job-read-view.js";
 import { resolveCronJobBoundSessionKeys } from "../../cron/job-session-bindings.js";
 import { normalizeCronJobCreate, normalizeCronJobPatch } from "../../cron/normalize.js";
+import { isInvalidCronRunJobIdError, projectCronRunHistoryPage } from "../../cron/run-history.js";
 import type { CronRuntimeAuthority } from "../../cron/runtime-authority.js";
 import { CRON_JOB_SCRATCH_MAX_BYTES } from "../../cron/scratch-contract.js";
 import type { CronListPageResult } from "../../cron/service/list-page-types.js";
@@ -41,10 +44,7 @@ import {
   resolveCronSessionTargetSessionKey,
 } from "../../cron/session-target.js";
 import { cronStoreKey } from "../../cron/store/key.js";
-import {
-  isInvalidCronTaskRunJobIdError,
-  readCronTaskRunHistoryPage,
-} from "../../cron/task-run-history.js";
+import { readCronRunRecords } from "../../cron/store/read-only.js";
 import { cronJobUsesToolRuntime } from "../../cron/tools-allow.js";
 import type {
   CronDeliveryPreview,
@@ -75,8 +75,8 @@ import { assertActiveAgentRuntimeAuthority } from "./agent-runtime-authority.js"
 import {
   applyCronCreateCallerScopeDefault,
   cronCreateMatchesCallerScope,
-  cronJobMatchesDeclarationScope,
   cronJobMatchesCallerScope,
+  cronJobMatchesDeclarationScope,
   cronPatchSessionRefsMatchCaller,
   readCronCallerScope,
   resolveCronCreatorAuthorityCapture,
@@ -86,9 +86,10 @@ import {
   type CronCallerScope,
 } from "./cron-caller-scope.js";
 import { isCronInvalidRequestError } from "./cron-error-classification.js";
+import { handleCronHistoryRequest } from "./cron-history.js";
 import {
-  assertValidCronUpdatePatch,
   assertCronDoesNotTargetAgentHarness,
+  assertValidCronUpdatePatch,
 } from "./cron-input-validation.js";
 import { startCronListDiagnostics } from "./cron-list-diagnostics.js";
 import { compactCronListJob } from "./cron-list-projection.js";
@@ -1166,6 +1167,37 @@ export const cronHandlers: GatewayRequestHandlers = {
     }
     respond(true, { ...result, processInstanceId: getGatewayProcessInstanceId() }, undefined);
   },
+  "cron.history": async (opts) => {
+    const { params, context, client, respond } = opts;
+    if (!Value.Check(CronHistoryParamsSchema, params)) {
+      respondInvalidCronParams(respond, "cron.history", "invalid run selector");
+      return;
+    }
+    await context.cron.readJob(params.id);
+    await handleCronHistoryRequest(opts, (sessionKey, agentId) => {
+      if (opts.hasCurrentClientAuthority?.() === false) {
+        throw new Error("Cron history authority closed");
+      }
+      if (client?.internal?.agentRuntimeIdentity) {
+        assertActiveAgentRuntimeAuthority(client, context);
+      }
+      const callerScope = readCronCallerScope(client);
+      const visibility = resolveCronSessionVisibility(client, context.getRuntimeConfig());
+      const job = context.cron.getJob(params.id);
+      const defaultAgentId = context.cron.getDefaultAgentId();
+      if (
+        (callerScope || visibility) &&
+        (!job ||
+          !cronJobMatchesCallerScope({ job, callerScope, defaultAgentId, allowCurrentJob: true }) ||
+          !cronJobIsVisible(job, visibility, defaultAgentId))
+      ) {
+        throw new Error("Cron job not found");
+      }
+      if (sessionKey && visibility && !visibility(sessionKey, agentId)) {
+        throw new Error("Cron transcript not found");
+      }
+    });
+  },
   "cron.runs": async ({ params, respond, context, client }) => {
     if (!assertValidParams(params, validateCronRunsParams, "cron.runs", respond)) {
       return;
@@ -1176,12 +1208,12 @@ export const cronHandlers: GatewayRequestHandlers = {
     const hasJobSelector = p.id !== undefined || p.jobId !== undefined;
     const jobId = resolveCronJobId(p);
     const scope: "job" | "all" = explicitScope ?? (hasJobSelector ? "job" : "all");
-    const cronVisibility = resolveCronSessionVisibility(client, context.getRuntimeConfig());
     if (scope === "all") {
       if (callerScope) {
         respondInvalidCronParams(respond, "cron.runs", "scope all is not allowed by caller scope");
         return;
       }
+      const cronVisibility = resolveCronSessionVisibility(client, context.getRuntimeConfig());
       const jobs = filterCronRunLogJobsByAgent(
         await context.cron.list({ includeDisabled: true }),
         p.agentId,
@@ -1193,16 +1225,25 @@ export const cronHandlers: GatewayRequestHandlers = {
           .map((job) => [job.id, job.name]),
       );
       const visibleJobIds = new Set(jobs.map((job) => job.id));
-      const page = readCronTaskRunHistoryPage({
+      const records = await readCronRunRecords(cronStoreKey(context.cronStorePath));
+      const page = projectCronRunHistoryPage(records, {
         storeKey: cronStoreKey(context.cronStorePath),
         ...cronRunLogPageFilters(p),
         agentId: p.agentId,
         jobNameById,
-        entryFilter: cronVisibility
-          ? (entry) =>
-              visibleJobIds.has(entry.jobId) &&
-              (!entry.sessionKey || cronVisibility(entry.sessionKey, p.agentId))
-          : undefined,
+        entryFilter: (entry) => {
+          const visibility = resolveCronSessionVisibility(client, context.getRuntimeConfig());
+          if (!visibility) {
+            return true;
+          }
+          const currentJob = context.cron.getJob(entry.jobId);
+          return Boolean(
+            currentJob &&
+            visibleJobIds.has(entry.jobId) &&
+            cronJobIsVisible(currentJob, visibility, context.cron.getDefaultAgentId()) &&
+            (!entry.sessionKey || visibility(entry.sessionKey, p.agentId)),
+          );
+        },
       });
       respond(true, page, undefined);
       return;
@@ -1212,7 +1253,11 @@ export const cronHandlers: GatewayRequestHandlers = {
       return;
     }
     try {
-      const job = await context.cron.readJob(jobId);
+      await context.cron.readJob(jobId);
+      const storeKey = cronStoreKey(context.cronStorePath);
+      const records = await readCronRunRecords(storeKey, jobId);
+      const job = context.cron.getJob(jobId);
+      const cronVisibility = resolveCronSessionVisibility(client, context.getRuntimeConfig());
       const defaultAgentId = context.cron.getDefaultAgentId();
       const matchedJob =
         job &&
@@ -1227,7 +1272,6 @@ export const cronHandlers: GatewayRequestHandlers = {
           ? job
           : undefined;
       // Operator history survives job deletion; scoped reads still need a live, matching owner.
-      const storeKey = cronStoreKey(context.cronStorePath);
       if ((callerScope || p.agentId || cronVisibility) && !matchedJob) {
         respondCronJobNotFound(respond, jobId);
         return;
@@ -1236,7 +1280,7 @@ export const cronHandlers: GatewayRequestHandlers = {
         matchedJob && typeof matchedJob.name === "string"
           ? { [jobId]: matchedJob.name }
           : undefined;
-      const page = readCronTaskRunHistoryPage({
+      const page = projectCronRunHistoryPage(records, {
         storeKey,
         jobId,
         ...cronRunLogPageFilters(p),
@@ -1248,14 +1292,14 @@ export const cronHandlers: GatewayRequestHandlers = {
       if (
         !job &&
         page.total === 0 &&
-        readCronTaskRunHistoryPage({ storeKey, jobId, limit: 1 }).total === 0
+        projectCronRunHistoryPage(records, { storeKey, jobId, limit: 1 }).total === 0
       ) {
         respondCronJobNotFound(respond, jobId);
         return;
       }
       respond(true, page, undefined);
     } catch (err) {
-      if (!isInvalidCronTaskRunJobIdError(err)) {
+      if (!isInvalidCronRunJobIdError(err)) {
         throw err;
       }
       respondInvalidCronParams(respond, "cron.runs", "invalid id");

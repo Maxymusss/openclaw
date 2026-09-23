@@ -32,7 +32,6 @@ export function assistantImageMessage(params: {
   alt: string;
   seq?: number;
   runId?: string;
-  taskId?: string;
 }) {
   return {
     role: "assistant",
@@ -40,7 +39,6 @@ export function assistantImageMessage(params: {
     __openclaw: {
       seq: params.seq ?? 2,
       ...(params.runId ? { runId: params.runId } : {}),
-      ...(params.taskId ? { messageTaskId: params.taskId } : {}),
     },
   };
 }
@@ -50,7 +48,6 @@ export function assistantFileMessage(params: {
   title: string;
   seq?: number;
   runId?: string;
-  taskId?: string;
 }) {
   return {
     role: "assistant",
@@ -65,7 +62,6 @@ export function assistantFileMessage(params: {
     __openclaw: {
       seq: params.seq ?? 2,
       ...(params.runId ? { runId: params.runId } : {}),
-      ...(params.taskId ? { taskId: params.taskId } : {}),
     },
   };
 }

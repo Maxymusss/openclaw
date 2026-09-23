@@ -1,5 +1,5 @@
 // Gateway early-startup runtime helpers.
-// Starts discovery, remote skills, task maintenance, and delayed maintenance setup.
+// Starts discovery, remote skills, completion recovery, and delayed maintenance setup.
 import { isNixMode } from "../config/paths.js";
 import type { GatewayTailscaleMode } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -60,15 +60,6 @@ export async function startGatewayEarlyRuntime(params: {
   getRuntimeConfig: () => OpenClawConfig;
   startupTrace?: GatewayStartupTrace;
 }) {
-  if (!params.minimalTestGateway) {
-    await measureStartup(params.startupTrace, "runtime.early.task-state", async () => {
-      const { ensureTaskRuntimeStateReady } = await import("../tasks/runtime-internal.js");
-      await ensureTaskRuntimeStateReady();
-      const { reconcileRetainedHarnessCompletionDeliveries } =
-        await import("../agents/agent-harness-completion-delivery.js");
-      reconcileRetainedHarnessCompletionDeliveries();
-    });
-  }
   // Startup failure can occur immediately after discovery; publish its owner first.
   params.swapDiscovery(
     await measureStartup(params.startupTrace, "runtime.early.discovery", async () => {
@@ -100,28 +91,14 @@ export async function startGatewayEarlyRuntime(params: {
       );
     }),
   );
-  let getActiveTaskCount = () => 0;
-
   if (!params.minimalTestGateway) {
-    const [{ primeRemoteSkillsCache, setSkillsRemoteRegistry }, taskRegistryMaintenance] =
-      await measureStartup(params.startupTrace, "runtime.early.lazy-runtime-imports", () =>
-        Promise.all([
-          loadRemoteSkillsRuntimeModule(),
-          import("../tasks/task-registry.maintenance.js"),
-        ]),
-      );
+    const { primeRemoteSkillsCache, setSkillsRemoteRegistry } = await measureStartup(
+      params.startupTrace,
+      "runtime.early.lazy-runtime-imports",
+      loadRemoteSkillsRuntimeModule,
+    );
     setSkillsRemoteRegistry(params.nodeRegistry);
     void primeRemoteSkillsCache();
-    // Canary task rows belong to the source Gateway; never reconcile or resume them.
-    if (!params.updateCanary) {
-      // Restart-blocker counts must reflect the same live cron runtime.
-      taskRegistryMaintenance.configureTaskRegistryMaintenance({
-        runtimeAuthoritative: true,
-      });
-      taskRegistryMaintenance.startTaskRegistryMaintenance();
-      getActiveTaskCount = () =>
-        taskRegistryMaintenance.getInspectableActiveTaskRestartBlockers().length;
-    }
   }
 
   const skillsChangeUnsub = params.minimalTestGateway
@@ -203,7 +180,6 @@ export async function startGatewayEarlyRuntime(params: {
   };
 
   return {
-    getActiveTaskCount,
     skillsChangeUnsub,
     startMaintenance,
   };

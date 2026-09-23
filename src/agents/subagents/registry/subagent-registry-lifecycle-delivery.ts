@@ -13,16 +13,6 @@ import {
 } from "../../../plugins/runtime/gateway-request-scope.js";
 import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
 import { extractTextFromChatContent } from "../../../shared/chat-content.js";
-import type { DetachedTaskFindResult } from "../../../tasks/detached-task-runtime-contract.js";
-import {
-  completeTaskRunByRunId,
-  failTaskRunByRunId,
-  setDetachedTaskDeliveryStatusByRunId,
-} from "../../../tasks/detached-task-runtime.js";
-import {
-  isTerminalTaskStatus,
-  type TaskDeliveryStatus,
-} from "../../../tasks/task-registry.types.js";
 import {
   buildAnnounceIdFromChildRun,
   buildAnnounceIdempotencyKey,
@@ -36,7 +26,6 @@ import {
   ensureDeliveryState,
 } from "./subagent-delivery-state.js";
 import type { SubagentLifecycleEndedReason } from "./subagent-lifecycle-events.js";
-import { resolveFinalizedSubagentTaskState } from "./subagent-registry-completion.js";
 import { capFrozenResultText } from "./subagent-registry-helpers.js";
 import type {
   SubagentLifecycleCommonContext,
@@ -231,120 +220,6 @@ export const hasPriorRequesterDeliveryMirror = async (
   } catch {
     return false;
   }
-};
-
-const resolveSubagentTaskTarget = (
-  params: SubagentLifecycleOptions,
-  entry: SubagentRunRecord,
-  resolution = params.resolveSubagentTask(entry),
-) => {
-  const durableTaskRunId = entry.taskRunId ?? entry.runId;
-  return {
-    runId:
-      resolution.lookup === "available"
-        ? (resolution.task?.runId ?? durableTaskRunId)
-        : durableTaskRunId,
-    sessionKey:
-      resolution.lookup === "available"
-        ? (resolution.task?.childSessionKey ?? entry.childSessionKey)
-        : entry.childSessionKey,
-  };
-};
-
-export const safeSetSubagentTaskDeliveryStatus = (
-  params: SubagentLifecycleOptions,
-  args: {
-    entry: SubagentRunRecord;
-    deliveryStatus: Extract<TaskDeliveryStatus, "pending" | "delivered" | "failed">;
-    deliveryError?: string;
-  },
-) => {
-  const target = resolveSubagentTaskTarget(params, args.entry);
-  try {
-    setDetachedTaskDeliveryStatusByRunId({
-      runId: target.runId,
-      runtime: "subagent",
-      sessionKey: target.sessionKey,
-      deliveryStatus: args.deliveryStatus,
-      error: args.deliveryStatus === "failed" ? args.deliveryError : undefined,
-    });
-  } catch (err) {
-    params.warn("failed to update subagent background task delivery state", {
-      error: buildSafeLifecycleErrorMeta(err),
-      runId: maskLifecycleIdentifier(target.runId, "run"),
-      childSessionKey: maskLifecycleIdentifier(target.sessionKey, "session"),
-      deliveryStatus: args.deliveryStatus,
-    });
-  }
-};
-
-export const finalizeSubagentTaskRun = (
-  params: SubagentLifecycleOptions,
-  args: {
-    entry: SubagentRunRecord;
-    outcome: SubagentRunOutcome;
-    taskResolution?: DetachedTaskFindResult;
-  },
-): ReturnType<typeof completeTaskRunByRunId> => {
-  const terminal = resolveFinalizedSubagentTaskState(args.entry);
-  if (!terminal) {
-    return [];
-  }
-  const taskResolution = args.taskResolution ?? params.resolveSubagentTask(args.entry);
-  const pendingTask =
-    taskResolution.lookup === "available" &&
-    taskResolution.task &&
-    !isTerminalTaskStatus(taskResolution.task.status)
-      ? taskResolution.task
-      : undefined;
-  const target = resolveSubagentTaskTarget(params, args.entry, taskResolution);
-  const { status, error, terminalOutcome, ...details } = terminal;
-  const suppressDelivery = args.entry.suppressCompletionDelivery === true;
-  let finalized: ReturnType<typeof completeTaskRunByRunId>;
-  try {
-    if (status === "succeeded") {
-      finalized = completeTaskRunByRunId({
-        runId: target.runId,
-        runtime: "subagent",
-        sessionKey: target.sessionKey,
-        ...details,
-        terminalOutcome,
-        suppressDelivery,
-      });
-    } else {
-      finalized = failTaskRunByRunId({
-        runId: target.runId,
-        runtime: "subagent",
-        sessionKey: target.sessionKey,
-        ...details,
-        status,
-        error,
-        suppressDelivery,
-      });
-    }
-  } catch (err) {
-    params.warn("failed to finalize subagent background task state", {
-      error: buildSafeLifecycleErrorMeta(err),
-      runId: maskLifecycleIdentifier(args.entry.runId, "run"),
-      childSessionKey: maskLifecycleIdentifier(args.entry.childSessionKey, "session"),
-      outcomeStatus: args.outcome.status,
-    });
-    if (pendingTask) {
-      throw err;
-    }
-    return [];
-  }
-  // A failed task write must keep the native terminal owner replayable.
-  // Otherwise cleanup can discard the only outcome that repairs the running task.
-  if (
-    pendingTask &&
-    !finalized?.some(
-      (task) => task.taskId === pendingTask.taskId && isTerminalTaskStatus(task.status),
-    )
-  ) {
-    throw new Error("subagent task projection did not finalize");
-  }
-  return finalized;
 };
 
 export const freezeRunResultAtCompletion = async (

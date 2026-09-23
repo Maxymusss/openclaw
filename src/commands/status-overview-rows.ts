@@ -31,7 +31,6 @@ import {
   buildStatusHeartbeatValue,
   buildStatusLastHeartbeatValue,
   buildStatusMemoryValue,
-  buildStatusTasksValue,
   type StatusMemoryStateResolvers,
 } from "./status.command-sections.js";
 import type { MemoryStatusSnapshot } from "./status.scan.shared.js";
@@ -132,11 +131,6 @@ export function buildStatusCommandOverviewRows(
   const eventsValue = buildStatusEventsValue({
     queuedSystemEvents: params.summary.queuedSystemEvents,
   });
-  const tasksValue = buildStatusTasksValue({
-    summary: params.summary,
-    warn: params.warn,
-    muted: params.muted,
-  });
   const probesValue = buildStatusProbesValue({
     health: params.health,
     ok: params.ok,
@@ -205,7 +199,6 @@ export function buildStatusCommandOverviewRows(
       { Item: "Plugin compatibility", Value: pluginCompatibilityValue },
       { Item: "Probes", Value: probesValue },
       { Item: "Events", Value: eventsValue },
-      { Item: "Tasks", Value: tasksValue },
       {
         Item: "Backups",
         Value: buildBackupStatusValue({

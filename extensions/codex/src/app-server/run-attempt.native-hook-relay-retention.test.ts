@@ -224,7 +224,7 @@ describe("runCodexAppServerAttempt native hook relay retention", () => {
       const fixture = await createAdmittedHostCapabilityTestFixture(params);
       params.hostCapabilities = fixture.hostCapabilities;
       if (hasDeliveryScope) {
-        params.agentHarnessTaskRuntimeScope = fixture.agentHarnessTaskRuntimeScope;
+        params.agentHarnessCompletionScope = fixture.agentHarnessCompletionScope;
       }
 
       const beforeToolCall = vi.fn(async (event: unknown) =>

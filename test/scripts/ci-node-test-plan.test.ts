@@ -68,7 +68,6 @@ import { createPluginSdkVitestConfig } from "../vitest/vitest.plugin-sdk.config.
 import { createPluginsVitestConfig } from "../vitest/vitest.plugins.config.ts";
 import { createRuntimeConfigVitestConfig } from "../vitest/vitest.runtime-config.config.ts";
 import { startupCorpusTestFiles } from "../vitest/vitest.startup-corpus-paths.mjs";
-import { createTasksVitestConfig } from "../vitest/vitest.tasks.config.ts";
 import { fullSuiteVitestShards } from "../vitest/vitest.test-shards.mjs";
 import { createToolingVitestConfig } from "../vitest/vitest.tooling.config.ts";
 import { createTuiVitestConfig } from "../vitest/vitest.tui.config.ts";
@@ -2534,7 +2533,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       "src/commands/doctor-heartbeat-scratch-migration.test.ts",
       "src/commands/doctor-heartbeat-session-target.test.ts",
       "src/commands/doctor-heartbeat-source-archive.test.ts",
-      "src/commands/doctor-heartbeat-task-migration.test.ts",
       "src/commands/doctor-session-canonical-keys.memory.test.ts",
       "src/commands/doctor-session-canonical-keys.retention.test.ts",
       "src/commands/doctor-session-delivery-state.test.ts",
@@ -3698,7 +3696,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         configs: [
           "test/vitest/vitest.acp.config.ts",
           "test/vitest/vitest.shared-core.config.ts",
-          "test/vitest/vitest.tasks.config.ts",
           "test/vitest/vitest.utils.config.ts",
         ],
         requiresDist: false,
@@ -3951,7 +3948,6 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         createPluginSdkLightVitestConfig({}),
         createPluginSdkVitestConfig({}),
         createPluginsVitestConfig({}),
-        createTasksVitestConfig({}),
         createToolingVitestConfig({}),
         createWizardVitestConfig({}),
         createCommandsVitestConfig({}),

@@ -33,7 +33,7 @@ import {
   requestGroupMatchesTrusted,
   resolveTrustedGroupMetadata,
   type TrustedGroupMetadata,
-} from "./agent-task-tracking.js";
+} from "./agent-subagent-registration.js";
 
 export type AgentSessionPatchBuild = {
   patch: Partial<SessionEntry>;

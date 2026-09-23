@@ -31,6 +31,7 @@ import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.pa
 import { cronStoreKey } from "./key.js";
 import { restoreCronLoadError } from "./load-error.js";
 import type { CronReadOnlyRequest, CronReadOnlyResult } from "./read-only.types.js";
+import type { CronRunRecord } from "./run-history.types.js";
 import type { LoadedCronStore } from "./types.js";
 
 function emptyLoadedCronStore(): LoadedCronStore {
@@ -44,13 +45,14 @@ function emptyLoadedCronStore(): LoadedCronStore {
 }
 
 /** Loads cron jobs from existing SQLite state without creating or migrating it. */
-export async function loadCronJobsStoreWithConfigJobsReadOnly(
+async function readCronStore(
   storePath: string,
   env: NodeJS.ProcessEnv = process.env,
-): Promise<LoadedCronStore> {
+  history?: { jobId?: string },
+): Promise<{ loaded: LoadedCronStore; history: CronRunRecord[] }> {
   const statePath = resolveOpenClawStateSqlitePath(env);
   if (!fs.existsSync(statePath)) {
-    return emptyLoadedCronStore();
+    return { loaded: emptyLoadedCronStore(), history: [] };
   }
   const storeKey = cronStoreKey(storePath);
   const preserveArtifacts = isArtifactPreservingStateRead();
@@ -129,6 +131,7 @@ export async function loadCronJobsStoreWithConfigJobsReadOnly(
   const unregister = registerOpenClawStateDatabaseAsyncResource(resource);
   const run = async () => {
     let loaded = emptyLoadedCronStore();
+    let records: CronRunRecord[] = [];
     try {
       maintenance?.own(resource, "shared-resources", () => resource.close());
       // Only the native exclusion owner can prepare its already-drained source.
@@ -158,6 +161,7 @@ export async function loadCronJobsStoreWithConfigJobsReadOnly(
         {
           location,
           storeKey,
+          history,
           stagingRoot,
           coordinatorRuntime,
         },
@@ -166,6 +170,7 @@ export async function loadCronJobsStoreWithConfigJobsReadOnly(
           inputBytes:
             Buffer.byteLength(location) +
             Buffer.byteLength(storeKey) +
+            Buffer.byteLength(history?.jobId ?? "") +
             Buffer.byteLength(stagingRoot ?? "") +
             Buffer.byteLength(coordinatorRuntime.directory) +
             environmentBytes,
@@ -175,6 +180,7 @@ export async function loadCronJobsStoreWithConfigJobsReadOnly(
         throw restoreCronLoadError(result.error);
       }
       loaded = result.loaded ?? loaded;
+      records = result.history ?? [];
     } finally {
       producerSettled.resolve();
       await cleanup();
@@ -182,9 +188,23 @@ export async function loadCronJobsStoreWithConfigJobsReadOnly(
     controller.signal.throwIfAborted();
     assertExcluded?.();
     admission?.assertCurrent();
-    return loaded;
+    return { loaded, history: records };
   };
   return await retainSnapshotWork(run(), () =>
     controller.abort(new Error("Cron read-only load closed")),
   );
+}
+
+export async function loadCronJobsStoreWithConfigJobsReadOnly(
+  storePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<LoadedCronStore> {
+  return (await readCronStore(storePath, env)).loaded;
+}
+
+export async function readCronRunRecords(
+  storeKey: string,
+  jobId?: string,
+): Promise<CronRunRecord[]> {
+  return (await readCronStore(storeKey, process.env, { jobId })).history;
 }

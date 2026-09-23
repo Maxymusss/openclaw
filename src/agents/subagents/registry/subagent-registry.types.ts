@@ -9,8 +9,8 @@ import type { SpawnSubagentMode } from "../spawn/subagent-spawn.types.js";
 import type { SubagentRunOutcome } from "../subagent-run-outcome.types.js";
 import type { SubagentLifecycleEndedReason } from "./subagent-lifecycle-events.js";
 import type {
-  SubagentRunReadRecord,
   SubagentCompletionDeliveryState,
+  SubagentRunReadRecord,
 } from "./subagent-registry-read.types.js";
 
 export type SubagentCompletionRequest = {
@@ -288,8 +288,5 @@ export type RegisterSubagentRunParams = {
   outputSchema?: Record<string, unknown>;
   queuedLaunch?: SwarmQueuedLaunch;
   queued?: boolean;
-  /** Required when direct dispatch suppresses Gateway tracking. Out-of-process launches keep
-      Gateway's existing best-effort CLI policy; other callers create a best-effort row here. */
-  taskRowOwnership?: "required" | "gateway_best_effort";
   gatewayContextResolver?: GatewayContextResolver;
 };

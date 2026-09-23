@@ -249,11 +249,6 @@ describe("test-projects args", () => {
       config: "test/vitest/vitest.infra.config.ts",
     },
     {
-      title: "routes the worker-backed task registry to the infra config",
-      target: "src/tasks/task-registry.test.ts",
-      config: "test/vitest/vitest.infra.config.ts",
-    },
-    {
       title: "routes the real memory CLI JSON tests to the infra config",
       target: "src/entry.memory-json.test.ts",
       config: "test/vitest/vitest.infra.config.ts",

@@ -17,7 +17,7 @@ source scripts/e2e/lib/upgrade-survivor/paths.sh
 
 SCENARIO="${OPENCLAW_UPGRADE_SURVIVOR_SCENARIO:-base}"
 WORKER_CELL=0
-if [ "$SCENARIO" = "projects-doctor" ] || [ "$SCENARIO" = "projects-startup-migration" ] || [ "$SCENARIO" = "taskflow-restoration" ]; then
+if [ "$SCENARIO" = "projects-doctor" ] || [ "$SCENARIO" = "projects-startup-migration" ]; then
   WORKER_CELL=1
 fi
 
@@ -2139,18 +2139,12 @@ if [ "$WORKER_CELL" = "1" ]; then
     phase assert-project-worktree-import node scripts/e2e/lib/upgrade-survivor/project-worktree-startup.mjs assert-import "$ARTIFACT_ROOT/worktree-import.json"
     phase snapshot-published-worktree node scripts/e2e/lib/upgrade-survivor/project-worktree-startup.mjs snapshot published-import "$(package_root)" -
     phase prepare-independent-worktree-startup prepare_project_worktree_startup_fixture
-  else
-    phase seed-taskflow node scripts/e2e/lib/upgrade-survivor/taskflow-restoration.mjs seed --package-root "$(package_root)"
   fi
   phase validate-baseline-config validate_baseline_config
   phase resolve-worker-candidate resolve_candidate_version
   phase worker-candidate-identity prepare_worker_cell_package
   phase update-worker-candidate update_candidate
   phase assert-worker-installed-identity assert_worker_cell_update
-  if [ "$SCENARIO" = "taskflow-restoration" ]; then
-    phase assert-taskflow-update-migration node scripts/e2e/lib/upgrade-survivor/taskflow-restoration.mjs assert-migrated \
-      --package-root "$(package_root)" --expected-commit "$OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_COMMIT"
-  fi
   if [ "$SCENARIO" = "projects-doctor" ]; then
     phase projects-after-update node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs snapshot after-update "$(package_root)"
     phase projects-before-doctor node scripts/e2e/lib/upgrade-survivor/projects-doctor.mjs snapshot before-doctor "$(package_root)"
@@ -2192,20 +2186,6 @@ if [ "$WORKER_CELL" = "1" ]; then
         phase snapshot-after-worktree-doctor run_project_worktree_startup_fixture \
           snapshot after-doctor "$(package_root)" "$OPENCLAW_UPGRADE_SURVIVOR_STARTUP_BINDINGS"
       fi
-    done
-  else
-    for startup in first second; do
-      GATEWAY_LOG="$ARTIFACT_ROOT/taskflow-$startup-gateway.log"
-      HEALTHZ_JSON="$ARTIFACT_ROOT/taskflow-$startup-healthz.json"
-      READYZ_JSON="$ARTIFACT_ROOT/taskflow-$startup-readyz.json"
-      phase "$startup-taskflow-gateway-start" start_gateway
-      phase "$startup-taskflow-gateway-probes" check_gateway_probes
-      phase "$startup-taskflow-sdk-and-pages" node scripts/e2e/lib/upgrade-survivor/taskflow-restoration.mjs probe \
-        --package-root "$(package_root)" --url ws://127.0.0.1:18789 --attempt "$startup" \
-        --expected-commit "$OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_COMMIT"
-      phase "$startup-taskflow-gateway-stop" stop_gateway
-      phase "assert-$startup-taskflow-persistence" node scripts/e2e/lib/upgrade-survivor/taskflow-restoration.mjs assert-state \
-        --package-root "$(package_root)" --attempt "$startup" --expected-commit "$OPENCLAW_UPGRADE_SURVIVOR_CANDIDATE_COMMIT"
     done
   fi
   run_completed="1"

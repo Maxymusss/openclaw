@@ -13,7 +13,6 @@ export const en: TranslationMap & {
     codeBlock: TranslationMap;
     commands: TranslationMap;
     welcome: TranslationMap & { suggestions: TranslationMap & { whatCanYouDo: string } };
-    backgroundTasks: TranslationMap;
     goals: TranslationMap;
     messages: TranslationMap &
       Record<
@@ -157,6 +156,9 @@ export const en: TranslationMap & {
     unknown: "Unknown",
     configured: "Configured",
     running: "Running",
+    queued: "Queued",
+    completed: "Completed",
+    cancelled: "Cancelled",
     linked: "Linked",
     mode: "Mode",
     system: "System",
@@ -2112,7 +2114,6 @@ export const en: TranslationMap & {
     systems: "Systems",
     usage: "Usage",
     cron: "Automations",
-    tasks: "Tasks",
     skills: "Skills",
     plugins: "Plugins",
     skillWorkshop: "Skill workshop",
@@ -2160,7 +2161,6 @@ export const en: TranslationMap & {
     systems: "Machines and desktops.",
     usage: "API usage and costs.",
     cron: "Scheduled tasks and recurring agent runs.",
-    tasks: "Background tasks: subagents, automation runs, CLI.",
     skills: "Manage your agent skills",
     plugins: "Extend your Claw with tools",
     skillWorkshop:
@@ -2826,51 +2826,6 @@ export const en: TranslationMap & {
       },
     },
     modelAccounts: {},
-  },
-  tasksPage: {
-    active: "Active",
-    activeSub: "Queued and running background work.",
-    recent: "Recent",
-    recentSub: "Latest completed, failed, and cancelled tasks.",
-    loading: "Loading tasks…",
-    empty: "No background tasks yet.",
-    emptyActive: "No queued or running tasks.",
-    emptyRecent: "No recent completed tasks.",
-    disconnected: "Connect to the gateway to load and manage tasks.",
-    loadFailed: "Could not load tasks.",
-    cancelFailed: "Could not cancel the task.",
-    recoveryFailed: "Could not update completion delivery.",
-    invalidResponse: "The gateway returned an invalid task list.",
-    untitled: "Background task",
-    taskCount: "{count} tasks",
-    taskCountOne: "1 task",
-    agent: "Agent: {agent}",
-    openSession: "Open session",
-    viewTranscript: "View transcript",
-    transcript: "Task transcript",
-    cancelTask: "Cancel {title}",
-    cancelling: "Cancelling…",
-    retryDelivery: "Retry delivery",
-    dismissDelivery: "Dismiss delivery",
-    copyResult: "Copy result",
-    deliveryBlocked: "Completed, but result delivery is blocked.",
-    deliveryDismissed: "Completed; result delivery was dismissed.",
-    duplicateRisk: "Retrying may duplicate a result after an ambiguous acknowledgement.",
-    status: {
-      queued: "Queued",
-      running: "Running",
-      completed: "Completed",
-      failed: "Failed",
-      cancelled: "Cancelled",
-      timedOut: "Timed out",
-    },
-    runtime: {
-      subagent: "Subagent",
-      cron: "Automation",
-      acp: "ACP",
-      cli: "CLI",
-      unknown: "Task",
-    },
   },
   skillWorkshop: {},
   // Chat swarm summaries render before the lazy Activity catalog loads.
@@ -4083,8 +4038,6 @@ export const en: TranslationMap & {
       filesEmpty: "Browse files, artifacts, and changes from this session.",
       companion: "Side chat",
       companionEmpty: "Ask a focused question about this session.",
-      tasks: "Tasks",
-      tasksEmpty: "Follow active and recently completed background tasks.",
       desktop: "Desktop",
       desktopEmpty: "Connect to an available remote desktop.",
       portal: "Portal",
@@ -4460,7 +4413,6 @@ export const en: TranslationMap & {
       workedFor: "Worked for {duration}",
       worked: "Worked",
     },
-    backgroundTasks: {},
     sessionDiff: {
       title: "Changes",
       show: "Show session changes",
@@ -4928,6 +4880,10 @@ export const en: TranslationMap & {
       noSummary: "No summary.",
       deliverySuppression: "Delivery suppression: {reason}",
       runAt: "Run at",
+      automation: "Automation",
+      viewTranscript: "View transcript",
+      transcript: "Run transcript",
+      transcriptEmpty: "No messages in this run transcript.",
       transcriptMissingMetadata: "This run is missing the identity needed to open its transcript.",
       transcriptUnavailable:
         "The exact run transcript is unavailable or ambiguous. Refresh run history and try again.",

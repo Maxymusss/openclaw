@@ -9,8 +9,8 @@ import { cronStoreKey } from "../store/key.js";
 import { restoreCronLoadError } from "../store/load-error.js";
 import {
   deleteCronJobRowInDatabase,
-  loadedCronStoreFromRows,
   loadCronRows,
+  loadedCronStoreFromRows,
   upsertCronJobRow,
 } from "../store/row-codec.js";
 import {
@@ -24,18 +24,18 @@ import { isCronRunTriggerStateRetiredInDatabase } from "../store/run-receipt-tri
 import type { CronRunRecoveryProposal } from "../store/run-recovery.types.js";
 import type { CronJob } from "../types.js";
 import {
-  type CronMaintenanceOptions,
   recomputeJobNextRunAtMs,
   recomputeSingleJobForMaintenance,
+  type CronMaintenanceOptions,
 } from "./jobs-scheduling.js";
+import { findCronRunRecoveryInDatabase } from "./run-history-recovery.js";
 import { resolveCronRunReceiptTerminalStatus } from "./run-receipts.js";
 import {
-  type InterruptedStartupRun,
   markInterruptedStartupRun,
   restoreFinalizedStartupRun,
+  type InterruptedStartupRun,
 } from "./startup-run-repair.js";
 import type { CronServiceState, DeferredCronNotifications } from "./state.js";
-import { findCronTaskRunRecoveryInDatabase } from "./task-runs.js";
 
 export type { CronRunRecoveryProposal } from "../store/run-recovery.types.js";
 
@@ -146,7 +146,7 @@ function repairInDatabase(params: {
       }
       return { kind: "superseded", ...(currentReceipt ? { receipt: currentReceipt } : {}) };
     }
-    const task = findCronTaskRunRecoveryInDatabase({
+    const task = findCronRunRecoveryInDatabase({
       database: database.db,
       jobId: proposal.jobId,
       startedAt: proposal.runningAtMs,

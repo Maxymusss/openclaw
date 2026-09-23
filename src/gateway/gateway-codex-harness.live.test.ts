@@ -13,7 +13,10 @@ import type {
   SessionsCatalogListResult,
   ToolsInvokeResult,
 } from "../../packages/gateway-protocol/src/index.js";
-import { verifyCodexNativeSubagentBridgeProbe } from "../../test/helpers/gateway-codex-harness-native-subagent.js";
+import {
+  verifyCodexNativeSubagentBridgeProbe,
+  withCodexNativeThreadReader,
+} from "../../test/helpers/gateway-codex-harness-native-subagent.js";
 import {
   createCodexHarnessLiveInstance,
   createCodexHarnessEventCapture,
@@ -31,12 +34,14 @@ import {
   validateLongOutput,
   type LongOutputMarkers,
 } from "../../test/helpers/openai-long-context-live.js";
+import { resolveAgentDir } from "../agents/agent-scope-config.js";
 import { isLiveTestEnabled } from "../agents/live-test-helpers.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
 import { isTruthyEnvValue } from "../infra/env.js";
 import { runCommandWithTimeout } from "../process/exec.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
+import { splitCommandArgs } from "../utils/shell-argv.js";
 import type { GatewayClient } from "./client.js";
 import {
   connectTestGatewayClient,
@@ -580,7 +585,7 @@ async function writeLiveGatewayConfig(params: {
   port: number;
   token: string;
   workspace: string;
-}): Promise<void> {
+}): Promise<OpenClawConfig> {
   const parsedModel = parseModelKey(params.modelKey);
   const appServerArgs = buildCodexCompactionAppServerArgs(params.compactionMode);
   const cfg: OpenClawConfig = {
@@ -667,6 +672,7 @@ async function writeLiveGatewayConfig(params: {
       : {}),
   };
   await fs.writeFile(params.configPath, `${JSON.stringify(cfg, null, 2)}\n`);
+  return cfg;
 }
 
 async function requestAgentTextWithEvents(params: {
@@ -2524,9 +2530,28 @@ describeLive("gateway live (Codex harness)", () => {
 
       try {
         instance.state.applyEnv();
+        const configuredNativeArgs =
+          buildCodexCompactionAppServerArgs(CODEX_HARNESS_COMPACTION_MODE) ??
+          splitCommandArgs(instance.env.OPENCLAW_CODEX_APP_SERVER_ARGS ?? "", {
+            allowUnclosedQuotes: true,
+          });
+        const nativeProbeArgs =
+          configuredNativeArgs.length > 0
+            ? configuredNativeArgs
+            : buildCodexHarnessAppServerArgs([]);
+        if (CODEX_HARNESS_SUBAGENT_PROBE) {
+          // This reader supports the fixture's local stdio launch, not an
+          // arbitrary custom binary or proxy that could select another home.
+          expect(instance.env.OPENCLAW_CODEX_APP_SERVER_BIN?.trim() ?? "").toBe("");
+          expect(nativeProbeArgs.slice(0, 3)).toEqual(["app-server", "--listen", "stdio://"]);
+          expect(
+            nativeProbeArgs.slice(3).every((arg, index) => index % 2 === 1 || arg === "-c"),
+          ).toBe(true);
+          expect(nativeProbeArgs.slice(3).length % 2).toBe(0);
+        }
         const workspace = instance.state.workspaceDir;
         await createLiveWorkspace(workspace);
-        await writeLiveGatewayConfig({
+        const probeConfig = await writeLiveGatewayConfig({
           configPath,
           modelKey,
           port,
@@ -2598,22 +2623,48 @@ describeLive("gateway live (Codex harness)", () => {
               logCodexLiveStep("subagent-probe:start", { sessionKey });
               await verifyCodexSubagentProbe({ client: activeClient, sessionKey });
               logCodexLiveStep("native-subagent-bridge-probe:start", { sessionKey });
-              await verifyCodexNativeSubagentBridgeProbe(
+              // The ordinary harness is agent-scoped. Do not route its child reads
+              // through the user-home codex_threads tool or the native session catalog.
+              const codexPackagePath = bundledPluginFileAt(
+                path.resolve(import.meta.dirname, "../.."),
+                "codex",
+                "package.json",
+              );
+              const codexCommand = createRequire(codexPackagePath).resolve(
+                "@openai/codex/bin/codex.js",
+              );
+              await withCodexNativeThreadReader(
                 {
-                  annotate: context.annotate,
-                  client: activeClient,
-                  events: gatewayEvents,
-                  sessionKey,
-                },
-                {
+                  command: process.execPath,
+                  args: [codexCommand, ...nativeProbeArgs],
+                  codexHome: path.join(
+                    resolveAgentDir(probeConfig, "dev", instance.env),
+                    "codex-home",
+                  ),
+                  stateDir: instance.stateDir,
+                  cwd: workspace,
+                  env: instance.env,
                   requestTimeoutMs: CODEX_HARNESS_REQUEST_TIMEOUT_MS,
-                  observedCodexThreadIds,
-                  logCodexLiveStep,
-                  requestAgentTextWithEvents,
-                  recordCodexAttemptIdentity,
-                  requestCodexCommandText,
-                  requestAgentText,
                 },
+                (readNativeThread) =>
+                  verifyCodexNativeSubagentBridgeProbe(
+                    {
+                      annotate: context.annotate,
+                      client: activeClient,
+                      events: gatewayEvents,
+                      sessionKey,
+                    },
+                    {
+                      requestTimeoutMs: CODEX_HARNESS_REQUEST_TIMEOUT_MS,
+                      observedCodexThreadIds,
+                      readNativeThread,
+                      logCodexLiveStep,
+                      requestAgentTextWithEvents,
+                      recordCodexAttemptIdentity,
+                      requestCodexCommandText,
+                      requestAgentText,
+                    },
+                  ),
               );
               logCodexLiveStep("subagent-probe:done");
               if (CODEX_HARNESS_SUBAGENT_ONLY) {

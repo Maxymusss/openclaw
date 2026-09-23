@@ -18,6 +18,7 @@ import { recomputeJobNextRunAtMs } from "./jobs-scheduling.js";
 import { locked } from "./locked.js";
 import { retainManualOneShotOccurrence } from "./one-shot-schedule.js";
 import { runWithCronAdmission } from "./run-admission-capacity.js";
+import { createCronOwnerExecutionIdentityAdmission, createCronRunHandle } from "./run-history.js";
 import { skipCronJobsWithoutOwners } from "./run-owner.js";
 import {
   activateServiceCronRunReceiptInDatabase,
@@ -28,12 +29,8 @@ import {
   prepareServiceCronRunReceiptClaim,
 } from "./run-receipts.js";
 import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
-import { type CronServiceState, type DeferredCronNotifications, emit } from "./state.js";
+import { emit, type CronServiceState, type DeferredCronNotifications } from "./state.js";
 import { ensureLoaded, runPostPersistCronNotifications } from "./store.js";
-import {
-  createCronOwnerExecutionIdentityAdmission,
-  tryCreateCronTaskRunHandle,
-} from "./task-runs.js";
 import type { TimedCronRunOutcome } from "./timer-execution-timeout.js";
 import { authorCronRunCompletion, executeJobCoreWithTimeout } from "./timer-job-runner.js";
 import { isRunnableJob } from "./timer-runnable.js";
@@ -254,7 +251,7 @@ export async function persistQueuedCronRunReservations(params: {
   };
 }): Promise<Array<{ job: CronJob; runReceipt: CronRunReceiptHandle }>> {
   // Manual runs reach reservations without the scheduler's earlier owner filter.
-  const candidates = skipCronJobsWithoutOwners(
+  const candidates = await skipCronJobsWithoutOwners(
     params.state,
     [...params.candidates],
     params.reservedAtMs,
@@ -639,7 +636,7 @@ export async function executeQueuedCronRun(params: {
       const executionJob = structuredClone(activation.job);
       executionJob.state.runningAtMs = activation.startedAt;
       executionJob.state.lastError = undefined;
-      const taskRun = tryCreateCronTaskRunHandle({
+      const taskRun = createCronRunHandle({
         state,
         job: executionJob,
         startedAt: activation.startedAt,
@@ -683,8 +680,6 @@ export async function executeQueuedCronRun(params: {
         executionIdentity: createCronOwnerExecutionIdentityAdmission({
           state,
           runReceipt: started.runReceipt,
-          taskId: taskRun?.taskId,
-          flowId: taskRun?.flowId,
         }),
       });
       outcome = { ...base, ...result, endedAt: state.deps.nowMs() };

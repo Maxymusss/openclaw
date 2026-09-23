@@ -1,9 +1,9 @@
+import { randomUUID } from "node:crypto";
 /**
  * session_status built-in tool.
  *
  * Reports and updates session runtime state, model overrides, visibility, task status, and delivery context.
  */
-import { randomUUID } from "node:crypto";
 import { readStringValue } from "@openclaw/normalization-core/string-coerce";
 import { Type } from "typebox";
 import type {
@@ -37,12 +37,6 @@ import {
 } from "../../sessions/session-state-events.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import type { BuildStatusTextParams } from "../../status/status-text.types.js";
-import { buildTaskStatusSnapshotForRelatedSessionKeyForOwner } from "../../tasks/task-owner-access.js";
-import {
-  formatTaskStatus,
-  formatTaskStatusDetail,
-  formatTaskStatusTitle,
-} from "../../tasks/task-status.js";
 import {
   deliveryContextFromSession,
   normalizeDeliveryContext,
@@ -435,35 +429,6 @@ function withActiveStatusModelIdentity(
   delete next.modelOverrideSource;
   delete next.modelOverrideRouteResolution;
   return next;
-}
-
-function formatSessionTaskLine(params: {
-  relatedSessionKey: string;
-  callerOwnerKey: string;
-  callerAgentId: string;
-  config: OpenClawConfig;
-}): string | undefined {
-  const snapshot = buildTaskStatusSnapshotForRelatedSessionKeyForOwner({
-    relatedSessionKey: params.relatedSessionKey,
-    callerOwnerKey: params.callerOwnerKey,
-    callerAgentId: params.callerAgentId,
-    config: params.config,
-  });
-  const task = snapshot.focus;
-  if (!task) {
-    return undefined;
-  }
-  const headline =
-    snapshot.activeCount > 0
-      ? `${snapshot.activeCount} active`
-      : snapshot.recentFailureCount > 0
-        ? `${snapshot.recentFailureCount} recent failure${snapshot.recentFailureCount === 1 ? "" : "s"}`
-        : `latest ${formatTaskStatus(task).replaceAll("_", " ")}`;
-  const title = formatTaskStatusTitle(task);
-  const detail = formatTaskStatusDetail(task);
-  const blocked = formatTaskStatus(task) === "blocked" ? "blocked" : undefined;
-  const parts = [headline, blocked, task.runtime, title, detail].filter(Boolean);
-  return parts.length ? `📌 Tasks: ${parts.join(" · ")}` : undefined;
 }
 
 async function resolveModelOverride(params: {
@@ -1119,12 +1084,6 @@ export function createSessionStatusTool(opts?: {
             statusSessionEntry.chatType === "channel" ||
             scopedResolved.key.includes(":group:") ||
             scopedResolved.key.includes(":channel:");
-          const taskLine = formatSessionTaskLine({
-            relatedSessionKey: scopedResolved.key,
-            callerOwnerKey: visibilityRequesterKey,
-            callerAgentId: requesterAgentId,
-            config: cfg,
-          });
           // Tool status may read persisted/configured facts, but must not start provider discovery.
           const thinkingCatalog = await loadPublishedPreparedModelCatalog({
             config: cfg,
@@ -1165,14 +1124,11 @@ export function createSessionStatusTool(opts?: {
               }),
             isGroup,
             defaultGroupActivation: () => "mention",
-            taskLineOverride: taskLine,
-            skipDefaultTaskLookup: true,
             primaryModelLabelOverride: primaryModelLabel,
             ...(providerForCard ? {} : { modelAuthOverride: undefined }),
             includeTranscriptUsage: true,
           });
-          const fullStatusText =
-            taskLine && !statusText.includes(taskLine) ? `${statusText}\n${taskLine}` : statusText;
+          const fullStatusText = statusText;
           const resultOverrideProvider = statusSessionEntry.providerOverride?.trim();
           const resultOverrideModel = statusSessionEntry.modelOverride?.trim();
           const liveSessionKeySet = new Set(

@@ -293,7 +293,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       client: state.client,
       parentThreadId,
       requesterSessionKey: params.sessionKey,
-      taskRuntimeScope: params.agentHarnessTaskRuntimeScope,
+      completionScope: params.agentHarnessCompletionScope,
       historyOwner,
       submissionStore,
       agentId: sessionAgentId,
@@ -303,7 +303,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       claimDirectChild: (childThreadId) => state.nativeHookRelay?.claimDirectChild(childThreadId),
       rejectPendingDirectChild: (childThreadId, reason) =>
         state.nativeHookRelay?.rejectPendingDirectChild(childThreadId, reason),
-      ...(params.sessionKey && params.agentHarnessTaskRuntimeScope
+      ...(params.sessionKey && params.agentHarnessCompletionScope
         ? {
             onDirectChildAccepted: () => {
               state.runtimeContinuationStarted = true;

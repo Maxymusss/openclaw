@@ -368,23 +368,6 @@ describe("plugin runtime command execution", () => {
       },
     },
     {
-      name: "exposes canonical runtime.tasks task runtimes",
-      assert: (runtime: ReturnType<typeof createPluginRuntime>) => {
-        expectFunctionKeys(runtime.tasks.runs as Record<string, unknown>, [
-          "bindSession",
-          "fromToolContext",
-        ]);
-        expectFunctionKeys(runtime.tasks.flows as Record<string, unknown>, [
-          "bindSession",
-          "fromToolContext",
-        ]);
-        expectFunctionKeys(runtime.tasks.managedFlows as Record<string, unknown>, [
-          "bindSession",
-          "fromToolContext",
-        ]);
-      },
-    },
-    {
       name: "exposes runtime.agent host helpers",
       assert: (runtime: ReturnType<typeof createPluginRuntime>) => {
         expect(runtime.agent.defaults).toEqual({

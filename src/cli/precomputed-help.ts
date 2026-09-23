@@ -8,8 +8,7 @@ type PrecomputedSubcommandHelpName =
   | "gateway"
   | "models"
   | "plugins"
-  | "sessions"
-  | "tasks";
+  | "sessions";
 
 type PrecomputedCommandHelpName = "browser" | "secrets" | "nodes";
 type OutputPrecomputedHelpText = () => boolean;
@@ -34,7 +33,6 @@ const PRECOMPUTED_SUBCOMMAND_HELP_COMMANDS = new Set<PrecomputedSubcommandHelpNa
   "models",
   "plugins",
   "sessions",
-  "tasks",
 ]);
 const HELP_FLAGS = new Set(["-h", "--help"]);
 const VERSION_FLAGS = new Set(["-V", "--version"]);

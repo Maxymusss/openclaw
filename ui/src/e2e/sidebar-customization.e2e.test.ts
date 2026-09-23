@@ -519,8 +519,8 @@ suite.define(() => {
       await expect
         .poll(() => trimmedTextContents(menu.getByRole("menuitemcheckbox")))
         .not.toContain("Workboard");
-      const tasksItem = menu.getByRole("menuitemcheckbox", { name: "Tasks" });
-      await expect.poll(() => tasksItem.getAttribute("aria-checked")).toBe("false");
+      const logbookItem = menu.getByRole("menuitemcheckbox", { name: "Logbook" });
+      await expect.poll(() => logbookItem.getAttribute("aria-checked")).toBe("false");
       // Ask OpenClaw moved to Settings (#111686): custodian is not a sidebar
       // nav route anymore, so the pin editor does not offer it.
       await expect
@@ -528,14 +528,14 @@ suite.define(() => {
         .toBe(0);
       await captureUiProof(page, "02-customize-menu.png", menu.locator('[part="menu"]'));
 
-      await tasksItem.click();
+      await logbookItem.click();
       await expect
         .poll(() => trimmedTextContents(pinnedItems))
-        .toEqual(["Agents", "Dashboards", "Systems", "Automations", "Plugins", "Tasks"]);
+        .toEqual(["Agents", "Dashboards", "Systems", "Automations", "Plugins", "Logbook"]);
       await page.reload();
       await expect
         .poll(() => trimmedTextContents(pinnedItems))
-        .toEqual(["Agents", "Dashboards", "Systems", "Automations", "Plugins", "Tasks"]);
+        .toEqual(["Agents", "Dashboards", "Systems", "Automations", "Plugins", "Logbook"]);
       // The More menu is transient: closed after reload, unpinned routes inside.
       await expect.poll(() => moreButton.getAttribute("aria-expanded")).toBe("false");
       await moreButton.click();
@@ -546,7 +546,7 @@ suite.define(() => {
       await expect.poll(() => editPersistedPinnedItems.isVisible()).toBe(true);
       await expect
         .poll(() => trimmedTextContents(moreMenu.getByRole("menuitem")))
-        .not.toContain("Tasks");
+        .not.toContain("Logbook");
       await captureUiProof(
         page,
         "03-persisted-customization.png",

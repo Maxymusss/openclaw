@@ -81,7 +81,6 @@ describe("session accessor boundary guard", () => {
         "src/commands/sessions.ts",
         "src/commands/status.agent-local.ts",
         "src/status/summary.ts",
-        "src/commands/tasks.ts",
         "src/config/sessions/combined-store-gateway.ts",
         "src/config/sessions/delivery-info.ts",
         "src/config/sessions/goals.ts",
@@ -191,7 +190,6 @@ describe("session accessor boundary guard", () => {
         "src/auto-reply/reply/session-reset-model.ts",
         "src/auto-reply/reply/session-updates.ts",
         "src/auto-reply/reply/session-usage.ts",
-        "src/commands/tasks.ts",
         "src/config/sessions/cleanup-service.ts",
         "src/config/sessions/goals.ts",
         "src/gateway/boot.ts",
@@ -247,7 +245,6 @@ describe("session accessor boundary guard", () => {
       ]),
     );
   });
-
   it("ratchets only memory-host session corpus files migrated to accessor entries", () => {
     expect(migratedMemoryHostSessionCorpusFiles).toEqual(
       new Set([
@@ -498,7 +495,6 @@ describe("session accessor boundary guard", () => {
       { line: 3, reason: 'imports legacy transcript writer "emitSessionTranscriptUpdate"' },
     ]);
   });
-
   it("flags direct and namespace legacy transcript writer calls", () => {
     expect(
       findTranscriptWriterBoundaryViolations(`

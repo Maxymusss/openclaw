@@ -16,9 +16,9 @@ import {
 import { clearPluginMetadataLifecycleCaches } from "../../plugins/plugin-metadata-lifecycle.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import * as taskRuntime from "../../tasks/runtime-internal.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { resetRecentMediaGenerationDuplicateGuardsForTests } from "../media-generation-task-status-shared.test-support.js";
+import * as taskRuntime from "../media-generation-task-status.js";
 import { prepareConfiguredRuntimeFacts } from "../prepared-model-runtime.configured-catalog.js";
 import { prepareWorkspaceBuildGroup } from "../prepared-model-runtime.facts.js";
 import { createPreparedModelRuntimeSnapshot } from "../prepared-model-runtime.full-catalog.js";
@@ -337,21 +337,22 @@ describe.each(["image", "music", "video"] as const)(
                 }
                 return loadReference(...args);
               });
-            const readTasks = taskRuntime.listFreshTasksForOwnerKey;
+            const readTasks = taskRuntime.findDuplicateGuardImageGenerationTaskForSession;
             let lookups = 0;
-            vi.spyOn(taskRuntime, "listFreshTasksForOwnerKey").mockImplementation(
-              async (ownerKey) => {
-                const tasks = await readTasks(ownerKey);
-                if (
-                  pause !== "reference loading" &&
-                  ++lookups === (pause === "request lookup" ? 1 : 2)
-                ) {
-                  preflightPaused.resolve();
-                  await resumePreflight.promise;
-                }
-                return tasks;
-              },
-            );
+            vi.spyOn(
+              taskRuntime,
+              "findDuplicateGuardImageGenerationTaskForSession",
+            ).mockImplementation(async (ownerKey, options) => {
+              const tasks = await readTasks(ownerKey, options);
+              if (
+                pause !== "reference loading" &&
+                ++lookups === (pause === "request lookup" ? 1 : 2)
+              ) {
+                preflightPaused.resolve();
+                await resumePreflight.promise;
+              }
+              return tasks;
+            });
             const tool = createTool({
               config: {
                 ...fixture.config,

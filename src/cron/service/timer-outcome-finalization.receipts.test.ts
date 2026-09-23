@@ -20,8 +20,8 @@ import {
 import { inspectActiveCronRunReceipt } from "../store/run-receipt-store.test-support.js";
 import type { CronJob } from "../types.js";
 import { reserveQueuedCronRun } from "./run-admission.js";
+import { createCronRunHandle } from "./run-history.js";
 import { createCronServiceState } from "./state.js";
-import { tryCreateCronTaskRunHandle } from "./task-runs.js";
 import type { TimedCronRunOutcome } from "./timer-execution-timeout.js";
 import { finalizeCompletedCronRunOutcomes } from "./timer-outcome-finalization.js";
 import { authorCronRunCompletion } from "./timer.js";
@@ -80,7 +80,7 @@ describe("cron outcome receipt finalization", () => {
         nowMs: () => startedAt,
         runIsolatedAgentJob: vi.fn(),
       });
-      const taskRunId = tryCreateCronTaskRunHandle({
+      const taskRunId = createCronRunHandle({
         state,
         job: retired,
         startedAt,

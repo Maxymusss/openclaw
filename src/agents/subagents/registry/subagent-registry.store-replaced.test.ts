@@ -9,9 +9,6 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../../state/openclaw-state-db.js";
-import { ensureTaskRegistryReady, getTaskById } from "../../../tasks/runtime-internal.js";
-import { publishTaskRecordAfterAtomicStore } from "../../../tasks/task-registry.js";
-import { resetTaskRegistryForTests } from "../../../tasks/task-runtime.test-helpers.js";
 import { maybeWakeRequesterAfterAllChildrenSettled } from "../announce/subagent-announce.requester-settle-wake.js";
 import {
   blockSubagentCompletionDelivery,
@@ -46,7 +43,6 @@ beforeEach(() => {
 
 afterEach(() => {
   resetSubagentRegistryForTests({ persist: false });
-  resetTaskRegistryForTests({ persist: false });
   publishSystemEventStoreResolver(undefined);
   resetHeartbeatEventsForTest();
   testing.setDepsForTest();
@@ -60,11 +56,9 @@ it.each([false, true])(
   async (overlappingWake) => {
     const input = records();
     const now = Date.now();
-    const taskIds = new Map([[input.subagent.runId, input.task.taskId]]);
     let replacementWake: typeof input.subagent.requesterSettleWake;
     if (overlappingWake) {
       input.subagent.execution.endedAt = now + 2_000;
-      input.task.endedAt = now + 2_000;
     }
     input.subagent.requesterStorePath = "original-store";
     input.subagent.delivery = {
@@ -83,35 +77,28 @@ it.each([false, true])(
     const running = structuredClone(input);
     running.subagent.execution = { status: "running", startedAt: input.subagent.createdAt };
     running.subagent.completion = { required: true };
-    running.task.status = "running";
-    running.task.endedAt = undefined;
-    running.task.terminalOutcome = undefined;
     const database = openOpenClawStateDatabase();
-    settleSubagentCompletionDelivery({ subagent: running.subagent, task: running.task });
-    publishCommittedRecords(running.subagent, running.task);
+    settleSubagentCompletionDelivery({ subagent: running.subagent });
+    publishCommittedRecords(running.subagent);
     publishSystemEventStoreResolver(() => "replacement-store");
     expect(subagentRuns.get(input.subagent.runId)?.execution.status).toBe("running");
 
     if (overlappingWake) {
       vi.setSystemTime(now + 1_000);
       const replacement = records();
-      replacement.task.taskId = "replacement-task";
-      replacement.task.runId = "replacement-task-run";
-      replacement.task.childSessionKey = "agent:main:subagent:replacement";
-      replacement.task.createdAt = replacement.subagent.createdAt = now + 1_000;
-      replacement.task.endedAt = replacement.subagent.execution.endedAt = now + 1_500;
-      replacement.task.notifyPolicy = "silent";
+      replacement.subagent.taskRunId = "replacement-task-run";
+      replacement.subagent.childSessionKey = "agent:main:subagent:replacement";
+      replacement.subagent.createdAt = now + 1_000;
+      replacement.subagent.execution.endedAt = now + 1_500;
       replacement.subagent.runId = "replacement-run";
-      replacement.subagent.taskRunId = replacement.task.runId;
-      replacement.subagent.childSessionKey = replacement.task.childSessionKey;
+
       replacement.subagent.requesterStorePath = "replacement-store";
       replacement.subagent.delivery = { status: "pending" };
-      settleSubagentCompletionDelivery({ subagent: replacement.subagent, task: replacement.task });
-      publishCommittedRecords(replacement.subagent, replacement.task);
+      settleSubagentCompletionDelivery({ subagent: replacement.subagent });
+      publishCommittedRecords(replacement.subagent);
       expect(
         blockSubagentCompletionDelivery({
           subagent: expectDefined(subagentRuns.get(replacement.subagent.runId), "new-store child"),
-          taskId: replacement.task.taskId,
           reason: "completion delivery expired",
           suspendedReason: "expiry",
         }),
@@ -120,12 +107,11 @@ it.each([false, true])(
         subagentRuns.get(replacement.subagent.runId)?.requesterSettleWake,
       );
       expect(replacementWake).toMatchObject({ status: "pending" });
-      taskIds.set(replacement.subagent.runId, replacement.task.taskId);
       vi.setSystemTime(now + 2_000);
     }
 
-    settleSubagentCompletionDelivery({ subagent: input.subagent, task: input.task });
-    publishCommittedRecords(input.subagent, input.task);
+    settleSubagentCompletionDelivery({ subagent: input.subagent });
+    publishCommittedRecords(input.subagent);
     const settledEntry = expectDefined(
       subagentRuns.get(input.subagent.runId),
       "late terminal child",
@@ -141,7 +127,6 @@ it.each([false, true])(
           settleRequesterCompletionBatch({
             entries: batch.map((subagent) => ({
               subagent,
-              taskId: expectDefined(taskIds.get(subagent.runId), "batch task owner"),
             })),
             outcome: expectDefined(outcome, "store replacement disposition"),
             isCurrent: () => batch.every((entry) => subagentRuns.get(entry.runId) === entry),
@@ -155,10 +140,6 @@ it.each([false, true])(
         replacementWake,
       );
     }
-    expect(getTaskById(input.task.taskId)).toMatchObject({
-      status: "succeeded",
-      terminalOutcome: "succeeded",
-    });
     expect(
       database.db
         .prepare("SELECT id FROM delivery_queue_entries WHERE entry_kind = 'systemEvent'")
@@ -187,20 +168,14 @@ it.each(["same", "replaced", "restore", "unknown", "failed", "delivered"] as con
       ...(change === "delivered" ? { deliveredAt: Date.now(), announcedAt: Date.now() } : {}),
       payload: loadPendingFinalDeliveryPayload(input.subagent),
     };
-    const taskOutcome = {
-      status: input.task.status,
-      terminalOutcome: input.task.terminalOutcome,
-      error: input.task.error,
-    };
+    const executionBefore = structuredClone(input.subagent.execution);
     const database = openOpenClawStateDatabase();
-    settleSubagentCompletionDelivery({ subagent: input.subagent, task: input.task });
+    settleSubagentCompletionDelivery({ subagent: input.subagent });
     const receipt = expectDefined(
       loadSubagentRegistryFromSqlite().get(input.subagent.runId)?.delivery,
       "persisted notification receipt",
     );
     subagentRuns.set(input.subagent.runId, input.subagent);
-    ensureTaskRegistryReady();
-    publishTaskRecordAfterAtomicStore(input.task);
     initSubagentRegistry();
     if (change === "restore") {
       resetSubagentRegistryForTests({ persist: false });
@@ -220,13 +195,8 @@ it.each(["same", "replaced", "restore", "unknown", "failed", "delivered"] as con
       expect(persisted?.requesterStorePath).toBeUndefined();
       expect(persisted?.controllerStorePath).toBeUndefined();
     }
-    expect(persisted?.completion?.resultText).toBe("canonical result");
-    const task = getTaskById(input.task.taskId);
-    expect({
-      status: task?.status,
-      terminalOutcome: task?.terminalOutcome,
-      error: task?.error,
-    }).toEqual(taskOutcome);
+    expect(persisted?.completion?.resultText).toBe(input.subagent.completion?.resultText);
+    expect(persisted?.execution).toEqual(executionBefore);
     expect(
       database.db
         .prepare("SELECT id FROM delivery_queue_entries WHERE entry_kind = 'systemEvent'")

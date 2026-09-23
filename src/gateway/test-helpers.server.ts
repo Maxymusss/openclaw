@@ -64,10 +64,6 @@ import {
 } from "../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseByPathAsync } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
-import {
-  resetTaskFlowRegistryForTests,
-  resetTaskRegistryForTests,
-} from "../tasks/task-runtime.test-helpers.js";
 import { captureEnv } from "../test-utils/env.js";
 import type { TestPortClaim } from "../test-utils/port-claims.js";
 import type { DeliveryContext } from "../utils/delivery-context.types.js";
@@ -443,8 +439,6 @@ async function resetGatewayTestState(options: { uniqueConfigRoot: boolean }) {
   }
   applyGatewaySkipEnv();
   delete process.env.OPENCLAW_GATEWAY_TOKEN;
-  resetTaskRegistryForTests({ persist: false });
-  resetTaskFlowRegistryForTests({ persist: false });
   const stateDir = process.env.OPENCLAW_STATE_DIR;
   if (stateDir) {
     await fs.rm(stateDir, {
@@ -507,8 +501,6 @@ async function cleanupGatewayTestHome(options: { restoreEnv: boolean }) {
   vi.useRealTimers();
   resetGatewayLifecycleTestState({ preserveRuntimeBindings: false });
   resetLogger();
-  resetTaskRegistryForTests({ persist: false });
-  resetTaskFlowRegistryForTests({ persist: false });
   if (tempHome) {
     // Release leases before deleting their store, and revoke trust in recreated paths.
     await closeOpenClawAgentDatabasesAsync(tempHome);

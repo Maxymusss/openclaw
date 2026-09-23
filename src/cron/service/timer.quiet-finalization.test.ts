@@ -1,12 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
-import * as taskExecutor from "../../tasks/task-executor.js";
-import { findTaskByRunId, listTaskRecords } from "../../tasks/task-registry.js";
-import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers.js";
 import { advanceCronActiveJobGeneration } from "../active-jobs.js";
+import { readCronRunRecordsForTests } from "../run-history.test-support.js";
 import { setupCronServiceSuite, writeCronStoreSnapshot } from "../service.test-harness.js";
 import { loadCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
+import * as runHistory from "../store/run-history.js";
 import type { CronJob } from "../types.js";
 import { stop } from "./ops-lifecycle.js";
 import { run } from "./ops-run.js";
@@ -33,24 +32,17 @@ function createDueIsolatedAgentJob(params: { now: number }): CronJob {
   };
 }
 
-function findCronTaskByBaseRunId(baseRunId: string) {
-  return (
-    findTaskByRunId(baseRunId) ??
-    listTaskRecords().find((task) => task.runId?.startsWith(`${baseRunId}:`))
-  );
+function findCronRunByBaseRunId(baseRunId: string) {
+  return readCronRunRecordsForTests().find((row) => row.runId?.startsWith(`${baseRunId}:`));
 }
 
-afterEach(() => {
-  resetTaskRegistryForTests();
-});
-
-describe("cron quiet task finalization", () => {
+describe("cron quiet outcome finalization", () => {
   it.each(
     ["timer", "retired-timer", "manual", "retired-manual", "manual-force"].flatMap((mode) =>
       (mode === "manual-force" ? [false] : [false, true]).map((failWrite) => ({ mode, failWrite })),
     ),
   )(
-    "finalizes quiet trigger tasks only after cron state persists ($mode, failWrite=$failWrite)",
+    "records quiet trigger recovery only after cron state persists ($mode, failWrite=$failWrite)",
     async ({ mode, failWrite }) => {
       const { storePath } = await makeStorePath();
       const now = Date.parse("2026-03-23T12:00:00.000Z");
@@ -72,23 +64,21 @@ describe("cron quiet task finalization", () => {
       await writeCronStoreSnapshot({ storePath, jobs: [job] });
       const finalizedAfterPersist: boolean[] = [];
       const database = openOpenClawStateDatabase().db;
-      const finalize = taskExecutor.finalizeTaskRunByRunIdCore;
-      const finalizeSpy = vi
-        .spyOn(taskExecutor, "finalizeTaskRunByRunIdCore")
-        .mockImplementation((params) => {
-          const persistedJob = openOpenClawStateDatabase()
-            .db.prepare(
-              "SELECT json_extract(state_json, '$.runningAtMs') AS runningAtMs, json_extract(state_json, '$.nextRunAtMs') AS nextRunAtMs FROM cron_jobs WHERE store_key = ? AND job_id = ?",
-            )
-            .get(cronStoreKey(storePath), job.id) as {
-            runningAtMs: number | null;
-            nextRunAtMs: number | null;
-          };
-          finalizedAfterPersist.push(
-            persistedJob.runningAtMs === null && (persistedJob.nextRunAtMs ?? 0) > now,
-          );
-          return finalize(params);
-        });
+      const finalize = runHistory.recordCronRun;
+      const finalizeSpy = vi.spyOn(runHistory, "recordCronRun").mockImplementation((params) => {
+        const persistedJob = openOpenClawStateDatabase()
+          .db.prepare(
+            "SELECT json_extract(state_json, '$.runningAtMs') AS runningAtMs, json_extract(state_json, '$.nextRunAtMs') AS nextRunAtMs FROM cron_jobs WHERE store_key = ? AND job_id = ?",
+          )
+          .get(cronStoreKey(storePath), job.id) as {
+          runningAtMs: number | null;
+          nextRunAtMs: number | null;
+        };
+        finalizedAfterPersist.push(
+          persistedJob.runningAtMs === null && (persistedJob.nextRunAtMs ?? 0) > now,
+        );
+        return finalize(params);
+      });
       const state = createCronServiceState({
         defaultAgentId: "main",
         storePath,
@@ -131,9 +121,7 @@ describe("cron quiet task finalization", () => {
         if (failWrite) {
           await expect(execution).rejects.toThrow("quiet row unavailable");
           expect(finalizedAfterPersist).toEqual([]);
-          expect(findCronTaskByBaseRunId(`cron:${job.id}:${now}`)).toMatchObject({
-            status: "running",
-          });
+          expect(findCronRunByBaseRunId(`cron:${job.id}:${now}`)).toBeUndefined();
           expect((await loadCronStore(storePath)).jobs[0]?.state.runningAtMs).toBe(now);
           return;
         }
@@ -147,7 +135,7 @@ describe("cron quiet task finalization", () => {
             forcePreservedNextRunAtMs: pendingSlot,
           });
         }
-        const task = findCronTaskByBaseRunId(`cron:${job.id}:${now}`);
+        const task = findCronRunByBaseRunId(`cron:${job.id}:${now}`);
         expect(task).toMatchObject({ status: "succeeded" });
         expect(task?.detail).toEqual({
           storeKey: cronStoreKey(storePath),

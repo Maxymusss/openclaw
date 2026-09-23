@@ -30,6 +30,7 @@ except ModuleNotFoundError:
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "autoreview"
+fixture_git = runpy.run_path(str(SCRIPT.with_name("test-review-harness.py")))["fixture_git"]
 FIXTURES = Path(__file__).with_name("fixtures")
 PRIVATE_KEY_BEGIN_TEXT = "BEGIN " + "PRIVATE KEY"
 RSA_PRIVATE_KEY_BEGIN_TEXT = "BEGIN RSA " + "PRIVATE KEY"
@@ -85,6 +86,7 @@ report = {
     "overall_correctness": "patch is correct",
     "overall_explanation": "fake codex clean",
     "overall_confidence": 0.99,
+    "review_completion": "complete",
 }
 Path(output_path).write_text(json.dumps(report))
 print("fake codex ok")
@@ -117,6 +119,7 @@ report = {
     "overall_correctness": "patch is correct",
     "overall_explanation": "fake claude clean",
     "overall_confidence": 0.99,
+    "review_completion": "complete",
 }
 print(json.dumps(report))
 '''
@@ -147,6 +150,7 @@ report = {
     "overall_correctness": "patch is correct",
     "overall_explanation": "fake pi clean",
     "overall_confidence": 0.99,
+    "review_completion": "complete",
 }
 print(json.dumps(report))
 	'''
@@ -174,6 +178,7 @@ report = {
     "overall_correctness": "patch is correct",
     "overall_explanation": "fake kimi clean",
     "overall_confidence": 0.99,
+    "review_completion": "complete",
 }
 print(json.dumps(report))
 '''
@@ -208,19 +213,8 @@ def deadline_after_reviewer_ready(helper, ready: Path):
 
 
 def git(repo: Path, *args: str) -> str:
-    env = os.environ.copy()
-    env.update(
-        {
-            "GIT_AUTHOR_NAME": "Autoreview Test",
-            "GIT_AUTHOR_EMAIL": "autoreview@example.invalid",
-            "GIT_COMMITTER_NAME": "Autoreview Test",
-            "GIT_COMMITTER_EMAIL": "autoreview@example.invalid",
-        }
-    )
-    result = subprocess.run(
-        ["git", *args],
-        cwd=repo,
-        env=env,
+    result = fixture_git(
+        repo, *args,
         check=True,
         text=True,
         stdout=subprocess.PIPE,
@@ -647,8 +641,8 @@ class AutoreviewMixedTargetTests(unittest.TestCase):
                     if mutation == "index conflict":
                         git(repo, "update-index", "--force-remove", "--", "src/migrate-0.py")
                         # Text-mode stdin on Windows adds a CR to Git's pathname.
-                        subprocess.run(["git", "update-index", "--index-info"], cwd=repo, check=True,
-                                       input=f"100644 {oid} 2\tsrc/migrate-0.py\n".encode(), capture_output=True)
+                        fixture_git(repo, "update-index", "--index-info", check=True,
+                                    input=f"100644 {oid} 2\tsrc/migrate-0.py\n".encode(), capture_output=True)
                     else:
                         mode = "160000" if mutation == "index gitlink" else "120000"
                         git(repo, "update-index", "--cacheinfo", f"{mode},{oid},src/migrate-0.py")
@@ -694,6 +688,7 @@ class AutoreviewMixedTargetTests(unittest.TestCase):
                 "run_engine": lambda _args, _repo, prompt: sends.append(prompt) or json.dumps({
                     "findings": [], "overall_correctness": "patch is correct",
                     "overall_explanation": "Synthetic clean.", "overall_confidence": 0.9,
+                    "review_completion": "complete",
                 }),
             }), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 passes = self.helper["prepare_review_prompts"](repo, "local", None, captured, "", evidence, 30_000)
@@ -706,6 +701,55 @@ class AutoreviewMixedTargetTests(unittest.TestCase):
                 for record in item.chunk.sources:
                     self.assertIn(record.index.content, sent)
                     self.assertIn(record.working_tree.content, sent)
+
+    def test_unfinished_mixed_pass_retains_valid_attribution_without_certifying_scope(self):
+        with self.migration() as (repo, *_):
+            captured = self.helper["local_bundle"](repo)
+            record = captured.mixed[0]
+            finding = {
+                "title": "Synthetic claim", "body": "A concrete migration defect.",
+                "priority": "P2", "confidence": 0.8, "category": "bug",
+                "code_location": {"file_path": record.path, "line": 1},
+                "source_attribution": {
+                    "target": "index", "record_id": record.identity,
+                    "source_id": record.index.identity, "side": "present",
+                    "column": 1, "excerpt": "obsolete(0)",
+                },
+            }
+            provider = {
+                "findings": [finding], "overall_correctness": "patch is incorrect",
+                "overall_explanation": "Awaiting another batch.", "overall_confidence": 0.2,
+            }
+            prepare = self.helper["prepare_review_prompts"]
+            for completions in (("incomplete",), ("incomplete", "complete"), ("complete", "incomplete")):
+                with self.subTest(completions=completions):
+                    output, status = repo.parent / "result.json", repo.parent / "status.json"
+                    engine = mock.Mock(side_effect=[
+                        json.dumps({**provider, "review_completion": completion}) for completion in completions
+                    ])
+                    argv = [str(SCRIPT), "--mode", "local", "--max-priority", "P2",
+                            "--require-finding", "Synthetic claim", "--expect-findings",
+                            "--json-output", str(output), "--status-output", str(status)]
+                    text = io.StringIO()
+                    with mock.patch.dict(self.helper["main_impl"].__globals__, {
+                        "repo_root": lambda: repo,
+                        "prepare_review_prompts": lambda *args: prepare(*args) * len(completions),
+                        "run_engine": engine,
+                    }), mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(text):
+                        self.assertEqual(self.helper["main_impl"](), 2)
+                    result = json.loads(output.read_text())
+                    self.assertEqual(engine.call_count, len(completions))
+                    self.assertEqual(result["review_status"], "incomplete")
+                    self.assertEqual(result["findings"][0]["source_attribution"], finding["source_attribution"])
+                    self.assertNotIn("attribution_rejected_findings", result)
+                    self.assertNotIn("missing_required_findings", result)
+                    self.assertEqual(len(result["pass_reports"]), len(completions))
+                    for entry in result["pass_reports"]:
+                        self.assertEqual(entry["report"]["provider_report"], provider)
+                    self.assertNotIn("review_completion", output.read_text())
+                    self.assertTrue(json.loads(status.read_text())["report_produced"])
+                    self.assertIn("provider observation (incomplete review)", text.getvalue())
+                    self.assertNotIn("scoped-clean", text.getvalue())
 
     def test_honest_capacity_refusal_and_no_legacy_metadata_bypass(self):
         with self.migration() as (repo, *_):
@@ -771,7 +815,7 @@ class AutoreviewMixedTargetTests(unittest.TestCase):
                         with mock.patch.dict(self.helper["main_impl"].__globals__, {
                             "repo_root": lambda: repo,
                             "prepare_review_prompts": lambda *args: original_prepare(*args) * count,
-                            "run_engine": lambda *_: json.dumps(provider),
+                            "run_engine": lambda *_: json.dumps({**provider, "review_completion": "complete"}),
                         }), mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(text), \
                                 contextlib.redirect_stderr(io.StringIO()):
                             self.assertEqual(self.helper["main_impl"](), expected_exit)
@@ -931,6 +975,234 @@ class AutoreviewMixedTargetTests(unittest.TestCase):
                     self.helper["local_bundle"](repo)
 
 
+class AutoreviewBinaryDeletionTests(unittest.TestCase):
+    def setUp(self):
+        self.helper = load_helper()
+
+    @contextlib.contextmanager
+    def asset_repo(self, name="asset.bin", *, binary=True):
+        with tempfile.TemporaryDirectory() as tempdir:
+            repo = init_repo(Path(tempdir))
+            asset = repo / name
+            asset.parent.mkdir(parents=True, exist_ok=True)
+            asset.write_bytes(b"\0FORMER_BINARY_BYTES" if binary else b"old text\n")
+            (repo / "source.py").write_bytes(b"before()\n")
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "base")
+            base = git(repo, "rev-parse", "HEAD").strip()
+            yield repo, asset, base
+
+    def assert_deletion(self, repo, captured, name, target, ref=None, *, source=True):
+        self.assertEqual(captured.paths, {name, "source.py"} if source else {name})
+        self.assertIn("deleted file mode 100644", captured.text)
+        self.assertIn("Binary files ", captured.text)
+        self.assertIn(" and /dev/null differ", captured.text)
+        self.assertNotIn("FORMER_BINARY_BYTES", captured.text)
+        if source:
+            self.assertIn("+after()", captured.text)
+        prompts = self.helper["build_review_prompts"](repo, target, ref, captured, "", [])
+        self.assertEqual(len(prompts), 1)
+        prompt = prompts[0].prompt if captured.mixed else prompts[0]
+        self.assertIn(captured.text, prompt)
+        return prompt
+
+    def test_local_staged_and_unstaged_deletions_keep_metadata_and_scope(self):
+        for staged in (False, True):
+            with self.subTest(staged=staged), self.asset_repo() as (repo, asset, base):
+                asset.unlink()
+                (repo / "source.py").write_bytes(b"after()\n")
+                if staged:
+                    git(repo, "add", "-u")
+                for ref in (None, base):
+                    with self.subTest(base=ref):
+                        captured = self.helper["local_bundle"](repo, ref)
+                        self.assert_deletion(repo, captured, asset.name, "local", ref)
+                        self.assertEqual(captured.mixed, ())
+                        heading = "# Staged Diff" if staged else "# Unstaged Diff"
+                        self.assertIn("Binary files ", captured.text.split(heading, 1)[1])
+
+    def test_committed_deletion_is_reviewable_from_pinned_base_commit_and_branch(self):
+        with self.asset_repo() as (repo, asset, base):
+            git(repo, "rm", "--", asset.name)
+            (repo / "source.py").write_bytes(b"after()\n")
+            git(repo, "commit", "-qam", "remove asset")
+            commit = git(repo, "rev-parse", "HEAD").strip()
+            for target in ("local", "commit", "branch"):
+                with self.subTest(target=target):
+                    captured = self.helper["build_bundle"](repo, target, base, commit)
+                    self.assert_deletion(repo, captured, asset.name, target, base)
+            # Committed targets are authoritative, not the current filesystem.
+            asset.write_bytes(b"\0UNRELATED_DIRTY_BINARY")
+            for target in ("commit", "branch"):
+                with self.subTest(dirty_target=target):
+                    captured = self.helper["build_bundle"](repo, target, base, commit)
+                    self.assert_deletion(repo, captured, asset.name, target, base)
+                    self.assertNotIn("UNRELATED_DIRTY_BINARY", captured.text)
+
+    @unittest.skipIf(os.name == "nt", "literal tab/newline filenames require POSIX")
+    def test_literal_tab_newline_and_metadata_like_paths_remain_distinct(self):
+        names = ("tab\tasset.bin", "line\nbreak.bin", ":100644 000000 aaaaaaa 0000000 D")
+        for name in names:
+            with self.subTest(name=name), self.asset_repo(name) as (repo, asset, base):
+                asset.unlink()
+                for staged in (False, True):
+                    if staged:
+                        git(repo, "add", "-u")
+                    captured = self.helper["local_bundle"](repo, base)
+                    self.assert_deletion(repo, captured, name, "local", base, source=False)
+                git(repo, "commit", "-qm", "remove literal asset")
+                for target in ("branch", "commit"):
+                    captured = self.helper["build_bundle"](repo, target, base, "HEAD")
+                    self.assert_deletion(repo, captured, name, target, base, source=False)
+
+    def test_binary_only_removal_prompt_is_explicitly_metadata_only(self):
+        with self.asset_repo() as (repo, asset, _base):
+            asset.unlink()
+            captured = self.helper["local_bundle"](repo)
+            prompt = self.assert_deletion(repo, captured, asset.name, "local", source=False)
+            self.assertIn("Binary deletions include Git metadata only", prompt)
+            self.assertIn("not the former binary contents", prompt)
+
+    def test_binary_additions_modifications_and_text_replacements_still_refuse(self):
+        for kind in ("addition", "modification", "binary-to-text", "text-to-binary"):
+            with self.subTest(kind=kind), self.asset_repo(binary=kind != "text-to-binary") as (repo, asset, base):
+                if kind == "addition":
+                    asset = repo / "added.bin"
+                asset.write_bytes(b"new text\n" if kind == "binary-to-text" else b"\0NEW_BINARY_BYTES")
+                # Include a genuine deletion in the same transition: its permission
+                # must not exempt another path's binary content.
+                removed = repo / "removed.bin"
+                removed.write_bytes(b"\0removed")
+                git(repo, "add", "--", removed.name)
+                git(repo, "commit", "-qm", "deletion neighbor")
+                removed.unlink()
+                if kind != "addition":
+                    with self.assertRaisesRegex(SystemExit, "refusing binary changes"):
+                        self.helper["local_bundle"](repo, base)
+                git(repo, "add", ".")
+                for ref in (None, base):
+                    with self.assertRaisesRegex(SystemExit, "refusing binary changes"):
+                        self.helper["local_bundle"](repo, ref)
+                git(repo, "commit", "-qm", "binary content change")
+                for target in ("branch", "commit"):
+                    with self.assertRaisesRegex(SystemExit, "refusing binary changes"):
+                        self.helper["build_bundle"](repo, target, base, "HEAD")
+
+    def test_worktree_deletion_cannot_hide_staged_binary_change(self):
+        for kind in ("addition", "modification"):
+            with self.subTest(kind=kind), self.asset_repo() as (repo, asset, base):
+                if kind == "addition":
+                    asset = repo / "added.bin"
+                asset.write_bytes(b"\0STAGED_BINARY_BYTES")
+                git(repo, "add", "--", asset.name)
+                asset.unlink()
+                for ref in (None, base):
+                    with self.assertRaisesRegex(SystemExit, "binary changes in local staged diff"):
+                        self.helper["local_bundle"](repo, ref)
+
+    @unittest.skipIf(os.name == "nt", "symlink type change requires POSIX")
+    def test_binary_to_symlink_type_change_is_not_a_deletion(self):
+        with self.asset_repo() as (repo, asset, base):
+            asset.unlink()
+            asset.symlink_to("source.py")
+            for staged in (False, True):
+                if staged:
+                    git(repo, "add", ".")
+                with self.assertRaisesRegex(SystemExit, "refusing binary changes"):
+                    self.helper["local_bundle"](repo, base)
+            git(repo, "commit", "-qm", "change asset type")
+            for target in ("branch", "commit"):
+                with self.assertRaisesRegex(SystemExit, "refusing binary changes"):
+                    self.helper["build_bundle"](repo, target, base, "HEAD")
+
+    def test_staged_deletion_and_validated_text_readdition_keep_mixed_ownership(self):
+        with self.asset_repo() as (repo, asset, base):
+            git(repo, "rm", "--", asset.name)
+            asset.write_bytes(b"replacement text\n")
+            for ref in (None, base):
+                captured = self.helper["local_bundle"](repo, ref)
+                self.assert_deletion(repo, captured, asset.name, "local", ref, source=False)
+                record, = captured.mixed
+                self.assertEqual(record.path, asset.name)
+                self.assertEqual(record.index.identity, "absent")
+                self.assertIsNone(record.base.content)
+                self.assertEqual(record.index_removed, ())
+                self.assertEqual(record.working_tree.content, "replacement text\n")
+                self.assertEqual({span.target for span in captured.spans}, {"index", "working_tree"})
+                self.helper["verify_mixed_sources"](repo, captured.mixed)
+            asset.write_bytes(b"changed replacement\n")
+            with self.assertRaisesRegex(SystemExit, "mixed source changed"):
+                self.helper["verify_mixed_sources"](repo, captured.mixed)
+
+    def test_staged_deletion_does_not_admit_unsafe_readditions(self):
+        for kind in ("binary", "non-UTF-8", "ignored", "symlink"):
+            if kind == "symlink" and os.name == "nt":
+                continue
+            with self.subTest(kind=kind), self.asset_repo() as (repo, asset, base):
+                git(repo, "rm", "--", asset.name)
+                if kind == "symlink":
+                    asset.symlink_to(repo.parent / "unavailable")
+                else:
+                    asset.write_bytes({"binary": b"\0replacement", "non-UTF-8": b"\xff",
+                                       "ignored": b"ignored text\n"}[kind])
+                if kind == "ignored":
+                    (repo / ".git/info/exclude").write_text("*.bin\n")
+                reason = "binary file|non-UTF-8 file" if kind in {"binary", "non-UTF-8"} else "validated untracked membership"
+                for ref in (None, base):
+                    with self.assertRaisesRegex(SystemExit, reason):
+                        self.helper["local_bundle"](repo, ref)
+
+    def test_sensitive_binary_deletions_retain_security_omissions(self):
+        with self.asset_repo(".env") as (repo, asset, base):
+            git(repo, "rm", "--", asset.name)
+            (repo / "source.py").write_bytes(b"after()\n")
+            git(repo, "add", "source.py")
+            captured = self.helper["local_bundle"](repo, base)
+            git(repo, "commit", "-qm", "remove sensitive asset")
+            bundles = [captured, *(self.helper["build_bundle"](repo, target, base, "HEAD")
+                                   for target in ("branch", "commit"))]
+            for captured in bundles:
+                self.assertEqual(captured.paths, {"source.py"})
+                self.assertIn(self.helper["REVIEW_SECURITY_OMISSION"], captured.text)
+                self.assertIn("+after()", captured.text)
+                self.assertNotIn(".env", captured.text)
+                self.assertNotIn("FORMER_BINARY_BYTES", captured.text)
+
+    def test_gitlink_deletions_remain_refused(self):
+        with self.asset_repo() as (repo, _asset, base):
+            git(repo, "update-index", "--add", "--cacheinfo", f"160000,{base},dependency")
+            git(repo, "commit", "-qm", "gitlink base")
+            base = git(repo, "rev-parse", "HEAD").strip()
+            git(repo, "update-index", "--force-remove", "dependency")
+            for ref in (None, base):
+                with self.assertRaisesRegex(SystemExit, "gitlink/submodule changes"):
+                    self.helper["local_bundle"](repo, ref)
+            git(repo, "commit", "-qm", "remove gitlink")
+            for target in ("branch", "commit"):
+                with self.assertRaisesRegex(SystemExit, "gitlink/submodule changes"):
+                    self.helper["build_bundle"](repo, target, base, "HEAD")
+
+    def test_readdition_during_bundle_capture_prevents_reviewer_start(self):
+        with self.asset_repo() as (repo, asset, _base):
+            git(repo, "rm", "--", asset.name)
+            build = self.helper["build_bundle"]
+
+            def mutate(*args):
+                captured = build(*args)
+                asset.write_bytes(b"\0REAPPEARED_BINARY_BYTES")
+                return captured
+
+            reviewer = mock.Mock()
+            main = self.helper["main_impl"]
+            with mock.patch.dict(main.__globals__, {"repo_root": lambda: repo,
+                    "build_bundle": mutate, "run_engine": reviewer}), \
+                    mock.patch.object(sys, "argv", [str(SCRIPT), "--mode", "local"]), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaisesRegex(SystemExit, "source changed while"):
+                    main()
+            reviewer.assert_not_called()
+
+
 class AutoreviewHardeningTests(unittest.TestCase):
     def setUp(self) -> None:
         self.helper = load_helper()
@@ -960,6 +1232,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
                 return json.dumps({
                     "findings": [], "overall_correctness": "patch is correct",
                     "overall_explanation": "fixture clean", "overall_confidence": 0.99,
+                    "review_completion": "complete",
                 })
 
             with mock.patch.dict(self.helper["main_impl"].__globals__, {
@@ -1565,7 +1838,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
 
             def run_engine(_args, _repo, prompt):
                 sent.append(prompt)
-                return json.dumps(report)
+                return json.dumps({**report, "review_completion": "complete"})
 
             main = self.helper["main_impl"]
             with mock.patch.dict(main.__globals__, {
@@ -1712,7 +1985,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
 
                         def run_engine(_args, _repo, prompt):
                             sends.append(prompt)
-                            return json.dumps(provider_report)
+                            return json.dumps({**provider_report, "review_completion": "complete"})
 
                         argv = [str(SCRIPT), "--engine", engine, "--mode", mode, "--max-priority", "P2",
                                 "--dataset", e2e, "--prompt-file", "context.md", "--prompt", "Review the complete candidate.",
@@ -1793,7 +2066,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
                         with mock.patch.dict(self.helper["main_impl"].__globals__, {
                             "repo_root": lambda: repo,
                             "build_review_prompts": lambda *_args: ["synthetic pack"] * count,
-                            "run_engine": lambda *_args: json.dumps(provider),
+                            "run_engine": lambda *_args: json.dumps({**provider, "review_completion": "complete"}),
                         }), mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                             self.assertEqual(self.helper["main_impl"](), exit_code)
                         result = json.loads((root / "result.json").read_text())
@@ -1816,9 +2089,241 @@ class AutoreviewHardeningTests(unittest.TestCase):
                         if required and expected_status == "incomplete":
                             self.assertEqual(result["missing_required_findings"], required)
 
+    def test_local_filter_collection_is_all_or_nothing_before_review(self) -> None:
+        import shlex
+
+        cases = (
+            ("required-conversion", "probe", {"aaa-ordinary.txt", "data.txt"}),
+            ("unused-driver", "unused", {"aaa-ordinary.txt", "data.txt"}),
+            ("stat-clean-neighbor", "probe", {"aaa-ordinary.txt"}),
+        )
+        provider_report = {
+            "findings": [],
+            "overall_correctness": "patch is correct",
+            "overall_explanation": "Synthetic complete-scope review.",
+            "overall_confidence": 0.99,
+        }
+        for scenario, driver, expected_paths in cases:
+            with self.subTest(scenario=scenario), tempfile.TemporaryDirectory(
+                prefix="autoreview-filter-main.",
+            ) as tempdir:
+                root = Path(tempdir).resolve()
+                home = root / "operator"
+                home.mkdir()
+                # Keep native setup and main's actual Git preflight independent of
+                # caller routing, configuration, reviewer defaults, and credentials.
+                env = {key: os.environ[key] for key in (
+                    "PATH", "PATHEXT", "SYSTEMROOT", "SystemRoot", "COMSPEC", "WINDIR",
+                    "TEMP", "TMP", "TMPDIR", "DEVELOPER_DIR",
+                ) if key in os.environ}
+                env.update({
+                    "HOME": str(home), "USERPROFILE": str(home),
+                    "GIT_CONFIG_GLOBAL": os.devnull,
+                    "GIT_CONFIG_SYSTEM": os.devnull, "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_TERMINAL_PROMPT": "0", "GIT_OPTIONAL_LOCKS": "0",
+                    "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8",
+                })
+                with mock.patch.dict(os.environ, env, clear=True):
+                    repo = init_repo(root)
+                    git(repo, "config", "core.autocrlf", "false")
+                    git(repo, "config", "commit.gpgsign", "false")
+                    ordinary = repo / "aaa-ordinary.txt"
+                    data = repo / "data.txt"
+                    markers = (root / "clean-dispatched", root / "process-dispatched")
+                    programs = (repo / "cleaner.py", repo / "processor.py")
+                    for marker, program, ending in zip(markers, programs, (
+                        "sys.stdout.buffer.write(sys.stdin.buffer.read())\n",
+                        "raise SystemExit(23)\n",
+                    )):
+                        program.write_bytes((
+                            "from pathlib import Path\nimport sys\n"
+                            f"Path({str(marker)!r}).write_bytes(b'synthetic dispatch\\n')\n"
+                            + ending
+                        ).encode("utf-8"))
+                    (repo / ".gitattributes").write_bytes(b"data.txt filter=probe\n")
+                    ordinary.write_bytes(b"ordinary original\n")
+                    data.write_bytes(b"filtered original\n")
+                    git(repo, "add", ".")
+                    git(repo, "commit", "-qm", "synthetic dormant filter fixture")
+
+                    # Establish non-racy clean data before enabling any converter.
+                    # Never repair or refresh that entry after converters are armed.
+                    info = data.stat()
+                    os.utime(data, ns=(info.st_atime_ns, info.st_mtime_ns - 2_000_000_000))
+                    git(repo, "update-index", "--refresh")
+                    ordinary.write_bytes(b"ordinary changed before filtered path\n")
+                    if scenario != "stat-clean-neighbor":
+                        data.write_bytes(b"filtered content changed and different in size\n")
+                    # Freeze the complete expected patch while no driver can run.
+                    expected_patch = git(
+                        repo, "--no-optional-locks", "diff", "--no-ext-diff",
+                        "--no-textconv", "--no-renames", "--no-color", "--patch",
+                    )
+                    self.assertIn("+ordinary changed before filtered path", expected_patch)
+                    if scenario != "stat-clean-neighbor":
+                        self.assertIn("+filtered content changed and different in size", expected_patch)
+                    for field, program in zip(("clean", "process"), programs):
+                        command = shlex.join((Path(sys.executable).as_posix(), program.as_posix()))
+                        git(repo, "config", f"filter.{driver}.{field}", command)
+                    git(repo, "config", f"filter.{driver}.required", "true")
+
+                    def observe():
+                        # Collection may refresh index stat caches, but must retain
+                        # every staged entry and every working/configuration byte.
+                        files = {
+                            str(path.relative_to(repo)): path.read_bytes()
+                            for path in repo.rglob("*")
+                            if path.is_file() and path != repo / ".git" / "index"
+                        }
+                        return files, git(repo, "ls-files", "--stage", "-z")
+
+                    before = observe()
+                    output_dir = root / "outputs"
+                    output_dir.mkdir()
+                    human = output_dir / "report.txt"
+                    report = output_dir / "report.json"
+                    sidecar = output_dir / "status.json"
+                    sidecar.write_bytes(b'{"status":"scoped-clean","stale":true}\n')
+                    argv = [
+                        str(SCRIPT), "--engine", "codex", "--mode", "local",
+                        "--max-priority", "P2", "--output", str(human),
+                        "--json-output", str(report), "--status-output", str(sidecar),
+                    ]
+
+                    def reply(_args, selected_repo, _prompt):
+                        if scenario == "required-conversion":
+                            raise AssertionError("partial conversion-dependent scope reached reviewer")
+                        self.assertEqual(selected_repo, repo)
+                        return json.dumps({**provider_report, "review_completion": "complete"})
+
+                    engine = mock.Mock(side_effect=reply)
+                    stdout, stderr = io.StringIO(), io.StringIO()
+                    main = self.helper["main_impl"]
+                    with mock.patch.dict(main.__globals__, {
+                        "repo_root": lambda: repo,
+                        "resolve_engine_binary": lambda *_args: (True, None),
+                        "run_engine": engine,
+                    }), mock.patch.object(sys, "argv", argv), \
+                            contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                        try:
+                            if scenario == "required-conversion":
+                                with self.assertRaisesRegex(SystemExit, r"(?i)filter"):
+                                    main()
+                            else:
+                                self.assertEqual(main(), 0)
+                        finally:
+                            self.assertFalse(markers[0].exists(), "clean converter executed")
+                            self.assertFalse(markers[1].exists(), "process converter executed")
+                            self.assertEqual(observe(), before, "collection mutated fixture inputs")
+
+                    if scenario == "required-conversion":
+                        engine.assert_not_called()
+                        self.assertEqual(list(output_dir.iterdir()), [],
+                                         "refusal must not leave reports, status, or partial outputs")
+                        self.assertNotIn("scoped-clean:", stdout.getvalue())
+                        continue
+
+                    engine.assert_called_once()
+                    prompt = engine.call_args.args[2]
+                    self.assertIn(expected_patch.rstrip(), prompt)
+                    paths = set(re.findall(r"^diff --git a/(\S+) b/\1$", prompt, re.MULTILINE))
+                    self.assertEqual(paths, expected_paths)
+                    for path in expected_paths:
+                        self.assertEqual(prompt.count(f"diff --git a/{path} b/{path}\n"), 1)
+                    result = json.loads(report.read_text(encoding="utf-8"))
+                    self.assertEqual(result["findings"], [])
+                    self.assertEqual(result["review_status"], "scoped-clean")
+                    for key in ("overall_correctness", "overall_explanation", "overall_confidence"):
+                        self.assertEqual(result[key], provider_report[key])
+                    self.assertEqual(json.loads(sidecar.read_text(encoding="utf-8")), {
+                        "schema_version": 1, "status": "scoped-clean", "exit_code": 0,
+                        "engine": "codex", "report_produced": True, "reason": None,
+                        "reviewer_exit_code": None, "timed_out": False,
+                    })
+                    rendered = human.read_text(encoding="utf-8")
+                    self.assertIn("scoped-clean:", rendered)
+                    self.assertIn(provider_report["overall_explanation"], rendered)
+                    self.assertIn(rendered, stdout.getvalue())
+                    self.assertEqual({path.name for path in output_dir.iterdir()},
+                                     {"report.txt", "report.json", "status.json"})
+
+    def test_completion_finalizes_status_once_and_preserves_provider_observations(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            root = Path(tempdir)
+            repo = init_repo(root)
+            git(repo, "commit", "-q", "--allow-empty", "-m", "base")
+            (repo / "source.txt").write_text("changed\n")
+            status_fn = self.helper["review_status"]
+            for completions in (("complete",), ("incomplete",), ("incomplete", "complete"), ("complete", "incomplete")):
+                for has_finding in (False, True):
+                    for expect in (False, True):
+                        for save_text in (False, True):
+                            with self.subTest(completions=completions, finding=has_finding, expect=expect, save_text=save_text):
+                                providers = [{
+                                    "findings": [{
+                                        "title": "Synthetic defect", "body": "Retain this observation.",
+                                        "priority": "P2", "confidence": 0.01, "category": "bug",
+                                        "code_location": {"file_path": "source.txt", "line": 1},
+                                    }] if has_finding else [],
+                                    "overall_correctness": "patch is incorrect" if has_finding else "patch is correct",
+                                    "overall_explanation": (
+                                        "Awaiting the second evidence batch before a final review verdict."
+                                        if completion == "incomplete" else "Finished this assigned assessment."
+                                    ),
+                                    "overall_confidence": 0.01,
+                                } for completion in completions]
+                                engine = mock.Mock(side_effect=[
+                                    json.dumps({**provider, "review_completion": completion})
+                                    for provider, completion in zip(providers, completions)
+                                ])
+                                result_path, status_path, text_path = (
+                                    root / name for name in ("result.json", "status.json", "result.txt")
+                                )
+                                argv = [str(SCRIPT), "--mode", "local", "--max-priority", "P2",
+                                        "--json-output", str(result_path), "--status-output", str(status_path)]
+                                if expect:
+                                    argv.append("--expect-findings")
+                                if save_text:
+                                    argv += ["--output", str(text_path)]
+                                complete = all(value == "complete" for value in completions)
+                                expected_status = "incomplete" if not complete else "findings" if has_finding else "scoped-clean"
+                                expected_exit = 2 if not complete else int(not has_finding) if expect else int(has_finding)
+                                finalized = mock.Mock(wraps=status_fn)
+                                text = io.StringIO()
+                                with mock.patch.dict(self.helper["main_impl"].__globals__, {
+                                    "repo_root": lambda: repo,
+                                    "build_review_prompts": lambda *_: ["synthetic pack"] * len(completions),
+                                    "run_engine": engine, "review_status": finalized,
+                                }), mock.patch.object(sys, "argv", argv), contextlib.redirect_stdout(text), \
+                                        contextlib.redirect_stderr(io.StringIO()):
+                                    self.assertEqual(self.helper["main_impl"](), expected_exit)
+                                finalized.assert_called_once()
+                                self.assertEqual(engine.call_count, len(completions))
+                                result = json.loads(result_path.read_text())
+                                self.assertEqual(result["review_status"], expected_status)
+                                self.assertEqual(result["overall_confidence"], 0.01)
+                                self.assertEqual(bool(result["findings"]), has_finding)
+                                retained = ([result] if len(completions) == 1
+                                            else [entry["report"] for entry in result["pass_reports"]])
+                                self.assertEqual([entry["provider_report"] for entry in retained], providers)
+                                self.assertNotIn("review_completion", result_path.read_text())
+                                self.assertEqual(json.loads(status_path.read_text()), {
+                                    "schema_version": 1, "status": expected_status, "exit_code": expected_exit,
+                                    "engine": "codex", "report_produced": True, "reason": None,
+                                    "reviewer_exit_code": None, "timed_out": False,
+                                })
+                                for provider in providers:
+                                    self.assertIn(provider["overall_explanation"], text.getvalue())
+                                if save_text:
+                                    self.assertIn(text_path.read_text(), text.getvalue())
+                                if not complete:
+                                    self.assertNotIn("scoped-clean", text.getvalue())
+                                    self.assertIn("provider observation (incomplete review)", text.getvalue())
+
     def test_status_unavailable_and_local_refusals_remain_distinct(self) -> None:
-        clean = json.dumps({"findings": [], "overall_correctness": "patch is correct",
-                            "overall_explanation": "Synthetic review.", "overall_confidence": 0.9})
+        public = {"findings": [], "overall_correctness": "patch is correct",
+                  "overall_explanation": "Synthetic review.", "overall_confidence": 0.9}
+        clean = json.dumps({**public, "review_completion": "complete"})
         unavailable = self.helper["ReviewerUnavailable"]
         cases = (
             ("engine", unavailable("DIAGNOSTIC_SENTINEL", result=subprocess.CompletedProcess([], 7, "", "")), "engine_failed"),
@@ -1826,8 +2331,12 @@ class AutoreviewHardeningTests(unittest.TestCase):
             ("invalid-json", "not JSON", "invalid_report"),
             ("invalid-schema", '{"findings": []}', "invalid_report"),
             ("invalid-field-type", json.dumps({"findings": [], "overall_correctness": [],
-                                               "overall_explanation": "Invalid enum", "overall_confidence": 0.9}), "invalid_report"),
+                                               "overall_explanation": "Invalid enum", "overall_confidence": 0.9,
+                                               "review_completion": "complete"}), "invalid_report"),
             ("invalid-event-type", '[{"type":"assistant","message":{"content":null}}]', "invalid_report"),
+            ("missing-completion", json.dumps(public), "invalid_report"),
+            *((f"invalid-completion-{index}", json.dumps({**public, "review_completion": value}), "invalid_report")
+              for index, value in enumerate(("", "deferred", [], {}, None, 42, False))),
             ("isolation", SystemExit("isolation refused"), None),
             ("spawn", OSError("cannot execute reviewer"), None),
         )
@@ -1841,9 +2350,11 @@ class AutoreviewHardeningTests(unittest.TestCase):
                     with self.subTest(count=count, label=label):
                         sidecar = root / "status.json"
                         report = root / "result.json"
+                        human = root / "result.txt"
                         sidecar.write_text('{"status":"scoped-clean"}')
                         argv = [str(SCRIPT), "--mode", "local", "--engine", "codex",
-                                "--status-output", str(sidecar), "--json-output", str(report)]
+                                "--status-output", str(sidecar), "--json-output", str(report),
+                                "--output", str(human)]
                         engine = mock.Mock(side_effect=[clean] * (count - 1) + [failure])
                         with mock.patch.dict(self.helper["main_impl"].__globals__, {
                             "repo_root": lambda: repo,
@@ -1853,6 +2364,8 @@ class AutoreviewHardeningTests(unittest.TestCase):
                             with self.assertRaises((SystemExit, OSError)):
                                 self.helper["main_impl"]()
                         self.assertFalse(report.exists())
+                        self.assertFalse(human.exists())
+                        self.assertEqual(engine.call_count, count)
                         self.assertEqual(sidecar.exists(), reason is not None)
                         if reason:
                             text = sidecar.read_text()
@@ -2159,9 +2672,10 @@ class AutoreviewHardeningTests(unittest.TestCase):
                 git(repo, "add", "unrelated.txt")
                 git(repo, "commit", "-qm", "unrelated maintenance")
             expected_parent = git(repo, "rev-parse", "HEAD^").strip()
-            expected_patch = subprocess.check_output(
-                ["git", "diff", *self.helper["SAFE_DIFF_FLAGS"], "HEAD^", "HEAD"], cwd=repo,
-            ).decode("utf-8")
+            expected_patch = fixture_git(
+                repo, "diff", *self.helper["SAFE_DIFF_FLAGS"], "HEAD^", "HEAD",
+                check=True, capture_output=True,
+            ).stdout.decode("utf-8")
             for state, depth in (("missing", 1), ("available", 2), ("retained", None)):
                 with self.subTest(state=state):
                     checkout = root / state
@@ -2760,6 +3274,7 @@ class AutoreviewHardeningTests(unittest.TestCase):
                             ),
                             "overall_explanation": "test review",
                             "overall_confidence": 0.9,
+                            "review_completion": "complete",
                         }
                     )
 
@@ -2773,9 +3288,11 @@ class AutoreviewHardeningTests(unittest.TestCase):
                                 args, [args], repo, prompts, {"source.txt"}
                             )
                     else:
-                        reports = self.helper["run_review_passes"](
+                        results = self.helper["run_review_passes"](
                             args, [args], repo, prompts, {"source.txt"}
                         )
+                        self.assertTrue(all(result.complete for _, result in results))
+                        reports = [(label, result.report) for label, result in results]
                         report = self.helper["merge_chunk_reports"](reports)
                         self.helper["require_findings"](report, args.require_finding)
                         self.assertEqual(report["overall_correctness"], "patch is incorrect")
@@ -4397,6 +4914,7 @@ else:
         ) -> subprocess.CompletedProcess[str]:
             observed["cwd"] = cwd
             observed["env"] = kwargs["env"]
+            observed["schema"] = json.loads(_cmd[_cmd.index("--json-schema") + 1])
             return subprocess.CompletedProcess([], 0, "{}", "")
 
         with tempfile.TemporaryDirectory() as tempdir:
@@ -4421,6 +4939,7 @@ else:
                 observed["env"]["CLAUDE_CODE_DISABLE_AUTO_MEMORY"],
                 "1",
             )
+            self.assertEqual(observed["schema"], self.helper["PROVIDER_SCHEMA"])
 
     def test_codex_env_rejects_executable_dbus_transport(self) -> None:
         old = os.environ.copy()
@@ -5045,7 +5564,7 @@ else:
             with contextlib.redirect_stderr(io.StringIO()):
                 self.helper["validate_report"](literal, repo, {"src/index.ts"}, [])
             self.assertEqual(literal["findings"], [])
-            self.assertEqual(self.helper["review_status"](literal), "incomplete")
+            self.assertEqual(self.helper["review_status"](literal, complete=True), "incomplete")
 
             for invalid_path in ("", 123, None, True):
                 with self.subTest(invalid_path=invalid_path):
@@ -5098,6 +5617,7 @@ else:
             "overall_explanation": "explanation\x07",
             "overall_confidence": 0.9,
         }
+        report["review_status"] = self.helper["review_status"](report, complete=True)
         output = io.StringIO()
 
         with contextlib.redirect_stdout(output):
@@ -6711,6 +7231,7 @@ class AuthenticatedProxyTests(unittest.TestCase):
         proxy, forms = self.proxy_fixture()
         report = {"findings": [], "overall_correctness": "patch is incorrect",
                   "overall_explanation": "provider says " + " | ".join(forms), "overall_confidence": 0.8}
+        report["review_status"] = self.helper["review_status"](report, complete=True)
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"HTTPS_PROXY": proxy}, clear=True):
             output = Path(tmp) / "report.json"
             self.helper["atomic_write_text"](output, json.dumps(self.helper["redact_proxy_report"](report)))
@@ -6740,14 +7261,10 @@ class AuthenticatedProxyTests(unittest.TestCase):
             root = Path(tmp).resolve()
             repo = root / "repo"
             repo.mkdir()
-            def git(*args):
-                subprocess.run(["git", "-C", str(repo), "-c", "user.name=Proxy Test",
-                                "-c", "user.email=proxy@example.invalid", "-c", "commit.gpgsign=false",
-                                *args], check=True, capture_output=True)
-            git("init", "-q")
+            git(repo, "init", "-q")
             (repo / "source.txt").write_text("before\n")
-            git("add", ".")
-            git("commit", "-qm", "fixture")
+            git(repo, "add", ".")
+            git(repo, "commit", "-qm", "fixture")
             (repo / "source.txt").write_text("after\n")
             fake = root / "codex-fixture"
             fake.write_text(f"#!{sys.executable}\n" + '''import json, os, sys
@@ -6766,6 +7283,7 @@ flag = "--output-last-message" if "--output-last-message" in sys.argv else "-o"
 Path(sys.argv[sys.argv.index(flag) + 1]).write_text(json.dumps({
     "findings": [], "overall_correctness": "patch is incorrect",
     "overall_explanation": "transport diagnostics: " + os.environ["HTTPS_PROXY"], "overall_confidence": 0.8,
+    "review_completion": "complete",
 }))
 ''')
             fake.chmod(0o755)

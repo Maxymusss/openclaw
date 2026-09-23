@@ -1,4 +1,4 @@
-// Agent method tests cover run/steer/reset/wait behavior, task/subagent state,
+// Agent method tests cover run/steer/reset/wait behavior, native subagent state,
 // approval followups, lifecycle hooks, and emitted gateway events.
 import { expectDefined } from "@openclaw/normalization-core";
 import { expect, vi } from "vitest";
@@ -19,12 +19,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { buildProjectedAgentRunIndex } from "../../infra/agent-run-registry.js";
 import { resetDiagnosticEventsForTest } from "../../infra/diagnostic-events.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
-import {
-  resetDetachedTaskLifecycleRuntimeForTests,
-  resetTaskRegistryForTests,
-} from "../../tasks/task-runtime.test-helpers.js";
 import { captureEnv, setTestEnvValue } from "../../test-utils/env.js";
-import { installInMemoryTaskRegistryRuntime } from "../../test-utils/task-registry-runtime.js";
 import { createChatRunState } from "../server-chat-state.js";
 import { bindSessionRowProjection } from "../session-row-projection-access.js";
 import type { SessionRowProjection } from "../session-row-projection.js";
@@ -918,7 +913,7 @@ export async function invokeGatewaySuspendPrepare(
 
 // Operator-write client that is NOT the in-process backend ACP spawn caller:
 // a control-UI connection with the same operator.write scope. It can set
-// acpTurnSource but owns no replacement `acp` task row, so CLI tracking stays on.
+// acpTurnSource without receiving the authority of the in-process backend.
 export function operatorWriteGatewayClient(): AgentHandlerArgs["client"] {
   return {
     connect: {
@@ -1101,24 +1096,12 @@ export function applyGatewaySubagentRegistryTestDeps(
 
 applyGatewaySubagentRegistryTestDeps();
 
-/** Keep handler tests on the real task lifecycle without paying for SQLite durability. */
-export function resetAgentTaskRegistryForTests(): void {
-  resetTaskRegistryForTests({ persist: false });
-  installInMemoryTaskRegistryRuntime();
-}
-
-export function restoreAgentTaskRegistryRuntimeAfterTests(): void {
-  resetTaskRegistryForTests({ persist: false });
-}
-
 export const describe0AfterEach0 = async () => {
   mocks.userTurnStorePath = undefined;
   // Drain deferred broadcasts before retiring the test-owned row and runtime state.
   await flushPendingSessionsChangedEvents();
   envSnapshot.restore();
-  resetDetachedTaskLifecycleRuntimeForTests();
   resetDiagnosticEventsForTest();
-  resetAgentTaskRegistryForTests();
   resetSubagentRegistryForTests({ persist: false });
   applyGatewaySubagentRegistryTestDeps();
   mocks.agentCommand.mockReset();
@@ -1150,8 +1133,6 @@ export const describe0AfterEach0 = async () => {
 async function resetIntegrationState() {
   await flushPendingSessionsChangedEvents();
   envSnapshot.restore();
-  resetDetachedTaskLifecycleRuntimeForTests();
-  resetAgentTaskRegistryForTests();
   resetSubagentRegistryForTests({ persist: false });
   applyGatewaySubagentRegistryTestDeps();
   mocks.agentCommand.mockReset();

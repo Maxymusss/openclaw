@@ -8,6 +8,7 @@ import { getCliSessionBinding } from "../../config/sessions/cli-session-binding.
 import { loadSessionEntryReadOnly } from "../../config/sessions/session-accessor.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { removeCronRunContinuationSessionIfIdle } from "../../cron/run-continuation-cleanup.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
@@ -16,32 +17,28 @@ import {
   runInDetachedAsyncContext,
   runOutsideAsyncWorkScope,
 } from "../../shared/async-work-scope.js";
-import { removeCronRunContinuationSessionIfIdle } from "../../tasks/cron-run-continuation-cleanup.js";
-import {
-  completeTaskRunByRunId,
-  createRunningTaskRun,
-  failTaskRunByRunId,
-  recordTaskRunProgressByRunId,
-} from "../../tasks/detached-task-runtime.js";
-import {
-  clearGeneratedMediaTaskActivity,
-  registerGeneratedMediaTaskActivity,
-} from "../../tasks/generated-media-task-activity.js";
+import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import {
   resolveRequiredCompletionDeliveryFailureTerminalResult,
   type RequiredCompletionTerminalResult,
-} from "../../tasks/task-completion-contract.js";
-import type { DeliveryContext } from "../../utils/delivery-context.types.js";
+} from "../completion-result.js";
 import type { AgentGeneratedAttachment } from "../generated-attachments.js";
 import type { AgentInternalEvent } from "../internal-events.js";
+import {
+  clearGeneratedMediaTaskActivity,
+  createMediaGenerationOperation,
+  isMediaGenerationOperationCurrent,
+  registerGeneratedMediaTaskActivity,
+  updateMediaGenerationOperation,
+} from "../media-generation-activity.js";
 import { MEDIA_GENERATION_DELIVERING_COMPLETION_PROGRESS } from "../media-generation-task-status-shared.js";
 import { loadRequesterSessionEntry } from "../subagents/announce/subagent-announce-delivery.js";
 import { resolveAnnounceOrigin } from "../subagents/announce/subagent-announce-origin.js";
 import {
-  type MediaGenerationCompletionWakeOutcome,
-  type MediaGenerationTaskHandle,
   retainBlockedMediaReferences,
   wakeMediaGenerationTaskCompletion,
+  type MediaGenerationCompletionWakeOutcome,
+  type MediaGenerationTaskHandle,
 } from "./media-generate-background-completion.js";
 export type { MediaGenerationTaskHandle } from "./media-generate-background-completion.js";
 
@@ -183,7 +180,14 @@ async function wakeMediaGenerationTaskCompletionWithRetry(params: {
 }
 
 function touchMediaGenerationTaskRunContext(handle: MediaGenerationTaskHandle) {
-  registerGeneratedMediaTaskActivity(handle.runId, handle.requesterSessionKey);
+  if (!isMediaGenerationOperationCurrent(handle.runId)) {
+    return;
+  }
+  registerGeneratedMediaTaskActivity(
+    handle.runId,
+    handle.requesterSessionKey,
+    handle.requesterAgentId,
+  );
   registerAgentRunContext(handle.runId, {
     sessionKey: handle.requesterSessionKey,
     agentId: handle.requesterAgentId,
@@ -214,21 +218,16 @@ function createMediaGenerationTaskRun(params: {
       loadRequesterSessionEntry(sessionKey, params.requesterAgentId).entry,
       params.requesterOrigin,
     );
-    const task = createRunningTaskRun({
-      runtime: "cli",
+    const task = createMediaGenerationOperation({
+      taskId: runId,
+      status: "running",
+      createdAt: Date.now(),
       taskKind: params.taskKind,
       sourceId: params.providerId ? `${params.toolName}:${params.providerId}` : params.toolName,
       requesterSessionKey: sessionKey,
       requesterAgentId: params.requesterAgentId,
-      ownerKey: sessionKey,
-      scopeKind: "session",
-      requesterOrigin,
-      childSessionKey: sessionKey,
       runId,
-      label: params.label,
       task: params.prompt,
-      deliveryStatus: "not_applicable",
-      notifyPolicy: "silent",
       startedAt: Date.now(),
       lastEventAt: Date.now(),
       progressSummary: params.queuedProgressSummary,
@@ -247,7 +246,7 @@ function createMediaGenerationTaskRun(params: {
     touchMediaGenerationTaskRunContext(handle);
     return handle;
   } catch (error) {
-    log.warn("Failed to create media generation task ledger record", {
+    log.warn("Failed to admit media generation", {
       sessionKey,
       toolName: params.toolName,
       providerId: params.providerId,
@@ -266,19 +265,19 @@ function recordMediaGenerationTaskProgress(params: {
     return;
   }
   touchMediaGenerationTaskRunContext(params.handle);
-  recordTaskRunProgressByRunId({
-    runId: params.handle.runId,
-    runtime: "cli",
-    sessionKey: params.handle.requesterSessionKey,
+  updateMediaGenerationOperation(params.handle.runId, {
     lastEventAt: Date.now(),
     progressSummary: params.progressSummary,
-    eventSummary: params.eventSummary,
   });
 }
 
 function clearMediaGenerationTaskRunContext(handle: MediaGenerationTaskHandle): void {
+  const current = isMediaGenerationOperationCurrent(handle.runId);
   clearGeneratedMediaTaskActivity(handle.runId);
   clearAgentRunContext(handle.runId);
+  if (!current) {
+    return;
+  }
   // A one-shot cron job can be deleted before detached media settles, leaving no
   // later timer tick to reap its exact continuation row.
   void removeCronRunContinuationSessionIfIdle(handle.requesterSessionKey).catch(
@@ -330,10 +329,8 @@ function completeMediaGenerationTaskRun(params: {
   }
   try {
     const endedAt = Date.now();
-    completeTaskRunByRunId({
-      runId: params.handle.runId,
-      runtime: "cli",
-      sessionKey: params.handle.requesterSessionKey,
+    updateMediaGenerationOperation(params.handle.runId, {
+      status: "succeeded",
       endedAt,
       lastEventAt: endedAt,
       progressSummary: `Generated ${params.count} ${params.generatedLabel}${params.count === 1 ? "" : "s"}`,
@@ -358,10 +355,8 @@ function failMediaGenerationTaskRun(params: {
   try {
     const endedAt = Date.now();
     const errorText = formatErrorMessage(params.error);
-    failTaskRunByRunId({
-      runId: params.handle.runId,
-      runtime: "cli",
-      sessionKey: params.handle.requesterSessionKey,
+    updateMediaGenerationOperation(params.handle.runId, {
+      status: "failed",
       endedAt,
       lastEventAt: endedAt,
       error: errorText,
@@ -468,6 +463,9 @@ export function scheduleMediaGenerationTaskCompletion<
 }) {
   const runBackgroundWork = async () => {
     let executed: T;
+    if (params.handle && !isMediaGenerationOperationCurrent(params.handle.runId)) {
+      return;
+    }
     try {
       executed = await withMediaGenerationTaskKeepalive({
         handle: params.handle,
@@ -475,6 +473,10 @@ export function scheduleMediaGenerationTaskCompletion<
         run: params.run,
       });
     } catch (error) {
+      if (params.handle && !isMediaGenerationOperationCurrent(params.handle.runId)) {
+        clearMediaGenerationTaskRunContext(params.handle);
+        return;
+      }
       try {
         const wakeOutcome = await wakeMediaGenerationTaskCompletionWithRetry({
           wake: async () =>
@@ -503,6 +505,10 @@ export function scheduleMediaGenerationTaskCompletion<
       return;
     }
 
+    if (params.handle && !isMediaGenerationOperationCurrent(params.handle.runId)) {
+      clearMediaGenerationTaskRunContext(params.handle);
+      return;
+    }
     const recordCompletionDeliveryProgress = () => {
       try {
         params.lifecycle.recordTaskProgress({
@@ -531,7 +537,7 @@ export function scheduleMediaGenerationTaskCompletion<
             attachments: executed.attachments,
             mediaUrls: executed.mediaUrls,
           }),
-        // Keep both the detached-task ledger and process-local activity fresh
+        // Keep the native operation and process-local activity fresh
         // while an exact cron continuation is still owned by its original run.
         beforeRetry: recordCompletionDeliveryProgress,
       });

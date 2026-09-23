@@ -3,6 +3,7 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { getActiveGatewayRootWorkCount } from "../../process/gateway-work-admission.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import * as stateWorker from "../../state/openclaw-state-worker-store.js";
+import { readCronRunHistoryPage } from "../run-history.test-support.js";
 import { setupCronServiceSuite, writeCronStoreSnapshot } from "../service.test-harness.js";
 import * as cronStore from "../store.js";
 import { loadCronStore } from "../store.js";
@@ -16,10 +17,8 @@ import {
   inspectActiveCronRunReceipt,
   makeCronRecoveryJob,
 } from "../store/run-receipt-store.test-support.js";
-import { readCronTaskRunHistoryPage } from "../task-run-history.js";
 import { start, stop } from "./ops-lifecycle.js";
 import { createCronServiceState } from "./state.js";
-import { tryCreateCronTaskRunHandle } from "./task-runs.js";
 import { onTimer } from "./timer.test-support.js";
 
 const { logger, makeStorePath } = setupCronServiceSuite({ prefix: "cron-recovery-batch-" });
@@ -55,14 +54,11 @@ async function seedInterruptedBatch() {
       claimCronRunReceiptInDatabase({ database: db, prepared, resolveAgentId: () => "alpha" }),
     );
     job.state.runningReceiptId = receipt.receiptId;
-    expect(
-      tryCreateCronTaskRunHandle({ state, job, startedAt: startedAtMs, runReceipt: receipt }),
-    ).toBeDefined();
     releaseLocalCronRunReceiptOwnership(receipt);
   }
   await writeCronStoreSnapshot({ storePath, jobs });
   const history = (jobId: string) =>
-    readCronTaskRunHistoryPage({ storeKey: cronStoreKey(storePath), jobId }).entries;
+    readCronRunHistoryPage({ storeKey: cronStoreKey(storePath), jobId }).entries;
   return { storePath, jobs, state, onEvent, runner, history };
 }
 

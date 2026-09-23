@@ -21,7 +21,6 @@ type RequestFixtures = {
   acquireGatewayLock: Mock<
     (opts?: { port?: number }) => Promise<{ release: Mock<() => Promise<void>> }>
   >;
-  reloadTaskRuntimeStateFromStore: Mock<() => Promise<void>>;
   runLoopWithStart: (params: {
     start: ReturnType<typeof createSignaledStart>["start"];
     runtime: ReturnType<typeof createRuntimeWithExitSignal>["runtime"];
@@ -56,7 +55,6 @@ type RequestFixtures = {
 
 export function registerGatewayRequestTests({
   acquireGatewayLock,
-  reloadTaskRuntimeStateFromStore,
   runLoopWithStart,
   waitForGatewayActiveWork,
   restartGatewayProcessWithFreshPid,
@@ -259,7 +257,6 @@ export function registerGatewayRequestTests({
 
   it.each([
     { phase: "lock", pendingStop: false },
-    { phase: "restart-cleanup", pendingStop: false },
     { phase: "lock", pendingStop: true },
     { phase: "beginBoot", pendingStop: true },
   ] as const)(
@@ -296,11 +293,6 @@ export function registerGatewayRequestTests({
             reached.resolve();
             await resume.promise;
             return { release: vi.fn(async () => {}) };
-          });
-        } else if (phase === "restart-cleanup") {
-          reloadTaskRuntimeStateFromStore.mockImplementationOnce(async () => {
-            reached.resolve();
-            await resume.promise;
           });
         }
         const failures: unknown[] = [];

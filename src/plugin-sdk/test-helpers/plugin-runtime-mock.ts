@@ -24,7 +24,6 @@ import {
   type PluginRuntimeMockOverrides,
 } from "./plugin-runtime-mock-overrides.js";
 import { createPluginModelRuntimeMock } from "./plugin-runtime-model-mock.js";
-import { createPluginTasksRuntimeMock } from "./plugin-runtime-tasks-mock.js";
 
 type InboundDebounceFlush = ReturnType<InboundDebounceCreateParams<unknown>["onFlush"]>;
 type InboundDebounceFlushFactory = Parameters<InboundDebounceCreateParams<unknown>["onFlush"]>[1];
@@ -952,7 +951,6 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
         },
       ),
     },
-    tasks: createPluginTasksRuntimeMock(),
     subagent: {
       complete: vi.fn(),
       run: vi.fn(),

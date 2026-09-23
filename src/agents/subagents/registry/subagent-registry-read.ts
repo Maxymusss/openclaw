@@ -24,14 +24,13 @@ import {
 } from "./subagent-registry-queries.js";
 import type { SubagentRunReadRecord } from "./subagent-registry-read.types.js";
 import {
-  getSubagentSessionListRunsSnapshotForRead,
-  getSubagentSessionListRunsSnapshotForSessions,
   getSubagentRunsSnapshotForChildSession,
   getSubagentRunsSnapshotForController,
   getSubagentRunsSnapshotForRead,
   getSubagentRunsSnapshotForSessions,
+  getSubagentSessionListRunsSnapshotForRead,
+  getSubagentSessionListRunsSnapshotForSessions,
 } from "./subagent-registry-state.js";
-import { loadSubagentRunsForChildSessionFromSqlite } from "./subagent-registry.store.sqlite.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 import { isSubagentRunLive } from "./subagent-run-liveness.js";
 export { isSubagentRunLive, isSubagentRunQueued } from "./subagent-run-liveness.js";
@@ -193,26 +192,6 @@ export function listSubagentRunsForRequester(
 ): SubagentRunRecord[] {
   // Request-run lifetime scoping must observe the raw live map, including rows not persisted yet.
   return listRunsForRequesterFromRuns(subagentRuns, requesterSessionKey, options);
-}
-
-/** Whether any current or durable generation still owns this logical task, including waits/recovery. */
-export function hasSubagentTaskOwner(params: {
-  taskRunId: string;
-  childSessionKey: string;
-  requesterSessionKey: string;
-}): boolean {
-  const ownsTask = (entry: SubagentRunRecord) =>
-    (entry.taskRunId ?? entry.runId) === params.taskRunId &&
-    entry.childSessionKey === params.childSessionKey &&
-    entry.requesterSessionKey === params.requesterSessionKey;
-  for (const entry of getSubagentRunsForChildSession(params.childSessionKey)) {
-    if (ownsTask(entry)) {
-      return true;
-    }
-  }
-  // Absence permits maintenance to settle stranded tasks. Unlike presentation
-  // snapshots, this read must propagate failures rather than treating them as absence.
-  return loadSubagentRunsForChildSessionFromSqlite(params.childSessionKey).some(ownsTask);
 }
 
 /** Returns the preferred child-session run from its scoped readable snapshot. */

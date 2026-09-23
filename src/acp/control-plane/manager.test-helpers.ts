@@ -1,7 +1,6 @@
 /** Shared ACP manager test harness, mocks, fixtures, and assertion helpers. */
 import type { AcpRuntime, AcpRuntimeCapabilities } from "@openclaw/acp-core/runtime/types";
 import { afterEach, beforeEach, expect, vi } from "vitest";
-import { resetAcpManagerTaskStateForTests } from "../../../test/helpers/acp-manager-task-state.js";
 import { createTestAdmittedRunContext } from "../../agents/admitted-run-context.test-support.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { AcpSessionRuntimeOptions, SessionAcpMeta } from "../../config/sessions/types.js";
@@ -344,7 +343,6 @@ export function installAcpSessionManagerTestLifecycle(): void {
     } else {
       setTestEnvValue("OPENCLAW_STATE_DIR", ORIGINAL_STATE_DIR);
     }
-    resetAcpManagerTaskStateForTests();
   });
 }
 

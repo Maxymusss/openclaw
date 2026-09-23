@@ -1,5 +1,6 @@
 /** Prunes expired per-run cron sessions and archives unreferenced transcripts. */
 import path from "node:path";
+import { buildPendingGeneratedMediaSessionKeySet } from "../agents/media-generation-activity.js";
 import { hasDescendantRunAwaitingSettle } from "../agents/subagents/registry/subagent-registry-read.js";
 import { parseDurationMs } from "../cli/parse-duration.js";
 import {
@@ -14,7 +15,6 @@ import { formatErrorMessage } from "../infra/errors.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../routing/session-key.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import { isCompetingSessionWorkAdmissionActive } from "../sessions/session-lifecycle-admission.js";
-import { buildPendingGeneratedMediaSessionKeySet } from "../tasks/task-status-access.js";
 import { deleteCronSessionViaGateway } from "./isolated-agent/session-cleanup.js";
 import { resolveCronAgentSessionKey } from "./isolated-agent/session-key.js";
 import type { Logger } from "./service/state.js";

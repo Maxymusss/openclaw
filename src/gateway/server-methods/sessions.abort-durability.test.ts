@@ -106,7 +106,6 @@ it.each([
         sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
         chatAbortControllers: context.chatAbortControllers,
         restartRecoveryCandidates: new Map(),
-        terminalSessions: { closeTaskSessions: vi.fn() },
         refreshConnectedUserProfiles: vi.fn(),
       });
       const writerEntered = createDeferred();
@@ -222,7 +221,6 @@ it.each([
         subscriptions.heartbeatUnsub();
         subscriptions.transcriptUnsub();
         subscriptions.lifecycleUnsub();
-        await subscriptions.taskUnsub();
         persistenceSpy?.mockRestore();
       }
     });

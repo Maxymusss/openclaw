@@ -54,7 +54,6 @@ export const unitTestAdditionalExcludePatterns = [
   "src/process/**",
   "src/secrets/**",
   "src/shared/**",
-  "src/tasks/**",
   "src/media-understanding/**",
   "src/logging/**",
   "src/tui/**",

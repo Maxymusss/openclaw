@@ -127,7 +127,7 @@ OpenClaw until the shared realtime-voice contract can represent it.
 | Music          | Asynchronous | Same provider-processing characteristic as video.                                                    |
 
 For async tools, OpenClaw submits the request to the provider, returns a task
-id immediately, and tracks the job in the task ledger. The agent continues
+id immediately, and tracks the job in the media runtime. The agent continues
 responding to other messages while the job runs. When the provider finishes,
 OpenClaw wakes the agent with the generated media paths so it can tell the
 user through the session's normal visible-reply mode: automatic final reply

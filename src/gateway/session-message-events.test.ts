@@ -682,7 +682,6 @@ describe("session.message websocket events", () => {
       countPendingDescendantRuns: () => 0,
       getLatestRunForChildSession: () => null,
       suppressAnnounceForSteerRestart: () => false,
-      resolveSubagentTask: () => ({ lookup: "available" }),
       shouldEmitEndedHookForRun: () => false,
       emitSubagentEndedHookForRun: vi.fn(async () => {}),
       emitSubagentProgressEndedForRun,

@@ -9,9 +9,6 @@ import {
   closeOpenClawStateDatabaseForTest,
   openOpenClawStateDatabase,
 } from "../../../state/openclaw-state-db.js";
-import { ensureTaskRegistryReady, getTaskById } from "../../../tasks/runtime-internal.js";
-import { publishTaskRecordAfterAtomicStore } from "../../../tasks/task-registry.js";
-import { resetTaskRegistryForTests } from "../../../tasks/task-runtime.test-helpers.js";
 import { SubagentLifecycleController } from "../registry/subagent-registry-lifecycle.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import {
@@ -44,7 +41,6 @@ describe("completed requester delivery replay fence", () => {
     }
     await closeOpenClawStateDatabaseAsync();
     subagentRuns.clear();
-    resetTaskRegistryForTests({ persist: false });
     closeOpenClawStateDatabaseForTest();
     vi.unstubAllEnvs();
   });
@@ -53,28 +49,20 @@ describe("completed requester delivery replay fence", () => {
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
     subagentRuns.clear();
-    resetTaskRegistryForTests({ persist: false });
     openOpenClawStateDatabase();
     for (const [runId, entry] of loadSubagentRegistryFromSqlite()) {
       subagentRuns.set(runId, entry);
     }
-    ensureTaskRegistryReady();
   }
 
   function runningOwner() {
     const input = records();
-    input.task.status = "running";
-    input.task.deliveryStatus = "pending";
-    delete input.task.terminalOutcome;
-    delete input.task.endedAt;
-    input.subagent.execution = { status: "running", startedAt: input.task.createdAt };
+    input.subagent.execution = { status: "running", startedAt: input.subagent.createdAt };
     input.subagent.completion = { required: true };
     input.subagent.delivery = { status: "pending", generation: 1 };
     input.subagent.retainAttachmentsOnKeep = true;
-    settleSubagentCompletionDelivery({ subagent: input.subagent, task: input.task });
+    settleSubagentCompletionDelivery({ subagent: input.subagent });
     subagentRuns.set(input.subagent.runId, input.subagent);
-    ensureTaskRegistryReady();
-    publishTaskRecordAfterAtomicStore(input.task);
     return input;
   }
 
@@ -92,6 +80,7 @@ describe("completed requester delivery replay fence", () => {
         reason: "message_tool_delivery_missing",
         disposition: "permanent_failure",
         error: "requester finished without required message tool delivery",
+        enqueuedAt: input.subagent.createdAt,
       });
       reported.resolve(undefined);
       await tail.promise;
@@ -118,13 +107,9 @@ describe("completed requester delivery replay fence", () => {
         status: "suspended",
         suspendedReason: "permanent_failure",
         lastDropReason: "message_tool_delivery_missing",
+        enqueuedAt: input.subagent.createdAt,
         generation: 1,
-        payload: { childRunId: input.subagent.runId, task: input.task.task },
-      });
-      expect(getTaskById(input.task.taskId)).toMatchObject({
-        status: "succeeded",
-        terminalOutcome: "blocked",
-        deliveryStatus: "failed",
+        payload: { childRunId: input.subagent.runId, task: input.subagent.task },
       });
       expect(stored.requesterSettleWake).toBeUndefined();
       expect(stored.suppressCompletionDelivery).not.toBe(true);
@@ -242,7 +227,7 @@ describe("completed requester delivery replay fence", () => {
       const payload = structuredClone(before.delivery?.payload);
       expect(before.delivery?.status).toBe("suspended");
       if (action === "retry") {
-        expect(await retrySubagentCompletionDelivery(input.task.taskId)).toMatchObject({
+        expect(await retrySubagentCompletionDelivery(input.subagent.runId)).toMatchObject({
           ok: true,
           duplicateRisk: true,
         });
@@ -256,13 +241,12 @@ describe("completed requester delivery replay fence", () => {
         expect(subagentRuns.get(input.subagent.runId)?.delivery?.lastDropReason).toBeUndefined();
       } else {
         expect(
-          await dismissSubagentCompletionDelivery(input.task.taskId, {
+          await dismissSubagentCompletionDelivery(input.subagent.runId, {
             discardTerminalDelivery: SubagentLifecycleController.discardTerminalDelivery,
           }),
         ).toMatchObject({ ok: true });
         await reopenOwners();
         expect(subagentRuns.get(input.subagent.runId)?.delivery?.status).toBe("discarded");
-        expect(getTaskById(input.task.taskId)?.deliveryStatus).toBe("dismissed");
         expect(resumeSubagentRun).not.toHaveBeenCalled();
       }
     },

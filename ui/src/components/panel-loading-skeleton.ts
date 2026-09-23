@@ -10,7 +10,6 @@ export type PanelLoadingSkeletonVariant =
   | "discussion"
   | "files"
   | "review"
-  | "tasks"
   | "terminal";
 
 class PanelLoadingSkeleton extends OpenClawLitElement {
@@ -410,11 +409,6 @@ class PanelLoadingSkeleton extends OpenClawLitElement {
           <div class="terminal">
             ${this.line("medium")} ${this.line()} ${this.line("short")} ${this.line("long")}
           </div>
-        `;
-      case "tasks":
-        return html`
-          <div class="toolbar">${this.line("short")}</div>
-          <div class="rows">${this.rows(4)}</div>
         `;
       default:
         return html`

@@ -10,7 +10,6 @@ import {
   migrateLegacyTaskStateSidecars,
   resolveLegacyTaskRunsSidecarPath,
 } from "../infra/state-migrations.storage.js";
-import { readTaskRecord } from "../tasks/task-registry.store.kernel.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
   closeOpenClawStateDatabaseForTest,
@@ -88,17 +87,19 @@ it.each([false, true])(
       expect((await doctor.run()).warnings).toEqual([]);
       const repaired = openOpenClawStateDatabase({ env: state.env });
       try {
-        const task = readTaskRecord(repaired.db, "task-one");
-        expect(task).toMatchObject({
-          runId: "run-one",
-          childSessionKey: "agent:main:subagent:one",
-        });
-        expect(readTaskRecord(repaired.db, "task-duplicate")).toMatchObject({
-          runId: task?.runId,
-          childSessionKey: task?.childSessionKey,
-        });
-        expect(readTaskRecord(repaired.db, "task-empty")?.runId).toBeUndefined();
-        expect(readTaskRecord(repaired.db, "task-empty")?.childSessionKey).toBeUndefined();
+        expect(
+          repaired.db
+            .prepare("SELECT task_id, run_id, child_session_key FROM task_runs ORDER BY task_id")
+            .all(),
+        ).toEqual([
+          {
+            task_id: "task-duplicate",
+            run_id: "run-one",
+            child_session_key: "agent:main:subagent:one",
+          },
+          { task_id: "task-empty", run_id: null, child_session_key: null },
+          { task_id: "task-one", run_id: "run-one", child_session_key: "agent:main:subagent:one" },
+        ]);
         expect(readSubagentRun(repaired, run.runId)).toEqual({
           ...run,
           taskRunId: "run-one",
@@ -148,7 +149,9 @@ it.each(["task", "completion", "padded completion"])(
         }
         // The reader normalizes explicit links before comparing them with a task's run ID.
         expect(readSubagentRun(database, "unrelated-physical-run")?.taskRunId).toBe("run-one");
-        expect(readTaskRecord(database.db, "task-one")?.runId).toBe(run.runId);
+        expect(
+          database.db.prepare("SELECT run_id FROM task_runs WHERE task_id = ?").get("task-one"),
+        ).toEqual({ run_id: run.runId });
       }
       const before = snapshot(database.db);
       const pathname = database.path;
@@ -203,10 +206,16 @@ it.each([false, true])(
         expect(restored?.taskRunId).toBeUndefined();
         expect(restored?.childSessionKey).toBe("agent:main:subagent:one");
         expect(restored?.completion?.resultText).toBe("result");
-        expect(readTaskRecord(repaired.db, "task-one")?.progressSummary).toBeUndefined();
-        expect(readTaskRecord(repaired.db, "task-one")).toMatchObject({
-          runId: "run-one",
-          childSessionKey: "agent:main:subagent:one",
+        expect(
+          repaired.db
+            .prepare(
+              "SELECT run_id, child_session_key, progress_summary FROM task_runs WHERE task_id = ?",
+            )
+            .get("task-one"),
+        ).toEqual({
+          run_id: "run-one",
+          child_session_key: "agent:main:subagent:one",
+          progress_summary: null,
         });
       } finally {
         closeOpenClawStateDatabaseForTest();
@@ -234,9 +243,13 @@ it.each([false, true])(
         expect(fs.existsSync(sourcePath)).toBe(true);
       } else {
         expect(result.warnings).toEqual([]);
-        expect(readTaskRecord(database.db, "task-one")).toMatchObject({
-          runId: "run-one",
-          childSessionKey: "agent:main:subagent:one",
+        expect(
+          database.db
+            .prepare("SELECT run_id, child_session_key FROM task_runs WHERE task_id = ?")
+            .get("task-one"),
+        ).toEqual({
+          run_id: "run-one",
+          child_session_key: "agent:main:subagent:one",
         });
         const before = snapshot(database.db);
         fs.copyFileSync(`${sourcePath}.migrated`, sourcePath);

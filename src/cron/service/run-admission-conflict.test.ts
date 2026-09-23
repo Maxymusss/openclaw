@@ -8,7 +8,7 @@ import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
-import { findTaskByRunId } from "../../tasks/task-executor.js";
+import { findCronRunForTests, readCronRunHistoryPage } from "../run-history.test-support.js";
 import { loadCronStore, saveCronJobsStore, saveCronStore } from "../store.js";
 import { cronStoreKey } from "../store/key.js";
 import {
@@ -18,7 +18,6 @@ import {
   prepareCronRunReceiptClaim,
   releaseLocalCronRunReceiptOwnership,
 } from "../store/run-receipt-store.js";
-import { readCronTaskRunHistoryPage } from "../task-run-history.js";
 import { start, stop } from "./ops-lifecycle.js";
 import { list } from "./ops-read.js";
 import {
@@ -26,7 +25,7 @@ import {
   persistQueuedCronRunReservations,
   reserveQueuedCronRun,
 } from "./run-admission.js";
-import { tryCreateCronTaskRunHandle } from "./task-runs.js";
+import { createCronRunHandle } from "./run-history.js";
 import { onTimer } from "./timer.test-support.js";
 
 const fixtures = setupCronRegressionFixtures({ prefix: "cron-admission-conflict-" });
@@ -102,7 +101,7 @@ it("recovers a dead running owner on timer refresh without an admission conflict
     runIsolatedAgentJob,
     onEvent,
   });
-  const taskRun = tryCreateCronTaskRunHandle({
+  const taskRun = createCronRunHandle({
     state: sibling,
     job,
     startedAt: now,
@@ -120,12 +119,12 @@ it("recovers a dead running owner on timer refresh without an admission conflict
   expect(reclaimed?.state.runningAtMs).toBeUndefined();
   expect(reclaimed?.state.nextRunAtMs).toBeUndefined();
   expect(reclaimed?.state.startupCatchupAtMs).toBeUndefined();
-  expect(findTaskByRunId(taskRun.runId)).toMatchObject({
+  expect(findCronRunForTests(taskRun.runId)).toMatchObject({
     status: "failed",
     error: "cron: job interrupted by gateway restart",
   });
   const readHistory = () =>
-    readCronTaskRunHistoryPage({ storeKey: cronStoreKey(store.storePath), jobId: job.id }).entries;
+    readCronRunHistoryPage({ storeKey: cronStoreKey(store.storePath), jobId: job.id }).entries;
   expect(readHistory()).toMatchObject([
     {
       jobId: job.id,

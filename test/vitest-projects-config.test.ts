@@ -82,9 +82,6 @@ import { createUnitFastVitestConfig } from "./vitest/vitest.unit-fast.config.ts"
 const patternFiles = createPatternFileHelper("openclaw-vitest-projects-config-");
 const scopedGatewayMethodsIsolatedTestFiles = [
   "server-methods/chat-metadata-runtime.cache.test.ts",
-  "server-methods/tasks.access.test.ts",
-  "server-methods/tasks.test.ts",
-  "server-methods/agent.task-runtime.test.ts",
   "server-methods/agent.test.ts",
   "server-methods/board.runtime-boundaries.test.ts",
   "server-methods/chat.reset-visible-yield.test.ts",
@@ -280,9 +277,6 @@ describe("projects vitest config", () => {
     expect(gatewayFallback.exclude).toContain(overrideFixture);
     expect(methodsConfig.exclude).toContain("src/gateway/server-methods/agent.test.ts");
     expect(methodsConfig.exclude).toContain(
-      "src/gateway/server-methods/agent.task-runtime.test.ts",
-    );
-    expect(methodsConfig.exclude).toContain(
       "src/gateway/server-methods/health.owner-routing.test.ts",
     );
     expect(methodsConfig.exclude).toContain(
@@ -295,9 +289,6 @@ describe("projects vitest config", () => {
       "src/gateway/server-methods/system-agent-setup-control-ui.test.ts",
     );
     expect(gatewayFallback.exclude).toContain("src/gateway/server-methods/agent.test.ts");
-    expect(gatewayFallback.exclude).toContain(
-      "src/gateway/server-methods/agent.task-runtime.test.ts",
-    );
     expect(gatewayFallback.exclude).toContain(
       "src/gateway/server-methods/health.owner-routing.test.ts",
     );
@@ -620,7 +611,6 @@ describe("projects vitest config", () => {
     undefined,
     "src/channels/plugins/contracts/session-binding.registry-backed.contract.test.ts",
     "src/channels/plugins/contracts/session-key-artifact.contract.test.ts",
-    "src/tasks/task-registry.test.ts",
   ])("preserves public channel contract command coverage with include filter %s", (filter) => {
     const includeFile = filter
       ? patternFiles.writePatternFile("command-include.json", [filter])

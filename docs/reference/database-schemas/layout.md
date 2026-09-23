@@ -13,15 +13,13 @@ title: "Database layout"
 | Global control plane | `~/.openclaw/state/openclaw.sqlite`                        | Shared configuration state, registries, approvals, plugin state, and shared runtime state             |
 | Per-agent data plane | `~/.openclaw/agents/<agentId>/agent/openclaw-agent.sqlite` | Sessions, transcripts, memory indexes, auth state, conversation state, and agent-scoped runtime state |
 
-The task registry uses the shared state database. Runtime trajectory events live with their sessions in the per-agent database or a configured shared session SQLite store.
+Legacy task tables remain in the shared state database for upgrade safety; cron owns its retained run-history rows. Runtime trajectory events live with their sessions in the per-agent database or a configured shared session SQLite store.
 
 Doctor normalizes historical task run and child-session identifiers together
-with their related subagent bindings, so scoped mutations can use the existing
-indexes. Legacy sidecar imports use the same transactional repair. Gateway
-restore and reads consume stored identifiers without repairing them. New task
-records and explicit identifier changes normalize before persistence and receipt
-publication; unrelated patches preserve the existing identity. Schema versions
-and retention are unchanged. `openclaw update` runs Doctor before activation;
+with their related subagent bindings. Legacy sidecar imports use the same
+transactional repair. Native run readers consume stored identifiers without
+reviving the removed Tasks registry or repairing legacy rows on read. Schema
+versions and retention are unchanged. `openclaw update` runs Doctor before activation;
 after a direct binary replacement or using an older writer, run
 `openclaw doctor --fix` before starting the new Gateway.
 

@@ -611,9 +611,6 @@ enum class GatewayMethod(
   UsersAuthConnectStatus("users.authConnect.status"),
   UsersAuthConnectCancel("users.authConnect.cancel"),
   UsersAuthConnectCatalog("users.authConnect.catalog"),
-  TasksList("tasks.list"),
-  TasksGet("tasks.get"),
-  TasksCancel("tasks.cancel"),
   TaskSuggestionsList("taskSuggestions.list"),
   TaskSuggestionsCreate("taskSuggestions.create"),
   TaskSuggestionsAccept("taskSuggestions.accept"),
@@ -861,8 +858,6 @@ enum class GatewayMethod(
   SkillsProposalsEventsList("skills.proposals.events.list"),
   SkillsProposalsEvaluate("skills.proposals.evaluate"),
   HooksStatus("hooks.status"),
-  TasksRetry("tasks.retry"),
-  TasksDismiss("tasks.dismiss"),
   AuditRunInspect("audit.run.inspect"),
   SessionsPatchMany("sessions.patchMany"),
   UpdateHold("update.hold"),
@@ -931,7 +926,6 @@ enum class GatewayMethod(
   PluginsCatalogBrowse("plugins.catalog.browse"),
   PluginsCatalogCategories("plugins.catalog.categories"),
   PluginsCatalogGet("plugins.catalog.get"),
-  TasksHistory("tasks.history"),
   EnvironmentsPrepare("environments.prepare"),
   ModelsAuthRefresh("models.authRefresh"),
   ModelsAuthLogin("models.authLogin"),
@@ -967,6 +961,7 @@ enum class GatewayMethod(
   ThemesImport("themes.import"),
   ControlUiGithubDetail("controlUi.githubDetail"),
   ProgressCardRefresh("progressCard.refresh"),
+  CronHistory("cron.history"),
 }
 
 enum class GatewayEvent(
@@ -1000,7 +995,6 @@ enum class GatewayEvent(
   Health("health"),
   Heartbeat("heartbeat"),
   Cron("cron"),
-  Task("task"),
   TaskSuggestion("task.suggestion"),
   NodePairRequested("node.pair.requested"),
   NodePairResolved("node.pair.resolved"),

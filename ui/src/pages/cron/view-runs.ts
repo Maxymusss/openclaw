@@ -465,10 +465,10 @@ function renderRun(
               : nothing
           }
           ${
-            entry.sessionKey
+            entry.runId || entry.runAtMs !== undefined || entry.sessionKey
               ? html`<div>
                   <button class="btn btn--sm" @click=${() => onViewRunTranscript?.(entry)}>
-                    ${t("tasksPage.viewTranscript")}
+                    ${t("cron.runEntry.viewTranscript")}
                   </button>
                 </div>`
               : nothing

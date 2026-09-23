@@ -17,7 +17,6 @@ import {
   type ArtifactLookup,
   resolveBlockDownload,
   resolveMessageRunId,
-  resolveMessageTaskId,
 } from "./artifacts-content.js";
 import {
   ArtifactSessionResolutionError,
@@ -59,8 +58,7 @@ export async function findTranscriptImageArtifact(
     !message ||
     !block ||
     (params.messageRole && message.role !== params.messageRole) ||
-    (params.runId && resolveMessageRunId(message) !== params.runId) ||
-    (params.taskId && resolveMessageTaskId(message) !== params.taskId)
+    (params.runId && resolveMessageRunId(message) !== params.runId)
   ) {
     return { sessionKey };
   }

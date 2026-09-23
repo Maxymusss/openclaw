@@ -21,7 +21,6 @@ import {
   createTestChatPane,
 } from "../chat-pane.test-support.ts";
 import type { ChatPageHost } from "../chat-state-host.ts";
-import { createBackgroundTasksProps } from "./chat-background-tasks.ts";
 import type {
   HeaderMenuAction,
   HeaderMenuActionKind,
@@ -257,7 +256,6 @@ describe("chat header session menu", () => {
       render(
         pane.renderPaneHeader(
           createSessionWorkspaceProps(state),
-          createBackgroundTasksProps(state),
           session,
           false,
           undefined,
@@ -337,7 +335,6 @@ describe("chat header session menu", () => {
     render(
       pane.renderPaneHeader(
         createSessionWorkspaceProps(state),
-        createBackgroundTasksProps(state),
         session,
         false,
         undefined,

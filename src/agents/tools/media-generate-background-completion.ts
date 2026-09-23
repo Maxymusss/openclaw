@@ -1,14 +1,15 @@
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
-import type { RequiredCompletionTerminalResult } from "../../tasks/task-completion-contract.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
+import type { RequiredCompletionTerminalResult } from "../completion-result.js";
 import {
   formatGeneratedAttachmentLines,
   mediaUrlsFromGeneratedAttachments,
   type AgentGeneratedAttachment,
 } from "../generated-attachments.js";
 import { formatAgentInternalEventsForPrompt, type AgentInternalEvent } from "../internal-events.js";
+import { isMediaGenerationOperationCurrent } from "../media-generation-activity.js";
 import { deliverSubagentAnnouncement } from "../subagents/announce/subagent-announce-delivery.js";
 
 const log = createSubsystemLogger("agents/tools/media-generate-background-completion");
@@ -89,6 +90,11 @@ export async function wakeMediaGenerationTaskCompletion(params: {
   if (!params.handle) {
     return { status: "delivered" };
   }
+  if (!isMediaGenerationOperationCurrent(params.handle.runId)) {
+    return { status: "permanent_failure" };
+  }
+  const isSourceCurrent = () =>
+    Boolean(params.handle && isMediaGenerationOperationCurrent(params.handle.runId));
   const announceId = `${params.toolName}:${params.handle.taskId}:${params.status}`;
   const mediaUrls = Array.from(
     new Set([
@@ -120,6 +126,8 @@ export async function wakeMediaGenerationTaskCompletion(params: {
     formatAgentInternalEventsForPrompt(internalEvents) ||
     `A ${params.completionLabel} generation task finished. Process the completion update now.`;
   const delivery = await deliverSubagentAnnouncement({
+    isSourceSessionAdmissionAllowed: isSourceCurrent,
+    isSourceSessionEffectsAllowed: isSourceCurrent,
     requesterSessionKey: params.handle.requesterSessionKey,
     requesterAgentId: params.handle.requesterAgentId,
     targetRequesterSessionKey: params.handle.requesterSessionKey,

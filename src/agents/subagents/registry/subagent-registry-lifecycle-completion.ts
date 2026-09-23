@@ -2,8 +2,6 @@ import { isDeepStrictEqual } from "node:util";
 import { SILENT_REPLY_TOKEN } from "../../../auto-reply/tokens.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../../infra/agent-events.js";
 import { createLazyImportLoader } from "../../../shared/lazy-promise.js";
-import type { DetachedTaskFindResult } from "../../../tasks/detached-task-runtime-contract.js";
-import { isProvisionalSubagentKillTask } from "../../../tasks/task-cancellation-state.js";
 import { mergeAgentRunTerminalReplySnapshot } from "../../agent-run-terminal-reply.js";
 import { peekSwarmStructuredOutput } from "../../tools/structured-output-tool.js";
 import { withSubagentOutcomeTiming } from "../announce/subagent-announce-output.js";
@@ -23,7 +21,6 @@ import type { SubagentLifecycleCompletionContext } from "./subagent-registry-lif
 import {
   freezeRunResultAtCompletion,
   refreshPendingFinalDeliveryPayload,
-  finalizeSubagentTaskRun,
 } from "./subagent-registry-lifecycle-delivery.js";
 import type { SubagentCompletionRequest, SubagentRunRecord } from "./subagent-registry.types.js";
 import {
@@ -114,9 +111,7 @@ export async function completeSubagentRunAttempt(
   let completionReason = completeParams.reason;
   let sessionSuperseded = false;
   let suppressSessionEffects = completeParams.suppressSessionEffects === true;
-  let suppressTaskFinalization: boolean;
   let provisionalKillSnapshot: SubagentRunRecord | undefined;
-  let postCaptureTaskResolution: DetachedTaskFindResult | undefined;
   let entrySnapshot: SubagentRunRecord | undefined;
   try {
     entry = params.runs.get(completeParams.runId);
@@ -353,7 +348,6 @@ export async function completeSubagentRunAttempt(
     const isSteerRestartKill =
       completeParams.reason === SUBAGENT_ENDED_REASON_KILLED &&
       entry.suppressAnnounceReason === "steer-restart";
-    suppressTaskFinalization = isSteerRestartKill;
     if (completionReason === SUBAGENT_ENDED_REASON_KILLED && !isSteerRestartKill) {
       entry.suppressAnnounceReason = "killed";
       entry.killReconciliation ??= {
@@ -368,16 +362,12 @@ export async function completeSubagentRunAttempt(
       entry.killReconciliation !== undefined
     ) {
       const killReconciliation = entry.killReconciliation;
-      const taskResolution = params.resolveSubagentTask(entry);
-      const stableTaskCancellation =
-        taskResolution.lookup === "available" &&
-        taskResolution.task?.status === "cancelled" &&
-        !isProvisionalSubagentKillTask(taskResolution.task);
+      const stableTaskCancellation = entry.killReconciliation?.taskCancellationAccepted === true;
       const cancellationEndedAt = resolveKilledSubagentTaskEndedAt(entry);
       const completionPredatesCancellation =
         typeof cancellationEndedAt === "number" && endedAt < cancellationEndedAt;
       if (stableTaskCancellation && !completionPredatesCancellation) {
-        // tasks.cancel promotes the provisional marker to durable operator
+        // Native cancellation promotes the provisional marker to durable operator
         // intent. Only an already-durable earlier completion may reopen it.
         return;
       }
@@ -566,12 +556,8 @@ export async function completeSubagentRunAttempt(
       // Keep the tombstone's superseded generation boundary through task
       // commit. Clearing it on the canonical registry row must not let a
       // late old-run result select a newer task sharing the session key.
-      const taskResolution = params.resolveSubagentTask(provisionalKillSnapshot);
-      postCaptureTaskResolution = taskResolution;
       const stableTaskCancellation =
-        taskResolution.lookup === "available" &&
-        taskResolution.task?.status === "cancelled" &&
-        !isProvisionalSubagentKillTask(taskResolution.task);
+        currentEntry.killReconciliation?.taskCancellationAccepted === true;
       const cancellationEndedAt = resolveKilledSubagentTaskEndedAt(provisionalKillSnapshot);
       const completionPredatesCancellation =
         typeof cancellationEndedAt === "number" && endedAt < cancellationEndedAt;
@@ -585,41 +571,8 @@ export async function completeSubagentRunAttempt(
       mutated = true;
     }
 
-    const opaqueTaskArbitration =
-      provisionalKillSnapshot !== undefined && postCaptureTaskResolution?.lookup === "unavailable";
-    // A steer abort ends one agent run but continues the same detached task.
-    // The successor must remain able to publish its eventual terminal state.
+    // Native cancellation and completion share this exact run generation.
     if (provisionalKillSnapshot) {
-      const finalizedTasks = finalizeSubagentTaskRun(params, {
-        entry,
-        outcome: executionOutcome,
-        taskResolution: postCaptureTaskResolution,
-      });
-      const taskWasAbsent =
-        postCaptureTaskResolution?.lookup === "available" &&
-        postCaptureTaskResolution.task === undefined;
-      if ((!finalizedTasks || finalizedTasks.length === 0) && !taskWasAbsent) {
-        if (opaqueTaskArbitration) {
-          // The optional lookup cannot prove cancellation. Let the legacy
-          // runtime's own finalizer decide whether provider completion won.
-          return;
-        }
-        const latestTaskResolution = params.resolveSubagentTask(provisionalKillSnapshot);
-        const latestTask = latestTaskResolution.task;
-        const stableTaskCancellation =
-          latestTask?.status === "cancelled" && !isProvisionalSubagentKillTask(latestTask);
-        const cancellationEndedAt = resolveKilledSubagentTaskEndedAt(provisionalKillSnapshot);
-        const completionPredatesCancellation =
-          typeof cancellationEndedAt === "number" && endedAt < cancellationEndedAt;
-        if (stableTaskCancellation && !completionPredatesCancellation) {
-          return;
-        }
-        throw new Error("subagent task projection did not finalize");
-      }
-
-      // Task results do not auto-publish for subagents. Commit that durable,
-      // idempotent projection first: after a crash the persisted kill marker
-      // can replay it, while the inverse ordering could strand a provisional task.
       entry.browserCleanupDispatchedAt ??= currentEntry.browserCleanupDispatchedAt;
       if (currentEntry.killReconciliation?.suppressTaskDelivery === true) {
         entry.suppressCompletionDelivery = true;
@@ -644,12 +597,6 @@ export async function completeSubagentRunAttempt(
       } catch (error) {
         restoreEntrySnapshot(entrySnapshot);
         throw error;
-      }
-      if (!suppressTaskFinalization) {
-        finalizeSubagentTaskRun(params, {
-          entry,
-          outcome: executionOutcome,
-        });
       }
     }
     terminalGeneration = context.bumpTerminalGeneration(entry);

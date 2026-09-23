@@ -851,7 +851,7 @@ describe("openclaw launcher", () => {
     expect(result.stdout).toBe(`PRECOMPUTED ${params.command} help\n`);
   });
 
-  it.each(["config", "doctor", "gateway", "models", "plugins", "sessions", "tasks"])(
+  it.each(["config", "doctor", "gateway", "models", "plugins", "sessions"])(
     "uses precomputed %s help before loading the runtime entry",
     async (command) => {
       const fixtureRoot = await makeLauncherFixture(fixtureRoots);
@@ -880,6 +880,29 @@ describe("openclaw launcher", () => {
       expect(result.stdout).toBe(`PRECOMPUTED ${command} help\n`);
     },
   );
+
+  it("does not serve stale cached help for the retired Tasks command", async () => {
+    const fixtureRoot = await makeLauncherFixture(fixtureRoots);
+    await fs.writeFile(
+      path.join(fixtureRoot, "dist", "cli-startup-metadata.json"),
+      JSON.stringify({ subcommandHelpText: { tasks: "STALE Tasks help\n" } }),
+      "utf8",
+    );
+    await fs.writeFile(
+      path.join(fixtureRoot, "dist", "entry.js"),
+      "process.stdout.write('RUNTIME ENTRY\\n');\n",
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [path.join(fixtureRoot, "openclaw.mjs"), "tasks", "--help"],
+      { cwd: fixtureRoot, env: launcherEnv(), encoding: "utf8" },
+    );
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe("RUNTIME ENTRY\n");
+  });
 
   it("uses precomputed subcommand help with leading root options", async () => {
     const fixtureRoot = await makeLauncherFixture(fixtureRoots);

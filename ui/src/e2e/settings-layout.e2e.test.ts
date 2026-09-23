@@ -104,7 +104,6 @@ const mobileStandaloneSettingsPageRoutes = [
   "worktrees",
   "usage",
   "cron",
-  "tasks",
   "memory-import",
 ] as const satisfies readonly RouteId[];
 
@@ -124,7 +123,6 @@ const responsiveViewports = [
 
 const standaloneHeaderCases = [
   { route: "cron", subtitle: "Scheduled tasks and recurring agent runs." },
-  { route: "tasks", subtitle: "Background tasks: subagents, automation runs, CLI." },
   { route: "usage", subtitle: "API usage and costs." },
   {
     route: "memory-import",

@@ -46,7 +46,6 @@ function createParams(signal: AbortSignal): Parameters<typeof startGatewayEventS
     sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
     chatAbortControllers: new Map(),
     restartRecoveryCandidates: new Map(),
-    terminalSessions: { closeTaskSessions: vi.fn() },
     refreshConnectedUserProfiles: vi.fn(),
   };
 }
@@ -125,7 +124,6 @@ it.each(["before startup", "before inherited connection drain"] as const)(
       unsubs?.heartbeatUnsub();
       unsubs?.transcriptUnsub();
       unsubs?.lifecycleUnsub();
-      await unsubs?.taskUnsub();
       unsubs = undefined;
       await draining;
       prepared.mockRestore();

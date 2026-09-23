@@ -1,7 +1,9 @@
 import { embeddedAgentLog, formatErrorMessage } from "openclaw/plugin-sdk/agent-harness-runtime";
-import type { AgentHarnessTaskRecord } from "openclaw/plugin-sdk/agent-harness-task-runtime";
 import { readStringField as readString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { readCodexNativeSubagentHistoryOwner } from "./native-subagent-history-owner.js";
+import {
+  codexNativeSubagentRunId,
+  type NativeSubagentAssignment,
+} from "./native-subagent-assignment.js";
 import { readNativeTurnEnd, readThreadParentThreadId } from "./native-subagent-history-recovery.js";
 import type {
   ParentOwner,
@@ -23,11 +25,6 @@ import {
   type NativeSubagentSubmissionCall as SubmissionCall,
 } from "./native-subagent-submission-call.js";
 import type { CodexNativeSubagentSubmission } from "./native-subagent-submission.js";
-import {
-  codexNativeSubagentRunId,
-  readNativeTaskAssignment,
-  type NativeSubagentAssignment,
-} from "./native-subagent-task-ids.js";
 import { isJsonObject, type JsonObject, type CodexServerNotification } from "./protocol.js";
 
 type SubmissionCustody = {
@@ -48,11 +45,7 @@ type SubmissionDependencies = {
   knownChildren: ReadonlyMap<string, KnownChild>;
   currentChild: (threadId: string) => ChildState | undefined;
   prepareReceiver: (state: ParentState, threadId: string) => boolean;
-  restoreKnownChild: (
-    state: ParentState,
-    assignment: NativeSubagentAssignment,
-    records: readonly AgentHarnessTaskRecord[],
-  ) => void;
+  restoreKnownChild: (state: ParentState, assignment: NativeSubagentAssignment) => void;
   registerChild: (
     state: ParentState,
     assignment: NativeSubagentAssignment,
@@ -452,23 +445,43 @@ export class CodexNativeSubagentSubmissionOwner {
     if (custody.timer) {
       clearTimeout(custody.timer);
     }
-    const consumed = (async () => {
-      await custody.recorded;
-      if (state.submissionStore) {
-        try {
-          await state.submissionStore.consume(custody.receipt, () =>
-            this.dependencies.assertPersistenceCurrent(state),
-          );
-        } catch (error) {
-          embeddedAgentLog.warn(
-            "Native follow-up task is persisted but its receipt remains for reconciliation",
-            { error: formatErrorMessage(error) },
-          );
-        }
+    // Native history owns execution. Keep its existing submission receipt until
+    // the result is acknowledged; there is no task row to take restart custody.
+  }
+
+  settleChild(state: ParentState, child: ChildState): void {
+    for (const custody of this.pending.get(state)?.values() ?? []) {
+      if (
+        custody.phase === "settled" ||
+        codexNativeSubagentRunId(custody.receipt.childThreadId, custody.receipt.submissionId) !==
+          child.runId
+      ) {
+        continue;
       }
-      this.finishCustody(state, custody);
-    })();
-    void this.track(state, consumed);
+      custody.phase = "settled";
+      const settlement = (async () => {
+        await custody.recorded;
+        try {
+          if (
+            (child.nativeCompletionDelivered || child.subscriptionClosed) &&
+            state.submissionStore
+          ) {
+            await state.submissionStore.consume(custody.receipt, () =>
+              this.dependencies.assertPersistenceCurrent(state),
+            );
+          }
+        } catch (error) {
+          embeddedAgentLog.warn("Native follow-up receipt remains for reconciliation", {
+            error: formatErrorMessage(error),
+          });
+        } finally {
+          if ([...(this.pending.get(state)?.values() ?? [])].includes(custody)) {
+            this.finishCustody(state, custody);
+          }
+        }
+      })();
+      void this.track(state, settlement);
+    }
   }
 
   private async reconcile(state: ParentState, custody: SubmissionCustody): Promise<void> {
@@ -583,47 +596,18 @@ export class CodexNativeSubagentSubmissionOwner {
       return false;
     }
     const runId = codexNativeSubagentRunId(receipt.childThreadId, receipt.submissionId);
-    const records = state.taskRuntime?.listTaskRecords() ?? [];
-    const existing = records.find((task) => task.runId === runId);
-    if (existing) {
-      const assignment = readNativeTaskAssignment(existing);
-      const history = readCodexNativeSubagentHistoryOwner(existing.detail);
-      if (
-        assignment?.nativeTurnId !== receipt.submissionId ||
-        (history &&
-          history.parentThreadId !== this.nativeParentThreadId(state, receipt.childThreadId))
-      ) {
-        return false;
-      }
-      if (
-        (existing.status === "succeeded" ||
-          existing.status === "failed" ||
-          existing.status === "cancelled") &&
-        existing.deliveryStatus === "delivered"
-      ) {
-        return true;
-      }
-    }
     let known = this.dependencies.knownChildren.get(receipt.childThreadId);
     if (!known) {
       if (!historyValidated) {
         return false;
       }
-      this.dependencies.restoreKnownChild(
-        state,
-        {
-          runId: receipt.predecessorRunId,
-          childThreadId: receipt.childThreadId,
-          nativeTurnId: receipt.predecessorNativeTurnId,
-        },
-        records,
-      );
+      this.dependencies.restoreKnownChild(state, {
+        runId: receipt.predecessorRunId,
+        childThreadId: receipt.childThreadId,
+        nativeTurnId: receipt.predecessorNativeTurnId,
+      });
       known = this.dependencies.knownChildren.get(receipt.childThreadId);
-      if (
-        known &&
-        known.assignment.runId === receipt.predecessorRunId &&
-        !records.some((task) => task.runId === receipt.predecessorRunId)
-      ) {
+      if (known && known.assignment.runId === receipt.predecessorRunId) {
         known.assignment.terminal = true;
       }
     }
@@ -679,9 +663,6 @@ export class CodexNativeSubagentSubmissionOwner {
     }
     const child = this.dependencies.currentChild(receipt.childThreadId);
     if (child?.runId !== runId) {
-      return false;
-    }
-    if (!state.taskRuntime?.listTaskRecords().some((task) => task.runId === runId)) {
       return false;
     }
     if (nativeState === "active") {

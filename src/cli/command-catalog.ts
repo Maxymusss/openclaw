@@ -32,8 +32,6 @@ type CliRoutedCommandId =
   | "config-unset"
   | "models-list"
   | "models-status"
-  | "tasks-list"
-  | "tasks-audit"
   | "channels-list"
   | "channels-status"
   | "plugins-list";
@@ -370,38 +368,6 @@ export const cliCommandCatalog: readonly CliCommandCatalogEntry[] = [
       networkProxy: ({ argv }) => (hasFlag(argv, "--probe") ? "default" : "bypass"),
     },
     route: { id: "models-status" },
-  },
-  {
-    commandPath: ["tasks", "list"],
-    exact: true,
-    policy: {
-      configGuard: "skip",
-      ensureCliPath: false,
-      loadPlugins: "never",
-      networkProxy: "bypass",
-    },
-    route: { id: "tasks-list" },
-  },
-  {
-    commandPath: ["tasks", "audit"],
-    exact: true,
-    policy: {
-      configGuard: "skip",
-      ensureCliPath: false,
-      loadPlugins: "never",
-      networkProxy: "bypass",
-    },
-    route: { id: "tasks-audit" },
-  },
-  {
-    commandPath: ["tasks"],
-    policy: {
-      configGuard: "skip",
-      ensureCliPath: false,
-      loadPlugins: "never",
-      networkProxy: "bypass",
-    },
-    route: { id: "tasks-list" },
   },
   {
     // This unregistered root is reserved so plugin registration cannot claim it;

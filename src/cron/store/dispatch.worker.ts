@@ -11,6 +11,8 @@ import {
 } from "../../state/openclaw-state-db.js";
 import type { CronStoreWorkerOperations } from "./load-worker.types.js";
 import { loadMutableCronStoreInWorker } from "./load.worker.js";
+import { pruneCronRunHistoryInDatabase, recordCronRunInDatabase } from "./run-history.kernel.js";
+import type { CronRunHistoryWorkerOperations } from "./run-history.types.js";
 import {
   bindCronRunReceiptExecutionInDatabase,
   type CronRunReceiptHandle,
@@ -20,7 +22,8 @@ import { proposeCronRunRecoveryInWorker } from "./run-recovery.worker.js";
 import type { CronStoreSaveWorkerOperations } from "./save-worker.types.js";
 import { executeCronStoreSaveCommand } from "./save.worker.js";
 
-export type CronStateWorkerOperations = CronStoreWorkerOperations &
+export type CronStateWorkerOperations = CronRunHistoryWorkerOperations &
+  CronStoreWorkerOperations &
   CronRunRecoveryWorkerOperations &
   CronStoreSaveWorkerOperations & {
     "cron.bindReceiptExecution": {
@@ -34,6 +37,8 @@ export function isCronStateWorkerCommand(command: {
   input: unknown;
 }): command is SqliteWorkerCommand<CronStateWorkerOperations> {
   switch (command.type) {
+    case "cron.recordRun":
+    case "cron.pruneHistory":
     case "cron.loadMutable":
     case "cron.proposeRunRecovery":
     case "cron.save":
@@ -50,6 +55,21 @@ export function executeCronStateCommand(
   database: OpenClawStateDatabase,
 ): CronStateWorkerOperations[keyof CronStateWorkerOperations]["output"] {
   switch (command.type) {
+    case "cron.recordRun":
+    case "cron.pruneHistory":
+      return runOpenClawStateWriteTransaction(
+        ({ db }) => {
+          requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
+          const result =
+            command.type === "cron.recordRun"
+              ? recordCronRunInDatabase(db, command.input)
+              : pruneCronRunHistoryInDatabase(db, command.input.now);
+          requestSqliteWorkerOperationAdmission({ stage: "commit", facts: undefined });
+          return result;
+        },
+        { database, path: database.path, env: getSqliteWorkerStateContext().environment },
+        { operationLabel: command.type },
+      );
     case "cron.loadMutable":
       return loadMutableCronStoreInWorker(database, command.input.storeKey);
     case "cron.proposeRunRecovery":

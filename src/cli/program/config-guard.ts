@@ -42,7 +42,6 @@ const ALLOWED_INVALID_GATEWAY_SUBCOMMANDS = new Set([
   "stop",
   "restart",
 ]);
-const ALLOWED_INVALID_TASK_SUBCOMMANDS = new Set(["list", "audit"]);
 let didRunDoctorConfigFlow = false;
 let configSnapshotPromise: Promise<Awaited<ReturnType<typeof readConfigFileSnapshot>>> | null =
   null;
@@ -165,9 +164,7 @@ function shouldRunStateMigrationOnlyWithLegacyInputs(commandPath: string[]): boo
   return (
     commandName === "agent" ||
     commandName === "status" ||
-    (commandName === "plugins" && subcommandName === "list") ||
-    (commandName === "tasks" &&
-      (subcommandName === undefined || ALLOWED_INVALID_TASK_SUBCOMMANDS.has(subcommandName)))
+    (commandName === "plugins" && subcommandName === "list")
   );
 }
 
@@ -355,13 +352,9 @@ export async function ensureConfigReady(
   }
   const isBareGatewayForegroundRun =
     commandName === "gateway" && (subcommandName === undefined || subcommandName.trim() === "");
-  const isReadOnlyTaskStateCommand =
-    commandName === "tasks" &&
-    (subcommandName === undefined || ALLOWED_INVALID_TASK_SUBCOMMANDS.has(subcommandName));
   const allowInvalid = commandName
     ? params.allowInvalid === true ||
       ALLOWED_INVALID_COMMANDS.has(commandName) ||
-      isReadOnlyTaskStateCommand ||
       isBareGatewayForegroundRun ||
       (commandName === "gateway" &&
         subcommandName &&
@@ -441,9 +434,7 @@ export async function ensureConfigReady(
     `${muted("Inspect:")} ${commandText(formatCliCommand("openclaw config validate"))}`,
   );
   params.runtime.error(
-    muted(
-      "Audit, status, health, logs, tasks list/audit, and doctor commands still run with invalid config.",
-    ),
+    muted("Audit, status, health, logs, and doctor commands still run with invalid config."),
   );
   if (
     mustBlockInvalid &&

@@ -536,7 +536,7 @@ describe("OpenClaw shell route session commits", () => {
     expect(replace).toHaveBeenCalledWith("chat", { pathname: "/chat/research" });
   });
 
-  it("adopts a resolved chat session after path navigation from Tasks", () => {
+  it("adopts a resolved chat session after path navigation from Cron", () => {
     vi.stubGlobal("localStorage", createStorageMock());
     const calls: string[] = [];
     const setAgent = vi.fn((agentId: string | null) => calls.push(`agent:${agentId}`));
@@ -556,7 +556,7 @@ describe("OpenClaw shell route session commits", () => {
     shell.activeSessionKey = "agent:main:session-a";
     shell.didConsiderNativeRouteRestore = true;
 
-    shell.updateRouteState(selectShellRouteState(committedRouterState("tasks", "/tasks")));
+    shell.updateRouteState(selectShellRouteState(committedRouterState("cron", "/cron")));
     shell.updateRouteState(
       selectShellRouteState(
         committedRouterState("chat", "/chat/main/session-b-12345678", {

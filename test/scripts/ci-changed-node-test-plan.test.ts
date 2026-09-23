@@ -763,7 +763,6 @@ describe("CI changed Node test plan", () => {
     "src/plugin-sdk/config-runtime.test.ts",
     "src/plugins/contracts/registry.retry.test.ts",
     "src/channels/plugins/config-schema.test.ts",
-    "src/tasks/task-registry.test.ts",
   ])("keeps exact test leaf %s focused while retaining boundary coverage", (target) => {
     expect(hasCoreExtensionImpact([target])).toBe(false);
     expect(createChangedExtensionFallbackShards([target])).toEqual([]);
@@ -1002,14 +1001,14 @@ describe("CI changed Node test plan", () => {
     },
   );
 
-  it.each([
-    "src/tasks/task-registry.test.ts",
-    "src/agents/embedded-agent-runner/run/attempt-yield-handoff.test.ts",
-  ])("retains the other test owner alongside a boundary target: %s", (companion) => {
-    expect(
-      createChangedNodeTestShards(["test/extension-import-boundaries.test.ts", companion]),
-    ).toEqual(createChangedNodeTestShards([companion]));
-  });
+  it.each(["src/agents/embedded-agent-runner/run/attempt-yield-handoff.test.ts"])(
+    "retains the other test owner alongside a boundary target: %s",
+    (companion) => {
+      expect(
+        createChangedNodeTestShards(["test/extension-import-boundaries.test.ts", companion]),
+      ).toEqual(createChangedNodeTestShards([companion]));
+    },
+  );
 
   it.each(["src/agents/live-provider-owner.ts", "test/scripts/ci-linux-git.test.ts"])(
     "keeps an explicit boundary target when no local full owner is emitted: %s",

@@ -37,7 +37,6 @@ import {
   openSessionWorkspacePreview,
   clearSessionWorkspacePreviews,
 } from "./components/chat-session-workspace-state.ts";
-import { resetTaskDetail } from "./components/chat-task-detail-state.ts";
 import {
   handleChatDraftChange,
   handleChatInputHistoryKey,
@@ -283,7 +282,6 @@ export function createPageState(
         new CustomEvent(CHAT_TRANSCRIPT_LOADING_CHANGED_EVENT, { bubbles: true, composed: true }),
       ),
     sessionWorkspaceState: undefined,
-    backgroundTasksState: undefined,
     querySelector: page.querySelector.bind(page),
   } as unknown as ChatPageHost;
 
@@ -402,15 +400,6 @@ export function createPageState(
   };
   state.updateSidebarLayout = (layout, options) => {
     const normalized = normalizeSidebarLayout(layout);
-    if (
-      state.sidebarLayout.columns
-        .flatMap((column) => column.panels)
-        .find((panel) => panel.slot === "tasks")?.taskId !==
-      normalized.columns.flatMap((column) => column.panels).find((panel) => panel.slot === "tasks")
-        ?.taskId
-    ) {
-      resetTaskDetail(state);
-    }
     const presentation =
       options?.dashboardPresentation === "personal"
         ? sidebarDashboardPresentation(normalized)

@@ -2,7 +2,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import "./subagent-registry.mocks.shared.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import { patchSessionEntryCore } from "../../../config/sessions/session-accessor.js";
@@ -11,13 +10,8 @@ import { onAgentEvent } from "../../../infra/agent-events.js";
 import { flushLogger, setLoggerOverride } from "../../../logging/logger.js";
 import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.js";
 import { SQLITE_SESSION_WRITER_QUEUES } from "../../../state/openclaw-agent-write-admission.js";
-import { resetTaskRegistryMaintenanceRuntimeForTests } from "../../../tasks/task-registry.maintenance.js";
-import { getTaskRegistryStore } from "../../../tasks/task-registry.store.js";
-import {
-  resetTaskFlowRegistryForTests,
-  resetTaskRegistryForTests,
-} from "../../../tasks/task-runtime.test-helpers.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
+import "./subagent-registry.mocks.shared.js";
 import {
   cleanupSubagentRegistryPersistenceTest,
   createSubagentRegistryTestDeps,
@@ -48,9 +42,6 @@ describe("subagent timing completion", () => {
     setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
     logFile = path.join(stateDir, "reproduction.log");
     setLoggerOverride({ level: "warn", file: logFile, consoleLevel: "silent" });
-    resetTaskRegistryMaintenanceRuntimeForTests();
-    resetTaskRegistryForTests({ persist: false });
-    resetTaskFlowRegistryForTests({ persist: false });
     announce.mockClear();
     vi.mocked(callGateway).mockReset();
     vi.mocked(onAgentEvent).mockReset();
@@ -68,12 +59,8 @@ describe("subagent timing completion", () => {
       stateDir,
       resetRegistry: () => resetSubagentRegistryForTests({ persist: false }),
       resetDeps: () => testing.setDepsForTest(),
-      closeDatabases: () => {
-        resetTaskRegistryForTests({ persist: false });
-        resetTaskFlowRegistryForTests({ persist: false });
-      },
+      closeDatabases: () => {},
     });
-    resetTaskRegistryMaintenanceRuntimeForTests();
     setLoggerOverride(null);
     envSnapshot.restore();
   });
@@ -194,10 +181,6 @@ describe("subagent timing completion", () => {
       endedAt,
     });
     expect(registry?.delivery?.status).toBe("delivered");
-    const task = [...getTaskRegistryStore().loadSnapshot().tasks.values()].find(
-      (candidate) => candidate.runId === runId,
-    );
-    expect(task?.status).toBe("succeeded");
     expect(announce).toHaveBeenCalledTimes(1);
     await flushLogger();
     const text = await fs.readFile(logFile, "utf8").catch(() => "");

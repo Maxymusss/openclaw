@@ -2,6 +2,7 @@
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { createHarnessCompletionSourceAssertion } from "../../agents/agent-harness-completion-recovery.js";
 import { createMessageReceiptFromOutboundResults } from "../../channels/message/receipt.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import { buildRestartRecoveryClaimCleanupPatch } from "../../config/sessions/restart-recovery-state.js";
@@ -13,30 +14,22 @@ import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-
 import { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
 import { drainMatrixReconnect } from "../../infra/outbound/deliver.queue-integration.test-support.js";
 import { loadPendingDeliveries } from "../../infra/outbound/delivery-queue.test-helpers.js";
-import { createAgentHarnessTaskRuntime } from "../../plugin-sdk/agent-harness-task-runtime.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
 } from "../../plugins/hook-runner-global.js";
 import { addTestHook } from "../../plugins/hooks.test-helpers.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
-import {
-  captureHarnessCompletionRecovery,
-  createHarnessCompletionSourceAssertion,
-} from "../../tasks/agent-harness-completion-recovery.js";
-import { createAgentHarnessTaskRuntimeScope } from "../../tasks/agent-harness-task-runtime-scope.js";
-import { getTaskById, markTaskTerminalById } from "../../tasks/task-registry.js";
-import { resetTaskRegistryForTests } from "../../tasks/task-registry.test-support.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { reconcileHarnessCompletionDelivery } from "../agent-harness-completion-delivery.js";
+import { captureAdmittedHarnessCompletionForTest } from "../agent-harness-completion.test-support.js";
 import { persistPendingFinalDeliveryMarker } from "../pending-final-delivery-marker.js";
 import { deliverAgentCommandResult } from "./delivery.js";
 
 afterEach(() => {
   resetGlobalHookRunner();
   resetPluginRuntimeStateForTest();
-  resetTaskRegistryForTests();
 });
 
 describe("native completion final-send custody", () => {
@@ -46,36 +39,15 @@ describe("native completion final-send custody", () => {
     "queued retry",
     "queued after cleanup",
   ] as const) {
-    it.each(["unchanged", "cancelled", "failed"] as const)(
-      `enforces %s task authorization across ${boundary}`,
+    it.each(["unchanged", "physical", "revision"] as const)(
+      `enforces %s requester authorization across ${boundary}`,
       async (outcome) => {
         const queued = boundary.startsWith("queued");
         await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-          resetTaskRegistryForTests();
           const key = "agent:main:matrix:direct:owner";
           const child = "codex-thread:final-send-child";
           const source = "announce:final-send-child:succeeded";
           const recovery = "restart-recovery:final-send";
-          const runtime = createAgentHarnessTaskRuntime({
-            runtime: "subagent",
-            taskKind: "codex-native-subagent",
-            scope: createAgentHarnessTaskRuntimeScope({ requesterSessionKey: key }),
-            runIdPrefix: "codex-thread:",
-          });
-          const task = runtime.createRunningTaskRun({
-            runId: child,
-            sourceId: child,
-            task: "Produce a result for the final-send custody check",
-            requesterAgentId: "main",
-            notifyPolicy: "silent",
-          });
-          runtime.finalizeTaskRunByRunId({
-            runId: child,
-            status: "succeeded",
-            endedAt: Date.now(),
-            terminalSummary: "child result",
-          });
-          runtime.setDetachedTaskDeliveryStatusByRunId({ runId: child, deliveryStatus: "pending" });
           const target = {
             agentId: "main",
             sessionKey: key,
@@ -95,7 +67,7 @@ describe("native completion final-send custody", () => {
             sourceChannel: "internal",
             sourceSessionKey: child,
           };
-          const claim = captureHarnessCompletionRecovery({
+          const claim = await captureAdmittedHarnessCompletionForTest({
             agentId: "main",
             sessionKey: key,
             entry,
@@ -232,11 +204,6 @@ describe("native completion final-send custody", () => {
             await entered.promise;
           }
           expect(writes).toEqual([]);
-          if (outcome !== "unchanged") {
-            markTaskTerminalById({ taskId: task.taskId, status: outcome, endedAt: Date.now() + 1 });
-            expect(getTaskById(task.taskId)?.status).toBe(outcome);
-            expect(assertCurrent).toThrow();
-          }
           if (boundary === "queued after cleanup") {
             await appendTranscriptMessage(
               { ...target, sessionId: entry.sessionId },
@@ -269,6 +236,15 @@ describe("native completion final-send custody", () => {
               }),
             });
           }
+          if (outcome !== "unchanged") {
+            await replaceSessionEntry(target, {
+              ...marker.sessionEntry!,
+              ...(outcome === "physical"
+                ? { sessionId: "replacement-parent" }
+                : { lifecycleRevision: "replacement-revision" }),
+            });
+            expect(assertCurrent).toThrow();
+          }
           if (queued) {
             // The drain reconstructs callbacks from SQLite, not the old sender closure.
             await drainMatrixReconnect({
@@ -296,13 +272,9 @@ describe("native completion final-send custody", () => {
           expect(writes).toEqual(outcome === "unchanged" ? ["The completed child result"] : []);
           // Revocation must not leave a queued stale reply for a later drain.
           expect(await loadPendingDeliveries(state.stateDir)).toEqual([]);
-          expect(getTaskById(task.taskId)?.deliveryStatus).toBe(
-            outcome === "unchanged" ? "delivered" : "pending",
-          );
           if (outcome === "unchanged") {
             // Reopen task state as startup would: queue acknowledgment must not
             // be the only copy of the exact harness completion receipt.
-            resetTaskRegistryForTests({ persist: false });
             expect(
               reconcileHarnessCompletionDelivery({
                 ...target,
@@ -310,7 +282,6 @@ describe("native completion final-send custody", () => {
                 taskRunId: child,
               }),
             ).toBe("delivered");
-            expect(getTaskById(task.taskId)?.deliveryStatus).toBe("delivered");
           }
         });
       },

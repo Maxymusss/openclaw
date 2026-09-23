@@ -536,6 +536,17 @@ export function hasAgentRunContextExecutionOwner(runId: string): boolean {
   );
 }
 
+/** Counts admitted executions, excluding retained display-only context. */
+export function getActiveAgentRunContextCount(): number {
+  let count = 0;
+  for (const runId of getAgentRunRegistryState().contexts.keys()) {
+    if (hasAgentRunContextExecutionOwner(runId)) {
+      count += 1;
+    }
+  }
+  return count;
+}
+
 /** Live display projection also includes a producer's active-session marker. */
 export function hasLiveAgentRunContext(runId: string): boolean {
   const state = getAgentRunRegistryState();

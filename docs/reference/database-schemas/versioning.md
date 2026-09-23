@@ -45,16 +45,14 @@ writes maintain the added indexes. Older same-version readers can ignore them,
 so binary rollback preserves both rows and indexes. See the
 [accepted index design](https://github.com/openclaw/openclaw/issues/153533).
 
-Task execution ownership uses three bare nullable columns on `task_runs`:
-`execution_owner_host TEXT`, `execution_owner_pid INTEGER`, and
-`execution_owner_start_identity INTEGER`. The first task write ensures them
-idempotently; read-only inspection does not add them. They are declared in the
-canonical schema and included in the existing additive migration path, without
-changing the schema version. Older readers ignore these columns. Legacy rows
-remain unknown until an execution owner explicitly records its identity; restore
-never guesses their owner. Confirmed process-exit settlement uses existing task
-terminal fields and retention rules. Downgrading code does not undo a terminal
-outcome already recorded by restore.
+The retained `task_runs` schema includes three bare nullable legacy execution
+ownership columns: `execution_owner_host TEXT`, `execution_owner_pid INTEGER`,
+and `execution_owner_start_identity INTEGER`. They remain declared in the
+canonical schema and existing additive migration path; read-only inspection does
+not add them, and older readers ignore them. Removing Tasks does not drop these
+columns or change the schema version. Native run owners now settle execution
+independently, and Cron retains its own history codec over existing cron rows.
+Legacy ownership metadata does not revive a removed Tasks execution owner.
 
 Node worker recovery uses the private `node_worker_launch_cleanup` companion
 table in the existing launch journal. The launch owner adds it on first use and

@@ -1,7 +1,4 @@
-import {
-  createAgentHarnessTaskRuntime,
-  deliverAgentHarnessTaskCompletion,
-} from "openclaw/plugin-sdk/agent-harness-task-runtime";
+import { deliverAgentHarnessCompletion } from "openclaw/plugin-sdk/agent-harness-completion";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import {
   claimCodexAppServerLiveThread,
@@ -22,7 +19,7 @@ type ParentRegistration = Pick<
   ParentState,
   | "parentThreadId"
   | "requesterSessionKey"
-  | "taskRuntimeScope"
+  | "completionScope"
   | "historyOwner"
   | "agentId"
   | "submissionStore"
@@ -44,8 +41,7 @@ type NativeMonitorConstructor = new (
 ) => NativeMonitor;
 
 export const defaultNativeSubagentMonitorRuntime: NativeSubagentMonitorRuntime = {
-  createAgentHarnessTaskRuntime,
-  deliverAgentHarnessTaskCompletion,
+  deliverAgentHarnessCompletion,
 };
 
 export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorConstructor>(
@@ -57,7 +53,7 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
     client: CodexAppServerClient;
     parentThreadId: string;
     requesterSessionKey?: string;
-    taskRuntimeScope?: ParentState["taskRuntimeScope"];
+    completionScope?: ParentState["completionScope"];
     historyOwner?: ParentState["historyOwner"];
     submissionStore?: ParentState["submissionStore"];
     agentId?: string;
@@ -150,7 +146,7 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
     return monitor.registerParent({
       parentThreadId: params.parentThreadId,
       requesterSessionKey: params.requesterSessionKey,
-      taskRuntimeScope: params.taskRuntimeScope,
+      completionScope: params.completionScope,
       historyOwner: params.historyOwner,
       submissionStore: params.submissionStore,
       agentId: params.agentId,

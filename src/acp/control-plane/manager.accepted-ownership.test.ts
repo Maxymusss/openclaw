@@ -1,13 +1,10 @@
 /** Accepted cancellation retains exact task, actor, and late-runtime custody. */
 import type { AcpRuntimeEvent } from "@openclaw/acp-core/runtime/types";
 import { describe, expect, it } from "vitest";
-import {
-  requireTaskByRunId,
-  withAcpManagerTaskStateDir,
-} from "../../../test/helpers/acp-manager-task-state.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { createTestAdmittedRunContext } from "../../agents/admitted-run-context.test-support.js";
-import { withTaskCancellationControl } from "../../tasks/task-cancellation-context.js";
+import { withCancellationControl } from "../../agents/cancellation-control.js";
+import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import {
   AcpSessionManager,
   baseCfg,
@@ -32,7 +29,7 @@ describe("ACP accepted cancellation ownership", () => {
   installAcpSessionManagerTestLifecycle();
 
   it("cancels only the accepted snapshot and records queued tasks before releasing the actor", async () => {
-    await withAcpManagerTaskStateDir(async () => {
+    await withStateDirEnv("openclaw-acp-manager-", async () => {
       const state = fixture();
       mockParentedAcpSessionEntries({
         childSessionKey: state.target.sessionKey,
@@ -76,20 +73,17 @@ describe("ACP accepted cancellation ownership", () => {
             { type: "done", status: "cancelled", stopReason: "cancel" },
           ]),
         );
-        expect(requireTaskByRunId("snapshot-0").status).toBe("cancelled");
-        expect(requireTaskByRunId("snapshot-1").status).toBe("cancelled");
       } finally {
         release.resolve();
         await Promise.allSettled([actor, ...cancelled, cancellation, later]);
       }
       expect(state.runTurn).toHaveBeenCalledOnce();
       expect(state.runTurn.mock.calls[0]?.[0].text).toBe("survivor");
-      expect(requireTaskByRunId("later").status).toBe("succeeded");
     });
   });
 
   it("cancels a queued exact instance without terminalizing its same-id predecessor", async () => {
-    await withAcpManagerTaskStateDir(async () => {
+    await withStateDirEnv("openclaw-acp-manager-", async () => {
       const state = fixture();
       mockParentedAcpSessionEntries({
         childSessionKey: state.target.sessionKey,
@@ -112,7 +106,6 @@ describe("ACP accepted cancellation ownership", () => {
         requestId: "same-id",
       });
       await entered.promise;
-      const before = requireTaskByRunId("same-id");
       const context = createTestAdmittedRunContext("same-id");
       const events: AcpRuntimeEvent[] = [];
       const queued = state.manager.runTurn({
@@ -135,7 +128,6 @@ describe("ACP accepted cancellation ownership", () => {
         });
         await queued;
         expect(events).toEqual([{ type: "done", status: "cancelled", stopReason: "cancel" }]);
-        expect(requireTaskByRunId("same-id")).toEqual(before);
         expect(extractStatesFromUpserts().at(-1)).toBe("running");
         expect(activeSignal?.aborted).toBe(false);
         expect(state.cancel).not.toHaveBeenCalled();
@@ -148,7 +140,7 @@ describe("ACP accepted cancellation ownership", () => {
   });
 
   it("refuses stale caller authority before aborting an accepted turn", async () => {
-    await withAcpManagerTaskStateDir(async () => {
+    await withStateDirEnv("openclaw-acp-manager-", async () => {
       const state = fixture();
       mockParentedAcpSessionEntries({
         childSessionKey: state.target.sessionKey,
@@ -175,7 +167,7 @@ describe("ACP accepted cancellation ownership", () => {
       try {
         await entered.promise;
         await expect(
-          withTaskCancellationControl(
+          withCancellationControl(
             {
               assertCurrent: () => {
                 throw new Error("Caller no longer controls this task.");
@@ -192,12 +184,10 @@ describe("ACP accepted cancellation ownership", () => {
         ).rejects.toThrow("Caller no longer controls this task.");
         expect(activeSignal?.aborted).toBe(false);
         expect(state.cancel).not.toHaveBeenCalled();
-        expect(requireTaskByRunId("caller-revoked").status).toBe("running");
       } finally {
         release.resolve();
         await turn;
       }
-      expect(requireTaskByRunId("caller-revoked").status).toBe("succeeded");
     });
   });
 
@@ -234,7 +224,7 @@ describe("ACP accepted cancellation ownership", () => {
     await ensureEntered.promise;
     let settled = false;
     let callerCurrent = true;
-    const cancel = withTaskCancellationControl(
+    const cancel = withCancellationControl(
       {
         assertCurrent: () => {
           if (!callerCurrent) {
@@ -361,7 +351,7 @@ describe("ACP accepted cancellation ownership", () => {
   });
 
   it("revalidates task ownership before queued cancellation writes a terminal task", async () => {
-    await withAcpManagerTaskStateDir(async () => {
+    await withStateDirEnv("openclaw-acp-manager-", async () => {
       const state = fixture();
       mockParentedAcpSessionEntries({
         childSessionKey: state.target.sessionKey,
@@ -405,7 +395,6 @@ describe("ACP accepted cancellation ownership", () => {
           { status: "rejected", reason: { message: "ACP task owner could not be verified." } },
         ]);
         expect(events).toEqual([]);
-        expect(() => requireTaskByRunId("owner-race")).toThrow("Expected task for run owner-race");
         expect(state.runTurn).not.toHaveBeenCalled();
       } finally {
         release.resolve();

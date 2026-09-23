@@ -41,7 +41,7 @@ export function renderForwardedAttribution(group: MessageGroup, opts: ForwardedA
   const sourceLabel =
     group.senderSession?.label ??
     (sourceIsCronRun
-      ? t("tasksPage.runtime.cron")
+      ? t("cron.runEntry.automation")
       : sourceIsMainSession
         ? sourceAgentDisplayName
         : undefined);

@@ -67,8 +67,6 @@ extension OpenClawChatViewModel {
             self.handleAgentEvent(agent)
         case let .progressCardChanged(event):
             self.handleProgressCardChanged(event)
-        case let .task(task):
-            self.handleTaskEvent(task)
         case let .questionRequested(question):
             self.upsertQuestion(question)
             self.reconcileQuestionsAfterEvent()
@@ -106,7 +104,6 @@ extension OpenClawChatViewModel {
             // Question refresh is best-effort and must not delay transcript
             // recovery behind a slow gateway round trip.
             Task { await self.refreshQuestions() }
-            Task { await self.refreshSubagentActivities(sessionSnapshot: context.session) }
             Task {
                 await self.refreshHistoryAfterRun(historyRequest: context)
                 await self.pollHealthIfNeeded(force: true, sessionSnapshot: context.session)

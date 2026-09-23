@@ -10,13 +10,6 @@ import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-req
 import { resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
 import { emitSessionLifecycleEvent } from "../../../sessions/session-lifecycle-events.js";
 import { captureOpenClawStateWorkerContext } from "../../../state/openclaw-state-worker-context.js";
-import {
-  createQueuedTaskRun,
-  createRunningTaskRun,
-  finalizeTaskRunByRunId,
-  startTaskRunByRunId,
-} from "../../../tasks/detached-task-runtime.js";
-import { createSubagentTaskBackingDetail } from "../../../tasks/task-backing-authority.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import {
@@ -29,7 +22,6 @@ import { subagentRuns } from "./subagent-registry-memory.js";
 import { registerRequiredQueuedSubagent } from "./subagent-registry-queued-registration.js";
 import { createSubagentRegistrationRecord } from "./subagent-registry-run-launch-record.js";
 import { SubagentRecoveryManager } from "./subagent-registry-run-recovery.js";
-import { captureQueuedSubagentTaskOwner } from "./subagent-registry-task-owner.js";
 import type {
   RegisterSubagentRunOptions,
   RegisterSubagentRunParams,
@@ -94,10 +86,7 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     const waitTimeoutMs = this.options.resolveSubagentWaitTimeoutMs(cfg, runTimeoutSeconds);
     const requesterOrigin = normalizeDeliveryContext(registerParams.requesterOrigin);
     const queued = registerParams.queued === true;
-    const queuedContext =
-      queued && registerParams.taskRowOwnership === "required"
-        ? captureOpenClawStateWorkerContext()
-        : undefined;
+    const queuedContext = queued ? captureOpenClawStateWorkerContext() : undefined;
     const entry = createSubagentRegistrationRecord(registerParams, {
       now,
       generation,
@@ -134,12 +123,6 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     this.options.runs.set(runId, entry);
     bindGatewayContextResolver(entry, registerParams.gatewayContextResolver);
     const killReconciliationSnapshots = this.markOlderKillReconciliationsSuperseded(entry);
-    const registeredKillReconciliationSnapshots = new Map(
-      [...killReconciliationSnapshots.keys()].map((candidate) => [
-        candidate,
-        structuredClone(candidate.killReconciliation),
-      ]),
-    );
     const registeredRunIds = [
       runId,
       ...[...killReconciliationSnapshots.keys()].map((candidate) => candidate.runId),
@@ -147,10 +130,6 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     const rollbackRegistration = () => {
       this.options.runs.delete(runId);
       this.restoreKillReconciliationSnapshots(killReconciliationSnapshots);
-    };
-    const restoreDurableRegistration = () => {
-      this.options.runs.set(runId, entry);
-      this.restoreKillReconciliationSnapshots(registeredKillReconciliationSnapshots);
     };
     const bindRegistrationReservation = () => {
       bindSwarmRunReservation(entry.schedulerSlotId ?? runId, entry, () => {
@@ -169,32 +148,12 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
         void this.waitForSubagentCompletion(runId, waitTimeoutMs, entry);
       }
     };
-    const taskParams = {
-      runtime: "subagent",
-      sourceId: runId,
-      ownerKey: requesterSessionKey,
-      scopeKind: "session",
-      // Detached task runtimes are plugin-replaceable. Isolate their input so
-      // mutation cannot change the already-persisted registry record.
-      requesterOrigin: requesterOrigin ? structuredClone(requesterOrigin) : undefined,
-      childSessionKey,
-      runId,
-      label: registerParams.label,
-      task: registerParams.task,
-      agentId: registerParams.agentId,
-      requesterAgentId: resolveSubagentRequesterAgentId(cfg, registerParams),
-      deliveryStatus:
-        registerParams.expectsCompletionMessage === false ? "not_applicable" : "pending",
-      detail: createSubagentTaskBackingDetail(generation),
-    } as const;
     if (queuedContext) {
       return registerRequiredQueuedSubagent({
         context: queuedContext,
         entry,
         manager: this.options,
         originals: killReconciliationSnapshots,
-        captureTaskOwner: (assertCurrent) =>
-          captureQueuedSubagentTaskOwner(taskParams, assertCurrent),
         bindReservation: bindRegistrationReservation,
         activate: activateRegistrationLifecycle,
         ...options,
@@ -205,41 +164,6 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     } catch (error) {
       rollbackRegistration();
       throw error;
-    }
-    if (registerParams.taskRowOwnership !== "gateway_best_effort") {
-      try {
-        const task = queued
-          ? createQueuedTaskRun(taskParams)
-          : createRunningTaskRun({
-              ...taskParams,
-              startedAt: now,
-              lastEventAt: now,
-            });
-        if (!task) {
-          if (registerParams.taskRowOwnership === "required") {
-            throw new Error(`detached task runtime created no task row for run ${runId}`);
-          }
-          log.warn("Failed to persist background task for subagent run", { runId });
-        }
-      } catch (error) {
-        if (registerParams.taskRowOwnership !== "required") {
-          log.warn("Failed to create background task for subagent run", { runId, error });
-        } else {
-          // Direct dispatch suppressed Gateway's CLI fallback. Persist the rollback before
-          // asking the caller to abort; if that write fails, memory must match durable state.
-          rollbackRegistration();
-          try {
-            this.options.persistOrThrow(...registeredRunIds);
-          } catch (rollbackError) {
-            restoreDurableRegistration();
-            // Durable state still owns this registration. Keep reconciliation active so
-            // caller cleanup can terminalize it instead of leaving a phantom run.
-            activateRegistrationLifecycle();
-            throw rollbackError;
-          }
-          throw error;
-        }
-      }
     }
     // Wait through Gateway RPC; the in-process lifecycle listener is the embedded fallback.
     activateRegistrationLifecycle();
@@ -347,13 +271,6 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
         return true;
       }
       persistedRunning = true;
-      startTaskRunByRunId({
-        runId: entry.taskRunId ?? entry.runId,
-        runtime: "subagent",
-        sessionKey: entry.childSessionKey,
-        startedAt: acceptedAt,
-        lastEventAt: acceptedAt,
-      });
     } catch (error) {
       restoreQueuedRun();
       if (persistedRunning) {
@@ -403,25 +320,6 @@ export class SubagentLaunchManager extends SubagentRecoveryManager {
     } catch (persistError) {
       this.restoreRunRecord(entry, snapshot);
       throw persistError;
-    }
-    try {
-      finalizeTaskRunByRunId({
-        runId: entry.taskRunId ?? entry.runId,
-        runtime: "subagent",
-        sessionKey: entry.childSessionKey,
-        status: "failed",
-        endedAt,
-        lastEventAt: endedAt,
-        error,
-        suppressDelivery: true,
-      });
-    } catch (taskError) {
-      // Collector failure is already durable. Detached-task cleanup cannot
-      // turn it back into queued work or the scheduler could launch it twice.
-      log.warn("failed to finalize task after collector launch failure", {
-        runId: entry.runId,
-        error: taskError,
-      });
     }
     return true;
   };

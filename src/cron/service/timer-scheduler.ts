@@ -20,6 +20,7 @@ import {
   summarizeCronJobSchedule,
 } from "./jobs-scheduling.js";
 import { locked } from "./locked.js";
+import { runCronMaintenance } from "./maintenance.js";
 import {
   cleanupQueuedCronRunReservations,
   executeQueuedCronRun,
@@ -220,14 +221,14 @@ async function onAdmittedTimer(state: CronServiceState) {
         await ensureLoaded(state, { forceReload: true, skipRecompute: true });
       }
       for (const interrupted of leaseRecovery.interruptedRuns) {
-        emitInterruptedCronRun(state, interrupted);
+        await emitInterruptedCronRun(state, interrupted);
       }
       // These interruptions already committed; publish them before fencing new scheduling work.
       if (state.stopped || state.startupCatchup || state.lifecycleGeneration !== generation) {
         return [];
       }
       const dueCheckNow = state.deps.nowMs();
-      const due = skipCronJobsWithoutOwners(
+      const due = await skipCronJobsWithoutOwners(
         state,
         collectRunnableJobs(state, dueCheckNow),
         dueCheckNow,
@@ -546,6 +547,9 @@ async function onAdmittedTimer(state: CronServiceState) {
     capacityRechecks.abort();
     await capacityRechecks.drain();
     try {
+      if (state.lifecycleGeneration === generation) {
+        await runCronMaintenance(state);
+      }
       // Reaper discovery is maintenance: failure must never strand the timer
       // or leave the scheduler's execution slot permanently occupied.
       if (

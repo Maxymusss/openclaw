@@ -115,15 +115,7 @@ const completeRequesterSettleWakeBatch = (
   const requesterSessionKeys = new Set(entries.map((entry) => entry.requesterSessionKey));
   if (outcome) {
     settleRequesterCompletionBatch({
-      entries: entries.map((subagent) => {
-        const resolution = params.resolveSubagentTask(subagent);
-        if (resolution.lookup !== "available") {
-          throw new Error(
-            "subagent completion owner unavailable before settlement: " + subagent.runId,
-          );
-        }
-        return { subagent, taskId: resolution.task?.taskId };
-      }),
+      entries: entries.map((subagent) => ({ subagent })),
       outcome,
       isCurrent: () =>
         isCurrentRequesterSettleWakeBatch(

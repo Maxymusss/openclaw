@@ -7,23 +7,18 @@ import {
   isAgentEventLifecycleGenerationCurrent,
 } from "../../../infra/agent-events.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
-import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-contract.js";
-import {
-  captureTaskCancellationControl,
-  type TaskCancellationControl,
-} from "../../../tasks/task-cancellation-context.js";
-import type {
-  SubagentAdminKillResult,
-  TaskRegistryControlRuntime,
-} from "../../../tasks/task-registry-control.types.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
+import {
+  captureCancellationControl,
+  type CancellationControl,
+} from "../../cancellation-control.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { holdQueuedSwarmRun } from "../swarm/swarm-scheduler.js";
 import {
   killSubagentRun,
   persistSubagentAbortedLastRun,
-  resolveSubagentKillTargetState,
   resolveSubagentKillSession,
+  resolveSubagentKillTargetState,
 } from "./subagent-control-kill-runtime.js";
 import {
   ensureSubagentControllerOwnsRun,
@@ -32,6 +27,8 @@ import {
   isSameSubagentRunGeneration,
   type ResolvedSubagentController,
 } from "./subagent-control-scope.js";
+import type { SubagentAdminKillParams, SubagentAdminKillResult } from "./subagent-control.types.js";
+import { SUBAGENT_KILL_TASK_ERROR } from "./subagent-control.types.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import {
   listSubagentRunsForController,
@@ -64,7 +61,7 @@ type KillSelection = {
 };
 
 type KillScope = {
-  cancellationControl: TaskCancellationControl | undefined;
+  cancellationControl: CancellationControl | undefined;
   refresh: () => number;
 };
 
@@ -80,7 +77,7 @@ async function withSubagentKillScope<T>(
   preparePublication?: KillPublicationPreparation,
 ): Promise<T> {
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
-  const taskControl = captureTaskCancellationControl();
+  const taskControl = captureCancellationControl();
   const cancellationControl = params.assertCurrent
     ? {
         assertCurrent: () => {
@@ -514,7 +511,7 @@ async function killSelectedSubagentRuns(
 
 /** Admin kill path for a subagent session key, bypassing caller ownership checks. */
 export async function killSubagentRunAdmin(
-  params: Parameters<TaskRegistryControlRuntime["killSubagentRunAdmin"]>[0],
+  params: SubagentAdminKillParams,
   control?: {
     assertCurrent: () => void;
     beforeSessionKill?: () => boolean;

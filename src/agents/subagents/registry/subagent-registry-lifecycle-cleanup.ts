@@ -27,12 +27,12 @@ import {
   resolveAnnounceRetryDelayMs,
 } from "./subagent-registry-helpers.js";
 import type {
-  SubagentLifecycleCommonContext,
   SubagentLifecycleAnnounceCleanupContext,
-  SubagentLifecycleCompletionContext,
   SubagentLifecycleCleanupContext,
-  SubagentLifecycleWakeContext,
+  SubagentLifecycleCommonContext,
+  SubagentLifecycleCompletionContext,
   SubagentLifecycleOptions,
+  SubagentLifecycleWakeContext,
 } from "./subagent-registry-lifecycle-context.js";
 import {
   buildSafeLifecycleErrorMeta,
@@ -168,16 +168,18 @@ export function suspendPendingFinalDelivery(
     entry: SubagentRunRecord;
     reason: "expiry" | "permanent_failure";
     error?: string;
+    enqueuedAt?: number;
+    lastDropReason?: NonNullable<SubagentRunRecord["delivery"]>["lastDropReason"];
     storeReplaced?: true;
   },
 ): void {
   const params = context.options;
   const committed = blockSubagentCompletionDelivery({
     subagent: args.entry,
-    taskId: params.resolveSubagentTask(args.entry).task?.taskId ?? "",
     reason: args.error ?? getDeliveryLastError(args.entry) ?? args.reason,
     suspendedReason: args.reason,
-    lastDropReason: args.entry.delivery?.lastDropReason,
+    lastDropReason: args.lastDropReason ?? args.entry.delivery?.lastDropReason,
+    enqueuedAt: args.enqueuedAt,
     storeReplaced: args.storeReplaced,
   });
   if (!committed) {
@@ -236,7 +238,6 @@ export function suspendReplacedStoreNotifications(options: SubagentLifecycleOpti
     if (
       !blockSubagentCompletionDelivery({
         subagent: entry,
-        taskId: options.resolveSubagentTask(entry).task?.taskId ?? "",
         reason: "store replaced",
         suspendedReason: "permanent_failure",
         storeReplaced: true,

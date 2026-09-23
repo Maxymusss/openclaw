@@ -19,16 +19,16 @@ import { locked } from "./locked.js";
 import { waitForRunSettlement } from "./ops-lifecycle.js";
 import {
   activatePreparedManualRun,
-  type ActivatedManualRun,
   emitCronRunFinished,
   inspectManualRunDisposition,
+  prepareManualRun,
+  releasePreparedManualReservationAfterReloadWithRetry,
+  releasePreparedManualReservationWithRetry,
+  type ActivatedManualRun,
   type ManualRunOptions,
   type ManualRunTerminalTracker,
   type OnExitRunOptions,
   type PreparedManualRun,
-  prepareManualRun,
-  releasePreparedManualReservationAfterReloadWithRetry,
-  releasePreparedManualReservationWithRetry,
 } from "./ops-run-preparation.js";
 import { clearManualCronJobActive, maybeNotifyManualIsolatedSetupTimeout } from "./ops-shared.js";
 import {
@@ -36,6 +36,10 @@ import {
   runWithCronAdmission,
   supersedeActivatedCronRun,
 } from "./run-admission.js";
+import {
+  createCronOwnerExecutionIdentityAdmission,
+  recordQuietCronEvaluation,
+} from "./run-history.js";
 import { cronRunReceiptPersistHooks, resolveCronRunReceiptTerminalStatus } from "./run-receipts.js";
 import { recomputeUnownedCronSchedules } from "./run-recovery.js";
 import { applyCronRuntimeRowsToState, commitCronRuntimeRows } from "./runtime-store.js";
@@ -47,10 +51,6 @@ import type {
 } from "./state.js";
 import { emit, isImmediateCronRunMode } from "./state.js";
 import { ensureLoaded, publishCronRuntimeRows, runPostPersistCronNotifications } from "./store.js";
-import {
-  createCronOwnerExecutionIdentityAdmission,
-  tryFinishCronTaskRunWithoutHistory,
-} from "./task-runs.js";
 import { createCronOutcomeEvent, recordCronOutcomeForJob } from "./timer-outcome-events.js";
 import { applyOutcomeToAuthoritativeJob } from "./timer-outcomes.js";
 import { armTimer, authorCronRunCompletion, executeJobCoreWithTimeout } from "./timer.js";
@@ -86,8 +86,6 @@ async function finishPreparedManualRun(
         executionIdentity: createCronOwnerExecutionIdentityAdmission({
           state,
           runReceipt: prepared.runReceipt,
-          taskId: prepared.taskId,
-          flowId: prepared.flowId,
         }),
       });
     } catch (err) {
@@ -127,13 +125,12 @@ async function finishPreparedManualRun(
       endedAt,
     };
     const outcomeOptions = {
-      emit: false,
       request: {
         preserveCadence: isImmediateCronRunMode(mode),
         scheduleOwnershipAtMs: prepared.scheduleOwnershipAtMs,
       },
     };
-    const emitMissingTerminal = (required = false) => {
+    const emitMissingTerminal = async (required = false) => {
       const tracker = prepared.terminalTracker;
       if ((!tracker && !required) || tracker?.emitted) {
         return;
@@ -144,7 +141,7 @@ async function finishPreparedManualRun(
           : state.store?.jobs.find((entry) => entry.id === jobId);
       // Queued calls carry a tracker for dedupe. A removed direct run has no
       // tracker, but still needs one durable terminal event/history/task outcome.
-      emitCronRunFinished(
+      await emitCronRunFinished(
         state,
         {
           jobId,
@@ -182,7 +179,7 @@ async function finishPreparedManualRun(
         },
       );
     };
-    const finishRemovedRun = () => {
+    const finishRemovedRun = async () => {
       finishCronRunReceipt({
         handle: prepared.runReceipt,
         status: resolveCronRunReceiptTerminalStatus(
@@ -193,10 +190,10 @@ async function finishPreparedManualRun(
         error: coreResult.error,
       });
       finalized = true;
-      emitMissingTerminal(true);
+      await emitMissingTerminal(true);
     };
     if (prepared.activeJobMarker?.jobRemoved === true) {
-      finishRemovedRun();
+      await finishRemovedRun();
       return;
     }
     let notifySetupTimeout = coreResult.isolatedAgentSetupTimeout !== undefined;
@@ -205,7 +202,7 @@ async function finishPreparedManualRun(
       const job = state.store?.jobs.find((entry) => entry.id === jobId);
       if (prepared.activeJobMarker?.jobRemoved === true || !job) {
         notifySetupTimeout = false;
-        finishRemovedRun();
+        await finishRemovedRun();
         return;
       }
       const postPersistNotifications: DeferredCronNotifications = [];
@@ -215,7 +212,7 @@ async function finishPreparedManualRun(
           ...outcomeOptions,
           deferredNotifications: [],
         });
-        recordCronOutcomeForJob(state, taskJob, { ...outcome, job: executionJob });
+        await recordCronOutcomeForJob(state, taskJob, { ...outcome, job: executionJob });
       }
       let removedJob: CronJob | undefined;
       try {
@@ -266,8 +263,11 @@ async function finishPreparedManualRun(
           { publish: false },
         );
         if (triggerSkipped) {
-          tryFinishCronTaskRunWithoutHistory(state, {
+          await recordQuietCronEvaluation(state, {
             taskRunId,
+            jobId,
+            startedAt,
+            job: executionJob,
             status: coreResult.status,
             error: coreResult.error,
             endedAt,
@@ -283,7 +283,7 @@ async function finishPreparedManualRun(
           return;
         }
         if (!triggerSkipped) {
-          emitCronRunFinished(
+          await emitCronRunFinished(
             state,
             {
               ...createCronOutcomeEvent(committed.job, outcome),
@@ -344,7 +344,7 @@ async function finishPreparedManualRun(
     if (finalized && isCronActiveJobMarkerCurrent(prepared.activeJobMarker)) {
       armTimer(state);
     }
-    emitMissingTerminal();
+    await emitMissingTerminal();
   } finally {
     // A failed row write leaves the exact receipt for recovery of its terminal
     // task fact. Only local liveness and admission ownership retire here.
@@ -528,7 +528,7 @@ export async function enqueueRun(
               if (result.reason !== "invalid-spec" && result.reason !== "ownerless") {
                 const finishedAt = state.deps.nowMs();
                 const job = state.store?.jobs.find((entry) => entry.id === id);
-                emitCronRunFinished(
+                await emitCronRunFinished(
                   state,
                   {
                     jobId: id,
@@ -581,7 +581,7 @@ export async function enqueueRun(
     throw error;
   }
   void queuedRun
-    .catch((err: unknown) => {
+    .catch(async (err: unknown) => {
       if (!accepted) {
         acceptance.reject(err);
         return;
@@ -595,7 +595,7 @@ export async function enqueueRun(
       }
       const finishedAt = state.deps.nowMs();
       const job = state.store?.jobs.find((entry) => entry.id === id);
-      emitCronRunFinished(
+      await emitCronRunFinished(
         state,
         {
           jobId: id,

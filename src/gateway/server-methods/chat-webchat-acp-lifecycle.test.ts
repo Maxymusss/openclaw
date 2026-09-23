@@ -2,8 +2,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { emitAgentEvent, resetAgentEventsForTest } from "../../infra/agent-events.js";
 import type { SubsystemLogger } from "../../logging/subsystem.js";
-import { resetTaskRegistryForTests } from "../../tasks/task-runtime.test-helpers.js";
-import { installInMemoryTaskRegistryRuntime } from "../../test-utils/task-registry-runtime.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import {
   createChatRunState,
@@ -60,7 +58,6 @@ function createParams(): SubscriptionParams {
     sessionMessageSubscribers: createSessionMessageSubscriberRegistry(),
     chatAbortControllers: new Map(),
     restartRecoveryCandidates: new Map(),
-    terminalSessions: { closeTaskSessions: vi.fn() },
     refreshConnectedUserProfiles: vi.fn(),
   };
 }
@@ -68,16 +65,13 @@ describe("bound ACP terminal lifecycle", () => {
   let unsubs: ReturnType<typeof startGatewayEventSubscriptions> | undefined;
   beforeEach(() => {
     vi.clearAllMocks();
-    installInMemoryTaskRegistryRuntime();
   });
   afterEach(async () => {
     await unsubs?.agentUnsub();
     unsubs?.heartbeatUnsub();
     unsubs?.transcriptUnsub();
     unsubs?.lifecycleUnsub();
-    void unsubs?.taskUnsub();
     resetAgentEventsForTest();
-    resetTaskRegistryForTests({ persist: false });
   });
   it.each([false, true])(
     "keeps bound ACP terminal ownership together (chat link=%s)",

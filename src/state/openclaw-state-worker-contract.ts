@@ -56,7 +56,6 @@ import type { commitSkillUploadInDatabase } from "../skills/lifecycle/upload-sto
 import type * as curator from "../skills/workshop/curator.kernel.js";
 import type { listStoredSkillProposalEventsInDatabase } from "../skills/workshop/store-sqlite-event.js";
 import type { SkillProposalEvent, SkillProposalRecord } from "../skills/workshop/types.js";
-import type { TaskRegistryWorkerOperations } from "../tasks/task-registry.worker-contract.js";
 import type {
   TranscriptReadOperations,
   TranscriptWriteOperations,
@@ -90,8 +89,7 @@ export type OpenClawStateWorkerOperations = WebPushWorkerOperations &
   DeliveryQueueWorkerOperations &
   TranscriptReadOperations &
   TranscriptWriteOperations &
-  NodeWorkerJournalWorkerOperations &
-  TaskRegistryWorkerOperations & {
+  NodeWorkerJournalWorkerOperations & {
     "githubRepository.personalPending": {
       input: RepositoryGitHubPublicationPendingQuery;
       output: RepositoryGitHubPublicationStatusRow | undefined;

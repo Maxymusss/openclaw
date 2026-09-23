@@ -1496,8 +1496,9 @@ describe("gateway server chat", () => {
             getEmbeddedRuns: () => 0,
             getCronRuns: () => 0,
             getBackgroundExecSessions: () => 0,
-            getActiveTasks: () => 0,
-            getTaskBlockers: () => [],
+            getAgentRuns: () => 0,
+            getAcpRuns: () => 0,
+            getMediaRuns: () => 0,
           };
           expect(createSafeGatewayRestartPreflight(restartInspectors)).toMatchObject({
             safe: false,

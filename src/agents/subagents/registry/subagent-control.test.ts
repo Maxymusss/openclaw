@@ -24,7 +24,6 @@ import {
   SESSION_WORK_ADMISSION_DRAIN_TIMEOUT_MS,
 } from "../../../sessions/session-lifecycle-admission.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../../state/openclaw-agent-db.js";
-import { SUBAGENT_KILL_TASK_ERROR } from "../../../tasks/detached-task-runtime-contract.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import {
   enqueueSwarmRun,
@@ -38,21 +37,22 @@ import {
   killSubagentRunAdmin,
   listControlledSubagentRuns,
 } from "./subagent-control.js";
+import { SUBAGENT_KILL_TASK_ERROR } from "./subagent-control.types.js";
 import {
   SUBAGENT_ENDED_REASON_COMPLETE,
   SUBAGENT_ENDED_REASON_KILLED,
 } from "./subagent-lifecycle-events.js";
 import {
-  replaceSubagentRunAfterSteerCore,
   markSubagentRunTerminated,
-  startQueuedSubagentRun,
   registerSubagentRun,
+  replaceSubagentRunAfterSteerCore,
+  startQueuedSubagentRun,
 } from "./subagent-registry.js";
 import {
-  testing as subagentRegistryTesting,
   addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
   resetSubagentRegistryForTests,
+  testing as subagentRegistryTesting,
 } from "./subagent-registry.test-helpers.js";
 
 type ControlRuntime = typeof import("./subagent-control.runtime.js");
@@ -84,23 +84,6 @@ vi.mock("../../../gateway/call.js", () => ({
   callGateway: vi.fn(async (request: { method: string }) =>
     request.method === "agent.wait" ? { status: "pending" } : {},
   ),
-}));
-
-const detachedTaskRuntimeMocks = vi.hoisted(() => ({
-  findDetachedTaskRun: vi.fn(() => ({ lookup: "available" as const })),
-  finalizeTaskRunByRunId: vi.fn<(_params: unknown) => unknown[]>(() => []),
-}));
-
-vi.mock("../../../tasks/detached-task-runtime.js", () => ({
-  createQueuedTaskRun: vi.fn(() => null),
-  createRunningTaskRun: vi.fn(() => null),
-  startTaskRunByRunId: vi.fn(() => []),
-  recordTaskRunProgressByRunId: vi.fn(() => []),
-  finalizeTaskRunByRunId: detachedTaskRuntimeMocks.finalizeTaskRunByRunId,
-  completeTaskRunByRunId: vi.fn(() => []),
-  failTaskRunByRunId: vi.fn(() => []),
-  setDetachedTaskDeliveryStatusByRunId: vi.fn(() => []),
-  findDetachedTaskRun: detachedTaskRuntimeMocks.findDetachedTaskRun,
 }));
 
 function setSubagentControlDepsForTest(overrides: Partial<ControlRuntime> = {}) {
@@ -168,7 +151,6 @@ async function writeSessionStoreFixture(label: string, store: Record<string, unk
 }
 
 beforeEach(() => {
-  detachedTaskRuntimeMocks.finalizeTaskRunByRunId.mockClear();
   setSubagentControlDepsForTest();
   subagentRegistryTesting.setDepsForTest({
     cleanupBrowserSessionsForLifecycleEnd: async () => {},
@@ -233,15 +215,6 @@ describe("killSubagentRunAdmin", () => {
     expect(loadSessionEntry({ storePath, sessionKey: childSessionKey })?.abortedLastRun).toBe(true);
     expect(getSubagentRunByChildSessionKey(childSessionKey)?.execution.endedAt).toBeTypeOf(
       "number",
-    );
-    expect(detachedTaskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalledTimes(1);
-    expect(detachedTaskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalledWith(
-      expect.objectContaining({
-        runId: "run-worker",
-        runtime: "subagent",
-        sessionKey: childSessionKey,
-        status: "cancelled",
-      }),
     );
   });
 
@@ -489,7 +462,6 @@ describe("killSubagentRunAdmin", () => {
         },
       });
     }
-    expect(detachedTaskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalledTimes(2);
   });
 
   it("keeps a killed steer-restart run on its failed projection", async () => {
@@ -526,7 +498,6 @@ describe("killSubagentRunAdmin", () => {
         },
       },
     });
-    expect(detachedTaskRuntimeMocks.finalizeTaskRunByRunId).not.toHaveBeenCalled();
   });
 
   it("restores the recoverable task marker when abort lifecycle wins the race", async () => {
@@ -580,13 +551,6 @@ describe("killSubagentRunAdmin", () => {
     });
 
     expect(result).toMatchObject({ found: true, killed: true });
-    expect(detachedTaskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalledWith(
-      expect.objectContaining({
-        runId: "run-abort-lifecycle-race",
-        status: "cancelled",
-        error: SUBAGENT_KILL_TASK_ERROR,
-      }),
-    );
     expect(abortedLastRunWrites).toEqual([]);
   });
 
@@ -665,7 +629,6 @@ describe("killSubagentRunAdmin", () => {
       endedReason: SUBAGENT_ENDED_REASON_COMPLETE,
       execution: { outcome: { status: "ok" } },
     });
-    expect(detachedTaskRuntimeMocks.finalizeTaskRunByRunId).not.toHaveBeenCalled();
   });
 
   it("refreshes target completion after descendant cancellation settles", async () => {
@@ -816,11 +779,10 @@ describe("killSubagentRunAdmin", () => {
       },
     });
     expect(getSubagentRunByChildSessionKey(childSessionKey)?.pauseReason).toBeUndefined();
-    expect(detachedTaskRuntimeMocks.finalizeTaskRunByRunId).toHaveBeenCalledWith(
-      expect.objectContaining({ runId: "run-yield-race", status: "cancelled" }),
-    );
-    const [finalizeArgs] = detachedTaskRuntimeMocks.finalizeTaskRunByRunId.mock.calls[0] ?? [];
-    const killedAt = (finalizeArgs as { endedAt?: number } | undefined)?.endedAt;
+    const killedAt =
+      result.found && result.targetState?.state === "terminal"
+        ? result.targetState.task.endedAt
+        : undefined;
     expect(killedAt).toBeGreaterThan(yieldedAt);
 
     const repeated = await killSubagentRunAdmin({
@@ -835,9 +797,6 @@ describe("killSubagentRunAdmin", () => {
         task: { status: "cancelled", endedAt: killedAt },
       },
     });
-    const [repeatedFinalizeArgs] =
-      detachedTaskRuntimeMocks.finalizeTaskRunByRunId.mock.calls.at(-1) ?? [];
-    expect((repeatedFinalizeArgs as { endedAt?: number } | undefined)?.endedAt).toBe(killedAt);
   });
 
   it("does not mark a finalizing run killed when its abort is rejected", async () => {
@@ -1845,10 +1804,10 @@ describe("killAllControlledSubagentRuns", () => {
       });
       const start = vi.fn(async () => {});
       const childKey = "agent:main:subagent:late-child";
-      const registerChild = () => {
+      const registerChild = async () => {
         const requester = phase === "admission drain" ? activeChild : parent;
         expect(requester.execution.endedAt).toBeUndefined();
-        registerSubagentRun({
+        await registerSubagentRun({
           runId: "late-child",
           childSessionKey: childKey,
           requesterSessionKey: requester.childSessionKey,
@@ -1886,7 +1845,7 @@ describe("killAllControlledSubagentRuns", () => {
       };
       const cfg = cfgWithSessionStore(storePath);
       if (replaceChild) {
-        registerChild();
+        await registerChild();
       }
       const pending = killAllControlledSubagentRuns({
         cfg,
@@ -1908,9 +1867,9 @@ describe("killAllControlledSubagentRuns", () => {
         if (replaceChild) {
           expect(removeQueuedSwarmRun("late-child")).toBe(true);
         }
-        registerChild();
+        await registerChild();
         const outsideStart = vi.fn(async () => {});
-        registerSubagentRun({
+        await registerSubagentRun({
           runId: "other-turn-root",
           childSessionKey: "agent:main:subagent:other-turn-root",
           requesterSessionKey: owner,

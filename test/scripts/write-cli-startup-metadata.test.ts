@@ -29,7 +29,6 @@ const DEFAULT_COMMAND_HELP_NAMES = [
   "models",
   "plugins",
   "sessions",
-  "tasks",
 ] as const;
 
 function writeFixtureFile(rootDir: string, relativePath: string, contents: string): void {
@@ -247,7 +246,6 @@ describe("write-cli-startup-metadata", () => {
         spawnProcess: spawnProcess as typeof spawn,
         timeoutMs: 5_000,
       });
-
       child[streamName].emit("error", streamError);
       child.emit("close", null, "SIGTERM");
 
@@ -413,7 +411,6 @@ describe("write-cli-startup-metadata", () => {
             models: "Usage: openclaw models\n",
             plugins: "Usage: openclaw plugins\n",
             sessions: "Usage: openclaw sessions\n",
-            tasks: "Usage: openclaw tasks\n",
           }),
         });
         await new Promise((resolve) => {
@@ -696,7 +693,7 @@ describe("write-cli-startup-metadata", () => {
           "    config: 'Usage: openclaw config\\n',",
           "    doctor: 'Usage: openclaw doctor\\n', gateway: 'Usage: openclaw gateway\\n',",
           "    models: 'Usage: openclaw models\\n', plugins: 'Usage: openclaw plugins\\n',",
-          "    sessions: 'Usage: openclaw sessions\\n', tasks: 'Usage: openclaw tasks\\n',",
+          "    sessions: 'Usage: openclaw sessions\\n',",
           "  }),",
           "});",
         ].join("\n"),
@@ -748,7 +745,6 @@ describe("write-cli-startup-metadata", () => {
       }
     },
   );
-
   it.each(["new", "existing", "symlinked parent"] as const)(
     "writes complete startup metadata with %s output and source-rendered help",
     async (outputKind) => {
@@ -798,7 +794,6 @@ describe("write-cli-startup-metadata", () => {
           models: "Usage: openclaw models\n",
           plugins: "Usage: openclaw plugins\n",
           sessions: "Usage: openclaw sessions\n",
-          tasks: "Usage: openclaw tasks\n",
         }),
       });
 
@@ -816,7 +811,6 @@ describe("write-cli-startup-metadata", () => {
           models: string;
           plugins: string;
           sessions: string;
-          tasks: string;
         };
       };
       expect(written.channelOptions).toContain("matrix");
@@ -835,7 +829,6 @@ describe("write-cli-startup-metadata", () => {
       expect(written.subcommandHelpText.models).toContain("openclaw models");
       expect(written.subcommandHelpText.plugins).toContain("openclaw plugins");
       expect(written.subcommandHelpText.sessions).toContain("openclaw sessions");
-      expect(written.subcommandHelpText.tasks).toContain("openclaw tasks");
       expect(fs.readdirSync(distDir)).toEqual(["cli-startup-metadata.json"]);
       if (process.platform !== "win32") {
         expect(fs.statSync(distDir).mode & 0o777).toBe(0o750);
@@ -871,7 +864,6 @@ describe("write-cli-startup-metadata", () => {
           models: "Usage: openclaw models\n",
           plugins: "Usage: openclaw plugins\n",
           sessions: "Usage: openclaw sessions\n",
-          tasks: "Usage: openclaw tasks\n",
         }),
       };
       await testing.writeCliStartupMetadata(options);
@@ -947,7 +939,6 @@ describe("write-cli-startup-metadata", () => {
           models: "Usage: openclaw models\n",
           plugins: "Usage: openclaw plugins\n",
           sessions: "Usage: openclaw sessions\n",
-          tasks: "Usage: openclaw tasks\n",
         }),
       })
       .then(
@@ -1002,7 +993,6 @@ describe("write-cli-startup-metadata", () => {
           models: "Usage: openclaw models\n",
           plugins: "Usage: openclaw plugins\n",
           sessions: "Usage: openclaw sessions\n",
-          tasks: "Usage: openclaw tasks\n",
         }),
       });
 
@@ -1071,7 +1061,6 @@ describe("write-cli-startup-metadata", () => {
           models: "Usage: openclaw models\n",
           plugins: "Usage: openclaw plugins\n",
           sessions: "Usage: openclaw sessions\n",
-          tasks: "Usage: openclaw tasks\n",
         };
       },
     });
@@ -1143,7 +1132,6 @@ describe("write-cli-startup-metadata", () => {
         models: "Usage: openclaw models\n",
         plugins: "Usage: openclaw plugins\n",
         sessions: "Usage: openclaw sessions\n",
-        tasks: "Usage: openclaw tasks\n",
       }),
     });
 
@@ -1203,7 +1191,6 @@ describe("write-cli-startup-metadata", () => {
             models: "Usage: openclaw models\n",
             plugins: "Usage: openclaw plugins\n",
             sessions: "Usage: openclaw sessions\n",
-            tasks: "Usage: openclaw tasks\n",
           }),
         })
         .then(
@@ -1252,7 +1239,6 @@ describe("write-cli-startup-metadata", () => {
           models: "Usage: openclaw models\n",
           plugins: "Usage: openclaw plugins\n",
           sessions: "Usage: openclaw sessions\n",
-          tasks: "Usage: openclaw tasks\n",
         }),
       });
     };
@@ -1308,7 +1294,6 @@ describe("write-cli-startup-metadata", () => {
         models: `${banner}\nUsage: openclaw models\n`,
         plugins: `${banner}\nUsage: openclaw plugins\n`,
         sessions: `${banner}\nUsage: openclaw sessions\n`,
-        tasks: `${banner}\nUsage: openclaw tasks\n`,
       };
     };
 

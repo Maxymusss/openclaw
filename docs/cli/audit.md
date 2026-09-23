@@ -115,8 +115,9 @@ view renders these sections:
 3. **Lineage**: parent context or an explicit absent, unknown, or unsupported
    state.
 4. **Decisions**: bounded run-admission and authoritative action-decision
-   receipts, including terminal operator approvals and exact-bound cron, task,
-   and task-flow lifecycle rows.
+   receipts, including terminal operator approvals and exact-bound cron lifecycle
+   rows. Retained pre-removal task and flow rows remain inspectable as historical
+   attribution.
 5. **Missing evidence** and **Next steps**.
 
 Every field includes `present`, `absent`, `unknown`, or `unsupported`; the CLI
@@ -126,14 +127,17 @@ ingress, an absent invoker, and
 `unattributed` coverage. Its admission receipt says `not-applicable` because no
 identity-aware policy or grant evaluation was proven.
 
-Lifecycle rows from `cron_run_receipts`, `task_runs`, and `flow_runs` appear as
-owner-native, attribution-only receipts when their keyed lifecycle metadata
-carries the exact inspected context and execution ids. They contain status and
+Cron lifecycle rows from `cron_run_receipts` appear as owner-native,
+attribution-only receipts when their keyed lifecycle metadata carries the exact
+inspected context and execution ids. Retained legacy `task_runs` and `flow_runs`
+rows can still appear with their original exact bindings; new native agent runs
+do not create Tasks or TaskFlow records. They contain status and
 bounded record references, not prompts, task goals, hook payloads, paths, or raw
 errors. Their decision is `not-applicable` because lifecycle attribution does
 not prove authorization.
 Treat every decision cursor as opaque: numeric and `a:`, `m:`, and `g:` values
-remain compatible, while cron/task/flow pages may return `c:`, `t:`, or `f:`.
+remain compatible. Cron pages may return `c:`; retained legacy task and flow
+pages may still return `t:` or `f:`.
 
 For Gateway runs, a resolved authenticated profile can make the invoker
 `present` and coverage `attribution-only`. Paired devices and shared credentials
@@ -380,5 +384,4 @@ instead of being silently discarded.
 - [Audit history](/gateway/audit)
 - [Gateway protocol](/gateway/protocol/ledgers#audit-ledger-rpc)
 - [Sessions](/cli/sessions)
-- [Tasks](/cli/tasks)
 - [Cron jobs](/automation/cron-jobs)

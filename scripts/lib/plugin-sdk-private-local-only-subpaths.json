@@ -8,7 +8,7 @@
   "agent-core",
   "agent-harness-exec-review-runtime",
   "agent-harness-registration",
-  "agent-harness-task-runtime",
+  "agent-harness-completion",
   "agent-harness-tool-runtime",
   "agent-runtime-test-contracts",
   "agent-sessions",

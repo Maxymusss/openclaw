@@ -39,16 +39,16 @@ import {
   resolvePreparedExecEnvironment,
 } from "./bash-tools.exec-request-preparation.js";
 import {
+  buildExecRuntimeErrorOutcome,
   DEFAULT_MAX_OUTPUT,
   DEFAULT_PENDING_MAX_OUTPUT,
-  ExecProcessPreflightError,
   type ExecProcessHandle,
-  normalizePathPrepend,
-  resolveExecTarget,
-  resolveApprovalRunningNoticeMs,
-  buildExecRuntimeErrorOutcome,
-  runExecProcess,
+  ExecProcessPreflightError,
   execSchema,
+  normalizePathPrepend,
+  resolveApprovalRunningNoticeMs,
+  resolveExecTarget,
+  runExecProcess,
 } from "./bash-tools.exec-runtime.js";
 import {
   shouldSkipExecScriptPreflight,
@@ -62,7 +62,6 @@ import {
   resolveExecElevatedMode,
   resolveExecReviewerDefaults,
 } from "./bash-tools.exec-support.js";
-import { createBackgroundExecTask } from "./bash-tools.exec-task-tracking.js";
 import type {
   ExecToolApprovalReview,
   ExecToolDefaults,
@@ -600,7 +599,6 @@ export function createExecTool(
           beforeSpawn: gatewayApproval?.revalidateBeforeExecution,
           assertCurrent: gatewayApproval?.assertCurrent,
           onSettledBeforeNotify: settlement.settle,
-          onActivity: settlement.activity,
         });
         discardPreparedSandboxWorkdir = null;
       } catch (error) {
@@ -673,13 +671,6 @@ export function createExecTool(
         markBackgrounded(run.session);
         // Only the guarded yield transition owns task registration. A process
         // that settles before this timer fires must stay out of the task ledger.
-        settlement.backgroundTask = createBackgroundExecTask({
-          processSessionId: run.session.id,
-          command: run.session.command,
-          sessionKey: notifySessionKey,
-          agentId,
-          startedAt: run.startedAt,
-        });
         backgrounded.resolve({ status: "backgrounded" });
       };
 

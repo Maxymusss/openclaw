@@ -770,7 +770,6 @@
       "test/scripts/bench-gateway-startup.test.ts": 1,
       "test/scripts/bench-sqlite-reliability.test.ts": 21,
       "test/scripts/bench-sqlite-state.test.ts": 3,
-      "test/scripts/bench-task-registry-sqlite.test.ts": 2,
       "test/scripts/browser-cdp-snapshot.test.ts": 1,
       "test/scripts/build-all.test.ts": 2,
       "test/scripts/build-and-run-mac.test.ts": 1,

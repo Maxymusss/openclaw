@@ -202,7 +202,9 @@ it.each(["static catalog", "synthetic auth"] as const)(
       expect(getEventListeners(acquisitionSignal!, "abort")).toHaveLength(0);
       expect(getPreparedModelCatalogWorkerPoolSnapshot()).toMatchObject({
         workers: 0,
-        activeTasks: 0,
+        agentRuns: 0,
+        acpRuns: 0,
+        mediaRuns: 0,
         pendingTasks: 0,
       });
       expect(completePublications).toBe(0);

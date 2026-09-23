@@ -7,10 +7,6 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { ContextEngine } from "../../../context-engine/types.js";
 import * as gatewayCallRuntime from "../../../gateway/call.js";
 import { openOpenClawStateDatabase } from "../../../state/openclaw-state-db.js";
-import {
-  resetTaskFlowRegistryForTests,
-  resetTaskRegistryForTests,
-} from "../../../tasks/task-runtime.test-helpers.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { persistSubagentRunsToDiskOrThrow } from "./subagent-registry-state.js";
 
@@ -213,8 +209,6 @@ describe("subagent registry steer restarts", () => {
     emitSessionLifecycleEventMock.mockReset();
     removeInternalSessionEffectsSessionMock.mockClear();
     mod.resetSubagentRegistryForTests({ persist: false });
-    resetTaskRegistryForTests();
-    resetTaskFlowRegistryForTests();
   });
 
   const flushAnnounce = async () => {
@@ -358,8 +352,6 @@ describe("subagent registry steer restarts", () => {
     lifecycleHandler = undefined;
     removeInternalSessionEffectsSessionMock.mockClear();
     mod.resetSubagentRegistryForTests({ persist: false });
-    resetTaskRegistryForTests();
-    resetTaskFlowRegistryForTests();
   });
 
   it("honors persisted steer suppression and only announces the replacement run", async () => {

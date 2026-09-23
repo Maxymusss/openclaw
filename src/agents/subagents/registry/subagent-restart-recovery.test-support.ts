@@ -6,10 +6,6 @@ import { afterEach, beforeEach, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../../../config/config.js";
 import type { GatewayRecoveryRuntime } from "../../../gateway/server-instance-runtime.types.js";
 import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
-import {
-  resetTaskFlowRegistryForTests,
-  resetTaskRegistryForTests,
-} from "../../../tasks/task-runtime.test-helpers.js";
 import { captureEnv } from "../../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../../test-utils/session-state-cleanup.js";
 import {
@@ -69,8 +65,6 @@ export function useSubagentRestartRecoveryFixture() {
   let tempStateDir: string | null = null;
 
   beforeEach(async () => {
-    resetTaskRegistryForTests({ persist: false });
-    resetTaskFlowRegistryForTests({ persist: false });
     tempStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-orphan-integ-"));
     process.env.OPENCLAW_STATE_DIR = tempStateDir;
     setRuntimeConfigSnapshot({ session: { store: undefined } } as never);
@@ -90,8 +84,6 @@ export function useSubagentRestartRecoveryFixture() {
     testing.setDepsForTest();
     resetSubagentRegistryForTests({ persist: false });
     await cleanupSessionStateForTest({ stateDir: tempStateDir ?? undefined });
-    resetTaskRegistryForTests({ persist: false });
-    resetTaskFlowRegistryForTests({ persist: false });
     if (tempStateDir) {
       await fs.rm(tempStateDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 50 });
       tempStateDir = null;

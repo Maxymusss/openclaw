@@ -356,7 +356,9 @@ describe("worker task pool", () => {
     expect(pool.getSnapshot()).toMatchObject({
       workers: 1,
       workersCreated: 1,
-      activeTasks: 0,
+      agentRuns: 0,
+      acpRuns: 0,
+      mediaRuns: 0,
       pendingTasks: 0,
     });
   });

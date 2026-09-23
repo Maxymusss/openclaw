@@ -1,17 +1,13 @@
 import path from "node:path";
-import { expect, it, vi } from "vitest";
 import type { Mock } from "vitest";
+import { expect, it } from "vitest";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
 import type { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import { callGateway } from "../../gateway/call.js";
 import type { GatewayRecoveryRuntime } from "../../gateway/server-instance-runtime.types.js";
-import { createAgentHarnessTaskRuntime } from "../../plugin-sdk/agent-harness-task-runtime.js";
-import { captureHarnessCompletionRecovery } from "../../tasks/agent-harness-completion-recovery.js";
-import { createAgentHarnessTaskRuntimeScope } from "../../tasks/agent-harness-task-runtime-scope.js";
-import { markTaskTerminalById } from "../../tasks/task-registry.js";
-import { resetTaskRegistryForTests } from "../../tasks/task-registry.test-support.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { buildCurrentRunRestartRecoveryClaim } from "../agent-command-restart-recovery.js";
+import { captureAdmittedHarnessCompletionForTest } from "../agent-harness-completion.test-support.js";
 import type { SessionEntryFixture } from "../subagent-test-fixtures.test-helpers.js";
 
 type HarnessRecoveryFixture = {
@@ -49,11 +45,6 @@ export function registerHarnessCompletionRecoveryCases(
     "missing-source",
     "reserved-successor",
     "human-before-recovery",
-    "cancel-before-recovery",
-    "duplicate-before-recovery",
-    "cancel-after-dispatch",
-    "duplicate-after-dispatch",
-    "cancel-before-notice-effect",
   ])(
     "recovers the admitted harness completion after %s execution is interrupted",
     async (phase) => {
@@ -65,38 +56,14 @@ export function registerHarnessCompletionRecoveryCases(
         writeTranscript,
         expectRecovery,
         loadSessionEntry,
-        sendRecoveryNotice,
         dispatchSettlement,
         discordDeliveryContext,
       } = getFixture();
       await withEnvAsync({ OPENCLAW_STATE_DIR: tmpDir }, async () => {
-        resetTaskRegistryForTests();
         const sessionsDir = await makeSessionsDir();
         const sessionKey = "agent:main:main";
         const taskRunId = "harness:child-1";
         const sourceRunId = "announce:harness:parent:child-1:succeeded";
-        const runtime = createAgentHarnessTaskRuntime({
-          runtime: "subagent",
-          taskKind: "example-harness",
-          scope: createAgentHarnessTaskRuntimeScope({ requesterSessionKey: sessionKey }),
-        });
-        runtime.createRunningTaskRun({
-          runId: taskRunId,
-          sourceId: taskRunId,
-          task: "work",
-          requesterAgentId: "main",
-          notifyPolicy: "silent",
-        });
-        runtime.finalizeTaskRunByRunId({
-          runId: taskRunId,
-          status: "succeeded",
-          endedAt: Date.now(),
-          terminalSummary: "result",
-        });
-        runtime.setDetachedTaskDeliveryStatusByRunId({
-          runId: taskRunId,
-          deliveryStatus: "pending",
-        });
         const provenance = {
           kind: "inter_session",
           sourceTool: "agent_harness_task",
@@ -104,7 +71,7 @@ export function registerHarnessCompletionRecoveryCases(
           sourceSessionKey: taskRunId,
         } as const;
         const entry = mainSessionEntry({ lifecycleRevision: "revision-1" });
-        const binding = captureHarnessCompletionRecovery({
+        const binding = await captureAdmittedHarnessCompletionForTest({
           agentId: "main",
           sessionKey,
           entry,
@@ -188,58 +155,10 @@ export function registerHarnessCompletionRecoveryCases(
             restartRecoveryHarnessCompletion: binding,
             restartRecoveryDeliverySourceRunId: sourceRunId,
           });
-          expect(runtime.listTaskRecords()[0]?.deliveryStatus).toBe("pending");
           return;
-        }
-        const invalidateTask = () => {
-          if (phase === "duplicate-after-dispatch" || phase === "duplicate-before-recovery") {
-            runtime.createRunningTaskRun({
-              runId: taskRunId,
-              sourceId: taskRunId,
-              task: "different work sharing a native run id",
-              requesterAgentId: "main",
-              notifyPolicy: "silent",
-            });
-          } else {
-            const task = runtime.listTaskRecords()[0];
-            if (!task) {
-              throw new Error("Missing original task.");
-            }
-            markTaskTerminalById({ taskId: task.taskId, status: "cancelled", endedAt: Date.now() });
-          }
-        };
-        if (phase === "cancel-before-recovery" || phase === "duplicate-before-recovery") {
-          invalidateTask();
-          await expectRecovery({ started: 0, settled: 0, failed: 0, skipped: 1 });
-          expect(callGateway).not.toHaveBeenCalled();
-          expect(
-            loadSessionEntry({ sessionKey, storePath: path.join(sessionsDir, "sessions.json") }),
-          ).toMatchObject({ status: "killed", abortedLastRun: false });
-          return;
-        }
-        let effectCurrentAfter: boolean | undefined;
-        if (phase === "cancel-after-dispatch" || phase === "duplicate-after-dispatch") {
-          vi.mocked(callGateway).mockImplementationOnce(async () => {
-            await Promise.resolve();
-            invalidateTask();
-            return { runId: "run-resumed" };
-          });
-        } else if (phase === "cancel-before-notice-effect") {
-          sendRecoveryNotice.mockImplementationOnce(async (notice) => {
-            await Promise.resolve();
-            invalidateTask();
-            effectCurrentAfter = notice.isCurrent?.({});
-            return { suppressed: !effectCurrentAfter };
-          });
         }
         await expectRecovery({ started: 1, settled: 0, failed: 0, skipped: 0 });
         expect(callGateway).toHaveBeenCalledOnce();
-        if (phase === "cancel-after-dispatch" || phase === "duplicate-after-dispatch") {
-          expect(sendRecoveryNotice).not.toHaveBeenCalled();
-        } else if (phase === "cancel-before-notice-effect") {
-          expect(effectCurrentAfter).toBe(false);
-        }
-
         const saved = loadSessionEntry({
           sessionKey,
           storePath: path.join(sessionsDir, "sessions.json"),
@@ -247,7 +166,6 @@ export function registerHarnessCompletionRecoveryCases(
         expect(saved?.restartRecoveryHarnessCompletion).toEqual(binding);
         expect(saved?.restartRecoveryDeliverySourceRunId).toBe(sourceRunId);
         expect(saved?.restartRecoveryDeliveryRunId).not.toBe(sourceRunId);
-        expect(runtime.listTaskRecords()[0]?.deliveryStatus).toBe("pending");
         dispatchSettlement.resolve();
       });
     },

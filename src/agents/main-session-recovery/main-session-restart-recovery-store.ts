@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
-  type InternalSessionEntry as SessionEntry,
   resolveSessionWorkStartError,
+  type InternalSessionEntry as SessionEntry,
 } from "../../config/sessions.js";
 import { buildRestartRecoveryClaimCleanupPatch } from "../../config/sessions/restart-recovery-state.js";
 import {
@@ -18,7 +18,7 @@ import { findDeliveryIntentOwner } from "../../infra/outbound/delivery-queue-sto
 import {
   getOwedHarnessCompletionTask,
   readAdmittedHarnessCompletionInput,
-} from "../../tasks/agent-harness-completion-recovery.js";
+} from "../agent-harness-completion-recovery.js";
 import {
   listActiveEmbeddedRunSessionIds,
   listActiveEmbeddedRunSessionKeys,

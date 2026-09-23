@@ -24,14 +24,6 @@ import {
 import { withTimeout } from "../../../infra/fs-safe.js";
 import { withPluginRuntimeGatewayRequestScope } from "../../../plugins/runtime/gateway-request-scope.js";
 import { beginSessionWorkAdmission } from "../../../sessions/session-lifecycle-admission.js";
-import { resetTaskFlowRegistryForTests } from "../../../tasks/task-flow-registry.test-support.js";
-import * as taskControlRuntime from "../../../tasks/task-registry-control.runtime.js";
-import { findTaskByRunId } from "../../../tasks/task-registry.js";
-import {
-  resetTaskRegistryControlRuntimeForTests,
-  resetTaskRegistryForTests,
-  setTaskRegistryControlRuntimeForTests,
-} from "../../../tasks/task-registry.test-support.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -57,9 +49,10 @@ import { callInProcessGatewayTool } from "../../tools/in-process-gateway.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { settleSubagentRegistryPersistenceWork } from "../registry/subagent-registry.persistence.test-support.js";
 import {
-  resetSubagentRegistryForTests,
   testing as registryTesting,
+  resetSubagentRegistryForTests,
 } from "../registry/subagent-registry.test-helpers.js";
+import { resolveSubagentSessionStatus } from "../registry/subagent-session-metrics.js";
 import {
   activateSwarmRun,
   closeSwarmScheduler,
@@ -171,9 +164,6 @@ beforeEach(async () => {
     routeVariants: [model],
   });
   resetSubagentRegistryForTests({ persist: false });
-  resetTaskRegistryForTests({ persist: false });
-  resetTaskFlowRegistryForTests({ persist: false });
-  setTaskRegistryControlRuntimeForTests(taskControlRuntime);
   registryTesting.setDepsForTest({
     loadAgentRuntimePluginRegistryHandle: () => undefined,
     runSubagentAnnounceFlow: async () => "delivered",
@@ -189,9 +179,6 @@ beforeEach(async () => {
 afterEach(async ({ task }) => {
   await settleSubagentRegistryPersistenceWork();
   resetSubagentRegistryForTests({ persist: false });
-  resetTaskRegistryForTests({ persist: false });
-  resetTaskFlowRegistryForTests({ persist: false });
-  resetTaskRegistryControlRuntimeForTests();
   registryTesting.setDepsForTest();
   clearRuntimeConfigSnapshot();
   clearConfigCache();
@@ -278,13 +265,10 @@ function readBoundExecutionState(
     controllerAborted: controller?.controller.signal.aborted,
     executionStarted: controller?.executionStarted,
     executionStatus: label(execution?.status, ["queued", "running", "interrupted", "terminal"]),
-    taskStatus: label(childRunId ? findTaskByRunId(childRunId)?.status : undefined, [
-      "queued",
-      "running",
-      "completed",
-      "failed",
-      "cancelled",
-    ]),
+    runStatus: label(
+      childRunId ? resolveSubagentSessionStatus(subagentRuns.get(childRunId)) : undefined,
+      ["queued", "running", "done", "failed", "killed", "timeout"],
+    ),
     queuedLaunchPresent: collector?.queuedLaunch !== undefined,
     collectorCleanupPending: collector?.collectorLaunchCleanupPending === true,
     collectorKillPending: collector?.killIntent !== undefined,
@@ -659,7 +643,7 @@ describe("recursive spawn production boundary", () => {
             aborted: true,
             runIds: [parentRunId],
           });
-          expect(findTaskByRunId(childRunId)?.status).toBe("cancelled");
+          expect(resolveSubagentSessionStatus(subagentRuns.get(childRunId))).toBe("killed");
         }
         if (parentState === "operator-revoked") {
           expectDefined(source, "operator source").revoke();

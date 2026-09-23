@@ -6,9 +6,6 @@ import {
   openOpenClawStateDatabase,
   type OpenClawStateDatabase,
 } from "../../../state/openclaw-state-db.js";
-import { getTaskById } from "../../../tasks/runtime-internal.js";
-import type { TaskRecord } from "../../../tasks/task-registry.types.js";
-import { resetTaskRegistryForTests } from "../../../tasks/task-runtime.test-helpers.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import { SubagentLifecycleController } from "../registry/subagent-registry-lifecycle.js";
 import { subagentRuns } from "../registry/subagent-registry-memory.js";
@@ -38,7 +35,6 @@ describe("subagent completion recovery identity", () => {
 
   afterEach(() => {
     subagentRuns.clear();
-    resetTaskRegistryForTests({ persist: false });
     closeOpenClawStateDatabaseForTest();
     vi.unstubAllEnvs();
   });
@@ -49,32 +45,13 @@ describe("subagent completion recovery identity", () => {
     remappedRun = false,
   ) {
     const now = Date.now();
-    const task: TaskRecord = {
-      taskId: `task-${name}`,
-      runId: `run-${name}`,
-      runtime: "subagent",
-      requesterSessionKey: "agent:main:main",
-      ownerKey: "agent:main:main",
-      scopeKind: "session",
+    const subagent = createSubagentRunRecord({
+      runId: remappedRun ? `completion-${name}` : `run-${name}`,
+      taskRunId: remappedRun ? `run-${name}` : undefined,
       childSessionKey: "agent:main:subagent:shared",
       task: `finish ${name} work`,
-      status: "succeeded",
-      deliveryStatus: deliveryStatus === "suspended" ? "failed" : "delivered",
-      terminalOutcome: deliveryStatus === "suspended" ? "blocked" : "succeeded",
-      progressSummary: `${name} result`,
-      notifyPolicy: "done_only",
       createdAt: now - (name === "old" ? 20_000 : 10_000),
       endedAt: now - 1_000,
-      lastEventAt: now,
-      cleanupAfter: now + 7 * 24 * 60 * 60_000,
-    };
-    const subagent = createSubagentRunRecord({
-      runId: remappedRun ? `completion-${name}` : task.runId!,
-      taskRunId: remappedRun ? task.runId : undefined,
-      childSessionKey: task.childSessionKey,
-      task: task.task,
-      createdAt: task.createdAt,
-      endedAt: task.endedAt,
       outcome: { status: "ok" },
       expectsCompletionMessage: true,
       completion: { required: true, resultText: `${name} result`, capturedAt: now },
@@ -87,9 +64,9 @@ describe("subagent completion recovery identity", () => {
           : { deliveredAt: now }),
       },
     });
-    settleSubagentCompletionDelivery({ subagent, task, databaseOptions: { database } });
+    settleSubagentCompletionDelivery({ subagent, databaseOptions: { database } });
     subagentRuns.set(subagent.runId, subagent);
-    return { task, subagent };
+    return { subagent };
   }
 
   function storedPair(pair: ReturnType<typeof persistCompletion>) {
@@ -97,7 +74,6 @@ describe("subagent completion recovery identity", () => {
       .prepare("SELECT payload_json FROM subagent_runs WHERE run_id = ?")
       .get(pair.subagent.runId) as { payload_json: string } | undefined;
     return {
-      task: database.db.prepare("SELECT * FROM task_runs WHERE task_id = ?").get(pair.task.taskId),
       subagent: row ? (JSON.parse(row.payload_json) as unknown) : undefined,
     };
   }
@@ -118,18 +94,9 @@ describe("subagent completion recovery identity", () => {
       const oldRows = storedPair(old);
       const oldLive = structuredClone(old.subagent);
 
-      await expect.soft(dismiss("task-current")).resolves.toMatchObject({
+      await expect.soft(dismiss(current.subagent.runId)).resolves.toMatchObject({
         ok: true,
-        task: {
-          taskId: "task-current",
-          deliveryStatus: "dismissed",
-          progressSummary: "current result",
-        },
-      });
-      expect.soft(storedPair(current).task).toMatchObject({
-        delivery_status: "dismissed",
-        progress_summary: "current result",
-        terminal_outcome: "blocked",
+        run: { delivery: { status: "discarded" }, completion: { resultText: "current result" } },
       });
       expect.soft(storedPair(current).subagent).toMatchObject({
         delivery: {
@@ -152,22 +119,13 @@ describe("subagent completion recovery identity", () => {
       const oldLive = structuredClone(old.subagent);
 
       await expect
-        .soft(retrySubagentCompletionDelivery("task-current", { database }))
+        .soft(retrySubagentCompletionDelivery(current.subagent.runId, { database }))
         .resolves.toMatchObject({
           ok: true,
           duplicateRisk: true,
-          task: {
-            taskId: "task-current",
-            deliveryStatus: "pending",
-            progressSummary: "current result",
-          },
+          run: { delivery: { status: "pending" }, completion: { resultText: "current result" } },
         });
       expect.soft(resumeSubagentRun.mock.calls).toEqual([[current.subagent.runId]]);
-      expect.soft(storedPair(current).task).toMatchObject({
-        delivery_status: "pending",
-        progress_summary: "current result",
-        terminal_outcome: "succeeded",
-      });
       expect.soft(storedPair(current).subagent).toMatchObject({
         delivery: {
           status: "pending",
@@ -189,11 +147,10 @@ describe("subagent completion recovery identity", () => {
       const oldRows = storedPair(old);
       const currentRows = storedPair(current);
       const oldLive = structuredClone(old.subagent);
-      const currentTask = getTaskById("task-current");
 
       const result = await (action === "dismiss"
-        ? dismiss("task-current")
-        : retrySubagentCompletionDelivery("task-current", { database }));
+        ? dismiss(current.subagent.runId)
+        : retrySubagentCompletionDelivery(current.subagent.runId, { database }));
 
       expect(result).toEqual({
         ok: false,
@@ -205,7 +162,6 @@ describe("subagent completion recovery identity", () => {
       expect(storedPair(old)).toEqual(oldRows);
       expect(storedPair(current)).toEqual(currentRows);
       expect(subagentRuns.get(old.subagent.runId)).toEqual(oldLive);
-      expect(getTaskById("task-current")).toEqual(currentTask);
       expect(resumeSubagentRun).not.toHaveBeenCalled();
     },
   );

@@ -702,9 +702,9 @@ suite.define(() => {
       await expect
         .poll(() => customizeMenu.locator(".sidebar-customize-menu__provenance").textContent())
         .toContain("Stored in this browser only");
-      const tasks = customizeMenu.getByRole("menuitemcheckbox", { name: "Tasks" });
-      await tasks.click();
-      await expect.poll(() => tasks.getAttribute("aria-checked")).toBe("true");
+      const logbook = customizeMenu.getByRole("menuitemcheckbox", { name: "Logbook" });
+      await logbook.click();
+      await expect.poll(() => logbook.getAttribute("aria-checked")).toBe("true");
       await page.waitForTimeout(100);
       expect(await gateway.getRequests("config.patch")).toHaveLength(0);
 
@@ -733,7 +733,7 @@ suite.define(() => {
       await expect
         .poll(() =>
           customizeMenu
-            .getByRole("menuitemcheckbox", { name: "Tasks" })
+            .getByRole("menuitemcheckbox", { name: "Logbook" })
             .getAttribute("aria-checked"),
         )
         .toBe("true");

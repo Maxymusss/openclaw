@@ -1,17 +1,14 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
+import { cronRunLogEntryToDetail, cronRunStorageStatus } from "../../cron/run-history-detail.js";
 import type { CronRunLogEntry } from "../../cron/run-log-types.js";
 import { CronService } from "../../cron/service.js";
 import { createNoopLogger } from "../../cron/service.test-harness.js";
 import { cronStoreKey } from "../../cron/store/key.js";
-import {
-  cronRunLogEntryToTaskDetail,
-  cronRunStatusToTaskStatus,
-} from "../../cron/task-run-detail.js";
-import type { TaskRecord } from "../../tasks/task-registry.types.js";
+import { recordCronRunInDatabase } from "../../cron/store/run-history.kernel.js";
+import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { seedTaskRegistryRowsForTests } from "../../test-utils/task-registry-sqlite.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
 import { cronHandlers } from "./cron.js";
@@ -94,33 +91,30 @@ async function withCronHistory(
         { jobId: foreignJobId, sessionKey: ownKey, status: "error", summary: "needle foreign job" },
       ];
       const now = Date.now();
-      const tasks = rows.map((row, index): TaskRecord => {
-        const entry: CronRunLogEntry = {
-          ...row,
-          action: "finished",
-          ts: now + index,
-          runId: `history-run-${index}`,
-          deliveryStatus: row.status === "error" ? "not-delivered" : "delivered",
-        };
-        return {
-          taskId: `history-task-${index}`,
-          runtime: "cron",
-          sourceId: entry.jobId,
-          requesterSessionKey: "",
-          ownerKey: "",
-          scopeKind: "system",
-          childSessionKey: entry.sessionKey,
-          agentId: "main",
-          task: "history fixture",
-          status: cronRunStatusToTaskStatus(entry),
-          deliveryStatus: "not_applicable",
-          notifyPolicy: "silent",
-          createdAt: entry.ts,
-          endedAt: entry.ts,
-          detail: cronRunLogEntryToTaskDetail(entry, { storeKey: cronStoreKey(storePath) }),
-        };
+      const storeKey = cronStoreKey(storePath);
+      runOpenClawStateWriteTransaction(({ db }) => {
+        for (const [index, row] of rows.entries()) {
+          const entry: CronRunLogEntry = {
+            ...row,
+            action: "finished",
+            ts: now + index,
+            runId: `history-run-${index}`,
+            deliveryStatus: row.status === "error" ? "not-delivered" : "delivered",
+          };
+          recordCronRunInDatabase(db, {
+            storeKey,
+            jobId: entry.jobId,
+            runId: `cron:${entry.jobId}:${entry.ts}:history`,
+            agentId: "main",
+            sessionKey: entry.sessionKey,
+            startedAt: entry.ts,
+            endedAt: entry.ts,
+            status: cronRunStorageStatus(entry),
+            summary: entry.summary,
+            detail: cronRunLogEntryToDetail(entry, { storeKey }),
+          });
+        }
       });
-      seedTaskRegistryRowsForTests(new Map(tasks.map((task) => [task.taskId, task])).values());
       const context = createDirectChatContext({
         cron,
         cronStorePath: storePath,

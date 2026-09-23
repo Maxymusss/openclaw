@@ -1,14 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
-import { reloadTaskRegistryFromStoreAsync } from "../tasks/task-registry-state.js";
-import { resetTaskRegistryForTests } from "../tasks/task-runtime.test-helpers.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { readCronRunHistoryPage } from "./run-history.test-support.js";
 import { CronService } from "./service.js";
 import { createNoopLogger, installCronTestHooks } from "./service.test-harness.js";
 import type { CronServiceDeps } from "./service/state.js";
 import { loadCronStore } from "./store.js";
 import { cronStoreKey } from "./store/key.js";
-import { readCronTaskRunHistoryPage } from "./task-run-history.js";
 
 const BASE_TIME_ISO = "2026-01-15T13:55:00.000Z";
 const logger = createNoopLogger();
@@ -39,7 +36,6 @@ describe("cron state contracts", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-cron-state-lifecycle-" },
       async (state) => {
-        resetTaskRegistryForTests({ persist: false });
         const storePath = state.path("cron", "jobs.json");
         const baseTimeMs = Date.parse(BASE_TIME_ISO);
         const atMs = baseTimeMs + 1_000;
@@ -192,7 +188,6 @@ describe("cron state contracts", () => {
           first?.stop();
           restarted?.stop();
           reloaded?.stop();
-          resetTaskRegistryForTests({ persist: false });
         }
       },
     );
@@ -202,7 +197,6 @@ describe("cron state contracts", () => {
     await withOpenClawTestState(
       { layout: "state-only", prefix: "openclaw-cron-state-dedup-" },
       async (state) => {
-        resetTaskRegistryForTests({ persist: false });
         const storePath = state.path("cron", "jobs.json");
         const atMs = Date.parse(BASE_TIME_ISO) + 1_000;
         const runIsolatedAgentJob = vi.fn(async () => ({
@@ -252,7 +246,7 @@ describe("cron state contracts", () => {
             events.filter((event) => event.jobId === job.id && event.action === "finished"),
           ).toHaveLength(1);
 
-          const initialHistory = readCronTaskRunHistoryPage({
+          const initialHistory = readCronRunHistoryPage({
             storeKey: cronStoreKey(storePath),
             jobId: job.id,
           });
@@ -272,10 +266,8 @@ describe("cron state contracts", () => {
           first = undefined;
           second.stop();
           second = undefined;
-          resetTaskRegistryForTests({ persist: false });
-          await reloadTaskRegistryFromStoreAsync(captureOpenClawStateWorkerContext());
 
-          const reloadedHistory = readCronTaskRunHistoryPage({
+          const reloadedHistory = readCronRunHistoryPage({
             storeKey: cronStoreKey(storePath),
             jobId: job.id,
           });
@@ -285,7 +277,7 @@ describe("cron state contracts", () => {
           await restarted.start();
           expect(runIsolatedAgentJob).toHaveBeenCalledTimes(1);
           expect(
-            readCronTaskRunHistoryPage({
+            readCronRunHistoryPage({
               storeKey: cronStoreKey(storePath),
               jobId: job.id,
             }).entries,
@@ -294,7 +286,6 @@ describe("cron state contracts", () => {
           first?.stop();
           second?.stop();
           restarted?.stop();
-          resetTaskRegistryForTests({ persist: false });
         }
       },
     );

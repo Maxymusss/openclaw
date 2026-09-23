@@ -14,10 +14,6 @@ import {
   trackAsyncWork,
 } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import {
-  resetTaskFlowRegistryForTests,
-  resetTaskRegistryForTests,
-} from "../../tasks/task-runtime.test-helpers.js";
 import { withStateDirEnv } from "../../test-helpers/state-dir-env.js";
 import {
   runContextEngineMaintenance,
@@ -87,8 +83,6 @@ async function withResources(
 ) {
   await withStateDirEnv("openclaw-maintenance-resources-", async ({ stateDir }) => {
     resetCommandQueueStateForTest();
-    resetTaskRegistryForTests({ persist: false });
-    resetTaskFlowRegistryForTests({ persist: false });
     const db = new DatabaseSync(path.join(stateDir, "registration.sqlite"));
     db.exec("CREATE TABLE probe(value INTEGER); INSERT INTO probe VALUES (42)");
     const pending: Promise<void>[] = [];
@@ -111,8 +105,6 @@ async function withResources(
       await Promise.allSettled(pending);
       db.close();
       resetCommandQueueStateForTest();
-      resetTaskRegistryForTests({ persist: false });
-      resetTaskFlowRegistryForTests({ persist: false });
     }
   });
 }
@@ -122,8 +114,6 @@ it.each(["maintenance", "disposal"] as const)(
   async (phase) => {
     await withStateDirEnv("openclaw-maintenance-tail-", async ({ stateDir }) => {
       resetCommandQueueStateForTest();
-      resetTaskRegistryForTests({ persist: false });
-      resetTaskFlowRegistryForTests({ persist: false });
       const db = new DatabaseSync(path.join(stateDir, "registration.sqlite"));
       db.exec("CREATE TABLE probe(value INTEGER); INSERT INTO probe VALUES (42)");
       const release = createDeferredCore();
@@ -185,8 +175,6 @@ it.each(["maintenance", "disposal"] as const)(
           db.close();
         }
         resetCommandQueueStateForTest();
-        resetTaskRegistryForTests({ persist: false });
-        resetTaskFlowRegistryForTests({ persist: false });
       }
     });
   },

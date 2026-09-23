@@ -16,8 +16,7 @@ Sub-agents use a dedicated in-process queue lane:
 
 Suspended completion deliveries do not block new work. Native subagents, ACP
 sessions, and visible sessions retain their normal active-run limits and
-authorization checks independently of the delivery backlog. Operators can
-inspect, retry, or dismiss retained deliveries with `openclaw tasks`.
+authorization checks independently of the delivery backlog.
 
 OpenClaw warns when the delivery backlog reaches 25. Within a Gateway process,
 unchanged backlog counts do not repeat the warning every sweep. A count change
@@ -48,9 +47,9 @@ Recovery handles both sessions marked `abortedLastRun: true` and hard kills that
 prevented the shutdown marker from being written. For a hard kill, the child
 session must still identify the exact run from the retired Gateway, with no newer
 run or admitted work owning that session. Live executions and queued collectors
-keep their existing owners. Orphaned runs settle their background task before
-cleanup, so retained child sessions do not leave phantom running activity. If the
-task update fails, completion remains available for retry.
+keep their existing owners. Orphaned runs settle their native execution state
+before cleanup, so retained child sessions do not leave phantom running activity.
+If settlement fails, completion remains available for retry.
 
 The parent can inspect a retained child transcript and use `sessions_send` to
 continue that session, or spawn a replacement after confirming the old execution
@@ -105,7 +104,7 @@ cancellation, the Gateway refuses further cancellation and reports
 
 Incomplete cancellation is reported as an error, not a clean success. `/stop`
 reports actual stopped and failed child counts. Inspect the remaining
-[background tasks](/automation/tasks#control-ui) and retry their cancellation;
+native subagent runs with `subagents` and retry their cancellation;
 request acknowledgment does not mean all runtime cleanup is instantaneous.
 
 Accepted children remain independent after ordinary parent completion, yield, or
@@ -113,7 +112,7 @@ timeout. Those events do not automatically cancel them.
 
 ## Limitations
 
-- Direct announce attempts are best-effort, but admitted session-queued completion handoffs and their owner/task projections survive gateway restarts in the shared SQLite state database.
+- Direct announce attempts are best-effort, but admitted session-queued completion handoffs and their native subagent records survive gateway restarts in the shared SQLite state database.
 - Sub-agents still share the same gateway process resources; treat `maxConcurrent` as a safety valve.
 - `sessions_spawn` returns `{ status: "accepted", runId, childSessionKey }` when startup is accepted, without waiting for the child task to finish. Cloud-worker spawns can wait for provisioning before returning this receipt.
 - Sub-agent context only injects `AGENTS.md` (no `SOUL.md`, `IDENTITY.md`, `USER.md`, `MEMORY.md`, or `BOOTSTRAP.md`). Its `## Tools` section carries environment-specific notes. Codex-native subagents follow the same boundary through native `AGENTS.md` discovery, while parent-only persona, identity, and user files are injected as turn-scoped collaboration instructions so children do not clone them.

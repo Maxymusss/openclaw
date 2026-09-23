@@ -30,7 +30,6 @@ import {
 } from "./subagent-registry-deps.js";
 import { ANNOUNCE_EXPIRY_MS } from "./subagent-registry-helpers.js";
 import { suspendReplacedStoreNotifications } from "./subagent-registry-lifecycle-cleanup.js";
-import { finalizeSubagentTaskRun } from "./subagent-registry-lifecycle-delivery.js";
 import { SubagentLifecycleController } from "./subagent-registry-lifecycle.js";
 import { createSubagentRegistryListener } from "./subagent-registry-listener.js";
 import {
@@ -49,7 +48,6 @@ import {
   type RegisterSubagentRunParams,
 } from "./subagent-registry-run-manager.js";
 import { clearSubagentRunsReadCacheForTest } from "./subagent-registry-state.js";
-import { resolveSubagentTaskForRun } from "./subagent-registry-sweep-kill.js";
 import {
   createSubagentRegistrySweeper,
   retireSupersededSubagentRun as retireSupersededSubagentRunForSweep,
@@ -114,10 +112,6 @@ export function prepareSubagentSessionCleanupRevocation(sessionKey: string): () 
   };
 }
 
-function findSubagentTaskForRun(entry: SubagentRunRecord) {
-  return resolveSubagentTaskForRun(getSubagentRunsForChildSession(entry.childSessionKey), entry);
-}
-
 export function scheduleSubagentRegistrySweep(params?: { delayMs?: number }) {
   subagentSweeper.schedule(params);
 }
@@ -156,7 +150,6 @@ const subagentLifecycleController = new SubagentLifecycleController({
   countPendingDescendantRuns: (rootSessionKey) => countPendingDescendantRuns(rootSessionKey),
   getLatestRunForChildSession: getLatestLiveSubagentRunByChildSessionKey,
   suppressAnnounceForSteerRestart: contextCleanup.suppressAnnounceForSteerRestart,
-  resolveSubagentTask: findSubagentTaskForRun,
   shouldEmitEndedHookForRun: contextCleanup.shouldEmitEndedHookForRun,
   emitSubagentEndedHookForRun: contextCleanup.emitSubagentEndedHookForRun,
   emitSubagentProgressEndedForRun: emitSubagentProgressEndedHook,
@@ -290,16 +283,6 @@ export function resumeSubagentRun(runId: string, source: "live" | "restore" = "l
     ) {
       scheduleSubagentRegistrySweep();
       return;
-    }
-    // The child result can reach disk before its task projection. Replay that
-    // idempotent projection before terminal cleanup exits during restoration.
-    // A steer restart deliberately leaves the shared task writable for its
-    // successor run, so the retired row must not terminalize it.
-    if (entry.execution.outcome && entry.suppressAnnounceReason !== "steer-restart") {
-      finalizeSubagentTaskRun(subagentLifecycleController.options, {
-        entry,
-        outcome: entry.execution.outcome,
-      });
     }
   } catch (error) {
     log.warn("subagent task settlement deferred before cleanup", { runId, error });
@@ -526,15 +509,13 @@ const subagentRunManager = createSubagentRunManager({
   completeSubagentRun: async (params) => {
     await completionRuntime.completeSubagentRunWithRecovery(params, "subagent-wait");
   },
-  resolveSubagentTask: findSubagentTaskForRun,
 });
 
 export const replaceSubagentRunAfterSteerCore = subagentRunManager.replaceSubagentRunAfterSteer;
 export const claimSubagentRunKill = subagentRunManager.claimSubagentRunKill;
 export const releaseSubagentRunKillClaim = subagentRunManager.releaseSubagentRunKillClaim;
 export function registerSubagentRun(
-  params: RegisterSubagentRunParams &
-    ({ queued?: false } | { taskRowOwnership?: "gateway_best_effort" }),
+  params: RegisterSubagentRunParams & { queued?: false },
   options?: RegisterSubagentRunOptions,
 ): void;
 export function registerSubagentRun(

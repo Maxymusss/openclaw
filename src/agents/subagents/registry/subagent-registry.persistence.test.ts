@@ -4,7 +4,6 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import "./subagent-registry.mocks.shared.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
   patchSessionEntryCore,
@@ -15,36 +14,31 @@ import { callGateway } from "../../../gateway/call.js";
 import { onAgentEvent } from "../../../infra/agent-events.js";
 import { getActiveGatewayRootWorkCount } from "../../../process/gateway-work-admission.js";
 import { closeOpenClawStateDatabaseForTest } from "../../../state/openclaw-state-db.js";
-import { resetTaskRegistryMaintenanceRuntimeForTests } from "../../../tasks/task-registry.maintenance.js";
-import {
-  resetTaskFlowRegistryForTests,
-  resetTaskRegistryForTests,
-} from "../../../tasks/task-runtime.test-helpers.js";
 import { captureEnv, setTestEnvValue, withEnv } from "../../../test-utils/env.js";
 import { createAgentsWaitTool } from "../../tools/agents-wait-tool.js";
 import { subagentRegistryDeps } from "./subagent-registry-deps.js";
 import { persistSubagentSessionTiming } from "./subagent-registry-helpers.js";
 import { getLatestSubagentRunByChildSessionKey } from "./subagent-registry-read.js";
 import { getSubagentRunsSnapshotForRead } from "./subagent-registry-state.js";
+import "./subagent-registry.mocks.shared.js";
 import { registerSubagentOrphanTaskCases } from "./subagent-registry.persistence.orphan.test-support.js";
+import type { SubagentRunFixture } from "./subagent-registry.persistence.test-support.js";
 import {
   canonicalSubagentRunFixtures,
   cleanupSubagentRegistryPersistenceTest,
+  createSubagentRegistryTestDeps,
   expectDeferredSubagentAnnouncement,
   gateSubagentRequesterSettlement,
-  settleSubagentRegistryPersistenceWork,
-  createSubagentRegistryTestDeps,
   readSubagentSessionStore,
   removeSubagentSessionEntry,
+  settleSubagentRegistryPersistenceWork,
   writeSubagentSessionEntry,
 } from "./subagent-registry.persistence.test-support.js";
-import type { SubagentRunFixture } from "./subagent-registry.persistence.test-support.js";
 import {
   loadSubagentRegistryFromSqlite,
   saveSubagentRegistryToSqlite,
 } from "./subagent-registry.store.sqlite.js";
 import {
-  testing,
   activateSubagentRegistry,
   addSubagentRunForTests,
   getSubagentRunByChildSessionKey,
@@ -53,6 +47,7 @@ import {
   registerSubagentRun,
   resetSubagentRegistryForTests,
   resumeSubagentRun,
+  testing,
 } from "./subagent-registry.test-helpers.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
@@ -213,9 +208,6 @@ describe("subagent registry persistence", () => {
   }
 
   beforeEach(() => {
-    resetTaskRegistryMaintenanceRuntimeForTests();
-    resetTaskRegistryForTests({ persist: false });
-    resetTaskFlowRegistryForTests({ persist: false });
     announceSpy.mockReset();
     announceSpy.mockResolvedValue("delivered");
     testing.setDepsForTest({
@@ -239,14 +231,10 @@ describe("subagent registry persistence", () => {
         stateDir: tempStateDir,
         resetRegistry: () => resetSubagentRegistryForTests({ persist: false }),
         resetDeps: () => testing.setDepsForTest(),
-        closeDatabases: () => {
-          resetTaskRegistryForTests({ persist: false });
-          resetTaskFlowRegistryForTests({ persist: false });
-        },
+        closeDatabases: () => {},
       });
       tempStateDir = null;
     }
-    resetTaskRegistryMaintenanceRuntimeForTests();
     envSnapshot.restore();
   });
 

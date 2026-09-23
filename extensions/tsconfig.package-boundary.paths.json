@@ -146,9 +146,6 @@
       "openclaw/plugin-sdk/codex-session-transcript-runtime": [
         "../packages/plugin-sdk/dist/src/plugin-sdk/codex-session-transcript-runtime.d.ts"
       ],
-      "openclaw/plugin-sdk/agent-harness-task-runtime": [
-        "../packages/plugin-sdk/dist/src/plugin-sdk/agent-harness-task-runtime.d.ts"
-      ],
       "openclaw/plugin-sdk/agent-harness-exec-review-runtime": [
         "../packages/plugin-sdk/dist/src/plugin-sdk/agent-harness-exec-review-runtime.d.ts"
       ],
@@ -939,6 +936,9 @@
       ],
       "openclaw/plugin-sdk/worker-task-server": [
         "../packages/plugin-sdk/dist/src/plugin-sdk/worker-task-server.d.ts"
+      ],
+      "openclaw/plugin-sdk/agent-harness-completion": [
+        "../packages/plugin-sdk/dist/src/plugin-sdk/agent-harness-completion.d.ts"
       ]
     }
   }

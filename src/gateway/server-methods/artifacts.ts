@@ -1,5 +1,5 @@
 // Artifact gateway methods collect generated artifacts from session transcripts
-// and expose list/get/download RPCs scoped by session, run, task, or agent.
+// and expose list/get/download RPCs scoped by session, run, or agent.
 import { createHash } from "node:crypto";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString as asNonEmptyString } from "@openclaw/normalization-core/string-coerce";
@@ -37,7 +37,6 @@ import {
   mediaUrlValue,
   resolveBlockDownload,
   resolveMessageRunId,
-  resolveMessageTaskId,
 } from "./artifacts-content.js";
 import { readArtifactImagePage } from "./artifacts-image-page.js";
 import {
@@ -157,7 +156,6 @@ function collectArtifactsFromMessage(params: {
   collection: { artifacts: ArtifactRecord[]; count: number };
   sessionKey: string;
   runId?: string;
-  taskId?: string;
   messageRole?: ArtifactQuery["messageRole"];
   includeDownloadData?: boolean;
   downloadArtifactId?: string;
@@ -169,11 +167,7 @@ function collectArtifactsFromMessage(params: {
   }
   const messageSeq = resolveMessageSeq(msg, params.messageFallbackSeq);
   const messageRunId = resolveMessageRunId(msg);
-  const messageTaskId = resolveMessageTaskId(msg);
   if (params.runId && messageRunId !== params.runId) {
-    return;
-  }
-  if (params.taskId && messageTaskId !== params.taskId) {
     return;
   }
   const content = readAssistantDisplayContent(msg);
@@ -262,7 +256,6 @@ function collectArtifactsFromMessage(params: {
       ...(download.sizeBytes !== undefined ? { sizeBytes: download.sizeBytes } : {}),
       sessionKey: params.sessionKey,
       ...(messageRunId ? { runId: messageRunId } : {}),
-      ...(messageTaskId ? { taskId: messageTaskId } : {}),
       messageSeq,
       source: previewOnly ? "session-transcript-preview" : "session-transcript",
       download: { mode: previewOnly ? "unsupported" : download.mode },
@@ -274,7 +267,7 @@ function collectArtifactsFromMessage(params: {
   }
 }
 
-/** Loads artifacts from the transcript selected by sessionKey, runId, or taskId. */
+/** Loads artifacts from the transcript selected by sessionKey or runId. */
 async function loadArtifacts(
   query: ArtifactsListParams,
   getRuntimeConfig: () => OpenClawConfig | undefined,
@@ -317,7 +310,6 @@ async function loadArtifacts(
         scope.agentId,
         sessionId,
         query.runId,
-        query.taskId,
         query.messageRole,
       ]),
       client,
@@ -331,7 +323,6 @@ async function loadArtifacts(
           collection: { artifacts: images, count: 0 },
           sessionKey,
           runId: query.runId,
-          taskId: query.taskId,
           messageRole: query.messageRole,
           imagesOnly: true,
         });
@@ -350,7 +341,6 @@ async function loadArtifacts(
       collection,
       sessionKey,
       runId: query.runId,
-      taskId: query.taskId,
       messageRole: query.messageRole,
       includeDownloadData: opts.includeDownloadData,
       downloadArtifactId: opts.downloadArtifactId,
@@ -363,16 +353,13 @@ async function loadArtifacts(
 }
 
 function requireQueryable(params: ArtifactQuery, respond: RespondFn): boolean {
-  if (params.sessionKey || params.runId || params.taskId) {
+  if (params.sessionKey || params.runId) {
     return true;
   }
   respond(
     false,
     undefined,
-    artifactError(
-      "artifact_query_unsupported",
-      "artifacts require one of sessionKey, runId, or taskId",
-    ),
+    artifactError("artifact_query_unsupported", "artifacts require sessionKey or runId"),
   );
   return false;
 }
@@ -481,7 +468,6 @@ async function respondManagedArtifactDownload(
         ...(managed.sizeBytes !== undefined ? { sizeBytes: managed.sizeBytes } : {}),
         sessionKey: managed.sessionKey,
         ...(matched?.runId ? { runId: matched.runId } : {}),
-        ...(matched?.taskId ? { taskId: matched.taskId } : {}),
         ...(matched?.messageSeq !== undefined ? { messageSeq: matched.messageSeq } : {}),
         source: "session-transcript",
         download: { mode: "url" as const },
@@ -519,7 +505,7 @@ export const artifactsHandlers: GatewayRequestHandlers = {
       return;
     }
     const { artifacts, sessionKey, nextCursor, omittedOversized } = loaded.value;
-    if (!sessionKey && (query.runId || query.taskId)) {
+    if (!sessionKey && query.runId) {
       respond(
         false,
         undefined,
@@ -573,7 +559,6 @@ export const artifactsHandlers: GatewayRequestHandlers = {
     if (
       query.sessionKey &&
       !query.runId &&
-      !query.taskId &&
       !query.messageRole &&
       parseManagedOutgoingArtifactId(query.artifactId)
     ) {

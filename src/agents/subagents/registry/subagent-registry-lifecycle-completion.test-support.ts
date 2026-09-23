@@ -1,5 +1,4 @@
 import { expect, it, vi, type Mock } from "vitest";
-import type { setDetachedTaskDeliveryStatusByRunId } from "../../../tasks/detached-task-runtime.js";
 import type {
   blockSubagentCompletionDelivery,
   settleRequesterCompletionBatch,
@@ -13,16 +12,11 @@ import type {
 import { markRequesterTurnYieldedInRuns } from "./subagent-registry-requester-yield.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
 
-export function mockBlockedCompletionDeliveryOwner(
-  completionDeliveryMocks: {
-    blockSubagentCompletionDelivery: Mock<typeof blockSubagentCompletionDelivery>;
-    settleRequesterCompletionBatch: Mock<typeof settleRequesterCompletionBatch>;
-    runsByEntry: WeakMap<SubagentRunRecord, Map<string, SubagentRunRecord>>;
-  },
-  taskExecutorMocks: {
-    setDetachedTaskDeliveryStatusByRunId: Mock<typeof setDetachedTaskDeliveryStatusByRunId>;
-  },
-): void {
+export function mockBlockedCompletionDeliveryOwner(completionDeliveryMocks: {
+  blockSubagentCompletionDelivery: Mock<typeof blockSubagentCompletionDelivery>;
+  settleRequesterCompletionBatch: Mock<typeof settleRequesterCompletionBatch>;
+  runsByEntry: WeakMap<SubagentRunRecord, Map<string, SubagentRunRecord>>;
+}): void {
   completionDeliveryMocks.settleRequesterCompletionBatch.mockImplementation(
     ({
       entries,
@@ -30,7 +24,7 @@ export function mockBlockedCompletionDeliveryOwner(
     }: Parameters<
       typeof import("../completion/subagent-completion-admission.store.js").settleRequesterCompletionBatch
     >[0]) => {
-      for (const { subagent, taskId } of entries) {
+      for (const { subagent } of entries) {
         if (subagent.pauseReason !== "sessions_yield") {
           // The store publishes a newly decoded receipt even when already delivered.
           if (outcome.delivered && subagent.delivery) {
@@ -50,14 +44,9 @@ export function mockBlockedCompletionDeliveryOwner(
                 announcedAt: deliveredAt,
               };
               clearSubagentPendingDelivery(subagent);
-              taskExecutorMocks.setDetachedTaskDeliveryStatusByRunId({
-                runId: subagent.taskRunId ?? subagent.runId,
-                deliveryStatus: "delivered",
-              });
             } else {
               completionDeliveryMocks.blockSubagentCompletionDelivery({
                 subagent,
-                taskId: taskId ?? "",
                 reason: outcome.error ?? outcome.reason ?? "requester settle wake failed",
                 disposition: outcome.disposition,
               });

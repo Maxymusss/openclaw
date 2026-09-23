@@ -321,7 +321,7 @@ async function planStartupCatchup(
     }
 
     const now = state.deps.nowMs();
-    const missed = skipCronJobsWithoutOwners(
+    const missed = await skipCronJobsWithoutOwners(
       state,
       collectStartupCatchupJobs(state, now, { skipJobIds: opts?.skipJobIds }),
       now,

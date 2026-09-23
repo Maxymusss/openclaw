@@ -5,9 +5,11 @@ import { withStateDatabaseCoordinatorRuntimeDirectory } from "../../infra/state-
 import { serveWorkerTasks } from "../../infra/worker-task-server.js";
 import { openOpenClawStateReadConnection } from "../../state/openclaw-state-db-read-connection.js";
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
+import { cronRunRecordStoreKey } from "../run-history-detail.js";
 import { serializeCronLoadError } from "./load-error.js";
 import { loadCronStoreFromDatabase } from "./load.kernel.js";
 import type { CronReadOnlyResult } from "./read-only.types.js";
+import { readCronRunRecordsInDatabase } from "./run-history.kernel.js";
 
 serveWorkerTasks(async (input, _channel, control): Promise<CronReadOnlyResult> => {
   try {
@@ -16,6 +18,9 @@ serveWorkerTasks(async (input, _channel, control): Promise<CronReadOnlyResult> =
       typeof input.location !== "string" ||
       typeof input.storeKey !== "string" ||
       (input.stagingRoot !== undefined && typeof input.stagingRoot !== "string") ||
+      (input.history !== undefined &&
+        (!isRecord(input.history) ||
+          (input.history.jobId !== undefined && typeof input.history.jobId !== "string"))) ||
       !isRecord(input.coordinatorRuntime) ||
       typeof input.coordinatorRuntime.directory !== "string" ||
       typeof input.coordinatorRuntime.keepAlive !== "boolean"
@@ -41,6 +46,15 @@ serveWorkerTasks(async (input, _channel, control): Promise<CronReadOnlyResult> =
         // The connection owner retains failed-close token custody without imposing a schema gate.
         const db = connection?.database.db ?? openNodeSqliteDatabase(location, { readOnly: true });
         try {
+          if (isRecord(input.history)) {
+            return {
+              ok: true,
+              history: readCronRunRecordsInDatabase(
+                db,
+                typeof input.history.jobId === "string" ? input.history.jobId : undefined,
+              ).filter((row) => cronRunRecordStoreKey(row) === storeKey),
+            } satisfies CronReadOnlyResult;
+          }
           return {
             ok: true,
             loaded: tableExists(db, "cron_jobs")

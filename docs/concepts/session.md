@@ -290,7 +290,7 @@ therefore remain above the cap when protected rows alone exceed it.
 Root sessions and sessions auto-parented to the agent's Home root can be pinned;
 genuine child sessions and subagent runs reject pin requests. Persistent child
 sessions retain their sidebar nesting; subagent runs appear in transcript activity
-and Tasks views. Existing child pins disappear and no longer protect the session
+and session transcripts. Existing child pins disappear and no longer protect the session
 from maintenance.
 
 Gateway model-run probe sessions are short-lived by default. Rows matching
@@ -369,5 +369,4 @@ Preview any maintenance run with `openclaw sessions cleanup --dry-run`.
 - [Multi-agent sandbox and tools](/tools/multi-agent-sandbox-tools) - per-agent sandbox and tool restrictions, including session visibility
 - [Transcript hygiene](/reference/transcript-hygiene) - in-memory, provider-specific transcript sanitization applied before a run
 - [Command queue](/concepts/queue)
-- [Background Tasks](/automation/tasks) - how detached work creates task records with session references
 - [Channel routing](/channels/channel-routing) - how inbound messages are routed to sessions

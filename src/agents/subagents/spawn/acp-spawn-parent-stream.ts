@@ -15,9 +15,9 @@ import {
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { onAgentEventForRun } from "../../../infra/agent-events.js";
 import {
-  type EventSessionRoutingPolicy,
   resolveEventSessionKeyForPolicy,
   scopedHeartbeatWakeOptionsForPolicy,
+  type EventSessionRoutingPolicy,
 } from "../../../infra/event-session-routing.js";
 import { requestHeartbeat } from "../../../infra/heartbeat-wake.js";
 import { resolveSystemEventQueueKey } from "../../../infra/system-event-ownership.js";
@@ -27,7 +27,6 @@ import { resolveChannelAccountEntry } from "../../../routing/account-lookup.js";
 import { normalizeAccountId, resolveAgentIdFromSessionKey } from "../../../routing/session-key.js";
 import { normalizeAssistantPhase } from "../../../shared/chat-message-content.js";
 import { truncateUtf16WithEllipsis as truncate } from "../../../shared/text-truncate.js";
-import { recordTaskRunProgressByRunId } from "../../../tasks/detached-task-runtime.js";
 import type { DeliveryContext } from "../../../utils/delivery-context.types.js";
 import {
   recordAcpParentStreamEvents,
@@ -361,13 +360,6 @@ export function startAcpSpawnParentStreamRelay(params: {
     wake();
   };
   const emitStartNotice = () => {
-    recordTaskRunProgressByRunId({
-      runId,
-      runtime: "acp",
-      sessionKey: params.childSessionKey,
-      lastEventAt: Date.now(),
-      eventSummary: "Started.",
-    });
     emit(
       `Started ${relayLabel} session ${params.childSessionKey}. Streaming progress updates to parent session.`,
       `${contextPrefix}:start`,
@@ -430,13 +422,6 @@ export function startAcpSpawnParentStreamRelay(params: {
   const appendVisibleProgress = (delta: string, kind: string) => {
     if (stallNotified) {
       stallNotified = false;
-      recordTaskRunProgressByRunId({
-        runId,
-        runtime: "acp",
-        sessionKey: params.childSessionKey,
-        lastEventAt: Date.now(),
-        eventSummary: "Resumed output.",
-      });
       emit(`${relayLabel} resumed output.`, `${contextPrefix}:resumed`);
     }
 
@@ -522,13 +507,6 @@ export function startAcpSpawnParentStreamRelay(params: {
     }
     stallNotified = true;
     const notice = buildNoOutputNotice();
-    recordTaskRunProgressByRunId({
-      runId,
-      runtime: "acp",
-      sessionKey: params.childSessionKey,
-      lastEventAt: Date.now(),
-      eventSummary: notice.summary,
-    });
     emit(notice.text, `${contextPrefix}:stall`);
   }, noOutputPollMs);
   noOutputWatcherTimer.unref?.();

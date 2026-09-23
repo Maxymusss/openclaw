@@ -62,7 +62,6 @@ import {
   dispatchAgentRunFromGateway,
 } from "./agent-run-dispatch.js";
 import { resolveExecutionIdentitySpawnFacts } from "./agent-run-execution-lineage.js";
-import { settleUnstartedGatewayAgentTask } from "./agent-run-task-tracking.js";
 import {
   finalizePreparedAgentRunUserTurn,
   releasePreparedAgentRunUserTurn,
@@ -132,17 +131,6 @@ export async function startAgentRunExecution(params: {
     const abortController = abortRegistration.controller;
     const operationalRunInstance = prepared.operationalRunInstance;
     const sessionKey = abortEntry?.sessionKey;
-    const assertTaskSettlementCurrent = () => {
-      params.assertContextCurrent?.();
-      assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
-      // Cancellation closes execution, but its retained producer still records the outcome.
-      if (
-        !leaseActive ||
-        (abortRegistration.registered && !prepared.activeGatewayWorkAdmission.isActive())
-      ) {
-        throw new Error("Agent task settlement no longer owns this Gateway run");
-      }
-    };
     const assertDispatchCurrent = () => {
       params.assertContextCurrent?.();
       prepared.operatorAuthority?.assertCurrent();
@@ -160,7 +148,7 @@ export async function startAgentRunExecution(params: {
             abortEntry.sessionKey !== sessionKey ||
             abortEntry.registrationCleanupRequested))
       ) {
-        throw new Error("agent task creation no longer owns this Gateway run");
+        throw new Error("agent dispatch no longer owns this Gateway run");
       }
     };
     let mediaCleanup: Promise<void> | undefined;
@@ -208,16 +196,6 @@ export async function startAgentRunExecution(params: {
       await yieldAfterAgentAcceptedAck();
       let dispatched = false;
       let pendingRecovery: MainSessionRecoveryPendingTarget | undefined;
-      const settleUnstartedTask = (outcome: AgentRunTerminalOutcome) =>
-        !dispatched
-          ? settleUnstartedGatewayAgentTask({
-              tracking: prepared.dispatchTaskTrackingMode,
-              runId: params.runId,
-              admittedRunEntry: abortEntry,
-              context: params.context,
-              outcome,
-            })
-          : undefined;
       const finishFailure = async (err: unknown, recordCompletion = true) => {
         const error = errorShapeFromError(ErrorCodes.UNAVAILABLE, err);
         const renderedErr = error.message;
@@ -231,7 +209,6 @@ export async function startAgentRunExecution(params: {
             );
           }
         }
-        await settleUnstartedTask(outcome);
         const payload = { runId: params.runId, status: "error" as const, summary: renderedErr };
         setGatewayDedupeEntries({
           dedupe: params.context.dedupe,
@@ -258,7 +235,6 @@ export async function startAgentRunExecution(params: {
           await finishFailure(error, false);
           return;
         }
-        await settleUnstartedTask(outcome);
         setAbortedAgentDedupeEntries({
           dedupe: params.context.dedupe,
           keys: params.agentDedupeKeys,
@@ -297,7 +273,7 @@ export async function startAgentRunExecution(params: {
 
         // Admission owns plugin/settlement adoption; other inter-session work
         // must leave the paused task's completion lifecycle with its owner.
-        if (prepared.dispatchTaskTrackingMode === "cli" && params.resolvedSessionKey) {
+        if (prepared.reactivateSubagent && params.resolvedSessionKey) {
           await reactivateCompletedSubagentSession({
             sessionKey: params.resolvedSessionKey,
             runId: params.runId,
@@ -437,7 +413,6 @@ export async function startAgentRunExecution(params: {
           withAgentRunDispatchExecutionIdentity(
             {
               assertCurrent: assertDispatchCurrent,
-              assertSettlementCurrent: assertTaskSettlementCurrent,
               admittedRunEntry: abortEntry,
               commandRuntimeContext: {
                 config: prepared.replyDispatchRuntime.config,
@@ -610,7 +585,6 @@ export async function startAgentRunExecution(params: {
                 : undefined,
               io: params.io,
               context: params.context,
-              taskTrackingMode: prepared.dispatchTaskTrackingMode,
               restoreAdmittedRecovery: prepared.restoreAdmittedRestartRecoveryInterrupted,
               canonicalSkillWorkspaceDir: params.sessionEntry?.worktree?.canonicalWorkspaceDir,
             },

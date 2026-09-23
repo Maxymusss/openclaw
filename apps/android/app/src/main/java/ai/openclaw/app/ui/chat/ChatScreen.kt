@@ -30,7 +30,6 @@ import ai.openclaw.app.chat.ChatProgressCard
 import ai.openclaw.app.chat.ChatQuestionDraft
 import ai.openclaw.app.chat.ChatQuestionPrompt
 import ai.openclaw.app.chat.ChatSessionEntry
-import ai.openclaw.app.chat.ChatSubagentActivity
 import ai.openclaw.app.chat.ChatThinkingLevelOption
 import ai.openclaw.app.chat.ChatThinkingLevelSelection
 import ai.openclaw.app.chat.ChatToolActivity
@@ -83,7 +82,6 @@ import ai.openclaw.app.ui.gatewayDiagnosticsEndpoint
 import ai.openclaw.app.ui.gatewayStatusForDisplay
 import ai.openclaw.app.ui.localizedUppercase
 import ai.openclaw.app.ui.relativeSessionTime
-import ai.openclaw.app.ui.rememberSystemAnimationsEnabled
 import ai.openclaw.app.ui.rememberWindowDisplayFeatureState
 import ai.openclaw.app.ui.sessionPresentationTitle
 import ai.openclaw.app.ui.sidebarCatalogHosts
@@ -93,8 +91,6 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
@@ -155,7 +151,6 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Difference
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.GppMaybe
-import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Lock
@@ -374,7 +369,6 @@ internal fun ChatScreen(
   val thinkingLevelSelection by viewModel.chatThinkingLevelSelection.collectAsState()
   val streamingAssistantText by viewModel.chatStreamingAssistantText.collectAsState()
   val pendingToolCalls by viewModel.chatToolActivities.collectAsState()
-  val subagentActivities by viewModel.chatSubagentActivities.collectAsState()
   val questions by viewModel.chatQuestions.collectAsState()
   val progressCard by viewModel.chatProgressCard.collectAsState()
   val sessions by viewModel.chatSessions.collectAsState()
@@ -568,12 +562,6 @@ internal fun ChatScreen(
         viewModel.isCurrentChatComposerOwner(expected) && (canChangeThinking() || canChangeFastMode(expected))
       }
     }
-  val backgroundTasks =
-    remember(viewModel, pickerActivity, pickerView, lifecycleOwner) {
-      ChatModelPickerSessionOwner(pickerActivity, pickerView, lifecycleOwner.lifecycle) { expected ->
-        viewModel.isCurrentChatComposerOwner(expected)
-      }
-    }
   val reviewDiff =
     remember(viewModel, pickerActivity, pickerView, lifecycleOwner) {
       ChatModelPickerSessionOwner(pickerActivity, pickerView, lifecycleOwner.lifecycle) { expected ->
@@ -606,7 +594,6 @@ internal fun ChatScreen(
   rememberWindowDisplayFeatureState { publication ->
     modelPicker.publishFeatures(publication)
     effortPicker.publishFeatures(publication)
-    backgroundTasks.publishFeatures(publication)
     reviewDiff.publishFeatures(publication)
     branchPicker.publishFeatures(publication)
     attachmentPicker.publishFeatures(publication)
@@ -614,17 +601,15 @@ internal fun ChatScreen(
   SideEffect {
     modelPicker.refreshTarget()
     effortPicker.refreshTarget()
-    backgroundTasks.refreshTarget()
     reviewDiff.refreshTarget()
     branchPicker.refreshTarget()
     attachmentPicker.refreshTarget()
     branchOpening?.let { isCurrentBranchOpening(it) }
   }
-  DisposableEffect(modelPicker, effortPicker, backgroundTasks, reviewDiff, branchPicker, attachmentPicker) {
+  DisposableEffect(modelPicker, effortPicker, reviewDiff, branchPicker, attachmentPicker) {
     onDispose {
       modelPicker.dispose()
       effortPicker.dispose()
-      backgroundTasks.dispose()
       reviewDiff.dispose()
       branchPicker.dispose()
       attachmentPicker.dispose()
@@ -940,10 +925,6 @@ internal fun ChatScreen(
         dismissDetails()
         reviewDiff.open(composerOwner, sessionKey)
       },
-      onOpenBackgroundTasks = {
-        dismissDetails()
-        backgroundTasks.open(composerOwner, sessionKey)
-      },
       onOpenBranchSwitcher = {
         dismissDetails()
         if (viewModel.isCurrentChatSelection(composerOwner, selectionGeneration)) {
@@ -992,7 +973,6 @@ internal fun ChatScreen(
     activeRunClockKey = selectedActiveRun.clockKey,
     activeRunOutputTokens = selectedActiveRun.outputTokens,
     pendingToolCalls = pendingToolCalls,
-    subagentActivities = subagentActivities,
     questions = questionsForSession(questions, sessionKey, mainSessionKey, activeAgentId),
     streamingAssistantText = streamingAssistantText,
     healthOk = healthOk,
@@ -1428,16 +1408,6 @@ internal fun ChatScreen(
       )
     }
   }
-  backgroundTasks.visible?.let { opening ->
-    key(opening) {
-      BackgroundTasksSheet(
-        viewModel = viewModel,
-        opening = opening,
-        admit = { backgroundTasks.admit(opening) },
-        onDismiss = { if (backgroundTasks.admit(opening)) backgroundTasks.retire(opening) },
-      )
-    }
-  }
 }
 
 internal fun canStartNewChat(
@@ -1483,7 +1453,6 @@ private fun ChatHeader(
   onNewChatInWorktree: () -> Unit,
   onRefresh: () -> Unit,
   onOpenDashboard: () -> Unit,
-  onOpenBackgroundTasks: () -> Unit,
   onOpenReviewDiff: () -> Unit,
   onOpenBranchSwitcher: () -> Unit,
 ) {
@@ -1630,7 +1599,6 @@ private fun ChatHeader(
                 add(FoldAwareMenuItem("review-diff", nativeString("Review changes"), onOpenReviewDiff, Icons.Default.Difference))
               }
               add(FoldAwareMenuItem("dashboard", nativeString("Dashboard"), onOpenDashboard, Icons.Default.Dashboard))
-              add(FoldAwareMenuItem("background", nativeString("Background tasks"), onOpenBackgroundTasks, Icons.Default.HourglassEmpty))
               if (workspaceGit) {
                 add(FoldAwareMenuItem("worktree", newChatInWorktreeLabel, onNewChatInWorktree, enabled = newChatEnabled))
               }
@@ -1680,7 +1648,6 @@ private fun ChatMessageList(
   activeRunClockKey: String?,
   activeRunOutputTokens: Long?,
   pendingToolCalls: List<ChatPendingToolCall>,
-  subagentActivities: Map<String, ChatSubagentActivity>,
   questions: List<ChatQuestionPrompt>,
   streamingAssistantText: String?,
   healthOk: Boolean,
@@ -1739,13 +1706,12 @@ private fun ChatMessageList(
     )
   var expandedWorkKeys by remember(sessionKey) { mutableStateOf(emptySet<String>()) }
   val timeline =
-    remember(history, turnRecap, expandedWorkKeys, activeRunCount, activeRunId, pendingToolCalls, subagentActivities, questions, streamingAssistantText, outboxItems, recoveryOutboxItems) {
+    remember(history, turnRecap, expandedWorkKeys, activeRunCount, activeRunId, pendingToolCalls, questions, streamingAssistantText, outboxItems, recoveryOutboxItems) {
       history
         .buildTimeline(
           pendingRunCount = activeRunCount,
           pendingToolCalls = pendingToolCalls,
           streamingAssistantText = streamingAssistantText,
-          subagentActivities = subagentActivities,
           outboxItems = outboxItems,
           recoveryOutboxItems = recoveryOutboxItems,
           questions = questions,
@@ -1881,12 +1847,6 @@ private fun ChatMessageList(
                       CompletedToolActivity(tools = item.tools, stableKey = item.key)
                     }
 
-                    is ChatTimelineItem.SubagentActivity -> {
-                      SubagentActivityRows(
-                        activities = item.activities,
-                        moreWorkingCount = item.moreWorkingCount,
-                      )
-                    }
 
                     is ChatTimelineItem.QuestionPrompt -> {
                       ChatQuestionCard(prompt = item.prompt, onDraftChanged = onQuestionDraftChanged, onSubmit = onResolveQuestion, onSkip = onSkipQuestion)
@@ -2845,87 +2805,6 @@ internal fun readableToolName(name: String): String =
     .ifEmpty { nativeString("Tool") }
 
 @Composable
-private fun SubagentActivityRows(
-  activities: List<ChatSubagentActivity>,
-  moreWorkingCount: Int,
-) {
-  val animationsEnabled = rememberSystemAnimationsEnabled()
-  ClawPanel {
-    Column(
-      modifier = if (animationsEnabled) Modifier.animateContentSize() else Modifier,
-      verticalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
-      activities.forEach { activity -> SubagentActivityRow(activity, animationsEnabled) }
-      if (moreWorkingCount > 0) {
-        Text(
-          text = nativeString("+\${moreWorkingCount} more working", moreWorkingCount),
-          style = ClawTheme.type.caption,
-          color = ClawTheme.colors.textSubtle,
-        )
-      }
-    }
-  }
-}
-
-@Composable
-private fun SubagentActivityRow(
-  activity: ChatSubagentActivity,
-  animationsEnabled: Boolean,
-) {
-  val completed = activity.status == "completed"
-  val summary = if (activity.isWorking) activity.snippet else activity.terminalSummary ?: activity.error ?: activity.snippet
-  Row(
-    verticalAlignment = Alignment.CenterVertically,
-    horizontalArrangement = Arrangement.spacedBy(8.dp),
-  ) {
-    if (activity.isWorking) {
-      WorkingClawIcon(runKey = activity.id, color = ClawTheme.colors.primary)
-    } else {
-      Icon(
-        imageVector = if (completed) Icons.Default.Check else Icons.Default.Close,
-        contentDescription = null,
-        modifier = Modifier.size(15.dp),
-        tint = if (completed) ClawTheme.colors.success else ClawTheme.colors.danger,
-      )
-    }
-    Text(
-      text = subagentActivityStatusLabel(activity.status),
-      style = ClawTheme.type.label,
-      color = ClawTheme.colors.text,
-      maxLines = 1,
-    )
-    if (summary.isNullOrBlank()) {
-      Box(modifier = Modifier.weight(1f))
-    } else if (animationsEnabled) {
-      AnimatedContent(
-        targetState = summary,
-        modifier = Modifier.weight(1f),
-      ) { text ->
-        SubagentActivitySnippet(text)
-      }
-    } else {
-      SubagentActivitySnippet(summary, Modifier.weight(1f))
-    }
-    activity.diffStat?.takeIf { it.added > 0 || it.removed > 0 }?.let { DiffStatChips(it) }
-  }
-}
-
-@Composable
-private fun SubagentActivitySnippet(
-  text: String,
-  modifier: Modifier = Modifier,
-) {
-  Text(
-    text = text,
-    modifier = modifier,
-    style = ClawTheme.type.caption,
-    color = ClawTheme.colors.textMuted,
-    maxLines = 1,
-    overflow = TextOverflow.Ellipsis,
-  )
-}
-
-@Composable
 private fun DiffStatChips(diff: ChatDiffStat) {
   Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
     if (diff.added > 0) {
@@ -2953,16 +2832,6 @@ private fun DiffStatChip(
     )
   }
 }
-
-@Composable
-private fun subagentActivityStatusLabel(status: String): String =
-  when (status) {
-    "queued", "running" -> nativeString("Subagent working")
-    "completed" -> nativeString("Subagent finished")
-    "failed", "timed_out" -> nativeString("Subagent failed")
-    "cancelled" -> nativeString("Subagent cancelled")
-    else -> nativeString("Subagent finished")
-  }
 
 @Composable
 private fun ChatNotice(
