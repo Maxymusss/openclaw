@@ -19,8 +19,7 @@ import {
   MAX_PRESERVED_PENDING_LINE_BYTES,
   resolveMaxOutputBytes,
   resolveOutputCapture,
-  shouldTerminateOnOutputError,
-  shouldTerminateOnOutputLimit,
+  shouldTerminateOnOutput,
   type CapturedOutputBuffers,
   type CommandOutputCaptureMode,
   type CommandOutputCaptureOption,
@@ -400,10 +399,7 @@ async function runCommandWithOutputEncoding(
     const streamLimitExceeded = outputBytesByStream[stream] > maxBytes;
     if (maxCombinedOutputBytes === undefined) {
       appendCapturedOutput(capture, buffer, maxBytes, captureMode);
-      if (
-        streamLimitExceeded &&
-        shouldTerminateOnOutputLimit(options.terminateOnOutputLimit, stream)
-      ) {
+      if (streamLimitExceeded && shouldTerminateOnOutput(options.terminateOnOutputLimit, stream)) {
         cancel("output-limit");
       }
       return;
@@ -449,8 +445,8 @@ async function runCommandWithOutputEncoding(
     }
     if (
       (combinedLimitExceeded &&
-        shouldTerminateOnOutputLimit(options.terminateOnOutputLimit, "combined")) ||
-      (streamLimitExceeded && shouldTerminateOnOutputLimit(options.terminateOnOutputLimit, stream))
+        shouldTerminateOnOutput(options.terminateOnOutputLimit, "combined")) ||
+      (streamLimitExceeded && shouldTerminateOnOutput(options.terminateOnOutputLimit, stream))
     ) {
       cancel("output-limit");
     }
@@ -477,7 +473,7 @@ async function runCommandWithOutputEncoding(
     if (
       termination ||
       options.tolerateOutputError?.[stream] === true ||
-      !shouldTerminateOnOutputError(options.terminateOnOutputError, stream)
+      !shouldTerminateOnOutput(options.terminateOnOutputError, stream)
     ) {
       return;
     }
@@ -485,34 +481,25 @@ async function runCommandWithOutputEncoding(
     Object.assign(terminatingOutputError, { outputErrorStream: stream });
     cancel("signal");
   };
-  child.stdout?.once("error", (error) => onOutputError(error, "stdout"));
-  child.stderr?.once("error", (error) => onOutputError(error, "stderr"));
-  child.stdout?.on("data", (chunk) => {
-    const buffer = observeOutputChunk(chunk, "stdout");
-    appendPreservedOutputLines({
-      capture: stdoutCapture,
-      chunk: buffer,
-      stream: "stdout",
-      preserveOutputLine: options.preserveOutputLine,
-      maxPreservedOutputLines,
-      maxPendingLineBytes: maxPreservedPendingLineBytes,
+  for (const [stream, pipe, capture, maxBytes, captureMode] of [
+    ["stdout", child.stdout, stdoutCapture, maxStdoutBytes, stdoutCaptureMode],
+    ["stderr", child.stderr, stderrCapture, maxStderrBytes, stderrCaptureMode],
+  ] as const) {
+    pipe?.once("error", (error) => onOutputError(error, stream));
+    pipe?.on("data", (chunk) => {
+      const buffer = observeOutputChunk(chunk, stream);
+      appendPreservedOutputLines({
+        capture,
+        chunk: buffer,
+        stream,
+        preserveOutputLine: options.preserveOutputLine,
+        maxPreservedOutputLines,
+        maxPendingLineBytes: maxPreservedPendingLineBytes,
+      });
+      captureOutput(capture, buffer, maxBytes, stream, captureMode);
+      armNoOutputTimer();
     });
-    captureOutput(stdoutCapture, buffer, maxStdoutBytes, "stdout", stdoutCaptureMode);
-    armNoOutputTimer();
-  });
-  child.stderr?.on("data", (chunk) => {
-    const buffer = observeOutputChunk(chunk, "stderr");
-    appendPreservedOutputLines({
-      capture: stderrCapture,
-      chunk: buffer,
-      stream: "stderr",
-      preserveOutputLine: options.preserveOutputLine,
-      maxPreservedOutputLines,
-      maxPendingLineBytes: maxPreservedPendingLineBytes,
-    });
-    captureOutput(stderrCapture, buffer, maxStderrBytes, "stderr", stderrCaptureMode);
-    armNoOutputTimer();
-  });
+  }
 
   let inputAdmissionError: Error | undefined;
   if (options.beforeInput) {
@@ -643,20 +630,18 @@ async function runCommandWithOutputEncoding(
         : resolvedCode
       : resolvedCode;
 
-  flushPreservedOutputLine({
-    capture: stdoutCapture,
-    stream: "stdout",
-    preserveOutputLine: options.preserveOutputLine,
-    maxPreservedOutputLines,
-    maxPendingLineBytes: maxPreservedPendingLineBytes,
-  });
-  flushPreservedOutputLine({
-    capture: stderrCapture,
-    stream: "stderr",
-    preserveOutputLine: options.preserveOutputLine,
-    maxPreservedOutputLines,
-    maxPendingLineBytes: maxPreservedPendingLineBytes,
-  });
+  for (const [stream, capture] of [
+    ["stdout", stdoutCapture],
+    ["stderr", stderrCapture],
+  ] as const) {
+    flushPreservedOutputLine({
+      capture,
+      stream,
+      preserveOutputLine: options.preserveOutputLine,
+      maxPreservedOutputLines,
+      maxPendingLineBytes: maxPreservedPendingLineBytes,
+    });
+  }
 
   if (usesCombinedTailCapture) {
     for (const entry of combinedTailChunks) {

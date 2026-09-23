@@ -1,6 +1,5 @@
 // PTY adapter wraps pseudo-terminal processes for the process supervisor.
 import { createDeferredCore } from "../../../shared/deferred.js";
-import { signalPtySessionTree } from "../../kill-tree.js";
 import { prepareOomScoreAdjustedSpawn } from "../../linux-oom-score.js";
 import {
   readPtyTerminalName,
@@ -186,15 +185,7 @@ export async function createPtyAdapter(
 
   const kill = (signal: NodeJS.Signals = "SIGKILL") => {
     try {
-      if (
-        (signal === "SIGKILL" || signal === "SIGTERM") &&
-        typeof pty.pid === "number" &&
-        pty.pid > 0
-      ) {
-        signalPtySessionTree(pty.pid, signal);
-      } else {
-        pty.kill(signal);
-      }
+      pty.kill(signal);
     } catch {
       // ignore kill errors
     }

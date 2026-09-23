@@ -8,22 +8,13 @@ import {
   mockLinuxOomWrapperShell,
 } from "./test-support.js";
 
-const { spawnMock, ptyKillMock, signalProcessTreeMock, signalPtySessionTreeMock } = vi.hoisted(
-  () => ({
-    spawnMock: vi.fn(),
-    ptyKillMock: vi.fn(),
-    signalProcessTreeMock: vi.fn(),
-    signalPtySessionTreeMock: vi.fn(),
-  }),
-);
+const { spawnMock, ptyKillMock } = vi.hoisted(() => ({
+  spawnMock: vi.fn(),
+  ptyKillMock: vi.fn(),
+}));
 
 vi.mock("../../terminal-pty.js", () => ({
   spawnTerminalPty: (...args: unknown[]) => spawnMock(...args),
-}));
-
-vi.mock("../../kill-tree.js", () => ({
-  signalProcessTree: (...args: unknown[]) => signalProcessTreeMock(...args),
-  signalPtySessionTree: (...args: unknown[]) => signalPtySessionTreeMock(...args),
 }));
 
 function createStubPty(pid = 1234) {
@@ -90,8 +81,6 @@ describe("createPtyAdapter", () => {
   beforeEach(() => {
     spawnMock.mockClear();
     ptyKillMock.mockClear();
-    signalProcessTreeMock.mockClear();
-    signalPtySessionTreeMock.mockClear();
     vi.useRealTimers();
   });
 
@@ -202,54 +191,28 @@ describe("createPtyAdapter", () => {
     });
   });
 
-  it("forwards non-SIGTERM explicit signals to node-pty kill on non-Windows", async () => {
-    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
-    try {
-      spawnMock.mockReturnValue(createStubPty());
+  it.each(["darwin", "win32"] as const)(
+    "delegates cancellation signals to the terminal owner on %s",
+    async (platform) => {
+      vi.useFakeTimers();
+      const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+      try {
+        spawnMock.mockReturnValue(createStubPty());
+        const adapter = await createPtyAdapter({ shell: "shell", args: [] });
 
-      const adapter = await createPtyAdapter({
-        shell: "bash",
-        args: ["-lc", "sleep 10"],
-      });
-
-      adapter.kill("SIGINT");
-      expect(ptyKillMock).toHaveBeenCalledWith("SIGINT");
-      expect(signalProcessTreeMock).not.toHaveBeenCalled();
-    } finally {
-      if (originalPlatform) {
-        Object.defineProperty(process, "platform", originalPlatform);
+        for (const signal of ["SIGINT", "SIGTERM", "SIGKILL", undefined] as const) {
+          adapter.kill(signal);
+          expect(ptyKillMock).toHaveBeenLastCalledWith(signal ?? "SIGKILL");
+        }
+        adapter.dispose();
+      } finally {
+        if (originalPlatform) {
+          Object.defineProperty(process, "platform", originalPlatform);
+        }
       }
-    }
-  });
-
-  it("uses process-tree kill for graceful SIGTERM cancellation", async () => {
-    spawnMock.mockReturnValue(createStubPty(1234));
-
-    const adapter = await createPtyAdapter({
-      shell: "bash",
-      args: ["-lc", "sleep 10"],
-    });
-
-    adapter.kill("SIGTERM");
-    expect(signalPtySessionTreeMock).toHaveBeenCalledWith(1234, "SIGTERM");
-    expect(signalProcessTreeMock).not.toHaveBeenCalled();
-    expect(ptyKillMock).not.toHaveBeenCalled();
-  });
-
-  it("uses process-tree kill for SIGKILL by default", async () => {
-    spawnMock.mockReturnValue(createStubPty());
-
-    const adapter = await createPtyAdapter({
-      shell: "bash",
-      args: ["-lc", "sleep 10"],
-    });
-
-    adapter.kill();
-    expect(signalPtySessionTreeMock).toHaveBeenCalledWith(1234, "SIGKILL");
-    expect(signalProcessTreeMock).not.toHaveBeenCalled();
-    expect(ptyKillMock).not.toHaveBeenCalled();
-  });
+    },
+  );
 
   it("keeps terminal fallback distinct from unconfirmed PTY cleanup", async () => {
     vi.useFakeTimers();
@@ -427,48 +390,5 @@ describe("createPtyAdapter", () => {
     });
 
     expect(expectSpawnEnv()).toEqual({ FOO: "bar", COUNT: "12", TERM: "xterm-256color" });
-  });
-
-  it("delegates non-SIGTERM explicit signals to the terminal owner on Windows", async () => {
-    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    try {
-      spawnMock.mockReturnValue(createStubPty());
-
-      const adapter = await createPtyAdapter({
-        shell: "powershell.exe",
-        args: ["-NoLogo"],
-      });
-
-      adapter.kill("SIGINT");
-      expect(ptyKillMock).toHaveBeenCalledWith("SIGINT");
-      expect(signalProcessTreeMock).not.toHaveBeenCalled();
-    } finally {
-      if (originalPlatform) {
-        Object.defineProperty(process, "platform", originalPlatform);
-      }
-    }
-  });
-
-  it("uses process-tree kill for SIGKILL on Windows", async () => {
-    const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
-    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-    try {
-      spawnMock.mockReturnValue(createStubPty(4567));
-
-      const adapter = await createPtyAdapter({
-        shell: "powershell.exe",
-        args: ["-NoLogo"],
-      });
-
-      adapter.kill("SIGKILL");
-      expect(signalPtySessionTreeMock).toHaveBeenCalledWith(4567, "SIGKILL");
-      expect(signalProcessTreeMock).not.toHaveBeenCalled();
-      expect(ptyKillMock).not.toHaveBeenCalled();
-    } finally {
-      if (originalPlatform) {
-        Object.defineProperty(process, "platform", originalPlatform);
-      }
-    }
   });
 });

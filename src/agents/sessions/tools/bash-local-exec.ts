@@ -1,19 +1,13 @@
 import { existsSync } from "node:fs";
 import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { toErrorObject } from "../../../infra/errors.js";
-import { releaseChildProcessOutputAfterExit } from "../../../process/child-process.js";
-import {
-  COMMAND_PROCESS_TREE_KILL_GRACE_MS,
-  waitForCommandSpawn,
-} from "../../../process/exec-spawn.js";
-import { createCommandTerminationController } from "../../../process/exec-termination.js";
-import { spawnCommand } from "../../../process/exec.js";
-import { createDeferredCore } from "../../../shared/deferred.js";
+import { COMMAND_PROCESS_TREE_KILL_GRACE_MS } from "../../../process/exec-spawn.js";
 import {
   buildShellCommandInvocation,
   getBashShellConfig,
   getBashShellEnv,
 } from "../../shell-utils.js";
+import { runSessionCommand } from "../command-process.js";
 import type { BashOperations } from "./bash-operations.js";
 
 export function resolveBashTimeoutMs(timeoutSeconds: unknown): number | undefined {
@@ -30,7 +24,6 @@ export function resolveBashTimeoutMs(timeoutSeconds: unknown): number | undefine
   return resolveTimerTimeoutMs(timeoutSeconds * 1000, 1);
 }
 
-/** Local shell execution owns cancellation from admission through final output cleanup. */
 export function createLocalBashOperations(options?: { shellPath?: string }): BashOperations {
   return {
     exec: async (command, cwd, { onData, signal, timeout, env }) => {
@@ -44,121 +37,44 @@ export function createLocalBashOperations(options?: { shellPath?: string }): Bas
         throw new Error("aborted");
       }
       const shellEnv = env ?? getBashShellEnv(shellConfig.shell);
-      const cancelController = new AbortController();
-      const startupCanceled = createDeferredCore<never>();
-      void startupCanceled.promise.catch(() => {});
-      let waitingForSpawn = true;
-      let acceptingOutput = true;
-      let cancellationRequested = false;
-      let terminationStarted = false;
-      let timedOut = false;
-      let terminationController: ReturnType<typeof createCommandTerminationController> | undefined;
-      const terminate = () => {
-        cancellationRequested = true;
-        if (terminationController) {
-          if (!terminationStarted) {
-            terminationStarted = true;
-            if (!terminationController.terminate()) {
-              cancelController.abort();
-            }
-          }
-        } else {
-          cancelController.abort();
-        }
-        if (waitingForSpawn) {
-          startupCanceled.reject(new Error(signal?.aborted ? "aborted" : `timeout:${timeout}`));
-        }
-      };
-      signal?.addEventListener("abort", terminate, { once: true });
-      const timeoutHandle =
-        timeoutMs === undefined
-          ? undefined
-          : setTimeout(() => {
-              timedOut = true;
-              terminate();
-            }, timeoutMs);
       try {
-        const child = spawnCommand(invocation.argv, {
+        const { outcome, timedOut } = await runSessionCommand(invocation.argv, {
           baseEnv: {},
-          buffer: false,
-          cancelSignal: cancelController.signal,
           cwd,
-          detached: process.platform !== "win32",
           env: shellEnv,
-          forceKillAfterDelay: COMMAND_PROCESS_TREE_KILL_GRACE_MS,
-          ...(invocation.input === undefined ? {} : { input: invocation.input }),
-          reject: false,
-          stdio: [invocation.stdin, "pipe", "pipe"],
+          input: invocation.input,
+          stdin: invocation.stdin,
+          signal,
+          timeoutMs,
+          processTree: { mode: "force" },
+          killGraceMs: COMMAND_PROCESS_TREE_KILL_GRACE_MS,
+          cancellationEndsAt: "cleanup",
+          onOutput: (chunk, stream) => {
+            onData(chunk, stream);
+          },
         });
-        // This continuation retains late PID cleanup even when startup cancellation
-        // returns to the caller before the broker finishes its handshake.
-        const completion = (async () => {
-          if (child.pid === undefined) {
-            await waitForCommandSpawn(child);
+        if (outcome === undefined) {
+          throw new Error(signal?.aborted ? "aborted" : `timeout:${timeout}`);
+        }
+        if ("error" in outcome) {
+          throw outcome.error;
+        }
+        const result = outcome.result;
+        if (result.failed && result.exitCode === undefined && result.signal === undefined) {
+          if (result instanceof Error) {
+            throw result;
           }
-          waitingForSpawn = false;
-          const releaseOutput = releaseChildProcessOutputAfterExit(child.nodeChildProcess);
-          let childExited = false;
-          child.nodeChildProcess.once("exit", () => {
-            childExited = true;
-          });
-          let commandSettled = false;
-          const termination = createCommandTerminationController({
-            child: child.nodeChildProcess,
-            cancelController,
-            baseEnv: {},
-            env: shellEnv,
-            processTree: { mode: "force" },
-            killGraceMs: COMMAND_PROCESS_TREE_KILL_GRACE_MS,
-            isChildExited: () => childExited,
-            isCommandSettled: () => commandSettled,
-          });
-          terminationController = termination;
-          child.stdout?.on("data", (data: Buffer) => {
-            if (acceptingOutput) {
-              onData(data, "stdout");
-            }
-          });
-          child.stderr?.on("data", (data: Buffer) => {
-            if (acceptingOutput) {
-              onData(data, "stderr");
-            }
-          });
-          if (cancellationRequested) {
-            terminate();
-          }
-          let result: Awaited<typeof child>;
-          try {
-            result = await child;
-          } finally {
-            commandSettled = true;
-            try {
-              await termination.settle();
-            } finally {
-              releaseOutput();
-            }
-          }
-          if (result.failed && result.exitCode === undefined && result.signal === undefined) {
-            if (result instanceof Error) {
-              throw result;
-            }
-            throw new Error(`Failed to launch shell: ${shellConfig.shell}`, { cause: result });
-          }
-          if (signal?.aborted) {
-            throw new Error("aborted");
-          }
-          if (timedOut || result.timedOut) {
-            throw new Error(`timeout:${timeout}`);
-          }
-          return { exitCode: result.exitCode ?? (result.failed ? 1 : 0) };
-        })();
-        return await Promise.race([completion, startupCanceled.promise]);
+          throw new Error(`Failed to launch shell: ${shellConfig.shell}`, { cause: result });
+        }
+        if (signal?.aborted) {
+          throw new Error("aborted");
+        }
+        if (timedOut || result.timedOut) {
+          throw new Error(`timeout:${timeout}`);
+        }
+        return { exitCode: result.exitCode ?? (result.failed ? 1 : 0) };
       } catch (error) {
         throw toErrorObject(error, "Non-Error rejection");
-      } finally {
-        acceptingOutput = false;
-        clearTimeout(timeoutHandle);
-        signal?.removeEventListener("abort", terminate);
       }
     },
   };

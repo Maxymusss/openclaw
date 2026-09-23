@@ -26,12 +26,6 @@ const bashSchema = Type.Object({
   command: Type.String({ description: "Bash command." }),
   timeout: Type.Optional(Type.Number({ description: "Optional timeout seconds; default none." })),
 });
-if (process.env.VITEST || process.env.NODE_ENV === "test") {
-  (globalThis as Record<PropertyKey, unknown>)[Symbol.for("openclaw.bashToolTestApi")] = {
-    resolveBashTimeoutMs,
-  };
-}
-
 export { createLocalBashOperations } from "./bash-local-exec.js";
 
 export interface BashSpawnContext {

@@ -15,9 +15,9 @@ import {
   expectNativeBashSpill,
   nativeBashSpillScenarios,
 } from "../bash-output-spill.test-support.js";
+import { resolveBashTimeoutMs } from "./bash-local-exec.js";
 import type { BashOperations } from "./bash-operations.js";
 import { createBashTool, createLocalBashOperations } from "./bash.js";
-import { resolveBashTimeoutMs } from "./bash.test-support.js";
 
 describe("bash tool timeout helpers", () => {
   it("converts positive timeout seconds to timer-safe milliseconds", () => {

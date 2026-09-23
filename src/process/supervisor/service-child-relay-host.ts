@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import type { Duplex, Readable } from "node:stream";
 import { setTimeout as delay } from "node:timers/promises";
-import { extractErrorCode, toErrorObject } from "../../infra/errors.js";
+import { toErrorObject } from "../../infra/errors.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { joinProcessCompletionAndOutput } from "../decoded-output.js";
 import { pipeProcessOutput } from "../pipe-output.js";
@@ -278,10 +278,9 @@ export async function createServiceChildRelayAdapter(
         return false;
       }
       try {
-        process.kill(-anchorPid, 0);
+        return isOwnedProcessGroupGone(anchorPid);
+      } catch {
         return false;
-      } catch (error) {
-        return extractErrorCode(error) === "ESRCH";
       }
     },
     canRetire: () =>
@@ -376,18 +375,14 @@ export async function createServiceChildRelayAdapter(
       if (childExited) {
         try {
           // Observation only: signalling a retired numeric PGID could hit a reused group.
-          process.kill(-anchorPid, 0);
-        } catch (cause) {
-          const code = extractErrorCode(cause);
-          if (code === "ESRCH") {
+          if (isOwnedProcessGroupGone(anchorPid)) {
             finishAuthorityClose(missingReceiptError);
             return;
           }
-          if (code !== "EPERM") {
-            loseIdentity("owned process group disappearance could not be confirmed", { cause });
-            return;
-          }
           // EPERM proves presence, not lost ownership. Keep observing within the same deadline.
+        } catch (cause) {
+          loseIdentity("owned process group disappearance could not be confirmed", { cause });
+          return;
         }
       }
       const remainingMs = cleanupDeadline.at! - performance.now();

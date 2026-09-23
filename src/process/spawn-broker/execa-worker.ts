@@ -46,9 +46,8 @@ export async function startBrokerExeca(
       }
     }
     assertCurrent();
-    const { encoding, ...processOptions } = options;
     const spawnOptions = {
-      ...processOptions,
+      ...options,
       ...(outputs.has(1)
         ? { stdout: { transform: outputs.get(1)!.transform, objectMode: false as const } }
         : {}),
@@ -57,11 +56,7 @@ export async function startBrokerExeca(
         : {}),
       cancelSignal: controller.signal,
     };
-    // Execa separates its text and binary option contracts at the encoding discriminant.
-    const subprocess =
-      encoding === undefined || encoding === "utf8" || encoding === "utf16le"
-        ? execa(argv[0]!, argv.slice(1), { ...spawnOptions, encoding })
-        : execa(argv[0]!, argv.slice(1), { ...spawnOptions, encoding });
+    const subprocess = execa(argv[0]!, argv.slice(1), spawnOptions);
     const child = subprocess.nodeChildProcess;
     const stdio = [0, 1, 2].map((fd) => {
       if (fd === 0 && options.input !== undefined) {

@@ -464,4 +464,33 @@ describe("execCommand", () => {
 
     await expect(resultPromise).resolves.toMatchObject({ code: 0 });
   });
+
+  it.each(["abort", "timeout"] as const)(
+    "ignores %s after exit while retained cleanup settles",
+    async (reason) => {
+      vi.useFakeTimers();
+      const child = createStubChild();
+      const completion = createDeferred<number | null>();
+      const cleanup = createDeferred();
+      const controller = new AbortController();
+      spawnMock.mockReturnValue(child);
+      completionMock.mockReturnValue(completion.promise);
+      settleTerminationMock.mockReturnValue(cleanup.promise);
+      const { execCommand } = await import("./exec.js");
+      const result = execCommand("cmd", [], "/tmp", {
+        signal: controller.signal,
+        ...(reason === "timeout" ? { timeout: 10 } : {}),
+      });
+      completion.resolve(0);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settleTerminationMock).toHaveBeenCalledOnce();
+      if (reason === "abort") {
+        controller.abort();
+      }
+      await vi.advanceTimersByTimeAsync(10);
+      expect(terminateMock).not.toHaveBeenCalled();
+      cleanup.resolve();
+      await expect(result).resolves.toMatchObject({ code: 0, killed: false });
+    },
+  );
 });
