@@ -37,6 +37,8 @@ adb_started=0
 readiness_failure_latched=0
 final_cold_boot_observation_seconds=900
 emulator_observation_deadline=0
+last_accel_status=unobserved
+last_accel_timed_out=unobserved
 
 capture_accel_check() {
   local accel_raw="$DIAGNOSTIC_DIR/emulator-accel-check.raw"
@@ -70,10 +72,16 @@ capture_accel_check() {
   if [[ "$accel_timed_out" == "true" ]]; then
     accel_status=124
   fi
+  last_accel_status="$accel_status"
+  last_accel_timed_out="$accel_timed_out"
+  if [[ "$accel_status" != "0" ]]; then
+    capture_kvm_transition acceleration-probe-failed || :
+  fi
   head -c 16384 "$accel_raw" >"$DIAGNOSTIC_DIR/emulator-accel-check.txt"
   rm -f "$accel_raw"
   printf 'exit_status=%s\n' "$accel_status" >>"$DIAGNOSTIC_DIR/emulator-accel-check.txt"
   printf 'timed_out=%s\n' "$accel_timed_out" >>"$DIAGNOSTIC_DIR/emulator-accel-check.txt"
+  return 0
 }
 
 sample_owned_qemu() {
@@ -166,6 +174,211 @@ retain_probe_output() {
     printf 'retained_bytes=%s\n' "$retained_bytes"
     printf 'output_truncated=%s\n' "$output_truncated"
   } >>"$destination_file"
+}
+
+# Observations only: the workflow remains the sole admission/permission owner.
+# Never dereference a device override or a symlink; snapshots are non-atomic facts,
+# not an authorization decision. No stderr or unvalidated tool text is retained.
+capture_kvm_transition() {
+  local checkpoint="$1"
+  local snapshot_dir="$DIAGNOSTIC_DIR/kvm-transitions/$checkpoint"
+  local checkpoint_deadline=$((SECONDS + 3))
+  local probe_status=0 probe_timed_out=false
+  local kind raw line key output_bytes command_deadline
+  local -A seen=()
+  local shape_valid complete saw_complete saw_user saw_group saw_other saw_mask saw_named
+  local state_character=false
+  local state_reader='
+import os, stat, time
+complete = True
+def emit(key, value):
+    print(f"{key}={value}", flush=True)
+def observe(name, read):
+    global complete
+    try:
+        return read()
+    except (OSError, ValueError, NotImplementedError) as error:
+        emit(name + "_errno", getattr(error, "errno", None) or 0)
+        complete = False
+        return None
+emit("utc_epoch_ns", time.time_ns())
+emit("monotonic_ns", time.monotonic_ns())
+for name, read in [("real_uid", os.getuid), ("effective_uid", os.geteuid),
+                   ("real_gid", os.getgid), ("effective_gid", os.getegid)]:
+    value = observe(name, read)
+    if value is not None: emit(name, value)
+groups = observe("groups", os.getgroups)
+if groups is not None:
+    emit("groups", " ".join(str(group) for group in groups))
+def device_state(name, read):
+    value = observe(name, read)
+    if value is not None:
+        for key in ["dev", "ino", "rdev", "uid", "gid", "mode", "ctime_ns"]:
+            emit(name + "_" + key, getattr(value, "st_" + key))
+        emit(name + "_type", stat.S_IFMT(value.st_mode))
+    return value
+before = device_state("lstat", lambda: os.lstat("/dev/kvm"))
+if before is not None and stat.S_ISCHR(before.st_mode):
+    after = device_state("stat", lambda: os.stat("/dev/kvm", follow_symlinks=False))
+    if after is not None and stat.S_ISCHR(after.st_mode):
+        emit("same_identity", int((before.st_dev, before.st_ino, before.st_rdev) ==
+                                  (after.st_dev, after.st_ino, after.st_rdev)))
+        for name, mode in [("read", os.R_OK), ("write", os.W_OK)]:
+            for credential, effective in [("real", False), ("effective", True)]:
+                key = name + "_" + credential
+                value = observe(key, lambda: os.access("/dev/kvm", mode,
+                    effective_ids=effective, follow_symlinks=False))
+                if value is not None: emit(key, int(value))
+    else:
+        complete = False
+else:
+    complete = False
+emit("complete", int(complete))
+'
+
+  local acl_reader='
+import os, stat, sys
+try:
+    # O_PATH obtains metadata only; it never invokes the KVM device open method.
+    # Bind the ACL utility to this no-follow descriptor, not a mutable pathname.
+    fd = os.open("/dev/kvm", os.O_PATH | os.O_NOFOLLOW)
+    device = os.fstat(fd)
+    for key in ["dev", "ino", "rdev", "uid", "gid", "mode", "ctime_ns"]:
+        value = getattr(device, "st_" + key)
+        print(f"acl_{key}={value}", flush=True)
+    print(f"acl_type={stat.S_IFMT(device.st_mode)}", flush=True)
+    if not stat.S_ISCHR(device.st_mode):
+        sys.exit(125)
+    os.set_inheritable(fd, True)
+    os.execvp("getfacl", ["getfacl", "-ncpE", "--", f"/proc/self/fd/{fd}"])
+except OSError as error:
+    print(f"acl_errno={error.errno or 0}", flush=True)
+    sys.exit(127 if isinstance(error, FileNotFoundError) else 1)
+'
+
+  case "$checkpoint" in
+    entry-pre-probe|pre-launch|before-owned-signal|after-owned-wait|after-cleanup|acceleration-probe-failed) ;;
+    *) return 0 ;;
+  esac
+  if ! mkdir -p "$snapshot_dir"; then
+    printf 'KVM observer: artifact directory unavailable; snapshot incomplete.\n' >&2
+    return 0
+  fi
+  # Cleanup never buys more live observation time after the permanent failure latch.
+  if [[ "$readiness_failure_latched" == "1" ]] &&
+    (( emulator_observation_deadline < checkpoint_deadline )); then
+    checkpoint_deadline=$emulator_observation_deadline
+  fi
+  {
+    printf 'checkpoint=%s\n' "$checkpoint"
+    printf 'admission_relation=after-workflow-admission-not-acl-grant\n'
+    printf 'atomic=false\n'
+    printf 'shell_elapsed_seconds=%s\n' "$SECONDS"
+    if [[ ! -v ANDROID_EMULATOR_KVM_DEVICE ]]; then
+      printf 'kvm_device_override=unset\n'
+    elif [[ "$ANDROID_EMULATOR_KVM_DEVICE" == /dev/kvm ]]; then
+      printf 'kvm_device_override=default\n'
+    else
+      printf 'kvm_device_override=nondefault\n'
+    fi
+    printf 'accel_exit_status=%s\n' "${last_accel_status:-unobserved}"
+    printf 'accel_timed_out=%s\n' "${last_accel_timed_out:-unobserved}"
+  } >"$snapshot_dir/metadata.txt"
+
+  for kind in state acl; do
+    raw="$snapshot_dir/$kind.raw"
+    command_deadline=$((SECONDS + 2))
+    if (( command_deadline > checkpoint_deadline )); then
+      command_deadline=$checkpoint_deadline
+    fi
+    if [[ "$kind" == state ]]; then
+      # exec keeps the probe owner identical to the reader; the writer itself is
+      # capped at 16 KiB, not merely trimmed after an unbounded temporary write.
+      run_bounded_probe "$raw" "$command_deadline" bash -c \
+        'ulimit -c 0 && ulimit -f 16 || exit 125; exec python3 -I -S -c "$1" 2>/dev/null' kvm-state "$state_reader"
+    elif [[ "$state_character" == true ]]; then
+      run_bounded_probe "$raw" "$command_deadline" bash -c \
+        'ulimit -c 0 && ulimit -f 16 || exit 125; exec python3 -I -S -c "$1" 2>/dev/null' kvm-acl "$acl_reader"
+    else
+      : >"$raw"
+      probe_status=125
+      probe_timed_out=false
+    fi
+    output_bytes="$(wc -c <"$raw" | tr -d ' ')"
+    shape_valid=true
+    seen=()
+    complete=false
+    saw_complete=false saw_user=false saw_group=false saw_other=false saw_mask=false saw_named=false
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      if [[ "$kind" == state ]]; then
+        if [[ "$line" =~ ^(utc_epoch_ns|monotonic_ns|real_uid|effective_uid|real_gid|effective_gid|((lstat|stat)_(dev|ino|rdev|uid|gid|mode|ctime_ns|type))|same_identity|((read|write)_(real|effective))|complete|((real_uid|effective_uid|real_gid|effective_gid|groups|lstat|stat|((read|write)_(real|effective)))_errno))=[0-9]+$ ||
+          "$line" =~ ^groups=([0-9]+(\ [0-9]+)*)?$ ]]; then
+          key="${line%%=*}"
+          [[ ! -v seen[$key] ]] || shape_valid=false
+          seen[$key]=1
+          [[ "$line" != complete=1 ]] || saw_complete=true
+          [[ "$line" != stat_type=8192 ]] || state_character=true
+        else
+          shape_valid=false
+        fi
+      elif [[ "$line" =~ ^acl_(errno|dev|ino|rdev|uid|gid|mode|ctime_ns|type)=[0-9]+$ ]]; then
+        key="${line%%=*}"
+        [[ ! -v seen[$key] ]] || shape_valid=false
+        seen[$key]=1
+      elif [[ -z "$line" ]]; then
+        :
+      elif [[ "$line" =~ ^(user|group):[0-9]*:[r-][w-][x-]$ ||
+        "$line" =~ ^(mask|other)::[r-][w-][x-]$ ]]; then
+        key="${line%:*}"
+        [[ ! -v seen[$key] ]] || shape_valid=false
+        seen[$key]=1
+        case "$line" in
+          user::*) saw_user=true ;;
+          group::*) saw_group=true ;;
+          other::*) saw_other=true ;;
+          mask::*) saw_mask=true ;;
+          *) saw_named=true ;;
+        esac
+      else
+        shape_valid=false
+      fi
+    done <"$raw"
+    if [[ "$kind" == state ]]; then
+      for key in utc_epoch_ns monotonic_ns real_uid effective_uid real_gid effective_gid groups \
+        lstat_dev lstat_ino lstat_rdev lstat_uid lstat_gid lstat_mode lstat_ctime_ns lstat_type \
+        stat_dev stat_ino stat_rdev stat_uid stat_gid stat_mode stat_ctime_ns stat_type \
+        same_identity read_real read_effective write_real write_effective complete; do
+        [[ -v seen[$key] ]] || saw_complete=false
+      done
+    fi
+    if [[ "$kind" == acl && "$saw_user$saw_group$saw_other" == truetruetrue &&
+      ( "$saw_named" == false || "$saw_mask" == true ) ]]; then
+      saw_complete=true
+      for key in acl_dev acl_ino acl_rdev acl_uid acl_gid acl_mode acl_ctime_ns acl_type; do
+        [[ -v seen[$key] ]] || saw_complete=false
+      done
+    fi
+    if [[ "$shape_valid" != true ]]; then
+      # Discard the whole payload rather than leaking error text or claiming a
+      # partial ACL (especially a missing mask) was a complete observation.
+      : >"$raw"
+      state_character=false
+    fi
+    if [[ "$shape_valid$saw_complete" == truetrue && "$probe_status" == 0 &&
+      "$probe_timed_out" == false ]] && (( output_bytes <= 8192 )); then
+      complete=true
+    fi
+    retain_probe_output "$raw" "$snapshot_dir/$kind.txt" 8192 "$probe_status" "$probe_timed_out"
+    {
+      printf 'source_bytes=%s\n' "$output_bytes"
+      if (( output_bytes >= 16384 )); then
+        printf 'source_limit_reached=true\n'
+      fi
+      printf 'shape_valid=%s\n' "$shape_valid"
+      printf 'complete=%s\n' "$complete"
+    } >>"$snapshot_dir/$kind.txt"
+  done
+  return 0
 }
 
 capture_cold_boot_snapshot() {
@@ -352,6 +565,7 @@ cleanup() {
     fi
   } >>"$DIAGNOSTIC_DIR/process-status.log" 2>&1
   if [[ -n "$emulator_pid" ]] && kill -0 "$emulator_pid" 2>/dev/null; then
+    capture_kvm_transition before-owned-signal || :
     kill "$emulator_pid"
     for _ in {1..15}; do
       kill -0 "$emulator_pid" 2>/dev/null || break
@@ -367,6 +581,7 @@ cleanup() {
     else
       emulator_exit_status=$?
     fi
+    capture_kvm_transition after-owned-wait || :
     printf 'owned_emulator_exit_status=%s\n' "$emulator_exit_status" >>"$DIAGNOSTIC_DIR/process-status.log"
   fi
   if [[ "$adb_started" == "1" && "$readiness_failure_latched" != "1" ]]; then
@@ -377,6 +592,7 @@ cleanup() {
   fi
   avdmanager delete avd --name "$AVD_NAME" \
     >>"$DIAGNOSTIC_DIR/cleanup.log" 2>&1
+  capture_kvm_transition after-cleanup || :
   exit "$status"
 }
 trap cleanup EXIT
@@ -384,6 +600,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 emulator -no-window -no-audio -version >"$DIAGNOSTIC_DIR/emulator-version.txt" 2>&1
+capture_kvm_transition entry-pre-probe || :
 capture_accel_check
 sdkmanager --list_installed >"$DIAGNOSTIC_DIR/sdk-packages.txt" 2>&1
 avdmanager list device >"$DIAGNOSTIC_DIR/avd-devices.txt" 2>&1
@@ -401,6 +618,7 @@ cp "$HOME/.android/avd/${AVD_NAME}.avd/config.ini" "$DIAGNOSTIC_DIR/avd-config.i
 emulator_args=(-avd "$AVD_NAME" -no-window -no-audio -no-boot-anim -verbose -show-kernel)
 printf '%q ' "${emulator_args[@]}" >"$DIAGNOSTIC_DIR/emulator-args.txt"
 printf '\n' >>"$DIAGNOSTIC_DIR/emulator-args.txt"
+capture_kvm_transition pre-launch || :
 emulator_launch_seconds=$SECONDS
 emulator_observation_deadline=$((emulator_launch_seconds + final_cold_boot_observation_seconds))
 emulator "${emulator_args[@]}" >"$DIAGNOSTIC_DIR/emulator.log" 2>&1 &

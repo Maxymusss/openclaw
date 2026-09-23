@@ -2518,7 +2518,10 @@ describe("mobile release authority", () => {
       fs.writeFileSync(path.join(bin, "emulator"), emulatorSource, { mode: 0o755 });
       const result = spawnSync(
         "/bin/bash",
-        ["-c", `set -euo pipefail\n${accelFunction}\ncapture_accel_check\n`],
+        [
+          "-c",
+          `set -euo pipefail\ncapture_kvm_transition() { return 0; }\n${accelFunction}\ncapture_accel_check\n`,
+        ],
         {
           encoding: "utf8",
           env: {
@@ -2973,7 +2976,12 @@ fi
     expect(source).not.toMatch(/apps-signing|MATCH_PASSWORD|GOOGLE_PLAY|upload-and-record/iu);
   });
 
-  it("runs fixed phone and Wear diagnostics through the workflow's trusted shell", async () => {
+  async function exerciseDiagnostic(
+    scenario: string,
+    mode = "ready",
+    admission = "matching",
+    options: { observerMode?: string; override?: "unset" | "default" } = {},
+  ) {
     const workflow = parse(
       fs.readFileSync(".github/workflows/android-emulator-diagnostic.yml", "utf8"),
     ) as {
@@ -2986,48 +2994,40 @@ fi
       throw new Error("Missing canonical diagnostic entrypoint");
     }
     const source = fs.readFileSync("scripts/android-emulator-diagnostic.sh", "utf8");
-    const exercise = async (scenario: string, mode = "ready", admission = "matching") => {
-      const root = tempRoots.make("openclaw-android-diagnostic-entrypoint-");
-      const bin = path.join(root, "bin");
-      const home = path.join(root, "home");
-      const diagnostic = path.join(root, "diagnostic");
-      const runner = path.join(root, "runner");
-      for (const directory of [
-        bin,
-        home,
-        diagnostic,
-        path.join(runner, "openclaw-android-tools"),
-      ]) {
-        fs.mkdirSync(directory, { recursive: true });
-      }
-      // Test-only clock compression of the actual entrypoint, not a second implementation.
-      const fixtureSource = source
-        .replace(
-          "ANDROID_SCREENSHOT_EMULATOR_TIMEOUT_SECONDS=180",
-          "ANDROID_SCREENSHOT_EMULATOR_TIMEOUT_SECONDS=1",
-        )
-        .replace(
-          "final_cold_boot_observation_seconds=900",
-          "final_cold_boot_observation_seconds=5",
-        );
-      const trusted = path.join(
-        root,
-        ".mobile-release-tooling/scripts/android-emulator-diagnostic.sh",
-      );
-      fs.mkdirSync(path.dirname(trusted), { recursive: true });
-      fs.writeFileSync(trusted, fixtureSource, { mode: 0o755 });
-      const executable = (name: string, body: string) =>
-        fs.writeFileSync(
-          path.join(bin, name),
-          `#!/bin/bash
+
+    const root = tempRoots.make("openclaw-android-diagnostic-entrypoint-");
+    const bin = path.join(root, "bin");
+    const home = path.join(root, "home");
+    const diagnostic = path.join(root, "diagnostic");
+    const runner = path.join(root, "runner");
+    for (const directory of [bin, home, diagnostic, path.join(runner, "openclaw-android-tools")]) {
+      fs.mkdirSync(directory, { recursive: true });
+    }
+    // Test-only clock compression of the actual entrypoint, not a second implementation.
+    const fixtureSource = source
+      .replace(
+        "ANDROID_SCREENSHOT_EMULATOR_TIMEOUT_SECONDS=180",
+        "ANDROID_SCREENSHOT_EMULATOR_TIMEOUT_SECONDS=1",
+      )
+      .replace("final_cold_boot_observation_seconds=900", "final_cold_boot_observation_seconds=5");
+    const trusted = path.join(
+      root,
+      ".mobile-release-tooling/scripts/android-emulator-diagnostic.sh",
+    );
+    fs.mkdirSync(path.dirname(trusted), { recursive: true });
+    fs.writeFileSync(trusted, fixtureSource, { mode: 0o755 });
+    const executable = (name: string, body: string) =>
+      fs.writeFileSync(
+        path.join(bin, name),
+        `#!/bin/bash
 set -euo pipefail
 ${body}
 `,
-          { mode: 0o755 },
-        );
-      executable(
-        "git",
-        `
+        { mode: 0o755 },
+      );
+    executable(
+      "git",
+      `
 shift 2
 case "$1 $2" in
   "rev-parse HEAD") if [[ "$ADMISSION" == wrong-sha ]]; then echo wrong; else echo "$GITHUB_WORKFLOW_SHA"; fi ;;
@@ -3040,22 +3040,112 @@ case "$1 $2" in
     [[ "$ADMISSION" != changed-bytes ]] || printf '# changed\\n' ;;
   *) exit 91 ;;
 esac`,
-      );
-      executable("sdkmanager", `printf 'installed SDK revisions\\n'`);
-      executable(
-        "avdmanager",
-        `
+    );
+    fs.writeFileSync(
+      path.join(bin, "python3"),
+      `#!/usr/bin/python3
+import os, stat, sys, time, types
+root = os.environ["STATE"]
+mode = os.environ["OBSERVER_MODE"]
+try:
+    with open(root + "/phase") as stream: phase = int(stream.read())
+except FileNotFoundError:
+    phase = 0
+reader = sys.argv[-1]
+is_acl = "os.execvp" in reader
+with open(root + "/trace", "a") as stream: stream.write("observe " + str(phase) + "\\n")
+# Execute the actual inline reader with every credential/device/time API faked.
+# No observation call reaches this machine or even its private /dev namespace.
+def state(name, follow_symlinks=False):
+    assert name == "/dev/kvm" and not follow_symlinks
+    if mode == "state-missing": raise FileNotFoundError(2, "secret-missing-path")
+    if mode == "state-hang":
+        with open(root + "/observer-pids", "a") as stream: stream.write(str(os.getpid()) + "\\n")
+        time.sleep(60)
+    kind = stat.S_IFLNK if mode == "state-symlink" else stat.S_IFREG if mode == "state-regular" else stat.S_IFCHR
+    return types.SimpleNamespace(st_dev=7, st_ino=100 + phase, st_rdev=256,
+        st_uid=1001, st_gid=108, st_mode=kind | 0o660, st_ctime_ns=1000 + phase)
+os.lstat = state
+os.stat = state
+os.getuid = lambda: 1001
+os.geteuid = lambda: 1002
+os.getgid = lambda: 108
+os.getegid = lambda: 109
+os.getgroups = lambda: list(range(2500)) if mode == "state-large" else [108, 109]
+def access(name, mode, effective_ids=False, follow_symlinks=False):
+    assert name == "/dev/kvm" and not follow_symlinks
+    return not (os.environ["MODE"] == "kvm-denied" and phase >= 2)
+os.access = access
+time.time_ns = lambda: 1700000000000000000 + phase
+time.monotonic_ns = lambda: 1000000000 + phase
+if mode == "state-shape":
+    print("complete=1")
+    sys.exit(0)
+if mode == "state-missing-tool": sys.exit(127)
+if mode == "state-error" and not is_acl:
+    print("secret-identity-data")
+    sys.exit(73)
+def open_device(name, flags):
+    assert name == "/dev/kvm" and flags == os.O_PATH | os.O_NOFOLLOW
+    return 77
+def fd_state(fd):
+    assert fd == 77
+    kind = stat.S_IFLNK if mode == "acl-replaced-symlink" else stat.S_IFCHR
+    return types.SimpleNamespace(st_dev=7, st_ino=100 + phase, st_rdev=256,
+        st_uid=1001, st_gid=108, st_mode=kind | 0o660, st_ctime_ns=1000 + phase)
+os.open = open_device
+os.fstat = fd_state
+os.set_inheritable = lambda fd, value: None
+exec(reader, {})
+`,
+      { mode: 0o755 },
+    );
+    executable(
+      "getfacl",
+      String.raw`
+[[ "$*" == '-ncpE -- /proc/self/fd/77' ]] || exit 96
+MODE="$OBSERVER_MODE"
+printf 'acl-read\n' >>"$TRACE"
+if [[ "$MODE" == acl-error ]]; then echo 'secret-acl-data'; exit 74; fi
+if [[ "$MODE" == acl-missing-tool ]]; then exit 127; fi
+if [[ "$MODE" == acl-hang ]]; then
+  printf '%s\n' "$$" >>"$STATE/observer-pids"
+  exec /bin/sleep 60
+fi
+printf 'user::rw-\nuser:1001:rw-\ngroup::rw-\n'
+if [[ "$MODE" == acl-large ]]; then
+  for ((i=1; i<=2000; i++)); do printf 'user:%s:rw-\n' "$i"; done
+fi
+if [[ "$MODE" == acl-duplicate ]]; then printf 'user::rw-\n'; fi
+if [[ "$MODE" != acl-no-mask ]]; then
+  if [[ "$MODE" == kvm-denied && "$(cat "$STATE/phase")" -ge 2 ]]; then
+    printf 'mask::---\n'
+  else printf 'mask::rw-\n'; fi
+fi
+printf 'other::---\n'`,
+    );
+    executable("ps", "exit 0");
+    executable("date", "printf '2026-09-20T00:00:00Z\\n'");
+    for (const forbidden of ["sudo", "setfacl", "usermod", "groupadd", "udevadm", "chown"]) {
+      executable(forbidden, `printf 'permission-writer\\n' >>"$TRACE"; exit 99`);
+    }
+    executable("sdkmanager", `printf 'installed SDK revisions\\n'`);
+    executable(
+      "avdmanager",
+      `
 printf 'avdmanager %s\\n' "$*" >>"$TRACE"
 if [[ "$1" == create ]]; then
   while [[ "$1" != --name ]]; do shift; done
   avd="$2"
   mkdir -p "$HOME/.android/avd/$avd.avd"
   printf 'AvdId=%s\\n' "$avd" >"$HOME/.android/avd/$avd.avd/config.ini"
+elif [[ "$1" == delete && -f "$STATE/phase" ]]; then
+  printf '4\\n' >"$STATE/phase"
 fi`,
-      );
-      executable(
-        "emulator",
-        `
+    );
+    executable(
+      "emulator",
+      `
 if [[ " $* " == *" -version "* ]]; then
   printf 'version %s\\n' "$*" >>"$TRACE"
   if [[ " $* " != *" -no-window "* || "$MODE" == version-failed ]]; then
@@ -3066,7 +3156,12 @@ if [[ " $* " == *" -version "* ]]; then
   printf 'version-stderr-sentinel\\n' >&2
   exit 0
 fi
-if [[ "$1" == -accel-check ]]; then printf 'emulator fixture\\n'; exit 0; fi
+if [[ "$1" == -accel-check ]]; then
+  if [[ "$MODE" == kvm-denied && -f "$STATE/phase" && "$(cat "$STATE/phase")" == 4 ]]; then
+    printf 'KVM permission denied\\n'; exit 11
+  fi
+  printf 'emulator fixture\\n'; exit 0
+fi
 if [[ -f "$STATE/pid" ]] && kill -0 "$(cat "$STATE/pid")" 2>/dev/null; then
   echo 'previous emulator still running' >&2; exit 98
 fi
@@ -3075,13 +3170,27 @@ printf '%s\\n' "$$" >>"$STATE/pids"
 printf '%s\\n' "$2" >"$STATE/avd"
 printf 'launch %s\\n' "$*" >>"$TRACE"
 printf 'emulator-startup-sentinel\\n' >&2
+if [[ "$MODE" == kvm-denied && "$2" == *Wear* ]]; then exit 1; fi
+printf '1\\n' >"$STATE/phase"
 if [[ "$MODE" == exited || ( "$MODE" == wear-exited && "$2" == *Wear* ) ]]; then exit 42; fi
-exec /bin/sleep 60`,
-      );
-      executable(
-        "adb",
-        `
+/bin/sleep 60 &
+sleeper=$!
+printf '%s\\n' "$sleeper" >>"$STATE/pids"
+stop() {
+  trap "" TERM INT
+  kill "$sleeper" 2>/dev/null || true
+  wait "$sleeper" 2>/dev/null || true
+  printf '2\\n' >"$STATE/phase"
+  exit 0
+}
+trap stop TERM INT
+wait "$sleeper"`,
+    );
+    executable(
+      "adb",
+      `
 printf 'adb %s\\n' "$*" >>"$TRACE"
+if [[ "$1" == kill-server ]]; then printf '3\\n' >"$STATE/phase"; fi
 if [[ "$1" == devices ]]; then
   printf 'List of devices attached\\n'
   if [[ "$MODE" == preexisting ]]; then printf 'external-device\\tdevice\\n'; exit 0; fi
@@ -3100,40 +3209,59 @@ elif [[ "$1" == -s && "$3" == shell ]]; then
     touch "$STATE/boot-polled"; printf '0\\n'
   else printf '1\\n'; fi
 fi`,
-      );
-      const result = await runVitestShutdownCommand({
-        bin: "/bin/bash",
-        args: ["-c", run],
-        cwd: root,
-        timeoutMs: 15_000,
-        env: {
-          PATH: `${bin}:/usr/bin:/bin`,
-          HOME: home,
-          TMPDIR: runner,
-          LANG: "C",
-          LC_ALL: "C",
-          DIAGNOSTIC_DIR: diagnostic,
-          DIAGNOSTIC_SCENARIO: scenario,
-          GITHUB_WORKFLOW_SHA: "a".repeat(40),
-          RUNNER_TEMP: runner,
-          TRUSTED_SCRIPT: trusted,
-          TRACE: path.join(root, "trace"),
-          STATE: root,
-          MODE: mode,
-          ADMISSION: admission,
-        },
-      });
-      const trace = fs.existsSync(path.join(root, "trace"))
-        ? fs.readFileSync(path.join(root, "trace"), "utf8")
-        : "";
-      if (fs.existsSync(path.join(root, "pids"))) {
-        for (const pid of fs.readFileSync(path.join(root, "pids"), "utf8").trim().split("\n")) {
-          expect(() => process.kill(Number(pid), 0)).toThrow();
-        }
+    );
+    const result = await runVitestShutdownCommand({
+      bin: "/bin/bash",
+      args: ["-c", run],
+      cwd: root,
+      timeoutMs: 15_000,
+      env: {
+        PATH: `${bin}:/usr/bin:/bin`,
+        HOME: home,
+        TMPDIR: runner,
+        LANG: "C",
+        LC_ALL: "C",
+        DIAGNOSTIC_DIR: diagnostic,
+        DIAGNOSTIC_SCENARIO: scenario,
+        GITHUB_WORKFLOW_SHA: "a".repeat(40),
+        RUNNER_TEMP: runner,
+        TRUSTED_SCRIPT: trusted,
+        TRACE: path.join(root, "trace"),
+        STATE: root,
+        MODE: mode,
+        ADMISSION: admission,
+        OBSERVER_MODE: options.observerMode ?? mode,
+        ANDROID_EMULATOR_KVM_DEVICE:
+          options.override === "unset"
+            ? undefined
+            : options.override === "default"
+              ? "/dev/kvm"
+              : "/secret-override-must-not-appear",
+        PRIVATE_SECRET: "secret-env-must-not-appear",
+      },
+    });
+    const trace = fs.existsSync(path.join(root, "trace"))
+      ? fs.readFileSync(path.join(root, "trace"), "utf8")
+      : "";
+    if (fs.existsSync(path.join(root, "pids"))) {
+      for (const pid of fs.readFileSync(path.join(root, "pids"), "utf8").trim().split("\n")) {
+        expect(() => process.kill(Number(pid), 0)).toThrow();
       }
-      return { result, trace, diagnostic };
-    };
+    }
+    if (fs.existsSync(path.join(root, "observer-pids"))) {
+      for (const pid of fs
+        .readFileSync(path.join(root, "observer-pids"), "utf8")
+        .trim()
+        .split("\n")) {
+        expect(() => process.kill(Number(pid), 0)).toThrow();
+      }
+    }
+    expect(trace).not.toContain("permission-writer");
+    return { result, trace, diagnostic };
+  }
 
+  it("runs fixed phone and Wear diagnostics through the workflow's trusted shell", async () => {
+    const exercise = exerciseDiagnostic;
     for (const scenario of ["phone", "wear", "phone-then-wear"]) {
       const outcome = await exercise(scenario);
       expect(outcome.result.code, outcome.result.stderr).toBe(0);
@@ -3220,6 +3348,153 @@ fi`,
       expect(rejected.result.code).not.toBe(0);
       expect(rejected.trace).toBe("");
     }
+  });
+
+  it("retains distinct numeric KVM transitions without changing denied Wear failure", async () => {
+    const outcome = await exerciseDiagnostic("phone-then-wear", "kvm-denied");
+    expect(outcome.result.code, outcome.result.stderr).toBe(1);
+    const read = (factor: string, checkpoint: string, file: string) =>
+      fs.readFileSync(
+        path.join(outcome.diagnostic, factor, "kvm-transitions", checkpoint, file),
+        "utf8",
+      );
+    const phases = [
+      ["phone", "entry-pre-probe", 0],
+      ["phone", "pre-launch", 0],
+      ["phone", "before-owned-signal", 1],
+      ["phone", "after-owned-wait", 2],
+      ["phone", "after-cleanup", 4],
+      ["wear", "entry-pre-probe", 4],
+      ["wear", "acceleration-probe-failed", 4],
+    ] as const;
+    for (const [factor, checkpoint, phase] of phases) {
+      const state = read(factor, checkpoint, "state.txt");
+      expect(state).toContain(`lstat_ino=${100 + phase}\n`);
+      expect(state).toContain(`monotonic_ns=${1000000000 + phase}\n`);
+      expect(state).toContain("real_uid=1001\neffective_uid=1002");
+      expect(state).toContain("real_gid=108\neffective_gid=109");
+      expect(state).toContain("groups=108 109");
+      expect(state).toContain("complete=true");
+      expect(read(factor, checkpoint, "acl.txt")).toContain(phase >= 2 ? "mask::---" : "mask::rw-");
+      const metadata = read(factor, checkpoint, "metadata.txt");
+      expect(metadata).toContain("admission_relation=after-workflow-admission-not-acl-grant");
+      expect(metadata).toContain("kvm_device_override=nondefault");
+      expect(state + metadata + read(factor, checkpoint, "acl.txt")).not.toMatch(
+        /secret-|username/u,
+      );
+    }
+    expect(read("wear", "acceleration-probe-failed", "metadata.txt")).toContain(
+      "accel_exit_status=11",
+    );
+    expect(read("wear", "acceleration-probe-failed", "metadata.txt")).toContain(
+      "accel_timed_out=false",
+    );
+    expect(
+      fs.readFileSync(path.join(outcome.diagnostic, "phone/process-status.log"), "utf8"),
+    ).toContain("owned_emulator_exit_status=0");
+    expect(
+      fs.readFileSync(path.join(outcome.diagnostic, "wear/process-status.log"), "utf8"),
+    ).toContain("owned_emulator_exit_status=1");
+    expect(fs.existsSync(path.join(outcome.diagnostic, "phone/result.txt"))).toBe(true);
+    expect(fs.existsSync(path.join(outcome.diagnostic, "wear/result.txt"))).toBe(false);
+    expect(outcome.trace.indexOf("delete avd --name OpenClaw_Screenshots_API36")).toBeLessThan(
+      outcome.trace.indexOf("launch -avd OpenClaw_Wear"),
+    );
+    for (const factor of ["phone", "wear"]) {
+      expect(
+        fs.readdirSync(path.join(outcome.diagnostic, factor, "kvm-transitions")).length,
+      ).toBeLessThanOrEqual(6);
+    }
+  });
+
+  it.each([
+    ["state-error", "state", "probe_exit_status=73"],
+    ["state-shape", "state", "complete=false"],
+    ["state-missing-tool", "state", "probe_exit_status=127"],
+    ["state-hang", "state", "probe_timed_out=true"],
+    ["state-large", "state", "output_truncated=true"],
+    ["state-missing", "state", "lstat_errno=2"],
+    ["state-symlink", "state", "lstat_type=40960"],
+    ["state-regular", "state", "lstat_type=32768"],
+    ["acl-error", "acl", "probe_exit_status=74"],
+    ["acl-duplicate", "acl", "shape_valid=false"],
+    ["acl-missing-tool", "acl", "probe_exit_status=127"],
+    ["acl-replaced-symlink", "acl", "probe_exit_status=125"],
+    ["acl-hang", "acl", "probe_timed_out=true"],
+    ["acl-large", "acl", "complete=false"],
+    ["acl-no-mask", "acl", "complete=false"],
+  ])(
+    "keeps %s observer evidence bounded and incomplete while owned cleanup settles",
+    async (mode, file, marker) => {
+      const started = Date.now();
+      const outcome = await exerciseDiagnostic("phone", mode);
+      expect(outcome.result.code, outcome.result.stderr).toBe(0);
+      expect(Date.now() - started).toBeLessThan(15_000);
+      const root = path.join(outcome.diagnostic, "phone/kvm-transitions");
+      const checkpoints = fs.readdirSync(root);
+      expect(checkpoints.toSorted()).toEqual([
+        "after-cleanup",
+        "after-owned-wait",
+        "before-owned-signal",
+        "entry-pre-probe",
+        "pre-launch",
+      ]);
+      for (const checkpoint of checkpoints) {
+        const folder = path.join(root, checkpoint);
+        expect(fs.readdirSync(folder).toSorted()).toEqual(["acl.txt", "metadata.txt", "state.txt"]);
+        const value = fs.readFileSync(path.join(folder, `${file}.txt`), "utf8");
+        expect(value).toContain(marker);
+        expect(value).toContain("complete=false");
+        for (const name of fs.readdirSync(folder)) {
+          const text = fs.readFileSync(path.join(folder, name), "utf8");
+          expect(Buffer.byteLength(text)).toBeLessThan(9_000);
+          expect(text).not.toMatch(/secret-|Traceback|username/u);
+        }
+      }
+      if (
+        ["state-symlink", "state-regular", "state-missing", "acl-replaced-symlink"].includes(mode)
+      ) {
+        expect(outcome.trace).not.toContain("acl-read");
+      }
+      expect(
+        fs.readFileSync(path.join(outcome.diagnostic, "phone/process-status.log"), "utf8"),
+      ).toContain("owned_emulator_exit_status=0");
+    },
+  );
+
+  it.each(["unset", "default"] as const)(
+    "classifies the %s KVM override without retaining a value",
+    async (override) => {
+      const outcome = await exerciseDiagnostic("phone", "ready", "matching", { override });
+      expect(outcome.result.code, outcome.result.stderr).toBe(0);
+      expect(
+        fs.readFileSync(
+          path.join(outcome.diagnostic, "phone/kvm-transitions/entry-pre-probe/metadata.txt"),
+          "utf8",
+        ),
+      ).toContain(`kvm_device_override=${override}`);
+    },
+  );
+
+  it("preserves failed Wear status when its transition observer also fails", async () => {
+    const outcome = await exerciseDiagnostic("phone-then-wear", "kvm-denied", "matching", {
+      observerMode: "state-error",
+    });
+    expect(outcome.result.code, outcome.result.stderr).toBe(1);
+    const factor = path.join(outcome.diagnostic, "wear");
+    expect(fs.readFileSync(path.join(factor, "emulator-accel-check.txt"), "utf8")).toContain(
+      "exit_status=11",
+    );
+    expect(fs.readFileSync(path.join(factor, "process-status.log"), "utf8")).toContain(
+      "owned_emulator_exit_status=1",
+    );
+    expect(
+      fs.readFileSync(
+        path.join(factor, "kvm-transitions/acceleration-probe-failed/state.txt"),
+        "utf8",
+      ),
+    ).toContain("probe_exit_status=73");
+    expect(fs.existsSync(path.join(factor, "result.txt"))).toBe(false);
   });
 
   it("generates two-axis varied-color Android conversion smoke inputs", () => {
