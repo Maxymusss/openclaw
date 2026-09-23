@@ -193,6 +193,7 @@ async function resolveHarnessCompactApiKey(params: {
       preparedModelRuntime: params.preparedModelRuntime,
       authProfileId: profileId,
       authProfileMode,
+      harnessAuthBootstrap: harness.authBootstrap,
       skipAgentDiscovery: true,
       allowBundledStaticCatalogFallback: true,
       workspaceDir,
@@ -209,6 +210,7 @@ async function resolveHarnessCompactApiKey(params: {
             reusableRuntimeAuthPlan?.forwardedAuthProfileId ??
             compactParams.authProfileId?.trim() ??
             undefined,
+          harnessAuthBootstrap: initialHarness.authBootstrap,
           workspaceDir,
         })
       ).model;

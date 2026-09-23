@@ -342,6 +342,7 @@ type BtwRuntimeModelMaterialization = {
   preparedModelRuntime: PreparedModelRuntimeSnapshot;
   authStorage: PreparedModelRuntimeStores["authStorage"];
   modelRegistry: PreparedModelRuntimeStores["modelRegistry"];
+  harnessAuthBootstrap?: AgentHarness["authBootstrap"];
 };
 
 async function materializeBtwRuntimeModel(
@@ -374,6 +375,7 @@ async function materializeBtwRuntimeModel(
           workspaceDir,
           authProfileId,
           authProfileMode,
+          harnessAuthBootstrap: params.harnessAuthBootstrap,
         }),
     })) ?? params.model
   );
@@ -442,6 +444,7 @@ async function resolveRuntimeModel(params: {
     modelRegistry,
     preparedModelRuntime,
     workspaceDir,
+    harnessAuthBootstrap: params.harnessAuthBootstrap,
     skipAgentDiscovery: true,
     allowBundledStaticCatalogFallback: true,
     preferBundledStaticCatalogTransport: Boolean(
@@ -518,6 +521,7 @@ async function resolveRuntimeModel(params: {
     modelRegistry,
     plan: runtimeAuthPreparation.plan,
     model,
+    harnessAuthBootstrap: params.harnessAuthBootstrap,
   });
   return {
     model,
@@ -940,6 +944,7 @@ export async function runBtwSideQuestion(
             authStorage: runtime.authStorage,
             modelRegistry: runtime.modelRegistry,
             authProfileStore: selectedAuthProfileStore,
+            harnessAuthBootstrap: selectedHarness.authBootstrap,
           });
       const runtimeAuthPlan = resolvedAttempt.plan;
       const runtimeModel = resolvedAttempt.model;

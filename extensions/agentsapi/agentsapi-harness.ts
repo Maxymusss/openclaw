@@ -37,6 +37,7 @@ import {
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import {
   assertPluginCapabilitySecretAvailable,
+  coerceSecretRef,
   normalizeResolvedSecretInputString,
 } from "openclaw/plugin-sdk/secret-input-runtime";
 import { createAgentsApiBindings } from "./agentsapi-bindings.js";
@@ -530,6 +531,7 @@ function readAgentsApiKey(params: AgentHarnessAttemptParamsV2, config: AgentsApi
     : config.apiKey;
   const apiKey = normalizeResolvedSecretInputString({
     value,
+    refValue: coerceSecretRef(value, params.config?.secrets?.defaults),
     defaults: params.config?.secrets?.defaults,
     path,
   });

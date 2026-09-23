@@ -1,6 +1,7 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { withSqliteReadOnlyWorkerScope } from "../../infra/sqlite-readonly-worker.js";
 import type { AuthProfileCredential } from "../auth-profiles/types.js";
+import type { AgentHarness } from "../harness/types.js";
 import type { ModelFallbackRouteResolution } from "../model-fallback.types.js";
 import {
   prepareModelRuntimeSnapshot,
@@ -23,9 +24,12 @@ export async function resolveTieredModel(params: {
   workspaceDir: string;
   authProfileId?: string;
   authProfileMode?: AuthProfileCredential["type"] | "aws-sdk";
+  harnessAuthBootstrap?: AgentHarness["authBootstrap"];
   preparedModelRuntime?: PreparedModelRuntimeSnapshot;
   staticCatalogOwnsTransport?: boolean;
 }): Promise<{ provider: string; resolution: ModelResolution }> {
+  const pluginOwnsAuth = params.harnessAuthBootstrap === "plugin";
+  const staticCatalogOwnsTransport = params.staticCatalogOwnsTransport || pluginOwnsAuth;
   const result = await withSqliteReadOnlyWorkerScope(async () => {
     const providers =
       params.fallbackProvider && params.fallbackProvider !== params.provider
@@ -37,8 +41,9 @@ export async function resolveTieredModel(params: {
         abortSignal: params.abortSignal,
         assertCurrent: params.assertCurrent,
         workspaceDir: params.workspaceDir,
-        authProfileId: params.authProfileId,
-        authProfileMode: params.authProfileMode,
+        authProfileId: pluginOwnsAuth ? undefined : params.authProfileId,
+        authProfileMode: pluginOwnsAuth ? undefined : params.authProfileMode,
+        harnessAuthBootstrap: params.harnessAuthBootstrap,
         modelIdSource: params.requestedRouteResolution === "resolved" ? "selected" : "input",
       };
       let firstFailure: { provider: string; resolution: ModelResolution } | undefined;
@@ -59,11 +64,11 @@ export async function resolveTieredModel(params: {
     };
     const firstTier = await resolveCandidates({
       skipAgentDiscovery: true,
-      allowBundledStaticCatalogFallback: params.staticCatalogOwnsTransport,
-      preferBundledStaticCatalogTransport: params.staticCatalogOwnsTransport,
+      allowBundledStaticCatalogFallback: staticCatalogOwnsTransport,
+      preferBundledStaticCatalogTransport: staticCatalogOwnsTransport,
       preparedModelRuntime: params.preparedModelRuntime,
     });
-    if (firstTier.resolution.model || params.staticCatalogOwnsTransport) {
+    if (firstTier.resolution.model || staticCatalogOwnsTransport) {
       return firstTier;
     }
     const config = params.config ?? {};

@@ -249,6 +249,7 @@ export async function prepareEmbeddedRunAuthPlan(params: {
           workspaceDir: params.workspaceDir,
           authProfileId,
           authProfileMode,
+          harnessAuthBootstrap: params.getAgentHarness().authBootstrap,
         }),
     });
 

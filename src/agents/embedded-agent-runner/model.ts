@@ -5,6 +5,7 @@ import { providerOwnsDynamicModelPreparation } from "../../plugins/provider-runt
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
 import { resolveDefaultAgentDir } from "../agent-scope.js";
 import type { AuthProfileCredential } from "../auth-profiles/types.js";
+import type { AgentHarness } from "../harness/types.js";
 import { resolveLegacyInheritedAuthDir } from "../legacy-inherited-auth-dir.js";
 import { resolveModelWorkspaceDir } from "../model-discovery-context.js";
 import { modelKey, type ModelRef } from "../model-ref-shared.js";
@@ -59,6 +60,8 @@ type CommonModelResolutionOptions = {
 
 type AsyncModelResolutionOptions = CommonModelResolutionOptions & {
   abortSignal?: AbortSignal;
+  /** Plugin-owned credentials cannot be used for host provider discovery. */
+  harnessAuthBootstrap?: AgentHarness["authBootstrap"];
   /** Selected executable IDs must not pass through input aliases again. */
   modelIdSource?: "input" | "selected";
   allowBundledStaticCatalogFallback?: boolean;
@@ -133,7 +136,9 @@ export async function resolveModelAsync(
     options?.agentId,
   );
   const explicitPreparedRuntime = options?.preparedModelRuntime;
+  const pluginOwnsAuth = options?.harnessAuthBootstrap === "plugin";
   const needsPreparedSnapshot =
+    !pluginOwnsAuth &&
     !explicitPreparedRuntime &&
     !options?.skipAgentDiscovery &&
     (!options?.authStorage || !options?.modelRegistry);
@@ -179,7 +184,9 @@ export async function resolveModelAsync(
         ? stores.modelRegistry.fork(authStorage)
         : stores.modelRegistry;
     }
-    const runtimeHooks = resolveRuntimeHooks(options);
+    const runtimeHooks = resolveRuntimeHooks(
+      pluginOwnsAuth ? { skipProviderRuntimeHooks: true } : options,
+    );
     let staticCatalogResolved = false;
     let staticCatalogModel: StaticCatalogFallbackModel | undefined;
     const getManifestStaticCatalogModel = () => {
@@ -221,7 +228,7 @@ export async function resolveModelAsync(
     });
     if (explicitModel && explicitModel.kind !== "resolved") {
       const suppressedRuntimeModel =
-        explicitModel.kind === "suppressed"
+        explicitModel.kind === "suppressed" && !pluginOwnsAuth
           ? await resolveRuntimePreferredSuppressedModel({
               abortSignal: options?.abortSignal,
               assertCurrent: options?.assertCurrent,
@@ -373,7 +380,9 @@ export async function resolveModelAsync(
       explicitModel?.kind === "resolved" && !providerRuntimeMetadataShouldWin
         ? explicitModel.model
         : undefined;
-    model ??= await resolveDynamicAttempt();
+    if (!pluginOwnsAuth) {
+      model ??= await resolveDynamicAttempt();
+    }
     options?.assertCurrent?.();
     if (!model && !explicitModel && options?.allowBundledStaticCatalogFallback) {
       model = await resolveStaticCatalogFallbackModel();
@@ -413,7 +422,8 @@ export async function resolveModelAsync(
         workspaceDir,
         runtimeHooks,
       }),
-      ...(options?.deferProviderDynamicModelPreparation &&
+      ...(!pluginOwnsAuth &&
+      options?.deferProviderDynamicModelPreparation &&
       providerOwnsDynamicModelPreparation({
         provider: normalizedRef.provider,
         config: cfg,

@@ -32,6 +32,8 @@ import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
 import { isRecoverableNativeHarnessBindingFailure } from "../harness/compaction-recovery.js";
 import { maybeCompactAgentHarnessSession } from "../harness/compaction.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
+import { resolveAgentHarnessSelectionDecision } from "../harness/selection-decision.js";
+import { projectPreparedModelProvider } from "../harness/support.js";
 import {
   acquireAgentRunPreparedModelRuntime,
   type PreparedModelRuntimeSnapshot,
@@ -491,6 +493,24 @@ async function compactResolvedContextEngine(
     pluginRegistry: requireActivePluginRegistry(),
   });
   assertQueuedCompactionPreparationActive(params, host);
+  const metadataHarnessSelection = resolveAgentHarnessSelectionDecision({
+    config: params.config,
+    provider: ceProvider,
+    modelId: ceModelId,
+    agentId: runtimePolicyAgentId,
+    sessionKey: runtimePolicySessionKey,
+    agentHarnessId: params.agentHarnessId,
+    agentHarnessRuntimeOverride: selectedHarnessRuntime,
+    ...(reusableRuntimeAuthPlan
+      ? {
+          modelProvider: projectPreparedModelProvider({ plan: reusableRuntimeAuthPlan }),
+          preparedModelProvider: true,
+        }
+      : {}),
+  });
+  const harnessAuthBootstrap = metadataHarnessSelection.builtIn
+    ? undefined
+    : metadataHarnessSelection.harness.authBootstrap;
   const { resolution: modelResolution } = await resolveTieredModel({
     abortSignal: params.abortSignal,
     provider: ceRuntimeProvider,
@@ -500,6 +520,7 @@ async function compactResolvedContextEngine(
     workspaceDir: resolvedWorkspaceDir,
     ...initialModelAuth,
     preparedModelRuntime,
+    harnessAuthBootstrap,
   });
   assertQueuedCompactionPreparationActive(params, host);
   const { model: ceModel, authStorage, modelRegistry } = modelResolution;
@@ -562,6 +583,7 @@ async function compactResolvedContextEngine(
         workspaceDir: resolvedWorkspaceDir,
         authProfileId,
         authProfileMode,
+        harnessAuthBootstrap: selectedPreparedHarness.authBootstrap,
       });
       assertQueuedCompactionPreparationActive(params, host);
       return { ...resolved, model: resolved.model as ProviderRuntimeModel | undefined };

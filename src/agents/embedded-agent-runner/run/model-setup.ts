@@ -279,6 +279,7 @@ export async function resolveEmbeddedRunModelSetup(params: {
       workspaceDir: params.workspaceDir,
       authProfileId,
       preparedModelRuntime: params.preparedModelRuntime,
+      harnessAuthBootstrap: agentHarness.authBootstrap,
       staticCatalogOwnsTransport: pluginHarnessOwnsTransport,
     });
     resolvedModelProvider = tieredResolution.provider;

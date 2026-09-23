@@ -16,6 +16,8 @@ import { resolveUserPath } from "../../utils.js";
 import { resolveAgentDir, resolveSessionAgentIds } from "../agent-scope.js";
 import { describeFailoverError } from "../failover-error.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
+import { resolveAgentHarnessSelectionDecision } from "../harness/selection-decision.js";
+import { projectPreparedModelProvider } from "../harness/support.js";
 import { MissingProviderAuthError } from "../model-auth.js";
 import { projectModelThinkingCompat } from "../model-catalog-lookup.js";
 import type { PreparedModelRuntimeSnapshot } from "../prepared-model-runtime.js";
@@ -112,6 +114,24 @@ export async function prepareDirectCompactionAttempt(
     workspaceDir: resolvedWorkspace,
     pluginRegistry: params.preparedModelRuntime.pluginRegistry!,
   });
+  const metadataHarnessSelection = resolveAgentHarnessSelectionDecision({
+    config: params.config,
+    provider,
+    modelId,
+    agentId: runtimePolicyAgentId,
+    sessionKey: runtimePolicySessionKey,
+    agentHarnessId: boundHarnessRuntime,
+    agentHarnessRuntimeOverride: selectedHarnessRuntimeOverride,
+    ...(reusableRuntimeAuthPlan
+      ? {
+          modelProvider: projectPreparedModelProvider({ plan: reusableRuntimeAuthPlan }),
+          preparedModelProvider: true,
+        }
+      : {}),
+  });
+  const harnessAuthBootstrap = metadataHarnessSelection.builtIn
+    ? undefined
+    : metadataHarnessSelection.harness.authBootstrap;
   const attemptedThinking = new Set<ThinkLevel>();
   const fail = (reason: string, err?: unknown): EmbeddedAgentCompactResult => {
     const failureReason = classifyCompactionReason(reason);
@@ -150,6 +170,7 @@ export async function prepareDirectCompactionAttempt(
     workspaceDir: resolvedWorkspace,
     ...initialModelAuth,
     preparedModelRuntime,
+    harnessAuthBootstrap,
   });
   const { model, error, authStorage, modelRegistry } = modelResolution;
   if (!model) {
@@ -209,6 +230,7 @@ export async function prepareDirectCompactionAttempt(
       allowBundledStaticCatalogFallback: true,
       authProfileId: profileId,
       authProfileMode: resolvedAuthProfileMode,
+      harnessAuthBootstrap: selectedPreparedHarness.authBootstrap,
     });
   const materializeAuthAttemptModel = async (materializeParams: {
     plan: AgentRuntimeAuthPlan;
