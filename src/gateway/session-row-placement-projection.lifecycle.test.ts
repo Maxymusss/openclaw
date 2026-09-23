@@ -8,9 +8,12 @@ import { buildSessionListRowMetadataContext } from "./session-utils-projection.j
 import type { WorkerSessionPlacementProjection } from "./worker-environments/placement-read-projection.types.js";
 
 function placementReadView() {
-  const cfg = {};
   const projection: SessionRowReadView & { isCurrent(): boolean } = {
-    state: { cfg, policyConfig: cfg, rowContext: buildSessionListRowMetadataContext({ now: 1 }) },
+    state: {
+      cfg: {},
+      policyConfig: {},
+      rowContext: buildSessionListRowMetadataContext({ now: 1 }),
+    },
     describe: () => undefined,
     selectEntries: () => [],
     present: () => {
