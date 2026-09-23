@@ -1214,19 +1214,19 @@ private struct ChatExternalSubmissionTests {
                 hasActiveRun: successor, activeRunIds: successor ? [runID] : [], key: fixture.target.sessionKey,
                 agentId: fixture.target.agentID, sessionId: "session-a"),
             inFlightRun: successor ? OpenClawChatInFlightRun(runId: runID, text: "successor run text") : nil)
-        // Only this captured reconciliation can install the snapshot. Ordinary
-        // owner polling keeps the fixture's default unavailable-history result.
+        // Hold the captured post-ACK read before it installs this run snapshot.
         await fixture.transport.setTargetedHistoryReplies([.snapshot, .held(payload, historyGate)])
         vm.input = "preserved composer draft"
         let session = vm.currentSessionSnapshot()
-        let initialHistoryRequest = vm.latestAppliedHistoryRequestID
+        // Run snapshots apply even while an unanswered user keeps older transcript replies admissible.
+        let initialRunSnapshotRequest = vm.latestAppliedRunSnapshotRequestID
         let invocation = fixture.request()
         let physical = await fixture.transport.route(fixture.target)
         let route = OpenClawChatExternalSubmissionRoute(
             target: fixture.target, lease: physical.lease,
             accountIsCurrent: {
                 let current = await physical.accountIsCurrent()
-                if await MainActor.run(body: { vm.latestAppliedHistoryRequestID > initialHistoryRequest }) {
+                if await MainActor.run(body: { vm.latestAppliedRunSnapshotRequestID > initialRunSnapshotRequest }) {
                     await routeGate.wait()
                 }
                 return current
@@ -1260,7 +1260,7 @@ private struct ChatExternalSubmissionTests {
             await historyGate.open()
 
             try await waitUntil("reconciled run installed before terminal admission") { await routeGate.entered }
-            #expect(vm.latestAppliedHistoryRequestID > initialHistoryRequest)
+            #expect(vm.latestAppliedRunSnapshotRequestID > initialRunSnapshotRequest)
             #expect(await fixture.transport.targetedHistoryReturns == [1, 2])
             #expect(vm.currentSessionSnapshot() == session)
             #expect(vm.pendingRuns == [runID])

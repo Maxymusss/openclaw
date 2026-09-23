@@ -50,6 +50,7 @@ public struct OpenClawChatExternalSubmissionRoute: Sendable {
     public let lease: OpenClawChatTransportRouteLease
     public let accountIsCurrent: @Sendable () async -> Bool
     public let presentationIsCurrent: @MainActor @Sendable () -> Bool
+    public let isCurrent: @Sendable () async -> Bool
 
     public init(
         target: OpenClawNativeSessionRef,
@@ -61,11 +62,12 @@ public struct OpenClawChatExternalSubmissionRoute: Sendable {
         self.lease = lease
         self.accountIsCurrent = accountIsCurrent
         self.presentationIsCurrent = presentationIsCurrent
-    }
-
-    public func isCurrent() async -> Bool {
-        guard await self.accountIsCurrent() else { return false }
-        return await self.presentationIsCurrent()
+        // Retained receipts need authority checks, not the route's send and
+        // history closures or their execution captures.
+        self.isCurrent = { [accountIsCurrent, presentationIsCurrent] in
+            guard await accountIsCurrent() else { return false }
+            return await presentationIsCurrent()
+        }
     }
 }
 
@@ -82,7 +84,7 @@ extension OpenClawChatViewModel {
         switch submission.state {
         case .idle:
             submission.owner = self
-            submission.isCurrent = { await route.isCurrent() }
+            submission.isCurrent = route.isCurrent
             let session = self.currentSessionSnapshot()
             let branchGeneration = self.nextSessionBranchSwitchGeneration
             // Bind and reserve before suspension. Only the first caller owns
