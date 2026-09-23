@@ -280,11 +280,10 @@ async function withGatewayChatHarness(
   try {
     await run({ ws, createSessionDir });
   } finally {
+    await resetDirectChatSession();
     if (process.env.OPENCLAW_CONFIG_PATH) {
       await fs.rm(process.env.OPENCLAW_CONFIG_PATH, { force: true });
     }
-    testState.sessionStorePath = undefined;
-    resetConfigRuntimeState();
     ws.close();
   }
 }
@@ -370,7 +369,7 @@ async function withDirectChatSession(
   try {
     await run(sessionDir, storePath);
   } finally {
-    resetDirectChatSession();
+    await resetDirectChatSession();
   }
 }
 
@@ -383,9 +382,10 @@ function openDirectChatSession() {
   return { sessionDir, storePath };
 }
 
-function resetDirectChatSession() {
+async function resetDirectChatSession() {
+  await disposeSessionReadContexts();
+  await releaseSessionTestDirectories([...autoCleanupTempDirs.dirs]);
   dispatchInboundMessageMock.mockReset();
-  testState.sessionStorePath = undefined;
   resetConfigRuntimeState();
 }
 
@@ -620,7 +620,7 @@ test("chat.send replays a cached result after the session is archived", async ()
     ]);
     expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
   } finally {
-    resetDirectChatSession();
+    await resetDirectChatSession();
   }
 });
 
@@ -765,7 +765,7 @@ describe("gateway server chat", () => {
         expect(responses[0]?.ok, JSON.stringify(responses[0]?.error ?? null)).toBe(true);
       } finally {
         testState.agentsConfig = undefined;
-        resetDirectChatSession();
+        await resetDirectChatSession();
       }
     },
   );
@@ -795,7 +795,7 @@ describe("gateway server chat", () => {
       );
     } finally {
       testState.agentsConfig = undefined;
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -821,7 +821,7 @@ describe("gateway server chat", () => {
       });
     } finally {
       testState.agentsConfig = undefined;
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -2919,7 +2919,7 @@ describe("gateway server chat", () => {
       }, FAST_WAIT_OPTS);
     } finally {
       dispatchRelease.resolve();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -2977,7 +2977,7 @@ describe("gateway server chat", () => {
         expect(remaining.filter((name) => !inboundBaseline.has(name))).toEqual([]);
       }, FAST_WAIT_OPTS);
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -3059,7 +3059,7 @@ describe("gateway server chat", () => {
         path.basename(retainedPath),
       ]);
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -3216,7 +3216,7 @@ describe("gateway server chat", () => {
       }, FAST_WAIT_OPTS);
     } finally {
       firstCatalogSnapshot.resolve(createChatVisionModelCatalogSnapshot());
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -3327,7 +3327,7 @@ describe("gateway server chat", () => {
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseMutation.resolve();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -3389,7 +3389,7 @@ describe("gateway server chat", () => {
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseMutation.resolve();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -3485,7 +3485,7 @@ describe("gateway server chat", () => {
     } finally {
       performDeletion.resolve();
       await Promise.allSettled(mutation ? [mutation] : []);
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -3542,7 +3542,7 @@ describe("gateway server chat", () => {
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseMutation.resolve();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -3658,7 +3658,7 @@ describe("gateway server chat", () => {
     } finally {
       releaseMutation.resolve();
       releaseTerminalMutation.resolve();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -3904,7 +3904,7 @@ describe("gateway server chat", () => {
       );
     } finally {
       dispatchRelease.resolve(undefined);
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -3998,7 +3998,7 @@ describe("gateway server chat", () => {
         ]),
       );
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4075,7 +4075,7 @@ describe("gateway server chat", () => {
       );
     } finally {
       dispatchRelease.resolve(undefined);
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4120,7 +4120,7 @@ describe("gateway server chat", () => {
       );
     } finally {
       dispatchRelease.resolve(undefined);
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4180,7 +4180,7 @@ describe("gateway server chat", () => {
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       releaseCallback.resolve(undefined);
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4330,7 +4330,7 @@ describe("gateway server chat", () => {
       ).toHaveLength(1);
     } finally {
       stopListening?.();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4404,7 +4404,7 @@ describe("gateway server chat", () => {
       });
     } finally {
       restartRecoveryMocks.retryRestartAbortedMainSessionRecovery.mockClear();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4452,7 +4452,7 @@ describe("gateway server chat", () => {
       });
     } finally {
       restartRecoveryMocks.retryRestartAbortedMainSessionRecovery.mockClear();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4506,7 +4506,7 @@ describe("gateway server chat", () => {
     } finally {
       releaseMutation.resolve();
       await Promise.allSettled(mutation ? [mutation] : []);
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4542,7 +4542,7 @@ describe("gateway server chat", () => {
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       restartRecoveryMocks.retryRestartAbortedMainSessionRecovery.mockClear();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4587,7 +4587,7 @@ describe("gateway server chat", () => {
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
       restartRecoveryMocks.retryRestartAbortedMainSessionRecovery.mockClear();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4621,7 +4621,7 @@ describe("gateway server chat", () => {
       ]);
       expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4681,7 +4681,7 @@ describe("gateway server chat", () => {
         restartRecoveryDeliveryRunId: runId,
       });
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4725,7 +4725,7 @@ describe("gateway server chat", () => {
         status: "failed",
       });
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4810,7 +4810,7 @@ describe("gateway server chat", () => {
         )?.replyOptions?.suppressNextUserMessagePersistence,
       ).toBe(true);
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4846,7 +4846,7 @@ describe("gateway server chat", () => {
       expect(failed?.restartRecoveryDeliveryRunId).toBe(runId);
       expect(failed?.restartRecoveryDeliverySourceRunId).toBe(runId);
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4915,7 +4915,7 @@ describe("gateway server chat", () => {
         )?.replyOptions?.suppressNextUserMessagePersistence,
       ).toBe(true);
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -4974,7 +4974,7 @@ describe("gateway server chat", () => {
         FAST_WAIT_OPTS,
       );
     } finally {
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
@@ -5156,7 +5156,7 @@ describe("gateway server chat", () => {
       }, FAST_WAIT_OPTS);
     } finally {
       dispatchRelease.resolve();
-      resetDirectChatSession();
+      await resetDirectChatSession();
     }
   });
 
