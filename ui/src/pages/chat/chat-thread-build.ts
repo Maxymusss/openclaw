@@ -28,6 +28,7 @@ import {
 import type { CanvasToolPreview } from "../../lib/chat/tool-cards.ts";
 import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
 import {
+  insertPendingInputProjections,
   projectPendingInputItems,
   type PendingInputPlacement,
 } from "./chat-pending-input-placement.ts";
@@ -442,7 +443,7 @@ export function buildChatItems(
   );
   // Transient projections merge into stable history + queued-send rows by timestamp.
   // Stable rows keep their relative order despite client and Gateway clock skew.
-  const projections = projectPendingInputItems({
+  const pendingProjections = projectPendingInputItems({
     pendingInputs,
     items,
     historyItems,
@@ -454,7 +455,8 @@ export function buildChatItems(
     workerSetupPending: props.workerSetupPending,
     messageRecovery: props.messageRecovery,
   });
-  const pendingInputItems = projections.map(({ item }) => item);
+  const pendingInputItems = pendingProjections.flatMap((projection) => projection.items);
+  const projections: ChatProjection[] = [];
   if (compaction && compactionKey && !hasPersistedCompaction) {
     const timestamp = compaction.startedAt ?? compaction.completedAt ?? Date.now();
     projections.push({
@@ -625,6 +627,7 @@ export function buildChatItems(
     toolItems.map((tool) => tool.projection),
   );
   insertChatItemsByTimestamp(items, projections);
+  insertPendingInputProjections(items, pendingProjections);
 
   // Completion time must not move an already visible reply across queued custody.
   // Only unsequenced live terminals use the same causal ceiling as their stream;

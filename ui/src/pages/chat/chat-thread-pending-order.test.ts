@@ -252,6 +252,138 @@ describe("observed pending-input order", () => {
     },
   );
 
+  it.each(["queued", "cancelled", "interrupted"] as const)(
+    "keeps a handoff before %s custody with an earlier timestamp",
+    (state) => {
+      visible(props());
+      const queue = [
+        {
+          id: "new-send",
+          text: nextUser.content,
+          createdAt: 1,
+          sendRunId: "next-run",
+          sendSubmittedAtMs: 1,
+          sendState: "submitting" as const,
+        },
+      ];
+      expect(visible(props({ queue }))).toEqual([
+        ...history,
+        handoff.message,
+        expect.objectContaining({ content: [{ type: "text", text: nextUser.content }] }),
+      ]);
+      const accepted = {
+        id: "new-send",
+        runId: "next-run",
+        acceptedAt: 1,
+        state,
+        message: { ...nextUser, timestamp: 1, __openclaw: { id: "pending:new-send" } },
+      };
+      expect(visible(props({ pendingInputs: [accepted, handoff] }))).toEqual([
+        ...history,
+        handoff.message,
+        accepted.message,
+      ]);
+      const items = buildCachedChatItems(props({ pendingInputs: [accepted, handoff] }));
+      const handoffIndex = items.findIndex(
+        (item) =>
+          item.kind === "group" && item.messages.some((entry) => entry.message === handoff.message),
+      );
+      const acceptedIndex = items.findIndex(
+        (item) =>
+          item.kind === "group" &&
+          item.messages.some((entry) => entry.message === accepted.message),
+      );
+      expect(handoffIndex).toBeGreaterThanOrEqual(0);
+      expect(items[handoffIndex + 1]?.key).toBe("pending-input:handoff:state");
+      expect(acceptedIndex).toBeGreaterThan(handoffIndex + 1);
+      if (state !== "queued") {
+        expect(items[acceptedIndex + 1]?.key).toBe("pending-input:new-send:state");
+      } else {
+        expect(visible(props({ messages: [...history, nextUser] }))).toEqual([
+          ...history,
+          handoff.message,
+          nextUser,
+        ]);
+      }
+    },
+  );
+
+  it("keeps three observed sends in order across custody with backward clocks", () => {
+    visible(props());
+    const firstQueue = {
+      id: "first",
+      text: "First follow-up.",
+      createdAt: 1,
+      sendRunId: "first-run",
+      sendSubmittedAtMs: 1,
+      sendState: "submitting" as const,
+    };
+    visible(props({ queue: [firstQueue] }));
+    const first = {
+      id: "first",
+      runId: "first-run",
+      acceptedAt: 1,
+      state: "queued" as const,
+      message: { role: "user", content: firstQueue.text, timestamp: 1 },
+    };
+    visible(props({ pendingInputs: [first, handoff] }));
+    const secondQueue = {
+      id: "second",
+      text: "Second follow-up.",
+      createdAt: 0,
+      sendRunId: "second-run",
+      sendSubmittedAtMs: 0,
+      sendState: "submitting" as const,
+    };
+    visible(props({ pendingInputs: [first, handoff], queue: [secondQueue] }));
+    const second = {
+      id: "second",
+      runId: "second-run",
+      acceptedAt: 0,
+      state: "queued" as const,
+      message: { role: "user", content: secondQueue.text, timestamp: 0 },
+    };
+    expect(visible(props({ pendingInputs: [second, first, handoff] }))).toEqual([
+      ...history,
+      handoff.message,
+      first.message,
+      second.message,
+    ]);
+  });
+
+  it("keeps a handoff that first appears during search after all earlier history", () => {
+    const matchingReply = message("assistant", "Earlier handoff reply", 2);
+    const earlierHistory = [
+      history[0]!,
+      matchingReply,
+      message("user", "Hidden older request", 3),
+      message("assistant", "Hidden older reply", 4),
+    ];
+    const search = { searchOpen: true, searchQuery: "handoff" };
+    visible(props({ messages: earlierHistory, pendingInputs: [], ...search }));
+    expect(visible(props({ messages: earlierHistory, ...search }))).toEqual([
+      matchingReply,
+      handoff.message,
+    ]);
+    const laterUser = message("user", "Continue from the handoff.", 5, "next-run");
+    const messages = [...earlierHistory, laterUser];
+    expect(visible(props({ messages, ...search }))).toEqual([
+      matchingReply,
+      handoff.message,
+      laterUser,
+    ]);
+    expect(visible(props({ messages }))).toEqual([...earlierHistory, handoff.message, laterUser]);
+  });
+
+  it("does not retain placement for custody never displayed by search", () => {
+    visible(props({ searchOpen: true, searchQuery: "Earlier" }));
+    const messages = [...history, nextUser];
+    expect(visible(props({ messages, searchOpen: true, searchQuery: "handoff" }))).toEqual([
+      nextUser,
+      handoff.message,
+    ]);
+  });
+
   it("scopes observed placement to the pane and session and retires it on reset", () => {
     visible(props());
     const messages = [...history, nextUser];

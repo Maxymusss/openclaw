@@ -2,7 +2,7 @@ import type { ChatPendingInputsPage } from "../../../../packages/gateway-protoco
 import type { ChatItem, ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
 import { buildPendingInputItems } from "./chat-pending-inputs.ts";
-import type { ChatProjection } from "./chat-thread-items.ts";
+import { insertChatItemsByTimestamp, type TurnInsertionBounds } from "./chat-thread-items.ts";
 import { chatItemStartsUserTurn } from "./chat-turn-boundary.ts";
 
 export type PendingInputPlacement = {
@@ -12,6 +12,12 @@ export type PendingInputPlacement = {
 };
 // Retain observed positions across custody pages without growing for the session's lifetime.
 const MAX_PENDING_INPUT_PLACEMENTS = 200;
+
+type PendingInputProjection = {
+  items: ChatItem[];
+  bounds: TurnInsertionBounds;
+  pendingBeforeKey?: string;
+};
 
 export function projectPendingInputItems({
   pendingInputs,
@@ -35,19 +41,28 @@ export function projectPendingInputItems({
   workspaceSyncPendingRunIds?: readonly string[];
   workerSetupPending?: boolean;
   messageRecovery?: ChatMessageRecovery;
-}): ChatProjection[] {
+}): PendingInputProjection[] {
   const searchFiltering = Boolean(searchQuery?.trim());
-  const projections: ChatProjection[] = [];
+  const projections: PendingInputProjection[] = [];
   const sourceKey = (key: string) => historySourceKeys.get(key) ?? key;
-  for (const input of pendingInputs) {
-    const pendingItems = buildPendingInputItems(
+  const groups = pendingInputs.map((input) => ({
+    input,
+    pendingItems: buildPendingInputItems(
       [input],
       searchQuery,
       queue,
       workspaceSyncPendingRunIds,
       workerSetupPending,
       messageRecovery,
-    );
+    ),
+  }));
+  const pendingKeys = new Set(
+    groups.flatMap(({ pendingItems }) => pendingItems.map(({ key }) => key)),
+  );
+  for (const { input, pendingItems } of groups) {
+    if (!pendingItems.length) {
+      continue;
+    }
     const previous = pendingInputPlacements.get(input.id);
     const afterIndex = previous?.afterKey
       ? items.findIndex((item) => item.key === previous.afterKey)
@@ -55,14 +70,14 @@ export function projectPendingInputItems({
     let beforeIndex = previous?.beforeKey
       ? items.findIndex((item) => item.key === previous.beforeKey)
       : -1;
-    let historyAfterIndex = previous
-      ? historyItems.findIndex(
-          (item) => previous.afterKey !== null && item.key === sourceKey(previous.afterKey),
+    const historyAfterIndex = previous
+      ? Math.max(
+          historyItems.findIndex(
+            (item) => previous.afterKey !== null && item.key === sourceKey(previous.afterKey),
+          ),
+          historyItems.findIndex((item) => item.key === previous.historyAfterKey),
         )
       : -1;
-    if (previous && historyAfterIndex < 0) {
-      historyAfterIndex = historyItems.findIndex((item) => item.key === previous.historyAfterKey);
-    }
     const historyFloorPresent = historyAfterIndex >= 0 || previous?.historyAfterKey === null;
     const anchorPresent =
       historyFloorPresent || previous?.afterKey === null || afterIndex >= 0 || beforeIndex >= 0;
@@ -107,13 +122,15 @@ export function projectPendingInputItems({
     // cannot move it; only the preceding assistant turn can continue above it.
     const afterKey = items[beforeIndex < 0 ? items.length - 1 : beforeIndex - 1]?.key ?? null;
     const beforeKey = beforeIndex < 0 ? undefined : items[beforeIndex]?.key;
-    if (!searchFiltering && (!previous || anchorPresent)) {
+    const pendingBeforeKey =
+      previous?.beforeKey && pendingKeys.has(previous.beforeKey) ? previous.beforeKey : undefined;
+    if ((!searchFiltering || !previous) && (!previous || anchorPresent)) {
       // Page absence is not consumption. Keep a bounded, recently observed
       // cache until the owning pane/session resets or older entries expire.
       pendingInputPlacements.delete(input.id);
       pendingInputPlacements.set(input.id, {
         afterKey,
-        beforeKey,
+        beforeKey: pendingBeforeKey ?? beforeKey,
         // Lifted previews can own the rendered floor without being history rows.
         historyAfterKey: previous ? previous.historyAfterKey : (historyItems.at(-1)?.key ?? null),
       });
@@ -128,7 +145,49 @@ export function projectPendingInputItems({
       ...(afterKey ? { afterKey } : {}),
       ...(beforeKey ? { beforeKey } : {}),
     };
-    projections.push(...pendingItems.map((item) => ({ item, bounds })));
+    projections.push({ items: pendingItems, bounds, pendingBeforeKey });
   }
   return projections;
+}
+
+export function insertPendingInputProjections(
+  items: ChatItem[],
+  projections: PendingInputProjection[],
+): void {
+  const byKey = new Map(
+    projections.flatMap((projection) =>
+      projection.items.map((item) => [item.key, projection] as const),
+    ),
+  );
+  const visited = new Set<PendingInputProjection>();
+  const insert = (projection: PendingInputProjection) => {
+    if (visited.has(projection)) {
+      return;
+    }
+    visited.add(projection);
+    // A local-send ceiling keeps the same key when custody replaces it. Insert
+    // that anchor first so timestamp sorting cannot erase the observed order.
+    const ceiling = projection.pendingBeforeKey;
+    const pendingCeiling = ceiling ? byKey.get(ceiling) : undefined;
+    if (pendingCeiling) {
+      insert(pendingCeiling);
+    }
+    const pendingIndex = ceiling ? items.findIndex((item) => item.key === ceiling) : -1;
+    const stableIndex = projection.bounds.beforeKey
+      ? items.findIndex((item) => item.key === projection.bounds.beforeKey)
+      : -1;
+    const bounds =
+      pendingIndex >= 0 && (stableIndex < 0 || pendingIndex < stableIndex)
+        ? { ...projection.bounds, beforeKey: ceiling }
+        : projection.bounds;
+    const [message, ...notices] = projection.items;
+    if (message) {
+      insertChatItemsByTimestamp(items, [{ item: message, bounds }]);
+      // Status is part of this custody record, not a separately clocked row.
+      items.splice(items.indexOf(message) + 1, 0, ...notices);
+    }
+  };
+  for (const projection of projections) {
+    insert(projection);
+  }
 }
