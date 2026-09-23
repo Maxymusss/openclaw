@@ -20,7 +20,10 @@ import {
 const REPLY_CONTEXT_BODY_MAX_CHARS = 2000;
 
 export type ChatSendReplyContextFields = Partial<
-  Pick<MsgContext, "ReplyToId" | "ReplyToBody" | "ReplyToSender">
+  Pick<
+    MsgContext,
+    "ReplyToId" | "ReplyToBody" | "ReplyToSender" | "ReplyToSenderId" | "ReplyToRole"
+  >
 >;
 
 type ChatSendReplyContextParams = {
@@ -30,7 +33,6 @@ type ChatSendReplyContextParams = {
   sessionKey: string;
   sessionEntry?: SessionTranscriptReadScope["sessionEntry"];
   storePath: string | undefined;
-  userSenderLabel?: string;
   warn?: (message: string) => void;
 };
 
@@ -76,14 +78,18 @@ function resolveReplyTargetSenderLabel(params: {
   message: unknown;
   cfg: OpenClawConfig;
   agentId?: string;
-  userSenderLabel?: string;
 }): string {
   const role = asOptionalRecord(params.message)?.role;
   if (role === "assistant") {
     return resolveAssistantIdentity({ cfg: params.cfg, agentId: params.agentId }).name;
   }
-  const userLabel = params.userSenderLabel?.trim();
-  return userLabel || "User";
+  const metadata = asOptionalRecord(asOptionalRecord(params.message)?.["__openclaw"]);
+  for (const value of [metadata?.senderName, metadata?.senderUsername, metadata?.senderId]) {
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "User";
 }
 
 /** Copies hydrated reply fields onto the inbound context without clobbering unset keys. */
@@ -99,6 +105,12 @@ export function applyChatSendReplyContextFields(
   }
   if (fields.ReplyToSender !== undefined) {
     ctx.ReplyToSender = fields.ReplyToSender;
+  }
+  if (fields.ReplyToSenderId !== undefined) {
+    ctx.ReplyToSenderId = fields.ReplyToSenderId;
+  }
+  if (fields.ReplyToRole !== undefined) {
+    ctx.ReplyToRole = fields.ReplyToRole;
   }
 }
 
@@ -152,11 +164,21 @@ export async function resolveChatSendReplyContext(
       return fields;
     }
     fields.ReplyToBody = truncateUtf16Safe(body, REPLY_CONTEXT_BODY_MAX_CHARS);
+    if (displayMessage.role === "user" || displayMessage.role === "assistant") {
+      fields.ReplyToRole = displayMessage.role;
+    }
+    const metadata = asOptionalRecord(displayMessage["__openclaw"]);
+    if (
+      displayMessage.role === "user" &&
+      typeof metadata?.senderId === "string" &&
+      metadata.senderId.trim()
+    ) {
+      fields.ReplyToSenderId = metadata.senderId.trim();
+    }
     fields.ReplyToSender = resolveReplyTargetSenderLabel({
       message: displayMessage,
       cfg: params.cfg,
       agentId: params.agentId,
-      userSenderLabel: params.userSenderLabel,
     });
     return fields;
   } catch (err) {

@@ -198,6 +198,9 @@ export type MsgContext = Partial<CanonicalInboundText> & {
   ReplyToBody?: string;
   ReplyToQuoteText?: string;
   ReplyToSender?: string;
+  /** Authorship of the referenced message, independent of the current sender. */
+  ReplyToSenderId?: string;
+  ReplyToRole?: "user" | "assistant";
   ReplyChain?: Array<{
     messageId?: string;
     threadId?: string;

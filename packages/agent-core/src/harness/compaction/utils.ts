@@ -293,7 +293,17 @@ function readPersistedSender(message: PersistedSenderCarrier): PersistedSender |
  */
 export function formatPersistedSenderSuffix(message: PersistedSenderCarrier): string {
   const sender = readPersistedSender(message);
-  return sender ? ` sender=${JSON.stringify(sender)}` : "";
+  if (!sender) {
+    return "";
+  }
+  const participation = asRecord(Reflect.get(message, "__openclaw"))?.participation;
+  const audience =
+    participation === "humans"
+      ? " audience=humans (discussion context, not an agent assignment)"
+      : participation === "agent"
+        ? " audience=agent"
+        : "";
+  return ` sender=${JSON.stringify(sender)}${audience}`;
 }
 
 function formatConversationSpeaker(message: Message): string {

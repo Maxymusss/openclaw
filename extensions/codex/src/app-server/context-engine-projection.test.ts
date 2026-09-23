@@ -43,6 +43,24 @@ function summaryMessages(type: "compaction" | "branch_summary", summary: string)
 }
 
 describe("projectContextEngineAssemblyForCodex", () => {
+  it("keeps discussion audience beside authorship in quoted native history", async () => {
+    const message = {
+      ...textMessage("user", "@Morgan please check the preview"),
+      __openclaw: { senderId: "alex", senderName: "Alex", participation: "humans" },
+    };
+    const before = JSON.stringify(message);
+    const result = await projectContextEngineAssemblyForCodex({
+      assembledMessages: [message],
+      originalHistoryMessages: [message],
+      prompt: "Agent, summarize the discussion",
+    });
+    expect(result.promptText).toContain(
+      'sender={"id":"alex","name":"Alex"} audience=humans (discussion context, not an agent assignment)',
+    );
+    expect(result.promptText).toContain("Current user request:\nAgent, summarize the discussion");
+    expect(JSON.stringify(message)).toBe(before);
+  });
+
   it("charges restored file content to the selected window before reading older attachments", async () => {
     const older = textMessage("user", "older attachment");
     const recent = textMessage("user", "recent attachment");

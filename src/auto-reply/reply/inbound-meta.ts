@@ -20,6 +20,7 @@ import {
   selectInboundHistoryContext,
 } from "./channel-prompt-context.js";
 import { markInboundContextLabel } from "./inbound-context-marker.js";
+import { normalizePromptMetadataString, stripNullBytes } from "./inbound-meta-values.js";
 
 const MAX_UNTRUSTED_TRANSCRIPT_FIELD_CHARS = 500;
 const MAX_ACTIVE_GOAL_OBJECTIVE_CHARS = 200;
@@ -114,19 +115,6 @@ export function refreshActiveGoalContext(
       : {}),
     injectedGoalContexts: activeGoalContext ? [activeGoalContext] : undefined,
   };
-}
-
-function stripNullBytes(value: string): string {
-  return value.replaceAll("\u0000", "");
-}
-
-function normalizePromptMetadataString(value: unknown): string | undefined {
-  const normalized = normalizeOptionalString(value);
-  if (!normalized) {
-    return undefined;
-  }
-  const sanitized = stripNullBytes(normalized);
-  return sanitized || undefined;
 }
 
 function normalizePromptMediaPath(value: unknown): string | undefined {
@@ -716,6 +704,8 @@ export function buildInboundUserContextPrefix(
       formatContextJsonBlock(markInboundContextLabel("Reply target of current user message:"), {
         message_id: replyToId,
         sender_label: replyToSender,
+        sender_id: normalizePromptMetadataString(ctx.ReplyToSenderId),
+        role: ctx.ReplyToRole,
         is_quote: ctx.ReplyToIsQuote === true ? true : undefined,
         body: replyToBody || undefined,
       }),

@@ -88,7 +88,13 @@ function formatCodexContextSenderSuffix(message: AgentMessage): string {
   }
   const name = normalize(record.senderName);
   const username = normalize(record.senderUsername);
-  return ` sender=${JSON.stringify({ id, ...(name ? { name } : {}), ...(username ? { username } : {}) })}`;
+  const audience =
+    record.participation === "humans"
+      ? " audience=humans (discussion context, not an agent assignment)"
+      : record.participation === "agent"
+        ? " audience=agent"
+        : "";
+  return ` sender=${JSON.stringify({ id, ...(name ? { name } : {}), ...(username ? { username } : {}) })}${audience}`;
 }
 
 // Codex scans every turn text input byte-for-byte for explicit `$name` skill

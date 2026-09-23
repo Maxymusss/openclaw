@@ -74,25 +74,41 @@ describe("resolveChatSendReplyContext", () => {
       ReplyToId: "msg-1",
       ReplyToBody: "the replied-to answer",
       ReplyToSender: "Molty",
+      ReplyToRole: "assistant",
     });
   });
 
-  it("labels user reply targets with the client display name", async () => {
+  it("labels human reply targets with their persisted author", async () => {
     readSessionMessageByIdAsyncMock.mockResolvedValue({
       found: true,
-      message: { role: "user", content: "an earlier question" },
+      message: {
+        role: "user",
+        content: "an earlier question",
+        __openclaw: { senderId: "author-a", senderName: "Ada" },
+      },
     });
 
-    const fields = await resolveChatSendReplyContext(baseParams({ userSenderLabel: "Ada" }));
+    const fields = await resolveChatSendReplyContext(baseParams());
 
     expect(fields).toEqual({
       ReplyToId: "msg-1",
       ReplyToBody: "an earlier question",
       ReplyToSender: "Ada",
+      ReplyToSenderId: "author-a",
+      ReplyToRole: "user",
     });
   });
 
   it("keeps only the reply id when the target message is missing", async () => {
+    readSessionMessageByIdAsyncMock.mockResolvedValue({
+      found: true,
+      message: { role: "user", content: "legacy input" },
+    });
+    expect(await resolveChatSendReplyContext(baseParams())).toMatchObject({
+      ReplyToSender: "User",
+      ReplyToRole: "user",
+    });
+    expect(await resolveChatSendReplyContext(baseParams())).not.toHaveProperty("ReplyToSenderId");
     readSessionMessageByIdAsyncMock.mockResolvedValue({ found: false });
 
     expect(await resolveChatSendReplyContext(baseParams())).toEqual({ ReplyToId: "msg-1" });
@@ -143,7 +159,7 @@ describe("resolveChatSendReplyContext", () => {
       },
     });
 
-    const fields = await resolveChatSendReplyContext(baseParams({ userSenderLabel: "Ada" }));
+    const fields = await resolveChatSendReplyContext(baseParams());
 
     expect(fields.ReplyToBody).toBe("Which stage runs the integration tests?");
   });

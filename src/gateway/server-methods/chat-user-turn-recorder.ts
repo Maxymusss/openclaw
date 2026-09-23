@@ -110,7 +110,6 @@ export function createGatewayChatUserTurnController(params: {
         sessionKey: session.sessionKey,
         sessionEntry: session.entry,
         storePath: session.storePath,
-        userSenderLabel: request.clientInfo?.displayName,
         warn: params.warn,
       })
     : undefined;

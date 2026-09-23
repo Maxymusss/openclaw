@@ -88,6 +88,13 @@ It uses the same session access, send policy, committed-mention notification, an
 durable retry checks as ordinary chat. Omitted participation or `"agent"` retains
 the normal agent request contract; a human mention alone does not suppress it.
 
+Saved participation remains message-local context: human discussion is not an
+agent assignment, and an explicit agent request may also mention or reply to a
+human. History projection and compaction preserve this distinction alongside
+authorship without rewriting the stored message or changing the security chat
+type. Reply context uses the referenced message's stored author and role; an
+unattributed older message is not assigned to the current connection's user.
+
 The Control UI binds each [selected person](/concepts/multi-user#mentioning-people) to the submitted message text. `chat.send`, the initial message on `sessions.create`, and `sessions.send` accept an optional `mentions` array of `{ profileId, start, end }` annotations. There are at most ten annotations. `start` is inclusive and `end` is exclusive, measured in UTF-16 code units. The Gateway validates their text ranges and recipients before accepting the input. Plain `@name` text and agent output do not create human mentions. Copying or quoting text does not copy its recipient selections.
 
 The mention becomes eligible for an Inbox entry and optional browser push only after the original human message is newly committed to the transcript. An early `status: "started"` acknowledgment, a staged initial message, or durable pending-input custody is not that commit. A queued or remotely placed first message therefore does not notify while it is still waiting to be recorded. A later agent failure does not undo a mention whose human message was already committed.

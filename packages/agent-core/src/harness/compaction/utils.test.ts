@@ -338,6 +338,18 @@ describe("serializeConversation", () => {
     },
   );
 
+  it("retains discussion audience in summary text and its accounted suffix", () => {
+    const message = {
+      role: "user" as const,
+      content: "Morgan should check it",
+      timestamp: 1,
+      __openclaw: { senderId: "alex", participation: "humans" },
+    };
+    const suffix = formatPersistedSenderSuffix(message);
+    expect(suffix).toContain("audience=humans (discussion context, not an agent assignment)");
+    expect(serializeConversation([message])).toContain(`[User${suffix}]: Morgan should check it`);
+  });
+
   it("preserves persisted group sender provenance in summary input", () => {
     const messages = [
       {
