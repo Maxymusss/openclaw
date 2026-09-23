@@ -398,7 +398,7 @@ describe("resolveProviderAuths key normalization", () => {
           { openai: ["openai:default"] },
         );
       },
-      expected: [{ provider: "openai", token: "chatgpt-token" }],
+      expected: [{ provider: "openai", token: "chatgpt-token", profileType: "token" }],
     });
   });
 
@@ -479,7 +479,9 @@ describe("resolveProviderAuths key normalization", () => {
         config: {},
         env: buildSuiteEnv(home),
       });
-      expect(auths).toEqual([{ provider: "anthropic", token: "anthropic-token" }]);
+      expect(auths).toEqual([
+        { provider: "anthropic", token: "anthropic-token", profileType: "token" },
+      ]);
     });
   });
 
@@ -511,7 +513,7 @@ describe("resolveProviderAuths key normalization", () => {
         config: {},
         env: buildSuiteEnv(home),
       });
-      expect(auths).toEqual([{ provider: "anthropic", token: "token-1" }]);
+      expect(auths).toEqual([{ provider: "anthropic", token: "token-1", profileType: "token" }]);
     });
   });
 
