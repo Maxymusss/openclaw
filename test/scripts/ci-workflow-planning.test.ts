@@ -1784,6 +1784,8 @@ describe("ci workflow guards", () => {
       );
       expect(actual.filter((job) => job === "checks-node-core-test-nondist-shard")).toHaveLength(1);
       expect(actual).toContain("preflight");
+      expect(actual).not.toContain("ci-gate");
+      expect(actual).not.toContain("check-lint-hosted-core-shard");
       expect(Number(qualification.outputs.hybrid_hosted_base_rows)).toBe(
         Number(ordinary.outputs.hybrid_hosted_base_rows) + 2,
       );
@@ -1853,6 +1855,8 @@ describe("ci workflow guards", () => {
           "build-artifacts",
           "android",
           "check-test-types-hosted-core-shard",
+          "check-lint-hosted-core-shard",
+          "ci-gate",
         ]) {
           expect(hosted, name).not.toContain(name);
         }
@@ -2140,6 +2144,8 @@ describe("ci workflow guards", () => {
         emittedHostedRows(manifest.outputs, context).length,
       );
       expect(base.filter((name) => name === "macos-node")).toHaveLength(3);
+      expect(base).not.toContain("ci-gate");
+      expect(base).not.toContain("check-lint-hosted-core-shard");
       expect(base.filter((name) => name === "check-lint-hosted-extension-shard")).toHaveLength(
         runnerProfile === "hybrid" ? 6 : 0,
       );
