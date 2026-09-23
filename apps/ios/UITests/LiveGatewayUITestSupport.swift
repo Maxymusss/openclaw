@@ -7,7 +7,8 @@ extension XCTestCase {
         in app: XCUIApplication,
         setupCode: String?,
         initialTab: String,
-        initialDestination: String)
+        initialDestination: String,
+        expectedTLSFingerprint: String? = nil)
     {
         if let setupCode {
             UIPasteboard.general.string = setupCode
@@ -38,6 +39,18 @@ extension XCTestCase {
         XCTAssertTrue(app.menuItems["Paste"].waitForExistence(timeout: 3))
         app.menuItems["Paste"].tap()
         app.buttons["Apply"].tap()
+        if let expectedTLSFingerprint {
+            XCTAssertEqual(expectedTLSFingerprint.count, 64)
+            XCTAssertTrue(expectedTLSFingerprint.allSatisfy(\.isHexDigit))
+            let trust = app.alerts["Trust this gateway?"]
+            XCTAssertTrue(trust.waitForExistence(timeout: 15))
+            let fingerprint = trust.staticTexts.matching(NSPredicate(
+                format: "label ENDSWITH %@", expectedTLSFingerprint))
+            XCTAssertEqual(fingerprint.count, 1, "The actual TLS certificate fingerprint differs")
+            let accept = trust.buttons["Trust and connect"]
+            XCTAssertTrue(accept.isEnabled && accept.isHittable)
+            accept.tap()
+        }
         XCTAssertTrue(app.staticTexts["You're connected"].waitForExistence(timeout: 45))
         app.buttons["Go to Chat"].tap()
     }

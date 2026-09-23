@@ -21,6 +21,12 @@ final class InstalledNativeActionProofHost: OpenClawNativeActionHost {
         var runMatch: Bool?
         var misattributed = false
         var idleUnprotectedComposer = false
+        var forwardingEntries = 0
+        var forwardingCompletions = 0
+        var forwardingKind = "none"
+        var forwardingOutcome = "none"
+        var forwardingOverflow = false
+        var forwardingMisattributed = false
     }
 
     private struct Origin {
@@ -132,7 +138,21 @@ final class InstalledNativeActionProofHost: OpenClawNativeActionHost {
     }
 
     func open(_ request: OpenClawNativeOpenRequest) async -> OpenClawNativeOpenOutcome {
-        guard case let .inspect(run) = request else { return await self.router.open(request) }
+        self.snapshot.forwardingOverflow = self.snapshot.forwardingOverflow || self.snapshot.forwardingEntries >= 256
+        self.snapshot.forwardingMisattributed = self.snapshot.forwardingMisattributed ||
+            self.snapshot.forwardingEntries != self.snapshot.forwardingCompletions
+        self.snapshot.forwardingEntries = min(256, self.snapshot.forwardingEntries + 1)
+        let forwardingOrdinal = self.snapshot.forwardingEntries
+        self.snapshot.forwardingKind = switch request {
+        case .session: "session"
+        case .compose: "compose"
+        case .inspect: "inspect"
+        }
+        guard case let .inspect(run) = request else {
+            let result = await self.router.open(request)
+            self.forwarded(result, ordinal: forwardingOrdinal)
+            return result
+        }
         let ordinal = self.snapshot.producers
         self.snapshot.explicitEntries += 1
         self.snapshot.runMatch = self.origin?.run.map { $0 == run }
@@ -144,7 +164,20 @@ final class InstalledNativeActionProofHost: OpenClawNativeActionHost {
         case .cancelled: self.snapshot.explicitOutcome = "cancelled"
         case .unavailable: self.snapshot.explicitOutcome = "unavailable"
         }
+        self.forwarded(result, ordinal: forwardingOrdinal)
         return result
+    }
+
+    private func forwarded(_ result: OpenClawNativeOpenOutcome, ordinal: Int) {
+        // This independent counter never changes the Shortcuts producer/continuation slot.
+        self.snapshot.forwardingMisattributed = self.snapshot.forwardingMisattributed ||
+            ordinal != self.snapshot.forwardingEntries
+        self.snapshot.forwardingCompletions = min(256, self.snapshot.forwardingCompletions + 1)
+        self.snapshot.forwardingOutcome = switch result {
+        case .opened: "opened"
+        case .cancelled: "cancelled"
+        case .unavailable: "unavailable"
+        }
     }
 }
 #endif
