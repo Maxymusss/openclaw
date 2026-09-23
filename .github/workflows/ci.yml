@@ -3,6 +3,11 @@ name: CI
 on:
   workflow_dispatch:
     inputs:
+      s4_probe:
+        description: Temporary S4 replay of the 20 frozen baseline rows on Blacksmith 16-class.
+        required: false
+        default: false
+        type: boolean
       target_ref:
         description: Optional branch, tag, or full commit SHA to validate instead of the workflow ref
         required: false
@@ -108,7 +113,7 @@ jobs:
       contents: read
       actions: read
       pull-requests: read
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: ${{ !inputs.s4_probe && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
     runs-on: ${{ (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' || (contains(fromJSON('["hybrid","runson"]'), vars.OPENCLAW_CI_RUNNER_BACKEND) && github.run_attempt != 1)) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (contains(fromJSON('["hybrid","runson"]'), vars.OPENCLAW_CI_RUNNER_BACKEND) && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: 20
     outputs:
@@ -2361,7 +2366,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: ${{ !inputs.s4_probe && (!cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)) }}
     runs-on: ${{ contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && needs.preflight.outputs.hybrid_hosted_offload != 'true' && github.run_attempt == 1 && (github.event_name != 'workflow_dispatch' || ((needs.preflight.outputs.node_runner_backend == 'runson' || needs.preflight.outputs.ci_qualification == 'true') && github.run_attempt == 1)) && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04' }}
     timeout-minutes: 20
     env:
@@ -2534,7 +2539,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: needs.preflight.outputs.run_build_artifacts == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_build_artifacts == 'true') }}
     # The measured hosted tail reached 898s before preflight and gate overhead.
     runs-on: ${{ (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 35 || 20 }}
@@ -2928,7 +2933,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: needs.preflight.outputs.run_control_ui_performance == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_control_ui_performance == 'true') }}
     runs-on: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 15
     env:
@@ -2960,7 +2965,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: ${{ !cancelled() && always() && needs.preflight.outputs.run_native_i18n == 'true' }}
+    if: ${{ !inputs.s4_probe && (!cancelled() && always() && needs.preflight.outputs.run_native_i18n == 'true') }}
     runs-on: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 10
     steps:
@@ -2998,7 +3003,7 @@ jobs:
       contents: read
     name: ${{ needs.preflight.outputs.compatibility_target == 'true' && 'checks-ui' || format('checks-ui ({0}/3)', matrix.shard) }}
     needs: [preflight]
-    if: needs.preflight.outputs.run_ui_tests == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_ui_tests == 'true') }}
     # Keep three workers per row; admit hosted hybrid rows only within budget.
     runs-on: ${{ (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && needs.preflight.outputs.hybrid_hosted_offload == 'true') && 'ubuntu-24.04' || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-8vcpu-ubuntu-2404' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04')) }}
     timeout-minutes: 20
@@ -3093,7 +3098,7 @@ jobs:
     needs: [preflight]
     # Compatibility targets pin a frozen Control UI whose e2e expectations track
     # that release, not current main.
-    if: needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true') }}
     # Only the browser-extension row can consume the optional hosted budget.
     # Keep Control UI on available 16-class capacity and retain browser-extension placement.
     runs-on: ${{ (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && needs.preflight.outputs.hybrid_hosted_offload == 'true' && matrix.task == 'browser-extension') && 'ubuntu-24.04' || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.task == 'control-ui' && 'blacksmith-16vcpu-ubuntu-2404' || 'blacksmith-8vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
@@ -3194,7 +3199,7 @@ jobs:
     needs: [preflight]
     # Compatibility targets pin a frozen Control UI whose e2e expectations track
     # that release, not current main.
-    if: needs.preflight.outputs.run_proof_tier == 'true' && needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_proof_tier == 'true' && needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true') }}
     # Contributor trust controls Blacksmith eligibility; manual runs and PR retries
     # stay hosted. Hybrid also uses hosted capacity on push retries.
     # Restore eight-CPU capacity for the fixed 20-minute budget; actual
@@ -3376,7 +3381,7 @@ jobs:
       contents: read
     name: control-ui-i18n
     needs: [preflight]
-    if: needs.preflight.outputs.run_control_ui_i18n == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_control_ui_i18n == 'true') }}
     runs-on: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 10
     env:
@@ -3414,7 +3419,7 @@ jobs:
       pull-requests: read
     name: ${{ matrix.check_name || 'checks-fast-core' }}
     needs: [preflight]
-    if: needs.preflight.outputs.run_checks_fast_core == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_checks_fast_core == 'true') }}
     runs-on: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: 60
     strategy:
@@ -3661,7 +3666,7 @@ jobs:
       contents: read
     name: QA Smoke CI (${{ matrix.name }})
     needs: [preflight]
-    if: needs.preflight.outputs.run_qa_smoke_ci == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_qa_smoke_ci == 'true') }}
     runs-on: ${{ (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 60
     strategy:
@@ -3841,7 +3846,7 @@ jobs:
       contents: read
     name: ${{ matrix.checkName }}
     needs: [preflight]
-    if: needs.preflight.outputs.run_plugin_contracts_shards == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_plugin_contracts_shards == 'true') }}
     runs-on: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 60
     strategy:
@@ -3902,7 +3907,7 @@ jobs:
       contents: read
     name: ${{ matrix.checkName }}
     needs: [preflight]
-    if: needs.preflight.outputs.run_channel_contracts_shards == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_channel_contracts_shards == 'true') }}
     runs-on: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 60
     strategy:
@@ -3931,7 +3936,7 @@ jobs:
       contents: read
     name: checks-node-compat-node24
     needs: [preflight]
-    if: needs.preflight.outputs.run_build_artifacts == 'true' && github.event_name == 'workflow_dispatch' && (needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true')
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_build_artifacts == 'true' && github.event_name == 'workflow_dispatch' && (needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true')) }}
     runs-on: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 60
     steps:
@@ -3965,7 +3970,7 @@ jobs:
       CHECKOUT_GIT_COMMITS_JSON: ${{ toJson(matrix.git_commits) }}
     name: ${{ matrix.check_name || 'checks-node-core-test-nondist-shard' }}
     needs: [preflight]
-    if: needs.preflight.outputs.run_checks_node_core_nondist == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_checks_node_core_nondist == 'true') }}
     # Extension placement follows planner metadata; bundle numbers change after packing.
     runs-on: ${{ needs.preflight.outputs.node_runner_backend == 'runson' && matrix.runner == 'runson-c8i-8xlarge' && github.run_attempt == 1 && format('runs-on={0}-{1}/family=c8i.8xlarge/cpu=32/ram=64/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb', github.run_id, matrix.check_name) || matrix.runner == 'runson-c8i-8xlarge' && 'ubuntu-24.04' || (needs.preflight.outputs.node_runner_backend == 'runson' || needs.preflight.outputs.ci_qualification == 'true') && github.run_attempt == 1 && ((matrix.runner == 'blacksmith-8vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-compact-large-9","checks-node-compact-large-5"]'), matrix.check_name)) && 'blacksmith-16vcpu-ubuntu-2404' || matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && ((matrix.runner == 'blacksmith-8vcpu-ubuntu-2404' && contains(fromJSON('["checks-node-compact-large-9","checks-node-compact-large-5"]'), matrix.check_name)) && 'blacksmith-16vcpu-ubuntu-2404' || matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: ${{ matrix.timeout_minutes || 60 }}
@@ -4192,7 +4197,7 @@ jobs:
       contents: read
     name: ${{ matrix.check_name || 'check-shard' }}
     needs: [preflight]
-    if: ${{ !cancelled() && always() && needs.preflight.outputs.run_check == 'true' }}
+    if: ${{ !inputs.s4_probe && (!cancelled() && always() && needs.preflight.outputs.run_check == 'true') }}
     runs-on: ${{ (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt == 1 && ((needs.preflight.outputs.hybrid_hosted_checks == 'true' && matrix.task == 'dependencies') || (needs.preflight.outputs.hybrid_hosted_main_checks == 'true' && (matrix.task == 'lint' || matrix.task == 'test-types')))) && 'ubuntu-24.04' || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.repository == 'openclaw/openclaw' && (github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) && !inputs.release_gate && startsWith(inputs.dispatch_id, 'full-release-validation-') && needs.preflight.outputs.frozen_target == 'true' && matrix.task == 'lint') && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || github.run_attempt > 1 || (matrix.task != 'lint' && matrix.task != 'test-types' && matrix.task != 'dependencies'))) && 'ubuntu-24.04' || (((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) && inputs.release_gate) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: 20
     env:
@@ -4605,7 +4610,7 @@ jobs:
       contents: read
     name: check-lint-core-${{ matrix.stripe }}
     needs: [preflight]
-    if: ${{ needs.preflight.outputs.run_check == 'true' && (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid') && (needs.preflight.outputs.frozen_target != 'true' || needs.preflight.outputs.hosted_runner_profile_contract == 'true') }}
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_check == 'true' && (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid') && (needs.preflight.outputs.frozen_target != 'true' || needs.preflight.outputs.hosted_runner_profile_contract == 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -4694,7 +4699,7 @@ jobs:
       contents: read
     name: check-lint-extensions-${{ matrix.stripe }}
     needs: [preflight]
-    if: ${{ needs.preflight.outputs.run_check == 'true' && needs.preflight.outputs.runner_profile == 'hybrid' && needs.preflight.outputs.frozen_target != 'true' && (!inputs.release_gate || needs.preflight.outputs.node_runner_backend == 'runson' || needs.preflight.outputs.ci_qualification == 'true') }}
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_check == 'true' && needs.preflight.outputs.runner_profile == 'hybrid' && needs.preflight.outputs.frozen_target != 'true' && (!inputs.release_gate || needs.preflight.outputs.node_runner_backend == 'runson' || needs.preflight.outputs.ci_qualification == 'true')) }}
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     strategy:
@@ -4747,7 +4752,7 @@ jobs:
       contents: read
     name: check-test-types-core-${{ matrix.stripe }}
     needs: [preflight]
-    if: ${{ needs.preflight.outputs.run_check == 'true' && !needs.preflight.outputs.changed_core_test_paths_json && (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid') && (needs.preflight.outputs.frozen_target != 'true' || needs.preflight.outputs.hosted_runner_profile_contract == 'true') }}
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_check == 'true' && !needs.preflight.outputs.changed_core_test_paths_json && (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid') && (needs.preflight.outputs.frozen_target != 'true' || needs.preflight.outputs.hosted_runner_profile_contract == 'true')) }}
     # Healthy, budgeted hybrid checks use hosted capacity with unchanged compiler children.
     runs-on: ${{ (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt == 1 && needs.preflight.outputs.hybrid_hosted_checks == 'true') && 'ubuntu-24.04' || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 15
@@ -4811,7 +4816,7 @@ jobs:
       contents: read
     name: ${{ matrix.check_name || 'check-additional-shard' }}
     needs: [preflight]
-    if: ${{ !cancelled() && always() && needs.preflight.outputs.run_check_additional == 'true' }}
+    if: ${{ !inputs.s4_probe && (!cancelled() && always() && needs.preflight.outputs.run_check_additional == 'true') }}
     runs-on: ${{ (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt == 1 && needs.preflight.outputs.hybrid_hosted_checks == 'true' && (matrix.group == 'extension-package-boundary' || matrix.group == 'runtime-topology-architecture')) && 'ubuntu-24.04' || (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && (github.run_attempt > 1 || (matrix.group != 'extension-package-boundary' && matrix.group != 'runtime-topology-architecture' && matrix.group != 'plugin-sdk-api-diff'))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && (matrix.runner || 'blacksmith-4vcpu-ubuntu-2404') || 'ubuntu-24.04') }}
     timeout-minutes: 20
     strategy:
@@ -5085,7 +5090,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: needs.preflight.outputs.run_check_docs == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_check_docs == 'true') }}
     # Always hosted: check-docs clones the ClawHub mirror without lending the
     # repository token (git-owner boundary), and unauthenticated GitHub fetches
     # from Blacksmith egress are refused often enough to fail the job.
@@ -5126,7 +5131,7 @@ jobs:
     permissions:
       contents: read
     needs: [preflight]
-    if: needs.preflight.outputs.run_skills_python_job == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_skills_python_job == 'true') }}
     runs-on: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-4vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 20
     steps:
@@ -5160,7 +5165,7 @@ jobs:
       contents: read
     name: ${{ matrix.check_name || 'checks-windows' }}
     needs: [preflight]
-    if: needs.preflight.outputs.run_checks_windows == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_checks_windows == 'true') }}
     runs-on: ${{ (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'windows-2025' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'windows-2025' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'windows-2025' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-windows-2025' || 'windows-2025') }}
     timeout-minutes: 60
     env:
@@ -5301,7 +5306,7 @@ jobs:
       contents: read
     name: ${{ matrix.check_name || 'macos-node' }}
     needs: [preflight]
-    if: ${{ !cancelled() && always() && needs.preflight.outputs.run_macos_node == 'true' }}
+    if: ${{ !inputs.s4_probe && (!cancelled() && always() && needs.preflight.outputs.run_macos_node == 'true') }}
     runs-on: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND))) && 'macos-15' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || github.run_attempt > 1) && 'macos-15' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-6vcpu-macos-15' || 'macos-15') }}
     timeout-minutes: 20
     strategy:
@@ -5346,7 +5351,7 @@ jobs:
       contents: read
     name: ${{ format('macos-swift ({0})', matrix.phase) }}
     needs: [preflight]
-    if: needs.preflight.outputs.run_macos_swift == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_macos_swift == 'true') }}
     # Independent package builds must not consume the app test job's budget.
     # Full validation also compiles the optimized app, within the same two-job cap.
     strategy:
@@ -5776,7 +5781,7 @@ jobs:
       contents: read
     name: ${{ format('ios-build ({0})', matrix.phase) }}
     needs: [preflight]
-    if: needs.preflight.outputs.run_ios_build == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_ios_build == 'true') }}
     # Automatic CI compiles and lints; full manual validation adds independent
     # Release device and simulator test phases.
     strategy:
@@ -6092,7 +6097,7 @@ jobs:
     # Full manual validation requires both build and screenshot evidence.
     needs: [preflight]
     # PRs and their exact-head release-gate substitutes retain only the build smoke.
-    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true' }}
+    if: ${{ !inputs.s4_probe && (github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true') }}
     # Keep capture on the same verified hosted image as the iOS build phases.
     runs-on: xcode-27
     timeout-minutes: 90
@@ -6211,7 +6216,7 @@ jobs:
       contents: read
     name: "ios-screenshot-evidence"
     needs: [preflight, ios-screenshot-shard]
-    if: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true' }}
+    if: ${{ !inputs.s4_probe && (github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true') }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -6279,7 +6284,7 @@ jobs:
       contents: read
     name: ${{ matrix.check_name || 'android' }}
     needs: [preflight]
-    if: needs.preflight.outputs.run_android_job == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_android_job == 'true') }}
     runs-on: ${{ (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || ((github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-8vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     # Combined phone-flavor unit tests and lint need setup/cleanup headroom on both
     # runner routes. Hosted build-play keeps its three-invocation budget on retries.
@@ -6555,7 +6560,7 @@ jobs:
       contents: read
     name: docker-seed-e2e
     needs: [preflight]
-    if: needs.preflight.outputs.run_docker_seed_e2e == 'true'
+    if: ${{ !inputs.s4_probe && (needs.preflight.outputs.run_docker_seed_e2e == 'true') }}
     runs-on: ${{ (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' && 'ubuntu-24.04' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) && 'ubuntu-24.04' || (github.event_name == 'workflow_dispatch' && ((needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true') || github.run_attempt != 1)) && 'ubuntu-24.04' || (github.event_name == 'pull_request' && (github.run_attempt > 1 || github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-ubuntu-2404' || 'ubuntu-24.04') }}
     timeout-minutes: 60
     steps:
@@ -6671,7 +6676,7 @@ jobs:
       - docker-seed-e2e
     # Report failed prerequisites, but let superseded runs release their slot
     # without waiting for an aggregate runner after workflow cancellation.
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}
+    if: ${{ !inputs.s4_probe && (!cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft)) }}
     # The gate only aggregates job results; keep it independent of Blacksmith capacity.
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -6733,3 +6738,251 @@ jobs:
           done <<< "$JOB_RESULTS"
 
           exit "$failures"
+
+  # Temporary S4 benchmark only; never merge these frozen replays into normal CI.
+  s4-probe-manifest:
+    name: S4 frozen baseline manifest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.s4_probe && github.run_attempt == 1 && github.repository == 'openclaw/openclaw' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.samples.outputs.matrix }}
+    steps:
+      - name: Checkout fixed sample descriptors
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.workflow_sha }}
+          sparse-checkout: /scripts/ci/s4-blacksmith-probe-rows.json
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - name: Load fixed samples
+        id: samples
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+          rows = json.loads(Path("scripts/ci/s4-blacksmith-probe-rows.json").read_text())
+          assert len(rows) == 20
+          assert Counter(row["shape"] for row in rows) == {"main": 10, "pr": 10}
+          assert len({row["sample_id"] for row in rows}) == 20
+          for row in rows:
+              assert row["baseline_runner_label"] == "blacksmith-32vcpu-ubuntu-2404"
+              assert row["checkout_sha"] == row["workflow_sha"]
+              assert row["timeout_minutes"] == 60
+              assert row["environment"]["FROZEN_TARGET"] == "false"
+              print(f"S4_SAMPLE {row['sample_id']} {row['shape']} {row['check_name']} checkout={row['checkout_sha']}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("matrix=" + json.dumps({"include": rows}, separators=(",", ":")) + "\n")
+          PY
+  s4-probe-row:
+    name: ${{ format('s4-{0}-{1}', matrix.shape, matrix.check_name) }}
+    needs:
+      - s4-probe-manifest
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.s4_probe && github.run_attempt == 1 && github.repository == 'openclaw/openclaw' }}
+    permissions:
+      contents: read
+    runs-on: blacksmith-16vcpu-ubuntu-2404
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    env:
+      CHECKOUT_GIT_COMMITS_JSON: ${{ toJson(matrix.git_commits) }}
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJson(needs.s4-probe-manifest.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        shell: bash
+        env:
+          CHECKOUT_REPO: ${{ github.repository }}
+          CHECKOUT_TOKEN: ${{ github.token }}
+          CHECKOUT_SHA: ${{ matrix.checkout_sha }}
+          WORKFLOW_SHA: ${{ matrix.workflow_sha }}
+        run: *owned_checkout_run
+      - name: Setup Node environment
+        uses: ./.ci-harness/.github/actions/setup-node-env
+        with:
+          cache-mode: ${{ matrix.setup_inputs['cache-mode'] }}
+          node-version: ${{ matrix.setup_inputs['node-version'] }}
+          install-bun: ${{ matrix.setup_inputs['install-bun'] }}
+          dependency-cache: ${{ matrix.setup_inputs['dependency-cache'] }}
+          vitest-fs-cache: ${{ matrix.setup_inputs['vitest-fs-cache'] }}
+          vitest-worker-cache: ${{ matrix.setup_inputs['vitest-worker-cache'] }}
+          node-compile-cache: ${{ matrix.setup_inputs['node-compile-cache'] }}
+      - name: Setup pinned Bun test runtime
+        if: matrix.requires_bun == true
+        uses: ./.ci-harness/.github/actions/setup-test-bun
+      - name: Record replay source and allocation
+        shell: bash
+        env:
+          S4_SAMPLE_ID: ${{ matrix.sample_id }}
+          S4_CHECKOUT_SHA: ${{ matrix.checkout_sha }}
+          S4_BASELINE_RUN: ${{ matrix.run_id }}
+          S4_BASELINE_JOB: ${{ matrix.job_id }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$S4_CHECKOUT_SHA"
+          python3 - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          memory = dict(line.split(":", 1) for line in Path("/proc/meminfo").read_text().splitlines())
+          print("S4_ALLOCATION " + json.dumps({
+              "sample_id": os.environ["S4_SAMPLE_ID"],
+              "checkout_sha": os.environ["S4_CHECKOUT_SHA"],
+              "baseline_run_id": os.environ["S4_BASELINE_RUN"],
+              "baseline_job_id": os.environ["S4_BASELINE_JOB"],
+              "runner_label": "blacksmith-16vcpu-ubuntu-2404",
+              "nproc": int(subprocess.check_output(["nproc"], text=True)),
+              "logical_cpus": os.cpu_count(),
+              "cpu_affinity_count": len(os.sched_getaffinity(0)),
+              "mem_total_kib": int(memory["MemTotal"].split()[0]),
+              "node_version": subprocess.check_output(["node", "--version"], text=True).strip(),
+              "pnpm_version": subprocess.check_output(["pnpm", "--version"], text=True).strip(),
+          }), flush=True)
+          PY
+      - name: Install ripgrep for native grep tests
+        if: matrix.requires_ripgrep == true && runner.os == 'Linux'
+        shell: bash
+        run: |
+          if command -v rg >/dev/null 2>&1; then
+            exit 0
+          fi
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ripgrep
+      - name: Configure Node test resources
+        env:
+          PREDICTED_TEST_SECONDS: ${{ matrix.environment.PREDICTED_TEST_SECONDS }}
+          SHARD_PLAN_CONCURRENCY: ${{ matrix.environment.SHARD_PLAN_CONCURRENCY }}
+          FROZEN_TARGET: ${{ matrix.environment.FROZEN_TARGET }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          RUNSON_JOB: "false"
+        run: |
+          cores="$(nproc)"
+          if [ "$RUNSON_JOB" = "true" ]; then
+            workers=2
+          elif [ "$SHARD_PLAN_CONCURRENCY" != "1" ]; then
+            workers=2
+          elif [ "$cores" -ge 12 ]; then
+            workers=6
+          elif [ "$cores" -ge 6 ]; then
+            workers=4
+          else
+            workers=3
+          fi
+          if [[ "$RUNSON_JOB" != "true" && "$RUNNER_ENVIRONMENT" == "self-hosted" && "$FROZEN_TARGET" != "true" && "$SHARD_PLAN_CONCURRENCY" == "1" ]]; then
+            workers="$(CI_LEGACY_WORKERS="$workers" node --input-type=module <<'JS'
+          import { isConstrainedCiCheckHost } from './scripts/lib/local-check-runtime.mts';
+          import { detectVitestHostInfo, resolveLocalVitestScheduling } from './scripts/lib/vitest-local-scheduling.mts';
+          const host = detectVitestHostInfo();
+          const constrained = isConstrainedCiCheckHost({
+            logicalCpuCount: host.cpuCount,
+            totalMemoryBytes: host.totalMemoryBytes,
+          });
+          console.log(constrained ? process.env.CI_LEGACY_WORKERS : resolveLocalVitestScheduling(process.env, host).maxWorkers);
+          JS
+            )"
+          fi
+          if [ "$workers" -gt "$cores" ]; then
+            workers="$cores"
+          fi
+          echo "detected cores=$cores plan_concurrency=${SHARD_PLAN_CONCURRENCY:-default} predicted_test_seconds=${PREDICTED_TEST_SECONDS:-unknown} -> workers=$workers"
+          echo "OPENCLAW_VITEST_MAX_WORKERS=$workers" >> "$GITHUB_ENV"
+      - name: Run Node test shard
+        env:
+          NODE_OPTIONS: ${{ matrix.environment.NODE_OPTIONS }}
+          OPENCLAW_CI_TEST_RUNTIME_POLICY: ${{ matrix.environment.OPENCLAW_CI_TEST_RUNTIME_POLICY }}
+          FROZEN_TARGET: ${{ matrix.environment.FROZEN_TARGET }}
+          RUNNER_ENVIRONMENT: ${{ runner.environment }}
+          OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: ${{ matrix.environment.OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64 }}
+          OPENCLAW_NODE_TEST_GROUPS_JSON: ${{ matrix.environment.OPENCLAW_NODE_TEST_GROUPS_JSON }}
+          OPENCLAW_NODE_TEST_CONFIGS_JSON: ${{ matrix.environment.OPENCLAW_NODE_TEST_CONFIGS_JSON }}
+          OPENCLAW_NODE_TEST_ENV_JSON: ${{ matrix.environment.OPENCLAW_NODE_TEST_ENV_JSON }}
+          OPENCLAW_NODE_TEST_INCLUDE_PATTERNS_JSON: ${{ matrix.environment.OPENCLAW_NODE_TEST_INCLUDE_PATTERNS_JSON }}
+          OPENCLAW_NODE_TEST_TARGETS_JSON: ${{ matrix.environment.OPENCLAW_NODE_TEST_TARGETS_JSON }}
+          OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: "[]"
+          OPENCLAW_VITEST_SHARD_NAME: ${{ matrix.environment.OPENCLAW_VITEST_SHARD_NAME }}
+          OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "300000"
+          OPENCLAW_VITEST_NO_OUTPUT_RETRY: "1"
+          OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: ${{ matrix.environment.OPENCLAW_NODE_TEST_PLAN_CONCURRENCY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Observe load without altering the target-source shard executor or its admission.
+          cat > "$RUNNER_TEMP/s4-resource-sampler.py" <<'PY'
+          import json, signal, time
+          from pathlib import Path
+
+          running = True
+          def stop(_signal, _frame):
+              global running
+              running = False
+
+          signal.signal(signal.SIGTERM, stop)
+          signal.signal(signal.SIGINT, stop)
+
+          def integer(path):
+              try:
+                  return int(Path(path).read_text().strip())
+              except (FileNotFoundError, ValueError):
+                  return None
+
+          def cpu_usage():
+              path = Path("/sys/fs/cgroup/cpu.stat")
+              if not path.exists():
+                  return None
+              fields = dict(line.split() for line in path.read_text().splitlines())
+              return int(fields["usage_usec"]) if "usage_usec" in fields else None
+
+          started = time.monotonic()
+          initial_cpu = cpu_usage()
+          previous_cpu, previous_time = initial_cpu, started
+          peak_load = [0.0, 0.0, 0.0]
+          peak_memory, peak_busy_cores, samples = None, None, 0
+          while running:
+              now = time.monotonic()
+              load = [float(value) for value in Path("/proc/loadavg").read_text().split()[:3]]
+              peak_load = [max(old, new) for old, new in zip(peak_load, load)]
+              current_memory = integer("/sys/fs/cgroup/memory.current")
+              if current_memory is not None:
+                  peak_memory = max(peak_memory or 0, current_memory)
+              current_cpu = cpu_usage()
+              if samples > 0 and current_cpu is not None and previous_cpu is not None and now > previous_time:
+                  peak_busy_cores = max(peak_busy_cores or 0, (current_cpu - previous_cpu) / 1e6 / (now - previous_time))
+              previous_cpu, previous_time = current_cpu, now
+              samples += 1
+              time.sleep(1)
+          elapsed = time.monotonic() - started
+          final_cpu = cpu_usage()
+          print("S4_RESOURCE_PEAK " + json.dumps({
+              "sample_count": samples, "sampling_interval_seconds": 1,
+              "sampled_peak_load_average": peak_load,
+              "sampled_peak_cgroup_memory_bytes": peak_memory,
+              "cgroup_memory_peak_bytes": integer("/sys/fs/cgroup/memory.peak"),
+              "sampled_peak_cgroup_busy_cores": peak_busy_cores,
+              "average_cgroup_busy_cores": None if initial_cpu is None or final_cpu is None else (final_cpu - initial_cpu) / 1e6 / elapsed,
+              "elapsed_seconds": elapsed,
+          }), flush=True)
+          PY
+          python3 -u "$RUNNER_TEMP/s4-resource-sampler.py" &
+          sampler_pid=$!
+          finish_sampler() {
+            kill -TERM "$sampler_pid" 2>/dev/null || true
+            wait "$sampler_pid" || true
+          }
+          trap finish_sampler EXIT
+          runner="scripts/ci-run-node-test-shard.mts"
+          if [[ ! -f "$runner" ]]; then
+            runner=".ci-workflow/${runner}"
+            [[ -f "$runner" ]]
+          fi
+          time -p node --import tsx "$runner"
+      - name: Record runner memory peak
+        if: always()
+        shell: bash
+        run: |
+          # This includes setup and every child process, not just the test step.
+          if peak_memory="$(cat /sys/fs/cgroup/memory.peak 2>/dev/null)"; then
+            echo "runner cgroup peak memory bytes=$peak_memory"
+          fi
