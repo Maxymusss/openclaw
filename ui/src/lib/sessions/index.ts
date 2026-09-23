@@ -286,29 +286,30 @@ export function createSessionCapability(
     publish(next, errorSource);
   };
 
-  const mutations = createSessionMutations({
-    connection,
-    snapshot: () => gateway.snapshot,
-    findRow: (matches) => {
-      const row = roster.publishedRow(matches);
-      return row ? roster.projectFields(row) : undefined;
+  const mutations = createSessionMutations(
+    {
+      connection,
+      snapshot: () => gateway.snapshot,
+      findRow: (matches) => {
+        const row = roster.publishedRow(matches);
+        return row ? roster.projectFields(row) : undefined;
+      },
+      readState: () => state,
+      publish: publishMutation,
+      copyRow: roster.copyRow,
+      stageManagedResults: roster.stageManagedResults,
+      reconcileMutation: roster.reconcileMutation,
+      publishedRow: (key) => roster.publishedRow((row) => row.key === key),
+      archiveFields: roster,
+      readRevision: () => roster.requestRevision,
+      redecorateLists: roster.redecorateLists,
+      notifyCreated,
+      claimPermissionProjection: permissions.claim,
+      capturePatchFields: (target) => capturePatchFields(target),
+      retirePullRequestSummary,
     },
-    readState: () => state,
-    publish: publishMutation,
-    copyRow: roster.copyRow,
-    stageManagedResults: roster.stageManagedResults,
-    reconcileMutation: roster.reconcileMutation,
-    publishedRow: (key) => roster.publishedRow((row) => row.key === key),
-    archiveFields: roster,
-    readRevision: () => roster.requestRevision,
-    redecorateLists: roster.redecorateLists,
-    notifyCreated,
-    clearThink: thinkingClaims.clear,
-    suspendThink: thinkingClaims.suspend,
-    claimPermissionProjection: permissions.claim,
-    capturePatchFields: (target) => capturePatchFields(target),
-    retirePullRequestSummary,
-  });
+    thinkingClaims.suspend,
+  );
 
   const deletions = createSessionDeletions({
     connection,

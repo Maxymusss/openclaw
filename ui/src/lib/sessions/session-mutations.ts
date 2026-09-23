@@ -41,7 +41,13 @@ import {
 } from "./session-requests.ts";
 import { createSessionRowLocalPatch } from "./session-row-local-patch.ts";
 
-export function createSessionMutations(host: SessionMutationsHost) {
+export function createSessionMutations(
+  host: SessionMutationsHost,
+  suspendThinkingClaim: (
+    key: string,
+    agentId?: string | null,
+  ) => ((completed: boolean) => void) | undefined,
+) {
   const pendingModelPatches = new Map<
     string,
     {
@@ -251,9 +257,8 @@ export function createSessionMutations(host: SessionMutationsHost) {
       pendingConversation,
       options.expectedSessionId,
     );
-    const managesThinkingClaim = Object.hasOwn(patchParams, "thinkingLevel");
-    let resumeThinkingClaim = managesThinkingClaim
-      ? host.suspendThink(normalizedKey, options.agentId)
+    const settleThinkingClaim = Object.hasOwn(patchParams, "thinkingLevel")
+      ? suspendThinkingClaim(normalizedKey, options.agentId)
       : undefined;
     // Claim settings before queued dispatch so the newest choice remains visible.
     const thinkingPatchToken =
@@ -372,14 +377,7 @@ export function createSessionMutations(host: SessionMutationsHost) {
     };
     const settleOptimisticPatch = (completed: boolean) => {
       settleModelOverride(completed);
-      if (managesThinkingClaim) {
-        if (completed) {
-          host.clearThink(normalizedKey, options.agentId);
-        } else {
-          resumeThinkingClaim?.();
-        }
-        resumeThinkingClaim = undefined;
-      }
+      settleThinkingClaim?.(completed);
       if (pendingTarget) {
         for (const [owner, token] of [
           [optimisticPins, pinPatchToken],
