@@ -3954,6 +3954,7 @@ setImmediate(() => {
       "build-artifacts": "ubuntu-24.04",
       "check-additional-shard": "ubuntu-24.04",
       "check-shard": "ubuntu-24.04",
+      "checks-baseline-ratchets": "ubuntu-24.04",
       "checks-fast-channel-contracts-shard": "ubuntu-24.04",
       "checks-fast-core": "ubuntu-24.04",
       "checks-fast-plugin-contracts-shard": "ubuntu-24.04",
@@ -4674,6 +4675,7 @@ setImmediate(() => {
       "check-lint-hosted-core-shard",
       "check-shard",
       "check-test-types-hosted-core-shard",
+      "checks-baseline-ratchets",
       "checks-fast-channel-contracts-shard",
       "checks-fast-core",
       "checks-fast-plugin-contracts-shard",
@@ -5965,7 +5967,7 @@ server.listen(0, "127.0.0.1", () => {
         task,
       ).toBe("true");
     }
-    for (const task of ["baseline-ratchets", "coercion-helpers"]) {
+    for (const task of ["startup-corpus", "coercion-helpers"]) {
       expect(
         evaluateWorkflowExpression(fastCoreSetup.with["restore-test-caches"], {
           eventName: "push",
@@ -8713,7 +8715,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     { job: "check-shard", task: "prod-types", events: [] },
     {
       job: "checks-fast-core",
-      task: "baseline-ratchets",
+      task: "startup-corpus",
       events: ["pull_request", "push", "workflow_dispatch"],
     },
     {
