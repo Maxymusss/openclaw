@@ -40,6 +40,7 @@ export async function runProfileWireProof<P extends ProfileWireProvider>(
     config: OpenClawConfig;
   }) => Promise<void>,
   borrowersJoined: () => boolean = () => true,
+  releaseBorrowers?: () => Promise<void>,
 ) {
   const instance = await createSkillLibraryWireInstance();
   let provider: P | undefined;
@@ -185,6 +186,9 @@ export async function runProfileWireProof<P extends ProfileWireProvider>(
       });
     },
     () => provider?.release?.(),
+    // Preparation may allocate listeners before Gateway startup. Release those
+    // borrowers before closing their clients, Gateway, or provider dependencies.
+    () => releaseBorrowers?.(),
     // Installed test commands can outlive a failed process-tree join. Their
     // sockets and state remain borrowed until the caller proves custody closed.
     () =>
