@@ -4,6 +4,7 @@ import {
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
+import { assertAdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import type { SessionCreatedActor } from "../config/sessions/session-entry-provenance.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -174,6 +175,29 @@ export function resolveOperatorRolePolicy(
   if (actor?.kind === "system") {
     return undefined;
   }
+  const authority = client?.internal?.operatorRunAuthority;
+  if (actor?.kind === "operator" && authority) {
+    assertAdmittedRunOperatorAuthority(authority);
+    authority.assertCurrent();
+    if (authority.profileId !== actor.profileId) {
+      throw new Error("Gateway requester profile changed");
+    }
+    if (!cfg.gateway?.roles || authority.profileId === GATEWAY_OWNER_PROFILE_ID) {
+      return undefined;
+    }
+    if (!authority.readCurrentRoleAssignment) {
+      throw new Error("Operator role assignment was not prepared");
+    }
+    return resolveOperatorRolePolicyForAssignment(
+      authority.profileId,
+      authority.readCurrentRoleAssignment(),
+      cfg,
+    );
+  }
+  const prepared = client?.preparedSessionProfile;
+  if (actor?.kind === "operator" && prepared?.aliases.has(actor.profileId)) {
+    return resolveOperatorRolePolicyForAssignment(prepared.profileId, prepared.role, cfg);
+  }
   return resolveOperatorRolePolicyForProfile(actor?.profileId, cfg);
 }
 
@@ -182,7 +206,15 @@ export function authorizeCurrentOperatorRoleScopes(
   client: GatewayClient | null,
   cfg: OpenClawConfig,
 ): ErrorShape | undefined {
-  const policy = resolveOperatorRolePolicy(client, cfg);
+  let policy: GatewayOperatorRoleDefinition | undefined;
+  try {
+    policy = resolveOperatorRolePolicy(client, cfg);
+  } catch (error) {
+    if (!client?.internal?.operatorRunAuthority) {
+      throw error;
+    }
+    return errorShape(ErrorCodes.FORBIDDEN, "Gateway requester authority changed");
+  }
   if (
     policy &&
     !roleScopesAllow({
@@ -204,7 +236,25 @@ export function operatorSessionCap(client: GatewayClient | null, cfg: OpenClawCo
 }
 
 export function hasOperatorBoundary(client: GatewayClient | null, cfg: OpenClawConfig): boolean {
-  return operatorSessionCap(client, cfg) !== undefined;
+  if (operatorSessionCap(client, cfg) !== undefined) {
+    return true;
+  }
+  if (resolveGatewayOperatorRoleActor(client)?.kind === "system") {
+    return false;
+  }
+  const scopes = client?.connect?.scopes ?? [];
+  return (
+    roleScopesAllow({
+      role: "operator",
+      requestedScopes: ["operator.sessions.read"],
+      allowedScopes: scopes,
+    }) &&
+    !roleScopesAllow({
+      role: "operator",
+      requestedScopes: ["operator.read"],
+      allowedScopes: scopes,
+    })
+  );
 }
 
 /** Enforces the owning agent ceiling for session creation and run-start targets. */

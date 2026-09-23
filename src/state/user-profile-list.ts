@@ -1,4 +1,3 @@
-import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
 import { ok, type Result } from "@openclaw/normalization-core/result";
@@ -20,7 +19,6 @@ import {
 } from "./openclaw-state-db-readonly.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { OpenClawStateDatabaseOptions } from "./openclaw-state-db.js";
-import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
 import {
   captureUserProfileAuthorityRead,
@@ -30,6 +28,9 @@ import {
   readUserProfileVersion,
 } from "./user-profile-events.js";
 import {
+  profileCatalogPath,
+  projectHasMultipleSessionSharingIdentities,
+  selectHasMultipleSessionSharingIdentities,
   selectUserProfileIdentityInDatabase,
   selectUserProfileDisplaysInDatabase,
   selectUserProfileReferenceInDatabase,
@@ -55,10 +56,14 @@ import type {
 } from "./user-profiles.types.js";
 
 export { projectUserProfileDisplay } from "./user-profiles-internal.js";
-export {
-  readCurrentUserProfileAliases,
-  hasMultipleSessionSharingIdentities,
-} from "./user-profile-identity.read.js";
+export { readCurrentUserProfileAliases } from "./user-profile-identity.read.js";
+
+export const hasMultipleSessionSharingIdentities = (options: OpenClawStateDatabaseOptions = {}) =>
+  readProfileCatalog(
+    options,
+    projectHasMultipleSessionSharingIdentities,
+    selectHasMultipleSessionSharingIdentities,
+  ) ?? false;
 
 /** Exact durable identity facts; never use display-reference prefix matching for authority. */
 export function readUserProfileIdentity(
@@ -170,8 +175,6 @@ function observeEmailBindings(): void {
     }
   });
 }
-const profileCatalogPath = (options: OpenClawStateDatabaseOptions) =>
-  path.resolve(options.path ?? resolveOpenClawStateSqlitePath(options.env ?? process.env));
 
 function readProfileCatalog<T>(
   options: OpenClawStateDatabaseOptions,

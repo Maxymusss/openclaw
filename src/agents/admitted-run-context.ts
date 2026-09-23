@@ -46,6 +46,8 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   source?: object;
   /** Retains the original source independently of a foreground run or request. */
   retain?: () => () => void;
+  /** Live assignment from the original prepared profile lease. */
+  readCurrentRoleAssignment?: (this: void) => string | null;
   modelPolicy?: PreparedOperatorModelPolicy;
   /** Committed policy changes invalidate only executions using a removed model. */
   onModelPolicyChanged?: (listener: () => void) => () => void;
@@ -60,6 +62,19 @@ export function createAdmittedRunOperatorAuthority(
   const check = source.assertCurrent;
   const signal = source.signal;
   let revoked = false;
+  const assertCurrent = () => {
+    if (revoked) {
+      throw new Error("operator execution authority is no longer active");
+    }
+    try {
+      signal?.throwIfAborted();
+      check();
+    } catch (error) {
+      revoked = true;
+      throw error;
+    }
+  };
+  const readCurrentRoleAssignment = source.readCurrentRoleAssignment;
   const authority = Object.freeze({
     profileId: source.profileId,
     scopes: Object.freeze([...source.scopes]),
@@ -73,18 +88,13 @@ export function createAdmittedRunOperatorAuthority(
     get modelPolicy() {
       return source.modelPolicy;
     },
-    assertCurrent: () => {
-      if (revoked) {
-        throw new Error("operator execution authority is no longer active");
-      }
-      try {
-        signal?.throwIfAborted();
-        check();
-      } catch (error) {
-        revoked = true;
-        throw error;
-      }
-    },
+    assertCurrent,
+    readCurrentRoleAssignment: readCurrentRoleAssignment
+      ? () => {
+          assertCurrent();
+          return readCurrentRoleAssignment();
+        }
+      : undefined,
   });
   operatorAuthorityIssuers.add(authority);
   return authority;

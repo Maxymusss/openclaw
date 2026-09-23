@@ -2,6 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   getPluginRuntimeGatewayRequestScope,
@@ -34,7 +35,9 @@ it.each(["capture", "operator tool"])(
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const profile = ensureProfileForEmail("operator-sql@example.test");
       setUserProfileRole(profile.id, "reader");
-      const client = createOperatorClient({ profileId: profile.id, scopes: ["operator.read"] });
+      const sourceScopes: GatewayOperatorRoleDefinition["scopes"] =
+        entry === "operator tool" ? ["operator.read", "operator.write"] : ["operator.read"];
+      const client = createOperatorClient({ profileId: profile.id, scopes: sourceScopes });
       const context = createContext();
       let cfg: OpenClawConfig = {
         agents: { defaults: { model: "fixture/a" } },
@@ -44,7 +47,7 @@ it.each(["capture", "operator tool"])(
               reader: {
                 sessions: { others: "none" as const },
                 agents: [],
-                scopes: ["operator.read"],
+                scopes: sourceScopes,
                 modelPolicy: { allow: ["fixture/a", "fixture/b"] },
               },
             },
@@ -144,16 +147,23 @@ it.each(["capture", "operator tool"])(
                 );
                 authority.assertCurrent();
                 expect(authority.profileId).toBe(profile.id);
-                await expect(
-                  dispatchGatewayMethodInProcess(
-                    "profileProof.current",
-                    {},
-                    {
-                      disableSyntheticClient: true,
-                      requireScopedClient: true,
-                    },
-                  ),
-                ).resolves.toEqual({ profileId: profile.id });
+                await withOperatorToolGatewayAuthority(
+                  { scopes: ["operator.read"], operatorRunAuthority: authority },
+                  async () => {
+                    const narrowed = expectDefined(
+                      getPluginRuntimeGatewayRequestScope()?.client?.internal?.operatorRunAuthority,
+                      "narrowed operator authority",
+                    );
+                    expect(narrowed.scopes).toEqual(["operator.read"]);
+                    await expect(
+                      dispatchGatewayMethodInProcess(
+                        "profileProof.current",
+                        {},
+                        { disableSyntheticClient: true, requireScopedClient: true },
+                      ),
+                    ).resolves.toEqual({ profileId: profile.id });
+                  },
+                );
               }),
           );
         }

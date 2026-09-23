@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { GATEWAY_OWNER_PROFILE_ID } from "../../packages/gateway-protocol/src/schema/users.js";
 import {
   assertAdmittedRunOperatorAuthority,
   createAdmittedRunOperatorAuthority,
@@ -117,10 +118,27 @@ export async function captureGatewayOperatorRunAuthority(input: {
   }
   const actor = resolveGatewayOperatorRoleActor(params.client);
   const client = params.client;
-  if (!client || actor?.kind !== "operator") {
+  // Shared-secret owner sessions keep system role semantics, but still have an
+  // authenticated user subject. Capture only the real, handshake-attested ingress:
+  // an autonomous/synthetic system caller must not acquire the owner profile.
+  const isAuthenticatedOwner = (currentActor: typeof actor) =>
+    client?.internal?.authenticatedOperator === true &&
+    (currentActor === undefined || currentActor.kind === "system") &&
+    client.connect.role === "operator" &&
+    Boolean(client.connId) &&
+    !client.invalidated &&
+    !client.connectionSignal?.aborted &&
+    !client.internal.syntheticClient &&
+    !client.internal.agentRuntimeIdentity &&
+    !client.internal.agentToolCaller &&
+    client.authenticatedUserProfile?.profileId === GATEWAY_OWNER_PROFILE_ID;
+  const authenticatedOwner = isAuthenticatedOwner(actor);
+  if (!client || (actor?.kind !== "operator" && !authenticatedOwner)) {
     return undefined;
   }
-  const profileId = actor.profileId;
+  const profileId = actor?.kind === "operator" ? actor.profileId : GATEWAY_OWNER_PROFILE_ID;
+  const connectionId = client.connId;
+  const connectionSignal = client.connectionSignal;
   if (params.hasCurrentClientAuthority?.() === false) {
     throw new Error("Gateway caller authority is no longer active.");
   }
@@ -301,10 +319,14 @@ export async function captureGatewayOperatorRunAuthority(input: {
     assertSourceCurrent();
     preparedProfile = await prepareUserProfileIdentity(profileId);
     const currentActor = resolveGatewayOperatorRoleActor(params.client);
+    const originalActorCurrent = authenticatedOwner
+      ? isAuthenticatedOwner(currentActor) &&
+        client.connId === connectionId &&
+        client.connectionSignal === connectionSignal
+      : currentActor?.kind === "operator" && currentActor.profileId === profileId;
     if (
       params.client !== client ||
-      currentActor?.kind !== "operator" ||
-      currentActor.profileId !== profileId ||
+      !originalActorCurrent ||
       params.hasCurrentClientAuthority?.() === false ||
       !isGatewayCurrent() ||
       !roleScopesAllow({
@@ -372,6 +394,10 @@ export async function captureGatewayOperatorRunAuthority(input: {
       authority: createAdmittedRunOperatorAuthority({
         profileId,
         scopes,
+        readCurrentRoleAssignment: () => {
+          assertCurrent();
+          return assertProfileCurrent().assignedRole;
+        },
         gatewayAccessGrant: sourceAuthority === null ? null : sourceAuthority?.gatewayAccessGrant,
         source: source.token,
         assertCurrent,

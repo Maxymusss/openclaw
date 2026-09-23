@@ -93,7 +93,9 @@ describe("native assignment completion custody", () => {
         claimChildThread,
       });
       let current = true;
+      const modelSource = { sourceIdentity: {}, assertCurrent: vi.fn(), release: vi.fn() };
       const registration = {
+        modelSource,
         parentThreadId: "parent-thread",
         requesterSessionKey: "agent:main:original",
         taskRuntimeScope: createTaskScope("agent:main:original"),
@@ -215,6 +217,7 @@ describe("native assignment completion custody", () => {
       }
       expect(source.live()).toHaveLength(0);
       expect(replacement.live()).toHaveLength(0);
+      expect(modelSource.release).toHaveBeenCalledOnce();
     },
   );
 

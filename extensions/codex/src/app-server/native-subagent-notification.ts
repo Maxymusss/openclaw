@@ -8,6 +8,7 @@ import { isJsonObject } from "./protocol.js";
 
 export const NATIVE_SUBAGENT_NOTIFICATION_METHODS = new Set([
   "thread/started",
+  "thread/closed",
   "thread/status/changed",
   "turn/started",
   "turn/completed",
