@@ -351,7 +351,7 @@ extensions/discord/src/monitor/message-forwarded.ts	7
 extensions/discord/src/monitor/message-handler.batch-gate.ts	1
 extensions/discord/src/monitor/message-handler.hydration.ts	12
 extensions/discord/src/monitor/message-handler.preflight-helpers.ts	5
-extensions/discord/src/monitor/message-handler.preflight.ts	2
+extensions/discord/src/monitor/message-handler.preflight.ts	1
 extensions/discord/src/monitor/message-handler.process.ts	1
 extensions/discord/src/monitor/message-text.ts	3
 extensions/discord/src/monitor/model-picker-preferences-migrations.ts	5

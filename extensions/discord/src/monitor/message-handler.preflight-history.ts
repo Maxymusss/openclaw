@@ -89,6 +89,7 @@ async function resolveDiscordHistoryMediaForPendingRecord(params: {
   const mediaMessage = Object.assign(
     Object.create(Object.getPrototypeOf(params.message)),
     params.message,
+    // SAFETY: Clone retains the Message prototype and fields; only media fields are overridden below.
   ) as typeof params.message;
   Object.defineProperties(mediaMessage, {
     attachments: { value: imageAttachments },
