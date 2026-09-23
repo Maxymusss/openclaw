@@ -7,6 +7,10 @@ export async function collectGarbageForTest(collectInNode?: () => void): Promise
   await setImmediate();
   if (process.versions.bun) {
     Bun.gc(true);
+    // Bun can keep a target alive for the collection job after WeakRef.deref().
+    // Cross one more job boundary before the final synchronous collection.
+    await setImmediate();
+    Bun.gc(true);
   } else if (collectInNode) {
     collectInNode();
   } else {

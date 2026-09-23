@@ -229,10 +229,6 @@ describe("subagent registry steer restarts", () => {
       setImmediate(resolve);
     });
   };
-  const waitForRegistrySideEffect = async (assertion: () => void) => {
-    await vi.waitFor(assertion, { interval: 1, timeout: 1_000 });
-  };
-
   const createDeferredAnnounce = () => {
     const entered = createDeferred();
     const delivery = createDeferred<"delivered" | "retryable">();
