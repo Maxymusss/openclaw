@@ -13,7 +13,10 @@ import {
 } from "../../infra/update-channels.js";
 import { resolveUpdateInstallKind } from "../../infra/update-check.js";
 import { UPDATE_RUN_ID_ENV } from "../../infra/update-control-plane-sentinel.js";
-import { normalizeUpdatePostInstallDoctorWarnings } from "../../infra/update-doctor-result.js";
+import {
+  DoctorMaintenanceRefusalError,
+  normalizeUpdatePostInstallDoctorWarnings,
+} from "../../infra/update-doctor-result.js";
 import { POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV } from "../../infra/update-post-core-context.js";
 import {
   acknowledgeAbandonedUpdateRun,
@@ -28,6 +31,7 @@ import { withCommandProcessScope } from "../../process/exec-spawn.js";
 import { createNonExitingRuntime, defaultRuntime } from "../../runtime.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { assertOpenClawStateWriteAllowedAtPath } from "../../state/openclaw-state-ownership.js";
+import { formatCliCommand } from "../command-format.js";
 import { exitCliAfterOutput } from "../one-shot-exit.js";
 import { retainCliProcessJobUntilExit } from "../runtime-cleanup-scope.js";
 import {
@@ -166,6 +170,30 @@ export async function updateFinalizeCommand(
               if (hasCommandProcessCleanupError(error)) {
                 throw error;
               }
+              if (
+                error instanceof DoctorMaintenanceRefusalError &&
+                error.refusal.kind === "deferred"
+              ) {
+                const warnings = normalizeUpdatePostInstallDoctorWarnings([
+                  `Doctor and plugin maintenance remain pending. Resolve the maintenance refusal, then run ${formatCliCommand("openclaw update repair")}. ${error.message}`,
+                ]);
+                lifecycle.recordWarnings(warnings);
+                defaultRuntime.error(warnings[0]);
+                if (opts.json) {
+                  defaultRuntime.writeJson({
+                    status: "warning",
+                    mode: "finalize",
+                    root,
+                    restart: false,
+                    phaseTimings: lifecycle.phaseTimings,
+                    postUpdate: { doctor: { status: "warning", warnings } },
+                  });
+                } else {
+                  defaultRuntime.log(theme.warn("Update finalization completed with warnings."));
+                }
+                lifecycle.complete(0);
+                return;
+              }
               if (!lifecycle.completed) {
                 target.failureResult = await lifecycle.observeFailure(error);
               }
@@ -210,7 +238,7 @@ async function prepareUpdateFinalization(
   await assertOpenClawStateWriteAllowedAtPath({
     databasePath: resolveOpenClawStateSqlitePath(process.env),
   });
-  let configSnapshot = await readConfigFileSnapshot({ skipPluginValidation: true });
+  let configSnapshot = await readConfigFileSnapshot({ skipPluginValidation: true, observe: false });
   const preFinalizeConfig =
     (await readPostCorePreUpdateSourceConfig({
       sourceConfigPath: process.env[POST_CORE_UPDATE_SOURCE_CONFIG_PATH_ENV],
@@ -246,7 +274,7 @@ async function prepareUpdateFinalization(
   const channel = requestedChannel ?? storedChannel ?? effectiveChannel ?? DEFAULT_PACKAGE_CHANNEL;
   if (requestedChannel) {
     configSnapshot = await withPluginLifecycleLease(phase, async () => {
-      const snapshot = await readConfigFileSnapshot({ skipPluginValidation: true });
+      const snapshot = await readConfigFileSnapshot({ skipPluginValidation: true, observe: false });
       return await persistRequestedUpdateChannel({
         configSnapshot: snapshot,
         requestedChannel,
@@ -493,7 +521,9 @@ async function updateFinalizeCommandInternal(
     const failures = "error" in outcome ? [outcome.error] : [];
     for (const restore of [
       async () =>
-        restoreMaintenance((await readConfigFileSnapshot({ skipPluginValidation: true })).config),
+        restoreMaintenance(
+          (await readConfigFileSnapshot({ skipPluginValidation: true, observe: false })).config,
+        ),
       () => owned.release(),
     ]) {
       if (failures.some(hasCommandProcessCleanupError)) {

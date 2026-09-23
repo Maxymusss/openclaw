@@ -4,8 +4,9 @@ import { evaluate } from "./client.js";
 import { runtimeConfig } from "./config.js";
 import { MAX_JSON_BYTES, parseInput, parseResult } from "./schema.js";
 
-const config = { apiKey: "synthetic-test-credential", model: "jev-test", timeoutMs: 1000 };
+const config = { apiKey: "synthetic-test-credential", timeoutMs: 1000 };
 const input = {
+  model: "jev-test",
   state: { text: "synthetic state" },
   questions: {
     route: { type: "choice", instructions: "Choose", criteria: { keep: "Keep", skip: "Skip" } },
@@ -154,6 +155,7 @@ describe("bounded contracts", () => {
     { ...input, questions: {} },
     { ...input, state: "x".repeat(MAX_JSON_BYTES + 1) },
     { ...input, state: "😀".repeat(MAX_JSON_BYTES / 4 + 1) },
+    { ...input, state: Array(262145) },
     { ...input, state: { bad: Infinity } },
     { ...input, state: { bad: undefined } },
     { ...input, state: JSON.parse('{"__proto__":"bad"}') },

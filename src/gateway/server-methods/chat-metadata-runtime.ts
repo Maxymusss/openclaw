@@ -7,6 +7,7 @@ import {
   withPreparedModelRuntimeReadBatch,
 } from "../../agents/prepared-model-catalog.js";
 import { getPreparedModelFullCatalogAuth } from "../../agents/prepared-model-runtime-auth.js";
+import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
 import { getPreparedModelRuntimeStartupStatus } from "../../agents/prepared-model-runtime.startup-status.js";
 import { resolveSwarmConfig } from "../../agents/subagents/swarm/swarm-config.js";
 import { resolveRuntimeConfigCacheKey } from "../../config/runtime-snapshot.js";
@@ -552,6 +553,17 @@ export function createGatewayChatMetadataRuntime(params: {
   const read = async (readParams: ChatMetadataReadParams): Promise<ChatMetadataResult> => {
     assertAgentDatabaseAdmitted(readParams.agentId);
     const draft = readParams.draftAccountSelection;
+    const isCurrent = readParams.isCurrent;
+    const assertCurrent = isCurrent
+      ? () => {
+          if (!isCurrent()) {
+            throw new PreparedModelRuntimePublicationSupersededError(
+              "Chat metadata access changed while preparing its metadata. Retry the request.",
+            );
+          }
+          draft?.assertCurrent();
+        }
+      : draft?.assertCurrent;
     const sessionEntry: ChatMetadataSessionEntry | undefined = draft
       ? { authProfileOverride: draft.authProfileId, authProfileOverrideSource: "user" }
       : readParams.sessionEntry;
@@ -563,12 +575,13 @@ export function createGatewayChatMetadataRuntime(params: {
           `prepared chat metadata is unavailable for agent "${agentId}"`,
         );
       }
+      readParams.assertCurrent?.();
       const projection = await projectAgent(
         generation,
         agent,
         sessionEntry,
         draft?.owner ?? readParams.requesterProfileId,
-        draft?.assertCurrent,
+        assertCurrent,
         // Existing sessions use their saved selection, never a viewer's newer default.
         !readParams.sessionKey && !readParams.sessionEntry,
       );
@@ -605,7 +618,16 @@ export function createGatewayChatMetadataRuntime(params: {
       // History consumes stable catalogs only; live readiness stays inside the current-read fence.
       ...(readParams.readPolicy === "ready"
         ? {}
-        : { metadata: readPreparedChatMetadata(session, readParams, deps.getConfig()) }),
+        : {
+            metadata: readPreparedChatMetadata(
+              session,
+              {
+                ...readParams,
+                requesterProfileId: readParams.readRequesterProfileId?.(),
+              },
+              deps.getConfig(),
+            ),
+          }),
       sessionModelCatalog: session.modelCatalog,
       defaultModelCatalog: neutral.modelCatalog,
     });
@@ -625,7 +647,7 @@ export function createGatewayChatMetadataRuntime(params: {
             generation,
             agent,
             readParams.sessionEntry,
-            readParams.requesterProfileId,
+            readParams.readRequesterProfileId?.(),
           )
         : readNeutral;
       return {

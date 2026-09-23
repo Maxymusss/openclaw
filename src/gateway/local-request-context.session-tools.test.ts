@@ -24,6 +24,7 @@ import {
   upsertSessionEntryCore,
 } from "../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { LegacyPluginSdkResourceHost } from "../plugins/legacy-sdk-resource-host.js";
 import {
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
@@ -39,7 +40,7 @@ import {
   withOperatorToolGatewayAuthority,
 } from "./server-plugin-in-process-dispatch.js";
 import { dispatchGatewayMethodInProcess } from "./server-plugins.js";
-import { roleClient, rolePolicyConfig, sharingPolicyClient } from "./session-sharing.test-utils.js";
+import { roleClient, rolePolicyConfig } from "./session-sharing.test-utils.js";
 
 // This authority fixture creates no browser tabs; lifecycle cleanup and tab
 // ownership have dedicated coverage without cold-loading Browser's source graph here.
@@ -85,9 +86,16 @@ function withSessionToolsFixture(run: (cfg: OpenClawConfig) => Promise<void>) {
         },
       );
     }
-    await withLocalGatewayRequestScope({ deps: {} as CliDeps, getRuntimeConfig: () => cfg }, () =>
-      run(cfg),
-    );
+    const resources = new LegacyPluginSdkResourceHost();
+    try {
+      await resources.run(() =>
+        withLocalGatewayRequestScope({ deps: {} as CliDeps, getRuntimeConfig: () => cfg }, () =>
+          run(cfg),
+        ),
+      );
+    } finally {
+      await resources.close();
+    }
   }));
 }
 
@@ -677,10 +685,12 @@ describe("built-in session tool role authority", () => {
       if (!scope) {
         throw new Error("expected local Gateway scope");
       }
+      const reader = roleClient("view", "reader-profile");
+      reader.connect.scopes = ["operator.read"];
       await withPluginRuntimeGatewayRequestScope(
         {
           ...scope,
-          client: sharingPolicyClient({ user: "reader-profile", scopes: ["operator.read"] }),
+          client: reader,
         },
         async () => {
           await expect(

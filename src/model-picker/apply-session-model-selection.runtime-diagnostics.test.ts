@@ -30,7 +30,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
-import { applySessionModelSelection } from "./apply-session-model-selection.js";
+import { applySessionModelSelectionInternal } from "./apply-session-model-selection.js";
 
 // Only unrelated post-commit notifications are replaced. Owner publication, auth,
 // runtime preparation, both native guards, and the SQLite session write are real.
@@ -188,7 +188,7 @@ describe("native model selection runtime diagnostics", () => {
   }
 
   function select(validateAuthProfileSelection?: () => string | undefined) {
-    return applySessionModelSelection({
+    return applySessionModelSelectionInternal({
       cfg: config,
       agentId: "main",
       sessionKey,

@@ -64,7 +64,7 @@ export function activateCodexAttemptTurn(
     runAbortController,
     terminalState,
     abortExplicitly,
-    abortFromUpstream,
+    cancellation,
     sessionAgentId,
     contextSessionKey,
     effectiveCwd,
@@ -273,9 +273,18 @@ export function activateCodexAttemptTurn(
             : "Codex cancellation could not confirm the turn stopped; background terminals may still be running.",
         );
       }
-      // Native terminal receipt leaves background terminals alive. Cancellation,
-      // budget expiry, and policy replacement close that thread's execution too.
-      await terminateCodexBackgroundTerminals(resourceState.client, resourceState.thread.threadId);
+      if (resources.nativeProcessAuthority) {
+        await resources.nativeProcessAuthority.cancelTurn(
+          resourceState.client,
+          resourceState.thread.threadId,
+          activeTurnId,
+        );
+      } else {
+        await terminateCodexBackgroundTerminals(
+          resourceState.client,
+          resourceState.thread.threadId,
+        );
+      }
       if (state.permissionChangeRestart) {
         state.permissionChangeRestart = "confirmed";
       }
@@ -602,13 +611,7 @@ export function activateCodexAttemptTurn(
     cancel: () => abortExplicitly("cancelled"),
     abort: () => abortExplicitly("aborted"),
   };
-  const freezeRunTerminalOutcome = () => {
-    if (terminalState.terminalOutcomeFrozen) {
-      return;
-    }
-    terminalState.terminalOutcomeFrozen = true;
-    params.abortSignal?.removeEventListener("abort", abortFromUpstream);
-  };
+  const freezeRunTerminalOutcome = cancellation.freezeTerminalOutcome;
   // Return cleanup ownership before callbacks or backend publication can fail.
   const projectionReady = Promise.resolve().then(async () => {
     runAbortController.signal.addEventListener("abort", abortListener, { once: true });
