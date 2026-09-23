@@ -210,7 +210,7 @@ describe("session read event admission", () => {
             sessionId: row.key,
             updatedAt: 1,
             visibility: row.visibility,
-            incognito: row.incognito,
+            incognito: row.incognito || undefined,
             createdActor: {
               type: "human",
               source: "profile",
