@@ -102,6 +102,8 @@ export async function startQaGatewayRpcProxy({
   let held;
   let holdMethod;
   let holdSelector;
+  let holdConnection;
+  let approvalReservation;
   let rejectCreate;
   let nodeFault = false;
   const controlTasks = new Set();
@@ -110,11 +112,16 @@ export async function startQaGatewayRpcProxy({
   const requestSelector = (frame) => ({
     expectedProfileId: selector(frame.expectedProfileId),
     sessionKey: selector(frame.params?.sessionKey),
+    key: selector(frame.params?.key),
+    entryId: selector(frame.params?.entryId),
+    parentSessionKey: selector(frame.params?.parentSessionKey),
     agentId: selector(frame.params?.agentId),
     runId: selector(frame.params?.runId),
     approvalId: selector(frame.params?.id),
-    inputRunId: Array.isArray(frame.params?.inputRunIds) && frame.params.inputRunIds.length === 1
-      ? selector(frame.params.inputRunIds[0]) : undefined,
+    inputRunId:
+      Array.isArray(frame.params?.inputRunIds) && frame.params.inputRunIds.length === 1
+        ? selector(frame.params.inputRunIds[0])
+        : undefined,
   });
   const matchesSelector = (facts, expected) =>
     !expected || Object.entries(expected).every(([key, value]) => facts?.[key] === value);
@@ -123,9 +130,23 @@ export async function startQaGatewayRpcProxy({
       throw new Error("missing fixture producer selector");
     }
     const keys = Object.keys(value);
-    if (!keys.length || keys.some((key) =>
-      !["expectedProfileId", "sessionKey", "agentId", "runId", "approvalId", "inputRunId"].includes(key) ||
-      typeof value[key] !== "string" || value[key].length === 0 || value[key].length > 512)) {
+    if (
+      !keys.length ||
+      keys.some(
+        (key) =>
+          ![
+            "expectedProfileId",
+            "sessionKey",
+            "agentId",
+            "runId",
+            "approvalId",
+            "inputRunId",
+          ].includes(key) ||
+          typeof value[key] !== "string" ||
+          value[key].length === 0 ||
+          value[key].length > 512,
+      )
+    ) {
       throw new Error("invalid fixture producer selector");
     }
     return { ...value };
@@ -335,10 +356,16 @@ export async function startQaGatewayRpcProxy({
     media: { ...media },
     held: Boolean(held),
     heldResponse: heldResponse?.summary,
+    approval: approvalReservation ? { ...approvalReservation } : undefined,
     nodeFault,
     acceptedConnections: acceptedSockets.size,
-    connectedOperators: [...peers].filter((peer) => peer.role === "operator" && peer.connected &&
-      peer.front.readyState === WebSocket.OPEN && peer.back.readyState === WebSocket.OPEN).length,
+    connectedOperators: [...peers].filter(
+      (peer) =>
+        peer.role === "operator" &&
+        peer.connected &&
+        peer.front.readyState === WebSocket.OPEN &&
+        peer.back.readyState === WebSocket.OPEN,
+    ).length,
     pid: process.pid,
   });
   const record = (kind, facts = {}) => {
@@ -354,6 +381,17 @@ export async function startQaGatewayRpcProxy({
   if (recordPath) {
     writeFileSync(recordPath, "");
   }
+  const invalidateApproval = (reason) => {
+    if (!approvalReservation) {
+      return;
+    }
+    approvalReservation.status = "invalid";
+    approvalReservation.reason ??= reason;
+    if (holdConnection === approvalReservation.connection) {
+      holdMethod = holdSelector = holdConnection = undefined;
+    }
+    heldWaiter?.(new Error("approval producer binding invalidated"));
+  };
   const handleRequest = (req, res) => {
     if (req.url === "/__fixture") {
       if (!token || req.headers["x-qa-fixture-token"] !== token) {
@@ -374,21 +412,74 @@ export async function startQaGatewayRpcProxy({
         const input = text ? JSON.parse(text) : {};
         const action = input.action ?? "snapshot";
         if (action === "reset") {
-          if (holdMethod || heldResponse || responseReleaseTask || rejectCreate || fixtureWrites.size || nodeFault) {
+          if (
+            holdMethod ||
+            heldResponse ||
+            responseReleaseTask ||
+            rejectCreate ||
+            fixtureWrites.size ||
+            nodeFault ||
+            (approvalReservation && !["released", "invalid"].includes(approvalReservation.status))
+          ) {
             throw new Error("cannot reset an active fixture producer");
           }
+          approvalReservation = undefined;
           events = [];
           sequence = 0;
           dropResponse = false;
           if (recordPath) {
             writeFileSync(recordPath, "");
           }
+        } else if (action === "hold-approval-response") {
+          if (
+            approvalReservation ||
+            holdMethod ||
+            heldResponse ||
+            responseReleaseTask ||
+            rejectCreate ||
+            fixtureWrites.size ||
+            mediaTask ||
+            held ||
+            holdHello ||
+            dropResponse
+          ) {
+            throw new Error("overlapping approval producer reservation");
+          }
+          const expected = readSelector(input.selector);
+          if (
+            Object.keys(expected).length !== 3 ||
+            !expected.expectedProfileId ||
+            !expected.sessionKey ||
+            !expected.agentId ||
+            !Number.isSafeInteger(input.connection)
+          ) {
+            throw new Error("approval reservation requires its exact native producer");
+          }
+          const peer = [...peers].find((candidate) => candidate.id === input.connection);
+          if (
+            !peer ||
+            peer.role !== "operator" ||
+            peer.clientId !== "openclaw-ios" ||
+            !peer.connected ||
+            peer.profileId !== expected.expectedProfileId ||
+            peer.front.readyState !== WebSocket.OPEN ||
+            peer.back.readyState !== WebSocket.OPEN
+          ) {
+            throw new Error("approval native owner is not live");
+          }
+          approvalReservation = { connection: peer.id, ...expected, status: "waiting-event" };
         } else if (action === "hold-response") {
           if (
-            !["users.self", "chat.send", "chat.history", "sessions.create", "approval.get", "media.get", "plugin.surface.refresh"].includes(
-              input.method,
-            ) ||
+            ![
+              "users.self",
+              "chat.send",
+              "chat.history",
+              "sessions.create",
+              "media.get",
+              "plugin.surface.refresh",
+            ].includes(input.method) ||
             holdMethod ||
+            approvalReservation ||
             rejectCreate ||
             fixtureWrites.size ||
             heldResponse ||
@@ -400,21 +491,21 @@ export async function startQaGatewayRpcProxy({
           if (input.method === "sessions.create" && dropResponse) {
             throw new Error("create delivery already has an injected loss");
           }
-          const requiresSelector = ["chat.history", "sessions.create", "approval.get"].includes(input.method);
-          holdSelector = requiresSelector || input.selector !== undefined ? readSelector(input.selector) : undefined;
+          const requiresSelector = ["chat.history", "sessions.create"].includes(input.method);
+          holdSelector =
+            requiresSelector || input.selector !== undefined
+              ? readSelector(input.selector)
+              : undefined;
           if (requiresSelector && !holdSelector.expectedProfileId) {
             throw new Error("native hold requires the profile producer");
           }
           if (input.method === "chat.history" && !holdSelector.sessionKey) {
             throw new Error("history hold requires its session producer");
           }
-          if (input.method === "approval.get" && !holdSelector.approvalId) {
-            throw new Error("approval hold requires its exact producer");
-          }
           holdMethod = input.method;
         } else if (action === "wait-held") {
           if (!heldResponse) {
-            if (!holdMethod || heldWaiter) {
+            if ((!holdMethod && approvalReservation?.status !== "waiting-event") || heldWaiter) {
               throw new Error("no response hold or another waiter is active");
             }
             await new Promise((resolve, reject) => {
@@ -444,12 +535,32 @@ export async function startQaGatewayRpcProxy({
           responseReleaseTask = (async () => {
             const delivered = await releasing.release();
             record("response-released", { ...releasing.summary, delivered });
+            if (
+              approvalReservation &&
+              approvalReservation.requestId === releasing.summary.requestId &&
+              approvalReservation.connection === releasing.summary.connection
+            ) {
+              if (delivered && approvalReservation.status === "held") {
+                approvalReservation.status = "released";
+              } else {
+                invalidateApproval("delivery-failed");
+              }
+            }
           })().finally(() => {
             responseReleaseTask = undefined;
           });
           await responseReleaseTask;
         } else if (action === "reject-create") {
-          if (rejectCreate || dropResponse || holdMethod || heldResponse || responseReleaseTask || mediaTask || fixtureWrites.size) {
+          if (
+            rejectCreate ||
+            dropResponse ||
+            holdMethod ||
+            heldResponse ||
+            responseReleaseTask ||
+            mediaTask ||
+            fixtureWrites.size ||
+            approvalReservation
+          ) {
             throw new Error("overlapping controlled create fault");
           }
           rejectCreate = readSelector(input.selector);
@@ -458,15 +569,28 @@ export async function startQaGatewayRpcProxy({
             throw new Error("create fault requires profile and agent");
           }
         } else if (action === "fail-node") {
-          const operators = [...peers].filter((peer) => peer.role === "operator" && peer.connected &&
-            peer.front.readyState === WebSocket.OPEN && peer.back.readyState === WebSocket.OPEN);
-          const nodes = [...peers].filter((peer) => peer.role === "node" && peer.connected &&
-            peer.front.readyState === WebSocket.OPEN && peer.back.readyState === WebSocket.OPEN);
+          const operators = [...peers].filter(
+            (peer) =>
+              peer.role === "operator" &&
+              peer.connected &&
+              peer.front.readyState === WebSocket.OPEN &&
+              peer.back.readyState === WebSocket.OPEN,
+          );
+          const nodes = [...peers].filter(
+            (peer) =>
+              peer.role === "node" &&
+              peer.connected &&
+              peer.front.readyState === WebSocket.OPEN &&
+              peer.back.readyState === WebSocket.OPEN,
+          );
           if (nodeFault || operators.length !== 1 || nodes.length !== 1) {
             throw new Error("node fault requires distinct live node and operator owners");
           }
           nodeFault = true;
-          record("controlled-node-fault", { connection: nodes[0].id, operatorConnection: operators[0].id });
+          record("controlled-node-fault", {
+            connection: nodes[0].id,
+            operatorConnection: operators[0].id,
+          });
           for (const peer of nodes) {
             recordFirstTermination(peer.id, "front", peer.front, "node-fault");
             peer.front.terminate();
@@ -474,15 +598,26 @@ export async function startQaGatewayRpcProxy({
             peer.back.terminate();
           }
           await Promise.all(nodes.map((peer) => peer.closed));
-          if (operators[0].front.readyState !== WebSocket.OPEN || operators[0].back.readyState !== WebSocket.OPEN) {
+          if (
+            operators[0].front.readyState !== WebSocket.OPEN ||
+            operators[0].back.readyState !== WebSocket.OPEN
+          ) {
             throw new Error("operator authority did not survive the controlled node fault");
           }
         } else if (action === "release-node") {
-          if (!nodeFault) throw new Error("no controlled node fault");
+          if (!nodeFault) {
+            throw new Error("no controlled node fault");
+          }
           nodeFault = false;
         } else if (action === "drop-response") {
-          if (holdMethod === "sessions.create" || heldResponse?.summary.method === "sessions.create" ||
-            responseReleaseTask || rejectCreate || fixtureWrites.size) {
+          if (
+            holdMethod === "sessions.create" ||
+            heldResponse?.summary.method === "sessions.create" ||
+            responseReleaseTask ||
+            rejectCreate ||
+            fixtureWrites.size ||
+            approvalReservation
+          ) {
             throw new Error("create producer already has a controlled boundary");
           }
           dropResponse = true;
@@ -510,7 +645,9 @@ export async function startQaGatewayRpcProxy({
         res.writeHead(200, { "content-type": "application/json" });
         res.end(JSON.stringify(snapshot()));
       })().catch(() => {
-        if (!res.headersSent) res.writeHead(500);
+        if (!res.headersSent) {
+          res.writeHead(500);
+        }
         res.end("fixture control failed");
       });
       controlTasks.add(controlTask);
@@ -601,10 +738,14 @@ export async function startQaGatewayRpcProxy({
   // HTTPS closeAllConnections does not own sockets waiting for a TLS handshake.
   // Install their close receipts at admission, before a cancelled probe can leave.
   server.on("connection", (socket) => {
-    const closed = new Promise((resolve) => socket.once("close", resolve));
+    const closed = new Promise((resolve) => {
+      socket.once("close", resolve);
+    });
     acceptedSockets.set(socket, closed);
     void closed.then(() => acceptedSockets.delete(socket));
-    if (stopping) socket.destroy();
+    if (stopping) {
+      socket.destroy();
+    }
   });
   const sockets = new WebSocketServer({ server });
   sockets.on("connection", (front) => {
@@ -684,7 +825,16 @@ export async function startQaGatewayRpcProxy({
           }),
       ),
     );
-    const peer = { id, front, back, closed, role: "other", connected: false };
+    const peer = {
+      id,
+      front,
+      back,
+      closed,
+      role: "other",
+      connected: false,
+      clientId: undefined,
+      profileId: undefined,
+    };
     peers.add(peer);
     // The frontend can close before its upstream receiver finishes. Keep both
     // endpoints owned until their close handlers have run, including before stop.
@@ -718,6 +868,24 @@ export async function startQaGatewayRpcProxy({
         }
         methods.set(frame.id, frame.method);
         requestSelectors.set(frame.id, requestSelector(frame));
+        if (
+          approvalReservation?.connection === id &&
+          frame.method === "approval.get" &&
+          frame.params?.id === approvalReservation.approvalId
+        ) {
+          if (
+            approvalReservation.status !== "bound" ||
+            approvalReservation.requestId ||
+            !selector(frame.id) ||
+            peer.profileId !== approvalReservation.expectedProfileId ||
+            (frame.expectedProfileId !== undefined &&
+              frame.expectedProfileId !== approvalReservation.expectedProfileId)
+          ) {
+            invalidateApproval("ambiguous-lookup");
+          } else {
+            approvalReservation.requestId = frame.id;
+          }
+        }
         if (diagnostic && READINESS_METHODS.has(frame.method)) {
           if (diagnostic.requests.length < 32) {
             trace = {
@@ -745,6 +913,7 @@ export async function startQaGatewayRpcProxy({
               ? {
                   expectedProfileId: selector(frame.expectedProfileId),
                   sessionKey: selector(frame.params?.sessionKey),
+                  key: selector(frame.params?.key),
                   agentId: selector(frame.params?.agentId),
                   runId: selector(frame.params?.runId),
                   approvalId: selector(frame.params?.id),
@@ -767,7 +936,10 @@ export async function startQaGatewayRpcProxy({
         }
         if (frame.method === "connect") {
           nativeDeviceId = frame.params?.device?.id;
-          peer.role = ["node", "operator"].includes(frame.params?.role) ? frame.params.role : "other";
+          peer.clientId = selector(frame.params?.client?.id);
+          peer.role = ["node", "operator"].includes(frame.params?.role)
+            ? frame.params.role
+            : "other";
           recordFirstConnection(id, "connect-received");
           record("connect-request", {
             connection: id,
@@ -792,22 +964,43 @@ export async function startQaGatewayRpcProxy({
           record("mutation-request", { connection: id, requestId: frame.id });
         }
       }
-      const controlledCreate = frame.type === "req" && frame.method === "sessions.create" &&
-        rejectCreate && matchesSelector(requestSelectors.get(frame.id), rejectCreate);
-      const controlledNode = frame.type === "req" && frame.method === "connect" && peer.role === "node" && nodeFault;
+      const controlledCreate =
+        frame.type === "req" &&
+        frame.method === "sessions.create" &&
+        rejectCreate &&
+        matchesSelector(requestSelectors.get(frame.id), rejectCreate);
+      const controlledNode =
+        frame.type === "req" && frame.method === "connect" && peer.role === "node" && nodeFault;
       if (controlledCreate || controlledNode) {
-        if (controlledCreate) rejectCreate = undefined;
+        if (controlledCreate) {
+          rejectCreate = undefined;
+        }
         methods.delete(frame.id);
         requestSelectors.delete(frame.id);
         diagnosticRequests.delete(frame.id);
-        record("controlled-request-refusal", { connection: id, requestId: frame.id, method: frame.method });
-        const write = new Promise((resolve) => front.send(JSON.stringify({
-          type: "res", id: frame.id, ok: false,
-          error: { code: "UNAVAILABLE", message: "Controlled fixture request refusal" },
-        }), (error) => {
-          record("controlled-refusal-written", { connection: id, requestId: frame.id, delivered: !error });
-          resolve();
-        }));
+        record("controlled-request-refusal", {
+          connection: id,
+          requestId: frame.id,
+          method: frame.method,
+        });
+        const write = new Promise((resolve) => {
+          front.send(
+            JSON.stringify({
+              type: "res",
+              id: frame.id,
+              ok: false,
+              error: { code: "UNAVAILABLE", message: "Controlled fixture request refusal" },
+            }),
+            (error) => {
+              record("controlled-refusal-written", {
+                connection: id,
+                requestId: frame.id,
+                delivered: !error,
+              });
+              resolve();
+            },
+          );
+        });
         fixtureWrites.add(write);
         void write.finally(() => fixtureWrites.delete(write));
         return;
@@ -836,6 +1029,42 @@ export async function startQaGatewayRpcProxy({
       if (firstChallenge) {
         challengeReceived = true;
         recordFirstConnection(id, "challenge-received");
+      }
+      // Freeze the real event identity before forwarding it. The reservation never
+      // follows another connection, and foreign WebView/admin reads cannot consume it.
+      if (
+        approvalReservation?.connection === id &&
+        frame.type === "event" &&
+        frame.event === "openclaw.approval.requested" &&
+        frame.payload?.request?.sessionKey === approvalReservation.sessionKey &&
+        frame.payload?.request?.agentId === approvalReservation.agentId
+      ) {
+        const payload = frame.payload;
+        if (approvalReservation.status !== "waiting-event") {
+          invalidateApproval("ambiguous-event");
+        } else if (
+          payload.approvalKind !== "system-agent" ||
+          !selector(payload.id) ||
+          !selector(payload.request.runId) ||
+          typeof payload.request.proposalHash !== "string" ||
+          !/^[a-f0-9]{64}$/.test(payload.request.proposalHash) ||
+          peer.front.readyState !== WebSocket.OPEN ||
+          peer.back.readyState !== WebSocket.OPEN
+        ) {
+          invalidateApproval("invalid-event");
+        } else {
+          Object.assign(approvalReservation, {
+            status: "bound",
+            approvalId: payload.id,
+            runId: payload.request.runId,
+            proposalHash: payload.request.proposalHash,
+          });
+          holdMethod = "approval.get";
+          // The native approval fetch omits expectedProfileId. Its already verified
+          // users.self profile belongs to this exact connection, never another reader.
+          holdSelector = { approvalId: payload.id };
+          holdConnection = id;
+        }
       }
       const method = methods.get(frame.id);
       const producer = requestSelectors.get(frame.id);
@@ -920,6 +1149,14 @@ export async function startQaGatewayRpcProxy({
         }
         if ((observeMobileHandoff || observeNativeActions) && method === "users.self" && frame.ok) {
           const profileId = frame.payload?.profile?.id;
+          peer.profileId =
+            typeof profileId === "string" && profileId.length <= 128 ? profileId : undefined;
+          if (
+            approvalReservation?.connection === id &&
+            peer.profileId !== approvalReservation.expectedProfileId
+          ) {
+            invalidateApproval("profile-changed");
+          }
           record("native-profile", {
             connection: id,
             requestId: frame.id,
@@ -949,12 +1186,65 @@ export async function startQaGatewayRpcProxy({
                 }),
           });
         }
-        if (holdMethod && method === holdMethod && matchesSelector(producer, holdSelector)) {
+        if (observeNativeActions && method === "sessions.fork") {
+          const attachments = frame.payload?.editorAttachments;
+          const image =
+            Array.isArray(attachments) && attachments.length === 1 ? attachments[0] : undefined;
+          const data =
+            typeof image?.data === "string" && image.data.length <= 1024 * 1024
+              ? Buffer.from(image.data, "base64")
+              : undefined;
+          record("fork-result", {
+            connection: id,
+            requestId: frame.id,
+            ok: frame.ok,
+            sourceSessionKey: producer?.sessionKey,
+            entryId: producer?.entryId,
+            key: selector(frame.payload?.sessionKey),
+            editorTextSHA256:
+              typeof frame.payload?.editorText === "string" &&
+              frame.payload.editorText.length <= 1024 * 1024
+                ? createHash("sha256").update(frame.payload.editorText).digest("hex")
+                : undefined,
+            attachmentCount: Array.isArray(attachments) ? attachments.length : 0,
+            imageMimeType: selector(image?.mimeType),
+            imageBytes: data?.length,
+            imageSHA256: data ? createHash("sha256").update(data).digest("hex") : undefined,
+          });
+        }
+        if (
+          holdConnection === id &&
+          method === "approval.get" &&
+          matchesSelector(producer, holdSelector)
+        ) {
+          const approval = frame.payload?.approval;
+          if (
+            approvalReservation.status !== "bound" ||
+            approvalReservation.requestId !== frame.id ||
+            frame.ok !== true ||
+            approval?.id !== approvalReservation.approvalId ||
+            approval?.status !== "pending" ||
+            approval?.presentation?.kind !== "system-agent" ||
+            approval?.presentation?.proposalHash !== approvalReservation.proposalHash
+          ) {
+            invalidateApproval("response-owner-mismatch");
+          }
+        }
+        if (
+          holdMethod &&
+          method === holdMethod &&
+          matchesSelector(producer, holdSelector) &&
+          (holdConnection === undefined || holdConnection === id)
+        ) {
+          if (holdConnection !== undefined) {
+            approvalReservation.status = "held";
+          }
           if (trace) {
             trace.held = true;
           }
           holdMethod = undefined;
           holdSelector = undefined;
+          holdConnection = undefined;
           heldResponse = {
             release: () => {
               if (front.readyState !== WebSocket.OPEN) {
@@ -977,7 +1267,7 @@ export async function startQaGatewayRpcProxy({
               method,
               connection: id,
               requestId: frame.id,
-              ...(producer ?? {}),
+              ...producer,
               requestedRunId: producer?.runId,
               ok: frame.ok,
               runId: frame.payload?.runId,
@@ -1042,6 +1332,9 @@ export async function startQaGatewayRpcProxy({
       }
     });
     front.on("close", () => {
+      if (approvalReservation?.connection === id && approvalReservation.status !== "released") {
+        invalidateApproval("owner-retired");
+      }
       diagnosticRequests.clear();
       recordFirstConnection(id, "front-close");
       recordFirstTermination(id, "upstream", back, "front-close");
@@ -1051,6 +1344,9 @@ export async function startQaGatewayRpcProxy({
       }
     });
     back.on("close", () => {
+      if (approvalReservation?.connection === id && approvalReservation.status !== "released") {
+        invalidateApproval("owner-retired");
+      }
       diagnosticRequests.clear();
       recordFirstConnection(id, "upstream-close");
       recordFirstTermination(id, "front", front, "upstream-close");
@@ -1092,6 +1388,9 @@ export async function startQaGatewayRpcProxy({
       const serverClosed = new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
+      if (approvalReservation?.status !== "released") {
+        invalidateApproval("proxy-stopped");
+      }
       heldWaiter?.(new Error("proxy stopped"));
       heldResponse = undefined;
       const closingPeers = [...peers];
@@ -1113,7 +1412,9 @@ export async function startQaGatewayRpcProxy({
         upstream.destroy();
       }
       server.closeAllConnections();
-      for (const [socket] of closingSockets) socket.destroy();
+      for (const [socket] of closingSockets) {
+        socket.destroy();
+      }
       const results = await Promise.allSettled([
         mediaTask,
         responseReleaseTask,
