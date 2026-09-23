@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
@@ -135,8 +136,11 @@ describe.skipIf(process.platform !== "win32")("native Windows Testbox OpenSSH ad
     fs.writeFileSync(
       fixture,
       String.raw`param([string]$Resolver)
+$diagnosticClock = [Diagnostics.Stopwatch]::StartNew()
+[Console]::Error.WriteLine(('WS entry ps={0} edition={1} arch={2}' -f $PSVersionTable.PSVersion, $PSVersionTable.PSEdition, [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture))
 $ErrorActionPreference = 'Stop'
 . $Resolver
+[Console]::Error.WriteLine(('WS resolver {0}' -f $diagnosticClock.ElapsedMilliseconds))
 function Assert($Condition, $Name) { if (-not $Condition) { throw "Admission fixture failed: $Name" } }
 $trustedInstaller = 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
 $aclCases = @(
@@ -177,6 +181,8 @@ foreach ($ace in @(
   $descriptor.DiscretionaryAcl.InsertAce(0, $ace)
   Assert ((Get-OpenSshAclDisposition $descriptor $true) -eq 'unknown') 'unsupported applying ACE'
 }
+
+[Console]::Error.WriteLine(('WS descriptors {0}' -f $diagnosticClock.ElapsedMilliseconds))
 
 # One process supplies read-only OS observations; the resolver must never execute a binary.
 $env:WINDIR = 'C:\Windows'
@@ -284,7 +290,10 @@ $cases = @(
   @{ Name='process path changed'; ChangeProcess='ExecutablePath'; ChangeValue='C:\other\sshd.exe' },
   @{ Name='process became unavailable'; ChangeProcess='CreationDate'; ChangeValue=$null }
 )
+$diagnosticInstallation = 0
 foreach ($case in $cases) {
+  $diagnosticInstallation++
+  [Console]::Error.WriteLine(('WS begin {0} {1}' -f $diagnosticInstallation, $diagnosticClock.ElapsedMilliseconds))
   $script:case = $case
   $directory = if ($case.Directory) { $case.Directory } else { $inbox }
   $script:sshd = "$directory\sshd.exe"
@@ -306,10 +315,13 @@ foreach ($case in $cases) {
   if ($case.Reparse) {
     Assert ($script:items[-1] -eq $case.Reparse -and $script:acls.Count -eq 0 -and $script:signatures.Count -eq 0) 'stop before following reparse'
   }
+  [Console]::Error.WriteLine(('WS end {0} {1}' -f $diagnosticInstallation, $diagnosticClock.ElapsedMilliseconds))
 }
+[Console]::Error.WriteLine(('WS complete {0}' -f $diagnosticClock.ElapsedMilliseconds))
 @{ installations=$cases.Count; descriptors=($aclCases.Count + 4) } | ConvertTo-Json -Compress
 `,
     );
+    const diagnosticStartedAt = process.hrtime.bigint();
     const result = spawnSync(
       "pwsh",
       [
@@ -321,7 +333,42 @@ foreach ($case in $cases) {
       ],
       { encoding: "utf8", timeout: 10000 },
     );
-    expect(result.status, result.stderr).toBe(0);
+    const elapsedMs = Number(process.hrtime.bigint() - diagnosticStartedAt) / 1e6;
+    const redact = (text: string | null | undefined) => {
+      let value = text ?? "";
+      for (const [root, replacement] of [
+        [dir, "<fixture>"],
+        [process.cwd(), "<repo>"],
+        [os.homedir(), "<home>"],
+      ] as const) {
+        value = value
+          .replaceAll(root, replacement)
+          .replaceAll(root.replaceAll("\\", "/"), replacement);
+      }
+      return value.slice(0, 2048);
+    };
+    // A failed or timed-out spawn can have no status or stderr; expose its cause without paths.
+    const error = result.error as NodeJS.ErrnoException | undefined;
+    const outcome = {
+      status: result.status,
+      signal: result.signal,
+      error: error ? { message: redact(error.message), code: error.code } : undefined,
+    };
+    const diagnostic = JSON.stringify({
+      ...outcome,
+      elapsedMs,
+      node: process.versions.node,
+      platform: process.platform,
+      arch: process.arch,
+      timeoutMs: 10000,
+      errno: typeof error?.errno === "number" ? error.errno : undefined,
+      stdout: redact(result.stdout),
+      stderr: redact(result.stderr),
+      stdoutTruncated: (result.stdout?.length ?? 0) > 2048,
+      stderrTruncated: (result.stderr?.length ?? 0) > 2048,
+    });
+    console.error("[windows-admission-spawn]", diagnostic);
+    expect(outcome, diagnostic).toEqual({ status: 0, signal: null, error: undefined });
     expect(JSON.parse(result.stdout)).toEqual({ installations: 40, descriptors: 25 });
   });
 });
