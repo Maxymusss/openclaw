@@ -116,6 +116,9 @@ start_reachable_unhealthy_gateway() {
       18790 \
       "$GATEWAY_BACKEND_LOG_PATH"
   )"
+  if ! wait_for_gateway 18790 "$GATEWAY_BACKEND_LOG_PATH"; then
+    return 1
+  fi
   GATEWAY_PID="$(
     openclaw_e2e_start_tracked_process \
       "$GATEWAY_LOG_PATH" \
@@ -143,15 +146,17 @@ start_wizard_gateway() {
 }
 
 wait_for_gateway() {
+  local port="${1:-18789}"
+  local log_path="${2:-$GATEWAY_LOG_PATH}"
   local wait_attempts
   wait_attempts="$(openclaw_e2e_read_positive_int_env OPENCLAW_ONBOARD_GATEWAY_WAIT_ATTEMPTS 20)" || return $?
   local wait_interval_s="${OPENCLAW_ONBOARD_GATEWAY_WAIT_INTERVAL_S:-1}"
   local saw_listening_log="false"
   for _ in $(seq 1 "$wait_attempts"); do
-    if openclaw_e2e_probe_tcp 127.0.0.1 18789 500 >/dev/null 2>&1; then
+    if openclaw_e2e_probe_tcp 127.0.0.1 "$port" 500 >/dev/null 2>&1; then
       return 0
     fi
-    if [ -f "$GATEWAY_LOG_PATH" ] && grep -E -q "listening on ws://[^ ]+:18789" "$GATEWAY_LOG_PATH"; then
+    if [ -f "$log_path" ] && grep -E -q "listening on ws://[^ ]+:${port}" "$log_path"; then
       saw_listening_log="true"
     fi
     sleep "$wait_interval_s"
@@ -160,7 +165,7 @@ wait_for_gateway() {
   if [ "$saw_listening_log" = "true" ]; then
     echo "Gateway log reported listening, but TCP probe never succeeded"
   fi
-  cat "$GATEWAY_LOG_PATH" || true
+  cat "$log_path" || true
   return 1
 }
 
