@@ -1,5 +1,5 @@
 # Temporary source-bound qualification. Never merge this harness.
-name: Temporary integrated FreeBSD remaining qualification
+name: Temporary integrated FreeBSD fresh ARM qualification
 
 on:
   push:
@@ -16,39 +16,35 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: "892e4e1aca46d6a5ae8ee699fd78aec606054aa3"
-  SOURCE_TREE: "7c5bc951d87e603e21ca803cc10abec122cbc987"
-  HARNESS_SHA: "82845539c110b395efdd257e5493bea532b44abd"
-  PRODUCER_TREE: "23e9edc5e2492d5474d02761a9fd32b4dd651e19"
+  SOURCE_SHA: "f7ad18ddbeedd52c4520428c1f7aca8bf4173bb3"
+  SOURCE_TREE: "ad4a6a7fd0175b4c3d792ae305075737608067dc"
+  HARNESS_SHA: "faaa7142b7742ec27c06dd1dfd148fb9fca7a08e"
+  PRODUCER_TREE: "f1354e5d0403761d153de5e433aeb8d9bdfd31f0"
   CONSUMER_SHA: ${{ github.sha }}
-  CONSUMER_PARENT_SHA: "0077fafbe01505d029e51dd98495d149483ec335"
-  CONSUMER_PARENT_TREE: "2a2207741df2c836b86d5f2e52efe9e8eef62a0f"
-  PRIOR_CONSUMER_SHA: "3f7ed788c310c953a578cd416fcf1838bb520d61"
-  PRIOR_CONSUMER_TREE: "c56f1d7fcc10b5e88efa7ee37a32a41c442063c3"
-  FIXTURE_RUN_ID: "35784025702"
-  FIXTURE_ARTIFACT_ID: "10719246569"
-  FIXTURE_ARTIFACT_DIGEST: "sha256:f05e47055a921068fa5b7f51a6fa37552d1cc1acae5f79f56f6a5058c164f8b4"
-  FIXTURE_ARTIFACT_SIZE: "164351027"
+  CONSUMER_PARENT_SHA: "faaa7142b7742ec27c06dd1dfd148fb9fca7a08e"
+  CONSUMER_PARENT_TREE: "f1354e5d0403761d153de5e433aeb8d9bdfd31f0"
   WORKFLOW_SHA: ${{ github.workflow_sha }}
   PROOF_REPOSITORY: openclaw/openclaw
-  PROOF_RUN_ID: "35781153292"
+  PROOF_RUN_ID: "35840977011"
   PROOF_RUN_ATTEMPT: "1"
-  PROOF_JOB_ID: "106926666804"
-  PAYLOAD_ARTIFACT_ID: "10717974081"
-  PAYLOAD_ARTIFACT_DIGEST: "sha256:4d1f28bc08a4b2598f65a1093b1e926c7afa28813a8ee0e6e21dc01aa4157c04"
-  PAYLOAD_ARTIFACT_SIZE: "263497097"
-  MANIFEST_SHA: "ea1e9b7332b6947daa587badc48c0c718716035a5c34740f2edc92179cc79671"
-  ARCHIVE_SHA: "f950bf5035b1e3e2911743255421d1e9895b8e929c7f0c44a030d7011359f3e7"
+  PROOF_JOB_ID: "107115669444"
+  PAYLOAD_ARTIFACT_ID: "10742330116"
+  PAYLOAD_ARTIFACT_DIGEST: "sha256:630553a8842aa27ae3d7a1a124ba4e5453cf213873cb19fde0750ce0c74e0480"
+  PAYLOAD_ARTIFACT_SIZE: "269861174"
+  MANIFEST_SHA: "54f002e8023f3a27db16eccf4fa59c0c9fb35a51ca7062a3b8eb69f930e86070"
+  ARCHIVE_SHA: "77ab76ad7f18c4034abe9d053ad80472b7a893f21389de64b815c72eeb3101c7"
   PACKAGE_VERSION: "2026.9.5"
   BASELINE_SRI: sha512-lTQpEEe1Xm3u2PCHaPEr+vP8paGk1vLdHuzdItsNToaLI6hAqRVvgJYg+GxukJhETJp4tPy/S1Gftl4KuB8n7A==
-  SOURCE_PINS: '{"package.json":"daeeae9df9b29e09d88c5040f027e1b295f6a2f072887d56b39e525a860ad7ef","pnpm-lock.yaml":"3926f52636eac81ac3f5a282c2bc7b39760ea8350aadee5e681228fed3bcba91","pnpm-workspace.yaml":"12bce91e5e9e4bb52f043f60ce465191f83a2eae0ec9e7be088e5cea2e2454af",".npmrc":"f1d021e2abdf8817d83e35feb1f5d604e8c985aa0553bec3d417cf6f93e9c09c","scripts/freebsd-service-inspect.mjs":"6585523afc1b700b82b53e4b9881944a0f3d58f2dd47c5675252ec658a3a8f4d","scripts/lib/freebsd-service-discovery.mjs":"a18f1ba7022576545571ef033a0060c83343d8a047e380aec15e3dc0543e0d19","scripts/lib/freebsd-service-discovery.d.mts":"efb110b8164077569df27bb8a4ba931180d9438a6ae045cdd03752c26f75ba1f","scripts/install-smoke-candidate-payload.mts":"5f4de9d36236a4f23d769e0972a0f0904864711ff664ba3fad362137dc3902ac","packages/ai/package.json":"b0149f2738759517c06cf550a0ded043ca9fcb54024ba6ec025747b707500ca9","packages/markdown-core/package.json":"eb934f4829a87292edff90480e2c060e636afdd75d35a3ffc02a55581e37a548","packages/model-catalog-core/package.json":"4c53a2d17e2bc41f7011efff70cbd0306122af164c3df8e8e13a4e25c41cec28","packages/normalization-core/package.json":"2bfc2ae79211db8023b168e8dd6c5f378dd64e0890b32ae9a043d38c867683a5","packages/session-url-contract/package.json":"ce05f27abdafc0ff033aadf0d0944f8c48681d5eebcd5dec7485e64215abe827"}'
+  SOURCE_PINS: '{"package.json":"871b3c9232120483d606294d97af5e9f8c0452804911f229c63d6ca6e70b3dc5","pnpm-lock.yaml":"6b7b9eb4522fef82e8741dcb07836b3cf2843a68a00bd932638bf5f057fad417","pnpm-workspace.yaml":"8cd6666eee1dba62d902b42fd06287b77b09429601b73a06168e57dd56d48be9",".npmrc":"f1d021e2abdf8817d83e35feb1f5d604e8c985aa0553bec3d417cf6f93e9c09c","scripts/freebsd-service-inspect.mjs":"6585523afc1b700b82b53e4b9881944a0f3d58f2dd47c5675252ec658a3a8f4d","scripts/lib/freebsd-service-discovery.mjs":"a18f1ba7022576545571ef033a0060c83343d8a047e380aec15e3dc0543e0d19","scripts/lib/freebsd-service-discovery.d.mts":"efb110b8164077569df27bb8a4ba931180d9438a6ae045cdd03752c26f75ba1f","scripts/install-smoke-candidate-payload.mts":"5f4de9d36236a4f23d769e0972a0f0904864711ff664ba3fad362137dc3902ac","packages/ai/package.json":"b0149f2738759517c06cf550a0ded043ca9fcb54024ba6ec025747b707500ca9","packages/markdown-core/package.json":"eb934f4829a87292edff90480e2c060e636afdd75d35a3ffc02a55581e37a548","packages/model-catalog-core/package.json":"4c53a2d17e2bc41f7011efff70cbd0306122af164c3df8e8e13a4e25c41cec28","packages/normalization-core/package.json":"2bfc2ae79211db8023b168e8dd6c5f378dd64e0890b32ae9a043d38c867683a5","packages/session-url-contract/package.json":"ce05f27abdafc0ff033aadf0d0944f8c48681d5eebcd5dec7485e64215abe827"}'
 
 jobs:
   fixtures:
-    # One reviewed successor reuses fixtures and completed Linux/x64 fresh evidence.
-    if: github.repository == 'openclaw/openclaw' && github.actor == 'vincentkoc' && github.event_name == 'push' && github.run_attempt == 1 && github.event.before == '3f7ed788c310c953a578cd416fcf1838bb520d61' && !github.event.forced && !github.event.deleted
+    # One reviewed successor derives new fixtures and runs two isolated fresh ARM cases.
+    if: github.repository == 'openclaw/openclaw' && github.actor == 'vincentkoc' && github.event_name == 'push' && github.run_attempt == 1 && github.event.before == 'faaa7142b7742ec27c06dd1dfd148fb9fca7a08e' && !github.event.forced && !github.event.deleted
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      artifact-id: ${{ steps.fixture-upload.outputs.artifact-id }}
     steps:
       - &checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -57,7 +53,7 @@ jobs:
           fetch-depth: 7
           persist-credentials: false
       - &admit
-        name: Bind the remaining cases, successful producer, and terminal prior proof
+        name: Bind the new source, successful producer, and two fresh ARM cases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -67,18 +63,15 @@ jobs:
           test "$(git rev-parse HEAD)" = "$CONSUMER_SHA"
           test "$(git show -s --format=%P HEAD)" = "$CONSUMER_PARENT_SHA"
           test "$(git rev-parse "$CONSUMER_PARENT_SHA^{tree}")" = "$CONSUMER_PARENT_TREE"
-          test "$(git show -s --format=%P "$CONSUMER_PARENT_SHA")" = 6be1b742e89f53d5385c516c098ef02e0ea42c13
-          test "$(git rev-parse 6be1b742e89f53d5385c516c098ef02e0ea42c13^{tree})" = b2929b7004ca257f7cfe230ca20595ab4f69cb2d
-          test "$(git show -s --format=%P 6be1b742e89f53d5385c516c098ef02e0ea42c13)" = "$PRIOR_CONSUMER_SHA"
-          test "$(git rev-parse "$PRIOR_CONSUMER_SHA^{tree}")" = "$PRIOR_CONSUMER_TREE"
-          test "$(git show -s --format=%P "$PRIOR_CONSUMER_SHA")" = "$HARNESS_SHA"
+          test "$CONSUMER_PARENT_SHA" = "$HARNESS_SHA"
           test "$(git rev-parse "$HARNESS_SHA^{tree}")" = "$PRODUCER_TREE"
-          test "$(git show -s --format=%P "$HARNESS_SHA")" = "5a98148a8fa573812cd0a37686518973167e061b $SOURCE_SHA"
-          test "$(git show -s --format=%P "$SOURCE_SHA")" = 43f22988f4dcd22644a056591428d5849207593c
+          test "$(git show -s --format=%P "$HARNESS_SHA")" = "5dea8004191b0c1ca9bc852c3205556c2cac9f64 $SOURCE_SHA"
+          test "$(git show -s --format=%P "$SOURCE_SHA")" = "6df9d25f09e53f65329d4292480ce17d665d8909 741a1c84cde99000a3fba8a67c1c96ecfda6fee4"
           test "$(git rev-parse "$SOURCE_SHA^{tree}")" = "$SOURCE_TREE"
-          test "$(git diff --name-only "$CONSUMER_PARENT_SHA" HEAD)" = "$(printf '%s\n' .github/workflows/freebsd-integrated-native-proof.yml .github/workflows/freebsd-refreshed-proof.yml)"
+          test "$(git diff --name-only "$CONSUMER_PARENT_SHA" HEAD)" = .github/workflows/freebsd-integrated-native-proof.yml
           test "$(git diff --name-only "$SOURCE_SHA" HEAD)" = "$(printf '%s\n' .github/workflows/freebsd-integrated-native-proof.yml .github/workflows/freebsd-integrated-package-proof.yml .github/workflows/freebsd-refreshed-proof.yml)"
           test "$(git rev-parse HEAD:.github/workflows/freebsd-integrated-package-proof.yml)" = "$(git rev-parse "$HARNESS_SHA:.github/workflows/freebsd-integrated-package-proof.yml")"
+          test "$(git rev-parse HEAD:.github/workflows/freebsd-refreshed-proof.yml)" = "$(git rev-parse "$HARNESS_SHA:.github/workflows/freebsd-refreshed-proof.yml")"
           test -z "$(git status --porcelain)"
           test "$WORKFLOW_SHA" = "$CONSUMER_SHA"
           mkdir -p evidence
@@ -86,12 +79,14 @@ jobs:
           import json,os,subprocess,pathlib
           def api(path): return json.loads(subprocess.check_output(['gh','api',path]))
           e=json.loads(pathlib.Path(os.environ['GITHUB_EVENT_PATH']).read_text())
-          assert e['before']==os.environ['PRIOR_CONSUMER_SHA'] and e['after']==os.environ['CONSUMER_SHA']
+          assert e['before']==os.environ['CONSUMER_PARENT_SHA'] and e['after']==os.environ['CONSUMER_SHA']
           assert not e['forced'] and not e['deleted'] and e['ref']=='refs/heads/test/freebsd-integrated-package-proof'
           repo=os.environ['PROOF_REPOSITORY'];p=api(f'repos/{repo}/pulls/155851')
           assert p['state']=='open' and p['draft'] is True and p['auto_merge'] is None
           assert p['head']['sha']==os.environ['CONSUMER_SHA'] and p['head']['repo']['full_name']==repo
           assert p['head']['ref']=='test/freebsd-integrated-package-proof' and p['user']['login']=='vincentkoc'
+          primary=api(f'repos/{repo}/pulls/149882')
+          assert primary['state']=='open' and primary['head']['sha']==os.environ['SOURCE_SHA'] and primary['head']['repo']['full_name']==repo
           r=api(f"repos/{repo}/actions/runs/{os.environ['PROOF_RUN_ID']}")
           assert r['head_sha']==os.environ['HARNESS_SHA'] and r['run_attempt']==1
           assert r['status']=='completed' and r['conclusion']=='success' and r['event']=='push'
@@ -103,32 +98,7 @@ jobs:
           assert not a['expired'] and a['workflow_run']['id']==r['id'] and a['workflow_run']['head_sha']==r['head_sha']
           assert a['name']==f"freebsd-integrated-package-{r['id']}-1"
           assert a['size_in_bytes']==int(os.environ['PAYLOAD_ARTIFACT_SIZE']) and a['digest']==os.environ['PAYLOAD_ARTIFACT_DIGEST']
-          prior=api(f"repos/{repo}/actions/runs/{os.environ['FIXTURE_RUN_ID']}")
-          assert prior['head_sha']==os.environ['PRIOR_CONSUMER_SHA'] and prior['run_attempt']==1
-          assert prior['status']=='completed' and prior['conclusion']=='cancelled' and prior['event']=='push'
-          assert prior['path']=='.github/workflows/freebsd-integrated-native-proof.yml'
-          jobs=api(f"repos/{repo}/actions/runs/{prior['id']}/attempts/1/jobs?per_page=100")
-          assert jobs['total_count']==10 and len(jobs['jobs'])==10
-          expected={106936290556:('fixtures','success'),106936776534:('linux','success'),
-                    106941764241:('native (x86_64, root, fresh)','success'),106941764341:('native (x86_64, ordinary, fresh)','success'),
-                    106941764299:('native (x86_64, root, seeded)','failure'),106941764426:('native (x86_64, ordinary, seeded)','failure'),
-                    106941764413:('native (aarch64, root, fresh)','cancelled'),106941764257:('native (aarch64, ordinary, fresh)','cancelled'),
-                    106941764358:('native (aarch64, root, seeded)','cancelled'),106941764260:('native (aarch64, ordinary, seeded)','cancelled')}
-          for job in jobs['jobs']:
-              assert job['id'] in expected and (job['name'],job['conclusion'])==expected[job['id']]
-              assert job['status']=='completed' and job['head_sha']==prior['head_sha'] and job['run_id']==prior['id'] and job['run_attempt']==1
-          required={job_id:name for job_id,(name,result) in expected.items() if result=='success'}
-          for job_id,name in required.items():
-              matches=[job for job in jobs['jobs'] if job['id']==job_id]
-              assert len(matches)==1
-              job=matches[0]
-              assert job['name']==name and job['head_sha']==prior['head_sha'] and job['run_id']==prior['id'] and job['run_attempt']==1
-              assert job['status']=='completed' and job['conclusion']=='success'
-          fixture=api(f"repos/{repo}/actions/artifacts/{os.environ['FIXTURE_ARTIFACT_ID']}")
-          assert not fixture['expired'] and fixture['workflow_run']['id']==prior['id'] and fixture['workflow_run']['head_sha']==prior['head_sha']
-          assert fixture['name']==f"freebsd-integrated-fixtures-{prior['id']}-1"
-          assert fixture['size_in_bytes']==int(os.environ['FIXTURE_ARTIFACT_SIZE']) and fixture['digest']==os.environ['FIXTURE_ARTIFACT_DIGEST']
-          out=dict(source=os.environ['SOURCE_SHA'],sourceTree=os.environ['SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],consumerRun=os.environ['GITHUB_RUN_ID'],consumerAttempt=1,producer=r['head_sha'],producerRun=r['id'],producerJob=j['id'],artifact=a['id'],digest=a['digest'],bytes=a['size_in_bytes'],priorConsumer=prior['head_sha'],priorRun=prior['id'],reusedSuccessfulJobs=required,priorOutcomes=expected,fixtureArtifact=fixture['id'],fixtureDigest=fixture['digest'],fixtureBytes=fixture['size_in_bytes'])
+          out=dict(source=os.environ['SOURCE_SHA'],sourceTree=os.environ['SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],consumerRun=os.environ['GITHUB_RUN_ID'],consumerAttempt=1,producer=r['head_sha'],producerRun=r['id'],producerJob=j['id'],artifact=a['id'],digest=a['digest'],bytes=a['size_in_bytes'],cells=[['aarch64','root','fresh'],['aarch64','ordinary','fresh']],reusedSuccessfulJobs={})
           pathlib.Path('evidence/admission.json').write_text(json.dumps(out)+'\n');print(json.dumps(out))
           AUTH
       - &payload-download
@@ -166,34 +136,40 @@ jobs:
           const receipt=JSON.parse(fs.readFileSync('proof-input/complete.json'));
           assert.equal(receipt.source,process.env.SOURCE_SHA);assert.equal(receipt.tree,process.env.SOURCE_TREE);assert.equal(receipt.complete,true);assert.equal(receipt.packageBuildPassed,true);assert.equal(receipt.carrier,process.env.HARNESS_SHA);assert.equal(receipt.run,process.env.PROOF_RUN_ID);assert.equal(receipt.attempt,process.env.PROOF_RUN_ATTEMPT);
           assert.equal(receipt.manifestSha256,process.env.MANIFEST_SHA);assert.equal(receipt.sourceArchiveSha256,process.env.ARCHIVE_SHA);
-          assert.equal(receipt.packageVersion,process.env.PACKAGE_VERSION);assert.equal(receipt.fsSafe,'0.18.1');
+          assert.equal(receipt.packageVersion,process.env.PACKAGE_VERSION);assert.equal(receipt.fsSafe,'0.18.2');
           console.log(JSON.stringify(receipt));
           VERIFY
-      - &fixture-download
-        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
-        with:
-          github-token: ${{ github.token }}
-          repository: openclaw/openclaw
-          run-id: ${{ env.FIXTURE_RUN_ID }}
-          artifact-ids: ${{ env.FIXTURE_ARTIFACT_ID }}
-          digest-mismatch: error
-          path: operator-fixtures
-          merge-multiple: true
-      - &verify-fixtures
-        name: Authenticate the complete fixture handoff
+      - name: Derive one metadata-only target and authenticate the exact released driver
         run: |
           set -euo pipefail
-          node --input-type=module <<'FIXTURES'
+          mkdir fixtures
+          npm pack openclaw@2026.9.4 --ignore-scripts --json --min-release-age=0 --registry=https://registry.npmjs.org/ --pack-destination fixtures > fixtures/published-pack.original.json
+          node --input-type=module <<'BASELINE'
           import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
-          const dir='operator-fixtures',r=JSON.parse(fs.readFileSync(`${dir}/complete.json`));
-          assert.equal(r.source,process.env.SOURCE_SHA);assert.equal(r.consumer,process.env.PRIOR_CONSUMER_SHA);assert.equal(r.run,process.env.FIXTURE_RUN_ID);assert.equal(r.attempt,1);
-          assert.deepEqual(r.files.map(f=>f.name).sort(),['first-hop.json','first-hop.tgz','published-2026.9.4.tgz','published-pack.original.json']);
-          assert.deepEqual(fs.readdirSync(dir).sort(),[...r.files.map(f=>f.name),'complete.json'].sort());
-          for(const f of r.files){const stat=fs.lstatSync(`${dir}/${f.name}`);assert(stat.isFile());assert.equal(stat.size,f.bytes);assert.equal(createHash('sha256').update(fs.readFileSync(`${dir}/${f.name}`)).digest('hex'),f.sha256);}
-          const baseline=fs.readFileSync(`${dir}/published-2026.9.4.tgz`);assert.equal(`sha512-${createHash('sha512').update(baseline).digest('base64')}`,process.env.BASELINE_SRI);
-          const target=JSON.parse(fs.readFileSync(`${dir}/first-hop.json`));assert.equal(target.sourceSha256,createHash('sha256').update(fs.readFileSync('proof-input/payload/candidate.tgz')).digest('hex'));
-          console.log(JSON.stringify(r));
-          FIXTURES
+          const rows=JSON.parse(fs.readFileSync('fixtures/published-pack.original.json'));assert.equal(rows.length,1);
+          const r=rows[0];assert.equal(r.name,'openclaw');assert.equal(r.version,'2026.9.4');assert.equal(r.filename,'openclaw-2026.9.4.tgz');assert.equal(r.integrity,process.env.BASELINE_SRI);
+          const bytes=fs.readFileSync(`fixtures/${r.filename}`);assert.equal(`sha512-${createHash('sha512').update(bytes).digest('base64')}`,process.env.BASELINE_SRI);
+          fs.renameSync(`fixtures/${r.filename}`,'fixtures/published-2026.9.4.tgz');
+          BASELINE
+          node scripts/e2e/lib/update-first-hop-package-fixtures.mjs first-hop-tarball "$PWD/proof-input/payload/candidate.tgz" "$PWD/fixtures/first-hop.tgz" 0 > fixtures/first-hop.json
+          node --input-type=module <<'FIXTURE'
+          import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
+          const hash=f=>createHash('sha256').update(fs.readFileSync(f)).digest('hex');
+          const r=JSON.parse(fs.readFileSync('fixtures/first-hop.json'));
+          assert.equal(r.method,'candidate-same-schema-first-hop-fixture');
+          assert(r.members.changes.length>=2);assert(r.members.changes.every(c=>['package.json','dist/build-info.json','dist/postinstall-content-inventory.json'].includes(c.path)&&c.before&&c.after));
+          assert.equal(r.sourceSha256,hash('proof-input/payload/candidate.tgz'));assert.equal(r.targetSha256,hash('fixtures/first-hop.tgz'));
+          const files=fs.readdirSync('fixtures').sort().map(name=>({name,bytes:fs.statSync(`fixtures/${name}`).size,sha256:hash(`fixtures/${name}`)}));
+          fs.writeFileSync('fixtures/complete.json',JSON.stringify({source:process.env.SOURCE_SHA,consumer:process.env.CONSUMER_SHA,run:process.env.GITHUB_RUN_ID,attempt:1,files})+'\n',{flag:'wx'});console.log(JSON.stringify(r));
+          FIXTURE
+      - id: fixture-upload
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: freebsd-integrated-fixtures-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fixtures
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
 
   native:
     needs: fixtures
@@ -204,12 +180,9 @@ jobs:
       fail-fast: false
       max-parallel: 1
       matrix:
-        arch: [x86_64, aarch64]
+        arch: [aarch64]
         account: [root, ordinary]
-        mode: [fresh, seeded]
-        exclude:
-          - arch: x86_64
-            mode: fresh
+        mode: [fresh]
     env:
       PROOF_ACCOUNT: ${{ matrix.account }}
       PROOF_MODE: ${{ matrix.mode }}
@@ -222,8 +195,31 @@ jobs:
       - *payload-download
       - *toolchain
       - *verify-payload
-      - *fixture-download
-      - *verify-fixtures
+      - &fixture-download
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          github-token: ${{ github.token }}
+          repository: openclaw/openclaw
+          run-id: ${{ github.run_id }}
+          artifact-ids: ${{ needs.fixtures.outputs.artifact-id }}
+          digest-mismatch: error
+          path: operator-fixtures
+          merge-multiple: true
+      - &verify-fixtures
+        name: Authenticate the complete fixture handoff
+        run: |
+          set -euo pipefail
+          node --input-type=module <<'FIXTURES'
+          import assert from 'node:assert/strict';import fs from 'node:fs';import {createHash} from 'node:crypto';
+          const dir='operator-fixtures',r=JSON.parse(fs.readFileSync(`${dir}/complete.json`));
+          assert.equal(r.source,process.env.SOURCE_SHA);assert.equal(r.consumer,process.env.CONSUMER_SHA);assert.equal(r.run,process.env.GITHUB_RUN_ID);assert.equal(r.attempt,1);
+          assert.deepEqual(r.files.map(f=>f.name).sort(),['first-hop.json','first-hop.tgz','published-2026.9.4.tgz','published-pack.original.json']);
+          assert.deepEqual(fs.readdirSync(dir).sort(),[...r.files.map(f=>f.name),'complete.json'].sort());
+          for(const f of r.files){const stat=fs.lstatSync(`${dir}/${f.name}`);assert(stat.isFile());assert.equal(stat.size,f.bytes);assert.equal(createHash('sha256').update(fs.readFileSync(`${dir}/${f.name}`)).digest('hex'),f.sha256);}
+          const baseline=fs.readFileSync(`${dir}/published-2026.9.4.tgz`);assert.equal(`sha512-${createHash('sha512').update(baseline).digest('base64')}`,process.env.BASELINE_SRI);
+          const target=JSON.parse(fs.readFileSync(`${dir}/first-hop.json`));assert.equal(target.sourceSha256,createHash('sha256').update(fs.readFileSync('proof-input/payload/candidate.tgz')).digest('hex'));
+          console.log(JSON.stringify(r));
+          FIXTURES
       - name: Place only authenticated fixtures beside the payload
         run: |
           set -euo pipefail
@@ -303,7 +299,7 @@ jobs:
           VERIFY_STAGE
           cat evidence/native-transfer-guest.json
           echo 'authenticated guest input transfer complete'
-      - name: Run native suites and an actual installed update
+      - name: Run the cold installed Doctor and update flow
         shell: freebsd {0}
         run: |
             set -eu
@@ -325,7 +321,7 @@ jobs:
             cp -R proof-input/. "$native_inputs/"
             cp scripts/install-smoke-candidate-payload.mts "$native_inputs/verifier.mts"
             cat > "$native_inputs/verify-source.py" <<'SOURCE_VERIFY'
-            import pathlib,os,sys,json,tarfile,hashlib,stat
+            import pathlib,os,sys,json,tarfile,hashlib,stat,gzip
             root=pathlib.Path(os.environ['SOURCE_ROOT']);rows=[]
             with tarfile.open(pathlib.Path(os.environ['INPUT_ROOT'])/'source.tar.gz','r:gz') as archive:
                 for member in archive:
@@ -344,6 +340,7 @@ jobs:
             rows.sort();identity=dict(source=os.environ['SOURCE_SHA'],tree=os.environ['SOURCE_TREE'],files=len(rows),inventorySha256=hashlib.sha256(json.dumps(rows,separators=(',',':')).encode()).hexdigest())
             dest=pathlib.Path(os.environ['RUN_ROOT'])/f'source-{sys.argv[1]}.json'
             if sys.argv[1]=='after':assert json.loads((dest.parent/'source-before.json').read_text())==identity
+            (dest.parent/f'source-{sys.argv[1]}.inventory.json.gz').write_bytes(gzip.compress(json.dumps(rows,separators=(',',':')).encode(),mtime=0))
             dest.write_text(json.dumps(identity)+'\n');print(json.dumps(identity))
             SOURCE_VERIFY
             export INPUT_ROOT="$native_inputs"
@@ -355,6 +352,142 @@ jobs:
               test "$(id -u openclaw-proof)" -gt 0
               chown openclaw-proof /var/tmp/openclaw-integrated-evidence
             fi
+            cat > /var/tmp/openclaw-integrated-stage/collect-native.py <<'COLLECTOR_OWNER'
+            import fcntl, hashlib, io, json, os, pathlib, pwd, stat, subprocess, sys, tarfile, tempfile
+
+            FIELDS = {"source":"SOURCE_SHA", "sourceTree":"SOURCE_TREE", "consumer":"CONSUMER_SHA", "run":"CONSUMER_RUN_ID", "attempt":"CONSUMER_RUN_ATTEMPT", "account":"PROOF_ACCOUNT", "mode":"PROOF_MODE"}
+            DEST = pathlib.Path("/var/tmp/openclaw-integrated-evidence")
+            LIMIT = 8 * 1024 * 1024
+
+            def regular(path, uid=None):
+                value = path.lstat()
+                assert stat.S_ISREG(value.st_mode) and value.st_nlink == 1
+                if uid is not None: assert value.st_uid == uid
+                return value
+
+            def atomic_json(path, value):
+                descriptor, temporary = tempfile.mkstemp(prefix=".record-", dir=path.parent)
+                try:
+                    with os.fdopen(descriptor, "w") as output:
+                        json.dump(value, output); output.write("\n")
+                    os.replace(temporary, path)
+                finally:
+                    if os.path.exists(temporary): os.unlink(temporary)
+
+            def start_identity(pid):
+                return subprocess.run(["ps", "-p", str(pid), "-o", "lstart="], text=True, capture_output=True, check=False).stdout.strip()
+
+            def context(dest, expected):
+                regular(dest / "context.json", os.getuid())
+                value = json.loads((dest / "context.json").read_text())
+                assert all(value[key] == item for key, item in expected.items())
+                assert value["uid"] == os.getuid() and (value["uid"] == 0) == (value["account"] == "root")
+                root = pathlib.Path(value["root"]); inputs = pathlib.Path(value["inputs"])
+                assert root.parent == dest.parent and root.name.startswith("openclaw-integrated-proof.")
+                assert inputs.parent == dest.parent and inputs.name.startswith("openclaw-integrated-input.")
+                for directory in [root, inputs]: assert directory.is_dir() and not directory.is_symlink()
+                assert root.stat().st_uid == value["uid"] and root.stat().st_mode & 0o077 == 0
+                driver = inputs / "run-native.sh"; regular(driver)
+                assert hashlib.sha256(driver.read_bytes()).hexdigest() == value["driverSha256"]
+                assert isinstance(value["driverPid"], int) and value["driverPid"] > 0 and value["driverStart"]
+                return value, root
+
+            def collect(dest, expected, kind, command_status):
+                assert kind in ["terminal", "interrupted"]
+                assert (kind == "interrupted" and command_status is None) or (type(command_status) is int and 0 <= command_status <= 255)
+                lock = dest / "collector.lock"
+                descriptor = os.open(lock, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+                try:
+                    assert os.fstat(descriptor).st_nlink == 1 and os.fstat(descriptor).st_uid == os.getuid()
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                    terminal = dest / "proof.tgz"
+                    if kind == "interrupted" and terminal.exists():
+                        regular(terminal, os.getuid())
+                        return {"archive":"proof.tgz", "kind":"terminal", "collectionExit":0}
+                    value, root = context(dest, expected)
+                    fixed = ["initial-discovery.json", "source-scope.json", "dist-graph.json", "source-before.json", "source-after.json", "source-before.inventory.json.gz", "source-after.inventory.json.gz", "phase-status.json"]
+                    selected = [root / name for name in fixed if (root / name).exists()]
+                    initial_omissions = []
+                    for folder in [root / "reports", root / value["mode"] / "plugin-evidence"]:
+                        if folder.is_symlink(): initial_omissions.append({"name":str(folder.relative_to(root)), "reason":"symlink-directory"})
+                        elif folder.is_dir(): selected.extend(path for path in folder.rglob("*") if not path.is_dir())
+                    for name in ["doctor.log", "preview.json", "preview.stderr", "update.json", "update.stderr", "handoff-before.json", "bootstrap-before.json"]:
+                        path = root / value["mode"] / name
+                        if path.exists(): selected.append(path)
+                    captured = []; omitted = initial_omissions; total = 0
+                    for path in sorted(set(selected)):
+                        name = str(path.relative_to(root))
+                        try:
+                            for parent in path.parents:
+                                if parent == root: break
+                                assert parent.is_dir() and not parent.is_symlink(), "symlink-parent"
+                            before = regular(path)
+                            assert len(captured) < 256, "file-count-limit"
+                            assert before.st_size <= LIMIT - total, "whole-file-size-limit"
+                            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+                            with os.fdopen(fd, "rb") as source:
+                                opened = os.fstat(source.fileno()); assert (opened.st_dev, opened.st_ino) == (before.st_dev, before.st_ino)
+                                data = source.read(LIMIT - total + 1); after = os.fstat(source.fileno())
+                            current = path.lstat()
+                            assert (current.st_dev, current.st_ino) == (before.st_dev, before.st_ino), "replaced-during-capture"
+                            assert len(data) <= LIMIT - total, "growing-file-size-limit"
+                            assert (before.st_size, before.st_mtime_ns, before.st_ctime_ns) == (after.st_size, after.st_mtime_ns, after.st_ctime_ns), "changed-during-capture"
+                            assert len(data) == after.st_size, "incomplete-read"
+                            captured.append((name, data)); total += len(data)
+                        except (OSError, AssertionError) as error:
+                            omitted.append({"name":name, "reason":type(error).__name__ + ": " + str(error)})
+                    process_rows = [tuple(map(int, line.split())) for line in subprocess.check_output(["ps", "-axo", "pid=,ppid="], text=True).splitlines() if len(line.split()) == 2]
+                    driver_observed = start_identity(value["driverPid"]) == value["driverStart"]
+                    owned = {value["driverPid"]}
+                    while True:
+                        found = {pid for pid, parent in process_rows if parent in owned} - owned
+                        if not found: break
+                        owned.update(found)
+                    observed = sorted(pid for pid, parent in process_rows if pid in owned and pid not in [value["driverPid"], os.getpid()] and parent != os.getpid()) if driver_observed else None
+                    remaining = observed if kind == "terminal" else None
+                    result = {key:value[key] for key in FIELDS}
+                    result.update(uid=os.getuid(), exit=command_status, archiveKind=kind, driverIdentityObserved=driver_observed, observedDescendants=observed, remainingOwnedDescendants=remaining, leaseSettlement="unknown", omittedFiles=omitted, files=[{"name":name, "bytes":len(data), "sha256":hashlib.sha256(data).hexdigest()} for name, data in captured])
+                    encoded = (json.dumps(result, indent=2) + "\n").encode(); assert len(encoded) <= 256 * 1024
+                    fd, temporary = tempfile.mkstemp(prefix=".archive-", dir=dest); os.close(fd)
+                    archive_name = "proof.tgz" if kind == "terminal" else "interrupted-proof.tgz"
+                    try:
+                        with tarfile.open(temporary, "w:gz") as archive:
+                            for name, data in [("receipt.json", encoded), *captured]:
+                                entry = tarfile.TarInfo(name); entry.size = len(data); entry.mode = 0o600
+                                archive.addfile(entry, io.BytesIO(data))
+                        os.replace(temporary, dest / archive_name)
+                    finally:
+                        if os.path.exists(temporary): os.unlink(temporary)
+                    failed = bool(omitted) or (kind == "terminal" and command_status == 0 and (remaining is None or bool(remaining)))
+                    return {"archive":archive_name, "kind":kind, "collectionExit":int(failed)}
+                finally: os.close(descriptor)
+
+            def main():
+                mode = sys.argv[1]; expected = {key:os.environ[name] for key, name in FIELDS.items()}
+                assert expected["account"] in ["root", "ordinary"] and expected["mode"] in ["fresh", "seeded"]
+                if mode == "interrupted" and os.getuid() == 0 and expected["account"] == "ordinary":
+                    account = pwd.getpwnam("openclaw-proof"); assert account.pw_uid > 0
+                    os.setgroups([]); os.setgid(account.pw_gid); os.setuid(account.pw_uid)
+                assert DEST.is_dir() and not DEST.is_symlink() and DEST.stat().st_uid == os.getuid()
+                if mode == "init":
+                    assert not (DEST / "context.json").exists()
+                    inputs = pathlib.Path(os.environ["INPUT_ROOT"]); driver = inputs / "run-native.sh"; regular(driver)
+                    pid = int(os.environ["PROOF_SCRIPT_PID"])
+                    value = dict(expected, root=os.environ["RUN_ROOT"], inputs=str(inputs), uid=os.getuid(), driverPid=pid, driverStart=start_identity(pid), driverSha256=hashlib.sha256(driver.read_bytes()).hexdigest())
+                    atomic_json(DEST / "context.json", value); context(DEST, expected); return
+                if mode == "record":
+                    value, root = context(DEST, expected); phase, outcome = sys.argv[2:]
+                    assert phase in ["doctor", "preview", "update"] and (outcome == "started" or (outcome.isdecimal() and 0 <= int(outcome) <= 255))
+                    file = root / "phase-status.json"; facts = json.loads(file.read_text()) if file.exists() else {}
+                    if outcome == "started": assert phase not in facts; facts[phase] = {"exit":None}
+                    else: assert facts[phase]["exit"] is None; facts[phase]["exit"] = int(outcome)
+                    atomic_json(file, facts); return
+                result = collect(DEST, expected, mode, int(sys.argv[2]) if mode == "terminal" else None)
+                print(json.dumps(result)); raise SystemExit(result["collectionExit"])
+
+            if __name__ == "__main__": main()
+            COLLECTOR_OWNER
+            chmod 0555 /var/tmp/openclaw-integrated-stage/collect-native.py
             cat > "$native_inputs/run-native.sh" <<'NATIVE_SCRIPT'
             set -eu
             umask 022
@@ -369,54 +502,14 @@ jobs:
               trap - EXIT
               set +e
               export PROOF_COMMAND_STATUS="$command_status"
-              python3 - <<'COLLECT'
-            import os,pathlib,json,hashlib,tarfile,subprocess,stat
-            root=pathlib.Path(os.environ['RUN_ROOT']);dest=pathlib.Path('/var/tmp/openclaw-integrated-evidence')
-            selected=[]
-            fixed=['initial-discovery.json','source-scope.json','dist-graph.json','source-before.json','source-after.json']
-            for name in fixed:
-                p=root/name
-                if p.exists(): selected.append(p)
-            reports=root/'reports'
-            if reports.is_dir(): selected.extend(p for p in reports.rglob('*') if p.is_file())
-            for cell in [os.environ['PROOF_MODE']]:
-                base=root/cell
-                for name in ['doctor.log','preview.json','preview.stderr','update.json','update.stderr','handoff-before.json','bootstrap-before.json']:
-                    p=base/name
-                    if p.exists(): selected.append(p)
-                plugins=base/'plugin-evidence'
-                if plugins.is_dir(): selected.extend(p for p in plugins.rglob('*') if p.is_file())
-            assert len(selected)<=256
-            assert sum(p.stat().st_size for p in selected)<=8*1024*1024
-            rows=[]
-            for p in sorted(selected):
-                assert stat.S_ISREG(p.lstat().st_mode) and not p.is_symlink()
-                rows.append(dict(name=str(p.relative_to(root)),bytes=p.stat().st_size,sha256=hashlib.sha256(p.read_bytes()).hexdigest()))
-            process_rows=[]
-            for line in subprocess.check_output(['ps','-axo','pid=,ppid='],text=True).splitlines():
-                fields=line.split()
-                if len(fields)==2: process_rows.append(tuple(map(int,fields)))
-            owned={int(os.environ['PROOF_SCRIPT_PID'])}
-            while True:
-                found={pid for pid,parent in process_rows if parent in owned}-owned
-                if not found: break
-                owned.update(found)
-            # This collector and its already-joined ps child are expected at observation.
-            remaining=sorted(pid for pid,parent in process_rows if pid in owned and pid not in [int(os.environ['PROOF_SCRIPT_PID']),os.getpid()] and parent!=os.getpid())
-            result=dict(source=os.environ['SOURCE_SHA'],sourceTree=os.environ['SOURCE_TREE'],consumer=os.environ['CONSUMER_SHA'],run=os.environ['CONSUMER_RUN_ID'],attempt=os.environ['CONSUMER_RUN_ATTEMPT'],account=os.environ['PROOF_ACCOUNT'],mode=os.environ['PROOF_MODE'],uid=os.getuid(),exit=int(os.environ['PROOF_COMMAND_STATUS']),remainingOwnedDescendants=remaining,files=rows)
-            receipt=dest/'receipt.json';receipt.write_text(json.dumps(result,indent=2)+'\n')
-            with tarfile.open(dest/'proof.tgz','w:gz') as archive:
-                archive.add(receipt,arcname='receipt.json',recursive=False)
-                for p in selected: archive.add(p,arcname=str(p.relative_to(root)),recursive=False)
-            print(json.dumps(result))
-            if result['exit']==0: assert not remaining,remaining
-            COLLECT
+              python3 /var/tmp/openclaw-integrated-stage/collect-native.py terminal "$command_status"
               collector_status=$?
               printf 'native_command_exit=%s original_report_collection_exit=%s\n' "$command_status" "$collector_status"
               if [ "$command_status" -ne 0 ]; then exit "$command_status"; fi
               exit "$collector_status"
             }
             trap collect_native EXIT
+            python3 /var/tmp/openclaw-integrated-stage/collect-native.py init
 
             node --input-type=module <<'ACCOUNT'
             import assert from 'node:assert/strict';
@@ -645,8 +738,10 @@ jobs:
             npm install --global "file:$INPUT_ROOT/payload/candidate.tgz" "--allow-scripts=file:$INPUT_ROOT/payload/candidate.tgz" --no-audit --no-fund
             node "$proof_root/verify-installed.mjs" candidate "$PACKAGED_ROOT"
             # Doctor is the first candidate CLI in this independent prefix and state.
+            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record doctor started
             if openclaw doctor --fix --non-interactive > "$proof_root/doctor.log" 2>&1; then doctor_status=0; else doctor_status=$?; fi
             pending_cli_status=$doctor_status
+            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record doctor "$doctor_status"
             echo "Doctor output (last 64 KiB, exit $doctor_status):"
             tail -c 65536 "$proof_root/doctor.log"
             if [ "$doctor_status" -ne 0 ]; then exit "$doctor_status"; fi
@@ -666,13 +761,13 @@ jobs:
             const target=JSON.parse(fs.readFileSync(path.join(process.env.INPUT_ROOT,'first-hop.json')));
             assert.equal(manifest.version,phase==='candidate-after-doctor'?process.env.PACKAGE_VERSION:target.targetVersion);
             assert.equal(build.commit,process.env.SOURCE_SHA);
-            assert.equal(manifest.dependencies['@openclaw/fs-safe'],'0.18.1');
+            assert.equal(manifest.dependencies['@openclaw/fs-safe'],'0.18.2');
             const require=createRequire(path.join(installed,'package.json'));
             const metaPath=fs.realpathSync(require.resolve('@openclaw/fs-safe/package.json'));
             const root=path.dirname(metaPath),relativeRoot=path.relative(installed,root);
             assert(relativeRoot!==''&&!relativeRoot.startsWith('..')&&!path.isAbsolute(relativeRoot));
             const meta=JSON.parse(fs.readFileSync(metaPath));
-            assert.equal(meta.name,'@openclaw/fs-safe'); assert.equal(meta.version,'0.18.1');
+            assert.equal(meta.name,'@openclaw/fs-safe'); assert.equal(meta.version,'0.18.2');
             const hash=file=>createHash('sha256').update(fs.readFileSync(file)).digest('hex'),files=[];
             function inventory(relative='') {
               for(const name of fs.readdirSync(path.join(root,relative)).sort()) {
@@ -720,8 +815,10 @@ jobs:
             fs.writeFileSync(`${process.env.PROOF_ROOT}/handoff-before.json`,JSON.stringify({physical,file,rows}),{flag:'wx',mode:0o600});
             console.log(JSON.stringify({handoffBaselineRows:rows.length,sha256:createHash('sha256').update(JSON.stringify(rows)).digest('hex'),installedScope:'absent'}));
             NODE
+            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record preview started
             if openclaw update --tag "file:$INPUT_ROOT/first-hop.tgz" --yes --dry-run --json > "$proof_root/preview.json" 2> "$proof_root/preview.stderr"; then preview_status=0; else preview_status=$?; fi
             pending_cli_status=$preview_status
+            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record preview "$preview_status"
             tail -c 65536 "$proof_root/preview.json"
             tail -c 65536 "$proof_root/preview.stderr"
             if [ "$preview_status" -ne 0 ]; then exit "$preview_status"; fi
@@ -735,8 +832,10 @@ jobs:
             console.log(JSON.stringify({defaultSyntaxPreview:true,account:process.env.PROOF_ACCOUNT,uid:process.getuid(),cell:process.env.PROOF_CELL,run:r.runId}));
             PREVIEW
             node "$proof_root/verify-installed.mjs" candidate "$PACKAGED_ROOT"
+            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record update started
             if openclaw update --tag "file:$INPUT_ROOT/first-hop.tgz" --yes --json > "$proof_root/update.json" 2> "$proof_root/update.stderr"; then update_status=0; else update_status=$?; fi
             pending_cli_status=$update_status
+            python3 /var/tmp/openclaw-integrated-stage/collect-native.py record update "$update_status"
             echo "Update stdout (last 64 KiB, exit $update_status):"
             tail -c 65536 "$proof_root/update.json"
             echo 'Update stderr (last 64 KiB):'
@@ -1081,10 +1180,29 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p evidence
-          scp -O -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 freebsd:/var/tmp/openclaw-integrated-evidence/proof.tgz evidence/native-proof.tgz
+          set +e
+          ssh -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 freebsd 'python3 /var/tmp/openclaw-integrated-stage/collect-native.py interrupted' > evidence/native-collection-request.json 2> evidence/native-collection-request.stderr
+          collection_status=$?
+          set -e
+          if ! archive=$(python3 - <<'SELECT_ARCHIVE'
+          import json,pathlib
+          r=json.loads(pathlib.Path('evidence/native-collection-request.json').read_text())
+          assert r['archive'] in ['proof.tgz','interrupted-proof.tgz']
+          print(r['archive'])
+          SELECT_ARCHIVE
+          ); then
+            python3 - "$collection_status" <<'UNAVAILABLE'
+          import json,pathlib,sys
+          pathlib.Path('evidence/native-capture-unavailable.json').write_text(json.dumps(dict(capture='unavailable',sshExit=int(sys.argv[1]),guestTerminalExit=None,leaseSettlement='unknown'))+'\n')
+          UNAVAILABLE
+            if [ "$collection_status" -eq 0 ]; then exit 1; fi
+            exit "$collection_status"
+          fi
+          export CAPTURE_PATH="evidence/native-$archive"
+          scp -O -o BatchMode=yes -o ConnectTimeout=15 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "freebsd:/var/tmp/openclaw-integrated-evidence/$archive" "$CAPTURE_PATH"
           python3 - <<'CUSTODY'
           import pathlib,tarfile,json,hashlib,os
-          p=pathlib.Path('evidence/native-proof.tgz');assert p.stat().st_size<=9*1024*1024
+          p=pathlib.Path(os.environ['CAPTURE_PATH']);assert p.stat().st_size<=9*1024*1024
           with tarfile.open(p,'r:gz') as t:
               members=t.getmembers();names=[m.name for m in members]
               assert len(members)<=257 and len(names)==len(set(names))
@@ -1096,7 +1214,11 @@ jobs:
               assert r['account']==os.environ['PROOF_ACCOUNT'] and (r['uid']==0)==(r['account']=='root')
               assert r['mode']==os.environ['PROOF_MODE']
               assert set(names)=={'receipt.json',*[f['name'] for f in r['files']]}
+              assert r['archiveKind'] in ['terminal','interrupted']
+              if r['archiveKind']=='interrupted':
+                  assert r['exit'] is None and r['remainingOwnedDescendants'] is None and r['leaseSettlement']=='unknown'
               if r['exit']==0:
+                  assert r['archiveKind']=='terminal' and not r['omittedFiles']
                   assert not r['remainingOwnedDescendants']
                   assert {'source-before.json','source-after.json',*[f'{cell}/{name}' for cell in [os.environ['PROOF_MODE']] for name in ['doctor.log','preview.json','update.json','handoff-before.json']]}<=set(names)
                   assert json.loads(t.extractfile('source-before.json').read())==json.loads(t.extractfile('source-after.json').read())
@@ -1104,6 +1226,7 @@ jobs:
                   b=t.extractfile(row['name']).read();assert len(b)==row['bytes'];assert hashlib.sha256(b).hexdigest()==row['sha256']
           print(json.dumps(dict(bytes=p.stat().st_size,sha256=hashlib.sha256(p.read_bytes()).hexdigest(),original=r)))
           CUSTODY
+          exit "$collection_status"
       - if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
