@@ -351,7 +351,7 @@ export async function finishUpdate(
         // Keep waiting after an observed stop/rebind or any rollback handling.
         waitForStartup:
           params.result.status !== "error" ||
-          params.mutationStarted !== false ||
+          params.mutationStarted ||
           params.preManagedServiceStop?.stopped === true ||
           currentServiceStop()?.stopped === true ||
           Boolean(params.originalManagedServiceRuntime?.definition.rebound) ||

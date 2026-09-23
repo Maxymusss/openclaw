@@ -10,7 +10,7 @@ import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import { defaultRuntime } from "../../runtime.js";
 import * as utils from "../../utils.js";
 import { finishSuccessfulPackageSwitch } from "./update-command-post-update.test-support.js";
-import { UpdateCommandFailure } from "./update-command-result.js";
+import { UpdateCommandFailure as ReportedUpdateCommandFailure } from "./update-command-result.js";
 import { completeUpdateCommandRun } from "./update-command-run.js";
 import { withUpdateCommandTerminalResult } from "./update-command-terminal.js";
 import { verifyUpdatedGateway } from "./update-command-verification.js";
@@ -119,7 +119,7 @@ describe("post-update failure recovery observation", () => {
       exitCode: 1,
       result: { status: "error", reason: "doctor-failed" },
     });
-    if (!(failure instanceof UpdateCommandFailure)) {
+    if (!(failure instanceof ReportedUpdateCommandFailure)) {
       throw failure;
     }
     expect(readRuntime).toHaveBeenCalledOnce();
