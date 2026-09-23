@@ -91,9 +91,7 @@ describe("remote model catalog refresh", () => {
     ).resolves.toMatchObject({ status: "updated", providers: 1, models: 1 });
     const persisted = JSON.parse(readRemoteModelCatalog(databaseOptions)?.bundle_json ?? "null");
     expect(persisted).toEqual(bundle);
-    expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(
-      "https://catalog.openclaw.ai/models/v2/catalog.json",
-    );
+    expect(fetchImpl.mock.calls[0]?.[0]).toBe("https://catalog.openclaw.ai/models/v2/catalog.json");
   });
 
   it("keeps a configured v1 mirror's pricing-only rows and sanitizes transport", async () => {
