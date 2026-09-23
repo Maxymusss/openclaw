@@ -14,6 +14,51 @@ final class NativeActionVisualProofTests: XCTestCase {
         (model: NodeAppModel, gatewayID: String, deviceID: String?, bridgeState: Any?)
     ] = []
 
+    private struct QueryObservation {
+        let line: Int
+        let identifier: Bool
+        let label: Bool
+        let button: Bool
+        var visited = 0
+        var discovered = 1
+        var hidden = 0
+        var rejectedViews = 0
+        var identifierValues = 0
+        var labelValues = 0
+        var candidates = 0
+        var emptyFrames = 0
+        var outsideFrames = 0
+        var nonButtons = 0
+        var disabled = 0
+        var matches = 0
+        var arrays = 0
+        var indexed = 0
+        var unavailable = 0
+
+        var summary: String {
+            [
+                "line=\(self.line) identifier=\(self.identifier) label=\(self.label) button=\(self.button)",
+                "visited=\(self.visited) discovered=\(self.discovered) hidden=\(self.hidden)",
+                "rejectedViews=\(self.rejectedViews) identifierValues=\(self.identifierValues)",
+                "labelValues=\(self.labelValues) candidates=\(self.candidates)",
+                "emptyFrames=\(self.emptyFrames) outsideFrames=\(self.outsideFrames)",
+                "nonButtons=\(self.nonButtons) disabled=\(self.disabled) matches=\(self.matches)",
+                "arrays=\(self.arrays) indexed=\(self.indexed) unavailable=\(self.unavailable)",
+            ].joined(separator: " ")
+        }
+    }
+
+    private struct FailureObservation {
+        let scenario: Scenario
+        var stage = "setup"
+        var waitLine = 0
+        var waitPhase = "unobserved"
+        var waitFacts: String?
+        var query: QueryObservation?
+    }
+
+    private var failureObservation: FailureObservation?
+
     func testInspectionRetiresWhenSelectedAgentChanges() async throws {
         try await self.runNativeVisualProof(.inspection)
     }
@@ -256,6 +301,9 @@ final class NativeActionVisualProofTests: XCTestCase {
         guard Self.retainedApprovalFixtures.isEmpty else {
             throw OpenClawNativeActionError("A prior approval fixture has incomplete cleanup")
         }
+        let previousObservation = self.failureObservation
+        self.failureObservation = FailureObservation(scenario: scenario)
+        defer { self.failureObservation = previousObservation }
         var defaults: [String: Any?] = [
             "talk.enabled": false, "talk.background.enabled": false, VoiceWakePreferences.enabledKey: false,
             "gateway.onboardingComplete": true, "gateway.hasConnectedOnce": true,
@@ -1441,7 +1489,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                     } catch {
                         XCTAssertEqual(
                             error.localizedDescription,
-                            "The action route changed. Select the session again.")
+                            "The selected session changed. Open it again before sending.")
                     }
                     XCTAssertEqual(sends, 0)
                     let reopenedChild = await router.open(.session(child))
@@ -1480,7 +1528,19 @@ final class NativeActionVisualProofTests: XCTestCase {
                     XCTAssertTrue(chat.input.isEmpty)
                     XCTAssertTrue(chat.switchSession(to: secondKey, agentID: session.agentID))
                     let returned = chat.currentSessionSnapshot()
-                    try await self.waitUntil {
+                    try await self.waitUntil(failureFacts: {
+                        let observed = chat.currentSessionSnapshot()
+                        return [
+                            "fork-return-ready failureTime=true",
+                            "current=\(chat.isCurrentSession(returned)) loading=\(chat.isLoading)",
+                            "metadata=\(chat.hasCurrentSessionMetadata) detached=\(chat.isTransportDetached)",
+                            "keyEqual=\(observed.key == returned.key) generationEqual=\(observed.generation == returned.generation)",
+                            "activeAgentEqual=\(observed.agentID == returned.agentID)",
+                            "deliveryAgentEqual=\(observed.deliveryAgentID == returned.deliveryAgentID)",
+                            "contractEqual=\(observed.sessionRoutingContract == returned.sessionRoutingContract)",
+                            "ownerSameModel=\(model.chatPresentation.viewModel === chat)",
+                        ].joined(separator: " ")
+                    }) {
                         chat.isCurrentSession(returned) && !chat.isLoading && chat.hasCurrentSessionMetadata
                     }
                     XCTAssertTrue(model.chatPresentation.viewModel === chat)
@@ -2122,11 +2182,30 @@ final class NativeActionVisualProofTests: XCTestCase {
                 XCTAssertEqual(sends, 0)
                 await cleanup()
             } catch {
+                self.reportFailure(error, window: window, hosting: window?.rootViewController)
                 reportLifetime()
                 await cleanup()
                 throw error
             }
         }
+    }
+
+    private func reportFailure(_ error: Error, window: UIWindow?, hosting: UIViewController?) {
+        guard let observation = self.failureObservation else { return }
+        // These fresh failure-time facts do not identify an earlier predicate or state writer.
+        let fields = [
+            "native-visual-failure scenario=\(observation.scenario) stage=\(observation.stage)",
+            "lastWaitLine=\(observation.waitLine) lastWaitPhase=\(observation.waitPhase) cancellation=\(error is CancellationError)",
+            "failureTime taskCancelled=\(Task.isCancelled) windowPresent=\(window != nil)",
+            "windowKey=\(window?.isKeyWindow == true) windowHidden=\(window?.isHidden == true)",
+            "sceneActive=\(window?.windowScene?.activationState == .foregroundActive)",
+            "hostInWindow=\(window != nil && hosting?.viewIfLoaded?.window === window)",
+            "presented=\(hosting?.presentedViewController != nil)",
+            "lastQuery={\(observation.query?.summary ?? "unobserved")}",
+            "waitFailureFacts={\(observation.waitFacts ?? "unobserved")}",
+        ]
+        // One bounded row per failed scenario; never emit labels, identifiers, or object descriptions.
+        print(String(fields.joined(separator: " ").prefix(2048)))
     }
 
     private func showSidebar(in window: UIWindow) async throws {
@@ -2162,7 +2241,11 @@ final class NativeActionVisualProofTests: XCTestCase {
     }
 
     private func visibleViews(in window: UIWindow) throws -> [UIView] {
-        guard window.isKeyWindow, !window.isHidden else { throw CancellationError() }
+        self.failureObservation?.stage = "visible-view-traversal"
+        guard window.isKeyWindow, !window.isHidden else {
+            self.failureObservation?.stage = "visible-window-ownership"
+            throw CancellationError()
+        }
         var pending: [UIView] = [window]
         var result: [UIView] = []
         var seen: Set<ObjectIdentifier> = []
@@ -2273,9 +2356,18 @@ final class NativeActionVisualProofTests: XCTestCase {
         label: String? = nil,
         prefix: Bool = false,
         in window: UIWindow,
-        button: Bool = false) throws -> NSObject?
+        button: Bool = false,
+        line: Int = #line) throws -> NSObject?
     {
+        var observation = QueryObservation(
+            line: line,
+            identifier: identifier != nil,
+            label: label != nil,
+            button: button)
+        self.failureObservation?.stage = "accessibility-query"
+        defer { self.failureObservation?.query = observation }
         guard !window.isHidden, window.isKeyWindow else {
+            self.failureObservation?.stage = "accessibility-window-ownership"
             throw OpenClawNativeActionError("Native visual window lost ownership")
         }
         let bounds = window.convert(window.bounds, to: nil as UIWindow?)
@@ -2284,32 +2376,58 @@ final class NativeActionVisualProofTests: XCTestCase {
         var matches: [NSObject] = []
         func enqueue(_ child: NSObject) throws {
             guard discovered.insert(ObjectIdentifier(child)).inserted else { return }
+            observation.discovered = discovered.count
             guard discovered.count <= 512 else {
                 throw OpenClawNativeActionError("Native visual accessibility hierarchy exceeds its bound")
             }
             pending.append(child)
         }
         while let element = pending.popLast() {
-            guard !element.accessibilityElementsHidden else { continue }
+            observation.visited += 1
+            guard !element.accessibilityElementsHidden else {
+                observation.hidden += 1
+                continue
+            }
             if let view = element as? UIView {
-                guard view === window || view.window === window, !view.isHidden, view.alpha > 0 else { continue }
+                guard view === window || view.window === window, !view.isHidden, view.alpha > 0 else {
+                    observation.rejectedViews += 1
+                    continue
+                }
                 for child in view.subviews {
                     try enqueue(child)
                 }
             }
-            let matchesIdentifier = identifier != nil &&
-                (element as? UIAccessibilityIdentification)?.accessibilityIdentifier == identifier
-            let matchesLabel = label.map { prefix ? (element.accessibilityLabel?.hasPrefix($0) == true) :
-                element.accessibilityLabel == $0
+            let matchesIdentifier: Bool
+            if identifier != nil {
+                let value = (element as? UIAccessibilityIdentification)?.accessibilityIdentifier
+                if value != nil { observation.identifierValues += 1 }
+                matchesIdentifier = value == identifier
+            } else {
+                matchesIdentifier = false
+            }
+            let matchesLabel = label.map {
+                let value = element.accessibilityLabel
+                if value != nil { observation.labelValues += 1 }
+                return prefix ? (value?.hasPrefix($0) == true) : value == $0
             } ?? false
-            if matchesIdentifier || matchesLabel,
-               !element.accessibilityFrame.isEmpty, bounds.intersects(element.accessibilityFrame),
-               !button || (element.accessibilityTraits.contains(.button) &&
-                   !element.accessibilityTraits.contains(.notEnabled))
-            {
-                matches.append(element)
+            // Count each original filter only when its short-circuit evaluation reaches it.
+            if matchesIdentifier || matchesLabel {
+                observation.candidates += 1
+                if element.accessibilityFrame.isEmpty {
+                    observation.emptyFrames += 1
+                } else if !bounds.intersects(element.accessibilityFrame) {
+                    observation.outsideFrames += 1
+                } else if button, !element.accessibilityTraits.contains(.button) {
+                    observation.nonButtons += 1
+                } else if button, element.accessibilityTraits.contains(.notEnabled) {
+                    observation.disabled += 1
+                } else {
+                    matches.append(element)
+                    observation.matches += 1
+                }
             }
             if let children = element.accessibilityElements {
+                observation.arrays += 1
                 guard children.count <= 512 else {
                     throw OpenClawNativeActionError("Native visual accessibility container exceeds its bound")
                 }
@@ -2318,7 +2436,11 @@ final class NativeActionVisualProofTests: XCTestCase {
                 }
             } else {
                 let count = element.accessibilityElementCount()
-                if count == NSNotFound { continue }
+                if count == NSNotFound {
+                    observation.unavailable += 1
+                    continue
+                }
+                observation.indexed += 1
                 guard (0...512).contains(count) else {
                     throw OpenClawNativeActionError("Native visual accessibility container exceeds its bound")
                 }
@@ -2357,12 +2479,34 @@ final class NativeActionVisualProofTests: XCTestCase {
         }
     }
 
-    private func waitUntil(_ ready: @MainActor () throws -> Bool) async throws {
+    private func waitUntil(
+        line: Int = #line,
+        failureFacts: (@MainActor () -> String)? = nil,
+        _ ready: @MainActor () throws -> Bool) async throws
+    {
         let deadline = ContinuousClock.now + .seconds(3)
-        while try !ready(), ContinuousClock.now < deadline {
-            try await Task.sleep(for: .milliseconds(10))
+        self.failureObservation?.waitLine = line
+        self.failureObservation?.waitFacts = nil
+        do {
+            self.failureObservation?.stage = "wait-predicate"
+            self.failureObservation?.waitPhase = "predicate"
+            while try !ready(), ContinuousClock.now < deadline {
+                self.failureObservation?.stage = "wait-sleep"
+                self.failureObservation?.waitPhase = "sleep"
+                try await Task.sleep(for: .milliseconds(10))
+                self.failureObservation?.stage = "wait-predicate"
+                self.failureObservation?.waitPhase = "predicate"
+            }
+            self.failureObservation?.stage = "wait-final-predicate"
+            self.failureObservation?.waitPhase = "final-predicate"
+            guard try ready() else {
+                self.failureObservation?.stage = "wait-timeout"
+                throw OpenClawNativeActionError("Native visual presentation did not settle")
+            }
+        } catch {
+            self.failureObservation?.waitFacts = failureFacts?()
+            throw error
         }
-        guard try ready() else { throw OpenClawNativeActionError("Native visual presentation did not settle") }
     }
 
     private func attach(_ window: UIWindow, name: String) throws {
