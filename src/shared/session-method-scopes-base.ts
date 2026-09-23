@@ -112,7 +112,10 @@ const SESSIONS_DELETE_WRITE_SCOPE_FIELDS: ReadonlySet<string> = new Set([
   "archivedOnly",
 ]);
 
-function resolveSessionsPatchRequiredScope(params: unknown): SessionMutationOperatorScope {
+function resolveSessionsPatchRequiredScope(
+  params: unknown,
+  allowEnvelope: boolean,
+): SessionMutationOperatorScope {
   if (!isRecord(params)) {
     return "operator.write";
   }
@@ -121,21 +124,9 @@ function resolveSessionsPatchRequiredScope(params: unknown): SessionMutationOper
   }
   return Object.keys(params).every(
     (key) =>
-      SESSIONS_PATCH_WRITE_SCOPE_ENVELOPE_FIELDS.has(key) ||
+      (allowEnvelope && SESSIONS_PATCH_WRITE_SCOPE_ENVELOPE_FIELDS.has(key)) ||
       SESSIONS_PATCH_WRITE_SCOPE_MUTATIONS.has(key),
   )
-    ? "operator.write"
-    : "operator.admin";
-}
-
-function resolveSessionsPatchManyRequiredScope(params: unknown): SessionMutationOperatorScope {
-  if (!isRecord(params) || !isRecord(params.patch)) {
-    return "operator.write";
-  }
-  if (params.patch.permissionMode === "full" || Object.hasOwn(params.patch, "sandboxMode")) {
-    return "operator.admin";
-  }
-  return Object.keys(params.patch).every((key) => SESSIONS_PATCH_WRITE_SCOPE_MUTATIONS.has(key))
     ? "operator.write"
     : "operator.admin";
 }
@@ -179,10 +170,11 @@ export function resolveBaseSessionMutationRequiredScope(
     return resolveSessionsCreateRequiredScope(params);
   }
   if (method === "sessions.patch") {
-    return resolveSessionsPatchRequiredScope(params);
+    return resolveSessionsPatchRequiredScope(params, true);
   }
   if (method === "sessions.patchMany") {
-    return resolveSessionsPatchManyRequiredScope(params);
+    // Batch target envelopes are outside the patch, never writable mutation fields.
+    return resolveSessionsPatchRequiredScope(isRecord(params) ? params.patch : undefined, false);
   }
   if (method === "sessions.delete") {
     return resolveSessionsDeleteRequiredScope(params);

@@ -60,48 +60,35 @@ export function readSessionMethodAccess(
   if (!requiredScope) {
     throw new Error(`Missing required scope for session mutation method: ${request.method}`);
   }
-  if (snapshot?.phase !== "connected" || !snapshot.client) {
-    return {
-      allowed: false,
-      requiredScope,
-      reason: sessionMethodAccessReason("disconnected", requiredScope),
-      cause: "disconnected",
-    };
-  }
-  if (isGatewayMethodAdvertised(snapshot, request.method) !== true) {
-    return {
-      allowed: false,
-      requiredScope,
-      reason: sessionMethodAccessReason("method-unavailable", requiredScope),
-      cause: "method-unavailable",
-    };
-  }
-  const auth = snapshot.hello?.auth;
-  const sessionScope =
-    requiredScope !== "operator.admin"
-      ? resolveSessionMethodScope(request.method, request.params)
-      : undefined;
-  if (
-    auth &&
-    Array.isArray(auth.scopes) &&
-    (roleScopesAllow({
-      role: auth.role,
-      requestedScopes: [requiredScope],
-      allowedScopes: auth.scopes,
-    }) ||
-      (sessionScope !== undefined &&
-        roleScopesAllow({
-          role: auth.role,
-          requestedScopes: [sessionScope],
-          allowedScopes: auth.scopes,
-        })))
-  ) {
-    return { allowed: true, requiredScope };
+  const cause =
+    snapshot?.phase !== "connected" || !snapshot.client
+      ? "disconnected"
+      : isGatewayMethodAdvertised(snapshot, request.method) !== true
+        ? "method-unavailable"
+        : "missing-scope";
+  if (cause === "missing-scope") {
+    const auth = snapshot?.hello?.auth;
+    const scopes = auth?.scopes;
+    const sessionScope =
+      requiredScope !== "operator.admin"
+        ? resolveSessionMethodScope(request.method, request.params)
+        : undefined;
+    if (
+      auth &&
+      Array.isArray(scopes) &&
+      [requiredScope, sessionScope].some(
+        (scope) =>
+          scope !== undefined &&
+          roleScopesAllow({ role: auth.role, requestedScopes: [scope], allowedScopes: scopes }),
+      )
+    ) {
+      return { allowed: true, requiredScope };
+    }
   }
   return {
     allowed: false,
     requiredScope,
-    reason: sessionMethodAccessReason("missing-scope", requiredScope),
-    cause: "missing-scope",
+    reason: sessionMethodAccessReason(cause, requiredScope),
+    cause,
   };
 }

@@ -4,6 +4,7 @@ import {
   authorizeOperatorScopesForMethod,
   authorizeOperatorScopesForRequiredScope,
   projectOperatorScopesForMethod,
+  resolveLeastPrivilegeOperatorScopesForMethod,
 } from "./method-scopes.js";
 
 describe("session-scoped method admission", () => {
@@ -97,6 +98,91 @@ describe("session-scoped method admission", () => {
         allowedScopes: ["operator.sessions.write"],
       }),
     ).toEqual(["operator.sessions.write"]);
+  });
+
+  it.each([
+    [{}, "operator.write", "operator.write"],
+    [
+      { label: "updated", model: "fixture/model", unread: true },
+      "operator.write",
+      "operator.write",
+    ],
+    [{ permissionMode: "guarded", thinkingLevel: null }, "operator.write", "operator.write"],
+    [{ key: "agent:main:own" }, "operator.write", "operator.admin"],
+    [{ agentId: "main" }, "operator.write", "operator.admin"],
+    [{ expectedSessionId: "session-1" }, "operator.write", "operator.admin"],
+    [{ expectedLifecycleRevision: "revision-1" }, "operator.write", "operator.admin"],
+    [{ expectedPermissionMode: "full" }, "operator.write", "operator.admin"],
+    [{ expectedMarkedUnreadAt: 1 }, "operator.write", "operator.admin"],
+    [{ permissionMode: "full" }, "operator.admin", "operator.admin"],
+    [{ sandboxMode: "off" }, "operator.admin", "operator.admin"],
+    [{ sandboxMode: undefined }, "operator.admin", "operator.admin"],
+    [{ label: "updated", futureField: true }, "operator.admin", "operator.admin"],
+  ] as const)(
+    "distinguishes single and batch patch fields %j",
+    (patch, singleScope, batchScope) => {
+      for (const [method, params, requiredScope] of [
+        ["sessions.patch", patch, singleScope],
+        ["sessions.patchMany", { targets: [{ key: "agent:main:own" }], patch }, batchScope],
+      ] as const) {
+        expect(resolveLeastPrivilegeOperatorScopesForMethod(method, params)).toEqual([
+          requiredScope,
+        ]);
+        expect(authorizeOperatorScopesForMethod(method, ["operator.write"], params)).toEqual(
+          requiredScope === "operator.write"
+            ? { allowed: true }
+            : { allowed: false, missingScope: "operator.admin" },
+        );
+        expect(
+          authorizeOperatorScopesForMethod(method, ["operator.sessions.write"], params),
+        ).toEqual(
+          requiredScope === "operator.write"
+            ? { allowed: true, sessionScope: "operator.sessions.write" }
+            : { allowed: false, missingScope: "operator.admin" },
+        );
+        expect(authorizeOperatorScopesForMethod(method, ["operator.admin"], params)).toEqual({
+          allowed: true,
+        });
+      }
+    },
+  );
+
+  it.each([
+    { value: undefined },
+    { value: null },
+    { value: "invalid" },
+    { value: 1 },
+    { value: [] },
+    { value: {} },
+  ])("leaves malformed patch payloads $value for handler validation", ({ value }) => {
+    for (const [method, params] of [
+      ["sessions.patch", value],
+      ["sessions.patchMany", value],
+      ["sessions.patchMany", { targets: [], patch: value }],
+    ] as const) {
+      expect(resolveLeastPrivilegeOperatorScopesForMethod(method, params)).toEqual([
+        "operator.write",
+      ]);
+      expect(authorizeOperatorScopesForMethod(method, ["operator.sessions.write"], params)).toEqual(
+        { allowed: true, sessionScope: "operator.sessions.write" },
+      );
+    }
+  });
+
+  it("classifies batch mutations independently of the outer envelope's validation", () => {
+    const params = {
+      targets: [{ key: "agent:main:own", expectedSessionId: "session-1" }],
+      patch: { label: "updated" },
+      permissionMode: "full",
+      sandboxMode: "off",
+      futureField: true,
+    };
+    expect(resolveLeastPrivilegeOperatorScopesForMethod("sessions.patchMany", params)).toEqual([
+      "operator.write",
+    ]);
+    expect(
+      authorizeOperatorScopesForMethod("sessions.patchMany", ["operator.sessions.write"], params),
+    ).toEqual({ allowed: true, sessionScope: "operator.sessions.write" });
   });
 
   it.each([

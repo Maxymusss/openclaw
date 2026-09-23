@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ApplicationGatewaySnapshot } from "../app/gateway.ts";
+import { t } from "../i18n/index.ts";
 import { readSessionMethodAccess } from "./session-method-access.ts";
 
 function snapshot(params: {
   connected?: boolean;
   methods?: string[];
   scopes?: string[];
+  role?: string;
   includeAuth?: boolean;
   includeScopes?: boolean;
 }): Pick<ApplicationGatewaySnapshot, "client" | "hello" | "phase"> {
@@ -19,7 +21,7 @@ function snapshot(params: {
         ? {}
         : {
             auth: {
-              role: "operator",
+              role: params.role ?? "operator",
               ...(params.includeScopes === false
                 ? {}
                 : { scopes: params.scopes ?? ["operator.write"] }),
@@ -55,21 +57,31 @@ describe("readSessionMethodAccess", () => {
     ).toMatchObject({ allowed: false, requiredScope: "operator.admin" });
   });
 
-  it("preserves an explicit admin requirement on an otherwise narrow operation", () => {
-    expect(
-      readSessionMethodAccess(
-        snapshot({
-          methods: ["sessions.reset"],
-          scopes: ["operator.sessions.write", "operator.write"],
-        }),
-        {
-          method: "sessions.reset",
+  it.each(["sessions.reset", "sessions.patch"])(
+    "preserves an explicit admin requirement on %s",
+    (method) => {
+      expect(
+        readSessionMethodAccess(
+          snapshot({
+            methods: [method],
+            scopes: ["operator.sessions.write", "operator.write"],
+          }),
+          {
+            method,
+            params: { key: "agent:main:own" },
+            requiredScope: "operator.admin",
+          },
+        ),
+      ).toMatchObject({ allowed: false, requiredScope: "operator.admin" });
+      expect(
+        readSessionMethodAccess(snapshot({ methods: [method], scopes: ["operator.admin"] }), {
+          method,
           params: { key: "agent:main:own" },
           requiredScope: "operator.admin",
-        },
-      ),
-    ).toMatchObject({ allowed: false, requiredScope: "operator.admin" });
-  });
+        }),
+      ).toEqual({ allowed: true, requiredScope: "operator.admin" });
+    },
+  );
 
   it("allows a write-scoped operator to create ordinary sessions", () => {
     expect(
@@ -161,9 +173,15 @@ describe("readSessionMethodAccess", () => {
     ).toBe(true);
   });
 
-  it("allows read, write, and admin scopes to satisfy read-scoped actions", () => {
+  it("allows broad and narrow session scopes to read sharing evidence", () => {
     for (const method of ["session.members.list", "session.members.listEvidence"]) {
-      for (const scope of ["operator.read", "operator.write", "operator.admin"]) {
+      for (const scope of [
+        "operator.read",
+        "operator.write",
+        "operator.admin",
+        "operator.sessions.read",
+        "operator.sessions.write",
+      ]) {
         expect(
           readSessionMethodAccess(snapshot({ methods: [method], scopes: [scope] }), {
             method,
@@ -172,6 +190,37 @@ describe("readSessionMethodAccess", () => {
         ).toBe(true);
       }
     }
+  });
+
+  it.each([
+    "session.visibility.set",
+    "session.publicShare.set",
+    "session.members.add",
+    "session.members.remove",
+  ])("does not let narrow sharing readers mutate through %s", (method) => {
+    for (const scope of ["operator.sessions.read", "operator.sessions.write"]) {
+      expect(
+        readSessionMethodAccess(snapshot({ methods: [method], scopes: [scope] }), {
+          method,
+          requiredScope: "operator.write",
+        }),
+      ).toMatchObject({
+        allowed: false,
+        requiredScope: "operator.write",
+        cause: "missing-scope",
+      });
+    }
+  });
+
+  it.each([
+    { role: " operator ", scopes: [" operator.write "], allowed: true },
+    { role: " operator ", scopes: [" operator.sessions.write "], allowed: true },
+    { role: "node", scopes: ["operator.admin"], allowed: false },
+    { role: "node", scopes: ["operator.sessions.write"], allowed: false },
+  ])("keeps canonical role/scope normalization for $role $scopes", ({ role, scopes, allowed }) => {
+    expect(
+      readSessionMethodAccess(snapshot({ role, scopes }), { method: "sessions.create" }),
+    ).toMatchObject({ allowed, requiredScope: "operator.write" });
   });
 
   it("rejects a read-scoped action without a compatible operator scope", () => {
@@ -219,5 +268,63 @@ describe("readSessionMethodAccess", () => {
         requiredScope: "operator.write",
       }),
     ).toMatchObject({ allowed: false, cause: "method-unavailable" });
+  });
+
+  it.each([
+    {
+      name: "absent snapshot",
+      gateway: undefined,
+      cause: "disconnected",
+      reason: "sessionsView.actionRequiresConnection",
+    },
+    {
+      name: "null snapshot",
+      gateway: null,
+      cause: "disconnected",
+      reason: "sessionsView.actionRequiresConnection",
+    },
+    {
+      name: "offline without method or auth",
+      gateway: snapshot({ connected: false, methods: [], includeAuth: false }),
+      cause: "disconnected",
+      reason: "sessionsView.actionRequiresConnection",
+    },
+    {
+      name: "connected phase without client, method or auth",
+      gateway: { ...snapshot({ methods: [], includeAuth: false }), client: null },
+      cause: "disconnected",
+      reason: "sessionsView.actionRequiresConnection",
+    },
+    {
+      name: "connected without method or auth",
+      gateway: snapshot({ methods: [], includeAuth: false }),
+      cause: "method-unavailable",
+      reason: "sessionsView.actionUnavailable",
+    },
+    {
+      name: "advertised without scopes",
+      gateway: snapshot({ includeScopes: false }),
+      cause: "missing-scope",
+      reason: "sessionsView.actionRequiresWrite",
+    },
+  ] as const)("preserves denial precedence for $name", ({ gateway, cause, reason }) => {
+    expect(readSessionMethodAccess(gateway, { method: "sessions.create" })).toEqual({
+      allowed: false,
+      requiredScope: "operator.write",
+      cause,
+      reason: t(reason),
+    });
+  });
+
+  it.each([
+    undefined,
+    null,
+    snapshot({ connected: false, methods: [], includeAuth: false }),
+    snapshot({ methods: [], includeAuth: false }),
+    snapshot({ methods: ["unknown.method"], scopes: ["operator.admin"] }),
+  ])("requires a scope for an unknown method before checking snapshot %j", (gateway) => {
+    expect(() => readSessionMethodAccess(gateway, { method: "unknown.method" })).toThrow(
+      "Missing required scope for session mutation method: unknown.method",
+    );
   });
 });
