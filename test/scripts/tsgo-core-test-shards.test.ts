@@ -511,16 +511,8 @@ process.exit(result.status??1);
         "test/tsconfig/tsconfig.core.test.agents-tools.json",
         "test/tsconfig/tsconfig.core.test.agents-other.json",
       ]);
-      // A removed rename source has no current root: keep the full canonical check.
-      const renamed = await check([leaf, "src/agents/old.test.ts"]);
-      expect(renamed.result.status, renamed.result.stderr).toBe(0);
-      expect(renamed.builds).toEqual([
-        "test/tsconfig/tsconfig.core.test.agents-tools.json",
-        ...TSGO_CORE_TEST_SHARDS.filter((shard) => shard.name !== "agents-tools").map(
-          (shard) => shard.config,
-        ),
-      ]);
-      // Mixed source/test patches retain all shards, with multiple owners in canonical order.
+      // One full compiler sweep covers mixed changes and multiple owners in canonical order.
+      // Deleted-root fallback is covered by the graph-selection cases above.
       const mixed = await check(["src/empty.ts", leaf, consumer, leaf]);
       expect(mixed.result.status, mixed.result.stderr).toBe(0);
       expect(mixed.builds).toEqual([
