@@ -1,4 +1,6 @@
 import {
+  captureAgentHarnessCompletionCustody,
+  createAgentHarnessTaskEventSink,
   createAgentHarnessTaskRuntime,
   deliverAgentHarnessTaskCompletion,
 } from "openclaw/plugin-sdk/agent-harness-task-runtime";
@@ -14,26 +16,12 @@ import type {
   MonitorOptions,
   NativeSubagentMonitorClient,
   NativeSubagentMonitorRuntime,
-  ParentState,
-  ParentOwner,
+  ParentRegistration,
+  ParentRegistrationHandle,
 } from "./native-subagent-monitor-types.js";
 
-type ParentRegistration = Pick<
-  ParentState,
-  | "parentThreadId"
-  | "requesterSessionKey"
-  | "taskRuntimeScope"
-  | "historyOwner"
-  | "agentId"
-  | "submissionStore"
-> &
-  Omit<ParentOwner, "turnId">;
-
 type NativeMonitor = {
-  registerParent(params: ParentRegistration): {
-    bindTurn: (turnId: string) => void;
-    unregister: () => Promise<void>;
-  };
+  registerParent(params: ParentRegistration): Promise<ParentRegistrationHandle>;
   retireParent(parentThreadId: string): void;
 };
 
@@ -44,6 +32,8 @@ type NativeMonitorConstructor = new (
 ) => NativeMonitor;
 
 export const defaultNativeSubagentMonitorRuntime: NativeSubagentMonitorRuntime = {
+  captureAgentHarnessCompletionCustody,
+  createAgentHarnessTaskEventSink,
   createAgentHarnessTaskRuntime,
   deliverAgentHarnessTaskCompletion,
 };
@@ -53,21 +43,13 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
 ) {
   const monitors = new WeakMap<CodexAppServerClient, NativeMonitor>();
 
-  function registerMonitor(params: {
-    client: CodexAppServerClient;
-    parentThreadId: string;
-    requesterSessionKey?: string;
-    taskRuntimeScope?: ParentState["taskRuntimeScope"];
-    historyOwner?: ParentState["historyOwner"];
-    submissionStore?: ParentState["submissionStore"];
-    agentId?: string;
-    runtime?: NativeSubagentMonitorRuntime;
-    retainClient?: () => (() => void) | undefined;
-    retainParentThread?: (threadId: string) => (() => void) | undefined;
-    claimDirectChild?: (threadId: string) => (() => void) | undefined;
-    rejectPendingDirectChild?: (threadId: string, reason: string) => void;
-    onDirectChildAccepted?: () => void;
-  }): { bindTurn: (turnId: string) => void; unregister: () => Promise<void> } {
+  async function registerMonitor(
+    params: ParentRegistration &
+      Pick<MonitorOptions, "retainClient" | "retainParentThread"> & {
+        client: CodexAppServerClient;
+        runtime?: NativeSubagentMonitorRuntime;
+      },
+  ): Promise<ParentRegistrationHandle> {
     let monitor = monitors.get(params.client);
     if (!monitor) {
       // Native start/completion can race; serialize each child so only its
@@ -157,6 +139,7 @@ export function createCodexNativeSubagentMonitorRuntime<T extends NativeMonitorC
       claimDirectChild: params.claimDirectChild,
       rejectPendingDirectChild: params.rejectPendingDirectChild,
       onDirectChildAccepted: params.onDirectChildAccepted,
+      assertCurrent: params.assertCurrent,
     });
   }
 

@@ -109,7 +109,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     trajectoryEndRecorded: false,
     nativeHookRelay: undefined as CodexNativeHookRelay | undefined,
     nativeSubagentMonitor: undefined as
-      | ReturnType<typeof codexNativeSubagentMonitorRuntime.register>
+      | Awaited<ReturnType<typeof codexNativeSubagentMonitorRuntime.register>>
       | undefined,
     runtimeContinuationStarted: false,
     nativePreToolUseFailureFallbackActive: false,
@@ -235,7 +235,9 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       },
     });
   let nativeSubagentMonitorSettlement: Promise<void> | undefined;
+  let nativeSubagentMonitorGeneration = 0;
   const unregisterNativeSubagentMonitor = async () => {
+    nativeSubagentMonitorGeneration += 1;
     const registration = state.nativeSubagentMonitor;
     state.nativeSubagentMonitor = undefined;
     if (registration) {
@@ -244,8 +246,10 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     await nativeSubagentMonitorSettlement;
   };
   const registerNativeSubagentMonitor = async (parentThreadId: string) => {
+    const { client, thread, nativeHookRelay, turnRoute } = state;
     await unregisterNativeSubagentMonitor();
     connection.assertCurrent();
+    const generation = ++nativeSubagentMonitorGeneration;
     const sessionKey = params.sessionKey;
     const storePath = params.sessionTarget?.storePath;
     const parentSession =
@@ -302,20 +306,37 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
             ),
         }
       : undefined;
-    state.nativeSubagentMonitor = codexNativeSubagentMonitorRuntime.register({
-      client: state.client,
+    const assertRegistrationCurrent = () => {
+      runAbortController.signal.throwIfAborted();
+      params.hostCapabilities.assertActive();
+      connection.assertCurrent();
+      submissionStore?.assertCurrent();
+      thread.liveThreadOwnership?.assertCurrent();
+      if (
+        generation !== nativeSubagentMonitorGeneration ||
+        state.client !== client ||
+        state.thread !== thread ||
+        state.nativeHookRelay !== nativeHookRelay ||
+        state.turnRoute !== turnRoute
+      ) {
+        throw new Error("Codex native subagent registration was superseded during setup");
+      }
+    };
+    const registration = await codexNativeSubagentMonitorRuntime.register({
+      client,
       parentThreadId,
       requesterSessionKey: params.sessionKey,
       taskRuntimeScope: params.agentHarnessTaskRuntimeScope,
       historyOwner,
       submissionStore,
       agentId: sessionAgentId,
-      retainClient: () => retainSharedCodexAppServerClientIfCurrent(state.client),
+      assertCurrent: assertRegistrationCurrent,
+      retainClient: () => retainSharedCodexAppServerClientIfCurrent(client),
       retainParentThread: (protectedThreadId) =>
-        protectCodexAppServerLiveThread(state.client, protectedThreadId),
-      claimDirectChild: (childThreadId) => state.nativeHookRelay?.claimDirectChild(childThreadId),
+        protectCodexAppServerLiveThread(client, protectedThreadId),
+      claimDirectChild: (childThreadId) => nativeHookRelay?.claimDirectChild(childThreadId),
       rejectPendingDirectChild: (childThreadId, reason) =>
-        state.nativeHookRelay?.rejectPendingDirectChild(childThreadId, reason),
+        nativeHookRelay?.rejectPendingDirectChild(childThreadId, reason),
       ...(params.sessionKey && params.agentHarnessTaskRuntimeScope
         ? {
             onDirectChildAccepted: () => {
@@ -324,6 +345,13 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
           }
         : {}),
     });
+    try {
+      assertRegistrationCurrent();
+      state.nativeSubagentMonitor = registration;
+    } catch (error) {
+      await registration.unregister();
+      throw error;
+    }
   };
   const releaseCurrentRoute = async () => {
     state.releaseInferenceContext?.();
