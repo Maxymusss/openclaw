@@ -20,6 +20,7 @@ import {
   sendForegroundMessage,
   startForegroundLifecycleFixture,
   waitForReleasedThread,
+  withForegroundTurnDiagnostics,
   type ForegroundLifecycleFixture,
   type observeForegroundFrames,
 } from "./chat-foreground-lifecycle.test-support.ts";
@@ -53,7 +54,9 @@ async function accepted(page: Page, observed: Observation, message: string, turn
     ok: true,
     payload: { runId: params.idempotencyKey, status: "started" },
   });
-  await expect.poll(() => turn.ready).toBe(1);
+  await withForegroundTurnDiagnostics(fixture, observed, params.idempotencyKey, turn, () =>
+    expect.poll(() => turn.ready).toBe(1),
+  );
   expect(fixture.provider.requests.at(-1)).toEqual({ id: turn.id, model: "allowed" });
   return params.idempotencyKey;
 }
@@ -68,7 +71,9 @@ async function completed(
   const turn = fixture.provider.plan("complete", reply);
   const runId = await accepted(page, observed, message, turn);
   await expect.poll(() => turn.closed).toEqual({ code: 0, signal: null });
-  await expect.poll(() => hasTerminalEvent(observed, runId)).toBe(true);
+  await withForegroundTurnDiagnostics(fixture, observed, runId, turn, () =>
+    expect.poll(() => hasTerminalEvent(observed, runId)).toBe(true),
+  );
   await expect.poll(() => thread(page).getByText(reply, { exact: true }).count()).toBe(1);
   await waitForReleasedThread(page, key);
   return runId;
@@ -77,7 +82,9 @@ async function completed(
 async function stopWithHeldCleanup(page: Page, observed: Observation, runId: string, turn: Turn) {
   await page.getByRole("button", { name: "Stop generating", exact: true }).click();
   await expect.poll(() => turn.acknowledged).toBe(1);
-  await expect.poll(() => hasTerminalEvent(observed, runId)).toBe(true);
+  await withForegroundTurnDiagnostics(fixture, observed, runId, turn, () =>
+    expect.poll(() => hasTerminalEvent(observed, runId)).toBe(true),
+  );
   expect(turn.closed).toBeUndefined();
   if (!turn.pid) {
     throw new Error("Missing owned child PID");
@@ -229,7 +236,9 @@ suite.define(() => {
               ok: true,
               payload: { status: "started" },
             });
-            await expect.poll(() => hasTerminalEvent(observed, forbiddenRun)).toBe(true);
+            await withForegroundTurnDiagnostics(fixture, observed, forbiddenRun, undefined, () =>
+              expect.poll(() => hasTerminalEvent(observed, forbiddenRun)).toBe(true),
+            );
             await expect
               .poll(() =>
                 thread(page)

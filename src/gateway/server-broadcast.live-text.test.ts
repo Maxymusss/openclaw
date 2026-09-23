@@ -3,11 +3,13 @@ import { describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { GATEWAY_CLIENT_CAPS } from "../../packages/gateway-protocol/src/client-info.js";
 import { USER_PROFILE_ID_MAX_LENGTH } from "../../packages/gateway-protocol/src/schema/user-profile-constants.js";
+import { prepareGatewayRecipientProfile } from "./expected-profile.js";
 import { createGatewayBroadcaster } from "./server-broadcast.js";
 import { createSessionMessageSubscriberRegistry } from "./server-chat-state.js";
 import { MAX_BUFFERED_BYTES, WEBSOCKET_CLOSE_GRACE_MS } from "./server-constants.js";
 import { GatewayClientRegistry } from "./server/client-registry.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { sharingPolicyClient } from "./session-sharing.test-utils.js";
 
 type TextPayload = { sessionKey: string; text: string; delta?: string };
 type Frame = {
@@ -127,18 +129,27 @@ describe("connection live-text delivery", () => {
     expect(slow.frames.at(-1)?.seq).toBe(7);
   });
 
-  it.each([
-    "owner",
-    "membership",
-    "invalidated",
-    "socket",
-    "replacement socket",
-    "scope",
-    "subscription",
-    "visibility",
-    "throwing visibility",
-  ] as const)("rechecks current %s before a pending send", (revoked) => {
+  it.each(
+    ["operator.read", "operator.sessions.read"].flatMap((scope) =>
+      [
+        "owner",
+        "membership",
+        "invalidated",
+        "socket",
+        "replacement socket",
+        "scope",
+        "subscription",
+        "visibility",
+        "throwing visibility",
+        ...(scope === "operator.sessions.read" ? ["prepared profile", "current identity"] : []),
+      ].map((revoked) => ({ scope, revoked })),
+    ),
+  )("rechecks current $revoked before a pending $scope send", ({ scope, revoked }) => {
     const peer = createPeer("subscriber");
+    Object.assign(peer.client, sharingPolicyClient({ user: "reader", scopes: [scope] }));
+    prepareGatewayRecipientProfile(peer.client, {
+      identity: { profileId: "reader", aliases: new Set(["reader"]), role: null },
+    });
     peer.client.connect.caps = [GATEWAY_CLIENT_CAPS.SESSION_SCOPED_EVENTS];
     const clients = new GatewayClientRegistry([peer.client]);
     const subscribers = createSessionMessageSubscriberRegistry();
@@ -188,6 +199,12 @@ describe("connection live-text delivery", () => {
     }
     if (revoked === "visibility" || revoked === "throwing visibility") {
       visible = false;
+    }
+    if (revoked === "prepared profile") {
+      peer.client.preparedSessionProfile = undefined;
+    }
+    if (revoked === "current identity") {
+      peer.client.authenticatedUserProfile!.profileId = "replacement-profile";
     }
     expect(() => peer.complete()).not.toThrow();
     expect(peer.frames).toHaveLength(1);
@@ -298,29 +315,37 @@ describe("connection live-text delivery", () => {
     });
   });
 
-  it("rechecks an ordinary targeted subscriber after unsubscribe", () => {
-    const peer = createPeer("ordinary-subscriber");
-    const subscribers = createSessionMessageSubscriberRegistry();
-    subscribers.subscribe(peer.client.connId, "agent:main:stream");
-    const { broadcastToConnIds } = createGatewayBroadcaster({
-      clients: new GatewayClientRegistry([peer.client]),
-      sessionMessageSubscribers: subscribers,
-    });
-    const recipients = new Set([peer.client.connId]);
-    const opts = {
-      sessionSubscriptionVerified: true,
-      liveText: {
-        group: new AbortController().signal,
-        coalesce: { key: "agent", merge: mergeText },
-      },
-    };
-    broadcastToConnIds("agent", text("A", "A"), recipients, opts);
-    broadcastToConnIds("agent", text("AB", "B"), recipients, opts);
-    expect(peer.frames).toHaveLength(1);
-    subscribers.unsubscribe(peer.client.connId, "agent:main:stream");
-    peer.complete();
-    expect(peer.frames).toHaveLength(1);
-  });
+  it.each(["operator.read", "operator.sessions.read"])(
+    "rechecks a targeted %s subscriber after unsubscribe",
+    (scope) => {
+      const peer = createPeer("ordinary-subscriber");
+      Object.assign(peer.client, sharingPolicyClient({ user: "reader", scopes: [scope] }));
+      prepareGatewayRecipientProfile(peer.client, {
+        identity: { profileId: "reader", aliases: new Set(["reader"]), role: null },
+      });
+      const subscribers = createSessionMessageSubscriberRegistry();
+      subscribers.subscribe(peer.client.connId, "agent:main:stream");
+      const { broadcastToConnIds } = createGatewayBroadcaster({
+        clients: new GatewayClientRegistry([peer.client]),
+        sessionMessageSubscribers: subscribers,
+        canReceiveSessionEvent: () => true,
+      });
+      const recipients = new Set([peer.client.connId]);
+      const opts = {
+        sessionSubscriptionVerified: true,
+        liveText: {
+          group: new AbortController().signal,
+          coalesce: { key: "agent", merge: mergeText },
+        },
+      };
+      broadcastToConnIds("agent", text("A", "A"), recipients, opts);
+      broadcastToConnIds("agent", text("AB", "B"), recipients, opts);
+      expect(peer.frames).toHaveLength(1);
+      subscribers.unsubscribe(peer.client.connId, "agent:main:stream");
+      peer.complete();
+      expect(peer.frames).toHaveLength(1);
+    },
+  );
 
   it("shares transport capacity with pending replacements before either queue fills", () => {
     const peer = createBufferedPeer("shared-budget", MAX_BUFFERED_BYTES - 8192);

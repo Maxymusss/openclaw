@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -11,7 +11,10 @@ import type {
   HelloOk,
   RequestFrame,
 } from "../../../packages/gateway-protocol/src/schema/frames.ts";
+import { resolveAgentWorkspaceDir } from "../../../src/agents/agent-scope-config.ts";
+import { resolveMaterializedSandboxSkillsWorkspaceDir } from "../../../src/agents/sandbox/workspace-mounts.ts";
 import { readActiveGatewayLockIdentity } from "../../../src/infra/gateway-lock.ts";
+import { redactSensitiveText } from "../../../src/logging/redact.ts";
 import {
   getCanonicalUserPreferences,
   setCanonicalUserPreferences,
@@ -351,6 +354,17 @@ export async function startForegroundLifecycleFixture() {
     );
     config.agents.defaults.sandbox.workspaceRoot = path.join(instance.stateDir, "sandboxes");
     await instance.state.writeConfig(config);
+    // Explicit agent ownership uses workspace-main, not the test state's legacy workspace.
+    // Create the protected mountpoint as the fixture owner before the engine sees it.
+    await mkdir(
+      path.join(
+        resolveMaterializedSandboxSkillsWorkspaceDir(
+          resolveAgentWorkspaceDir(config, "main", instance.env),
+        ),
+        "skills",
+      ),
+      { recursive: true },
+    );
     await instance.startGateway();
     const bundle = await verifyGatewayServedControlUiBundle(`http://127.0.0.1:${instance.port}/`);
     const owner = instance;
@@ -553,6 +567,73 @@ export function hasTerminalEvent(
       payload?.runId === runId && ["aborted", "error", "final"].includes(String(payload.state))
     );
   });
+}
+
+export async function withForegroundTurnDiagnostics(
+  fixture: ForegroundLifecycleFixture,
+  observed: ReturnType<typeof observeForegroundFrames>,
+  runId: string,
+  turn: PlannedTurn | undefined,
+  assertion: () => Promise<unknown>,
+) {
+  try {
+    await assertion();
+  } catch (error) {
+    const events = observed.received
+      .flatMap((frame) => {
+        if (frame.type !== "event" || (frame.event !== "chat" && frame.event !== "agent")) {
+          return [];
+        }
+        const payload = asNullableRecord(frame.payload);
+        if (payload?.runId !== runId) {
+          return [];
+        }
+        if (
+          frame.event === "chat"
+            ? !["aborted", "error", "final"].includes(String(payload.state))
+            : payload.stream !== "lifecycle" && payload.stream !== "error"
+        ) {
+          return [];
+        }
+        const data = asNullableRecord(payload.data);
+        return [
+          {
+            event: frame.event,
+            sessionKey: payload.sessionKey,
+            state: payload.state,
+            stream: payload.stream,
+            phase: data?.phase,
+            error: payload.errorMessage ?? data?.error,
+          },
+        ];
+      })
+      .slice(-12);
+    const evidence = {
+      events,
+      provider: {
+        count: fixture.provider.requests.length,
+        recent: fixture.provider.requests.slice(-8),
+      },
+      child: turn
+        ? {
+            id: turn.id,
+            ready: turn.ready,
+            acknowledged: turn.acknowledged,
+            closed: turn.closed ?? null,
+          }
+        : null,
+    };
+    const tail = fixture.instance
+      .logs()
+      .split("\n")
+      .filter((line) => /gateway|agent|sandbox|error|fail/i.test(line))
+      .slice(-20)
+      .join("\n");
+    throw new Error(
+      `Foreground turn ${runId} failed: ${redactSensitiveText(JSON.stringify(evidence), { mode: "tools" }).slice(-4_000)}\n${redactSensitiveText(tail, { mode: "tools" }).slice(-4_000)}`,
+      { cause: error },
+    );
+  }
 }
 
 export async function waitForReleasedThread(page: Page, key: string) {

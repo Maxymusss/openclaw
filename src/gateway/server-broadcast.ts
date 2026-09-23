@@ -15,7 +15,8 @@ import { queuePluginSessionsChanged } from "../plugins/gateway-events.js";
 import { operatorScopeSatisfied } from "../shared/operator-scope-compat.js";
 import { isBrowserCopilotClient } from "../utils/message-channel.js";
 import { ADMIN_SCOPE, QUESTIONS_SCOPE, READ_SCOPE, WRITE_SCOPE } from "./method-scopes.js";
-import { hasEventScope } from "./server-broadcast-scopes.js";
+import { resolveGatewayOperatorRoleActor } from "./operator-role-policy.js";
+import { resolveEventScopeAccess } from "./server-broadcast-scopes.js";
 import type {
   GatewayBroadcastFn,
   GatewayBroadcastOpts,
@@ -29,6 +30,7 @@ import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "./server-constan
 import type { GatewayClientRegistry } from "./server/client-registry.js";
 import { closeGatewayTransportWithGrace } from "./server/connection-transport-close.js";
 import type { GatewayWsClient } from "./server/ws-types.js";
+import { sharingIdentity } from "./session-sharing-policy.js";
 import { logWs, summarizeAgentEventForWsLog } from "./ws-log.js";
 
 // Opt-in scoped clients never receive session-bearing broadcasts without an
@@ -315,7 +317,8 @@ export function createGatewayBroadcaster(params: {
     const sessionSubscriptionVerified = opts?.sessionSubscriptionVerified === true;
     const isSessionSubscriptionEvent = SESSION_SUBSCRIPTION_EVENTS.has(event);
     const sessionMessageSubscribers = params.sessionMessageSubscribers;
-    let sessionSubscriberConnIdsByKey: Array<ReadonlySet<string> | undefined> | undefined;
+    let sessionReadKeys: readonly string[] | undefined;
+    let sessionSubscriberConnIdsByKey: Map<string, ReadonlySet<string>> | undefined;
     const recipients = retained
       ? [retained.client]
       : targetConnIds
@@ -347,8 +350,30 @@ export function createGatewayBroadcaster(params: {
       const ownRunQuestion =
         questionRecipient !== undefined &&
         !operatorScopeSatisfied(QUESTIONS_SCOPE, c.connect.scopes ?? []);
-      if (!hasEventScope(c, event, explicitPluginScope, ownRunQuestion)) {
+      const scopeAccess = resolveEventScopeAccess(c, event, explicitPluginScope, ownRunQuestion);
+      if (!scopeAccess) {
         continue;
+      }
+      const recipientSessionKeys =
+        scopeAccess === "session"
+          ? (sessionReadKeys ??= sessionKeys.map((key) => key.trim()))
+          : sessionKeys;
+      if (scopeAccess === "session") {
+        const actor = resolveGatewayOperatorRoleActor(c);
+        const identity = sharingIdentity(c, actor);
+        // The broad sharing path admits identityless system clients. Narrow reads
+        // need current prepared identity and every authoritative key, even when targeted.
+        if (
+          actor?.kind !== "operator" ||
+          !identity ||
+          !c.preparedSessionProfile?.aliases.has(actor.profileId) ||
+          !c.preparedSessionProfile.aliases.has(identity.id) ||
+          !recipientSessionKeys.length ||
+          recipientSessionKeys.some((key) => !key) ||
+          !params.canReceiveSessionEvent
+        ) {
+          continue;
+        }
       }
       if (questionRecipient && !isCurrent(() => questionRecipient(c))) {
         continue;
@@ -363,22 +388,23 @@ export function createGatewayBroadcaster(params: {
         requiresSessionSubscription &&
         !(isTargeted && sessionSubscriptionVerified && !retained)
       ) {
-        if (!sessionKeys.length || !sessionMessageSubscribers) {
+        if (!recipientSessionKeys.length || !sessionMessageSubscribers) {
           continue;
         }
         // Resolve keys lazily to preserve short-circuit order, then reuse their live sets across clients.
         // This avoids repeated normalization and map lookups without snapshotting recipients.
-        sessionSubscriberConnIdsByKey ??= [];
+        sessionSubscriberConnIdsByKey ??= new Map();
         let subscribed = false;
-        let sessionKeyIndex = 0;
-        for (const sessionKey of sessionKeys) {
-          const subscriberConnIds = (sessionSubscriberConnIdsByKey[sessionKeyIndex] ??=
-            sessionMessageSubscribers.get(sessionKey));
+        for (const sessionKey of recipientSessionKeys) {
+          let subscriberConnIds = sessionSubscriberConnIdsByKey.get(sessionKey);
+          if (!subscriberConnIds) {
+            subscriberConnIds = sessionMessageSubscribers.get(sessionKey);
+            sessionSubscriberConnIdsByKey.set(sessionKey, subscriberConnIds);
+          }
           if (subscriberConnIds.has(c.connId)) {
             subscribed = true;
             break;
           }
-          sessionKeyIndex += 1;
         }
         if (!subscribed) {
           // Scoped clients opt out of cross-session fanout, including critical observer announces.
@@ -389,9 +415,9 @@ export function createGatewayBroadcaster(params: {
       if (
         // The question owner consumes prepared sharing and original-source facts together.
         !questionRecipient &&
-        sessionKeys.length > 0 &&
+        recipientSessionKeys.length > 0 &&
         params.canReceiveSessionEvent &&
-        !params.canReceiveSessionEvent(c, sessionKeys, agentId, event, payload)
+        !params.canReceiveSessionEvent(c, recipientSessionKeys, agentId, event, payload)
       ) {
         continue;
       }

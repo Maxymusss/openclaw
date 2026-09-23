@@ -19,17 +19,18 @@ import type { GatewayWsClient } from "./server/ws-types.js";
 // Pairing scope is for device-pairing handshakes only; chat transcript events
 // require operator-level session access. Pairing-scoped and node-role clients
 // must not passively receive chat-class broadcasts.
-const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
-  agent: [READ_SCOPE],
-  chat: [READ_SCOPE],
+const SESSION_READ_EVENT = { scopes: [READ_SCOPE], sessionRead: true };
+const EVENT_SCOPE_GUARDS: Record<string, string[] | typeof SESSION_READ_EVENT> = {
+  agent: SESSION_READ_EVENT,
+  chat: SESSION_READ_EVENT,
   // This keyless, redacted invalidation tells session readers to refresh their own projection.
   "chat.metadata.changed": [READ_SCOPE, "operator.sessions.read"],
   "board.changed": [READ_SCOPE],
   "board.command": [READ_SCOPE],
   "progressCard.changed": [READ_SCOPE],
   "ui.command": [READ_SCOPE],
-  "chat.send_timing": [READ_SCOPE],
-  "chat.side_result": [READ_SCOPE],
+  "chat.send_timing": SESSION_READ_EVENT,
+  "chat.side_result": SESSION_READ_EVENT,
   cron: [READ_SCOPE],
   health: [],
   "exec.approval.requested": [APPROVALS_SCOPE],
@@ -74,18 +75,18 @@ const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
   "node.hostStats": [READ_SCOPE],
   [GATEWAY_EVENT_NODE_RUNNER_INVENTORY_CHANGED]: [READ_SCOPE],
   "sessions.catalog.host": [READ_SCOPE],
-  "sessions.changed": [READ_SCOPE],
+  "sessions.changed": SESSION_READ_EVENT,
   "controlUi.sessionPullRequests.changed": [READ_SCOPE],
   "plugins.controlUi.changed": [READ_SCOPE],
   "session.approval": [APPROVALS_SCOPE],
-  "session.message": [READ_SCOPE],
-  "session.observer": [READ_SCOPE],
+  "session.message": SESSION_READ_EVENT,
+  "session.observer": SESSION_READ_EVENT,
   "session.operation": [READ_SCOPE],
   "session.sharing": [READ_SCOPE],
   "session.sharing.evidence": [READ_SCOPE],
   "session.suggestion": [READ_SCOPE],
   "session.typing": [READ_SCOPE],
-  "session.tool": [READ_SCOPE],
+  "session.tool": SESSION_READ_EVENT,
   // Operator terminal byte/exit streams. Admin-gated to match the terminal.*
   // methods; also targeted to the owning connection at broadcast time.
   "terminal.data": [ADMIN_SCOPE],
@@ -93,30 +94,41 @@ const EVENT_SCOPE_GUARDS: Record<string, string[]> = {
   "portal.changed": [READ_SCOPE],
 };
 
-export function hasEventScope(
+export function resolveEventScopeAccess(
   client: GatewayWsClient,
   event: string,
   explicitPluginScope?: GatewayPluginEventScope,
   ownRunQuestion = false,
-): boolean {
+): "broad" | "session" | undefined {
   if (client.connectionKind === "worker") {
-    return false;
+    return undefined;
   }
   const role = client.connect.role ?? "operator";
   const scopes = Array.isArray(client.connect.scopes) ? client.connect.scopes : [];
-  const required = EVENT_SCOPE_GUARDS[event];
+  const guard = EVENT_SCOPE_GUARDS[event];
+  const required = Array.isArray(guard) ? guard : guard?.scopes;
   const pluginScope =
     explicitPluginScope || (!required && event.startsWith("plugin.") ? WRITE_SCOPE : undefined);
   if (pluginScope) {
-    return role === "operator" && operatorScopeSatisfied(pluginScope, scopes);
+    return role === "operator" && operatorScopeSatisfied(pluginScope, scopes) ? "broad" : undefined;
   }
   if (!required) {
-    return false;
+    return undefined;
   }
-  return (
+  if (
     required.length === 0 ||
     (role === "operator" &&
       (required.some((scope) => operatorScopeSatisfied(scope, scopes)) ||
         (ownRunQuestion && operatorScopeSatisfied("operator.sessions.write", scopes))))
-  );
+  ) {
+    return "broad";
+  }
+  // This alternative still needs a verified identity and exact session visibility
+  // at delivery; a keyless catalog event must never acquire broad read access.
+  return role === "operator" &&
+    !Array.isArray(guard) &&
+    guard?.sessionRead &&
+    operatorScopeSatisfied("operator.sessions.read", scopes)
+    ? "session"
+    : undefined;
 }
