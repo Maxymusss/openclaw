@@ -76,6 +76,7 @@ env:
 
 jobs:
   probe:
+    if: ${{ false }}
     name: Windows probe
     runs-on: ${{ inputs.runner_label }}
     timeout-minutes: 75
@@ -977,3 +978,61 @@ jobs:
           $profile = "schtasks-int-$env:TEST_ID"
           Remove-Item -LiteralPath (Join-Path $env:USERPROFILE ".openclaw-$profile") -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath $env:TEST_ROOT -Recurse -Force -ErrorAction SilentlyContinue
+
+  f113-diagnostic:
+    name: F113 Windows shutdown cohort ${{ matrix.part }}
+    runs-on: blacksmith-16vcpu-windows-2025
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        part: [1, 2]
+    defaults:
+      run:
+        shell: bash
+    env:
+      CI: true
+      NODE_OPTIONS: --max-old-space-size=8192
+      OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD: 1
+      OPENCLAW_TEST_PROJECTS_PARALLEL: 1
+      OPENCLAW_VITEST_MAX_WORKERS: 4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          submodules: false
+      - name: Exclude workspace from Defender
+        shell: pwsh
+        run: |
+          $cmd = Get-Command Add-MpPreference -ErrorAction SilentlyContinue
+          if ($cmd) {
+            try {
+              Add-MpPreference -ExclusionPath "$env:GITHUB_WORKSPACE" -ErrorAction Stop
+              Add-MpPreference -ExclusionProcess "node.exe" -ErrorAction Stop
+            } catch { Write-Warning "Defender exclusion unavailable." }
+          }
+      - name: Setup Node
+        run: |
+          source .github/actions/setup-pnpm-store-cache/ensure-node.sh
+          openclaw_ensure_node 24.19.0
+      - uses: ./.github/actions/setup-pnpm-store-cache
+        with:
+          node-version: 24.19.0
+          cache-mode: off
+      - name: Install frozen dependencies
+        run: |
+          node --version
+          pnpm --version
+          git rev-parse HEAD
+          pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
+      - name: Run fixed diagnostic cohort
+        run: node scripts/f113-cohort.mjs
+      - name: Upload diagnostic evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: f113-${{ github.run_id }}-${{ matrix.part }}
+          path: .artifacts/f113
+          if-no-files-found: error
+          retention-days: 7
