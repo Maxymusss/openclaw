@@ -1178,7 +1178,8 @@ struct SwiftUIRenderSmokeTests {
                         await withCheckedContinuation { restoreWaiters.append((requestID, $0)) }
                     }
                 } else {
-                    if sidebarReturn || renewsDuringCreate, restoreReturned { return }
+                    // Unbound New Chat synchronizes again after this first cold restore gate.
+                    if sidebarReturn || renewsDuringCreate || isUnbound, restoreReturned { return }
                     await withCheckedContinuation { releaseRestore = $0 }
                 }
                 restoreReturned = true
