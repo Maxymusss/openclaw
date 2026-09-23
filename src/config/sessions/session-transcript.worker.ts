@@ -180,7 +180,7 @@ serveOwnedWorkerTasks(
           await import("./session-accessor.sqlite-lifecycle-read.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () => ({
+          ...(await withHistoryDatabase(request.database, request.kind, () => ({
             kind: "session-lifecycle" as const,
             value: readSessionEntryLifecycleReadOnly(
               { ...request.database, env: request.env },
