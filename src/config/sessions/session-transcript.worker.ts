@@ -1,10 +1,13 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import type {
   UsageCostWorkerInput,
   UsageCostWorkerReply,
 } from "../../infra/session-cost-usage-worker.types.js";
-import { serveWorkerTasks } from "../../infra/worker-task-server.js";
+import { withSqliteReaderOwner } from "../../infra/sqlite-reader-lifecycle.js";
+import { serveOwnedWorkerTasks } from "../../infra/worker-task-server.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import type { SessionIdentityEvidenceResult } from "./session-accessor.sqlite-entry-availability.js";
+import { readSessionColdTranscript } from "./session-cold-storage-state.js";
 import type { SessionHistoryWorkerResult } from "./session-history-types.js";
 import {
   encodeSessionTranscriptWorkerError,
@@ -31,6 +34,7 @@ const historyDatabaseScopes = new Map<
 
 async function withHistoryDatabase<T>(
   database: SessionTranscriptHistoryWorkerInput["database"],
+  operationLabel: string,
   operation: () => T | Promise<T>,
 ): Promise<{ value: T; closedHistoryDatabase?: SessionTranscriptHistoryWorkerInput["database"] }> {
   const key = JSON.stringify(database);
@@ -42,7 +46,10 @@ async function withHistoryDatabase<T>(
   }
   const { scope } = retained;
   try {
-    const value = await scope.run(database, operation);
+    const value = await withSqliteReaderOwner(
+      { operation: `sessions.${operationLabel}`, ownerKind: "worker" },
+      () => scope.run(database, operation),
+    );
     historyDatabaseScopes.delete(key);
     // Tasks without retained connections must not evict useful connections or retain empty scopes.
     if (!scope.hasRetainedConnection) {
@@ -67,7 +74,11 @@ async function withHistoryDatabase<T>(
   }
 }
 
-serveWorkerTasks(
+let closeReadOnlyCandidates:
+  | typeof import("../../state/openclaw-agent-db-readonly-scope.js").closeOpenClawAgentDatabaseReadOnlyCandidates
+  | undefined;
+
+serveOwnedWorkerTasks(
   async (
     input,
     channel,
@@ -75,6 +86,9 @@ serveWorkerTasks(
   ): Promise<
     SessionTranscriptWorkerReply<keyof SessionTranscriptWorkerValues> | UsageCostWorkerReply
   > => {
+    // Install cleanup before this worker can acquire either a cached or explicit reader.
+    closeReadOnlyCandidates ??= (await import("../../state/openclaw-agent-db-readonly-scope.js"))
+      .closeOpenClawAgentDatabaseReadOnlyCandidates;
     // SAFETY: The paired runtime constructs this request; the SQLite snapshot validates admission.
     const request = input as SessionTranscriptWorkerInput | UsageCostWorkerInput;
     if (request.kind === "sqlite-target") {
@@ -99,7 +113,7 @@ serveWorkerTasks(
           control,
           async (database, read) => {
             closed.delete(JSON.stringify(database));
-            const result = await withHistoryDatabase(database, read);
+            const result = await withHistoryDatabase(database, request.kind, read);
             if (result.closedHistoryDatabase) {
               closed.set(
                 JSON.stringify(result.closedHistoryDatabase),
@@ -115,12 +129,40 @@ serveWorkerTasks(
       }
     }
     try {
+      if (request.kind === "session-archive-pruning") {
+        const { readSessionArchivePruningInWorker } =
+          await import("./session-history-archive-pruning.worker.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, request.kind, () => ({
+            kind: "session-archive-pruning" as const,
+            result: readSessionArchivePruningInWorker(request),
+          }))),
+        };
+      }
+      if (request.kind === "cold-metadata") {
+        const { withOpenClawAgentDatabaseReadOnly } =
+          await import("../../state/openclaw-agent-db-readonly.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, request.kind, () => {
+            const result = withOpenClawAgentDatabaseReadOnly(
+              (database) => readSessionColdTranscript(database.db, request.sessionId),
+              { ...request.database, env: cloneEnvWithPlatformSemantics(request.env) },
+            );
+            return {
+              kind: "cold-metadata" as const,
+              archive: result.found ? result.value : undefined,
+            };
+          })),
+        };
+      }
       if (request.kind === "transcript-search") {
         const { searchSessionTranscriptsReadOnlySync } =
           await import("./session-transcript-search.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () => ({
+          ...(await withHistoryDatabase(request.database, request.kind, () => ({
             kind: "transcript-search" as const,
             result: searchSessionTranscriptsReadOnlySync(request.params, {
               ...request.database,
@@ -138,7 +180,7 @@ serveWorkerTasks(
           await import("./session-entry-read.worker.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () =>
+          ...(await withHistoryDatabase(request.database, request.kind, () =>
             readExactSessionEntriesWithLifecycle(request),
           )),
         };
@@ -147,9 +189,20 @@ serveWorkerTasks(
         const { readSessionRowDatabaseFacts } = await import("./session-entry-read.worker.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () =>
+          ...(await withHistoryDatabase(request.database, request.kind, () =>
             readSessionRowDatabaseFacts(request),
           )),
+        };
+      }
+      if (request.kind === "session-row-backfill") {
+        const { readSessionRowTranscriptFields } =
+          await import("../../gateway/session-row-transcript-backfill.kernel.js");
+        return {
+          ok: true,
+          ...(await withHistoryDatabase(request.database, request.kind, () => ({
+            kind: "session-row-backfill" as const,
+            fields: readSessionRowTranscriptFields(request.params),
+          }))),
         };
       }
       if (request.kind === "session-target-inventory") {
@@ -166,7 +219,7 @@ serveWorkerTasks(
           await import("./session-canonical-key.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () => {
+          ...(await withHistoryDatabase(request.database, request.kind, () => {
             const result = withOpenClawAgentDatabaseReadOnly(
               (database) =>
                 readWithCanonicalSessionReaderContinuation(database, request.continuation, () =>
@@ -186,10 +239,11 @@ serveWorkerTasks(
         };
       }
       if (request.kind === "session-entry-list") {
-        const { listSessionEntriesReadOnly } = await import("./session-accessor.sqlite-entry.js");
+        const { listSessionEntriesReadOnly } =
+          await import("./session-accessor.sqlite-entry-list.read.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () => ({
+          ...(await withHistoryDatabase(request.database, request.kind, () => ({
             kind: "session-entry-list" as const,
             entries: listSessionEntriesReadOnly({
               ...request.scope,
@@ -203,7 +257,7 @@ serveWorkerTasks(
           await import("../../infra/session-cost-usage-cache-read.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () =>
+          ...(await withHistoryDatabase(request.database, request.kind, () =>
             readSessionCostUsageCache({ ...request.database, env: request.env }, request.request),
           )),
         };
@@ -222,7 +276,7 @@ serveWorkerTasks(
           await import("./session-canonical-key.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () => {
+          ...(await withHistoryDatabase(request.database, request.kind, () => {
             const result = withOpenClawAgentDatabaseReadOnly(
               (database) =>
                 readWithCanonicalSessionReaderContinuation(database, request.continuation, () =>
@@ -245,7 +299,7 @@ serveWorkerTasks(
         const { listSessionMembersInDatabase } = await import("./session-sharing-store.kernel.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () => {
+          ...(await withHistoryDatabase(request.database, request.kind, () => {
             const result = withOpenClawAgentDatabaseReadOnly(
               (database) => listSessionMembersInDatabase(database, request.sessionKey),
               { ...request.database, env: request.env },
@@ -261,7 +315,7 @@ serveWorkerTasks(
           await import("../../session-cards/progress-card-store.js");
         return {
           ok: true,
-          ...(await withHistoryDatabase(request.database, () => {
+          ...(await withHistoryDatabase(request.database, request.kind, () => {
             const result = withOpenClawAgentDatabaseReadOnly(
               (database) => readSessionProgressCard(database.db, request.sessionKey),
               { ...request.database, env: request.env },
@@ -280,6 +334,7 @@ serveWorkerTasks(
           ok: true,
           ...(await withHistoryDatabase(
             request.database,
+            request.kind,
             () =>
               loadSessionEntryReadOnlyInScope({ ...request.scope, projection: "list" }) !==
               undefined,
@@ -294,7 +349,7 @@ serveWorkerTasks(
               await import("../../gateway/session-transcript-title-reader.js");
             return {
               ok: true,
-              ...(await withHistoryDatabase(request.database, () => ({
+              ...(await withHistoryDatabase(request.database, request.kind, () => ({
                 kind: "session-title-fields" as const,
                 fields: readSessionTitleFieldsFromTranscript(request.scope, {
                   includeInterSession: request.includeInterSession,
@@ -308,7 +363,7 @@ serveWorkerTasks(
               await import("../../gateway/session-transcript-preview-reader.js");
             return {
               ok: true,
-              ...(await withHistoryDatabase(request.database, () => ({
+              ...(await withHistoryDatabase(request.database, request.kind, () => ({
                 kind: "session-preview" as const,
                 items: readSessionPreviewItemsReadOnly(request),
               }))),
@@ -332,7 +387,7 @@ serveWorkerTasks(
                 await import("./session-accessor.sqlite-current-turn.js");
               return {
                 ok: true,
-                ...(await withHistoryDatabase(request.database, () =>
+                ...(await withHistoryDatabase(request.database, request.kind, () =>
                   readSessionTranscriptCurrentTurnEntry(request.target, {
                     entryId: request.entryId,
                     version: request.version,
@@ -351,6 +406,7 @@ serveWorkerTasks(
               ok: true,
               ...(await withHistoryDatabase<SessionTranscriptWorkerValues["transcript-hydration"]>(
                 request.database,
+                request.kind,
                 () => {
                   if (request.limits) {
                     return {
@@ -387,6 +443,7 @@ serveWorkerTasks(
               ok: true,
               ...(await withHistoryDatabase<SessionHistoryWorkerResult>(
                 request.database,
+                request.kind,
                 async () => {
                   const { createReadonlySessionHistoryReader } =
                     await import("../../gateway/session-history-readonly-reader.js");
@@ -407,6 +464,12 @@ serveWorkerTasks(
                         request.request.params.messageId,
                       ),
                     };
+                  }
+                  if (request.request.kind === "recent") {
+                    const { target, ...limits } = request.request.params;
+                    const { messages } =
+                      await options.readers.readRecentSessionMessagesWithStatsAsync(target, limits);
+                    return { kind: "recent", messages };
                   }
                   if (request.request.kind === "delta") {
                     const { prepareSessionHistoryDelta } =
@@ -485,5 +548,32 @@ serveWorkerTasks(
       }
       throw error;
     }
+  },
+  {
+    closeResource: (key) => {
+      const parsed: unknown = key === undefined ? undefined : JSON.parse(key);
+      if (
+        !Array.isArray(parsed) ||
+        !parsed.every(
+          (candidate) =>
+            isRecord(candidate) &&
+            typeof candidate.path === "string" &&
+            (candidate.scope === undefined || candidate.scope === "sibling-family"),
+        )
+      ) {
+        throw new Error("Session reader cleanup requires captured physical paths");
+      }
+      const candidates = parsed.map((candidate: { path: string; scope?: "sibling-family" }) =>
+        candidate.scope
+          ? { path: candidate.path, scope: candidate.scope }
+          : { path: candidate.path },
+      );
+      closeReadOnlyCandidates?.(candidates);
+      for (const [identity, retained] of historyDatabaseScopes) {
+        if (!retained.scope.hasRetainedConnection) {
+          historyDatabaseScopes.delete(identity);
+        }
+      }
+    },
   },
 );

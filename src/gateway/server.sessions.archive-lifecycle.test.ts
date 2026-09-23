@@ -1,7 +1,7 @@
 // Archive lifecycle tests protect fence-before-cancel, terminal drains, and sentinels.
 import { afterEach, expect, test, vi } from "vitest";
 import { createFixtureLifetime } from "../../test/helpers/fixture-lifetime.js";
-import { SessionManager } from "../agents/sessions/session-manager.js";
+import * as sessionWrites from "../agents/sessions/session-manager-write-admission.js";
 import { loadSessionEntry, upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import {
@@ -11,6 +11,7 @@ import {
 } from "../sessions/session-lifecycle-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import {
   activeRunContext,
   identifiedClient,
@@ -50,6 +51,7 @@ const archiveFixture = createFixtureLifetime();
 afterEach(async () => {
   // Vitest cancellation rejects its wrapper before the retained handler body finishes.
   await archiveFixture.cleanup();
+  await disposeSessionReadContexts();
   closeOpenClawStateDatabaseForTest();
 });
 
@@ -529,7 +531,6 @@ test("sessions.patch fails closed when active worker inference has no archive dr
         workerEnvironmentService: {
           cancelInferenceForSession: vi.fn(() => []),
           hasInferenceForSession: vi.fn(() => true),
-          resolveInferenceSessionForRunId: vi.fn(),
         },
       },
     },
@@ -546,7 +547,7 @@ test("sessions.patch releases the archive drain without appending a transcript m
   const sessionId = "session-archive-drain-no-transcript";
   await writeSessionStore({ entries: { [sessionKey]: sessionStoreEntry(sessionId) } });
   const release = vi.fn();
-  const append = vi.spyOn(SessionManager, "appendMessageToTranscript");
+  const append = vi.spyOn(sessionWrites, "appendSessionTranscriptNote");
   try {
     const archived = await directSessionReq(
       "sessions.patch",

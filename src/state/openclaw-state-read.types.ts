@@ -1,5 +1,6 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { Selectable } from "kysely";
+import type { AcpSessionReadInput, AcpSessionRow } from "../acp/runtime/session-meta-keys.js";
 import type { McpOAuthReadOnlyOperations } from "../agents/mcp-oauth-store.kernel.js";
 import type {
   SandboxBrowserRegistryEntry,
@@ -74,6 +75,7 @@ import type { OpenClawAgentDatabaseRegistryReadResult } from "./openclaw-agent-d
 import type { ConfigMachineState } from "./openclaw-state-db.generated.js";
 import type { OpenClawStateWorkerContext } from "./openclaw-state-worker-context.types.js";
 import type { OpenClawStateWorkerErrorPayload } from "./openclaw-state-worker-error.js";
+import type { SessionRepositoryWorkspaceRecord } from "./session-repository-workspaces.types.js";
 import type {
   UserChannelIdentity,
   UserChannelIdentityLink,
@@ -99,6 +101,7 @@ export type OpenClawStateReadAuthority = {
 };
 
 export type OpenClawStateReadCommand =
+  | { type: "acpSessions.metadata"; entries: readonly AcpSessionReadInput[] }
   | {
       [Kind in keyof McpOAuthReadOnlyOperations]: {
         type: Kind;
@@ -163,6 +166,10 @@ export type OpenClawStateReadCommand =
   | { type: "workerPlacements.changeSnapshot" }
   | { type: "fleet.get"; tenantId: string }
   | { type: "nodeHost.config" }
+  | {
+      type: "sessionRepositoryWorkspaces.find";
+      owners: readonly { agentId: string; sessionKey: string }[];
+    }
   | { type: "workspace.snapshot"; workspaceDir: string }
   | { type: "sandboxRegistry.list" }
   | { type: "sandboxRegistry.get"; containerName: string }
@@ -183,6 +190,12 @@ export type OpenClawStateReadRequest = {
   command: OpenClawStateReadCommand | { type: "admit" };
 };
 export type OpenClawStateReadReply = (
+  | {
+      ok: true;
+      type: "acpSessions.metadata";
+      sourceAdmitted: true;
+      rows: Array<AcpSessionRow | null>;
+    }
   | {
       [Kind in keyof McpOAuthReadOnlyOperations]: {
         ok: true;
@@ -400,6 +413,12 @@ export type OpenClawStateReadReply = (
       type: "nodeHost.config";
       sourceAdmitted: true;
       row: Pick<Selectable<ConfigMachineState>, "value_json" | "updated_at_ms"> | undefined;
+    }
+  | {
+      ok: true;
+      type: "sessionRepositoryWorkspaces.find";
+      sourceAdmitted: true;
+      workspaces: SessionRepositoryWorkspaceRecord[];
     }
   | { ok: true; type: "workspace.snapshot"; sourceAdmitted: true; snapshot: WorkspaceStateSnapshot }
   | {

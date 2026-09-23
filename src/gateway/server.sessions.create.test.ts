@@ -60,7 +60,7 @@ import {
 import { listSessionStateEventsSince } from "../sessions/session-state-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
-  closeOpenClawAgentDatabasesForTest,
+  closeOpenClawAgentDatabaseByPathAsync,
   listOpenIncognitoAgentDatabases,
   openOpenClawAgentDatabase,
   resolveIncognitoOpenClawAgentSqlitePath,
@@ -82,14 +82,17 @@ import {
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { createMentionInbox } from "./mention-inbox.js";
+import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import { sessionLog } from "./server-methods/sessions-shared.js";
 import { identifiedClient, soloClient } from "./server-methods/sessions-sharing.test-support.js";
 import type { GatewayClient } from "./server-methods/types.js";
 import {
   copyGitWorkspace,
+  createGitWorkspace,
   settleWorkspaceRuns,
   waitForCreatedSessionRun,
 } from "./server.sessions.create.projects.test-support.js";
+import { expectNonAdminWorktreeSetupIsSkipped } from "./server.sessions.create.worktree-scope.test-support.js";
 import { listSessionGroups } from "./session-groups.js";
 import {
   resolveSessionMutationAuthorization,
@@ -194,6 +197,12 @@ const {
 const execFileAsync = promisify(execFile);
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+
+async function closeIncognitoSessionDatabases() {
+  for (const { agentId, storePath } of listOpenIncognitoAgentDatabases()) {
+    await closeOpenClawAgentDatabaseByPathAsync(storePath, agentId);
+  }
+}
 
 async function withFixedOwnerSessionStore(
   scope: "global" | "per-sender",
@@ -1522,21 +1531,10 @@ test("sessions.create keeps incognito rows process-local through list, spawn, re
       },
     });
     const durableCollisionKey = "agent:main:dashboard:incognito-durable-collision";
-    const durableCollisionUpdatedAt = Date.now();
-    persistentDatabase.db
-      .prepare(
-        "INSERT INTO session_nodes (session_key, current_session_id, entry_json, updated_at) VALUES (?, 'durable-collision', ?, ?)",
-      )
-      .run(
-        durableCollisionKey,
-        JSON.stringify({ sessionId: "durable-collision", updatedAt: durableCollisionUpdatedAt }),
-        durableCollisionUpdatedAt,
-      );
-    persistentDatabase.db
-      .prepare(
-        "INSERT INTO session_windows (session_id, session_key, session_scope, created_at, updated_at) VALUES ('durable-collision', ?, 'conversation', ?, ?)",
-      )
-      .run(durableCollisionKey, durableCollisionUpdatedAt, durableCollisionUpdatedAt);
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey: durableCollisionKey, storePath },
+      sessionStoreEntry("durable-collision"),
+    );
     const parse = vi.spyOn(JSON, "parse");
     try {
       const rejectedExplicitDashboard = await directSessionReq("sessions.create", {
@@ -1556,7 +1554,7 @@ test("sessions.create keeps incognito rows process-local through list, spawn, re
       parse.mockRestore();
     }
   } finally {
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
   }
 });
 
@@ -1581,7 +1579,7 @@ test("incognito webchat rejects a vanished non-default-agent session before disp
     const sessionKey = requireNonEmptyString(created.payload?.key, "incognito webchat key");
     const sessionId = requireNonEmptyString(created.payload?.sessionId, "incognito webchat id");
 
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
     dispatchInboundMessageMock.mockClear();
     const stale = await rpcReq(ws, "chat.send", {
       sessionKey,
@@ -1608,7 +1606,7 @@ test("incognito webchat rejects a vanished non-default-agent session before disp
     ).toBeUndefined();
   } finally {
     ws.close();
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
   }
 });
 
@@ -1699,7 +1697,7 @@ test("createGatewaySession rechecks admin scope after incognito inheritance reso
       createGatewaySession({ ...base, requestingOperatorScopes: ["operator.admin"] }),
     ).resolves.toMatchObject({ ok: true, entry: { incognito: true } });
   } finally {
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
   }
 });
 
@@ -1735,7 +1733,6 @@ test("createGatewaySession forwards its commit guard into main-session reset", a
     );
   } finally {
     testState.sessionConfig = undefined;
-    closeOpenClawAgentDatabasesForTest();
   }
 });
 
@@ -1972,7 +1969,7 @@ test("incognito operator RPCs treat identityless connections as owner-equivalent
     admin.ws.close();
     reader.ws.close();
     writer.ws.close();
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
   }
 });
 
@@ -1981,26 +1978,6 @@ function waitForFast<T>(
   options: { timeout?: number; interval?: number } = {},
 ) {
   return vi.waitFor(callback, { interval: 1, ...options });
-}
-
-async function createGitWorkspace(root: string): Promise<string> {
-  const workspace = path.join(root, "workspace");
-  await fs.mkdir(workspace, { recursive: true });
-  await execFileAsync("git", ["-C", workspace, "init", "-b", "main"]);
-  await fs.writeFile(path.join(workspace, "README.md"), "base\n");
-  await execFileAsync("git", ["-C", workspace, "add", "README.md"]);
-  await execFileAsync("git", [
-    "-c",
-    "user.name=OpenClaw Test",
-    "-c",
-    "user.email=openclaw-test@example.invalid",
-    "-C",
-    workspace,
-    "commit",
-    "-m",
-    "initial",
-  ]);
-  return await fs.realpath(workspace);
 }
 
 async function removeSessionWorktree(key: string | undefined) {
@@ -2466,7 +2443,7 @@ test("sessions.create rolls back failed provisioning before a same-key creator p
         allowSnapshotLoss: true,
       });
     }
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     testState.sessionConfig = undefined;
     await openClawState.cleanup();
@@ -2598,7 +2575,7 @@ test.each([
         });
       }
       diskSpace.mockRestore();
-      closeOpenClawStateDatabaseForTest();
+      await disposeSessionReadContexts();
       testState.agentConfig = undefined;
       testState.sessionConfig = undefined;
       await openClawState.cleanup();
@@ -2623,7 +2600,7 @@ test("sessions.create provisions and reuses a session worktree for later runs", 
       expect(isSessionLifecycleMutationActive(storePath, [params.ownerId])).toBe(true);
       return await originalCreate(params);
     });
-  let worktreeId: string | undefined;
+  let sessionKey: string | undefined;
   try {
     const created = await directSessionReq<{
       key: string;
@@ -2652,7 +2629,7 @@ test("sessions.create provisions and reuses a session worktree for later runs", 
     expect(created.payload?.entry.permissionMode).toBeUndefined();
     expect(loadSessionEntry({ sessionKey: key, storePath })?.permissionMode).toBeUndefined();
     expect(created.payload?.entry.sessionRoot).toBe(worktree?.path);
-    worktreeId = worktree?.id;
+    sessionKey = key;
     expect(findLiveRegistryWorktreeByOwner(process.env, "session", key)).toMatchObject({
       id: worktree?.id,
       path: worktree?.path,
@@ -2707,15 +2684,10 @@ test("sessions.create provisions and reuses a session worktree for later runs", 
     });
     ws.close();
   } finally {
+    await disposeSessionReadContexts();
     await releaseGatewaySessionStoreFixture(dir);
     createSpy.mockRestore();
-    if (worktreeId) {
-      await managedWorktrees.remove({
-        id: worktreeId,
-        reason: "test-cleanup",
-        allowSnapshotLoss: true,
-      });
-    }
+    await removeSessionWorktree(sessionKey);
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -2866,7 +2838,7 @@ test("sessions.create runs an existing managed worktree cwd for initial and foll
       reason: "test-cleanup",
       allowSnapshotLoss: true,
     });
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentsConfig = undefined;
     await openClawState.cleanup();
   }
@@ -2918,7 +2890,7 @@ test("sessions.create preserves pending worktree intent when initial-turn admiss
     });
     expect(findLiveRegistryWorktreeByOwner(process.env, "session", key)).toBeUndefined();
   } finally {
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -3209,7 +3181,7 @@ test("sessions.create does not start title generation for a model denied by poli
     expect(findLiveRegistryWorktreeByOwner(process.env, "session", key)).toBeUndefined();
     expect(loadSessionEntry({ agentId: "main", sessionKey: key, storePath })).toBeUndefined();
   } finally {
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -3246,7 +3218,7 @@ test("sessions.create keeps the crustacean fallback when no title source exists"
         allowSnapshotLoss: true,
       });
     }
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -3333,7 +3305,7 @@ test.each(["packages/app", "..notes"])(
       expect(rejected.ok).toBe(false);
     } finally {
       createSpy.mockRestore();
-      closeOpenClawStateDatabaseForTest();
+      await disposeSessionReadContexts();
       testState.agentConfig = undefined;
       await openClawState.cleanup();
     }
@@ -3402,7 +3374,7 @@ test("sessions.create maps an admin-selected worktree cwd and rejects repository
   } finally {
     createSpy.mockRestore();
     findSpy.mockRestore();
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -3953,46 +3925,10 @@ test.each(["direct path", "symlink escape"])(
 );
 
 test("sessions.create skips the worktree setup script for non-admin callers", async () => {
-  const openClawState = await createOpenClawTestState({
-    layout: "state-only",
-    prefix: "openclaw-worktree-setup-scope-",
+  await expectNonAdminWorktreeSetupIsSkipped({
+    workspaceTemplate: gitWorkspaceTemplate,
+    prepareSessionStore: createSessionStoreDir,
   });
-  const root = openClawState.root;
-  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, root);
-  await fs.mkdir(path.join(workspace, ".openclaw"), { recursive: true });
-  const setupScript = path.join(workspace, ".openclaw", "worktree-setup.sh");
-  await fs.writeFile(setupScript, "#!/bin/sh\ntouch setup-marker.txt\n");
-  await fs.chmod(setupScript, 0o755);
-  closeOpenClawStateDatabaseForTest();
-  testState.agentConfig = { workspace };
-  await createSessionStoreDir();
-  let worktreeId: string | undefined;
-  try {
-    const created = await directSessionReq<{
-      key: string;
-      worktree: { id: string; path: string; branch: string };
-    }>(
-      "sessions.create",
-      { agentId: "main", worktree: true },
-      { client: { connect: { scopes: ["operator.write"] } } as never },
-    );
-    expect(created.ok).toBe(true);
-    const worktree = requireNonEmptyString(created.payload?.worktree.path, "worktree path");
-    worktreeId = created.payload?.worktree.id;
-    // Write-scoped callers get provisioning but never repo-script execution.
-    await expect(fs.stat(path.join(worktree, "setup-marker.txt"))).rejects.toThrow();
-  } finally {
-    if (worktreeId) {
-      await managedWorktrees.remove({
-        id: worktreeId,
-        reason: "test-cleanup",
-        allowSnapshotLoss: true,
-      });
-    }
-    closeOpenClawStateDatabaseForTest();
-    testState.agentConfig = undefined;
-    await openClawState.cleanup();
-  }
 });
 
 test.each([
@@ -4099,7 +4035,7 @@ test.each([
           allowSnapshotLoss: true,
         });
       }
-      closeOpenClawStateDatabaseForTest();
+      await disposeSessionReadContexts();
       testState.agentConfig = undefined;
       testState.sessionConfig = undefined;
       await openClawState.cleanup();
@@ -4247,7 +4183,7 @@ test("sessions.create reset-in-place detaches the prior worktree permission boun
         allowSnapshotLoss: true,
       });
     }
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     testState.sessionConfig = undefined;
     await openClawState.cleanup();
@@ -4962,7 +4898,7 @@ test("sessions.create removes a provisioned worktree when authority closes befor
     ).toEqual([]);
   } finally {
     createSpy.mockRestore();
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
