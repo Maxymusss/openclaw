@@ -1047,6 +1047,93 @@ describe("FRV same-parent recovery", () => {
     expect(parentReruns).toBe(1);
   });
 
+  it.each([
+    ["settles", "normalCi", "success"],
+    ["persists", "normalCi", "success"],
+    ["attempt changes", "normalCi", "success"],
+    ["attempt changes after jobs", "normalCi", "success"],
+    ["settles", "releaseChecks", "failure"],
+  ])(
+    "bounds duplicate job materialization when it %s for %s with %s",
+    async (outcome, key, conclusion) => {
+      const selected = child(key, "101");
+      let latestReads = 0;
+      const client = {
+        getRun: async () =>
+          runFor(
+            selected,
+            (outcome === "attempt changes" && latestReads > 0) ||
+              (outcome === "attempt changes after jobs" && latestReads > 1)
+              ? 3
+              : 2,
+            conclusion,
+          ),
+        getAttemptJobs: async (_runId: string, attempt: number) => {
+          const jobs = [job("test", attempt === 1 ? "failure" : conclusion)];
+          if (attempt === 2 && (++latestReads === 1 || outcome === "persists")) {
+            jobs.push(job("test"));
+          }
+          return jobs;
+        },
+        repository: REPOSITORY,
+      };
+      vi.useFakeTimers();
+      vi.stubEnv("OPENCLAW_FRV_RECONCILE_TIMEOUT_MS", "100");
+      vi.stubEnv("OPENCLAW_FRV_POLL_MS", "50");
+      try {
+        const inspection = inspectContinuation(plan([selected]), client);
+        const result =
+          outcome === "settles"
+            ? expect(inspection).resolves.toMatchObject({
+                children: [
+                  {
+                    effectiveRunAttempt: 2,
+                    status: conclusion === "success" ? "passed" : "failed",
+                  },
+                ],
+              })
+            : expect(inspection).rejects.toThrow(
+                outcome === "persists"
+                  ? "duplicate job identity"
+                  : "changed during attempt materialization",
+              );
+        await Promise.all([result, vi.advanceTimersByTimeAsync(60_000)]);
+      } finally {
+        vi.useRealTimers();
+        vi.unstubAllEnvs();
+      }
+      expect(latestReads).toBe(outcome === "attempt changes" ? 1 : 2);
+    },
+  );
+
+  it("caps continuation materialization reads at the operation deadline", async () => {
+    const scenario = rerunScenario({ childSource: [2, "failure"] });
+    const readTimes: number[] = [];
+    const client = {
+      ...scenario.client,
+      getRun: async (runId: string) => {
+        readTimes.push(Date.now());
+        return scenario.client.getRun(runId);
+      },
+      getAttemptJobs: async (_runId: string, attempt: number) =>
+        attempt === 2 ? [job("test", "failure"), job("test", "failure")] : [job("test")],
+    };
+    vi.useFakeTimers();
+    vi.stubEnv("OPENCLAW_FRV_RECONCILE_TIMEOUT_MS", "10");
+    try {
+      const operationDeadline = Date.now() + 5;
+      const result = expect(
+        continueFailed(plan([scenario.selected]), "77", client, { operationDeadline }),
+      ).rejects.toThrow("duplicate job identity");
+      await Promise.all([result, vi.advanceTimersByTimeAsync(20)]);
+      expect(Math.max(...readTimes)).toBeLessThan(operationDeadline);
+      expect(scenario.counters.posts).toEqual({ child: 0, parent: 0 });
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllEnvs();
+    }
+  });
+
   it("does not rerun a parent that already seals the recovered child attempt", async () => {
     const selected = child("normalCi", "101");
     const childRuns = new Map([["101", { attempt: 1, conclusion: "failure" as string | null }]]);
@@ -1471,6 +1558,22 @@ describe("FRV protected gh evidence reads", () => {
     expect(result.calls).toHaveLength(1);
   });
 
+  it.each(["getRun", "getAttemptJobs"])(
+    "bounds the protected %s transport retries by the read deadline",
+    (method) => {
+      const args =
+        method === "getRun"
+          ? ["101", { operationDeadline: 15_000 }]
+          : ["101", 2, { operationDeadline: 15_000 }];
+      const endpoint =
+        method === "getRun" ? "actions/runs/101" : "actions/runs/101/attempts/2/jobs?per_page=100";
+      const result = runProtectedFrv(method, args, endpoint, "transient-deadline");
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("FRV operation timed out");
+      expect(result.calls).toHaveLength(1);
+    },
+  );
+
   it("falls back once when gh does not support the escape-sequence flag", () => {
     const result = runProtectedFrv("getJobLog", [1], "actions/jobs/1/logs", "legacy-flag");
     expect(result.status, result.stderr).toBe(0);
@@ -1495,9 +1598,9 @@ describe("FRV protected gh evidence reads", () => {
 
 function runProtectedFrv(
   method: string,
-  args: Array<string | number>,
+  args: Array<string | number | Record<string, unknown>>,
   endpoint: string,
-  failure: "none" | "legacy-flag" | "protected" | "unrelated" = "none",
+  failure: "none" | "legacy-flag" | "protected" | "unrelated" | "transient-deadline" = "none",
 ) {
   const root = mkdtempSync(join(tmpdir(), "frv-protected-"));
   const gh = join(root, "gh");
@@ -1510,6 +1613,7 @@ fs.appendFileSync("calls.jsonl", JSON.stringify(args) + "\\n");
 const fail = (message, code) => { console.error(message); process.exit(code); };
 const failure = ${JSON.stringify(failure)};
 if (failure === "protected") fail("protected refusal", 19);
+if (failure === "transient-deadline") fail("HTTP 502: transient fixture failure", 1);
 if (args[0] !== "api" || !args.includes(${JSON.stringify(`repos/${REPOSITORY}/${endpoint}`)})) fail("unexpected request", 17);
 if (!args.some((arg, i) => ["-H", "--header"].includes(arg) && args[i+1] === "Cache-Control: max-age=0")) fail("missing live header", 18);
 if (${endpoint.endsWith("/logs")} && failure === "legacy-flag" && args.includes("--allow-escape-sequences")) fail("unknown flag: --allow-escape-sequences", 1);
@@ -1531,9 +1635,18 @@ if (${endpoint.includes("/jobs?")}) {
         "-e",
         `
       import {createClient} from ${JSON.stringify(moduleUrl)};
+      import {existsSync} from "node:fs";
+      if (${JSON.stringify(failure)} === "transient-deadline") {
+        Date.now = () => existsSync("calls.jsonl") ? 20_000 : 10_000;
+        const nativeSetTimeout = globalThis.setTimeout;
+        globalThis.setTimeout = (...args) => {
+          if (Date.now() >= 15_000) throw new Error("transport scheduled work after its deadline");
+          return nativeSetTimeout(...args);
+        };
+      }
       try {
         console.log(JSON.stringify(await createClient(${JSON.stringify(REPOSITORY)})[${JSON.stringify(method)}](...${JSON.stringify(args)})));
-      } catch (error) { console.error(error.message); process.exitCode = error.code; }
+      } catch (error) { console.error(error.message); process.exitCode = typeof error.code === "number" ? error.code : 1; }
     `,
       ],
       {
