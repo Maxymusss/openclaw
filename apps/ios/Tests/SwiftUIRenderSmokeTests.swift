@@ -1681,12 +1681,13 @@ struct SwiftUIRenderSmokeTests {
                             id: isUnbound ? nil : presentationID)) != nil
                     let createdKey = try #require(
                         createdKeys.first,
-                        "new-chat prepared=\(hasPreparedRequest) " +
-                            "syncStarted=\(presentation.startedSynchronizations.count) " +
-                            "syncCompleted=\(presentation.completedSynchronizations.count) " +
-                            "createStarted=\(presentation.startedNewChats.count) " +
-                            "createCompleted=\(presentation.completedNewChats.count) " +
-                            "createSucceeded=\(presentation.completedNewChats.values.filter(\.self).count)")
+                        Comment(
+                            rawValue: "new-chat prepared=\(hasPreparedRequest) " +
+                                "syncStarted=\(presentation.startedSynchronizations.count) " +
+                                "syncCompleted=\(presentation.completedSynchronizations.count) " +
+                                "createStarted=\(presentation.startedNewChats.count) " +
+                                "createCompleted=\(presentation.completedNewChats.count) " +
+                                "createSucceeded=\(presentation.completedNewChats.values.filter(\.self).count)"))
                     #expect(createdProfiles == [expectedProfile])
                     if let prepared {
                         // The original owner's defer settles even when retirement suppresses
