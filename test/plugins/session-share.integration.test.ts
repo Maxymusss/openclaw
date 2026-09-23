@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { validateJsonSchemaValue } from "openclaw/plugin-sdk/json-schema-runtime";
-import type { OpenClawPluginNodeHostCommand } from "openclaw/plugin-sdk/plugin-entry";
+import type {
+  OpenClawPluginNodeHostCommand,
+  OpenClawPluginService,
+} from "openclaw/plugin-sdk/plugin-entry";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
@@ -37,23 +40,26 @@ afterEach(() => vi.restoreAllMocks());
 function registerSessionShare(runtime: PluginRuntime, config: OpenClawConfig = {}) {
   const nodeCommands: OpenClawPluginNodeHostCommand[] = [];
   const catalogs: SessionCatalogProvider[] = [];
-  sessionSharePlugin.register(
-    createTestPluginApi({
-      runtime,
-      config,
-      registerNodeHostCommand: (command) => {
-        nodeCommands.push(command);
-      },
-      registerSessionCatalog: (catalog) => {
-        catalogs.push(catalog);
-      },
-    }),
-  );
+  let service: OpenClawPluginService | undefined;
+  const api = createTestPluginApi({
+    runtime,
+    config,
+    registerNodeHostCommand: (command) => {
+      nodeCommands.push(command);
+    },
+    registerSessionCatalog: (catalog) => {
+      catalogs.push(catalog);
+    },
+    registerService: (registered) => {
+      service = registered;
+    },
+  });
+  sessionSharePlugin.register(api);
   const catalog = catalogs.find((entry) => entry.id === "openclaw");
   if (!catalog) {
     throw new Error("Session Share did not register its catalog");
   }
-  return { commands: nodeCommands, catalog };
+  return { commands: nodeCommands, catalog, service, logger: api.logger };
 }
 
 type SessionPage = { sessions: SessionCatalogSession[]; nextCursor?: string };
@@ -100,7 +106,7 @@ const remoteIdentity = {
   id: "4242",
 };
 
-function catalogFixture() {
+async function catalogFixture(stateDir: string) {
   let config: OpenClawConfig = {};
   const list = vi.fn<PluginRuntime["nodes"]["list"]>().mockResolvedValue({
     nodes: [{ nodeId: "alpha", displayName: " Alpha ", connected: true, commands }],
@@ -121,7 +127,12 @@ function catalogFixture() {
     config: { current: () => config },
     nodes: { list, invoke },
   });
-  const catalog = registerSessionShare(runtime).catalog;
+  const { catalog, service, logger } = registerSessionShare(runtime);
+  if (!service) {
+    throw new Error("Session Share did not register its service");
+  }
+  const serviceContext = { config, logger, stateDir, invokeNode: invoke };
+  await service.start(serviceContext);
   return {
     catalog,
     list,
@@ -129,14 +140,15 @@ function catalogFixture() {
     setConfig: (next: OpenClawConfig) => {
       config = next;
     },
+    [Symbol.asyncDispose]: async () => service.stop?.(serviceContext),
   };
 }
 
 describe("session-share node commands", () => {
   it("derives titles only for the requested page while preserving transcript-title search", async () => {
-    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const source = commandFixture();
-      const receiver = catalogFixture();
+      await using receiver = await catalogFixture(state.stateDir);
       receiver.invoke.mockImplementation(async ({ command, params }) => {
         const handler = source.commands.find((candidate) => candidate.command === command)!;
         return { payloadJSON: await handler.handle(JSON.stringify(params)) };
@@ -736,12 +748,12 @@ describe("session-share receiver identity integration", () => {
   it.each(["alpha", "beta"])(
     "keeps %s claims remote by default and applies only explicit owner and numeric GitHub links",
     async (nodeId) => {
-      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const profile = syncGitHubIdentity({
           identity: { accountId: 4242, login: "catalog-person", name: "Catalog Person" },
           authenticationAlias: { kind: "github-login", login: "catalog-person" },
         });
-        const fixture = catalogFixture();
+        await using fixture = await catalogFixture(state.stateDir);
         fixture.list.mockResolvedValue({ nodes: [{ nodeId, connected: true, commands }] });
         const hostId = `node:${nodeId}`;
         const namespacedIdentity = { ...remoteIdentity, domain: hostId };
