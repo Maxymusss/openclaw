@@ -1127,7 +1127,56 @@ describe("mock OpenAI response markers", () => {
       const description = await request();
       expect(description).toMatchObject({ type: "function_call", name: "tool_describe" });
       expect(JSON.parse(description.arguments)).toEqual({ id: target.id });
-      appendResult(description, { ...target, parameters: { type: "object", properties: {} } });
+      appendResult(description, {
+        ...target,
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      });
+      const recap = await fetch(`${baseUrl}/v1/responses`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          model: "gpt-5.6-luna",
+          stream: true,
+          store: false,
+          max_output_tokens: 240,
+          input: [
+            {
+              type: "message",
+              role: "system",
+              content: [
+                {
+                  type: "input_text",
+                  text: "Write an Activity recap for someone scanning their tasks: what was done here, and where it stands now.",
+                },
+              ],
+            },
+            {
+              type: "message",
+              role: "user",
+              content: [
+                {
+                  type: "input_text",
+                  text: JSON.stringify({
+                    previousRecap: "",
+                    messages: ["user: agent plugin bundle qa check"],
+                    omittedContent: false,
+                  }),
+                },
+              ],
+            },
+          ],
+        }),
+      });
+      expect(recap.status).toBe(200);
+      const recapEvents = (await recap.text())
+        .split("\n\n")
+        .filter((line) => line.startsWith("data: ") && line !== "data: [DONE]")
+        .map((line) => JSON.parse(line.slice(6)));
+      expect(
+        recapEvents.find((event) => event.type === "response.completed").response.output,
+      ).toMatchObject([
+        { type: "message", content: [{ type: "output_text", text: "OPENCLAW_E2E_OK" }] },
+      ]);
       const call = await request();
       expect(call).toMatchObject({ type: "function_call", name: "tool_call" });
       expect(JSON.parse(call.arguments)).toEqual({ id: target.id, args: {} });

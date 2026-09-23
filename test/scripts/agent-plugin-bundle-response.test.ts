@@ -27,7 +27,10 @@ function rounds(): Round[] {
     {
       name: "tool_describe",
       args: { id: target.id },
-      value: { ...target, parameters: { type: "object", properties: {} } },
+      value: {
+        ...target,
+        parameters: { type: "object", properties: {}, additionalProperties: false },
+      },
     },
     { name: "tool_call", args: { id: target.id, args: {} }, value: targetResult() },
   ];
@@ -76,6 +79,39 @@ describe("Agent Plugins bundle mock response", () => {
     });
   });
 
+  it("accepts the advertised schema independently of key order", () => {
+    const completed = rounds().slice(0, 2);
+    completed[1]!.value = {
+      ...target,
+      parameters: { additionalProperties: false, properties: {}, type: "object" },
+    };
+    expect(resolveAgentPluginBundleResponse(request(completed))).toEqual({
+      tool: { name: "tool_call", args: { id: target.id, args: {} } },
+    });
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    [
+      "unexpected required arguments",
+      { type: "object", properties: {}, additionalProperties: false, required: ["city"] },
+    ],
+    [
+      "unexpected properties",
+      { type: "object", properties: { city: { type: "string" } }, additionalProperties: false },
+    ],
+    [
+      "permissive additional properties",
+      { type: "object", properties: {}, additionalProperties: true },
+    ],
+    ["missing additional-property restriction", { type: "object", properties: {} }],
+  ])("rejects %s before calling the MCP tool", (_label, parameters) => {
+    const completed = rounds().slice(0, 2);
+    completed[1]!.value = { ...target, parameters };
+    expect(resolveAgentPluginBundleResponse(request(completed))).toEqual({
+      text: "AGENT_BUNDLE_MCP_FAIL unexpected-tool-output",
+    });
+  });
+
   it("starts discovery again instead of accepting a previous turn's receipt", () => {
     const body = request();
     body.input.push({ role: "user", content: "agent plugin bundle qa check" });
@@ -90,6 +126,19 @@ describe("Agent Plugins bundle mock response", () => {
         "<<<BEGIN_OPENCLAW_INTERNAL_CONTEXT>>>\nCurrent fixture context\n<<<END_OPENCLAW_INTERNAL_CONTEXT>>>",
     });
     expect(resolveAgentPluginBundleResponse(body)).toEqual({ text: "AGENT_BUNDLE_MCP_OK" });
+  });
+
+  it.each([
+    [String.raw`C:\Fixture User\plugin=one; two`, String.raw`C:\Fixture User\data=one; two`],
+    ["/fixture\nroot", "/fixture\r\ndata"],
+  ])("preserves dynamic probe paths %j and %j", (pluginRoot, pluginData) => {
+    const completed = rounds();
+    const result = targetResult();
+    result.result.content[0]!.text = `probe ok; PLUGIN_ROOT=${pluginRoot}; PLUGIN_DATA=${pluginData}; PROBE_MODE=live`;
+    completed[2]!.value = result;
+    expect(resolveAgentPluginBundleResponse(request(completed))).toEqual({
+      text: "AGENT_BUNDLE_MCP_OK",
+    });
   });
 
   it.each<[string, (value: Round[]) => void]>([
@@ -144,7 +193,11 @@ describe("Agent Plugins bundle mock response", () => {
     [
       "wrong described target",
       (value) => {
-        value[1]!.value = { ...target, id: "other", parameters: { type: "object" } };
+        value[1]!.value = {
+          ...target,
+          id: "other",
+          parameters: { type: "object", properties: {}, additionalProperties: false },
+        };
       },
     ],
     [
@@ -211,6 +264,41 @@ describe("Agent Plugins bundle mock response", () => {
       (value) => {
         const result = targetResult();
         result.result.content[0]!.text = "probe ok";
+        value[2]!.value = result;
+      },
+    ],
+    [
+      "corrupted probe success field",
+      (value) => {
+        const result = targetResult();
+        result.result.content[0]!.text = probeText.replace("probe ok", "probe ok=false");
+        value[2]!.value = result;
+      },
+    ],
+    [
+      "corrupted probe mode field",
+      (value) => {
+        const result = targetResult();
+        result.result.content[0]!.text = probeText.replace(
+          "PROBE_MODE=live",
+          "PROBE_MODE=live-corrupt",
+        );
+        value[2]!.value = result;
+      },
+    ],
+    [
+      "LF-suffixed probe mode field",
+      (value) => {
+        const result = targetResult();
+        result.result.content[0]!.text = `${probeText}\n`;
+        value[2]!.value = result;
+      },
+    ],
+    [
+      "CRLF-suffixed probe mode field",
+      (value) => {
+        const result = targetResult();
+        result.result.content[0]!.text = `${probeText}\r\n`;
         value[2]!.value = result;
       },
     ],

@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "../../lib/record-shared.mjs";
 import { readMockUserText } from "./mock-inference-facts.ts";
 
@@ -101,7 +102,11 @@ export function resolveAgentPluginBundleResponse(body) {
     description.args?.id !== target.id ||
     !isTarget(description.value) ||
     description.value.id !== target.id ||
-    description.value.parameters?.type !== "object"
+    !isDeepStrictEqual(description.value.parameters, {
+      type: "object",
+      properties: {},
+      additionalProperties: false,
+    })
   ) {
     return failure("unexpected-tool-output");
   }
@@ -131,9 +136,9 @@ export function resolveAgentPluginBundleResponse(body) {
   const text = result.content
     .flatMap((part) => (part?.type === "text" && typeof part.text === "string" ? [part.text] : []))
     .join("\n");
-  return ["probe ok", "PLUGIN_ROOT=", "PLUGIN_DATA=", "PROBE_MODE=live"].every((marker) =>
-    text.includes(marker),
-  )
+  return /^probe ok; PLUGIN_ROOT=[\s\S]+; PLUGIN_DATA=[\s\S]+; PROBE_MODE=live$/u.exec(
+    text,
+  )?.[0] === text
     ? { text: "AGENT_BUNDLE_MCP_OK" }
     : failure("unexpected-tool-output");
 }

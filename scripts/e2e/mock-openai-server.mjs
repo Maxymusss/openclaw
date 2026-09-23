@@ -843,7 +843,10 @@ function mcpAppConformanceEvents(body, bodyText) {
     : responseEvents("MCP_APP_CONFORMANCE_FAIL");
 }
 
-function agentPluginBundleEvents(body) {
+function agentPluginBundleEvents(body, inferenceFacts) {
+  if (inferenceFacts?.purpose === "activity-recap") {
+    return null;
+  }
   const input = Array.isArray(body?.input) ? body.input : [];
   const userText = input.map(readMockUserText).findLast((text) => text !== undefined) ?? "";
   if (!/agent plugin bundle qa check/i.test(userText)) {
@@ -919,6 +922,7 @@ const server = http.createServer((req, res) => {
         ? { response: controlSelection.models[body.model] }
         : undefined
       : controlSelection;
+    const inferenceFacts = scriptedRoute ? summarizeMockInferenceRequest(body) : undefined;
     if (
       writeRequestLogEntryOrFail(res, {
         requestLog,
@@ -929,7 +933,7 @@ const server = http.createServer((req, res) => {
           requestBytes: Buffer.byteLength(bodyText),
           body: boundedRequestLogBody(requestLogBody, requestLogBody),
           ...summarizeRequestContent(body),
-          ...(scriptedRoute ? { inferenceFacts: summarizeMockInferenceRequest(body) } : {}),
+          ...(inferenceFacts ? { inferenceFacts } : {}),
           ...(selectedResponse?.scriptEntry ? { scriptEntry: selectedResponse.scriptEntry } : {}),
         },
       })
@@ -948,7 +952,7 @@ const server = http.createServer((req, res) => {
     if (route === "responses") {
       if (!selectedResponse) {
         const events =
-          agentPluginBundleEvents(body) ??
+          agentPluginBundleEvents(body, inferenceFacts) ??
           mcpAppConformanceEvents(body, bodyText) ??
           mcpCodeModeApiFileEvents(body, bodyText) ??
           progressDraftEvents(body, bodyText);
