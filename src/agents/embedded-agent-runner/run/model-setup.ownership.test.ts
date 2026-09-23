@@ -77,6 +77,7 @@ async function createFixture(
     config,
   });
   publishCurrentModelGeneration(generation);
+  const runAttempt = vi.fn<AgentHarness["runAttempt"]>();
   const harness: AgentHarness = {
     id: "codex",
     label: "Native fixture",
@@ -88,7 +89,7 @@ async function createFixture(
           ? { supported: false, fallbackRuntime: "openclaw" }
           : { supported: true },
     ...(nativeOwner ? { resolveSessionRuntimeOwnership: nativeOwner } : {}),
-    runAttempt: vi.fn<AgentHarness["runAttempt"]>(),
+    runAttempt,
   };
   registerAgentHarness(harness);
   const runParams: RunEmbeddedAgentParams = {
@@ -192,7 +193,7 @@ async function createFixture(
       admission.close();
     }
   };
-  return { state, generation, harness, target, entry, runParams, resolve, withRuntime };
+  return { state, generation, harness, runAttempt, target, entry, runParams, resolve, withRuntime };
 }
 
 describe("model chat and native model ownership", () => {
@@ -315,7 +316,7 @@ describe("model chat and native model ownership", () => {
     ).rejects.toMatchObject({ code: "selected_auth_profile_unavailable", profileId: "openai:B" });
     expect(loadNativeModelCatalog).not.toHaveBeenCalled();
     expect(fixture.generation.resolveDynamicModel).not.toHaveBeenCalled();
-    expect(fixture.harness.runAttempt).not.toHaveBeenCalled();
+    expect(fixture.runAttempt).not.toHaveBeenCalled();
     expect(loadSessionEntryReadOnly(fixture.target)).toMatchObject(fixture.entry);
   });
 
@@ -348,7 +349,7 @@ describe("model chat and native model ownership", () => {
       modelId: "fixture-model",
       modelSelectionChangedByHook: true,
     });
-    expect(fixture.harness.runAttempt).not.toHaveBeenCalled();
+    expect(fixture.runAttempt).not.toHaveBeenCalled();
   });
 
   it("resolves the concrete locked model instead of treating a runtime request as native ownership", async () => {

@@ -312,11 +312,6 @@ export async function preparePublishedModelRuntimeChoice(params: {
       // Direct observations have the same nonthrowing contract as candidate callbacks.
     }
   };
-  let readAuthOverlay:
-    | ((
-        host: NonNullable<ModelRuntimeChoiceObservation["host"]>,
-      ) => ModelAuthOverlayObservation | undefined)
-    | undefined;
   const observeChoices = diagnostic
     ? (event: ModelRuntimeChoiceObservation) =>
         observeDiagnostic(() => {
@@ -428,7 +423,9 @@ export async function preparePublishedModelRuntimeChoice(params: {
     profileProvider: params.sessionEntry?.providerOverride ?? params.sessionEntry?.modelProvider,
     captureAuthOverlay: diagnostic,
   });
-  readAuthOverlay = decisions.getAuthOverlayObservation;
+  const readAuthOverlay: (
+    host: NonNullable<ModelRuntimeChoiceObservation["host"]>,
+  ) => ModelAuthOverlayObservation | undefined = decisions.getAuthOverlayObservation;
   let entry =
     findModelInCatalog(decisions.snapshot.entries, params.provider, params.model) ??
     decisions.snapshot.entries.find(
