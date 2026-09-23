@@ -2,7 +2,7 @@ import type { UpdateRunRecord } from "./update-run-record.js";
 
 // Deliberately excludes arbitrary SemVer prereleases, metadata, refs, and build IDs.
 const PUBLIC_VERSION =
-  /^202[0-9]\.(?:[1-9]|1[0-2])\.(?:[1-9]|[12][0-9]|3[01])(?:-[1-9][0-9]{0,2})?(?:-beta\.[1-9][0-9]{0,2})?$/;
+  /^202[0-9]\.(?:[1-9]|1[0-2])\.(?:0|[1-9][0-9]{0,5})(?:-[1-9][0-9]{0,2})?(?:-beta\.[1-9][0-9]{0,2})?$/;
 function publicVersion(value: string | null | undefined): string {
   return value && PUBLIC_VERSION.exec(value)?.[0] === value ? value : "unknown";
 }

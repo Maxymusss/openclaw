@@ -19,13 +19,13 @@ import {
 import type { UpdateRunRecord } from "./update-run-record.js";
 
 const dirs = createTempDirTracker();
-const consent = { telemetry: { enabled: true, updateResults: true } };
+const defaultPolicy = {};
 function fixture(enabled = true) {
   const directory = dirs.make("update-result-");
   const configPath = path.join(directory, "openclaw.json");
   fs.writeFileSync(
     configPath,
-    JSON.stringify(enabled ? consent : { telemetry: { enabled: true } }),
+    JSON.stringify(enabled ? defaultPolicy : { update: { checkOnStart: false } }),
   );
   return { env: { OPENCLAW_STATE_DIR: directory, OPENCLAW_CONFIG_PATH: configPath }, configPath };
 }
@@ -142,6 +142,28 @@ describe("identifier-free update result projection", () => {
     );
   });
   it.each([
+    "2026.8.0",
+    "2026.8.33",
+    "2026.8.123",
+    "2026.8.999999",
+    "2026.8.33-1",
+    "2026.8.33-beta.1",
+  ])("preserves supported release-train version %s in all fields", (version) => {
+    const run = result();
+    run.before.version = version;
+    run.target.version = version;
+    run.after.version = version;
+    run.verification.runningVersion = version;
+    expect(buildUpdateResultPayload(run)).toMatchObject({
+      fromVersion: version,
+      targetVersion: version,
+      resultingVersion: version,
+      runningVersion: version,
+    });
+  });
+  it.each([
+    "2026.8.1000000",
+    "2026.8.033",
     "feature/private",
     "2026.9.19+private",
     "2026.9.19-private",
@@ -196,11 +218,11 @@ describe("identifier-free update result projection", () => {
 });
 
 describe("outcome admission and at-most-once claims", () => {
-  it("does not backfill pre-consent runs or reinterpret feature-only consent", () => {
+  it("does not backfill runs admitted while automatic requests were disabled", () => {
     const options = fixture(false);
     const run = createUpdateRun({ trigger: "cli" }, options);
     expect(readConfigMachineState("telemetry.updateResults", options)).toBeUndefined();
-    fs.writeFileSync(options.configPath, JSON.stringify(consent));
+    fs.writeFileSync(options.configPath, JSON.stringify(defaultPolicy));
     finishUpdateRun(run.runId, { status: "failed" }, options);
     expect(readConfigMachineState("telemetry.updateResults", options)).toBeUndefined();
   });
@@ -235,12 +257,9 @@ describe("outcome admission and at-most-once claims", () => {
   it("drops revoked and rate-limited outcomes without retry or startup replay", () => {
     const options = fixture();
     const run = createUpdateRun({ trigger: "cli" }, options);
-    fs.writeFileSync(
-      options.configPath,
-      JSON.stringify({ telemetry: { enabled: false, updateResults: true } }),
-    );
+    fs.writeFileSync(options.configPath, JSON.stringify({ update: { checkOnStart: false } }));
     finishUpdateRun(run.runId, { status: "failed" }, options);
-    fs.writeFileSync(options.configPath, JSON.stringify(consent));
+    fs.writeFileSync(options.configPath, JSON.stringify(defaultPolicy));
     finishUpdateRun(run.runId, { status: "failed" }, options);
     const next = createUpdateRun({ trigger: "cli" }, options);
     finishUpdateRun(next.runId, { status: "succeeded" }, options);
@@ -256,7 +275,7 @@ describe("outcome admission and at-most-once claims", () => {
     const run = createUpdateRun({ trigger: "cli" }, options);
     fs.writeFileSync(options.configPath, "invalid JSON {");
     finishUpdateRun(run.runId, { status: "failed" }, options);
-    fs.writeFileSync(options.configPath, JSON.stringify(consent));
+    fs.writeFileSync(options.configPath, JSON.stringify(defaultPolicy));
     finishUpdateRun(run.runId, { status: "failed" }, options);
     expect(readConfigMachineState("telemetry.updateResults", options)).toMatchObject({
       eligible: [],
@@ -337,13 +356,7 @@ describe("bounded transport", () => {
     expect(send).toHaveBeenCalledTimes(1);
     settle?.();
   });
-  it.each([
-    { DO_NOT_TRACK: "1" },
-    { DO_NOT_TRACK: "true" },
-    { OPENCLAW_NO_AUTO_UPDATE: "1" },
-    { CI: "true" },
-    { OPENCLAW_NIX_MODE: "1" },
-  ])(
+  it.each([{ OPENCLAW_NO_AUTO_UPDATE: "1" }, { CI: "true" }, { OPENCLAW_NIX_MODE: "1" }])(
     "sends zero requests with suppression %j even to a configured receiver",
     async (suppression) => {
       const options = fixture();
@@ -360,13 +373,53 @@ describe("bounded transport", () => {
     },
   );
   it.each([
-    {},
-    { telemetry: { enabled: true } },
-    { telemetry: { enabled: false, updateResults: true } },
-    { ...consent, update: { checkOnStart: false } },
-  ])("sends zero requests for disabled consent/policy %j", async (config) => {
+    { update: { checkOnStart: false } },
+    { telemetry: { enabled: true }, update: { checkOnStart: false } },
+    { telemetry: { enabled: false }, update: { checkOnStart: false } },
+  ])("sends zero requests for disabled automatic request policy %j", async (config) => {
     const options = fixture();
     fs.writeFileSync(options.configPath, JSON.stringify(config));
+    const fetchImpl = vi.fn<typeof fetch>();
+    await sendUpdateResultTelemetry(buildUpdateResultPayload(result())!, {
+      env: options.env,
+      fetchImpl,
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each([{}, { telemetry: { enabled: false } }, { telemetry: { enabled: true } }])(
+    "sends by default independently of feature statistics %j",
+    async (config) => {
+      const options = fixture();
+      fs.writeFileSync(options.configPath, JSON.stringify(config));
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response("ok"));
+      await sendUpdateResultTelemetry(buildUpdateResultPayload(result())!, {
+        env: options.env,
+        fetchImpl,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const body = fetchImpl.mock.calls[0]?.[1]?.body;
+      if (typeof body !== "string") {
+        throw new Error("Expected a JSON request body");
+      }
+      expect(JSON.parse(body)).not.toHaveProperty("features");
+      expect(JSON.parse(fs.readFileSync(options.configPath, "utf8"))).toEqual(config);
+    },
+  );
+  it.each(["1", "true"])("does not treat DNT=%s as an update-request opt-out", async (dnt) => {
+    const options = fixture();
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response("ok"));
+    const env = { ...options.env, DO_NOT_TRACK: dnt };
+    const run = createUpdateRun({ trigger: "cli" }, { env });
+    finishUpdateRun(run.runId, { status: "succeeded" }, { env });
+    expect(readConfigMachineState("telemetry.updateResults", { env })).toMatchObject({
+      attempted: [run.runId],
+    });
+    await sendUpdateResultTelemetry(buildUpdateResultPayload(result())!, { env, fetchImpl });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+  it("does not dispatch when configuration cannot be parsed", async () => {
+    const options = fixture();
+    fs.writeFileSync(options.configPath, "invalid JSON {");
     const fetchImpl = vi.fn<typeof fetch>();
     await sendUpdateResultTelemetry(buildUpdateResultPayload(result())!, {
       env: options.env,
@@ -384,7 +437,7 @@ describe("bounded transport", () => {
     await expect(
       sendUpdateResultTelemetry(buildUpdateResultPayload(result())!, {
         fetchImpl,
-        getConsent: () => true,
+        getPolicy: () => true,
       }),
     ).resolves.toBeUndefined();
     expect(timeout).toHaveBeenCalledWith(3000);
@@ -396,7 +449,7 @@ describe("bounded transport", () => {
     await sendUpdateResultTelemetry(payload, {
       env: { OPENCLAW_TELEMETRY_ENDPOINT: "http://localhost/synthetic" },
       fetchImpl,
-      getConsent: () => true,
+      getPolicy: () => true,
     });
     expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
       "http://localhost/synthetic",
@@ -409,18 +462,18 @@ describe("bounded transport", () => {
       }),
     );
   });
-  it("rechecks consent at network admission and never falls back on endpoint failure", async () => {
+  it("rechecks update policy at network admission and never falls back on endpoint failure", async () => {
     const fetchImpl = vi
       .fn<typeof fetch>()
       .mockRejectedValue(new Error("private raw network exception"));
     const payload = buildUpdateResultPayload(result())!;
-    await sendUpdateResultTelemetry(payload, { fetchImpl, getConsent: () => false });
+    await sendUpdateResultTelemetry(payload, { fetchImpl, getPolicy: () => false });
     expect(fetchImpl).not.toHaveBeenCalled();
     await expect(
       sendUpdateResultTelemetry(payload, {
         env: { OPENCLAW_TELEMETRY_ENDPOINT: "http://localhost/unavailable" },
         fetchImpl,
-        getConsent: () => true,
+        getPolicy: () => true,
       }),
     ).resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledTimes(1);

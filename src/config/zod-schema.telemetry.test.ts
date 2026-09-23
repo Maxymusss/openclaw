@@ -12,16 +12,6 @@ describe("OpenClawSchema telemetry config", () => {
     }
   });
 
-  it("preserves a separate outcome opt-in without manufacturing one from old consent", () => {
-    expect(
-      OpenClawSchema.parse({ telemetry: { enabled: true } }).telemetry?.updateResults,
-    ).toBeUndefined();
-    expect(
-      OpenClawSchema.parse({ telemetry: { enabled: true, updateResults: true } }).telemetry
-        ?.updateResults,
-    ).toBe(true);
-  });
-
   it("rejects unknown telemetry fields and malformed consent timestamps", () => {
     expect(
       OpenClawSchema.safeParse({ telemetry: { enabled: true, installId: "hidden" } }).success,

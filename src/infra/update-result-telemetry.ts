@@ -9,6 +9,7 @@ import { buildUpdateResultPayload, type UpdateResultPayload } from "./update-res
 import type { UpdateRunLedgerOptions } from "./update-run-codec.js";
 import type { UpdateRunRecord } from "./update-run-record.js";
 
+// Internal local bookkeeping key, not a user configuration or consent setting.
 const KEY = "telemetry.updateResults";
 const HOUR = 60 * 60 * 1000;
 const MAX_ACTIVE = 16;
@@ -16,20 +17,15 @@ const MAX_ACTIVE = 16;
 type LocalState = { eligible: string[]; attempted: string[]; lastAttemptAt?: number };
 
 function updateResultTelemetryEnabled(config: OpenClawConfig, env = process.env): boolean {
-  const dnt = env.DO_NOT_TRACK?.trim().toLowerCase();
   return (
-    config.telemetry?.enabled === true &&
-    config.telemetry.updateResults === true &&
     config.update?.checkOnStart !== false &&
     !isTruthyEnvValue(env.OPENCLAW_NO_AUTO_UPDATE) &&
     !isTruthyEnvValue(env.CI) &&
-    !resolveIsNixMode(env) &&
-    dnt !== "1" &&
-    dnt !== "true"
+    !resolveIsNixMode(env)
   );
 }
 
-function currentConsent(env: NodeJS.ProcessEnv): boolean {
+function currentUpdatePolicy(env: NodeJS.ProcessEnv): boolean {
   try {
     return updateResultTelemetryEnabled(
       readCurrentConfigForPolicyCheck({ configPath: resolveConfigPath(env), env }),
@@ -40,14 +36,14 @@ function currentConsent(env: NodeJS.ProcessEnv): boolean {
   }
 }
 
-/** Admission is recorded only at creation, never by scanning pre-consent history. */
+/** Admission is recorded only at creation, never by scanning historical update records. */
 export function admitUpdateResultTelemetry(
   db: DatabaseSync,
   runId: string,
   options: UpdateRunLedgerOptions,
 ): void {
   try {
-    if (!currentConsent(options.env ?? process.env)) {
+    if (!currentUpdatePolicy(options.env ?? process.env)) {
       return;
     }
     updateConfigMachineStateInDatabase<LocalState>(
@@ -89,7 +85,7 @@ export function claimUpdateResultTelemetry(
         const next = { ...state, eligible: state.eligible.filter((id) => id !== run.runId) };
         if (
           state.attempted.includes(run.runId) ||
-          !currentConsent(options.env ?? process.env) ||
+          !currentUpdatePolicy(options.env ?? process.env) ||
           (state.lastAttemptAt !== undefined && now - state.lastAttemptAt < HOUR) ||
           // Abandonment can subsequently be repaired; it is not a settled diagnosis.
           run.reason === "abandoned" ||
@@ -117,7 +113,7 @@ export function claimUpdateResultTelemetry(
 /** Independent of daily-check cache. Never awaited by update/recovery/startup. */
 export async function sendUpdateResultTelemetry(
   payload: UpdateResultPayload,
-  options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; getConsent?: () => boolean } = {},
+  options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch; getPolicy?: () => boolean } = {},
 ): Promise<void> {
   try {
     const env = options.env ?? process.env;
@@ -135,7 +131,10 @@ export async function sendUpdateResultTelemetry(
       return;
     }
     const body = JSON.stringify(payload);
-    if (Buffer.byteLength(body) > 4096 || !(options.getConsent ?? (() => currentConsent(env)))()) {
+    if (
+      Buffer.byteLength(body) > 4096 ||
+      !(options.getPolicy ?? (() => currentUpdatePolicy(env)))()
+    ) {
       return;
     }
     const response = await (options.fetchImpl ?? fetch)(endpoint, {
