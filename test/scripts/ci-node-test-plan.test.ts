@@ -3062,6 +3062,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             ),
           ).toBe(true);
           for (const group of job.groups) {
+            if (mode === "pull-request") {
+              expect(group.configs).not.toContain("test/vitest/vitest.ui.config.ts");
+            }
             expect(group.fallbackMaxWorkers).toBeUndefined();
             expect(group.minTotalMemoryBytes).toBeUndefined();
             expect(

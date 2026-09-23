@@ -112,6 +112,9 @@ Native CI must establish the resulting execution and queue times.
 The measured exception is source-only, serial `agentic-gateway-core-1-hosted-*`
 rows whose children all retain an explicit two-worker ceiling. Their original
 360-second predicted envelopes can request the 16-class after provider placement.
+PR envelopes containing the UI Vitest config retain the 32-class: their native
+replay exceeded the tighter 600-second PR budget. Main retains the measured
+placement under its 720-second budget.
 Builds, SDK/compiler fixtures, measured-worker fallbacks, memory-gated children,
 overlapping plans, and denser envelopes retain their existing capacity. Precise
 changed-file plans keep their original anchors. The executor's worker policy is
@@ -130,6 +133,18 @@ row slowed 67.9%, memory-gated rows lost their eight-worker allowance, and the
 storage/chat PR row exceeded 600 seconds. Across the complete 60-job experiment,
 57 jobs passed and three failed in fixture/database teardown; those failures
 are retained evidence, not successful timing samples.
+
+Native qualification of the initial candidate at
+`67df1935207e1a7d0afe02bffff1b8cb3ec67c13` passed all six downsized rows.
+The [main-shaped run](https://github.com/openclaw/openclaw/actions/runs/35826103218)
+finished them in 525/571/531 seconds. The identical inventories in the
+[PR-shaped run](https://github.com/openclaw/openclaw/actions/runs/35826105619)
+took 657/623/540 seconds, so the two UI-bearing PR envelopes remain on 32.
+Their larger test intervals, not just setup, explain the budget overruns;
+the remaining timing variance is unproven. This narrows the candidate to three
+hybrid main rows and one hybrid PR row. Hosted preflight queues alone consumed
+675/684 seconds, and unrelated QA and lifecycle proof failures prevent claiming
+green whole-workflow qualification from those runs.
 
 At the historical $0.064/$0.032 per-minute list rates, these matched Gateway-core
 subsets save about 45%/47% of compute cost on main/PR while consuming 11%/6% more

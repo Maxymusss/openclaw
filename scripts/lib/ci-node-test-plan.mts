@@ -2978,6 +2978,9 @@ export function createNodeTestShardBundles(
         !job.groups.some((group) =>
           group.shard_name.startsWith("agentic-gateway-core-1-hosted-"),
         ) ||
+        // UI-bearing envelopes exceeded the tighter PR budget on the 16-class.
+        (compactMode === "pull-request" &&
+          job.groups.some((group) => group.configs.includes("test/vitest/vitest.ui.config.ts"))) ||
         job.groups.some(
           (group) =>
             group.requiresDist ||
