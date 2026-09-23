@@ -10,6 +10,7 @@ import {
   type SessionsCompanionResetParams,
   type SessionsCompanionStateParams,
 } from "../../packages/gateway-protocol/src/index.js";
+import { captureGatewayOperatorRunAuthority } from "./operator-run-authority.js";
 import type { GatewayRequestHandlers } from "./server-methods/types.js";
 import { SessionCompanionAskError } from "./session-companion-ask.js";
 import { resolveRequestedSessionAgentId } from "./session-request-agent.js";
@@ -63,7 +64,14 @@ function companionTargetIsVisible(
 }
 
 export const sessionCompanionHandlers: GatewayRequestHandlers = {
-  "sessions.companion.ask": async ({ params, respond, client, context, signal }) => {
+  "sessions.companion.ask": async ({
+    params,
+    respond,
+    client,
+    context,
+    signal,
+    hasCurrentClientAuthority,
+  }) => {
     if (!validateSessionsCompanionAskParams(params)) {
       respond(
         false,
@@ -105,20 +113,39 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
       respond(false, undefined, hiddenSessionNotFound(target.sessionKey));
       return;
     }
+    const companion = context.sessionCompanion;
+    const connId = client.connId;
     const assertSourceCurrent = () => {
-      if (!companionTargetIsVisible(target, client, context)) {
+      signal?.throwIfAborted();
+      if (
+        context.sessionCompanion !== companion ||
+        client.connId !== connId ||
+        client.invalidated ||
+        hasCurrentClientAuthority?.() === false ||
+        !companionTargetIsVisible(target, client, context)
+      ) {
         throw new SessionCompanionAskError("session-missing", "Side chat is unavailable.");
       }
     };
+    let capturedOperator: Awaited<ReturnType<typeof captureGatewayOperatorRunAuthority>>;
     try {
-      const result = await context.sessionCompanion.ask({
+      capturedOperator = await captureGatewayOperatorRunAuthority({
+        client,
+        context,
+        hasCurrentClientAuthority,
+        invocationAuthority: { assertCurrent: assertSourceCurrent, signal },
+      });
+      assertSourceCurrent();
+      const result = await companion.ask({
         sessionKey: target.sessionKey,
         agentId: target.agentId,
         question,
-        connId: client.connId,
+        connId,
         assertSourceCurrent,
+        ...(capturedOperator ? { operatorAuthority: capturedOperator.authority } : {}),
         ...(signal ? { signal } : {}),
       });
+      capturedOperator?.authority.assertCurrent();
       respond(true, result);
     } catch (error) {
       if (!(error instanceof SessionCompanionAskError)) {
@@ -150,6 +177,8 @@ export const sessionCompanionHandlers: GatewayRequestHandlers = {
           ...(error.retryAfterMs ? { retryAfterMs: error.retryAfterMs } : {}),
         }),
       );
+    } finally {
+      capturedOperator?.release();
     }
   },
   "sessions.companion.state": ({ params, respond, client, context }) => {

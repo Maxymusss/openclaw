@@ -202,7 +202,7 @@ export class DecisionProviderHost {
   }
 
   async evaluate(
-    batch: DecisionBatch,
+    submitted: DecisionBatch,
     options: Options,
     model: string,
     config: OpenClawConfig,
@@ -210,12 +210,6 @@ export class DecisionProviderHost {
     consumerId?: string,
   ): Promise<DecisionOutcome> {
     options.signal.throwIfAborted();
-    let submitted: DecisionBatch;
-    try {
-      submitted = structuredClone(batch);
-    } catch {
-      throw new DecisionContractError();
-    }
     const instance = getPluginInstance(this.record);
     if (this.retired || this.reloadPause || !instance?.acceptingCalls || instance.owner?.revoked) {
       return this.unavailable("retiring");

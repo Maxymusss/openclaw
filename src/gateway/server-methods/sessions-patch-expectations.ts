@@ -2,9 +2,16 @@ import type {
   ErrorShape,
   SessionsPatchParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { UserModelAccountSelection } from "../model-account-authority.js";
 import { sessionToolOverridesEqual } from "../session-tool-overrides.js";
-import { sessionChangedError } from "./sessions-patch-errors.js";
+import {
+  sessionChangedError,
+  assertSessionPatchCommitAllowed,
+  unexpectedPatchError,
+} from "./sessions-patch-errors.js";
 
 export function resolveSessionPatchExpectationError(
   patch: SessionsPatchParams,
@@ -88,5 +95,36 @@ export function sessionPatchTargetIdentity(patch: SessionsPatchParams) {
       ? { expectedToolOverrides: patch.expectedToolOverrides }
       : {}),
     expectedMarkedUnreadAt: patch.expectedMarkedUnreadAt,
+  };
+}
+
+/** The retained source and target keep the existing personal-account error boundary. */
+export function bindPreparedSessionPatchTarget(params: {
+  key: string;
+  originalGuard: () => ErrorShape | undefined;
+  operatorAuthority: AdmittedRunOperatorAuthority | undefined;
+  personalModelSelection: UserModelAccountSelection | undefined;
+  preparation: { facts: { matchesCurrent: (cfg: OpenClawConfig) => boolean } } | { error: unknown };
+  getCurrentConfig: () => OpenClawConfig;
+}): () => ErrorShape | undefined {
+  return () => {
+    try {
+      assertSessionPatchCommitAllowed({
+        personalModelSelection: params.personalModelSelection,
+        guards: [params.originalGuard],
+        archiveTransitions: [],
+      });
+      params.operatorAuthority?.assertCurrent();
+      if ("error" in params.preparation) {
+        throw params.preparation.error instanceof Error
+          ? params.preparation.error
+          : new Error("Session target preparation failed", { cause: params.preparation.error });
+      }
+      return params.preparation.facts.matchesCurrent(params.getCurrentConfig())
+        ? undefined
+        : sessionChangedError(params.key);
+    } catch (error) {
+      return unexpectedPatchError(params.key, error);
+    }
   };
 }

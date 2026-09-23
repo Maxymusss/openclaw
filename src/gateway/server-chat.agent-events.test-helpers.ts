@@ -187,6 +187,7 @@ export function registerChatConnectionIdentityTest(harness: {
     params: ChatConnectionIdentityInput & { context: GatewayRequestContext; respond: RespondFn },
   ) => Promise<void>;
   readTranscript: () => unknown[];
+  getSessionWorkRelease: () => Promise<void> | undefined;
 }) {
   test("chat.send persists optional connection identity per turn", async () => {
     await harness.withDirectChatSession(async () => {
@@ -199,10 +200,8 @@ export function registerChatConnectionIdentityTest(harness: {
           ...params,
           respond: vi.fn() as RespondFn,
         });
-        await vi.waitFor(
-          () => expect(context.removeChatRun).toHaveBeenCalledTimes(removeCount + 1),
-          { timeout: 2_000, interval: 1 },
-        );
+        await harness.getSessionWorkRelease();
+        expect(context.removeChatRun).toHaveBeenCalledTimes(removeCount + 1);
       };
 
       await send({

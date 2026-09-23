@@ -8,6 +8,7 @@ import {
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import {
   getCanonicalGatewayContextResolver,
+  getInProcessGatewayRequestContext,
   getGatewayContextLifetime,
   getPluginRuntimeGatewayRequestScope,
   withPluginRuntimeGatewayRequestScope,
@@ -31,7 +32,6 @@ import {
 } from "./server-in-process-dispatch.js";
 import type { AgentRunRequest } from "./server-methods/agent-request-types.js";
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
-import type { GatewayContextResolver, GatewayRequestContext } from "./server-methods/types.js";
 import type {
   DispatchGatewayMethodInProcessOptions,
   OperatorToolGatewayAuthority,
@@ -42,6 +42,7 @@ import { resolveInProcessGatewaySyntheticScopes } from "./server-plugin-in-proce
 import {
   createSyntheticPluginRuntimeClient,
   mergePluginRuntimeClientInternal,
+  projectPluginRuntimeClientExecution,
 } from "./server-plugin-runtime-client.js";
 import {
   cancelSubagentCompletionToolHandoff,
@@ -49,6 +50,10 @@ import {
 } from "./subagent-completion-tool-handoff.js";
 
 const operatorToolGatewayAuthority = new AsyncLocalStorage<OperatorToolGatewayAuthority>();
+
+export function readOperatorToolGatewayAuthority(): OperatorToolGatewayAuthority | undefined {
+  return operatorToolGatewayAuthority.getStore();
+}
 
 /** Retains operator attribution and authority only for the awaited tool invocation. */
 export async function withOperatorToolGatewayAuthority<T>(
@@ -418,32 +423,12 @@ function resolveInProcessGatewayDispatch(
     scopes: syntheticScopes,
   });
   const scopedStreamClient = options?.nodeInvokeStream ? scope?.client : undefined;
-  const agentRuntimeIdentity =
-    scopedStreamClient?.internal?.agentRuntimeIdentity ??
-    readInProcessAgentRuntimeIdentity(options);
-  const syntheticClient =
-    agentRuntimeIdentity || options?.nodeInvokeStream
-      ? {
-          ...(scopedStreamClient ?? baseSyntheticClient),
-          ...(agentRuntimeIdentity && !scopedStreamClient
-            ? { connId: `agent-runtime:${agentRuntimeIdentity.operationalRunInstance.instanceId}` }
-            : {}),
-          ...(scopedStreamClient
-            ? {
-                connect: {
-                  ...scopedStreamClient.connect,
-                  scopes: baseSyntheticClient.connect.scopes,
-                },
-              }
-            : {}),
-          internal: {
-            ...scopedStreamClient?.internal,
-            ...baseSyntheticClient.internal,
-            ...(agentRuntimeIdentity ? { agentRuntimeIdentity } : {}),
-            ...(options?.nodeInvokeStream ? { nodeInvokeStream: options.nodeInvokeStream } : {}),
-          },
-        }
-      : baseSyntheticClient;
+  const syntheticClient = projectPluginRuntimeClientExecution({
+    client: baseSyntheticClient,
+    streamClient: scopedStreamClient,
+    identity: readInProcessAgentRuntimeIdentity(options),
+    nodeInvokeStream: options?.nodeInvokeStream,
+  });
   const scopedClient = mergePluginRuntimeClientInternal(
     scope?.client,
     pluginRuntimeOwnerId ||
@@ -524,7 +509,8 @@ function resolveInProcessGatewayDispatch(
 }
 
 /** Authorizes a sessionless agent execution against its captured Gateway and caller. */
-export function prepareInProcessAgentExecution(params: PrepareInProcessAgentExecutionOptions) {
+export async function prepareInProcessAgentExecution(input: PrepareInProcessAgentExecutionOptions) {
+  const params = { ...input };
   const inheritedAuthority = operatorToolGatewayAuthority.getStore();
   const resolved = resolveInProcessGatewayDispatch(
     "agent",
@@ -538,9 +524,15 @@ export function prepareInProcessAgentExecution(params: PrepareInProcessAgentExec
   // Profile verification updates the original connection. Sessionless work needs
   // that live principal, not the dispatch copy carrying session tracking metadata.
   const client = getPluginRuntimeGatewayRequestScope()?.client ?? resolved.client;
+  let operatorSource = await captureGatewayOperatorRunAuthority({
+    client: resolved.operatorSourceClient,
+    context: resolved.context,
+    hasCurrentClientAuthority: resolved.hasCurrentClientAuthority,
+  });
   const assertLifetime = () => {
     resolved.assertContextCurrent();
     resolved.assertInvocationCurrent();
+    operatorSource?.authority.assertCurrent();
   };
   const assertCurrent = () => {
     assertLifetime();
@@ -553,9 +545,25 @@ export function prepareInProcessAgentExecution(params: PrepareInProcessAgentExec
       unwrapGatewayMethodDispatchResponse("agent", { ok: false, error });
     }
   };
+  try {
+    assertLifetime();
+  } catch (error) {
+    operatorSource?.release();
+    throw error;
+  }
   return {
     context: resolved.context,
-    signal: inheritedAuthority?.signal,
+    get operatorAuthority() {
+      return operatorSource?.authority;
+    },
+    get signal() {
+      return operatorSource?.authority.signal
+        ? inheritedAuthority
+          ? AbortSignal.any([inheritedAuthority.signal, operatorSource.authority.signal])
+          : operatorSource.authority.signal
+        : inheritedAuthority?.signal;
+    },
+    release: () => operatorSource?.release(),
     assertCurrent,
     async authorize() {
       assertLifetime();
@@ -574,6 +582,11 @@ export function prepareInProcessAgentExecution(params: PrepareInProcessAgentExec
       if (error) {
         unwrapGatewayMethodDispatchResponse("agent", { ok: false, error });
       }
+      operatorSource ??= await captureGatewayOperatorRunAuthority({
+        client,
+        context: resolved.context,
+        hasCurrentClientAuthority: resolved.hasCurrentClientAuthority,
+      });
       assertCurrent();
     },
     run<T>(run: () => Promise<T>): Promise<T> {
@@ -676,16 +689,7 @@ export async function dispatchGatewayMethodInProcessRaw(
   });
 }
 
-/** Live request context for trusted built-in tools that need direct runtime state. */
-export function getInProcessGatewayRequestContext(
-  resolveGatewayContext?: GatewayContextResolver,
-): GatewayRequestContext | undefined {
-  if (resolveGatewayContext) {
-    return resolveGatewayContext();
-  }
-  const scope = getPluginRuntimeGatewayRequestScope();
-  return scope?.resolveGatewayContext ? scope.resolveGatewayContext() : scope?.context;
-}
+export { getInProcessGatewayRequestContext } from "../plugins/runtime/gateway-request-scope.js";
 
 export async function dispatchGatewayMethodInProcess<T>(
   method: string,

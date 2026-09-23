@@ -1,4 +1,7 @@
-import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
+import {
+  type OpenClawAgentDatabase,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
 import { readSessionEntryCache } from "./session-accessor.sqlite-entry-cache.js";
 import type { SessionEntryCacheSnapshot } from "./session-accessor.sqlite-entry-cache.types.js";
 import { iterateSessionEntriesForListing } from "./session-accessor.sqlite-entry-list.read.js";
@@ -37,6 +40,7 @@ function* collectCreationCandidates(
 export function readSessionCreationSnapshot(
   scope: SessionAccessScope,
 ): SessionEntryCreateWithTranscriptContext & {
+  database: OpenClawAgentDatabase;
   normalizedKey: string;
   legacyKeys: string[];
 } {
@@ -59,6 +63,7 @@ export function readSessionCreationSnapshot(
   });
   const { targetEntry, labels } = facts;
   return {
+    database,
     normalizedKey: resolved.normalizedKey,
     legacyKeys: resolved.legacyKeys,
     existingEntry: resolved.existing ? { ...resolved.existing.entry } : undefined,

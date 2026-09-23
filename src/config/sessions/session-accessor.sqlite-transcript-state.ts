@@ -8,7 +8,7 @@ import {
 import { coerceRequiredSqliteNumber as sqliteNumber } from "../../infra/sqlite-number.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import type { SessionTranscriptContextVersion } from "./session-accessor.sqlite-contract.js";
-import { publishSessionEntryCacheInvalidation } from "./session-accessor.sqlite-entry-cache.js";
+import { publishSessionEntryPlaceholderInsertion } from "./session-accessor.sqlite-entry-cache.js";
 import { getSessionKysely, type ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import {
   parseSessionEntryJson,
@@ -245,7 +245,10 @@ export function ensureTranscriptSessionRoot(
           .set({ entry_valid: -1 })
           .where("session_key", "=", scope.sessionKey),
       );
-      publishSessionEntryCacheInvalidation(database, { sessionKey: scope.sessionKey });
+      publishSessionEntryPlaceholderInsertion(database, {
+        sessionKey: scope.sessionKey,
+        sessionId: scope.sessionId,
+      });
     }
   }
   executeSqliteQuerySync(

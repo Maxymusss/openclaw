@@ -10,6 +10,10 @@ import {
 import { applySessionEntryLifecycleMutation } from "./session-accessor.lifecycle.js";
 import { readSessionCreationSnapshot } from "./session-accessor.sqlite-creation-read.js";
 import "./session-accessor.sqlite-entry.js";
+import {
+  withSessionEntryCreationPublication,
+  runWithSessionEntryCreationPublication,
+} from "./session-accessor.sqlite-entry-cache.js";
 import { replaceSessionOwnerInTransaction } from "./session-accessor.sqlite-owner.js";
 import { forkSessionTranscriptFromParent } from "./session-accessor.sqlite-parent-session.js";
 import {
@@ -17,7 +21,7 @@ import {
   runExclusiveSqliteSessionWrite,
   toDatabaseOptions,
 } from "./session-accessor.sqlite-scope.js";
-import { ensureTranscriptHeader } from "./session-accessor.sqlite-transcript-store.js";
+import { ensureTranscriptHeader } from "./session-accessor.sqlite-transcript-header.js";
 import type {
   SessionAccessScope,
   SessionEntryUpdateOptions,
@@ -67,75 +71,93 @@ export async function createSessionEntryWithTranscript<TError = string>(
   const agentId = scope.agentId ?? resolveAgentIdFromSessionKey(scope.sessionKey);
   // The incognito sentinel is scoped to env; its path alone cannot identify the memory store.
   const storeScope = { agentId, env: scope.env, storePath };
-  const { normalizedKey, legacyKeys, ...context } = readSessionCreationSnapshot({
+  const {
+    database: creationDatabase,
+    normalizedKey,
+    legacyKeys,
+    ...context
+  } = readSessionCreationSnapshot({
     ...storeScope,
     sessionKey: scope.sessionKey,
   });
-  const created = await createEntry(context);
-  if (!created.ok) {
-    return { ok: false, error: created.error, phase: "entry" };
-  }
-  const ownerAssignment = options.resolveOwnerAssignment?.();
-  const { cwd, commitGuard, withCommit, onLifecycleCommitted } = options;
+  return await withSessionEntryCreationPublication<SessionEntryCreateWithTranscriptResult<TError>>(
+    { database: creationDatabase, agentId, sessionKey: normalizedKey, bind: options.bindCreation },
+    async (operation) => {
+      const created = await createEntry(context);
+      if (!created.ok) {
+        return { ok: false, error: created.error, phase: "entry" };
+      }
+      const ownerAssignment = options.resolveOwnerAssignment?.();
+      const { cwd, commitGuard, withCommit: withSourceCommit, onLifecycleCommitted } = options;
+      const withCommit: typeof options.withCommit = withSourceCommit
+        ? (run) =>
+            withSourceCommit((assertCurrent) =>
+              runWithSessionEntryCreationPublication(operation, () => run(assertCurrent)),
+            )
+        : undefined;
 
-  const initializeTranscript = async (assertSourceCurrent?: () => void) => {
-    try {
-      const transcriptScope = resolveSqliteTranscriptScope({
-        ...storeScope,
-        sessionId: created.entry.sessionId,
-        sessionKey: normalizedKey,
-      });
-      await runExclusiveSqliteSessionWrite(
-        transcriptScope,
-        async () => {
-          runOpenClawAgentWriteTransaction((database) => {
-            commitGuard?.();
-            assertSourceCurrent?.();
-            ensureTranscriptHeader(database, transcriptScope, cwd);
-          }, toDatabaseOptions(transcriptScope));
-        },
-        "session.entry.create-with-transcript",
-      );
-      return undefined;
-    } catch (err) {
-      // Reassert while source custody is still held; acquisition and unwind errors
-      // must escape instead of becoming ordinary transcript failures.
-      commitGuard?.();
-      assertSourceCurrent?.();
-      return formatErrorMessage(err);
-    }
-  };
-  const transcriptError = withCommit
-    ? await withCommit(initializeTranscript)
-    : await initializeTranscript();
-  if (transcriptError !== undefined) {
-    return {
-      ok: false,
-      error: transcriptError,
-      phase: "transcript",
-    };
-  }
-
-  const entry = created.entry;
-  await applySessionEntryLifecycleMutation({
-    ...storeScope,
-    removals: legacyKeys.map((sessionKey) => ({ sessionKey })),
-    upserts: [{ sessionKey: normalizedKey, entry }],
-    skipMaintenance: true,
-    ...(commitGuard ? { beforeCommitInTransaction: commitGuard } : {}),
-    ...(withCommit ? { withCommit } : {}),
-    ...(ownerAssignment
-      ? {
-          afterFreshUpsertsInTransaction: (database) => {
-            if (!replaceSessionOwnerInTransaction(database, normalizedKey, ownerAssignment)) {
-              throw new Error(`Session owner assignment lost its target: ${normalizedKey}`);
-            }
-          },
+      const initializeTranscript = async (assertSourceCurrent?: () => void) => {
+        try {
+          const transcriptScope = resolveSqliteTranscriptScope({
+            ...storeScope,
+            sessionId: created.entry.sessionId,
+            sessionKey: normalizedKey,
+          });
+          await runExclusiveSqliteSessionWrite(
+            transcriptScope,
+            async () => {
+              runOpenClawAgentWriteTransaction((database) => {
+                commitGuard?.();
+                assertSourceCurrent?.();
+                ensureTranscriptHeader(database, transcriptScope, cwd);
+              }, toDatabaseOptions(transcriptScope));
+            },
+            "session.entry.create-with-transcript",
+          );
+          return undefined;
+        } catch (err) {
+          // Reassert while source custody is still held; acquisition and unwind errors
+          // must escape instead of becoming ordinary transcript failures.
+          commitGuard?.();
+          assertSourceCurrent?.();
+          return formatErrorMessage(err);
         }
-      : {}),
-    ...(onLifecycleCommitted ? { onLifecycleCommitted: () => onLifecycleCommitted(entry) } : {}),
-  });
-  return { ok: true, entry, sessionFile: normalizedKey };
+      };
+      const transcriptError = withCommit
+        ? await withCommit(initializeTranscript)
+        : await initializeTranscript();
+      if (transcriptError !== undefined) {
+        return {
+          ok: false,
+          error: transcriptError,
+          phase: "transcript",
+        };
+      }
+
+      const entry = created.entry;
+      await applySessionEntryLifecycleMutation({
+        ...storeScope,
+        removals: legacyKeys.map((sessionKey) => ({ sessionKey })),
+        upserts: [{ sessionKey: normalizedKey, entry }],
+        skipMaintenance: true,
+        ...(commitGuard ? { beforeCommitInTransaction: commitGuard } : {}),
+        ...(withCommit ? { withCommit } : {}),
+        ...(ownerAssignment
+          ? {
+              afterFreshUpsertsInTransaction: (database) => {
+                if (!replaceSessionOwnerInTransaction(database, normalizedKey, ownerAssignment)) {
+                  throw new Error(`Session owner assignment lost its target: ${normalizedKey}`);
+                }
+              },
+            }
+          : {}),
+        ...(onLifecycleCommitted
+          ? { onLifecycleCommitted: () => onLifecycleCommitted(entry) }
+          : {}),
+      });
+      return { ok: true, entry, sessionFile: normalizedKey };
+    },
+  );
 }
 
 export function cloneSessionEntries(
