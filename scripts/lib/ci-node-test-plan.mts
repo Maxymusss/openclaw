@@ -4078,6 +4078,30 @@ function routeRunsOnJobs(
   }
   return routed
     .map((job) => {
+      // The long tooling tail ran on two CPUs with a two-worker ceiling.
+      // Keep its execution contract; the complete forecast selects on-demand.
+      if (
+        job.runner === DEFAULT_NODE_TEST_RUNNER &&
+        job.predictedSeconds !== undefined &&
+        Number.isFinite(job.predictedSeconds) &&
+        job.predictedSeconds >= 480 &&
+        job.planConcurrency === 1 &&
+        !job.requiresDist &&
+        !job.pretestBuildMode &&
+        (job.env?.OPENCLAW_VITEST_MAX_WORKERS === undefined ||
+          job.env.OPENCLAW_VITEST_MAX_WORKERS === "2") &&
+        job.groups.length > 0 &&
+        job.groups.every(
+          (group) =>
+            group.configs.length === 1 &&
+            group.configs[0] === TOOLING_CONFIG &&
+            group.env?.OPENCLAW_VITEST_MAX_WORKERS === "2" &&
+            !group.requiresDist &&
+            !group.pretestBuildMode,
+        )
+      ) {
+        return Object.assign({}, job, { runner: "runson-general-16" });
+      }
       // The 32-class supplies eight CPUs and 31 GiB. Preserve its memory floor
       // for overlapping children and the eight-worker isolated Gateway cohort.
       // Runtime preparation retains Blacksmith until its complete flow qualifies.

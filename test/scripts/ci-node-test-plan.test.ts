@@ -11,6 +11,7 @@ import {
   createChangedNodeTestShards,
 } from "../../scripts/lib/ci-changed-node-test-plan.mts";
 import { rebalanceMeasuredHybridJobs } from "../../scripts/lib/ci-measured-compact-packing.mts";
+import * as measuredCompactPacking from "../../scripts/lib/ci-measured-compact-packing.mts";
 import {
   type CompactNodeTestShard,
   createNodeTestShardBundles,
@@ -753,9 +754,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     (compactMode) => {
       const hybrid = getCommittedCompactPlan(compactMode, "hybrid");
       const runson = getCommittedCompactPlan(compactMode, "runson");
-      const routed = runson.filter((job) => job.runner === "runson-general-16");
+      const routed = runson.filter((job) => job.shardName === "runson-cron");
       expect(routed).toHaveLength(1);
       expect(routed[0]).toMatchObject({
+        runner: "runson-general-16",
         planConcurrency: 1,
         requiresDist: false,
         env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
@@ -796,11 +798,15 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       }
       expect(
         runson
-          .filter((job) => job.runner !== "runson-general-16")
+          .filter((job) => job.shardName !== "runson-cron")
           .map((job) =>
             Object.assign({}, job, {
               runner:
-                job.runner === "runson-memory-32" ? "blacksmith-32vcpu-ubuntu-2404" : job.runner,
+                job.runner === "runson-memory-32"
+                  ? "blacksmith-32vcpu-ubuntu-2404"
+                  : job.runner === "runson-general-16"
+                    ? DEFAULT_NODE_TEST_RUNNER
+                    : job.runner,
             }),
           ),
       ).toEqual(
@@ -821,6 +827,86 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       ).toEqual(hybrid);
     },
   );
+
+  it("moves only long serial two-worker tooling envelopes to RunsOn without changing execution", () => {
+    const originalShards = fullSuiteVitestShards.slice();
+    fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, {
+      name: "fixture",
+      config: "test/vitest/vitest.hooks.config.ts",
+      projects: ["test/vitest/vitest.hooks.config.ts"],
+    });
+    const sample: CompactNodeTestShard = {
+      checkName: "checks-node-tooling-fixture",
+      shardName: "tooling-fixture",
+      runner: DEFAULT_NODE_TEST_RUNNER,
+      predictedSeconds: 480,
+      planConcurrency: 1,
+      requiresDist: false,
+      timeoutMinutes: 20,
+      env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+      groups: ["a", "b"].map((name) => ({
+        shard_name: `core-tooling-${name}`,
+        configs: ["test/vitest/vitest.tooling.config.ts"],
+        includePatterns: [`test/scripts/tooling-fixture-${name}.test.ts`],
+        env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+        runner: BUNDLED_NODE_TEST_RUNNER,
+        requiresDist: false,
+      })),
+    };
+    const cases: Array<{
+      name: string;
+      job?: Partial<CompactNodeTestShard>;
+      child?: Partial<CompactNodeTestShard["groups"][number]>;
+      routed?: boolean;
+    }> = [
+      { name: "threshold", routed: true },
+      { name: "measured tail", job: { predictedSeconds: 549 }, routed: true },
+      ...[undefined, 479, Number.NaN, Number.POSITIVE_INFINITY].map((seconds) => ({
+        name: `ineligible prediction ${seconds}`,
+        job: { predictedSeconds: seconds },
+      })),
+      { name: "small owner", job: { runner: BUNDLED_NODE_TEST_RUNNER } },
+      { name: "parallel plans", job: { planConcurrency: 2 } },
+      { name: "dist", job: { requiresDist: true } },
+      { name: "runtime build", job: { pretestBuildMode: "runtime" } },
+      { name: "child dist", child: { requiresDist: true } },
+      { name: "child runtime build", child: { pretestBuildMode: "runtime" } },
+      {
+        name: "mixed configs",
+        child: {
+          configs: ["test/vitest/vitest.tooling.config.ts", "test/vitest/vitest.hooks.config.ts"],
+        },
+      },
+      {
+        name: "isolated tooling",
+        child: { configs: ["test/vitest/vitest.tooling-isolated.config.ts"] },
+      },
+      { name: "job worker cap", job: { env: { OPENCLAW_VITEST_MAX_WORKERS: "1" } } },
+      { name: "child worker cap", child: { env: { OPENCLAW_VITEST_MAX_WORKERS: "1" } } },
+      { name: "unbounded child", child: { env: undefined } },
+      { name: "empty", job: { groups: [] } },
+    ];
+    const packing = vi.spyOn(measuredCompactPacking, "rebalanceMeasuredHybridJobs");
+    try {
+      for (const scenario of cases) {
+        const job = { ...structuredClone(sample), ...scenario.job };
+        if (scenario.child) {
+          Object.assign(job.groups[0]!, scenario.child);
+        }
+        packing.mockReturnValue([job]);
+        const plan = createNodeTestShardBundles({
+          compactMode: "pull-request",
+          runnerBackend: "runson",
+        });
+        expect(plan, scenario.name).toEqual([
+          { ...job, runner: scenario.routed ? "runson-general-16" : job.runner },
+        ]);
+      }
+    } finally {
+      packing.mockRestore();
+      fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
+    }
+  });
 
   // Frozen executor inputs keep measurement regression tests independent of
   // unrelated inventory additions. Only a new native observation updates them.

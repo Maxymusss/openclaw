@@ -56,8 +56,8 @@ Numbered compact bins change when membership changes. A matching suffix does not
 ## RunsOn remains unqualified
 
 The next candidate diversifies every RunsOn request across five AMD types and
-both AZs exposed by the installed stack. Node rows need at least eight CPUs and
-32 GiB; UI/cron need 4–8 CPUs and 16 GiB. Existing memory gates and worker limits
+both AZs exposed by the installed stack. The former 32-class Node rows need at least eight CPUs and
+32 GiB; UI, cron and eligible long tooling rows use 4–8 CPUs and 16 GiB. Existing memory gates and worker limits
 still admit execution. Runtime builds and the measured update-CLI envelope
 retain Blacksmith. The slow retained CLI process cohort is split using the
 existing runtime admission owner and complete file costs; its former seven-file
@@ -70,6 +70,19 @@ UI has no complete per-row forecast. This market-only reserve covers the
 GitHub-projects UI spec stays on Blacksmith in a disjoint inventory partition
 until its previous AWS RPC timeout has an established cause. No coverage or
 hosted lint/type routing changes accompany these placements.
+
+Ordinary PR run `35881459999`, job `107251427442`, exposed a separate tooling
+tail: 85 files in three serial two-worker children took 674.40 test seconds
+inside a 786-second Blacksmith 8-class job. It averaged 1.5065 busy cores on
+two available CPUs with 7.656 GiB delivered RAM; peak RSS was not recorded.
+The exact ordered child contracts remain together in the RunsOn PR plan with
+the same 549-second prediction, while main omits that release-only tooling.
+Long ordinary tooling envelopes now request the existing 4–8-CPU, 16-GiB
+on-demand pool without another shard or worker. Native qualification must
+establish its runtime; the larger memory floor alone is not a speed claim.
+The ordinary run also had a 137-second hosted gate wait and a Gateway fixture
+type error. Its raw wall was 17m24s; removing queue time arithmetically does not
+qualify the route.
 
 The final single-pool controls at `791e06f63af6` all failed and exceeded 15 minutes:
 

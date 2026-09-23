@@ -212,15 +212,22 @@ admission floors. Blacksmith's requested 32/16 classes delivered eight/four CPUs
 in the native probes; advertised labels are not worker counts. Runtime builds,
 dist rows and the measured update-CLI storage envelope retain Blacksmith.
 
+Ordinary tooling envelopes with a finite prediction of at least 480 seconds
+also move from Blacksmith's 8-class to the 4–8-CPU, 16-GiB pool. Eligibility
+requires serial execution, the existing two-worker cap in every child, and no
+runtime preparation or dist requirement. Their prediction already exceeds Spot
+admission, so they use on-demand. This changes capacity without adding shards or
+changing the selected files, packing, workers, or deadlines.
+
 Each request admits five exact instance types. Fast-family preference is best
 effort: RunsOn's capacity-optimized-prioritized policy (`spot=cop`) chooses
 capacity first. Older AMD alternatives require native workload qualification;
 the family list does not establish equal single-thread performance.
 
-| Pool                | CPU / GiB bounds | Spot preference order                                                       |
-| ------------------- | ---------------- | --------------------------------------------------------------------------- |
-| Node                | 8–16 / 32–48     | `m8azn.3xlarge`, `m8a.2xlarge`, `c8a.4xlarge`, `m7a.2xlarge`, `c7a.4xlarge` |
-| Cron and Control UI | 4–8 / 16         | `m8azn.xlarge`, `m8a.xlarge`, `c8a.2xlarge`, `m7a.xlarge`, `c7a.2xlarge`    |
+| Pool                              | CPU / GiB bounds | Spot preference order                                                       |
+| --------------------------------- | ---------------- | --------------------------------------------------------------------------- |
+| Node                              | 8–16 / 32–48     | `m8azn.3xlarge`, `m8a.2xlarge`, `c8a.4xlarge`, `m7a.2xlarge`, `c7a.4xlarge` |
+| Cron, Control UI and long tooling | 4–8 / 16         | `m8azn.xlarge`, `m8a.xlarge`, `c8a.2xlarge`, `m7a.xlarge`, `c7a.2xlarge`    |
 
 The `m8azn` family has no 2xlarge size; its 3xlarge supplies 12 CPUs and 48 GiB.
 Resource ranges keep that alternative eligible. Direct on-demand requests put
