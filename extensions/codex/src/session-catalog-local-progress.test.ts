@@ -33,7 +33,8 @@ function fixture() {
     started.resolve();
     return response.promise;
   });
-  const onHost = vi.fn();
+  const published = createDeferred<unknown>();
+  const onHost = vi.fn((host: unknown) => published.resolve(host));
   const controller = new AbortController();
   const publications: Promise<void>[] = [];
   const list = (allowPartialResults = true) =>
@@ -50,7 +51,7 @@ function fixture() {
       data: [idleThread({ id: "cold-row", source: "cli", originator: "codex_cli_rs" })],
       nextCursor: null,
     });
-  return { started, response, reply, list, onHost, publications, controller };
+  return { started, response, reply, list, onHost, published, publications, controller };
 }
 
 it.each([true, false])(
@@ -73,6 +74,9 @@ it.each([true, false])(
       await vi.advanceTimersByTimeAsync(1_750);
       f.reply();
       await result.done;
+      await expect(f.published.promise).resolves.toMatchObject({
+        sessions: [expect.objectContaining({ threadId: "cold-row" })],
+      });
       await Promise.all(f.publications);
       expect(f.onHost).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ sessions: [expect.objectContaining({ threadId: "cold-row" })] }),
