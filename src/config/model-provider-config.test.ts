@@ -206,15 +206,18 @@ describe("configured model row precedence", () => {
 });
 
 describe("reused configured model lookups", () => {
-  it("defers legacy preparation until an exact miss and reuses only stripped rows", () => {
+  it("keeps the first fallback short-circuited and prepares only repeated fallback demand", () => {
     const legacy = model("custom/Model");
-    const models = [...Array.from({ length: 64 }, (_, index) => model(`plain-${index}`)), legacy];
+    const models = [legacy, ...Array.from({ length: 64 }, (_, index) => model(`plain-${index}`))];
     const strip = vi.spyOn(providerModelNormalization, "stripSelfProviderModelPrefix");
     try {
       const resolve = createConfiguredProviderModelResolver({ models }, "custom");
       expect(strip).not.toHaveBeenCalled();
-      expect(resolve("plain-0")).toBe(models[0]);
+      expect(resolve("plain-0")).toBe(models[1]);
       expect(strip).toHaveBeenCalledTimes(models.length + 1);
+      strip.mockClear();
+      expect(resolve("Model")).toBe(legacy);
+      expect(strip).toHaveBeenCalledTimes(2);
       strip.mockClear();
       expect(resolve("Model")).toBe(legacy);
       expect(strip).toHaveBeenCalledTimes(models.length + 1);
@@ -226,6 +229,37 @@ describe("reused configured model lookups", () => {
     } finally {
       strip.mockRestore();
     }
+  });
+
+  it("keeps an active first fallback scan stable when a callback prepares a nested lookup", () => {
+    const first = model("custom/First");
+    const second = model("custom/Second");
+    let nested: ModelDefinitionConfig | undefined;
+    let reentered = false;
+    const canonicalize = vi.fn((id: string) => {
+      if (id === "First" && !reentered) {
+        reentered = true;
+        nested = resolve("Second");
+      }
+      return id === "target" || id === "Second" ? "match" : id;
+    });
+    const resolve = createConfiguredProviderModelResolver(
+      { models: [first, second] },
+      "custom",
+      canonicalize,
+    );
+    expect(resolve("target")).toBe(second);
+    expect(nested).toBe(second);
+    expect(canonicalize.mock.calls).toEqual([
+      ["target"],
+      ["First"],
+      ["Second"],
+      ["First"],
+      ["Second"],
+    ]);
+    canonicalize.mockClear();
+    expect(resolve("target")).toBe(second);
+    expect(canonicalize.mock.calls).toEqual([["target"], ["First"], ["Second"]]);
   });
 
   it("keeps fallback callbacks live, ordered, short-circuited, and throwable", () => {

@@ -52,6 +52,7 @@ export function createConfiguredProviderModelResolver<T extends { id: string }>(
     stripSelfProviderModelPrefix(provider, id) !== id ? id : canonicalizeModelId?.(id).trim() || id;
   let configuredModels: Map<string, T> | undefined;
   let configuredModelsComplete = false;
+  let hasFallback = false;
   let legacyRows: [string, T][] | undefined;
   return (modelId) => {
     const id = modelId.trim();
@@ -81,21 +82,26 @@ export function createConfiguredProviderModelResolver<T extends { id: string }>(
     }
     // Declared equivalents precede legacy self-provider prefixes. The selected
     // namespace itself is never stripped or merged with a legacy row.
-    // Callbacks can observe a partial index or throw while building it; only
-    // completed indexes have a stable legacy projection.
+    // One-shot callers keep the original short-circuit scan. Repeated fallbacks
+    // prepare only a completed index; callbacks can expose a partial one.
     if (configuredModelsComplete && !legacyRows) {
-      legacyRows = [];
-      for (const [candidate, row] of rows) {
-        const legacy = stripSelfProviderModelPrefix(provider, candidate);
-        if (legacy !== candidate) {
-          legacyRows.push([legacy, row]);
+      if (hasFallback) {
+        legacyRows = [];
+        for (const [candidate, row] of rows) {
+          const legacy = stripSelfProviderModelPrefix(provider, candidate);
+          if (legacy !== candidate) {
+            legacyRows.push([legacy, row]);
+          }
         }
       }
+      hasFallback = true;
     }
-    for (const [candidate, row] of legacyRows ?? rows) {
-      const legacy = legacyRows ? candidate : stripSelfProviderModelPrefix(provider, candidate);
+    // A callback can reenter and prepare the projection while this scan is live.
+    const fallbackRows = legacyRows;
+    for (const [candidate, row] of fallbackRows ?? rows) {
+      const legacy = fallbackRows ? candidate : stripSelfProviderModelPrefix(provider, candidate);
       if (
-        (legacyRows !== undefined || legacy !== candidate) &&
+        (fallbackRows !== undefined || legacy !== candidate) &&
         (legacy === id || canonicalize(legacy.trim()) === canonicalId)
       ) {
         return row;

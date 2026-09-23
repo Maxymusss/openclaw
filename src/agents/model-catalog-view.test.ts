@@ -100,7 +100,9 @@ describe("prepared model catalog view", () => {
     (initial) => {
       const providers: Record<string, ModelProviderConfig> =
         initial === "empty" ? { fixture: { baseUrl: "", models: [] } } : {};
-      const enumerate = vi.fn(Reflect.ownKeys);
+      const enumerate = vi.fn((target: Record<string, ModelProviderConfig>) =>
+        Reflect.ownKeys(target),
+      );
       const cfg: OpenClawConfig = {
         models: { providers: new Proxy(providers, { ownKeys: enumerate }) },
       };

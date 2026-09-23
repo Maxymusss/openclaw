@@ -456,7 +456,9 @@ describe("projectModelCatalogEntryForRoute", () => {
   it.each(["absent", "empty"])("captures %s providers lazily within one resolver", (initial) => {
     const providers: Record<string, ModelProviderConfig> =
       initial === "empty" ? { custom: { baseUrl: "", models: [] } } : {};
-    const enumerate = vi.fn(Reflect.ownKeys);
+    const enumerate = vi.fn((target: Record<string, ModelProviderConfig>) =>
+      Reflect.ownKeys(target),
+    );
     const cfg: OpenClawConfig = {
       models: { providers: new Proxy(providers, { ownKeys: enumerate }) },
     };
