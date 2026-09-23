@@ -19,6 +19,7 @@ import { isCliRuntimeAliasForProvider, isCliRuntimeProvider } from "../model-run
 import { isOpenAIProvider } from "../openai-routing.js";
 import {
   assertOperatorModelAllowed,
+  assertOperatorModelSelection,
   assertOperatorModelHarnessSupported,
   isOperatorModelPolicyError,
 } from "../operator-model-policy.js";
@@ -211,7 +212,7 @@ async function resolveHarnessCompactApiKey(params: {
   if (!model) {
     return fallbackResolution(initialHarness);
   }
-  assertOperatorModelAllowed(compactParams.operatorAuthority, model.provider, model.id);
+  assertOperatorModelSelection(compactParams.operatorAuthority, model);
   const runtimeAuthProfileStore = isOpenAIProvider(provider)
     ? ensureAuthProfileStore(agentDir, {
         profileId: compactParams.authProfileId ?? reusableRuntimeAuthPlan?.forwardedAuthProfileId,
@@ -476,11 +477,7 @@ export async function maybeCompactAgentHarnessSession(
   harness = resolved.harness;
   assertOperatorModelHarnessSupported(params.operatorAuthority, harness);
   if (resolved.runtimeModel) {
-    assertOperatorModelAllowed(
-      params.operatorAuthority,
-      resolved.runtimeModel.provider,
-      resolved.runtimeModel.id,
-    );
+    assertOperatorModelSelection(params.operatorAuthority, resolved.runtimeModel);
   }
   const nativeToolPolicyRestricted = resolveNativeToolPolicyRestricted(harness);
   compactParams.nativeToolSurface = nativeToolPolicyRestricted ? "host-isolated" : "unrestricted";

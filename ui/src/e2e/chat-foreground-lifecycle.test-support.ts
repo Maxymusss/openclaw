@@ -466,14 +466,15 @@ export async function openForegroundPage(
   );
   await page.goto(new URL("settings/profile", fixture.identity(person).url).href);
   await waitForControlUiGatewayReady(page);
-  expect(
-    await rpc(page, "sessions.create", {
-      key,
-      agentId: person === "staff" ? "staff" : "main",
-      label: "Foreground lifecycle fixture",
-      visibility: "shared",
-    }),
-  ).toMatchObject({ ok: true });
+  const created = await rpc(page, "sessions.create", {
+    key,
+    agentId: person === "staff" ? "staff" : "main",
+    label: "Foreground lifecycle fixture",
+    visibility: "shared",
+  });
+  expect(created, created.ok ? undefined : JSON.stringify(created.error)).toMatchObject({
+    ok: true,
+  });
   await page.goto(controlUiSessionUrl(fixture.identity(person).url, key));
   await waitForControlUiGatewayReady(page);
   await expect.poll(observed.hello).toMatchObject({

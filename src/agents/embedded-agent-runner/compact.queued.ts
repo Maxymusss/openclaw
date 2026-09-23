@@ -30,6 +30,7 @@ import { maybeCompactAgentHarnessSession } from "../harness/compaction.js";
 import { ensureSelectedAgentHarnessPlugin } from "../harness/runtime-plugin.js";
 import {
   assertOperatorModelAllowed,
+  assertOperatorModelSelection,
   assertOperatorModelAuthorityCurrent,
   assertOperatorModelHarnessSupported,
   runWithOperatorModelAuthority,
@@ -455,11 +456,7 @@ async function compactResolvedContextEngine(
   const { model: ceModel, authStorage, modelRegistry } = modelResolution;
   const ceRuntimeModel = ceModel as ProviderRuntimeModel | undefined;
   if (ceRuntimeModel) {
-    assertOperatorModelAllowed(
-      params.operatorAuthority,
-      ceRuntimeModel.provider,
-      ceRuntimeModel.id,
-    );
+    assertOperatorModelSelection(params.operatorAuthority, ceRuntimeModel);
   }
   // Overrides stay unset when no bound/planned/explicit harness resolved so auth-aware
   // selection can pick the credential-owning harness (codex for ChatGPT OAuth).

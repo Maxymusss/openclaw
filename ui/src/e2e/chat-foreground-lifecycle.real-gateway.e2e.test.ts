@@ -126,14 +126,28 @@ suite.define(() => {
                 .filter((request) => asNullableRecord(request.params)?.sessionKey === key);
             const catalogs = catalogsForSession().length;
             await fixture.setGuestModelPolicy(restricted ? { allow: [allowedModel] } : undefined);
-            await expect
-              .poll(
-                () =>
-                  observed.received.filter(
-                    (frame) => frame.type === "event" && frame.event === "chat.metadata.changed",
-                  ).length,
-              )
-              .toBeGreaterThan(events);
+            try {
+              await expect
+                .poll(
+                  () =>
+                    observed.received.filter(
+                      (frame) => frame.type === "event" && frame.event === "chat.metadata.changed",
+                    ).length,
+                )
+                .toBeGreaterThan(events);
+            } catch (error) {
+              const reload = fixture.instance
+                .logs()
+                .split("\n")
+                .filter((line) => /config (?:hot-)?reload|config change detected/.test(line))
+                .slice(-20)
+                .join("\n")
+                .slice(-4_000);
+              throw new Error(
+                `Model-policy refresh failed (restricted=${restricted}).\n${reload}`,
+                { cause: error },
+              );
+            }
             await expect.poll(() => catalogsForSession().length).toBeGreaterThan(catalogs);
             await expect
               .poll(() => {
@@ -245,6 +259,10 @@ suite.define(() => {
             expect(await composer(page).inputValue()).toBe(draft);
             expect((await history(page, key)).pending).toMatchObject({ items: [], total: 0 });
             expect(observed.requests("chat.send")).toHaveLength(sendsBefore);
+            await thread(page).screenshot({
+              path: path.join(suite.artifactDir, "stop-running.png"),
+              animations: "disabled",
+            });
             await stopWithHeldCleanup(page, observed, runId, turn);
             expect(await composer(page).inputValue()).toBe(draft);
             const busy = await rpc(page, "chat.send", {
@@ -314,6 +332,10 @@ suite.define(() => {
               turn,
             );
             await stopWithHeldCleanup(page, observed, runId, turn);
+            await thread(page).screenshot({
+              path: path.join(suite.artifactDir, "cleanup-pending.png"),
+              animations: "disabled",
+            });
             turn.release(true);
             await expect.poll(() => turn.closed).toEqual({ code: 23, signal: null });
             expect(isPidAlive(turn.pid!)).toBe(false);
@@ -382,6 +404,10 @@ suite.define(() => {
             const connection = observed.hello()?.server.connId;
             const child = fixture.instance.child;
             const stateDir = fixture.instance.stateDir;
+            await thread(page).screenshot({
+              path: path.join(suite.artifactDir, "restart-running.png"),
+              animations: "disabled",
+            });
             expect(await fixture.restart(staff)).toMatchObject({ ok: true });
             await expect.poll(() => turn.acknowledged).toBe(1);
             expect(turn.closed).toBeUndefined();

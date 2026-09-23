@@ -28,7 +28,7 @@ import {
   type ChatCommandTarget,
   type ChatCommandResetOptions,
 } from "./chat-commands.ts";
-import { isForegroundChat } from "./chat-foreground-policy.ts";
+import { adoptForegroundRetainedInputs, isForegroundChat } from "./chat-foreground-policy.ts";
 import { chatOutboxOwner } from "./chat-outbox-owner.ts";
 import {
   consumeChatOutboxRetry,
@@ -266,6 +266,14 @@ async function drainStoredChatOutbox(
     if (!outbox) {
       return "empty";
     }
+    const adoption = adoptForegroundRetainedInputs(host, outbox);
+    if (adoption === "failed") {
+      dependencies.setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
+      return "blocked";
+    }
+    if (adoption === "updated") {
+      continue;
+    }
     // Fresh active-run sends bypass older rows, including when the Gateway resolves the mode.
     const freshActiveRunItem = outbox.queue.find(
       (entry) =>
@@ -307,13 +315,6 @@ async function drainStoredChatOutbox(
     const item = freshItem
       ? (readQueuedMessageById(host, storedItem.id) ?? storedItem)
       : storedItem;
-    if (isForegroundChat(host) && !item.foregroundOnly) {
-      if (!updateQueuedMessage(host, item.id, (entry) => ({ ...entry, foregroundOnly: true }))) {
-        dependencies.setChatError(host, OFFLINE_QUEUE_STORAGE_ERROR);
-        return "blocked";
-      }
-      continue;
-    }
     if (item.sendState === "failed" && !freshItem) {
       return "empty";
     }
@@ -321,6 +322,7 @@ async function drainStoredChatOutbox(
       // Browser input still belongs to the foreground submitter. Only its fresh
       // admission may deliver this version; passive wakes must not drop its fence.
       (!freshItem && chatOutboxOwner(host).hasPendingSubmission(outbox, storedItem)) ||
+      (isForegroundChat(host, item) && item.pendingRunId) ||
       item.sendState === "held" ||
       (item.sendState === "unconfirmed" && (!item.sendRunId || item.localCommandName)) ||
       (item.sendState === "waiting-model" && !lane.pendingOptions.has(item.id)) ||

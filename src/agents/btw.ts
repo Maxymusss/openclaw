@@ -69,6 +69,8 @@ import {
 } from "./model-runtime-aliases.js";
 import {
   assertOperatorModelAllowed,
+  assertOperatorModelSelection,
+  assertOperatorModelRequestRoute,
   assertOperatorModelHarnessSupported,
   runWithOperatorModelAuthority,
   assertOperatorModelResponse,
@@ -454,9 +456,14 @@ async function runOwnedBtwSideQuestion(
     const prepareHarness = async (
       provider: string,
       modelId: string,
+      model?: Model,
       modelProvider?: AgentHarnessPreparedModelProvider,
     ): Promise<AgentHarness> => {
-      assertOperatorModelAllowed(operatorAuthority, provider, modelId);
+      const assertModelCurrent = () =>
+        model
+          ? assertOperatorModelSelection(operatorAuthority, model)
+          : assertOperatorModelAllowed(operatorAuthority, provider, modelId);
+      assertModelCurrent();
       const agentHarnessId = isModelSelectionLocked(params.sessionEntry)
         ? params.sessionEntry.agentHarnessId
         : undefined;
@@ -480,6 +487,7 @@ async function runOwnedBtwSideQuestion(
       ].join("\0");
       const cached = preparedHarnesses.get(key);
       if (cached) {
+        assertOperatorModelHarnessSupported(operatorAuthority, cached);
         return cached;
       }
       await ensureSelectedAgentHarnessPlugin({
@@ -508,7 +516,7 @@ async function runOwnedBtwSideQuestion(
             modelProviders: [modelProvider],
           })
         : selectAgentHarness(selectionParams);
-      assertOperatorModelAllowed(operatorAuthority, provider, modelId);
+      assertModelCurrent();
       assertOperatorModelHarnessSupported(operatorAuthority, harness);
       preparedHarnesses.set(key, harness);
       return harness;
@@ -581,7 +589,7 @@ async function runOwnedBtwSideQuestion(
       runtime: Awaited<ReturnType<typeof resolveRuntimeModel>>,
       routeFinalized = false,
     ): Promise<BtwHarnessSideQuestionDispatch> => {
-      assertOperatorModelAllowed(operatorAuthority, runtime.model.provider, runtime.model.id);
+      assertOperatorModelSelection(operatorAuthority, runtime.model);
       assertOperatorModelHarnessSupported(operatorAuthority, selectedHarness);
       const toolsAllow = resolvePluginHarnessPolicyToolsAllow({
         config: params.cfg,
@@ -668,12 +676,17 @@ async function runOwnedBtwSideQuestion(
           });
       const runtimeAuthPlan = resolvedAttempt.plan;
       const runtimeModel = resolvedAttempt.model;
-      const finalizedHarness = await prepareHarness(runtimeModel.provider, runtimeModel.id, {
-        api: runtimeModel.api,
-        baseUrl: runtimeModel.baseUrl,
-        ...resolveAgentHarnessPreparedRouteSupport(runtimeAuthPlan),
-        preparedAuth: resolveAgentHarnessPreparedAuthSupport({ plan: runtimeAuthPlan }),
-      });
+      const finalizedHarness = await prepareHarness(
+        runtimeModel.provider,
+        runtimeModel.id,
+        runtimeModel,
+        {
+          api: runtimeModel.api,
+          baseUrl: runtimeModel.baseUrl,
+          ...resolveAgentHarnessPreparedRouteSupport(runtimeAuthPlan),
+          preparedAuth: resolveAgentHarnessPreparedAuthSupport({ plan: runtimeAuthPlan }),
+        },
+      );
       if (finalizedHarness.id !== selectedHarness.id) {
         if (routeFinalized) {
           throw new Error("Agent harness selection changed after route materialization.");
@@ -803,7 +816,7 @@ async function runOwnedBtwSideQuestion(
         };
         let result: Awaited<ReturnType<NonNullable<AgentHarness["runSideQuestion"]>>>;
         try {
-          assertOperatorModelAllowed(operatorAuthority, runtimeModel.provider, runtimeModel.id);
+          assertOperatorModelSelection(operatorAuthority, runtimeModel);
           assertOperatorModelHarnessSupported(operatorAuthority, selectedHarness);
           result = await selectedHarness.runSideQuestion(sideParams);
         } finally {
@@ -935,6 +948,7 @@ async function runOwnedBtwSideQuestion(
       (await prepareHarness(
         runtimeSelectionForHarness.model.provider,
         runtimeSelectionForHarness.model.id,
+        runtimeSelectionForHarness.model,
       ));
     if (runtimeHarness.runSideQuestion) {
       const dispatch = await runHarnessSideQuestion(runtimeHarness, runtimeSelectionForHarness);
@@ -972,7 +986,7 @@ async function runOwnedBtwSideQuestion(
     const resolvedRuntimeAuthPlan = resolvedAttempt.plan;
     const resolvedAuthProfileId = resolvedRuntimeAuthPlan.forwardedAuthProfileId;
     let runtimeModel = resolvedAttempt.model;
-    assertOperatorModelAllowed(operatorAuthority, runtimeModel.provider, runtimeModel.id);
+    assertOperatorModelSelection(operatorAuthority, runtimeModel);
     let apiKey =
       apiKeyInfo.mode === "aws-sdk" && !apiKeyInfo.apiKey
         ? undefined
@@ -1007,7 +1021,7 @@ async function runOwnedBtwSideQuestion(
         apiKey = preparedAuth.apiKey;
       }
     }
-    assertOperatorModelAllowed(operatorAuthority, runtimeModel.provider, runtimeModel.id);
+    assertOperatorModelSelection(operatorAuthority, runtimeModel);
     runtimeModel = applySecretRefHeaderSentinels(runtimeModel, params.cfg);
     const modelRegistryRuntime = getModelRegistryRuntime(modelRegistry);
 
@@ -1027,7 +1041,7 @@ async function runOwnedBtwSideQuestion(
     const { streamFn } = resolveEmbeddedAgentStream({
       operatorAuthority,
       assertModelCurrent: (selectedModel) =>
-        assertOperatorModelAllowed(operatorAuthority, selectedModel.provider, selectedModel.id),
+        assertOperatorModelRequestRoute(operatorAuthority, selectedModel),
       llmRuntime: modelRegistryRuntime.llmRuntime,
       currentStreamFn: modelRegistryRuntime.llmRuntime.streamSimple,
       providerStreamFn,

@@ -1,6 +1,7 @@
 import type { SessionEntry as StoredSessionEntry } from "../config/sessions.js";
 import { resolveCollapsedSessionAuthPinSource } from "../config/sessions/auth-profile-override-provenance.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { readModelRequestRoute } from "../llm/model-runtime-binding.js";
 import type { Model } from "../llm/types.js";
 import type { AdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
 import { resolveExternalCliAuthOverlayScopeFromSelection } from "./auth-profiles/external-cli-auth-selection.js";
@@ -14,7 +15,10 @@ import {
   ensureAuthProfileStoreWithoutExternalProfiles,
 } from "./model-auth.js";
 import { isOpenAIProvider } from "./openai-routing.js";
-import { assertOperatorModelAllowed } from "./operator-model-policy.js";
+import {
+  assertOperatorModelAllowed,
+  assertOperatorModelSelection,
+} from "./operator-model-policy.js";
 import type {
   PreparedModelRuntimeSnapshot,
   PreparedModelRuntimeStores,
@@ -131,6 +135,10 @@ async function materializeBtwRuntimeModel(
   },
 ): Promise<Model> {
   const { agentDir, config: cfg, workspaceDir } = params.preparedModelRuntime;
+  const logicalRef = readModelRequestRoute(params.model)?.logicalRef ?? {
+    provider: params.model.provider,
+    model: params.model.id,
+  };
   return (
     (await materializePreparedRuntimeModel({
       operatorAuthority: params.operatorAuthority,
@@ -143,7 +151,7 @@ async function materializeBtwRuntimeModel(
       model: params.model,
       ...(params.forceResolve !== undefined ? { forceResolve: params.forceResolve } : {}),
       resolveModel: ({ config, authProfileId, authProfileMode }) =>
-        resolveModelAsync(params.provider, params.modelId, agentDir, config, {
+        resolveModelAsync(logicalRef.provider, logicalRef.model, agentDir, config, {
           abortSignal: params.abortSignal,
           modelIdSource: "selected",
           authStorage: params.authStorage,
@@ -234,7 +242,7 @@ export async function resolveRuntimeModel(params: {
   if (!model) {
     throw new Error(resolution.error ?? `Unknown model: ${params.provider}/${params.model}`);
   }
-  assertOperatorModelAllowed(params.operatorAuthority, model.provider, model.id);
+  assertOperatorModelSelection(params.operatorAuthority, model);
   const runtimeProvider = model.provider;
   const runtimeModelId = model.id;
 
@@ -267,7 +275,7 @@ export async function resolveRuntimeModel(params: {
     authProfileStoreSelection.ignoreAutoPreferredProfile && authProfileIdSource !== "user"
       ? undefined
       : authProfileId;
-  assertOperatorModelAllowed(params.operatorAuthority, model.provider, model.id);
+  assertOperatorModelSelection(params.operatorAuthority, model);
   const authParams = {
     provider: runtimeProvider,
     modelId: runtimeModelId,
@@ -286,7 +294,7 @@ export async function resolveRuntimeModel(params: {
     harnessAuthBootstrap: params.harnessAuthBootstrap,
   } satisfies Parameters<typeof prepareAgentRuntimeAuth>[0];
   await reconcileAuthProfileQuotaBlocks(authParams);
-  assertOperatorModelAllowed(params.operatorAuthority, model.provider, model.id);
+  assertOperatorModelSelection(params.operatorAuthority, model);
   const runtimeAuthPreparation = prepareAgentRuntimeAuth(authParams);
   model = await materializeBtwRuntimeModel({
     operatorAuthority: params.operatorAuthority,

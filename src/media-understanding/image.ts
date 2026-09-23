@@ -9,6 +9,7 @@ import { isMinimaxVlmModel, minimaxUnderstandImage } from "../agents/minimax-vlm
 import { requireApiKey, resolveApiKeyForProviderCore } from "../agents/model-auth.js";
 import {
   assertOperatorModelAllowed,
+  assertOperatorModelSelection,
   runWithOperatorModelAuthority,
   assertOperatorModelResponse,
   wrapOperatorModelStream,
@@ -199,6 +200,7 @@ async function describeImagesWithMinimax(params: {
   runtimeValue: string;
   provider: string;
   modelId: string;
+  model?: Model;
   modelBaseUrl?: string;
   prompt: string;
   timeoutMs?: number;
@@ -225,7 +227,9 @@ async function describeImagesWithMinimax(params: {
         ? `${params.prompt}\n\nDescribe image ${index + 1} of ${params.images.length} independently.`
         : params.prompt;
     const assertCurrent = () =>
-      assertOperatorModelAllowed(params.operatorAuthority, params.provider, params.modelId);
+      params.model
+        ? assertOperatorModelSelection(params.operatorAuthority, params.model)
+        : assertOperatorModelAllowed(params.operatorAuthority, params.provider, params.modelId);
     assertCurrent();
     const text = await minimaxUnderstandImage({
       assertCurrent,
@@ -497,7 +501,7 @@ async function describeImagesWithModelInternal(
       }
 
       const apiKey = runtimeValue;
-      assertOperatorModelAllowed(operatorAuthority, model.provider, model.id);
+      assertOperatorModelSelection(operatorAuthority, model);
       params.signal?.throwIfAborted();
       assertResourcesOpen?.();
       const setupDurationMs = Date.now() - startedAtMs;
@@ -509,6 +513,7 @@ async function describeImagesWithModelInternal(
           runtimeValue,
           provider: model.provider,
           modelId: model.id,
+          model,
           modelBaseUrl: model.baseUrl,
           prompt,
           timeoutMs: params.timeoutMs,
@@ -526,7 +531,7 @@ async function describeImagesWithModelInternal(
         "image description provider request",
       );
       const assertModelCurrent = () =>
-        assertOperatorModelAllowed(operatorAuthority, requestModel.provider, requestModel.id);
+        assertOperatorModelSelection(operatorAuthority, requestModel);
       assertModelCurrent();
       const providerStreamFn = registerProviderStreamForModel({
         model: requestModel,

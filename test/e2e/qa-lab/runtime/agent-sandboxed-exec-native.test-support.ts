@@ -49,7 +49,10 @@ vi.mock("../../../../src/process/exec.js", async (importOriginal) => {
           if (stdout === undefined) {
             throw new Error("Successful native control request returned no captured output");
           }
-          await after(args[0], stdout.toString());
+          await after(
+            args[0],
+            typeof stdout === "string" ? stdout : Buffer.from(stdout).toString("utf8"),
+          );
         }
         return result;
       });
@@ -348,11 +351,15 @@ export function registerNativeSandboxLifecycleTests(backend: SandboxContainerEng
             value: { details: { status: "completed", exitCode: 0 } },
           });
         } else {
-          expect(result).toMatchObject({ ok: false, error: { name: "AbortError" } });
+          expect(result).toMatchObject({
+            ok: false,
+            error: { name: "AbortError", message: "Aborted" },
+          });
           if (mode !== "refresh") {
-            expect(result).toMatchObject({
-              error: { cause: mode === "stop" ? abort.signal.reason : originalSignal.reason },
-            });
+            expect(generation.current.signal.aborted).toBe(true);
+            expect(generation.current.signal.reason).toBe(
+              mode === "stop" ? abort.signal.reason : originalSignal.reason,
+            );
           }
         }
         if (mode === "deadline") {
@@ -362,7 +369,7 @@ export function registerNativeSandboxLifecycleTests(backend: SandboxContainerEng
         await generation.release("completion");
         generation.assertCleanupConfirmed();
         confirmed = true;
-        await expect(readRegistryEntry(runtimeId)).resolves.toBeUndefined();
+        await expect(readRegistryEntry(runtimeId)).resolves.toBeNull();
         const removed = await execContainer(engine, ["inspect", containerId], {
           allowFailure: true,
         });
@@ -470,7 +477,7 @@ export function registerNativeSandboxLifecycleTests(backend: SandboxContainerEng
       try {
         await Promise.race([
           entered.promise,
-          observed.then(() => {
+          setup.then(() => {
             throw new Error("native dispatch was not reached");
           }),
         ]);

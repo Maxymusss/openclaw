@@ -8,6 +8,7 @@ import {
   requireApiKey,
 } from "../agents/model-auth.js";
 import { normalizeModelRef } from "../agents/model-selection.js";
+import { assertOperatorModelSelection } from "../agents/operator-model-policy.js";
 import {
   acquireAgentRunPreparedModelRuntime,
   type PreparedModelRuntimeSnapshot,
@@ -18,7 +19,7 @@ import { applyPreparedRuntimeAuthToModel } from "../agents/provider-request-conf
 import { protectPreparedProviderRuntimeAuth } from "../agents/provider-runtime-auth-protection.js";
 import { providerUsesCredentialScopedModelMetadata } from "../agents/runtime-plan/credential-scoped-model.js";
 import { getModelRegistryRuntime } from "../agents/sessions/model-registry-runtime.js";
-import { bindModelLlmRuntime } from "../llm/model-runtime-binding.js";
+import { bindModelLlmRuntime, readModelRequestRoute } from "../llm/model-runtime-binding.js";
 import type { Model } from "../llm/types.js";
 import {
   attachModelProviderRuntimePluginHandle,
@@ -113,6 +114,10 @@ async function prepareResolvedImageRuntime(
   modelRegistry: Awaited<ReturnType<typeof resolveModelAsync>>["modelRegistry"],
 ): Promise<PreparedImageRuntime> {
   let model = resolvedModel;
+  const logicalRef = readModelRequestRoute(resolvedModel)?.logicalRef ?? {
+    provider: resolvedModel.provider,
+    model: resolvedModel.id,
+  };
   const modelRuntime = getModelRegistryRuntime(modelRegistry);
   const bindPreparedModel = (candidate: Model): Model => {
     const requestModel = applySecretRefHeaderSentinels(candidate, params.cfg);
@@ -129,6 +134,8 @@ async function prepareResolvedImageRuntime(
       modelRuntime.llmRuntime,
     );
   };
+  params.signal?.throwIfAborted();
+  assertOperatorModelSelection(undefined, model);
   const apiKeyInfo = await getApiKeyForModelCore({
     model,
     cfg: params.cfg,
@@ -140,6 +147,7 @@ async function prepareResolvedImageRuntime(
     secretSentinels: true,
   });
   params.signal?.throwIfAborted();
+  assertOperatorModelSelection(undefined, model);
   if (
     providerUsesCredentialScopedModelMetadata({
       provider: model.provider,
@@ -151,8 +159,8 @@ async function prepareResolvedImageRuntime(
   ) {
     const authProfileMode = resolveProviderModelMaterializationAuthMode(apiKeyInfo.mode);
     const authoritative = await resolveModelAsync(
-      model.provider,
-      model.id,
+      logicalRef.provider,
+      logicalRef.model,
       params.agentDir,
       params.cfg,
       {
@@ -179,6 +187,7 @@ async function prepareResolvedImageRuntime(
       requestedProvider: params.provider,
       requestedModel: params.model,
     });
+    assertOperatorModelSelection(undefined, model);
   }
   // Bedrock's runtime client owns AWS credential-chain resolution. Keep the
   // empty sentinel out of auth storage and pass it through to the stream.
@@ -214,6 +223,7 @@ async function prepareResolvedImageRuntime(
   });
   apiKey = preparedAuth?.apiKey?.trim() || apiKey;
   model = applyPreparedRuntimeAuthToModel(model, preparedAuth);
+  assertOperatorModelSelection(undefined, model);
   authStorage.setRuntimeApiKey(model.provider, apiKey);
   return bindResolvedImageRuntime(params, apiKey, bindPreparedModel(model));
 }

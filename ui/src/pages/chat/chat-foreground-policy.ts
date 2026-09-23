@@ -4,11 +4,48 @@ import type { ChatQueueItem } from "../../lib/chat/chat-types.ts";
 import { visibleSessionMatches } from "../../lib/sessions/index.ts";
 import { isInitialChatHistoryUnavailable } from "./chat-history-state.ts";
 import { chatOutboxOwner } from "./chat-outbox-owner.ts";
+import { updateQueuedMessagesForSession } from "./chat-queue.ts";
 import type { ChatHost } from "./chat-send-contract.ts";
-import { listStoredChatOutboxes } from "./composer-persistence.ts";
+import { listStoredChatOutboxes, type StoredChatOutbox } from "./composer-persistence.ts";
+import { isQueuedMessageBeingEdited } from "./queued-message-edit.ts";
 import { hasDirectSessionRun, isChatBusy } from "./run-lifecycle.ts";
 
 registerChatForegroundEnglish();
+
+/** Adopt retained input once; receipt confirmation may subsequently return it to waiting-idle. */
+export function adoptForegroundRetainedInputs(
+  host: ChatHost,
+  outbox: StoredChatOutbox,
+): "unchanged" | "updated" | "failed" {
+  if (!isForegroundChat(host)) {
+    return "unchanged";
+  }
+  const owner = chatOutboxOwner(host);
+  const updates = outbox.queue
+    .filter(
+      (item) =>
+        !item.foregroundOnly &&
+        !item.localCommandName &&
+        !item.pendingRunId &&
+        item.sendState !== "held" &&
+        item.sendState !== "waiting-model" &&
+        !isQueuedMessageBeingEdited(host, item.id) &&
+        !owner.hasPendingDelivery(outbox, item),
+    )
+    .map((item) => ({
+      id: item.id,
+      update: (entry: ChatQueueItem): ChatQueueItem => ({
+        ...entry,
+        foregroundOnly: true,
+        sendState: entry.sendState === "failed" ? "failed" : "unconfirmed",
+        sendError: entry.sendError ?? t("chat.foreground.review"),
+      }),
+    }));
+  if (updates.length === 0) {
+    return "unchanged";
+  }
+  return updateQueuedMessagesForSession(host, updates) ? "updated" : "failed";
+}
 
 export function isForegroundChat(
   host: Pick<ChatHost, "hello">,

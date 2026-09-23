@@ -284,7 +284,9 @@ function initializeIsolatedTestEnv(tempHome: string): void {
   setTestEnvValue("XDG_DATA_HOME", path.join(tempHome, ".local", "share"));
   setTestEnvValue("XDG_STATE_HOME", path.join(tempHome, ".local", "state"));
   setTestEnvValue("XDG_CACHE_HOME", path.join(tempHome, ".cache"));
-  setTestEnvValue("XDG_RUNTIME_DIR", path.join(tempHome, ".runtime"));
+  const runtimeDir = path.join(tempHome, ".runtime");
+  fs.mkdirSync(runtimeDir, { mode: 0o700 });
+  setTestEnvValue("XDG_RUNTIME_DIR", runtimeDir);
 }
 
 function ensureParentDir(targetPath: string): void {

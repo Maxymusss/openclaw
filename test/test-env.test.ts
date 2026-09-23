@@ -90,7 +90,13 @@ describe("installTestEnv", () => {
       const testEnv = installTestEnv({ mode: "hermetic" });
       cleanupFns.push(testEnv.cleanup);
       expect(process.env.XDG_RUNTIME_DIR).toBe(path.join(testEnv.tempHome, ".runtime"));
+      const runtimeDir = path.join(testEnv.tempHome, ".runtime");
+      expect(fs.statSync(runtimeDir).isDirectory()).toBe(true);
+      if (process.platform !== "win32") {
+        expect(fs.statSync(runtimeDir).mode & 0o777).toBe(0o700);
+      }
       testEnv.cleanup();
+      expect(fs.existsSync(runtimeDir)).toBe(false);
       expect(process.env.XDG_RUNTIME_DIR).toBe(callerRuntime);
     });
   });
