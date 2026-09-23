@@ -17,6 +17,7 @@ import { OPENAI_PROVIDER_ID } from "../../openai-routing.js";
 import {
   assertOperatorModelAllowed,
   assertOperatorModelHarnessSupported,
+  assertOperatorModelSelection,
 } from "../../operator-model-policy.js";
 import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.js";
 import { buildAgentRuntimeAuthPlan } from "../../runtime-plan/auth.js";
@@ -87,7 +88,7 @@ export async function prepareEmbeddedRunAuthPlan(params: {
   const assertModelCurrent = (model: RuntimeModel) => {
     params.assertCurrent();
     assertOperatorModelAllowed(operatorAuthority, params.provider, params.modelId);
-    assertOperatorModelAllowed(operatorAuthority, model.provider, model.id);
+    assertOperatorModelSelection(operatorAuthority, model);
     assertOperatorModelHarnessSupported(operatorAuthority, params.getAgentHarness());
   };
   assertModelCurrent(params.model);

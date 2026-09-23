@@ -20,6 +20,7 @@ import { recordAdmittedModelRoutingDecision } from "../../model-routing-decision
 import {
   assertOperatorModelAllowed,
   assertOperatorModelHarnessSupported,
+  assertOperatorModelSelection,
 } from "../../operator-model-policy.js";
 import { captureAgentPluginRuntimeRefresh } from "../../plugin-runtime-refresh.js";
 import { appendProgressCardSystemPrompt } from "../../progress-card-system-prompt.js";
@@ -106,7 +107,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     readAdmittedRunOperatorAuthority(params.admittedRunContext) ??
     readPreparedRunOperatorAuthority(params.preparedRunAdmission);
   assertOperatorModelAllowed(operatorAuthority, provider, modelId);
-  assertOperatorModelAllowed(operatorAuthority, effectiveModel.provider, effectiveModel.id);
+  assertOperatorModelSelection(operatorAuthority, effectiveModel);
   assertOperatorModelHarnessSupported(operatorAuthority, runtime.agentHarness);
 
   await fs.mkdir(workspaceDir, { recursive: true });

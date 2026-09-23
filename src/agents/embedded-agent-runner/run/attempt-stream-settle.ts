@@ -22,7 +22,7 @@ import {
 } from "../../admitted-run-context.js";
 import type { AgentRunAttemptFailureSource } from "../../agent-run-terminal-outcome.js";
 import type { subscribeEmbeddedAgentSession } from "../../embedded-agent-subscribe.js";
-import { assertOperatorModelAllowed } from "../../operator-model-policy.js";
+import { assertOperatorModelRequestRoute } from "../../operator-model-policy.js";
 import { wrapStreamFnTextTransforms } from "../../plugin-text-transforms.js";
 import { registerProviderStreamForModel } from "../../provider-stream.js";
 import type { AgentMessage } from "../../runtime/index.js";
@@ -578,8 +578,7 @@ export async function prepareEmbeddedAttemptTransport(input: {
     authProfileId: resolveAttemptStreamAuthProfileId(attempt),
     authStorage: attempt.authStorage,
     assertCurrent: assertRunCurrent,
-    assertModelCurrent: (model) =>
-      assertOperatorModelAllowed(operatorAuthority, model.provider, model.id),
+    assertModelCurrent: (model) => assertOperatorModelRequestRoute(operatorAuthority, model),
   });
   session.agent.streamFn = streamFn;
   // Install inside provider/config wrappers so their full onPayload chain runs

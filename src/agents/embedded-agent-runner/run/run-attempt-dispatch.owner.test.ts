@@ -6,6 +6,10 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../../../config/sessions/session-accessor.js";
 import { localWorkspaceStore } from "../../../gateway/worker-environments/local-workspace-store.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
+import {
+  bindModelRequestRoute,
+  readModelRequestRoute,
+} from "../../../llm/model-runtime-binding.js";
 import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../../plugins/runtime.js";
 import { buildSkillSnapshot } from "../../../skills/loading/workspace-skill-prompt.js";
@@ -14,13 +18,16 @@ import {
   createOperationalRunInstanceRef,
   prepareAgentRunAdmission,
 } from "../../admitted-run-context.js";
+import { createAdmittedRunOperatorAuthority } from "../../admitted-run-operator-authority.js";
 import { resolveSessionGitCoauthorPrompt } from "../../git-coauthor-prompt.js";
 import { registerAgentHarness } from "../../harness/registry.js";
 import type { AgentHarness } from "../../harness/types.js";
+import { prepareOperatorModelPolicy } from "../../operator-model-policy.js";
 import { registerSandboxBackend, type SandboxBackendFactory } from "../../sandbox/backend.js";
 import { createSandboxFsBridge } from "../../sandbox/fs-bridge.js";
 import { createSandboxTestContext } from "../../sandbox/test-fixtures.js";
 import { installSessionPlacementAdmissionProvider } from "../../session-placement-admission.js";
+import { makeProviderModelFixture } from "../../test-helpers/provider-model-fixture.js";
 import * as workspaceSandbox from "../../workspace-sandbox.js";
 import { requireGit } from "../../worktrees/git.js";
 import { insertRegistryWorktree } from "../../worktrees/registry.js";
@@ -61,9 +68,18 @@ type DispatchCase = {
   realManagedWorkspace?: boolean;
   hostMedia?: "allowed" | "outside";
   retirePlacement?: boolean;
+  operatorModel?: "mapped" | "unbound" | "forged-logical-ref" | "copied-route";
 };
 
 const dispatchCases: DispatchCase[] = [
+  ...(["mapped", "unbound", "forged-logical-ref", "copied-route"] as const).map(
+    (operatorModel) => ({
+      agentId: "main",
+      remoteSkills: false,
+      skillCatalog: "none" as const,
+      operatorModel,
+    }),
+  ),
   {
     agentId: "main",
     sandboxSessionKey: undefined,
@@ -138,7 +154,7 @@ const dispatchCases: DispatchCase[] = [
 ];
 
 it.each(dispatchCases)(
-  "dispatches the generic harness for $agentId/global with policy $sandboxSessionKey, $skillCatalog skills, remote skills $remoteSkills, one-shot $oneShotCliRun, real managed workspace $realManagedWorkspace, host media $hostMedia, retired placement $retirePlacement",
+  "dispatches the generic harness for $agentId/global with policy $sandboxSessionKey, $skillCatalog skills, remote skills $remoteSkills, one-shot $oneShotCliRun, real managed workspace $realManagedWorkspace, host media $hostMedia, retired placement $retirePlacement, operator model $operatorModel",
   async ({
     agentId,
     sandboxSessionKey,
@@ -149,6 +165,7 @@ it.each(dispatchCases)(
     realManagedWorkspace,
     hostMedia,
     retirePlacement,
+    operatorModel,
   }) => {
     const gitCoauthorPrompt =
       "Git co-authors: add these exact trailers to every commit you make from this session.\n" +
@@ -272,6 +289,18 @@ it.each(dispatchCases)(
       const runId = `dispatch-${agentId}`;
       const admission = prepareAgentRunAdmission({
         cfg: config,
+        operatorAuthority: operatorModel
+          ? createAdmittedRunOperatorAuthority({
+              profileId: "viewer",
+              scopes: ["operator.write"],
+              modelPolicy: prepareOperatorModelPolicy({
+                cfg: {},
+                policy: { allow: ["fixture/fixture-model", "fixture/other"] },
+                manifestPlugins: [],
+              }),
+              assertCurrent() {},
+            })
+          : undefined,
         facts: {
           runId,
           agentId,
@@ -301,6 +330,7 @@ it.each(dispatchCases)(
         label: "Owner fixture",
         supports: () => ({ supported: true }),
         conversationToolPolicySupport: "exact",
+        operatorModelPolicySupport: operatorModel ? "exact" : undefined,
         runAttempt,
       });
       const runtimePluginToolGrant = { pluginId: "owner-tools", toolNames: ["owner_only"] };
@@ -363,6 +393,24 @@ it.each(dispatchCases)(
         setParams: () => {},
       });
       const authProfileStore = { version: 1, profiles: {} };
+      const physicalModel = makeProviderModelFixture({
+        provider: "fixture",
+        id: "wire-model",
+        api: "openai-responses",
+        baseUrl: "https://provider.example/v1",
+      });
+      const mappedModel = bindModelRequestRoute(physicalModel, {
+        provider: "fixture",
+        model: "fixture-model",
+      });
+      const selectedModel =
+        operatorModel === "unbound"
+          ? physicalModel
+          : operatorModel === "forged-logical-ref"
+            ? { ...physicalModel, logicalRef: { provider: "fixture", model: "fixture-model" } }
+            : operatorModel === "copied-route"
+              ? { ...mappedModel, id: "other" }
+              : mappedModel;
       const input = {
         runInput: {
           runParams: params,
@@ -394,14 +442,19 @@ it.each(dispatchCases)(
           attemptAuthProfileStore: authProfileStore,
           resolveRunAttemptAuthProfileStore: () => authProfileStore,
           snapshot: () => ({
-            agentHarness: { id: "owner-fixture" },
-            pluginHarnessOwnsTransport: true,
-            effectiveModel: {
-              id: "fixture-model",
-              provider: "fixture",
-              api: "openai-responses",
-              input: imagePath ? ["text", "image"] : ["text"],
+            agentHarness: {
+              id: "owner-fixture",
+              operatorModelPolicySupport: operatorModel ? "exact" : undefined,
             },
+            pluginHarnessOwnsTransport: true,
+            effectiveModel: operatorModel
+              ? selectedModel
+              : {
+                  id: "fixture-model",
+                  provider: "fixture",
+                  api: "openai-responses",
+                  input: imagePath ? ["text", "image"] : ["text"],
+                },
             thinkLevel: "off",
             apiKeyInfo: null,
             runtimeAuthState: null,
@@ -507,6 +560,15 @@ it.each(dispatchCases)(
             })
           : undefined;
       try {
+        if (operatorModel && operatorModel !== "mapped") {
+          await expect(prepareAndDispatchEmbeddedRunAttempt(input)).rejects.toMatchObject({
+            code: "OPERATOR_MODEL_POLICY_DENIED",
+          });
+          expect(resolvePlacementSandbox).not.toHaveBeenCalled();
+          expect(localBackend).not.toHaveBeenCalled();
+          expect(runAttempt).not.toHaveBeenCalled();
+          return;
+        }
         if (retirePlacement) {
           await expect(prepareAndDispatchEmbeddedRunAttempt(input)).rejects.toThrow(
             "admitted run authority is no longer active",
@@ -569,6 +631,14 @@ it.each(dispatchCases)(
         const { dispatchedAttempt: result } = await prepareAndDispatchEmbeddedRunAttempt(input);
         expect(result.rawAttempt.terminal).toEqual({ kind: "ok" });
         expect(result.rawAttempt.assistantTexts).toEqual([`${agentId} answered`]);
+        if (operatorModel === "mapped") {
+          const actualModel = runAttempt.mock.calls[0]?.[0].model;
+          expect(actualModel).toMatchObject({ provider: "fixture", id: "wire-model" });
+          expect(actualModel && readModelRequestRoute(actualModel)?.logicalRef).toEqual({
+            provider: "fixture",
+            model: "fixture-model",
+          });
+        }
         expect(runAttempt).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({
             agentId,
