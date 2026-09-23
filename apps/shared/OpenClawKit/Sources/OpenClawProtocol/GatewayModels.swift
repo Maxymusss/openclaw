@@ -4270,6 +4270,7 @@ public struct ChatSendParams: Codable, Sendable {
     public let agentid: String?
     public let sessionid: String?
     public let message: String
+    public let participation: AnyCodable?
     public let mentions: [HumanMention]?
     public let workcontext: [String: AnyCodable]?
     public let intent: [String: AnyCodable]?
@@ -4301,6 +4302,7 @@ public struct ChatSendParams: Codable, Sendable {
         agentid: String? = nil,
         sessionid: String? = nil,
         message: String,
+        participation: AnyCodable? = nil,
         mentions: [HumanMention]? = nil,
         workcontext: [String: AnyCodable]? = nil,
         intent: [String: AnyCodable]? = nil,
@@ -4330,6 +4332,7 @@ public struct ChatSendParams: Codable, Sendable {
         self.agentid = agentid
         self.sessionid = sessionid
         self.message = message
+        self.participation = participation
         self.mentions = mentions
         self.workcontext = workcontext
         self.intent = intent
@@ -4361,6 +4364,7 @@ public struct ChatSendParams: Codable, Sendable {
         agentid: String? = nil,
         sessionid: String? = nil,
         message: String,
+        participation: AnyCodable? = nil,
         mentions: [HumanMention]? = nil,
         workcontext: [String: AnyCodable]? = nil,
         intent: [String: AnyCodable]? = nil,
@@ -4390,6 +4394,7 @@ public struct ChatSendParams: Codable, Sendable {
             agentid: agentid,
             sessionid: sessionid,
             message: message,
+            participation: participation,
             mentions: mentions,
             workcontext: workcontext,
             intent: intent,
@@ -4421,6 +4426,7 @@ public struct ChatSendParams: Codable, Sendable {
         case agentid = "agentId"
         case sessionid = "sessionId"
         case message
+        case participation
         case mentions
         case workcontext = "workContext"
         case intent

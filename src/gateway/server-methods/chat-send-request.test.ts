@@ -61,6 +61,8 @@ describe("normalizeChatSendRequest", () => {
     { systemInputProvenance: { kind: "internal_system" } },
     { intent: { kind: "session-goal-start", version: 1, issuedAtMs: 1 } },
     { participation: "automatic" },
+    { expectedPermissionMode: null },
+    { expectedToolOverrides: null },
     { sessionId: undefined },
   ])("rejects incompatible discussion input: %j", (overrides) => {
     expect(

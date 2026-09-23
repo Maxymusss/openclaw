@@ -88,7 +88,7 @@ export async function postChatDiscussion(params: {
       throw new Error("Discussion was not recorded. Refresh and retry.");
     }
     if (
-      turn.recorder.getPendingInputMessage?.()?.__openclaw?.discussionRequestFingerprint !==
+      turn.recorder.getPendingInputMessage?.()?.["__openclaw"]?.discussionRequestFingerprint !==
       turn.baseInput.discussionRequestFingerprint
     ) {
       throw new Error(

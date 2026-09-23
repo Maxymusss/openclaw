@@ -21,6 +21,29 @@ function boundaryUserMessage(content: UserMessage["content"], timestamp: number)
 }
 
 describe("normalizeMessagesForLlmBoundary", () => {
+  it.each(["humans", "agent"] as const)(
+    "preserves %s audience from active to historical replay without rewriting transcript bytes",
+    (participation) => {
+      const message = {
+        ...boundaryUserMessage("@Morgan please check the preview", 1),
+        __openclaw: { senderId: "alex", senderName: "Alex", participation },
+      };
+      const before = JSON.stringify(message);
+      const active = normalizeMessagesForLlmBoundary([message]);
+      const historical = normalizeMessagesForLlmBoundary([
+        message,
+        timestampedTextAssistant("Noted", 2),
+        boundaryUserMessage("What changed?", 3),
+      ]);
+      expect(active[0]?.content).toEqual(historical[0]?.content);
+      expect(String(active[0]?.content)).toContain(`"audience":"${participation}"`);
+      expect(String(active[0]?.content)).toContain(
+        participation === "humans" ? "not an agent assignment" : "requested agent participation",
+      );
+      expect(JSON.stringify(message)).toBe(before);
+    },
+  );
+
   it("strips inbound metadata from historical user turns before model replay", () => {
     // Historical envelopes contain untrusted routing metadata that should not be
     // replayed as user instructions.

@@ -140,6 +140,8 @@ export function normalizeChatSendRequest(params: {
       p.fastMode !== undefined ||
       p.fastAutoOnSeconds !== undefined ||
       p.timeoutMs !== undefined ||
+      p.expectedPermissionMode !== undefined ||
+      p.expectedToolOverrides !== undefined ||
       controlUiReconnectResume.resumeRequested)
   ) {
     return {

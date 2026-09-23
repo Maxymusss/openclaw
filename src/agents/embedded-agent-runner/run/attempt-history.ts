@@ -224,13 +224,38 @@ function readPersistedSender(message: AgentMessage): PersistedSender | undefined
   return sender;
 }
 
-function formatPersistedSenderContext(sender: PersistedSender): string {
-  return formatContextJsonBlock(CONVERSATION_INFO_LABEL, { sender });
+type ParticipationContext = { audience: "agent" | "humans"; guidance: string };
+
+function readParticipationContext(message: AgentMessage): ParticipationContext | undefined {
+  const metadata = Reflect.get(message, "__openclaw");
+  const audience =
+    metadata && typeof metadata === "object" ? Reflect.get(metadata, "participation") : undefined;
+  if (audience !== "agent" && audience !== "humans") {
+    return undefined;
+  }
+  return {
+    audience,
+    guidance:
+      audience === "humans"
+        ? "Human discussion, not an agent assignment. Use as context; act only when a human clearly asks you. Do not narrate staying silent or alter existing authorized work."
+        : "The sender requested agent participation. Human mentions or a reply to a human do not exclude the agent from this request.",
+  };
+}
+
+function formatPersistedSenderContext(
+  sender: PersistedSender,
+  participation?: ParticipationContext,
+): string {
+  return formatContextJsonBlock(CONVERSATION_INFO_LABEL, {
+    sender,
+    ...(participation ? { participation } : {}),
+  });
 }
 
 function mergeSenderIntoLeadingConversationInfo(
   text: string,
   sender: PersistedSender,
+  participation?: ParticipationContext,
 ): string | undefined {
   const { body, envelope } = splitLeadingTimestampEnvelope(text);
   const jsonPrefix = `${CONVERSATION_INFO_LABEL}\n\`\`\`json\n`;
@@ -254,18 +279,23 @@ function mergeSenderIntoLeadingConversationInfo(
   return `${envelope}${formatContextJsonBlock(CONVERSATION_INFO_LABEL, {
     ...(payload as Record<string, unknown>),
     sender,
+    ...(participation ? { participation } : {}),
   })}${suffix}`;
 }
 
-function prependContextToUserMessage(message: AgentMessage, sender: PersistedSender): AgentMessage {
-  const context = formatPersistedSenderContext(sender);
+function prependContextToUserMessage(
+  message: AgentMessage,
+  sender: PersistedSender,
+  participation?: ParticipationContext,
+): AgentMessage {
+  const context = formatPersistedSenderContext(sender, participation);
   const content = (message as { content?: unknown }).content;
   if (typeof content === "string") {
     const { body, envelope } = splitLeadingTimestampEnvelope(content);
     if (body === context || body.startsWith(`${context}\n\n`)) {
       return message;
     }
-    const merged = mergeSenderIntoLeadingConversationInfo(content, sender);
+    const merged = mergeSenderIntoLeadingConversationInfo(content, sender, participation);
     if (merged !== undefined) {
       return merged === content ? message : ({ ...message, content: merged } as AgentMessage);
     }
@@ -296,7 +326,7 @@ function prependContextToUserMessage(message: AgentMessage, sender: PersistedSen
   if (body === context || body.startsWith(`${context}\n\n`)) {
     return message;
   }
-  const merged = mergeSenderIntoLeadingConversationInfo(textBlock.text, sender);
+  const merged = mergeSenderIntoLeadingConversationInfo(textBlock.text, sender, participation);
   const nextContent = content.slice();
   nextContent[textIndex] = {
     ...textBlock,
@@ -340,7 +370,11 @@ export function projectPersistedSenderContext(
     if (!sender) {
       return message;
     }
-    const nextMessage = prependContextToUserMessage(message, sender);
+    const nextMessage = prependContextToUserMessage(
+      message,
+      sender,
+      readParticipationContext(transcriptMessage),
+    );
     changed ||= nextMessage !== message;
     return nextMessage;
   });
