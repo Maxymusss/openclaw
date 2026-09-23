@@ -115,6 +115,7 @@ describe("Teams inbound dispatch through the core turn runner", () => {
       settled = true;
       return value;
     });
+    let joined: PromiseSettledResult<unknown>[];
     try {
       await Promise.race([sendDrained.promise, finalized.promise, result]);
       // Sends have drained; let ready continuations expose premature core completion.
@@ -127,11 +128,11 @@ describe("Teams inbound dispatch through the core turn runner", () => {
     } finally {
       events.push("release");
       finalization.resolve({ visibleReplySent: true, messageIds: ["settled-reply"] });
-      const joined = await Promise.allSettled([result, waitForIdle?.()]);
-      for (const outcome of joined) {
-        if (outcome.status === "rejected") {
-          throw outcome.reason;
-        }
+      joined = await Promise.allSettled([result, waitForIdle?.()]);
+    }
+    for (const outcome of joined) {
+      if (outcome.status === "rejected") {
+        throw outcome.reason;
       }
     }
     await expect(result).resolves.toEqual({ kind: "completed", finalResponses: 1 });

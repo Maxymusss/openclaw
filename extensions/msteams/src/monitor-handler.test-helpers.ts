@@ -10,9 +10,13 @@ import {
   createPluginRuntimeMock,
   createTestInboundDebounceFlush,
 } from "openclaw/plugin-sdk/channel-test-helpers";
-import { closeOpenClawAgentDatabasesAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  closeOpenClawStateDatabaseAsync,
+  withStateDatabaseCoordinatorRuntimeDirectory,
+} from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker, useIsolatedStateGuard } from "openclaw/plugin-sdk/test-env";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterAll, afterEach, aroundAll, beforeEach, vi } from "vitest";
 import type { OpenClawConfig, PluginRuntime, RuntimeEnv } from "../runtime-api.js";
 import type { MSTeamsConversationStore } from "./conversation-store.js";
 import type { MSTeamsActivityHandler } from "./monitor-handler.js";
@@ -37,6 +41,23 @@ type MSTeamsTestRuntimeOptions = {
   resolveTextChunkLimit?: () => number;
 };
 
+const testHome = process.env.OPENCLAW_TEST_HOME;
+if (!testHome) {
+  throw new Error("MSTeams fixtures require the shared isolated test home.");
+}
+// Keep lock identity stable through metadata work and teardown, outside per-turn state.
+aroundAll((runSuite) =>
+  withStateDatabaseCoordinatorRuntimeDirectory(
+    path.join(testHome, ".runtime", "msteams-coordinators"),
+    runSuite,
+  ),
+);
+afterAll(async () => {
+  // Vitest unwinds this hook before shared setup removes the home. Agent leases
+  // can reopen shared state, so release them before closing the shared owner.
+  await closeOpenClawAgentDatabasesAsync(testHome);
+  await closeOpenClawStateDatabaseAsync();
+});
 useIsolatedStateGuard();
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
@@ -48,7 +69,13 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
 const dispatchReplyFromConfig =
   vi.fn<NonNullable<ChannelInboundTurnPlan["dispatchReplyFromConfig"]>>();
 const onFinalize =
-  vi.fn<NonNullable<ChannelInboundEventRunnerParams<unknown>["adapter"]["onFinalize"]>>();
+  vi.fn<
+    (
+      result: Parameters<
+        NonNullable<ChannelInboundEventRunnerParams<unknown>["adapter"]["onFinalize"]>
+      >[0],
+    ) => void
+  >();
 
 beforeEach(() => {
   onFinalize.mockReset();
