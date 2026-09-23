@@ -396,9 +396,9 @@ test("exports Incognito model/tool metrics without content to an isolated OTLP r
       ["private", "agent:main:dashboard:incognito-otlp", "PRIVATE_SENTINEL"],
       ["normal", "agent:main:main", "NORMAL_SENTINEL"],
     ] as const) {
-      const trace = createDiagnosticTraceContext();
+      const eventTrace = createDiagnosticTraceContext();
       const base = {
-        trace,
+        trace: eventTrace,
         sessionKey,
         runId: id,
         callId: `${id}-model`,
@@ -418,7 +418,7 @@ test("exports Incognito model/tool metrics without content to an isolated OTLP r
         { modelContent, errorMessage: sentinel },
       );
       const toolBase = {
-        trace,
+        trace: eventTrace,
         sessionKey,
         runId: id,
         toolCallId: `${id}-tool`,
