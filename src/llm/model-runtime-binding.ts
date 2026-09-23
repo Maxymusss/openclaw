@@ -43,12 +43,15 @@ function modelRequestRoute(model: Model, logicalRef: ProviderModelRef) {
 }
 
 /** Host resolution owns the logical identity; provider callbacks cannot supply it. */
-export function bindModelRequestRoute<T extends Model>(model: T, logicalRef: ProviderModelRef): T {
+export function bindModelRequestRoute<T extends RuntimeBoundModel>(
+  model: T,
+  logicalRef: ProviderModelRef,
+): T {
   const bound = {
     ...model,
     [MODEL_REQUEST_ROUTE]: modelRequestRoute(model, logicalRef),
   };
-  const runtime = (model as RuntimeBoundModel)[MODEL_LLM_RUNTIME];
+  const runtime = model[MODEL_LLM_RUNTIME];
   if (runtime) {
     Object.defineProperty(bound, MODEL_LLM_RUNTIME, { value: runtime, enumerable: false });
   }

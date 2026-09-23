@@ -28,7 +28,7 @@ import {
   dockerSandboxBackendManager,
   podmanSandboxBackendManager,
 } from "./docker-backend.js";
-import { replaceNativeSandboxBackend as replaceNativeHandle } from "./native-exec-binding.js";
+import { replaceNativeSandboxBackendFromHandle } from "./native-exec-binding.js";
 import { SandboxRuntimeRetiredError } from "./provisioning-error.js";
 import {
   assertSandboxRegistryEntryCurrent,
@@ -210,7 +210,7 @@ export function replaceNativeSandboxBackend(
 ) {
   custody.assertCurrent();
   requireNativeSandboxBackend(id);
-  return replaceNativeHandle(previous, custody);
+  return replaceNativeSandboxBackendFromHandle(previous, custody);
 }
 
 export function captureNativeSandboxBackend(

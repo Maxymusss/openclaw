@@ -80,6 +80,7 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
         { provider: "logical", model: "nested" },
       );
       const authority = createAdmittedRunOperatorAuthority({
+        profileId: "viewer",
         scopes: [],
         modelPolicy: prepareOperatorModelPolicy({
           cfg: {},

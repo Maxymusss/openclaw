@@ -28,7 +28,7 @@ export function registerNativeSandboxExecution(
   replacements.set(handle, replace);
 }
 
-export function replaceNativeSandboxBackend(
+export function replaceNativeSandboxBackendFromHandle(
   handle: SandboxBackendHandle,
   custody: NativeSandboxCustody,
 ) {

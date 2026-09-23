@@ -47,7 +47,7 @@ function originalAuthority(allow: string[]) {
       scopes: ["operator.sessions.write"],
       modelPolicy: prepareOperatorModelPolicy({
         cfg: {},
-        policy: { allow: allow },
+        policy: { allow },
         manifestPlugins: [],
       }),
       assertCurrent: () => {

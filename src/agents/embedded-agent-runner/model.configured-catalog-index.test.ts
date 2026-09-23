@@ -228,9 +228,10 @@ describe("prepared configured model indexes", () => {
           [modelId],
         );
         const result = await resolve(modelId);
-        expect(result.model && readModelRequestRoute(result.model)?.logicalRef).toEqual(
-          result.logicalRef,
-        );
+        if (!result.model) {
+          throw new Error(result.error);
+        }
+        expect(readModelRequestRoute(result.model)?.logicalRef).toEqual(result.logicalRef);
         expect(result).toEqual({
           ...stores,
           model: expected(modelId, maxSidePx),

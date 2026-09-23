@@ -1,5 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
+import { prepareOperatorModelPolicy } from "../../agents/operator-model-policy.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import {
@@ -28,12 +29,11 @@ it.each(["foreground", "expired", "revoked", "staff", "model-only"] as const)(
       const authority = createAdmittedRunOperatorAuthority({
         profileId: "title-source",
         scopes: ["operator.write"],
-        permissions:
-          state === "staff"
-            ? undefined
-            : {
-                modelPolicy: { allow: ["test-provider/test-model"] },
-              },
+        modelPolicy: prepareOperatorModelPolicy({
+          cfg: {},
+          policy: state === "staff" ? undefined : { allow: ["test-provider/test-model"] },
+          manifestPlugins: [],
+        }),
         ...(restricted
           ? ({
               executionPolicy: "foreground-only",
