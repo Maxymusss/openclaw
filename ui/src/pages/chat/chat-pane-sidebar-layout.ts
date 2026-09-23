@@ -48,6 +48,7 @@ const LAZY_SIDEBAR_ELEMENTS: Partial<Record<LazyElementKey, LazyElement>> = {
     "openclaw-chat-sidebar-region",
     () => import("./components/chat-sidebar-region.runtime.ts"),
   ],
+  recovery: ["openclaw-chat-input-recovery", () => import("./components/chat-input-recovery.ts")],
   terminal: [
     "openclaw-terminal-panel",
     () => import("../../components/terminal/terminal-panel-registration.ts"),
@@ -67,6 +68,15 @@ const LAZY_SIDEBAR_ELEMENTS: Partial<Record<LazyElementKey, LazyElement>> = {
 };
 
 const lazyRuntimes = new Map<LazyElementKey, LazyPanelRuntime>();
+
+/** Acquire the existing panel chrome before an automatic panel changes layout. */
+export async function prepareSidebarPanel(slot: SidebarSlotId): Promise<void> {
+  const panel = LAZY_SIDEBAR_ELEMENTS[slot];
+  const elements = [LAZY_SIDEBAR_ELEMENTS.region!, ...(panel ? [panel] : [])];
+  await Promise.all(
+    elements.map(([tagName, loadModule]) => ensureCustomElementDefined(tagName, loadModule)),
+  );
+}
 
 function ensureLazyElement(
   key: LazyElementKey,

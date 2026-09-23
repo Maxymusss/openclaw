@@ -30,6 +30,7 @@ function normalizeSlotId(value: unknown): SidebarSlotId | null {
     value === "detail" ||
     value === "discussion" ||
     value === "portal" ||
+    value === "recovery" ||
     value === "tasks" ||
     value === "terminal" ||
     value === "workspace" ||

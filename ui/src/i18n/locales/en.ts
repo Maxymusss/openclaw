@@ -15,6 +15,7 @@ export const en: TranslationMap & {
     detailPanel: TranslationMap;
     welcome: TranslationMap & { suggestions: TranslationMap & { whatCanYouDo: string } };
     backgroundTasks: TranslationMap;
+    inputRecovery: TranslationMap;
     goals: TranslationMap;
     messages: TranslationMap &
       Record<
@@ -4108,6 +4109,8 @@ export const en: TranslationMap & {
       desktopEmpty: "Connect to an available remote desktop.",
       portal: "Portal",
       portalEmpty: "Preview a web application running for this task.",
+      recovery: "Not started",
+      recoveryEmpty: "No requests need recovery.",
       discussion: "Discussion",
       discussionEmpty: "Open the shared discussion for this session.",
       dashboard: "Dashboard",
@@ -4128,17 +4131,13 @@ export const en: TranslationMap & {
       positionMarkerHint:
         "Use arrow keys or Home and End to choose a marker, Enter or Space to jump, and Escape to return to the conversation. Tab leaves the rail.",
     },
+    inputRecovery: {},
     pendingInputs: {
+      recoveryUnavailable: "Recovery could not open. Reload to try again.",
       waitingForWorkspaceSync: "Received · waiting for workspace sync",
       waitingForWorkerSetup: "Received · waiting for worker setup",
       resuming:
         "Interrupted by a Gateway restart. This saved message will resume when the session is ready.",
-      cancelled:
-        "Cancelled before the agent started it. It will not run automatically; copy it and send again.",
-      interrupted:
-        "Interrupted before the agent started it. It will not run automatically; copy it and send again.",
-      earlier: "Show earlier messages",
-      latest: "Show latest messages",
     },
     pairingQrExpired: {
       title: "Pairing QR expired",

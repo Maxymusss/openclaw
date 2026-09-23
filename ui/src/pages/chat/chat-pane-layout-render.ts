@@ -19,6 +19,7 @@ import {
 import { resolveChatPaneDesktopTarget } from "./chat-pane-placement.ts";
 import type { ResolvedBoardView } from "./chat-pane-shared.ts";
 import { renderSidebarRegion, sidebarRegionCallbacks } from "./chat-pane-sidebar-layout.ts";
+import { getChatPendingInputs, getChatRecoveryInputs } from "./chat-pending-inputs.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { ChatToolIconController } from "./chat-tool-icon-controller.ts";
 import { renderChat, type ChatProps } from "./chat-view.ts";
@@ -222,6 +223,14 @@ export abstract class ChatPaneLayoutRender extends ChatPaneBrowserAnnotationRend
         presented: this.presented,
         loadFullAssistantMessage: chatProps.loadFullAssistantMessage,
       }),
+      recovery: html`<openclaw-chat-input-recovery
+        .recoveryContext=${{ chat: chatProps, host: state }}
+      ></openclaw-chat-input-recovery>`,
+      recoveryAvailable:
+        this.inputRecoveryPresentation.isReady(state) &&
+        (getChatRecoveryInputs(state).length > 0 ||
+          getChatPendingInputs(state)?.page.nextBefore !== undefined ||
+          getChatPendingInputs(state)?.before !== undefined),
       renderDetail: (content) =>
         renderChatDetailSlot({
           chat: chatProps,

@@ -66,6 +66,8 @@ type SidebarPanelDefinitionParams = {
   dashboard: TemplateResult | typeof nothing;
   workspace: TemplateResult | typeof nothing;
   tasks: TemplateResult | typeof nothing;
+  recovery?: TemplateResult | typeof nothing;
+  recoveryAvailable?: boolean;
   renderDetail: (content: SidebarContent) => TemplateResult;
   digest: SessionObserverDigest | null;
   activeRunId: string | null;
@@ -91,7 +93,7 @@ type SidebarPanelDefinitionParams = {
 };
 
 type SidebarPanelTextKey =
-  | Exclude<SidebarSlotId, `plugin:${string}` | "detail" | "workspace" | "link-reader">
+  | Exclude<SidebarSlotId, `plugin:${string}` | "detail" | "workspace" | "link-reader" | "recovery">
   | "review"
   | "files";
 
@@ -120,7 +122,7 @@ export function sidebarPanelDefinitions(
     dashboardAvailable: () => params.dashboard !== nothing,
   };
   const definePanel = (
-    slot: Exclude<SidebarSlotId, `plugin:${string}`>,
+    slot: Exclude<SidebarSlotId, `plugin:${string}` | "recovery">,
     textKey: SidebarPanelTextKey,
     icon: TemplateResult,
     content: TemplateResult | typeof nothing | null,
@@ -274,6 +276,16 @@ export function sidebarPanelDefinitions(
   }
   return [
     definePanel("conversation", "conversation", icons.messageSquare, nothing),
+    {
+      slot: "recovery",
+      label: t("chat.sidePanel.recovery"),
+      icon: icons.clock,
+      available: params?.recoveryAvailable === true,
+      content: params?.recovery ?? null,
+      // Data and region runtime are ready before this panel is admitted.
+      loading: html``,
+      empty: { description: t("chat.sidePanel.recoveryEmpty") },
+    },
     definePanel(
       "detail",
       "review",

@@ -55,8 +55,15 @@ waits in durable pending-input custody, including during workspace preparation.
 An optional `messageSeq` comes only from a committed transcript receipt. Clients
 must not predict it from history length or treat `status: "started"` as persistence.
 The Control UI replaces its provisional source with accepted custody, then with
-the canonical row. Accepted inputs stay below saved conversation history until
-they are committed to the transcript. Its renderer keeps a loaded local preview in the same image
+the canonical row. Inputs that are queued or actively resuming stay below saved
+conversation history until they are committed to the transcript. Interrupted and
+cancelled requests that will not run automatically appear in the **Not started**
+side panel instead of at the end of the conversation. The panel opens when new
+recovery requests are confirmed and its content is ready, without a loading
+placeholder. Closing it is respected during background refreshes; a newly interrupted
+request can open it again. Recovery history remains inspectable and copyable,
+without sending anything automatically. Browsing older recovery pages does not
+replace the active queue or change the conversation’s unread position. Its renderer keeps a loaded local preview in the same image
 element during this handoff while canonical media metadata and image bytes load.
 Authoritative text, media replacements, and removals still win. Unavailable or
 access-denied media shows a visible reason.
