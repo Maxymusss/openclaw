@@ -34,10 +34,19 @@ describe("normalizeMessagesForLlmBoundary", () => {
         message,
         timestampedTextAssistant("Noted", 2),
         boundaryUserMessage("What changed?", 3),
-      ]);
-      expect(active[0]?.content).toEqual(historical[0]?.content);
-      expect(String(active[0]?.content)).toContain(`"audience":"${participation}"`);
-      expect(String(active[0]?.content)).toContain(
+      ] as Parameters<typeof normalizeMessagesForLlmBoundary>[0]);
+      const activeUser = expectDefined(
+        active.find((entry) => entry.role === "user"),
+        "active user message",
+      );
+      const historicalUser = expectDefined(
+        historical.find((entry) => entry.role === "user"),
+        "historical user message",
+      );
+      expect(activeUser.content).toEqual(historicalUser.content);
+      expect(typeof activeUser.content).toBe("string");
+      expect(activeUser.content).toContain(`"audience":"${participation}"`);
+      expect(activeUser.content).toContain(
         participation === "humans" ? "not an agent assignment" : "requested agent participation",
       );
       expect(JSON.stringify(message)).toBe(before);
