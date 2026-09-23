@@ -8934,7 +8934,10 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       );
     }
     expect(
-      evaluateWorkflowExpression(ui["timeout-minutes"], { ...context, eventName: "workflow_dispatch" }),
+      evaluateWorkflowExpression(ui["timeout-minutes"], {
+        ...context,
+        eventName: "workflow_dispatch",
+      }),
     ).toBe(35);
     expect(workflow.jobs["ci-gate"].needs).toContain("checks-ui");
 
