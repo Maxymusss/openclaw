@@ -437,8 +437,6 @@ function sessionDetailItems(params: {
   return details;
 }
 
-const NEW_GROUP_OPTION = "__new-group__";
-
 function sessionsTableColumnCount(props: SessionsProps): number {
   return props.groupBy === "category" ? 8 : 7;
 }
@@ -477,10 +475,10 @@ function sessionGroupLabel(group: SessionRowGroup, props: SessionsProps): string
 // Drag-over highlighting toggles a class directly on the target row instead of
 // re-rendering per dragover event; lit re-renders mid-drag would cancel the drag.
 function setDropTargetActive(event: DragEvent, active: boolean) {
-  (event.currentTarget as HTMLElement | null)?.classList.toggle(
-    "session-drop-target--active",
-    active,
-  );
+  const target = event.currentTarget;
+  if (target instanceof Element) {
+    target.classList.toggle("session-drop-target--active", active);
+  }
 }
 
 function categoryDropHandlers(props: SessionsProps, category: string | null) {
@@ -554,11 +552,11 @@ function renderCategoryCell(row: GatewaySessionRow, props: SessionsProps) {
         aria-label=${t("sessionsView.moveToGroup")}
         class="session-group-select"
         @change=${(e: Event) => {
-          if (props.groupWriteDisabledReason) {
+          const select = e.currentTarget;
+          if (props.groupWriteDisabledReason || !(select instanceof HTMLSelectElement)) {
             return;
           }
-          const select = e.target as HTMLSelectElement;
-          if (select.value === NEW_GROUP_OPTION) {
+          if (select.options[select.selectedIndex]?.dataset.action === "create") {
             // The page prompts for a name and patches; restore until the refresh lands.
             select.value = current;
             props.onRequestNewCategory(row.key);
@@ -571,7 +569,7 @@ function renderCategoryCell(row: GatewaySessionRow, props: SessionsProps) {
         ${options.map(
           (name) => html`<option value=${name} ?selected=${current === name}>${name}</option>`,
         )}
-        <option value=${NEW_GROUP_OPTION}>${t("sessionsView.newGroup")}</option>
+        <option data-action="create">${t("sessionsView.newGroup")}</option>
       </select>
     </td>
   `;
