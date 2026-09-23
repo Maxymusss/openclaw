@@ -11,17 +11,14 @@ import { forgetPromptBuildDrainCacheForRun } from "./attempt-prompt-helpers.js";
 import type { EmbeddedRunContextRecoveryState } from "./context-recovery-state.js";
 import type { PreparedEmbeddedRunInput } from "./execution-context.js";
 import type { CompactionAccountingFact } from "./internal-params.js";
-import type { prepareEmbeddedRunRuntime } from "./runtime-preparation.js";
+import type { PreparedEmbeddedRunRuntime } from "./runtime-preparation.js";
 import type { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
 
 type SessionPromptState = Awaited<ReturnType<typeof createEmbeddedRunSessionPromptState>>;
 
 export async function settleEmbeddedRun(input: {
   runInput: Pick<PreparedEmbeddedRunInput, "runParams" | "progressController">;
-  runtime: Pick<
-    Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>,
-    "admittedRunContext" | "stopRuntimeAuthRefreshTimer"
-  >;
+  runtime: Pick<PreparedEmbeddedRunRuntime, "admittedRunContext" | "stopRuntimeAuthRefreshTimer">;
   compaction: {
     state: Pick<EmbeddedRunContextRecoveryState, "autoCompactionCount" | "currentContextSnapshot">;
     session: Pick<

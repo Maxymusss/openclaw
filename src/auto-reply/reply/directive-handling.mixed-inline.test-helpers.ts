@@ -1,7 +1,11 @@
 import { vi } from "vitest";
 import type { ModelCatalogEntry } from "../../agents/model-catalog.js";
 import type { ModelAliasIndex } from "../../agents/model-selection.js";
-import { createModelVisibilityPolicy } from "../../agents/model-visibility-policy.js";
+import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
+import {
+  RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
+  createModelVisibilityPolicy,
+} from "../../agents/model-visibility-policy.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { MsgContext } from "../templating.js";
@@ -65,6 +69,21 @@ export async function applyMixedDirectives(params: {
     allowedModelCatalog: allowedModels,
     policyAliasIndex: aliasIndex,
     resetModelOverride: false,
+    prepareThinkingSelection: (selection) => ({
+      agentId: "main",
+      ...selection,
+      agentRuntime: selection.agentRuntime ?? "openclaw",
+      catalog: allowedModels,
+      allowedModelCatalog: allowedModels,
+      defaultProvider: params.defaultProvider ?? provider,
+      defaultModel: params.defaultModel ?? model,
+      normalization: RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
+      configuredThinkingDefault: resolveConfiguredThinkingDefault({
+        cfg,
+        agentId: "main",
+        ...selection,
+      }),
+    }),
     resolveThinkingCatalog: async () => allowedModels,
     resolveDefaultThinkingLevel: params.resolveDefaultThinkingLevel ?? (async () => "off"),
     resolveDefaultReasoningLevel: async () => "off",

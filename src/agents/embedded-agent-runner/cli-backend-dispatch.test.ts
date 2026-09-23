@@ -71,6 +71,7 @@ function baseRunParams(overrides: Partial<CliDispatchParams> = {}): CliDispatchP
   const runId = overrides.runId ?? "run-cli-dispatch-test";
   return {
     admittedRunContext: createTestAdmittedRunContext(runId),
+    assertCurrent: vi.fn(),
     sessionId: "recall-session",
     sessionKey: "agent:main:recall",
     sessionTarget: {
@@ -246,74 +247,86 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
   const runGate = (overrides: Partial<CliDispatchParams> = {}) =>
     runEmbeddedAgentViaCliBackendIfEligible(baseRunParams(overrides));
 
-  it.each([false, true])(
-    "consumes deferred metadata only after CLI selected-profile admission (missing=%s)",
-    async (missing) => {
-      const provider = "anthropic";
-      const model = "claude-opus-4-8";
-      const modelState = createModelSelectionStateFixture({
+  it.each([
+    { label: "missing selected profile", missing: true, revokedAt: 0 },
+    { label: "current owner", missing: false, revokedAt: 0 },
+    { label: "owner revoked during thinking", missing: false, revokedAt: 1 },
+    { label: "owner revoked during input", missing: false, revokedAt: 2 },
+  ])("consumes deferred metadata under CLI admission: $label", async ({ missing, revokedAt }) => {
+    const provider = "anthropic";
+    const model = "claude-opus-4-8";
+    const modelState = createModelSelectionStateFixture({
+      provider,
+      model,
+      agentCfg: { thinkingDefault: "high" },
+    });
+    const deferred = createReplyModelLevelResolver({
+      modelState,
+      selection: {
         provider,
         model,
-        agentCfg: { thinkingDefault: "high" },
-      });
-      const deferred = createReplyModelLevelResolver({
-        modelState,
-        selection: {
-          provider,
-          model,
-          agentRuntime: "openclaw",
-          thinkingExplicit: false,
-          reasoningLevel: "off",
-          reasoningExplicit: true,
-        },
-      }).defer();
-      const row = {
-        provider,
-        id: model,
-        name: "Claude",
-        reasoning: true,
-        input: ["text", "image"] as ("text" | "image")[],
-      };
-      deferred.thinking.catalog = [row];
-      deferred.thinking.allowedModelCatalog = [row];
-      const rejection = new Error("Missing explicitly selected CLI account");
-      resolveCliExecutionAuthProfileId.mockImplementation(() => {
-        if (missing) {
-          throw rejection;
-        }
-        return "anthropic:A";
-      });
-      const onReplyModelLevelsResolved = vi.fn();
-      resolveCliRuntimeExecutionProvider.mockReturnValue("claude-cli");
-      const run = runGate({
-        provider,
-        model,
-        agentId: "main",
-        agentDir: "/tmp/agent",
-        authProfileId: "anthropic:A",
-        authProfileIdSource: "user",
-        config: {},
-        deferredReplyModelLevels: deferred,
-        deferModelInput: true,
-        onReplyModelLevelsResolved,
-      });
-      if (missing) {
-        await expect(run).rejects.toBe(rejection);
-        expect(runCliAgent).not.toHaveBeenCalled();
-        expect(onReplyModelLevelsResolved).not.toHaveBeenCalled();
-        expect(createCliDispatchTranscriptRecorder).not.toHaveBeenCalled();
-      } else {
-        await run;
-        expect(resolveCliExecutionAuthProfileId).toHaveBeenCalledOnce();
-        expect(runCliAgent).toHaveBeenCalledWith(
-          expect.objectContaining({ modelHasVision: true, thinkLevel: "high" }),
-        );
-        expect(onReplyModelLevelsResolved).toHaveBeenCalledWith(
-          expect.objectContaining({ originalThinkLevel: "high", thinkLevel: "high" }),
-        );
+        agentRuntime: "openclaw",
+        thinkingExplicit: false,
+        reasoningLevel: "off",
+        reasoningExplicit: true,
+      },
+    }).defer();
+    const row = {
+      provider,
+      id: model,
+      name: "Claude",
+      reasoning: true,
+      input: ["text", "image"] as ("text" | "image")[],
+    };
+    deferred.thinking.catalog = [row];
+    deferred.thinking.allowedModelCatalog = [row];
+    const rejection = new Error("CLI admission is no longer current");
+    let observations = 0;
+    const assertCurrent = vi.fn(() => {
+      observations += 1;
+      if (observations === revokedAt) {
+        throw rejection;
       }
-    },
-  );
+    });
+    resolveCliExecutionAuthProfileId.mockImplementation(() => {
+      if (missing) {
+        throw rejection;
+      }
+      return "anthropic:A";
+    });
+    const onReplyModelLevelsResolved = vi.fn();
+    resolveCliRuntimeExecutionProvider.mockReturnValue("claude-cli");
+    const run = runGate({
+      provider,
+      model,
+      agentId: "main",
+      agentDir: "/tmp/agent",
+      authProfileId: "anthropic:A",
+      authProfileIdSource: "user",
+      config: {},
+      deferredReplyModelLevels: deferred,
+      deferModelInput: true,
+      assertCurrent,
+      onReplyModelLevelsResolved,
+    });
+    if (missing || revokedAt) {
+      await expect(run).rejects.toBe(rejection);
+      expect(runCliAgent).not.toHaveBeenCalled();
+      expect(onReplyModelLevelsResolved).not.toHaveBeenCalled();
+      expect(createCliDispatchTranscriptRecorder).not.toHaveBeenCalled();
+      expect(assertCurrent).toHaveBeenCalledTimes(missing ? 0 : revokedAt);
+    } else {
+      await run;
+      expect(assertCurrent).toHaveBeenCalledTimes(2);
+      expect(resolveCliExecutionAuthProfileId).toHaveBeenCalledOnce();
+      expect(runCliAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ modelHasVision: true, thinkLevel: "high" }),
+      );
+      expect(onReplyModelLevelsResolved).toHaveBeenCalledWith(
+        expect.objectContaining({ originalThinkLevel: "high", thinkLevel: "high" }),
+      );
+    }
+  });
 
   it("prepares input after CLI admission when the thinking descriptor was already retired", async () => {
     resolveCliRuntimeExecutionProvider.mockReturnValue("claude-cli");

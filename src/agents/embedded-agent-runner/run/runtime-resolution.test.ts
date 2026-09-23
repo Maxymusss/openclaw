@@ -26,4 +26,38 @@ describe("resolveInitialThinkLevel", () => {
       }),
     ).toBe("ultra");
   });
+
+  it.each([
+    {
+      label: "explicitly disabled effort support",
+      compat: { supportsReasoningEffort: false, reasoningEffortMap: { max: "custom" } },
+      expected: "off",
+    },
+    {
+      label: "empty supported efforts",
+      compat: { supportedReasoningEfforts: [], reasoningEffortMap: { max: "custom" } },
+      expected: "off",
+    },
+    {
+      label: "provider effort mapping",
+      compat: { reasoningEffortMap: { max: "custom" } },
+      expected: "max",
+    },
+    {
+      label: "binary thinking format",
+      compat: { thinkingFormat: "qwen" as const, supportsReasoningEffort: false },
+      expected: "high",
+    },
+  ])("clamps to the actual model's $label", ({ compat, expected }) => {
+    expect(
+      resolveInitialThinkLevel({
+        requested: "max",
+        provider: "openai",
+        modelId: "custom-thinking-model",
+        agentRuntime: "openclaw",
+        model: { api: "openai-completions", reasoning: true, compat },
+        clampToModel: true,
+      }),
+    ).toBe(expected);
+  });
 });

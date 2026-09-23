@@ -34,7 +34,7 @@ import {
   hasCompletedModelProgressForIdleBreaker,
   normalizeEmbeddedRunAttemptResult,
 } from "./run-attempt-result.js";
-import type { prepareEmbeddedRunRuntime } from "./runtime-preparation.js";
+import type { PreparedEmbeddedRunRuntime as PreparedRuntime } from "./runtime-preparation.js";
 import type { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
 import {
   isEmbeddedRunTerminalAbort,
@@ -43,7 +43,6 @@ import {
   resolveEmbeddedRunAttemptTerminalState,
 } from "./terminal-outcome.js";
 
-type PreparedRuntime = Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>;
 type SessionPromptState = Awaited<ReturnType<typeof createEmbeddedRunSessionPromptState>>;
 
 type ReplayState = ReturnType<typeof createEmbeddedRunReplayState>;

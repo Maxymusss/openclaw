@@ -30,12 +30,11 @@ import { resolveSettledToolBatchEvidence } from "./incomplete-turn-recovery.js";
 import { recoverEmbeddedRunOverflow } from "./overflow-context-recovery.js";
 import { handleEmbeddedPromptFailure } from "./prompt-failure.js";
 import type { prepareAndDispatchEmbeddedRunAttempt } from "./run-attempt-dispatch.js";
-import type { prepareEmbeddedRunRuntime } from "./runtime-preparation.js";
+import type { PreparedEmbeddedRunRuntime as PreparedRuntime } from "./runtime-preparation.js";
 import type { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
 import { isEmbeddedRunTerminalInterrupted, isEmbeddedRunTimeoutFinal } from "./terminal-outcome.js";
 import { recoverEmbeddedRunTimeout } from "./timeout-context-recovery.js";
 
-type PreparedRuntime = Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>;
 type NormalizedAttempt = Extract<
   Awaited<ReturnType<typeof normalizeEmbeddedRunAttempt>>,
   { action: "proceed" }

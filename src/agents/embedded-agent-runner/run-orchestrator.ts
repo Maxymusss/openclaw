@@ -266,6 +266,7 @@ async function runEmbeddedAgentInternal(
         // placement, and concurrency gates as native embedded runs.
         const cliDispatched = await runEmbeddedAgentViaCliBackendIfEligible({
           ...params,
+          assertCurrent: throwIfAborted,
           // Preserve the admitted writer claim alongside the already resolved storage identity.
           sessionTarget: { ...params.sessionTarget, ...runSessionTarget },
         });

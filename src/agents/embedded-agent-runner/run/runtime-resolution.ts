@@ -80,6 +80,7 @@ export function resolveInitialThinkLevel(params: {
         },
       ],
     });
+  const compat = params.model.compat;
   // A deferred primary default and a hook override both need the actual route's
   // clamp. The caller keeps the original level separately for later fallbacks.
   return params.clampToModel
@@ -91,7 +92,25 @@ export function resolveInitialThinkLevel(params: {
         agentId: params.agentId,
         sessionKey: params.sessionKey,
         agentRuntime: params.agentRuntime,
-        catalog: [{ provider: params.provider, id: params.modelId, ...params.model }],
+        catalog: [
+          {
+            provider: params.provider,
+            id: params.modelId,
+            ...params.model,
+            // Transport-specific compat unions share only these thinking facts.
+            compat: compat && {
+              thinkingFormat: "thinkingFormat" in compat ? compat.thinkingFormat : undefined,
+              supportsReasoningEffort:
+                "supportsReasoningEffort" in compat ? compat.supportsReasoningEffort : undefined,
+              supportedReasoningEfforts:
+                "supportedReasoningEfforts" in compat
+                  ? compat.supportedReasoningEfforts
+                  : undefined,
+              reasoningEffortMap:
+                "reasoningEffortMap" in compat ? compat.reasoningEffortMap : undefined,
+            },
+          },
+        ],
       }) ?? requested)
     : requested;
 }

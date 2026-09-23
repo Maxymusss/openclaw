@@ -16,7 +16,7 @@ import { createAgentRunDirectAbortError } from "../../run-termination.js";
 import type { EmbeddedAgentRunResult } from "../types.js";
 import type { PreparedEmbeddedRunInput } from "./execution-context.js";
 import { resolveProviderRefusal } from "./provider-refusal.js";
-import type { prepareEmbeddedRunRuntime } from "./runtime-preparation.js";
+import type { PreparedEmbeddedRunRuntime } from "./runtime-preparation.js";
 import type { createEmbeddedRunSessionPromptState } from "./session-prompt-state.js";
 import { resolveEmbeddedRunAttemptTerminalOutcome } from "./terminal-outcome.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
@@ -24,7 +24,7 @@ import type { EmbeddedRunAttemptResult } from "./types.js";
 /** Owns review admission, one physical attempt, and refusal recording for the logical run. */
 export function createProviderReviewRun(input: {
   run: PreparedEmbeddedRunInput;
-  runtime: Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>;
+  runtime: PreparedEmbeddedRunRuntime;
   session: Awaited<ReturnType<typeof createEmbeddedRunSessionPromptState>>;
   assertCurrent: (() => void) | undefined;
 }) {

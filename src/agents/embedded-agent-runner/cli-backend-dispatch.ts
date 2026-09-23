@@ -33,6 +33,7 @@ import type { EmbeddedAgentRunResult } from "./types.js";
 const log = createSubsystemLogger("agents/embedded-cli-dispatch");
 
 type CliBackendDispatchParams = RunEmbeddedAgentInternalParams & {
+  assertCurrent: () => void;
   sessionTarget: SessionTranscriptRuntimeTarget;
 };
 
@@ -136,7 +137,7 @@ async function runEmbeddedAgentViaCliBackend(
       ? await resolveDeferredReplyModelLevels({ cfg: config, agentId, deferred })
       : undefined;
     params.abortSignal?.throwIfAborted();
-    params.assertCurrent?.();
+    params.assertCurrent();
     if (levels?.kind === "reply") {
       return {
         payloads: [levels.reply],
@@ -176,7 +177,7 @@ async function runEmbeddedAgentViaCliBackend(
         model,
       });
       params.abortSignal?.throwIfAborted();
-      params.assertCurrent?.();
+      params.assertCurrent();
     }
     if (levels?.kind === "ready" && model) {
       params.onReplyModelLevelsResolved?.({

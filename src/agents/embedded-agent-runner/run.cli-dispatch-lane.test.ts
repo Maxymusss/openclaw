@@ -64,7 +64,8 @@ describe("runEmbeddedAgent CLI dispatch lane admission", () => {
 
   it("resolves and executes CLI dispatch inside the global-lane task", async () => {
     const order: string[] = [];
-    runEmbeddedAgentViaCliBackendIfEligible.mockImplementation(async () => {
+    runEmbeddedAgentViaCliBackendIfEligible.mockImplementation(async (params) => {
+      params.assertCurrent();
       order.push("dispatch-run");
       return dispatchResult;
     });
@@ -102,5 +103,25 @@ describe("runEmbeddedAgent CLI dispatch lane admission", () => {
       expectedWriterRunId: params.runId,
       expectedLifecycleRevision: sessionEntry.lifecycleRevision,
     });
+  });
+
+  it("forwards the owning lane assertion across CLI metadata awaits", async () => {
+    const abort = new AbortController();
+    const failure = new Error("lane revoked during metadata");
+    runEmbeddedAgentViaCliBackendIfEligible.mockImplementation(async (params) => {
+      params.assertCurrent();
+      await Promise.resolve();
+      abort.abort(failure);
+      params.assertCurrent();
+      return dispatchResult;
+    });
+    const params = laneRunParams();
+    await upsertSessionEntryCore(params.sessionTarget, {
+      sessionId: params.sessionId,
+      updatedAt: 1,
+      lifecycleRevision: "cli-dispatch-lifecycle",
+    });
+    await expect(runEmbeddedAgent({ ...params, abortSignal: abort.signal })).rejects.toBe(failure);
+    expect(runEmbeddedAgentViaCliBackendIfEligible).toHaveBeenCalledOnce();
   });
 });

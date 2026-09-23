@@ -39,6 +39,12 @@ import { resolveEmbeddedRunModelSetup } from "./model-setup.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 import { resolveInitialThinkLevel } from "./runtime-resolution.js";
 
+/** Attempts and settlement consume only the branch admitted by the run loop. */
+export type PreparedEmbeddedRunRuntime = Extract<
+  Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>,
+  { kind: "ready" }
+>;
+
 export async function prepareEmbeddedRunRuntime(input: {
   assertCurrent: () => void;
   runParams: RunEmbeddedAgentInternalParams;
