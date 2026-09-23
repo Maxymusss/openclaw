@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as exec from "../process/exec.js";
 import { withTestDir } from "../test-helpers/temp-dir.js";
@@ -52,9 +53,8 @@ describe("FreeBSD package replacement ownership", () => {
           });
           if (ownership === "unavailable") {
             expect(rollback.stderrTail).toContain("failed during pkg query (EACCES)");
-            expect(rollback.failureFacts?.[0].message).toContain(
-              "failed during pkg query (EACCES)",
-            );
+            const fact = expectDefined(rollback.failureFacts?.[0], "rollback failure fact");
+            expect(fact.message).toContain("failed during pkg query (EACCES)");
             expect(JSON.stringify(rollback)).not.toMatch(/\/private\/fixture|fixture-secret/u);
           }
           await expect(

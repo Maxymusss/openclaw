@@ -73,7 +73,11 @@ describe("FreeBSD pkg ownership", () => {
           /^FreeBSD pkg inspection failed during pkg query \(EACCES\)\./u,
         ),
       });
-      expect(await failed.catch((error: Error) => error.cause)).toBe(cause);
+      const error = await failed.catch((caught: unknown) => caught);
+      if (!(error instanceof FreeBsdPkgOwnershipError)) {
+        throw new Error("Expected pkg inspection refusal");
+      }
+      expect(error.cause).toBe(cause);
       await expect(failed).rejects.not.toThrow("private database detail");
     });
   });
@@ -174,7 +178,7 @@ describe("FreeBSD pkg ownership", () => {
             path.join(base, "openclaw"),
           );
           await expect(failed).rejects.toThrow("registered package directories");
-          const error = await failed.catch((error: FreeBsdPkgOwnershipError) => error);
+          const error = await failed.catch((caught: unknown) => caught);
           expect(error).toBeInstanceOf(FreeBsdPkgOwnershipError);
           if (!(error instanceof FreeBsdPkgOwnershipError)) {
             throw new Error("Expected pkg inspection refusal");

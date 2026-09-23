@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { formatErrorMessage } from "../../infra/errors.js";
@@ -273,11 +274,14 @@ describe("update progress", () => {
 
       expect(getUpdateRun).not.toHaveBeenCalled();
       expect(writeUpdateRunReportArtifact).toHaveBeenCalledTimes(1);
-      const saved = vi.mocked(writeUpdateRunReportArtifact).mock.calls[0][0];
+      const [saved] = expectDefined(
+        vi.mocked(writeUpdateRunReportArtifact).mock.calls[0],
+        "saved admission report",
+      );
       expect(saved.detached).toBe(true);
       expect(saved.result.reason).toBe("pkg-ownership-unavailable");
       expect(saved.result.status).toBe("error");
-      const fact = saved.result.steps[0].failureFacts?.[0];
+      const fact = expectDefined(saved.result.steps[0], "admission failure step").failureFacts?.[0];
       expect(fact?.message).toContain(discriminator);
       expect(fact?.message?.length).toBeLessThanOrEqual(200);
       expect(JSON.stringify(saved.report)).toContain(discriminator);
@@ -348,11 +352,14 @@ describe("update progress", () => {
 
       expect(getUpdateRun).not.toHaveBeenCalled();
       expect(writeUpdateRunReportArtifact).toHaveBeenCalledOnce();
-      const saved = vi.mocked(writeUpdateRunReportArtifact).mock.calls[0][0];
+      const [saved] = expectDefined(
+        vi.mocked(writeUpdateRunReportArtifact).mock.calls[0],
+        "saved mutable failure report",
+      );
       expect(saved.result).toBe(resolved.result);
       expect(saved.detached).toBe(true);
       expect(JSON.stringify(saved.report)).toContain(discriminator);
-      const fact = saved.result.steps[0].failureFacts?.[0];
+      const fact = expectDefined(saved.result.steps[0], "mutable failure step").failureFacts?.[0];
       expect(fact?.message).toContain(discriminator);
       expect(fact?.message?.length).toBeLessThanOrEqual(200);
       expect(stderr).toHaveBeenCalledExactlyOnceWith(error.message);
@@ -381,7 +388,9 @@ describe("update progress", () => {
     });
     expect(resolved.failure).toEqual({ cause: error, detail: formatErrorMessage(error) });
     expect(resolved.result.reason).toBe("update-failed");
-    expect(resolved.result.steps[0].stderrTail).toBe(formatErrorMessage(error));
+    expect(expectDefined(resolved.result.steps[0], "mutable failure step").stderrTail).toBe(
+      formatErrorMessage(error),
+    );
     expect(stderr).toHaveBeenCalledExactlyOnceWith(formatErrorMessage(error));
   });
 
