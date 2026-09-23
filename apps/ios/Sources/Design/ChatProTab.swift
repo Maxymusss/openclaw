@@ -89,6 +89,9 @@ struct ChatProTab: View {
             }
             .background(IOSNativePresentationAnchor(lifetime: self.lifetime).frame(width: 0, height: 0))
             .onDisappear {
+                #if DEBUG
+                self.nativeActions?.testLifetimeObservation?("chat-on-disappear")
+                #endif
                 if self.retainModalPresentation() {
                     _ = self.nativeActions?.userNavigationDidChange(
                         presentationID: self.nativePresentationID,
@@ -132,7 +135,17 @@ struct ChatProTab: View {
         if let id = self.chatRegistrationID {
             self.registeredChatIdentity = self.visibleChatIdentity
             let router = self.nativeActions
+            #if DEBUG
+            self.lifetime.testLifetimeObservation = { [weak router] event in
+                router?.testLifetimeObservation?("chat-\(event)")
+            }
+            #endif
             self.lifetime.own(id) {
+                #if DEBUG
+                router?.testLifetimeObservation?(
+                    "chat-cleanup current=\(router?.chatRegistrationID == id) " +
+                        "registered=\(router?.chatRegistrationID != nil)")
+                #endif
                 router?.unregisterChat(id)
                 if self.chatRegistrationID == id {
                     self.chatRegistrationID = nil

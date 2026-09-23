@@ -7,9 +7,15 @@ import UIKit
 final class IOSNativePresentationLifetime {
     private var id: UUID?
     private var cleanup: (@MainActor () -> Void)?
+    #if DEBUG
+    var testLifetimeObservation: (@MainActor (String) -> Void)?
+    #endif
 
     func own(_ id: UUID, cleanup: @escaping @MainActor () -> Void) {
         guard self.id != id else { return }
+        #if DEBUG
+        if self.id != nil { self.testLifetimeObservation?("own-replacement") }
+        #endif
         self.release()
         self.id = id
         self.cleanup = cleanup
@@ -37,6 +43,9 @@ struct IOSNativePresentationAnchor: UIViewRepresentable {
     func updateUIView(_: UIView, context _: Context) {}
 
     static func dismantleUIView(_: UIView, coordinator: IOSNativePresentationLifetime) {
+        #if DEBUG
+        coordinator.testLifetimeObservation?("anchor-dismantle")
+        #endif
         coordinator.release()
     }
 }

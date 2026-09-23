@@ -1121,6 +1121,9 @@ struct SwiftUIRenderSmokeTests {
             let router = NativeActionRouter(appModel: appModel, gatewayController: gatewayController)
             routerLifetime = router
             diagnosticRouter = router
+            let originalLifetimeObservation = router.testLifetimeObservation
+            router.testLifetimeObservation = { observeLifetime($0) }
+            defer { router.testLifetimeObservation = originalLifetimeObservation }
             let originalSelectionDidChange = appModel.chatSelectionDidChange
             appModel.chatSelectionDidChange = {
                 let previousOrigin = lifetimeOrigin
@@ -1311,6 +1314,7 @@ struct SwiftUIRenderSmokeTests {
                     try #require(restoreWaiters.contains { $0.requestID == first })
                     try #require(createdKeys.isEmpty)
                     var latest = first
+                    var explicitParentBeforeRestore: String?
                     if connectsDuringRestore {
                         #expect(appModel.activeGatewayConnectConfig == nil)
                         try await gateway.connect(
@@ -1322,6 +1326,7 @@ struct SwiftUIRenderSmokeTests {
                     }
                     if action == "ordinary-pending-user-aba" {
                         let original = appModel.chatSessionKey
+                        explicitParentBeforeRestore = original
                         appModel.focusChatSession("agent:main:other")
                         appModel.focusChatSession(original)
                     } else if action == "ordinary-pending-account-aba" {
@@ -1388,8 +1393,11 @@ struct SwiftUIRenderSmokeTests {
                     let restoredTarget = try #require(owner.transport).sessionTarget(for: cachedRouting.mainSessionKey)
                     #expect(restoredTarget.sessionKey == "agent:main:restored-main")
                     #expect(restoredTarget.agentID == nil)
-                    #expect(createdAgentIDs == [restoredTarget.agentID])
-                    #expect(createdParentKeys == [restoredTarget.sessionKey])
+                    // Cached routing does not erase the explicit focus restored by user ABA.
+                    let expectedParent = try #require(owner.transport).sessionTarget(
+                        for: explicitParentBeforeRestore ?? cachedRouting.mainSessionKey)
+                    #expect(createdAgentIDs == [expectedParent.agentID])
+                    #expect(createdParentKeys == [expectedParent.sessionKey])
                     let creating = try #require(owner.viewModel)
                     #expect(creating.isCreatingSession)
                     releaseCreates()
@@ -1666,7 +1674,19 @@ struct SwiftUIRenderSmokeTests {
                         }
                         try await Task.sleep(for: .milliseconds(10))
                     }
-                    let createdKey = try #require(createdKeys.first)
+                    let hasPreparedRequest = appModel.chatPresentation.currentNewChatRequest(
+                        appModel: appModel,
+                        presentation: .init(
+                            binding: presentation.binding, router: router,
+                            id: isUnbound ? nil : presentationID)) != nil
+                    let createdKey = try #require(
+                        createdKeys.first,
+                        "new-chat prepared=\(hasPreparedRequest) " +
+                            "syncStarted=\(presentation.startedSynchronizations.count) " +
+                            "syncCompleted=\(presentation.completedSynchronizations.count) " +
+                            "createStarted=\(presentation.startedNewChats.count) " +
+                            "createCompleted=\(presentation.completedNewChats.count) " +
+                            "createSucceeded=\(presentation.completedNewChats.values.filter(\.self).count)")
                     #expect(createdProfiles == [expectedProfile])
                     if let prepared {
                         // The original owner's defer settles even when retirement suppresses
@@ -1817,6 +1837,7 @@ struct SwiftUIRenderSmokeTests {
                 outcome = .failure(error)
             }
             // Close transport and join reply writers even if the body or a terminal wait throws.
+            router.testLifetimeObservation = originalLifetimeObservation
             await gateway.disconnect()
             await fixture.stopAndWait()
             let completion: Result<Void, Error>

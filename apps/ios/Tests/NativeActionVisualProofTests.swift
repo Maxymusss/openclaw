@@ -337,6 +337,9 @@ final class NativeActionVisualProofTests: XCTestCase {
                 print(
                     "native-visual-lifetime total=\(lifetimeTotal) truncated=\(lifetimeTotal > 32) \(lifetimeRows.joined(separator: " | "))")
             }
+            let originalLifetimeObservation = router.testLifetimeObservation
+            router.testLifetimeObservation = { observeLifetime($0) }
+            defer { router.testLifetimeObservation = originalLifetimeObservation }
             let originalSelectionDidChange = model.chatSelectionDidChange
             model.chatSelectionDidChange = {
                 observeLifetime("selection-before")
@@ -699,6 +702,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                 window?.rootViewController = nil
                 window = nil
                 previousKeyWindow = nil
+                router.testLifetimeObservation = originalLifetimeObservation
                 await model.operatorSession.disconnect()
                 await fixture.stopAndWait()
                 model.setOperatorConnected(false)

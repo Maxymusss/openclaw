@@ -690,7 +690,17 @@ struct RootTabs: View {
                     self.nativeRunInspection = receipt
                 })
                 if let id = self.nativePresentationID {
+                    #if DEBUG
+                    let router = self.nativeActions
+                    self.nativeLifetime.testLifetimeObservation = { [weak router] event in
+                        router?.testLifetimeObservation?("root-\(event)")
+                    }
+                    #endif
                     self.nativeLifetime.own(id) {
+                        #if DEBUG
+                        self.nativeActions?.testLifetimeObservation?(
+                            "root-cleanup current=\(self.nativeActions?.presentationRegistrationID == id)")
+                        #endif
                         self.nativeActions?.unregisterPresentation(id)
                         guard self.nativePresentationID == id else { return }
                         self.nativePresentationID = nil
@@ -769,24 +779,29 @@ struct RootTabs: View {
                     await self.appModel.refreshGatewayOverviewIfConnected()
                 }
             }
-            .onDisappear {
-                if self.pagesEditor != nil {
-                    // Pages owns this cover, but never retains a native chat binding.
-                    // The exact-ID lifetime anchor still releases actual Root removal.
-                    _ = self.nativeActions?.userNavigationDidChange(
-                        presentationID: self.nativePresentationID,
-                        disposition: .departure)
-                } else if self.retainChatModalPresentation() {
-                    _ = self.nativeActions?.userNavigationDidChange(
-                        presentationID: self.nativePresentationID,
-                        disposition: .chatModal)
-                } else {
-                    self.nativeLifetime.release()
-                    self.clearChatModalScope()
-                }
-                UIApplication.shared.isIdleTimerDisabled = false
-                self.clearVoiceWakeToast()
-            }
+            .onDisappear { self.rootDidDisappear() }
+    }
+
+    private func rootDidDisappear() {
+        #if DEBUG
+        self.nativeActions?.testLifetimeObservation?("root-on-disappear")
+        #endif
+        if self.pagesEditor != nil {
+            // Pages owns this cover, but never retains a native chat binding.
+            // The exact-ID lifetime anchor still releases actual Root removal.
+            _ = self.nativeActions?.userNavigationDidChange(
+                presentationID: self.nativePresentationID,
+                disposition: .departure)
+        } else if self.retainChatModalPresentation() {
+            _ = self.nativeActions?.userNavigationDidChange(
+                presentationID: self.nativePresentationID,
+                disposition: .chatModal)
+        } else {
+            self.nativeLifetime.release()
+            self.clearChatModalScope()
+        }
+        UIApplication.shared.isIdleTimerDisabled = false
+        self.clearVoiceWakeToast()
     }
 
     private func clearChangedNativeChatSelection() {
