@@ -20,6 +20,80 @@ The [File Transfer plugin](/plugins/reference/file-transfer) provides independen
 selectable directory-listing, fetch, and write tools. Allowing one tool does not
 make the others available; node-command and path policies still apply.
 
+### Gateway workspace files
+
+The File Transfer plugin can connect Gateway workspace-file callers to an
+already paired node. Configure the agent ID, exact node ID, and the node's
+absolute POSIX workspace path:
+
+```json5 validate=false
+// plugins.entries.file-transfer.config
+{
+  policyVersion: 2,
+  workspaces: {
+    main: { nodeId: "<paired-node-id>", remoteRoot: "/workspace" },
+  },
+  nodes: {
+    "<paired-node-id>": {
+      ask: "off",
+      allowReadPaths: ["/workspace/AGENTS.md"],
+      allowWritePaths: ["/workspace/AGENTS.md"],
+      followSymlinks: false,
+    },
+  },
+}
+```
+
+Placement does not grant access. Authorize the required node commands and file
+paths separately; the example grants only `AGENTS.md`. Gateway callers retain
+their own document allowlists. Use the canonical workspace root. Document reads
+and writes reject symlinks. Bootstrap reads can follow directory aliases inside
+that root when the node policy permits it; final-file symlinks remain rejected.
+There is no local-file fallback while the
+configured node is unavailable or its workspace service is stopped.
+Agents sharing a Gateway workspace must use the same node and remote root;
+identical mappings share one binding, while conflicting mappings fail startup.
+
+| Workspace operation                        | Node command |
+| ------------------------------------------ | ------------ |
+| Read bytes and their canonical source path | `file.fetch` |
+| Write bytes                                | `file.write` |
+| List directory entries                     | `dir.list`   |
+| Read type, size, and modification time     | `file.stat`  |
+
+`file.stat` adds no model tool. It accepts regular files and directories without
+fetching contents or listing the parent, under the existing read-path policy.
+For bootstrap reads, `file.fetch.rootPath` confines parent-alias resolution to
+the canonical workspace root; it does not grant access beyond the node policy.
+Unary reads and writes retain the 16 MiB transfer limit; directory reads consume
+the existing `dir.list` pages. `file.write.expectedSha256` verifies the submitted bytes, not
+the previous file version. Owner-document conflict checks remain in the Gateway.
+
+The mapping routes workspace documents and outbound attachment reads to the
+node. When the Gateway has duplex node transport, it also registers remote
+Memory-file access, Skills discovery and management, and input-attachment
+staging. Memory search and its index remain on the Gateway; the node supplies
+the source files. The mapping does not launch an agent harness.
+
+Run the same OpenClaw version on the Gateway and node so their workspace workers
+and transfer protocol match. Grant read access to the Memory files, Skills
+directories, and output files you intend to use, and write access to the
+attachment-staging and Skills installation paths. The `AGENTS.md`-only policy
+above does not grant those additional paths; each operation still enforces the
+node's command and file-path policies.
+
+### Binary transfers for services
+
+Plugin services can use the existing node channel to transfer file bytes:
+
+- `file.fetch` accepts binary transfer when both hosts support it, bounded by the caller's byte limit and node policy. Existing unary calls keep their current behavior.
+- `file.create` receives bytes over that channel and publishes a complete file without replacing an existing file. It checks the admitted size and SHA-256 digest before publishing.
+
+Both commands retain node pairing, file-path authorization, and approval checks.
+These transport commands do not automatically stage task attachments; the workspace adapter supplies that integration.
+
+### Transferred files
+
 Every successful file fetch saves the bytes in the Gateway's file-transfer media
 store and returns both `localPath` and `mediaId`, including for inlined text and
 images. Fetched files keep a sanitized filename stem in saved copies and forwarded
