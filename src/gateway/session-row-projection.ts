@@ -286,9 +286,11 @@ export async function createSessionRowProjection(params: {
     const presentationOnly = metadata.invalidate(change) && !change.factsInvalidated;
     if (!presentationOnly) {
       revisionToken = undefined;
-      databaseRevision++;
     }
     if ("all" in change) {
+      if (!presentationOnly) {
+        databaseRevision++;
+      }
       placementFacts.invalidateChange(change);
       if (change.scope === "stores" || change.scope === "config") {
         topologyDirty = true;
@@ -319,7 +321,7 @@ export async function createSessionRowProjection(params: {
       const exact = matching(query);
       const registryFactsReady = inOwnerContext(getSubagentSessionListReadSnapshotIdentity);
       for (const previous of new Set([...exact, ...matching(query, "id")])) {
-        previous.pendingDatabaseFacts = undefined;
+        records.invalidateDatabaseFacts(previous);
         if (previous.entry) {
           placementFacts.invalidate(previous.entry.sessionId);
         }
@@ -481,9 +483,8 @@ export async function createSessionRowProjection(params: {
         return;
       }
       epoch++;
-      databaseRevision++;
       revisionToken = undefined;
-      row.pendingDatabaseFacts = undefined;
+      records.invalidateDatabaseFacts(row);
       dirty.add(id);
       backfill.enqueue(id);
       void ensureMaterialized().catch(() => {});
