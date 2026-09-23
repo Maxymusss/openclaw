@@ -1,0 +1,347 @@
+import { afterEach, describe, expect, it } from "vitest";
+import type { BuildChatItemsProps } from "./chat-thread-build.ts";
+import { buildCachedChatItems, resetChatThreadState } from "./chat-thread.ts";
+
+const message = (role: string, text: string, seq: number, runId = text) => ({
+  role,
+  content: text,
+  timestamp: seq * 10,
+  __openclaw: {
+    id: text,
+    seq,
+    runId,
+    idempotencyKey: role === "user" ? `${runId}:user` : undefined,
+  },
+});
+const history = [message("user", "Earlier request", 1), message("assistant", "Earlier reply", 2)];
+const handoff = {
+  id: "handoff",
+  runId: "handoff-run",
+  acceptedAt: 5,
+  state: "cancelled" as const,
+  message: {
+    role: "assistant",
+    content: "The handoff is ready.",
+    timestamp: 5,
+    provenance: { kind: "inter_session", sourceTool: "sessions_send" },
+    senderSession: { sessionKey: "agent:helper:main", agentId: "helper" },
+    __openclaw: { id: "pending:handoff" },
+  },
+};
+const nextUser = message("user", "Continue from the handoff.", 3, "next-run");
+const preview = {
+  role: "toolResult",
+  toolCallId: "app-call",
+  toolName: "demo__show",
+  content: [{ type: "text", text: "ok" }],
+  timestamp: 25,
+  details: {
+    mcpAppPreview: {
+      kind: "canvas",
+      view: { id: "app-view", title: "Demo App" },
+      presentation: { target: "assistant_message", sandbox: "scripts" },
+      mcpApp: {
+        viewId: "app-view",
+        serverName: "demo",
+        toolName: "show",
+        uiResourceUri: "ui://demo/app.html",
+        toolCallId: "app-call",
+      },
+    },
+  },
+};
+function props(overrides: Partial<BuildChatItemsProps> = {}): BuildChatItemsProps {
+  return {
+    paneId: "pending-order",
+    sessionKey: "agent:main:pending-order",
+    messages: history,
+    pendingInputs: [handoff],
+    toolMessages: [],
+    streamSegments: [],
+    stream: null,
+    streamStartedAt: null,
+    showToolCalls: true,
+    ...overrides,
+  };
+}
+function visible(input: BuildChatItemsProps) {
+  return buildCachedChatItems(input).flatMap((item) =>
+    item.kind === "group" ? item.messages.map((source) => source.message) : [],
+  );
+}
+
+afterEach(() => resetChatThreadState());
+
+describe("observed pending-input order", () => {
+  it.each(["queued", "cancelled", "interrupted"] as const)(
+    "keeps an already displayed %s handoff before a later persisted user turn",
+    (state) => {
+      const pendingInputs = [{ ...handoff, state }];
+      expect(visible(props({ pendingInputs }))).toEqual([...history, handoff.message]);
+      const messages = [...history, nextUser];
+      expect(visible(props({ messages, pendingInputs }))).toEqual([
+        ...history,
+        handoff.message,
+        nextUser,
+      ]);
+      const nextReply = message("assistant", "Follow-up complete.", 4, "next-run");
+      expect(visible(props({ messages: [...messages, nextReply], pendingInputs }))).toEqual([
+        ...history,
+        handoff.message,
+        nextUser,
+        nextReply,
+      ]);
+      if (state !== "queued") {
+        const items = buildCachedChatItems(props({ messages, pendingInputs }));
+        const noticeIndex = items.findIndex((item) => item.kind === "notice");
+        const userIndex = items.findIndex(
+          (item) =>
+            item.kind === "group" && item.messages.some((entry) => entry.message === nextUser),
+        );
+        expect(noticeIndex).toBeGreaterThan(-1);
+        expect(noticeIndex).toBeLessThan(userIndex);
+      }
+    },
+  );
+
+  it.each(["submitting", "sending", "waiting-model", "waiting-reconnect"] as const)(
+    "keeps the handoff before a later %s send across custody and persistence",
+    (sendState) => {
+      visible(props());
+      const queue = [
+        {
+          id: "new-send",
+          text: nextUser.content,
+          createdAt: 1,
+          sendRunId: "next-run",
+          sendState,
+        },
+      ];
+      expect(visible(props({ queue, runId: "next-run" }))).toEqual([
+        ...history,
+        handoff.message,
+        expect.objectContaining({ content: [{ type: "text", text: nextUser.content }] }),
+      ]);
+      const accepted = {
+        id: "new-send",
+        runId: "next-run",
+        acceptedAt: 30,
+        state: "queued" as const,
+        message: { ...nextUser, __openclaw: { id: "pending:new-send" } },
+      };
+      expect(visible(props({ pendingInputs: [handoff, accepted], queue }))).toEqual([
+        ...history,
+        handoff.message,
+        accepted.message,
+      ]);
+      expect(visible(props({ messages: [...history, nextUser] }))).toEqual([
+        ...history,
+        handoff.message,
+        nextUser,
+      ]);
+    },
+  );
+
+  it("keeps the current assistant reply before custody without moving custody past the next turn", () => {
+    visible(props());
+    const completion = message("assistant", "Current work complete.", 3);
+    const messages = [...history, completion];
+    const nextUser = message("user", "Continue from the handoff.", 4, "next-run");
+    expect(visible(props({ messages }))).toEqual([...messages, handoff.message]);
+    expect(visible(props({ messages: [...messages, nextUser] }))).toEqual([
+      ...messages,
+      handoff.message,
+      nextUser,
+    ]);
+  });
+
+  it("does not lose the observed position while search hides its anchor", () => {
+    visible(props());
+    const messages = [...history, nextUser];
+    expect(visible(props({ messages, searchOpen: true, searchQuery: "handoff" }))).toEqual([
+      handoff.message,
+      nextUser,
+    ]);
+    expect(visible(props({ messages }))).toEqual([...history, handoff.message, nextUser]);
+  });
+
+  it.each([
+    { kind: "inter_session", sourceTool: "sessions_send" },
+    {
+      kind: "internal_system",
+      sourceTool: "cron",
+      jobId: "scheduled-job",
+      runId: "scheduled-run",
+      sourceSessionKey: "agent:helper:main",
+    },
+  ])("keeps a handoff before a later forwarded $sourceTool turn", (provenance) => {
+    visible(props());
+    const forwarded = {
+      ...message("assistant", "A new forwarded request.", 3),
+      provenance,
+      senderSession: { sessionKey: "agent:helper:main", agentId: "helper" },
+    };
+    const reply = message("assistant", "The forwarded task is done.", 4);
+    expect(visible(props({ messages: [...history, forwarded, reply] }))).toEqual([
+      ...history,
+      handoff.message,
+      forwarded,
+      reply,
+    ]);
+  });
+
+  it.each([false, true])(
+    "keeps the true turn ceiling when search hides it (ceiling observed: %s)",
+    (observeCeiling) => {
+      const matchingHistory = [history[0]!, message("assistant", "Earlier handoff reply", 2)];
+      visible(props({ messages: matchingHistory }));
+      const hiddenUser = message("user", "Continue the task.", 3);
+      if (observeCeiling) {
+        visible(props({ messages: [...matchingHistory, hiddenUser] }));
+      }
+      const reply = message("assistant", "The handoff was processed.", 4);
+      const laterUser = message("user", "Another handoff request.", 5);
+      const messages = [...matchingHistory, hiddenUser, reply, laterUser];
+      expect(visible(props({ messages, searchOpen: true, searchQuery: "handoff" }))).toEqual([
+        matchingHistory[1],
+        handoff.message,
+        reply,
+        laterUser,
+      ]);
+    },
+  );
+
+  it("keeps observed placement when browsing away from and back to a custody page", () => {
+    visible(props());
+    const messages = [...history, nextUser];
+    visible(props({ messages }));
+    visible(props({ messages, pendingInputs: [{ ...handoff, id: "older-handoff" }] }));
+    expect(visible(props({ messages }))).toEqual([...history, handoff.message, nextUser]);
+  });
+
+  it.each([false, true])(
+    "keeps the true turn ceiling ahead of a local send when search hides history (later canonical turn: %s)",
+    (hasLaterCanonicalTurn) => {
+      visible(props());
+      const hiddenUser = message("user", "Continue the task.", 3);
+      const queue = [
+        {
+          id: "new-send",
+          text: "Another handoff request.",
+          createdAt: 40,
+          sendRunId: "new-run",
+          sendState: "submitting" as const,
+        },
+      ];
+      expect(
+        visible(
+          props({
+            messages: hasLaterCanonicalTurn ? [...history, hiddenUser] : history,
+            queue,
+            searchOpen: true,
+            searchQuery: "handoff",
+          }),
+        ),
+      ).toEqual([
+        handoff.message,
+        expect.objectContaining({ content: [{ type: "text", text: queue[0]!.text }] }),
+      ]);
+    },
+  );
+
+  it("scopes observed placement to the pane and session and retires it on reset", () => {
+    visible(props());
+    const messages = [...history, nextUser];
+    for (const scope of [{ paneId: "other" }, { sessionKey: "agent:main:other" }]) {
+      expect(visible(props({ ...scope, messages }))).toEqual([...messages, handoff.message]);
+    }
+    resetChatThreadState("pending-order");
+    expect(visible(props({ messages }))).toEqual([...messages, handoff.message]);
+  });
+
+  it("keeps the true turn ceiling when search hides a lifted preview floor", () => {
+    const messages = [...history, preview];
+    const initial = visible(props({ messages, showToolCalls: false }));
+    expect(initial).toHaveLength(4);
+    expect(initial.at(-1)).toBe(handoff.message);
+    expect(initial[2]).toMatchObject({
+      role: "assistant",
+      content: [expect.objectContaining({ type: "canvas" })],
+    });
+    const queue = [
+      {
+        id: "new-send",
+        text: "Another handoff request.",
+        createdAt: 40,
+        sendRunId: "new-run",
+        sendState: "submitting" as const,
+      },
+    ];
+    expect(
+      visible(
+        props({ messages, queue, showToolCalls: false, searchOpen: true, searchQuery: "handoff" }),
+      ),
+    ).toEqual([
+      handoff.message,
+      expect.objectContaining({ content: [{ type: "text", text: queue[0]!.text }] }),
+    ]);
+  });
+
+  it("keeps the true turn ceiling before a later turn's lifted preview in search", () => {
+    visible(props());
+    const hiddenUser = message("user", "Continue the task.", 3);
+    const reply = message("assistant", "The handoff result is ready.", 5);
+    const messages = [...history, hiddenUser, preview, reply];
+    expect(
+      visible(props({ messages, showToolCalls: false, searchOpen: true, searchQuery: "handoff" })),
+    ).toEqual([
+      handoff.message,
+      expect.objectContaining({
+        role: "assistant",
+        content: [expect.objectContaining({ type: "canvas" })],
+      }),
+      reply,
+    ]);
+  });
+
+  it.each(["reset", "compaction", "live-compaction"])(
+    "keeps the true turn ceiling before a later %s divider in search",
+    (kind) => {
+      visible(props());
+      const hiddenUser = message("user", "Continue the task.", 3);
+      const divider = {
+        ...message("system", "Context boundary", 4),
+        __openclaw: {
+          id: "context-boundary",
+          seq: 4,
+          kind: kind === "reset" ? "reset" : "compaction",
+          runId: "compaction-run",
+        },
+      };
+      const reply = message("assistant", "The handoff result is ready.", 5);
+      const compactionStatus =
+        kind === "live-compaction"
+          ? { phase: "complete" as const, runId: "compaction-run", startedAt: 39, completedAt: 40 }
+          : undefined;
+      const items = buildCachedChatItems(
+        props({
+          messages: [...history, hiddenUser, divider, reply],
+          compactionStatus,
+          searchOpen: true,
+          searchQuery: "handoff",
+        }),
+      );
+      const handoffIndex = items.findIndex(
+        (item) =>
+          item.kind === "group" && item.messages.some((entry) => entry.message === handoff.message),
+      );
+      const dividerIndex = items.findIndex((item) => item.kind === "divider");
+      const replyIndex = items.findIndex(
+        (item) => item.kind === "group" && item.messages.some((entry) => entry.message === reply),
+      );
+      expect(handoffIndex).toBeGreaterThanOrEqual(0);
+      expect(dividerIndex).toBeGreaterThan(handoffIndex);
+      expect(replyIndex).toBeGreaterThan(dividerIndex);
+    },
+  );
+});

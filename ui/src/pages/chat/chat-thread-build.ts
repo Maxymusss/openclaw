@@ -27,7 +27,10 @@ import {
 } from "../../lib/chat/message-normalizer.ts";
 import type { CanvasToolPreview } from "../../lib/chat/tool-cards.ts";
 import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
-import { buildPendingInputItems } from "./chat-pending-inputs.ts";
+import {
+  projectPendingInputItems,
+  type PendingInputPlacement,
+} from "./chat-pending-input-placement.ts";
 import {
   buildCompactionDividerItem,
   buildGuardianNoticeItem,
@@ -122,7 +125,10 @@ function canvasAssistantItemKey(
   return identity ? `canvas:${identity}` : `${fallback}:canvas`;
 }
 
-export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | MessageGroup> {
+export function buildChatItems(
+  props: BuildChatItemsProps,
+  pendingInputPlacements = new Map<string, PendingInputPlacement>(),
+): Array<ChatItem | MessageGroup> {
   let items: ChatItem[] = [];
   const tools = props.toolMessages.filter(
     (message): message is Record<string, unknown> => asRecord(message) !== null,
@@ -147,6 +153,11 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
   const persistedCanvasIdentities = new Set<string>();
   const normalizedHistory = history.map(safeNormalizeMessage);
   const historyItems = buildMessageItems(history);
+  const historySourceKeys = new Map<string, string>();
+  const appendHistoryItem = (item: ChatItem, sourceKey: string) => {
+    historySourceKeys.set(item.key, sourceKey);
+    items.push(item);
+  };
   let canvasTurn: {
     previews: { preview: CanvasToolPreview; item: (typeof historyItems)[number] }[];
     lastMatchingAssistantIndex: number;
@@ -194,11 +205,14 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
         rawMessageTimestamp(msg) ?? Date.now(),
         i,
       );
-      items.push({
-        ...divider,
-        compactionId: divider.key,
-        ...(matchesLive && compactionKey ? { key: compactionKey } : {}),
-      });
+      appendHistoryItem(
+        {
+          ...divider,
+          compactionId: divider.key,
+          ...(matchesLive && compactionKey ? { key: compactionKey } : {}),
+        },
+        itemKey,
+      );
       hasPersistedCompaction ||= matchesLive;
       continue;
     }
@@ -207,7 +221,10 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
       continue;
     }
     if (marker && marker.kind === "reset") {
-      items.push(buildResetDividerItem(marker, normalized.timestamp ?? Date.now(), i));
+      appendHistoryItem(
+        buildResetDividerItem(marker, normalized.timestamp ?? Date.now(), i),
+        itemKey,
+      );
       continue;
     }
 
@@ -215,7 +232,10 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
     if (role === "system") {
       const text = extractTextCached(msg);
       if (text?.trim()) {
-        items.push({ kind: "notice", key: itemKey, text, timestamp: normalized.timestamp });
+        appendHistoryItem(
+          { kind: "notice", key: itemKey, text, timestamp: normalized.timestamp },
+          itemKey,
+        );
       }
       continue;
     }
@@ -247,14 +267,17 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
       !matchingCanvas &&
       (!searchFiltering || canvasTurns[i]!.lastMatchingAssistantIndex > i);
     if (persistedCanvasSource && renderPersistedPreview) {
-      items.push({
-        kind: "message",
-        key: canvasAssistantItemKey(msg, persistedCanvasSource, itemKey),
-        message: createCanvasAssistantMessage(
-          persistedCanvasSource,
-          persistedCanvasSource.timestamp ?? transcriptPositionTimestamp(history, i),
-        ),
-      });
+      appendHistoryItem(
+        {
+          kind: "message",
+          key: canvasAssistantItemKey(msg, persistedCanvasSource, itemKey),
+          message: createCanvasAssistantMessage(
+            persistedCanvasSource,
+            persistedCanvasSource.timestamp ?? transcriptPositionTimestamp(history, i),
+          ),
+        },
+        itemKey,
+      );
     }
 
     if (!props.showToolCalls && isToolResult) {
@@ -278,7 +301,7 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
 
     const projected = projectChatSystemNotice(item, normalized);
     if (projected) {
-      items.push(projected);
+      appendHistoryItem(projected, itemKey);
     }
   }
   const queuedSends = props.queue ?? [];
@@ -419,21 +442,19 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
   );
   // Transient projections merge into stable history + queued-send rows by timestamp.
   // Stable rows keep their relative order despite client and Gateway clock skew.
-  const pendingInputItems = buildPendingInputItems(
+  const projections = projectPendingInputItems({
     pendingInputs,
-    props.searchOpen ? props.searchQuery : undefined,
-    props.queue,
-    props.workspaceSyncPendingRunIds,
-    props.workerSetupPending,
-    props.messageRecovery,
-  );
-  // Custody follows visible history. Choose its floor after canvas placement and
-  // hidden-row filtering so the anchor survives projection insertion.
-  const custodyFloor = items.at(-1)?.key;
-  const projections: ChatProjection[] = pendingInputItems.map((item) => ({
-    item,
-    ...(custodyFloor ? { bounds: { afterKey: custodyFloor } } : {}),
-  }));
+    items,
+    historyItems,
+    historySourceKeys,
+    pendingInputPlacements,
+    searchQuery: props.searchOpen ? props.searchQuery : undefined,
+    queue: props.queue,
+    workspaceSyncPendingRunIds: props.workspaceSyncPendingRunIds,
+    workerSetupPending: props.workerSetupPending,
+    messageRecovery: props.messageRecovery,
+  });
+  const pendingInputItems = projections.map(({ item }) => item);
   if (compaction && compactionKey && !hasPersistedCompaction) {
     const timestamp = compaction.startedAt ?? compaction.completedAt ?? Date.now();
     projections.push({
