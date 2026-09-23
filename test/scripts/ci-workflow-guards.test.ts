@@ -1300,10 +1300,10 @@ AFTER_CD
       "ios-build",
       "ios-screenshot-build",
       "ios-screenshot-capture",
+      "ios-screenshot-shard",
     ]) {
       expect(workflow.jobs[jobName]["runs-on"], jobName).toBe("xcode-27");
     }
-    expect(workflow.jobs["ios-screenshot-shard"]["runs-on"]).toBe("ubuntu-24.04");
     expect(workflow.jobs["macos-swift"]["timeout-minutes"]).toBe(30);
   });
 
@@ -1331,9 +1331,16 @@ AFTER_CD
         (step: WorkflowStep) => step.name === "Capture iOS device screenshot shard",
       ).env,
     ).toMatchObject({
-      OPENCLAW_SNAPSHOT_PART: "${{ matrix.part }}",
-      OPENCLAW_SNAPSHOT_PART_COUNT: "2",
-      OPENCLAW_SNAPSHOT_REUSE_BUILD: "1",
+      OPENCLAW_SNAPSHOT_PART:
+        "${{ needs.ios-screenshot-build.outputs.supports_shared_build == 'true' && matrix.part || 1 }}",
+      OPENCLAW_SNAPSHOT_PART_COUNT:
+        "${{ needs.ios-screenshot-build.outputs.supports_shared_build == 'true' && '2' || '1' }}",
+      OPENCLAW_SNAPSHOT_REUSE_BUILD:
+        "${{ needs.ios-screenshot-build.outputs.supports_shared_build == 'true' && '1' || '0' }}",
+    });
+    expect(build.outputs).toMatchObject({
+      artifact_name: "${{ steps.screenshot_capability.outputs.artifact_name }}",
+      supports_shared_build: "${{ steps.screenshot_capability.outputs.supports_shared_build }}",
     });
     expect(merge.needs).toContain("ios-screenshot-capture");
     expect(merge.strategy.matrix.device_family).toEqual(["iphone", "ipad-13"]);
@@ -7762,7 +7769,7 @@ server.listen(0, "127.0.0.1", () => {
     const workflow = readCiWorkflow();
 
     expect(source.match(/&platform_checkout_step/gu) ?? []).toHaveLength(1);
-    expect(source.match(/\*platform_checkout_step/gu) ?? []).toHaveLength(5);
+    expect(source.match(/\*platform_checkout_step/gu) ?? []).toHaveLength(6);
     expect(source.match(/&owned_checkout_run/gu) ?? []).toHaveLength(1);
     const linuxCheckout = workflow.jobs["checks-fast-core"].steps.find(
       (step: WorkflowStep) => step.name === "Checkout",

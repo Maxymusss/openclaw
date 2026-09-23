@@ -43,19 +43,21 @@ export function mergeIosScreenshotCaptures({ family, inputRoot, outputRoot }) {
   const shardRoots = readdirSync(inputRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory())
     .map((entry) => path.join(inputRoot, entry.name));
-  if (shardRoots.length !== 2) {
-    throw new Error(`expected two ${family} capture shards, found ${shardRoots.length}`);
+  if (![1, 2].includes(shardRoots.length)) {
+    throw new Error(`expected one or two ${family} capture shards, found ${shardRoots.length}`);
   }
 
   const shards = shardRoots.map((root) => {
     const metadata = readJson(path.join(root, "metadata.json"), "capture metadata");
     if (
       metadata.deviceFamily !== family ||
-      metadata.partCount !== 2 ||
-      ![1, 2].includes(metadata.part)
+      metadata.partCount !== shardRoots.length ||
+      !Number.isInteger(metadata.part) ||
+      metadata.part < 1 ||
+      metadata.part > metadata.partCount
     ) {
       throw new Error(
-        `capture metadata does not bind ${family} part ${metadata.part ?? "unknown"}/2`,
+        `capture metadata does not bind ${family} part ${metadata.part ?? "unknown"}/${shardRoots.length}`,
       );
     }
     for (const key of ["xcodeVersion", "fastlaneVersion", "nodeVersion"]) {
@@ -64,8 +66,10 @@ export function mergeIosScreenshotCaptures({ family, inputRoot, outputRoot }) {
     return { metadata, root };
   });
   shards.sort((left, right) => left.metadata.part - right.metadata.part);
-  if (shards[0].metadata.part !== 1 || shards[1].metadata.part !== 2) {
-    throw new Error(`capture metadata does not contain unique ${family} parts 1 and 2`);
+  if (shards.some((shard, index) => shard.metadata.part !== index + 1)) {
+    throw new Error(
+      `capture metadata does not contain unique ${family} parts 1 through ${shardRoots.length}`,
+    );
   }
   const commonMetadata = {
     deviceFamily: family,
@@ -133,7 +137,7 @@ export function mergeIosScreenshotCaptures({ family, inputRoot, outputRoot }) {
   }
 
   writeFileSync(
-    path.join(outputRoot, "capture-attempts.json"),
+    path.join(xcresultsOutput, "capture-attempts.json"),
     `${JSON.stringify({ schemaVersion: 1, attempts }, null, 2)}\n`,
   );
   writeFileSync(

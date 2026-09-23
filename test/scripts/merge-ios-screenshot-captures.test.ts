@@ -4,15 +4,17 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { mergeIosScreenshotCaptures } from "../../scripts/merge-ios-screenshot-captures.mjs";
 
-function writeShard(root: string, family: "iphone" | "ipad-13", part: 1 | 2) {
+function writeShard(root: string, family: "iphone" | "ipad-13", part: 1 | 2, partCount: 1 | 2 = 2) {
   const shard = path.join(root, `${family}-${part}`);
   mkdirSync(path.join(shard, "screenshots"), { recursive: true });
   mkdirSync(path.join(shard, "xcresults", `${family}-${part}.xcresult`), { recursive: true });
   const device = family === "iphone" ? "iPhone 17 Pro Max" : "iPad Pro 13-inch (M5)";
   const names =
-    part === 1
-      ? ["01-control-connected", "03-agent-connected"]
-      : ["02-chat-connected", "04-settings-connected"];
+    partCount === 1
+      ? ["01-control-connected", "02-chat-connected", "03-agent-connected", "04-settings-connected"]
+      : part === 1
+        ? ["01-control-connected", "03-agent-connected"]
+        : ["02-chat-connected", "04-settings-connected"];
   for (const name of names) {
     writeFileSync(path.join(shard, "screenshots", `${device}-${name}.png`), "png");
   }
@@ -27,7 +29,7 @@ function writeShard(root: string, family: "iphone" | "ipad-13", part: 1 | 2) {
     JSON.stringify({
       deviceFamily: family,
       part,
-      partCount: 2,
+      partCount,
       xcodeVersion: "Xcode 27.0 Build version 18A1",
       fastlaneVersion: "2.999.0",
       nodeVersion: "v24.1.0",
@@ -54,7 +56,34 @@ describe("mergeIosScreenshotCaptures", () => {
       screenshots: family === "ipad-13" ? 5 : 4,
       xcresults: 2,
     });
+    expect(
+      JSON.parse(
+        readFileSync(path.join(root, "merged", "xcresults", "capture-attempts.json"), "utf8"),
+      ),
+    ).toMatchObject({ schemaVersion: 1 });
+    expect(() =>
+      readFileSync(path.join(root, "merged", "capture-attempts.json"), "utf8"),
+    ).toThrow();
   });
+
+  it.each(["iphone", "ipad-13"] as const)(
+    "accepts an unpartitioned historical %s capture",
+    (family) => {
+      const root = mkdtempSync(path.join(tmpdir(), "ios-screenshot-merge-"));
+      writeShard(root, family, 1, 1);
+      expect(
+        mergeIosScreenshotCaptures({
+          family,
+          inputRoot: root,
+          outputRoot: path.join(root, "merged"),
+        }),
+      ).toEqual({
+        attempts: 4,
+        screenshots: family === "ipad-13" ? 5 : 4,
+        xcresults: 1,
+      });
+    },
+  );
 
   it("rejects duplicate capture parts", () => {
     const root = mkdtempSync(path.join(tmpdir(), "ios-screenshot-merge-"));
@@ -69,6 +98,6 @@ describe("mergeIosScreenshotCaptures", () => {
         inputRoot: root,
         outputRoot: path.join(root, "merged"),
       }),
-    ).toThrow("unique iphone parts 1 and 2");
+    ).toThrow("unique iphone parts 1 through 2");
   });
 });

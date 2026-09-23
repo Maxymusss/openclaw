@@ -1314,17 +1314,25 @@ puts JSON.generate(results)
     expect(iosJob).toContain("timeout-minutes: 150");
     expect(iosJob).not.toContain("Capture iOS release screenshots");
     expect(buildJob).toContain("needs: [preflight]");
+    expect(buildJob).toContain("supports_shared_build:");
+    expect(buildJob).toContain("Detect shared screenshot build support");
     expect(buildJob).toContain('OPENCLAW_SNAPSHOT_BUILD_ONLY: "1"');
+    expect(buildJob).toContain(
+      'tar -C apps/ios/build/SnapshotDerivedData -czf "$RUNNER_TEMP/ios-screenshot-build.tar.gz" Build',
+    );
     expect(buildJob).toContain("Upload shared iOS screenshot products");
     expect(captureJob).toContain("needs: [preflight, ios-screenshot-build]");
     expect(captureJob).toContain("max-parallel: 4");
-    expect(captureJob).toContain('OPENCLAW_SNAPSHOT_PART_COUNT: "2"');
-    expect(captureJob).toContain('OPENCLAW_SNAPSHOT_REUSE_BUILD: "1"');
+    expect(captureJob).toContain("outputs.supports_shared_build == 'true' && '2' || '1'");
+    expect(captureJob).toContain("outputs.supports_shared_build == 'true' && '1' || '0'");
     expect(captureJob).toContain("Download shared iOS screenshot products");
+    expect(captureJob).toContain("outputs.artifact_name");
+    expect(captureJob).toContain("tar -C apps/ios/build/SnapshotDerivedData -xzf");
     expect(captureJob).toContain("run: pnpm ios:screenshots");
     expect(shardJob).toContain("needs: [preflight, ios-screenshot-capture]");
     expect(shardJob).toContain("device_family: [iphone, ipad-13]");
-    expect(shardJob).toContain("node scripts/merge-ios-screenshot-captures.mjs");
+    expect(shardJob).toContain("runs-on: xcode-27");
+    expect(shardJob).toContain("node .ci-harness/scripts/merge-ios-screenshot-captures.mjs");
     expect(shardJob).toContain("Package iOS screenshot shard evidence");
     expect(shardJob).toContain('if [[ "$DEVICE_FAMILY" == "ipad-13" ]]; then');
     expect(

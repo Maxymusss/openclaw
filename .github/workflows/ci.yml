@@ -6088,6 +6088,9 @@ jobs:
       contents: read
     name: ios-screenshot-build
     needs: [preflight]
+    outputs:
+      artifact_name: ${{ steps.screenshot_capability.outputs.artifact_name }}
+      supports_shared_build: ${{ steps.screenshot_capability.outputs.supports_shared_build }}
     if: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true' }}
     runs-on: xcode-27
     timeout-minutes: 45
@@ -6129,17 +6132,37 @@ jobs:
 
       - *install_watch_rust_toolchain
 
+      - name: Detect shared screenshot build support
+        id: screenshot_capability
+        run: |
+          set -euo pipefail
+          supports_shared_build=false
+          if grep -q 'OPENCLAW_SNAPSHOT_BUILD_ONLY' apps/ios/fastlane/Fastfile && \
+             grep -q 'OPENCLAW_SNAPSHOT_REUSE_BUILD' apps/ios/fastlane/Fastfile; then
+            supports_shared_build=true
+          fi
+          artifact_name="ios-release-screenshot-build-${{ needs.preflight.outputs.checkout_revision }}-${{ github.run_id }}-${{ github.run_attempt }}"
+          echo "supports_shared_build=$supports_shared_build" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+
       - name: Build shared iOS screenshot products
+        if: steps.screenshot_capability.outputs.supports_shared_build == 'true'
         env:
           OPENCLAW_SNAPSHOT_BUILD_ONLY: "1"
           OPENCLAW_SNAPSHOT_DEVICE_FAMILY: iphone
         run: pnpm ios:screenshots
 
+      - name: Archive shared iOS screenshot products
+        if: steps.screenshot_capability.outputs.supports_shared_build == 'true'
+        run: |
+          tar -C apps/ios/build/SnapshotDerivedData -czf "$RUNNER_TEMP/ios-screenshot-build.tar.gz" Build
+
       - name: Upload shared iOS screenshot products
+        if: steps.screenshot_capability.outputs.supports_shared_build == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ios-release-screenshot-build-${{ needs.preflight.outputs.checkout_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/ios/build/SnapshotDerivedData/Build/
+          name: ${{ steps.screenshot_capability.outputs.artifact_name }}
+          path: ${{ runner.temp }}/ios-screenshot-build.tar.gz
           if-no-files-found: error
           retention-days: 1
 
@@ -6213,23 +6236,34 @@ jobs:
       - *install_watch_rust_toolchain
 
       - name: Download shared iOS screenshot products
+        if: needs.ios-screenshot-build.outputs.supports_shared_build == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          name: ios-release-screenshot-build-${{ needs.preflight.outputs.checkout_revision }}-${{ github.run_id }}-${{ github.run_attempt }}
-          path: apps/ios/build/SnapshotDerivedData/Build
+          name: ${{ needs.ios-screenshot-build.outputs.artifact_name }}
+          path: ${{ runner.temp }}/ios-screenshot-build
+
+      - name: Restore shared iOS screenshot products
+        if: needs.ios-screenshot-build.outputs.supports_shared_build == 'true'
+        run: |
+          mkdir -p apps/ios/build/SnapshotDerivedData
+          tar -C apps/ios/build/SnapshotDerivedData -xzf "$RUNNER_TEMP/ios-screenshot-build/ios-screenshot-build.tar.gz"
 
       - name: Capture iOS device screenshot shard
         id: device_screenshots
+        if: needs.ios-screenshot-build.outputs.supports_shared_build == 'true' || matrix.part == 1
         env:
           OPENCLAW_SNAPSHOT_DEVICE_FAMILY: ${{ matrix.device_family }}
-          OPENCLAW_SNAPSHOT_PART: ${{ matrix.part }}
-          OPENCLAW_SNAPSHOT_PART_COUNT: "2"
-          OPENCLAW_SNAPSHOT_REUSE_BUILD: "1"
+          OPENCLAW_SNAPSHOT_PART: ${{ needs.ios-screenshot-build.outputs.supports_shared_build == 'true' && matrix.part || 1 }}
+          OPENCLAW_SNAPSHOT_PART_COUNT: ${{ needs.ios-screenshot-build.outputs.supports_shared_build == 'true' && '2' || '1' }}
+          OPENCLAW_SNAPSHOT_REUSE_BUILD: ${{ needs.ios-screenshot-build.outputs.supports_shared_build == 'true' && '1' || '0' }}
           OPENCLAW_SNAPSHOT_SKIP_WATCH: ${{ matrix.skip_watch }}
         run: pnpm ios:screenshots
 
       - name: Stage iOS screenshot capture shard
         id: stage_screenshot_capture
+        if: needs.ios-screenshot-build.outputs.supports_shared_build == 'true' || matrix.part == 1
+        env:
+          PART_COUNT: ${{ needs.ios-screenshot-build.outputs.supports_shared_build == 'true' && '2' || '1' }}
         run: |
           set -euo pipefail
           fastlane_version="$(
@@ -6246,18 +6280,21 @@ jobs:
           jq -nc \
             --arg deviceFamily "${{ matrix.device_family }}" \
             --argjson part "${{ matrix.part }}" \
+            --argjson partCount "$PART_COUNT" \
             --arg xcodeVersion "$xcode_version" \
             --arg fastlaneVersion "$fastlane_version" \
             --arg nodeVersion "$(node --version)" \
-            '{deviceFamily:$deviceFamily,part:$part,partCount:2,xcodeVersion:$xcodeVersion,fastlaneVersion:$fastlaneVersion,nodeVersion:$nodeVersion}' \
+            '{deviceFamily:$deviceFamily,part:$part,partCount:$partCount,xcodeVersion:$xcodeVersion,fastlaneVersion:$fastlaneVersion,nodeVersion:$nodeVersion}' \
             > "$shard_root/metadata.json"
 
       - name: Upload iOS screenshot capture shard
+        if: needs.ios-screenshot-build.outputs.supports_shared_build == 'true' || matrix.part == 1
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-release-screenshot-capture-${{ matrix.device_family }}-${{ matrix.part }}-${{ needs.preflight.outputs.checkout_revision }}
           path: apps/ios/build/ScreenshotCaptureShard/
           if-no-files-found: error
+          overwrite: true
           retention-days: 1
 
       - name: Upload failed iOS screenshot attempt evidence
@@ -6278,14 +6315,16 @@ jobs:
     name: "ios-screenshot-shard-${{ matrix.device_family }}"
     needs: [preflight, ios-screenshot-capture]
     if: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && needs.preflight.outputs.release_scope == 'full' && needs.preflight.outputs.compatibility_target != 'true' }}
-    runs-on: ubuntu-24.04
+    runs-on: xcode-27
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         device_family: [iphone, ipad-13]
     steps:
-      - *linux_node_checkout_step
+      - *platform_checkout_step
+
+      - *select_xcode_step
 
       - name: Setup screenshot evidence Node
         uses: ./.ci-harness/.github/actions/setup-node-env
@@ -6307,7 +6346,7 @@ jobs:
         env:
           DEVICE_FAMILY: ${{ matrix.device_family }}
         run: |
-          node scripts/merge-ios-screenshot-captures.mjs \
+          node .ci-harness/scripts/merge-ios-screenshot-captures.mjs \
             --family "$DEVICE_FAMILY" \
             --input apps/ios/build/ScreenshotCaptureInputs \
             --output apps/ios/build/ScreenshotCaptureMerged
