@@ -57,18 +57,24 @@ export class PluginSettingsController {
       onCommit: async (path, value) => {
         if (descriptor.storage === "protected" && typeof value === "string") {
           const connection = this.options.gateway.capture();
-          const baseHash = runtime.state.configSnapshot?.hash;
-          if (!connection || !baseHash) {
+          if (!connection) {
             return false;
           }
           const result = await runtime.runExternalMutation(
-            (client) =>
-              client.request<{ saved: true; warning?: string }>("plugins.credentials.set", {
+            (client) => {
+              const baseHash = runtime.state.configSnapshot?.hash;
+              if (!baseHash) {
+                throw new Error(
+                  "Configuration is unavailable; reload Settings before saving the credential.",
+                );
+              }
+              return client.request<{ saved: true; warning?: string }>("plugins.credentials.set", {
                 pluginId: detail.pluginId,
                 path,
                 baseHash,
                 value,
-              }),
+              });
+            },
             {
               canDispatch: () =>
                 this.options.canEdit() &&

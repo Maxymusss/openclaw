@@ -199,11 +199,38 @@ it("uses already configured models normally and never asks local models for keys
   f.setModels([local]);
   f.controller.choose("local/cpu", f.commit);
   expect(f.container.querySelector("input[type=password]")).toBeNull();
-  expect(f.container.textContent).toContain("not verified here");
+  expect(f.container.textContent).toContain("Download the model first");
   expect(f.commit).not.toHaveBeenCalled();
   f.button("Cancel").click();
   expect(f.selection).toBe("fixture/fast");
 });
+it.each(["local-model", "local-server"] as const)(
+  "never commits unknown %s setup and permits explicit confirmation only after refresh",
+  async (kind) => {
+    const f = await fixture();
+    const local: DecisionModelEntry = {
+      ...model,
+      readiness: "unknown",
+      setup: { kind, label: "Local", help: "Complete local setup" },
+    };
+    f.setModels([local]);
+    f.controller.choose("fixture/fast", f.commit);
+    expect(f.button("Use Fast decisions")).toBeUndefined();
+    expect(f.container.querySelector("input[type=password]")).toBeNull();
+    f.button("Refresh setup status").click();
+    await waitForFast(() =>
+      expect(f.request).toHaveBeenCalledWith("models.list", expect.any(Object)),
+    );
+    expect(f.commit).not.toHaveBeenCalled();
+    expect(f.selection).toBe("local/previous");
+    f.setModels([{ ...local, readiness: "configured" }]);
+    f.button("Refresh setup status").click();
+    await waitForFast(() => expect(f.button("Use Fast decisions")).toBeDefined());
+    expect(f.commit).not.toHaveBeenCalled();
+    f.button("Use Fast decisions").click();
+    expect(f.commit).toHaveBeenCalledExactlyOnceWith("fixture/fast");
+  },
+);
 it("does not confuse a saved but unavailable credential with a usable selection", async () => {
   const f = await fixture();
   f.controller.choose("fixture/fast", f.commit);

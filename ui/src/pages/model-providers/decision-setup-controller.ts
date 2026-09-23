@@ -108,7 +108,7 @@ export class DecisionModelSetupController implements ReactiveController {
       return;
     }
     intent.model = model;
-    if (intent.phase === "saved" && model.readiness === "configured") {
+    if (model.readiness === "configured") {
       intent.phase = "confirm";
       this.error = "";
     }
@@ -117,13 +117,11 @@ export class DecisionModelSetupController implements ReactiveController {
   private async save(intent: Intent) {
     const { context } = this.options.getScope();
     const gateway = context.gateway.snapshot;
-    const baseHash = context.runtimeConfig.state.configSnapshot?.hash;
     const path = intent.model.setup?.credentialPath;
     if (
       this.saving ||
       !intent.current() ||
       !gateway.client ||
-      !baseHash ||
       !path ||
       !this.key.trim() ||
       !canCallGatewayMethod(gateway, "plugins.credentials.set", "operator.admin", {
@@ -137,13 +135,18 @@ export class DecisionModelSetupController implements ReactiveController {
     this.host.requestUpdate();
     try {
       const result = await context.runtimeConfig.runExternalMutation(
-        (client) =>
-          client.request<{ saved: true; warning?: string }>("plugins.credentials.set", {
+        (client) => {
+          const baseHash = context.runtimeConfig.state.configSnapshot?.hash;
+          if (!baseHash) {
+            throw new Error(t("modelProviders.decisionSetup.stale"));
+          }
+          return client.request<{ saved: true; warning?: string }>("plugins.credentials.set", {
             pluginId: intent.model.pluginId,
             path,
             baseHash,
             value: this.key,
-          }),
+          });
+        },
         {
           canDispatch: () => intent.current() && clientIsCurrent(),
           dispatchError: t("modelProviders.decisionSetup.stale"),
@@ -223,12 +226,16 @@ export class DecisionModelSetupController implements ReactiveController {
       setup.kind === "api-key" && Boolean(setup.credentialPath) && intent.phase === "setup";
     const use =
       Boolean(intent.commit) &&
-      (intent.phase === "confirm" ||
-        (setup.kind !== "api-key" && intent.model.readiness !== "setup-required"));
+      intent.phase === "confirm" &&
+      intent.model.readiness === "configured";
     return renderProviderConnectionDialog({
       title:
         intent.phase !== "setup"
-          ? t("modelProviders.decisionSetup.saved")
+          ? t(
+              setup.kind === "api-key"
+                ? "modelProviders.decisionSetup.saved"
+                : "modelProviders.decisionSetup.ready",
+            )
           : t("modelProviders.decisionSetup.title", { provider: setup.label }),
       description:
         use && intent.phase === "confirm"

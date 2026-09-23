@@ -19,8 +19,8 @@ import {
   collectSecretStoreRefKeysInSnapshot,
   getActiveSecretsRuntimeSnapshotState,
 } from "../../secrets/runtime-state.js";
-import { purgeExpiredSecretStoreEntriesAsync } from "../../secrets/store/secret-store-worker.js";
 import {
+  purgeExpiredSecretStoreEntries,
   deleteSecretStoreEntry,
   listSecretStoreEntries,
   SecretStoreValidationError,
@@ -80,7 +80,7 @@ export function createSecretStoreWriteService(params: {
 }) {
   const purgeRetention = async () => {
     try {
-      await purgeExpiredSecretStoreEntriesAsync();
+      await purgeExpiredSecretStoreEntries();
     } catch (error) {
       params.log?.warn?.(`secrets.store retention purge failed: ${errorMessage(error)}`);
     }

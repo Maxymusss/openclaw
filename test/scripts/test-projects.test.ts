@@ -15,7 +15,7 @@ import { resolveDefaultVitestNoOutputTimeoutMs } from "../../scripts/lib/vitest-
 import { resolveVitestRuntimeCliSelections } from "../../scripts/lib/vitest-runtime-selection.mts";
 import { resolveShardTimingKey } from "../../scripts/lib/vitest-shard-metadata.mts";
 import {
-  applyDefaultMultiSpecVitestCachePaths,
+  applyDefaultVitestCachePaths,
   applyDefaultVitestNoOutputTimeout,
   applyFullExtensionsHeapBudget,
   applyParallelVitestCachePaths,
@@ -38,18 +38,21 @@ import {
   writeVitestIncludeFile,
 } from "../../scripts/test-projects.test-support.mts";
 import { withEnv } from "../../src/test-utils/env.js";
-import { toRepoPath } from "../../src/test-utils/repo-files.js";
+import { listGitTrackedFiles, toRepoPath } from "../../src/test-utils/repo-files.js";
 import { agentVitestProjectOwners } from "../vitest/vitest.agents-paths.mjs";
 import { databaseWorkerCoreTestFiles } from "../vitest/vitest.database-worker-core-paths.mjs";
 import { databaseWorkerExtensionTestFiles } from "../vitest/vitest.extension-database-workers-paths.mjs";
-import { gatewayDatabaseWorkerTestFiles } from "../vitest/vitest.gateway-server-paths.mjs";
+import {
+  gatewayDatabaseWorkerTestFiles,
+  isGatewayServerTestFile,
+} from "../vitest/vitest.gateway-server-paths.mjs";
+import { isSharedVitestExcludedPath } from "../vitest/vitest.pattern-file.ts";
 import {
   startupCorpusTestFiles,
   stateStartupCorpusTestFiles,
 } from "../vitest/vitest.startup-corpus-paths.mjs";
 
 const normalizeRepoPath = toRepoPath;
-const CODEX_TEST_PROCESS_FILE_LIMIT = 24;
 const MATRIX_TEST_PROCESS_FILE_LIMIT = 40;
 const TELEGRAM_TEST_PROCESS_FILE_LIMIT = 10;
 
@@ -378,7 +381,11 @@ describe("test runtime prerequisites", () => {
     ["gateway-server", ["server.config-patch.test.ts"], "runtime"],
     [
       "gateway-server",
-      ["server-sidecar-retention.test.ts", "server.config-patch.test.ts"],
+      [
+        "server-sidecar-retention.test.ts",
+        "server.config-patch.test.ts",
+        "server.acp-native-model.product.test.ts",
+      ],
       undefined,
     ],
     ["gateway", ["gateway-*.test.ts"], "runtime"],
@@ -449,7 +456,7 @@ describe("test runtime prerequisites", () => {
 
 function listOrdinaryExtensionFiles(root: string) {
   return listExtensionTestFilesForRoots([root]).filter(
-    (file) => !databaseWorkerExtensionTestFiles.includes(file),
+    (file) => !databaseWorkerExtensionTestFiles.includes(file) && !isSharedVitestExcludedPath(file),
   );
 }
 
@@ -1035,7 +1042,7 @@ describe("scripts/test-projects changed-target routing", () => {
       ["scripts/docs-i18n/main_test.go", ["test/scripts/docs-i18n.test.ts"]],
       [
         "scripts/docs-i18n/go.mod",
-        ["test/scripts/docs-i18n.test.ts", "test/scripts/ci-workflow-guards.test.ts"],
+        ["test/scripts/docs-i18n.test.ts", "test/scripts/ci-workflow-planning.test.ts"],
       ],
     ] as const;
     for (const [modulePath, targets] of cases) {
@@ -1135,6 +1142,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/ci-platform-checkout.test.ts",
         "src/scripts/ci-changed-scope.git-owner.test.ts",
         "test/scripts/ci-workflow-guards.test.ts",
+        "test/scripts/ci-workflow-evidence.test.ts",
       ]),
     });
   });
@@ -1176,6 +1184,8 @@ describe("scripts/test-projects changed-target routing", () => {
     [
       ".github/workflows/ci.yml",
       [
+        "test/scripts/ci-workflow-planning.test.ts",
+        "test/scripts/ci-workflow-evidence.test.ts",
         "test/scripts/changed-lanes.test.ts",
         "test/scripts/check-workflows.test.ts",
         "test/scripts/plugin-contract-test-plan.test.ts",
@@ -1499,7 +1509,9 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/scripts/ci-platform-checkout.test.ts",
         "src/scripts/ci-changed-scope.git-owner.test.ts",
         "test/scripts/ci-workflow-guards.test.ts",
-        ...(workflow === "docs-sync-publish" ? ["test/scripts/docs-mirror-freshness.test.ts"] : []),
+        ...(workflow === "docs-sync-publish"
+          ? ["test/scripts/docs-mirror-freshness.test.ts"]
+          : ["test/scripts/ci-workflow-planning.test.ts"]),
       ],
     );
   });
@@ -2207,6 +2219,7 @@ describe("scripts/test-projects changed-target routing", () => {
   });
 
   it.each([
+    "src/cli/update-cli/update-command-legacy-finalize.test.ts",
     "test/scripts/check-extension-package-tsc-boundary.test.ts",
     "test/scripts/check-plugin-sdk-wildcard-reexports.test.ts",
     "test/scripts/control-ui-i18n.test.ts",
@@ -2294,16 +2307,17 @@ describe("scripts/test-projects changed-target routing", () => {
     },
   );
 
-  it.each(["src/state/openclaw-state-db.test.ts", "src/worker/worker.runtime.test.ts"])(
-    "routes native shared-state consumer %s exactly once to its broker owner",
-    (testFile) => {
-      expectSingleVitestRunPlan(buildVitestRunPlans([testFile]), {
-        config: "test/vitest/vitest.infra.config.ts",
-        includePatterns: [testFile],
-      });
-      expect(databaseWorkerCoreTestFiles.filter((file) => file === testFile)).toEqual([testFile]);
-    },
-  );
+  it.each([
+    "src/agents/command/session-store.test.ts",
+    "src/state/openclaw-state-db.test.ts",
+    "src/worker/worker.runtime.test.ts",
+  ])("routes native shared-state consumer %s exactly once to its broker owner", (testFile) => {
+    expectSingleVitestRunPlan(buildVitestRunPlans([testFile]), {
+      config: "test/vitest/vitest.infra.config.ts",
+      includePatterns: [testFile],
+    });
+    expect(databaseWorkerCoreTestFiles.filter((file) => file === testFile)).toEqual([testFile]);
+  });
 
   it.each(databaseWorkerCoreTestFiles)(
     "routes host-owned database consumer %s to the infra fork shard",
@@ -2448,19 +2462,21 @@ describe("scripts/test-projects changed-target routing", () => {
     );
   });
 
-  it.each(["src/plugin-state", "src/plugin-sdk", "src/agents", "src/commands", "test/plugins"])(
-    "retains database worker ownership for directory and glob target %s",
-    (directory) => {
-      const expected = databaseWorkerCoreTestFiles.filter((file) =>
-        file.startsWith(`${directory}/`),
-      );
-      for (const target of [directory, `${directory}/**/*.test.ts`]) {
-        const plans = buildVitestRunPlans([target]);
-        const infra = plans.find((plan) => plan.config === "test/vitest/vitest.infra.config.ts");
-        expect(infra?.includePatterns).toEqual(expected);
-      }
-    },
-  );
+  it.each([
+    "src/plugin-state",
+    "src/plugin-sdk",
+    "src/agents",
+    "src/commands",
+    "src/config",
+    "test/plugins",
+  ])("retains database worker ownership for directory and glob target %s", (directory) => {
+    const expected = databaseWorkerCoreTestFiles.filter((file) => file.startsWith(`${directory}/`));
+    for (const target of [directory, `${directory}/**/*.test.ts`]) {
+      const plans = buildVitestRunPlans([target]);
+      const infra = plans.find((plan) => plan.config === "test/vitest/vitest.infra.config.ts");
+      expect(infra?.includePatterns).toEqual(expected);
+    }
+  });
 
   it.each(agentVitestProjectOwners.coreIsolated.include)(
     "routes isolated agent test %s to the isolated agents-core shard",
@@ -3100,6 +3116,7 @@ describe("scripts/test-projects changed-target routing", () => {
         "test/vitest/vitest.unit-fast.config.ts",
         "test/vitest/vitest.cli-process.config.ts",
         "test/vitest/vitest.cli.config.ts",
+        "test/vitest/vitest.tooling-isolated.config.ts",
       ]),
     );
     const processPlan = plans.find(
@@ -3107,6 +3124,10 @@ describe("scripts/test-projects changed-target routing", () => {
     );
     expect(processPlan?.includePatterns).toContain("src/cli/help-exit.process.test.ts");
     expect(processPlan?.includePatterns).toContain("src/cli/update-dry-run-state.process.test.ts");
+    expect(
+      plans.find((plan) => plan.config === "test/vitest/vitest.tooling-isolated.config.ts")
+        ?.includePatterns,
+    ).toEqual(["src/cli/update-cli/update-command-legacy-finalize.test.ts"]);
   });
 
   it.each(["src/state", "src/state/", "src/state/**/*.test.ts"])(
@@ -3766,35 +3787,6 @@ describe("scripts/test-projects changed-target routing", () => {
       }
     },
   );
-
-  it.each([
-    ["matrix", MATRIX_TEST_PROCESS_FILE_LIMIT],
-    ["codex", CODEX_TEST_PROCESS_FILE_LIMIT],
-    ["telegram", TELEGRAM_TEST_PROCESS_FILE_LIMIT],
-  ] as const)("bounds an explicit %s directory across both database owners", (name, limit) => {
-    const root = `extensions/${name}`;
-    const plans = buildVitestRunPlans([root]);
-    const selected = plans.flatMap((plan) => plan.includePatterns ?? []);
-    expect(plans.length).toBeGreaterThan(1);
-    expect(plans.every((plan) => (plan.includePatterns?.length ?? 0) <= limit)).toBe(true);
-    expect(selected.toSorted()).toEqual(listExtensionTestFilesForRoots([root]).toSorted());
-    expect(new Set(selected).size).toBe(selected.length);
-    for (const plan of plans) {
-      if (
-        name === "telegram" &&
-        plan.config === "test/vitest/vitest.extension-database-workers.config.ts"
-      ) {
-        expect(plan.includePatterns).toHaveLength(1);
-      }
-      for (const file of plan.includePatterns ?? []) {
-        expect(plan.config).toBe(
-          databaseWorkerExtensionTestFiles.includes(file)
-            ? "test/vitest/vitest.extension-database-workers.config.ts"
-            : `test/vitest/vitest.extension-${name}.config.ts`,
-        );
-      }
-    }
-  });
 
   it("keeps an explicit Codex file target in one process", () => {
     const testFile = listExtensionTestFilesForRoots(["extensions/codex"])[0];
@@ -5088,7 +5080,15 @@ describe("scripts/test-projects full-suite sharding", () => {
       const targetedPlans = (config: string) =>
         plans.filter((plan) => plan.config === config && plan.forwardedArgs.length > 0);
       expect(targetedPlans("test/vitest/vitest.agents-core.config.ts")).toHaveLength(6);
-      expect(targetedPlans("test/vitest/vitest.gateway-server.config.ts")).toHaveLength(4);
+      const gatewayTargets = targetedPlans("test/vitest/vitest.gateway-server.config.ts").map(
+        (plan) => plan.forwardedArgs,
+      );
+      expect(gatewayTargets.every((files) => files.length > 0 && files.length <= 50)).toBe(true);
+      expect(gatewayTargets.flat()).toEqual(
+        listGitTrackedFiles({ pathspecs: "src/gateway" })
+          ?.filter(isGatewayServerTestFile)
+          .toSorted((a, b) => a.localeCompare(b)),
+      );
     } finally {
       vi.unstubAllEnvs();
     }
@@ -5411,10 +5411,11 @@ describe("scripts/test-projects parallel cache paths", () => {
       { cwd: "/repo", env: { OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: "/tmp/cache" } },
     );
 
-    expect(specs.map((spec) => spec.env.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH)).toEqual([
-      path.join("/tmp/cache", "0-test-vitest-vitest.gateway.config.ts"),
-      path.join("/tmp/cache", "1-test-vitest-vitest.extension-telegram.config.ts"),
-    ]);
+    const paths = specs.map((spec) => spec.env.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH);
+    expect(new Set(paths).size).toBe(2);
+    for (const cachePath of paths) {
+      expect(path.relative("/tmp/cache", cachePath!)).toMatch(/^slots[/\\][a-f\d]+[/\\]0$/u);
+    }
   });
 
   it("keeps an already isolated cache path", () => {
@@ -5555,7 +5556,7 @@ describe("scripts/test-projects Vitest stall watchdog", () => {
 });
 
 describe("scripts/test-projects Vitest cache isolation", () => {
-  it("keeps same-config process lifetimes on one restored cache", () => {
+  it("keeps same-config process lifetimes on their explicit cache leaf", () => {
     const specs = [
       {
         config: "test/vitest/vitest.extension-telegram.config.ts",
@@ -5575,11 +5576,12 @@ describe("scripts/test-projects Vitest cache isolation", () => {
       },
     ];
 
-    const configured = applyDefaultMultiSpecVitestCachePaths(specs, {
+    const configured = applyDefaultVitestCachePaths(specs, {
       cwd: "/repo",
       env: { OPENCLAW_VITEST_FS_MODULE_CACHE_PATH: "/tmp/cache" },
     });
 
+    expect(configured).toBe(specs);
     expect(configured.map((spec) => spec.env.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH)).toEqual([
       "/tmp/cache",
       "/tmp/cache",
@@ -5587,7 +5589,7 @@ describe("scripts/test-projects Vitest cache isolation", () => {
   });
 
   it("assigns isolated fs-module caches to multi-spec non-watch runs", () => {
-    const specs = applyDefaultMultiSpecVitestCachePaths(
+    const specs = applyDefaultVitestCachePaths(
       [
         {
           config: "test/vitest/vitest.unit-fast.config.ts",
@@ -5609,13 +5611,16 @@ describe("scripts/test-projects Vitest cache isolation", () => {
       { cwd: "/repo", env: {} },
     );
 
-    expect(specs.map((spec) => spec.env.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH)).toEqual([
-      path.join("/repo", ".cache", "vitest", "0-test-vitest-vitest.unit-fast.config.ts"),
-      path.join("/repo", ".cache", "vitest", "1-test-vitest-vitest.extension-memory.config.ts"),
-    ]);
+    const paths = specs.map((spec) => spec.env.OPENCLAW_VITEST_FS_MODULE_CACHE_PATH);
+    expect(new Set(paths).size).toBe(2);
+    for (const cachePath of paths) {
+      expect(path.relative(path.join("/repo", ".cache", "vitest"), cachePath!)).toMatch(
+        /^slots[/\\][a-f\d]+[/\\]0$/u,
+      );
+    }
   });
 
-  it("keeps single-spec and watch runs on the default cache", () => {
+  it("assigns single-spec runs while preserving the watch cache owner", () => {
     const single = [
       {
         config: "test/vitest/vitest.unit-fast.config.ts",
@@ -5626,7 +5631,15 @@ describe("scripts/test-projects Vitest cache isolation", () => {
         watchMode: false,
       },
     ];
-    expect(applyDefaultMultiSpecVitestCachePaths(single, { cwd: "/repo", env: {} })).toBe(single);
+    const assigned = applyDefaultVitestCachePaths(single, { cwd: "/repo", env: {} });
+    if (process.platform === "win32") {
+      expect(assigned).toBe(single);
+    } else {
+      expect(assigned[0]?.cacheAssignment).toEqual({
+        kind: "scheduler",
+        root: path.join("/repo", ".cache", "vitest"),
+      });
+    }
 
     const watch = [
       {
@@ -5646,7 +5659,7 @@ describe("scripts/test-projects Vitest cache isolation", () => {
         watchMode: false,
       },
     ];
-    expect(applyDefaultMultiSpecVitestCachePaths(watch, { cwd: "/repo", env: {} })).toBe(watch);
+    expect(applyDefaultVitestCachePaths(watch, { cwd: "/repo", env: {} })).toBe(watch);
   });
 });
 

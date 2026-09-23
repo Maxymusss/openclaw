@@ -90,6 +90,7 @@ export function listDecisionModels({
             id: model.id,
             name: model.name,
             pluginId: plugin.id,
+            ...(model.capabilities ? { capabilities: model.capabilities } : {}),
             ...(setup
               ? {
                   readiness,

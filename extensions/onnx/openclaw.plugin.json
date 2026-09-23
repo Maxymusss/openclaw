@@ -70,7 +70,21 @@
           "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
           "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
         }
-      ]
+      ],
+      "capabilities": {
+        "questionTypes": [
+          "boolean",
+          "choice",
+          "score"
+        ],
+        "maxQuestions": 32,
+        "maxChoiceAlternatives": 64,
+        "maxScoreLevels": 64,
+        "maxInputTokens": 512,
+        "inputTokenScope": "encoded-question",
+        "requiresBooleanCriteria": true,
+        "confidence": "none"
+      }
     },
     {
       "provider": "onnx",
@@ -83,7 +97,21 @@
           "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
           "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
         }
-      ]
+      ],
+      "capabilities": {
+        "questionTypes": [
+          "boolean",
+          "choice",
+          "score"
+        ],
+        "maxQuestions": 32,
+        "maxChoiceAlternatives": 64,
+        "maxScoreLevels": 64,
+        "maxInputTokens": 512,
+        "inputTokenScope": "encoded-question",
+        "requiresBooleanCriteria": true,
+        "confidence": "none"
+      }
     },
     {
       "provider": "onnx",
@@ -96,7 +124,21 @@
           "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
           "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
         }
-      ]
+      ],
+      "capabilities": {
+        "questionTypes": [
+          "boolean",
+          "choice",
+          "score"
+        ],
+        "maxQuestions": 32,
+        "maxChoiceAlternatives": 64,
+        "maxScoreLevels": 64,
+        "maxInputTokens": 512,
+        "inputTokenScope": "encoded-question",
+        "requiresBooleanCriteria": true,
+        "confidence": "none"
+      }
     },
     {
       "provider": "onnx",
@@ -109,7 +151,21 @@
           "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
           "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
         }
-      ]
+      ],
+      "capabilities": {
+        "questionTypes": [
+          "boolean",
+          "choice",
+          "score"
+        ],
+        "maxQuestions": 32,
+        "maxChoiceAlternatives": 64,
+        "maxScoreLevels": 64,
+        "maxInputTokens": 512,
+        "inputTokenScope": "encoded-question",
+        "requiresBooleanCriteria": true,
+        "confidence": "none"
+      }
     },
     {
       "provider": "onnx",
@@ -122,7 +178,21 @@
           "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
           "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
         }
-      ]
+      ],
+      "capabilities": {
+        "questionTypes": [
+          "boolean",
+          "choice",
+          "score"
+        ],
+        "maxQuestions": 32,
+        "maxChoiceAlternatives": 64,
+        "maxScoreLevels": 64,
+        "maxInputTokens": 512,
+        "inputTokenScope": "state-plus-each-criterion",
+        "requiresBooleanCriteria": true,
+        "confidence": "none"
+      }
     },
     {
       "provider": "onnx",
@@ -135,7 +205,21 @@
           "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
           "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
         }
-      ]
+      ],
+      "capabilities": {
+        "questionTypes": [
+          "boolean",
+          "choice",
+          "score"
+        ],
+        "maxQuestions": 32,
+        "maxChoiceAlternatives": 64,
+        "maxScoreLevels": 64,
+        "maxInputTokens": 512,
+        "inputTokenScope": "encoded-question",
+        "requiresBooleanCriteria": true,
+        "confidence": "none"
+      }
     },
     {
       "provider": "onnx",
@@ -148,7 +232,21 @@
           "help": "Prepare this local model before using it. Run openclaw onnx models for the available presets, then download its pinned artifacts or prepare the documented local export. No API key is needed. OpenClaw does not download or verify model files from this dialog.",
           "documentationUrl": "https://docs.openclaw.ai/plugins/onnx"
         }
-      ]
+      ],
+      "capabilities": {
+        "questionTypes": [
+          "boolean",
+          "choice",
+          "score"
+        ],
+        "maxQuestions": 32,
+        "maxChoiceAlternatives": 64,
+        "maxScoreLevels": 64,
+        "maxInputTokens": 512,
+        "inputTokenScope": "encoded-question",
+        "requiresBooleanCriteria": true,
+        "confidence": "none"
+      }
     }
   ]
 }

@@ -17,9 +17,11 @@ export function decisionModelSetupLabel(model: DecisionModelEntry): string | und
       ? "configured"
       : model.readiness === "auth-rejected"
         ? "rejected"
-        : model.readiness === "setup-required"
-          ? "required"
-          : "unknown";
+        : model.setup?.kind === "api-key"
+          ? "addKey"
+          : model.setup?.kind === "local-server"
+            ? "connectServer"
+            : "setUpModel";
   return [model.setup?.label, t(`modelProviders.decisionSetup.${key}`)].filter(Boolean).join(" · ");
 }
 const INHERIT_VALUE = "__openclaw_inherit_decision__";
@@ -39,6 +41,12 @@ export function renderDecisionModelPicker(params: {
     label: model.name,
     provider: model.provider,
     detail: decisionModelSetupLabel(model),
+    status:
+      model.readiness === "auth-rejected"
+        ? "danger"
+        : model.setup && model.readiness !== "configured"
+          ? "warning"
+          : undefined,
   }));
   options.sort((a, b) => a.label.localeCompare(b.label));
   const selected = params.value?.trim();
@@ -77,6 +85,8 @@ export function renderDecisionModelPicker(params: {
     disabled: params.disabled,
     title: params.title,
     showSelectedDetail: true,
+    groupByProvider: true,
+    searchPlaceholder: t("chat.modelControls.searchModels"),
     onOpen: params.onOpen,
     onChange: (value) =>
       params.onChange(value === INHERIT_VALUE || (!params.inherit && value === "") ? null : value),

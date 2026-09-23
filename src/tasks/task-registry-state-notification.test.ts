@@ -16,9 +16,11 @@ import {
   type OpenClawTestState,
 } from "../test-utils/openclaw-test-state.js";
 import { resetTaskFlowRegistryForTests } from "./task-flow-registry.test-support.js";
+import type { sendMessage as SendMessage } from "./task-registry-delivery-runtime.js";
 import { maybeDeliverTaskStateChangeUpdate } from "./task-registry-delivery.js";
 import {
   captureTaskDeliveryWork,
+  failTaskNotificationPreparationAfterConsume,
   commitTaskDeliveryFixture,
 } from "./task-registry-delivery.test-support.js";
 import { getTaskDeliveryState } from "./task-registry-mutation.js";
@@ -31,14 +33,15 @@ import {
   loadTaskRegistryMutationStateFromSqlite,
   upsertTaskWithDeliveryStateToSqlite,
 } from "./task-registry.store.sqlite.js";
-import {
-  createTaskFixture,
-  resetTaskRegistryDeliveryRuntimeForTests,
-  resetTaskRegistryForTests,
-  setTaskRegistryDeliveryRuntimeForTests,
-} from "./task-registry.test-support.js";
+import { createTaskFixture, resetTaskRegistryForTests } from "./task-registry.test-support.js";
 import type { TaskEventRecord, TaskRecord } from "./task-registry.types.js";
 import { bindTaskRunOwner, getTaskRunOwner } from "./task-run-owner.js";
+
+const sendMessage = vi.hoisted(() => vi.fn<typeof SendMessage>());
+vi.mock("./task-registry-delivery-runtime.js", () => ({
+  sendMessage,
+  prepareTaskControlUiSessionUrl: async () => () => undefined,
+}));
 
 const ownerKey = "agent:main:state-notification";
 const runId = "state-notification-run";
@@ -51,8 +54,7 @@ const sent: MessageSendResult = {
   deliveryStatus: "sent",
   result: { messageId: "synthetic-notification" },
 };
-type MessageSendParams = Parameters<deliveryRuntime.TaskRegistryDeliveryRuntime["sendMessage"]>[0];
-const sendMessage = vi.fn<deliveryRuntime.TaskRegistryDeliveryRuntime["sendMessage"]>();
+type MessageSendParams = Parameters<typeof SendMessage>[0];
 let state: OpenClawTestState;
 let notifications: Array<{ complete: () => void; result: Promise<TaskRecord | null> }>;
 let nativeDeliveries: ReturnType<typeof captureTaskDeliveryWork> | undefined;
@@ -104,19 +106,7 @@ function stored(taskId: string) {
 
 function failPreparationAfterQueue(failure: Error) {
   const queued = vi.spyOn(systemEvents, "enqueueSystemEvent");
-  const mutate = taskRegistryState.withTaskRegistryMutation;
-  let failed = false;
-  vi.spyOn(taskRegistryState, "withTaskRegistryMutation").mockImplementation(
-    <T>(operation: () => T, onAdmissionFailure?: (error: unknown) => T): T => {
-      const before = queued.mock.calls.length;
-      const result = mutate(operation, onAdmissionFailure);
-      if (!failed && queued.mock.calls.length > before) {
-        failed = true;
-        throw failure;
-      }
-      return result;
-    },
-  );
+  failTaskNotificationPreparationAfterConsume(() => queued.mock.calls.length > 0, failure);
   return queued;
 }
 
@@ -132,7 +122,6 @@ beforeEach(async () => {
   nativeDeliveries = undefined;
   systemEvents.resetSystemEventsForTest();
   sendMessage.mockReset();
-  setTaskRegistryDeliveryRuntimeForTests({ sendMessage });
 });
 
 afterEach(async () => {
@@ -144,7 +133,6 @@ afterEach(async () => {
   expect(getActiveGatewayRootWorkCount()).toBe(0);
   vi.restoreAllMocks();
   await closeOpenClawStateDatabaseAsync();
-  resetTaskRegistryDeliveryRuntimeForTests();
   resetTaskRegistryForTests({ persist: false });
   resetTaskFlowRegistryForTests({ persist: false });
   resetGatewayWorkAdmission();

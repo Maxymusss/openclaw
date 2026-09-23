@@ -201,7 +201,9 @@ export function createGatewayAuxHandlers(
     },
     { cacheRejections: true },
   );
-  const questionManager = new QuestionManager();
+  const questionManager = new QuestionManager(() =>
+    params.log.warn?.("Question terminal publication failed; answer state retained."),
+  );
   const loadQuestionHandlers = createLazyPromise(
     async () => {
       const [{ createQuestionHandlers }, storeWriteService] = await Promise.all([
@@ -311,7 +313,7 @@ export function createGatewayAuxHandlers(
           );
         });
       }
-      questionManager.cancelClosedAuthorities();
+      questionManager.cancelClosedAuthorities(authority.operationalRunInstance);
       params.onAgentRunAuthorityClosed?.(authority, approvalReason);
     },
   );
@@ -327,7 +329,7 @@ export function createGatewayAuxHandlers(
           params.log.error?.(`${kind} approvals: worker-claim settlement failed: ${String(error)}`);
         });
       }
-      questionManager.cancelClosedAuthorities();
+      questionManager.cancelClosedAuthorities({ runId: claim.runId });
     },
   );
   const unregisterApprovalAuthorityObserver = () => {
@@ -438,6 +440,7 @@ export function createGatewayAuxHandlers(
           manager.retire();
         }
         questionManager.close();
+        await questionManager.drain();
         await Promise.all(approvalManagers.map((manager) => manager.drain()));
         await presentationWork.drain();
         await execApprovalForwarder.stop();

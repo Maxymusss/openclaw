@@ -16,7 +16,6 @@ export type SecretStoreWorkerOperations = {
     output: SecretStoreWriteReceipt;
   };
   "secrets.store.rollback": { input: SecretStoreWriteReceipt; output: boolean };
-  "secrets.store.purge": { input: undefined; output: number };
 };
 
 export async function readSecretStoreValueAsync(params: {
@@ -92,12 +91,5 @@ export async function withSecretStoreStagedWrite<T>(
         context.admission.databasePath,
       ]),
     },
-  );
-}
-
-export async function purgeExpiredSecretStoreEntriesAsync(): Promise<void> {
-  const context = captureOpenClawStateWorkerContext();
-  await runOpenClawStateWorkerOperation(context, (scope) =>
-    scope.execute({ type: "secrets.store.purge", input: undefined }),
   );
 }
