@@ -1160,7 +1160,9 @@ struct NativeActionRouterTests {
                                     host.model.focusChatSession("chosen-during-history")
                                     host.model.focusChatSession(originalSession)
                                 }
-                                selectedAfterInterruption = (host.model.chatDeliveryAgentId, host.model.chatSessionKey)
+                                // Gateway hydration can resolve the delivery owner; explicit
+                                // user selection must remain unchanged.
+                                selectedAfterInterruption = (host.model.selectedAgentId, host.model.chatSessionKey)
                             }
                         }
                         host.model._test_setGatewaySessionResetTask(Task {
@@ -1277,7 +1279,7 @@ struct NativeActionRouterTests {
                                     #expect(destination.nativeReads == ["users.self", "chat.history"])
                                     #expect(userNavigationAccepted == (interruption == "history-user"))
                                     let selected = try #require(selectedAfterInterruption)
-                                    #expect(host.model.chatDeliveryAgentId == selected.agent)
+                                    #expect(host.model.selectedAgentId == selected.agent)
                                     #expect(host.model.chatSessionKey == selected.session)
                                 }
                             }
