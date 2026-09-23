@@ -80,8 +80,12 @@ continue; see the [release fast path](/reference/RELEASING#fast-path-default).
 
 Release-dispatched validation children add one best-effort hosted receipt job
 each, up to seven per full campaign and none for ordinary PR/main CI. It retains
-job results independently of parent completion. This adds no Blacksmith
-registrations and does not yet enable partial evidence reuse.
+job results independently of parent completion. With `reuse_evidence=true`, each
+dispatch checks bounded prior receipts for its exact target and inputs, including
+candidate bytes, and adopts only verified successful children. Other roles still
+dispatch. Failed, cancelled, and active parents can supply green children; the
+current parent seals and revalidates each immutable selection. Discovery adds no
+jobs or Blacksmith registrations and falls back to fresh work on a miss.
 
 Auto-reply reply tests run files in parallel with two workers per compact group. Their planner uses separate parallel timing identities; until those have measurements, serial group costs are divided by the effective worker count, with single-file groups retaining their full cost.
 

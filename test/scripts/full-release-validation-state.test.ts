@@ -358,6 +358,116 @@ function runPlanSubprocess(overrides: Record<string, unknown>, env: Record<strin
 }
 
 describe("full release execution plan", () => {
+  it("seals mixed child reuse identities without replacing fresh children or current admission", () => {
+    const original = executionPlan(
+      { childPhaseVersion: 3 },
+      {
+        attemptEvidenceVersion: 3,
+        candidateRequest: canonicalCandidateRequest(),
+      },
+    );
+    const selection = {
+      repository: "openclaw/openclaw",
+      targetSha: TARGET_SHA,
+      role: "normalCi",
+      runId: "999",
+      runAttempt: 2,
+      workflowSha: "c".repeat(40),
+      workflowRef: "main",
+      displayTitle: "CI full-release-validation-88-1-ci",
+      sourceParentRunId: "88",
+      sourceParentAttempt: 1,
+      url: "https://github.com/openclaw/openclaw/actions/runs/999",
+      receiptSha256: "d".repeat(64),
+      inputs: { target_ref: TARGET_SHA },
+      artifact: { id: "701" },
+    };
+    const childReuse = { normalCi: selection };
+    const hydrated = hydrateReusedPlan(original.children, { childReuse });
+    expect(hydrated[0]).toMatchObject({
+      runId: "999",
+      runAttempt: 1,
+      source: "reused",
+      workflowSha: "c".repeat(40),
+    });
+    expect(hydrated.slice(1)).toEqual(original.children.slice(1));
+    const sealed = { ...original, childReuse, children: hydrated };
+    sealed.sha256 = releaseExecutionPlanSha256(sealed);
+    expect(validateReleaseExecutionPlanArtifact(sealed)).toMatchObject({
+      parentRunId: "77",
+      targetSha: TARGET_SHA,
+      workflowSha: SHA,
+      childReuse,
+    });
+    expect(() =>
+      validateReleaseExecutionPlanArtifact({
+        ...sealed,
+        childReuse: { normalCi: { ...selection, runAttempt: 3 } },
+      }),
+    ).toThrow("digest");
+    const mismatched = { ...sealed, childReuse: { normalCi: { ...selection, workflowSha: SHA } } };
+    mismatched.sha256 = releaseExecutionPlanSha256(mismatched);
+    expect(() => validateReleaseExecutionPlanArtifact(mismatched)).toThrow("immutable plan");
+    const changedTarget = {
+      ...sealed,
+      childReuse: { normalCi: { ...selection, inputs: { target_ref: SHA } } },
+    };
+    changedTarget.sha256 = releaseExecutionPlanSha256(changedTarget);
+    expect(() => validateReleaseExecutionPlanArtifact(changedTarget)).toThrow(
+      "target or candidate",
+    );
+
+    const root = tempDirs.make("release-reuse-plan-cli-");
+    const gh = join(root, "gh");
+    writeFileSync(gh, "#!/bin/sh\nprintf '%s\\n' '{\"run_attempt\":3}'\n");
+    chmodSync(gh, 0o755);
+    const { output, result } = runPlanSubprocess(
+      { childPhaseVersion: 3, childReuse },
+      {
+        PATH: `${root}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
+      },
+    );
+    expect(result.status).toBe(2);
+    expect(result.stderr).toContain("could not bind reusable evidence");
+    expect(JSON.parse(readFileSync(output, "utf8"))).toMatchObject({
+      childReuse,
+      children: expect.arrayContaining([
+        expect.objectContaining({ key: "normalCi", runId: "999", source: "reused" }),
+      ]),
+      blockers: [expect.objectContaining({ kind: "reused_evidence_invalid" })],
+    });
+    writeFileSync(gh, "#!/bin/sh\nprintf '%s\\n' 'HTTP 503: Service unavailable' >&2\nexit 1\n");
+    const unavailable = runPlanSubprocess(
+      { childPhaseVersion: 3, childReuse },
+      {
+        PATH: `${root}${process.platform === "win32" ? ";" : ":"}${process.env.PATH}`,
+      },
+    );
+    expect(unavailable.result.status).toBe(2);
+    expect(JSON.parse(readFileSync(unavailable.output, "utf8"))).toMatchObject({
+      blockers: [],
+      errors: [expect.objectContaining({ kind: "api_error" })],
+    });
+  });
+
+  it("rejects a new attempt of an independently reused child without cancelling the prior parent's work", async () => {
+    const reused = child("normalCi", { source: "reused" });
+    const observed = await readChild(reused, undefined, undefined, {
+      reuseSelection: { runAttempt: 1 },
+      readRun: async () => ({ run_attempt: 2 }),
+      readAttemptJobs: async () => {
+        throw new Error("must not read stale jobs");
+      },
+    });
+    expect(observed.errors).toEqual([
+      expect.objectContaining({
+        kind: "provenance_mismatch",
+        message: expect.stringContaining("reused attempt is stale"),
+      }),
+    ]);
+    expect(affectedActiveRunIds([reused], [{ runId: "101" }])).toEqual([]);
+  });
+
   it("binds declared flakes to the sealed plan and rejects changed source or omitted selectors", () => {
     const selectors = ["normalCi:checks-node"];
     expect(() =>
@@ -2527,7 +2637,7 @@ describe("release state artifacts", () => {
           "release decision and diagnostic drain transition is invalid: " +
             "decision(parentRunAttempt=2, state=passed), " +
             "drain(parentRunAttempt=1, state=blocked_complete); " +
-            `executionPlan(originalParentRunAttempt=1, sha256=${String(sealedPlan.sha256)}); ` +
+            `executionPlan(originalParentRunAttempt=1, sha256=${sealedPlan.sha256}); ` +
             "compatible collector evidence for the same execution plan is required",
         );
       } else {

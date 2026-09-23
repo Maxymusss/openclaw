@@ -51,6 +51,8 @@ import {
 } from "./full-release-validation-policy.mjs";
 import { inspectActionsArtifactZip } from "./lib/actions-artifact-archive.mjs";
 import { sortJsonValueKeys } from "./lib/canonical-json.mjs";
+import { releaseChildReuseSha256 } from "./lib/full-release-child-request.mjs";
+import { validateReusableReleaseChild } from "./lib/full-release-child-reuse.mjs";
 import {
   execGhRead,
   execGhReadAsync,
@@ -2136,6 +2138,9 @@ function validateCompletedParentRun(parentView, parentRest, repository, runId) {
 export function createReleaseEvidenceClient(repository = DEFAULT_REPO) {
   const normalizedRepository = normalizeRepository(repository);
   return {
+    validateChildReuse(selection, request) {
+      return validateReusableReleaseChild(selection, request);
+    },
     getWorkflowSource(sha) {
       const exactSha = normalizeSha(sha, "source admission workflow SHA");
       const payload = githubRestJson(
@@ -2471,7 +2476,9 @@ export function resolveVerifierIdentity(
 async function validateStrictChildRun({
   child,
   childEvidence,
+  childReuse,
   client,
+  executionPlan,
   parentEvidence,
   parentJobs,
   plannedChild,
@@ -2480,7 +2487,15 @@ async function validateStrictChildRun({
   runId,
   expectedRunAttempts,
 }) {
-  const run = await client.getRun(runId);
+  const reused = childReuse
+    ? await client.validateChildReuse(childReuse, {
+        inputs: childReuse.inputs,
+        repository,
+        role: child.manifestKey,
+        targetSha: parentEvidence.manifest.targetSha,
+      })
+    : undefined;
+  const run = reused?.run ?? (await client.getRun(runId));
   const effectiveRunAttempt = normalizePositiveInteger(
     run.run_attempt,
     `${child.name} run attempt`,
@@ -2497,12 +2512,9 @@ async function validateStrictChildRun({
       throw new Error(`execution plan child dispatch tuple mismatch: ${child.name}`);
     }
   }
-  const originAttempt = resolveManifestChildOriginAttempt(
-    run,
-    child,
-    parentEvidence.manifest,
-    parentJobs,
-  );
+  const originAttempt = reused
+    ? childReuse.sourceParentAttempt
+    : resolveManifestChildOriginAttempt(run, child, parentEvidence.manifest, parentJobs);
   if (originAttempt === undefined) {
     throw new Error(`manifest child dispatch tuple mismatch: ${child.name}`);
   }
@@ -2510,20 +2522,39 @@ async function validateStrictChildRun({
     parentJobs,
     child,
     parentEvidence.manifest,
-    originAttempt,
+    reused ? executionPlan.parentRunAttempt : originAttempt,
     { requireSkippedCarryForward: plannedChild !== undefined },
   );
-  validateManifestChildRun(
-    run,
-    child,
-    runId,
-    parentEvidence.manifest,
-    parentJobs,
-    await client.getJobLog(parentJob.id),
-    repository,
-    plannedChild?.runAttempt,
-    plannedChild !== undefined,
-  );
+  const parentLog = await client.getJobLog(parentJob.id);
+  if (reused) {
+    const selectionSha256 = releaseChildReuseSha256(childReuse);
+    const witnesses = [
+      ...String(parentLog).matchAll(/\bFRV_CHILD_REUSE_SHA256=([a-f0-9]{64})\b/gu),
+    ];
+    if (witnesses.length !== 1 || witnesses[0][1] !== selectionSha256) {
+      throw new Error(`release child reuse adoption witness mismatch: ${child.name}`);
+    }
+    validateReleaseChildDispatchBinding({
+      child: plannedChild,
+      coveragePolicy: parentEvidence.manifest.validationInputs?.coveragePolicy,
+      log: parentLog,
+      plannedRunAttempt: plannedChild.runAttempt,
+      repository,
+      targetSha: parentEvidence.manifest.targetSha,
+    });
+  } else {
+    validateManifestChildRun(
+      run,
+      child,
+      runId,
+      parentEvidence.manifest,
+      parentJobs,
+      parentLog,
+      repository,
+      plannedChild?.runAttempt,
+      plannedChild !== undefined,
+    );
+  }
   let jobs;
   let composite;
   if (plannedChild && childEvidence) {
@@ -2615,7 +2646,7 @@ async function validateStrictChildRun({
       parentEvidence.manifest.validationInputs?.laneWaiver,
     ),
     conclusion: run.conclusion,
-    dispatchNonce: `full-release-validation-${parentEvidence.manifest.runId}-${originAttempt}${child.suffix}`,
+    dispatchNonce: `full-release-validation-${reused ? childReuse.sourceParentRunId : parentEvidence.manifest.runId}-${originAttempt}${child.suffix}`,
     displayTitle: run.display_title,
     event: run.event,
     headBranch: run.head_branch,
@@ -2634,7 +2665,7 @@ async function validateStrictChildRun({
     runAttempt: effectiveRunAttempt,
     runId: String(run.id),
     sourceParentAttempt: originAttempt,
-    sourceParentRunId: parentEvidence.manifest.runId,
+    sourceParentRunId: reused ? childReuse.sourceParentRunId : parentEvidence.manifest.runId,
     status: run.status,
     url: run.html_url,
     workflowSha: run.head_sha,
@@ -3040,7 +3071,9 @@ export async function validateReleaseRunEvidence(
       validateStrictChildRun({
         child,
         childEvidence: rootEvidence.manifest.childEvidence?.[child.manifestKey],
+        childReuse: executionPlan?.childReuse?.[child.manifestKey],
         client: evidenceClient,
+        executionPlan,
         parentEvidence: dispatchEvidence,
         parentJobs,
         plannedChild: child.plannedChild,

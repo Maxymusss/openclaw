@@ -417,10 +417,18 @@ Validation children also upload immutable
 These retain dispatch inputs and attempt-composed job results independently of
 the parent's final manifest. `workloadConclusion` excludes the running receipt
 publisher; it does not claim that the child workflow has completed. Receipt
-collection is best effort and does not change release qualification. The current
-reuse path still requires a successful sealed parent; individual receipt reuse
-is not yet enabled. Npm, candidate, and Docker producers retain their existing
-artifact receipts.
+collection is best effort and does not change release qualification. With
+`reuse_evidence=true`, each dispatch can adopt a successful child for the exact
+target even when its original parent failed, was cancelled, or is still running.
+Discovery examines at most 30 recent runs and five receipts per role within two
+minutes; a miss dispatches fresh work. Inputs, including workflow defaults and
+candidate descriptor bytes, must match exactly. Only selected roles skip dispatch.
+The immutable plan and current-parent adoption witness bind each selection;
+collectors and the final verifier recheck the live attempt, main ancestry,
+successful seal/upload steps, and artifact identity, digest, and expiry. A newer
+child attempt invalidates the selection. Current-parent source and publication
+admission remain required. Successful whole-parent/changelog reuse is separate;
+npm, candidate, and Docker producers retain their existing artifact receipts.
 
 Flaky tests never block a release: rerun once, record, waive as advisory; only install smoke, upgrade-survivor proofs, pack budget and artifact children stay required.
 

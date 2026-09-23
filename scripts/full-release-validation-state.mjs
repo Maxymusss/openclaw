@@ -50,6 +50,7 @@ import {
   verifyReleaseStateArtifacts,
 } from "./full-release-validation-policy.mjs";
 import { sortJsonValueKeys } from "./lib/canonical-json.mjs";
+import { validateReusableReleaseChild } from "./lib/full-release-child-reuse.mjs";
 
 export * from "./full-release-validation-policy.mjs";
 
@@ -222,6 +223,9 @@ export async function readChild(child, previous, signal, options = {}) {
       ? await options.readRun(child.runId, signal)
       : await githubJson(`actions/runs/${child.runId}`, signal);
     const currentAttempt = positiveInteger(run.run_attempt, `${child.key} run attempt`);
+    if (options.reuseSelection && currentAttempt !== options.reuseSelection.runAttempt) {
+      throw new Error(`release child provenance changed: ${child.key} reused attempt is stale`);
+    }
     const plannedAttempt = positiveInteger(child.runAttempt, `${child.key} planned run attempt`);
     if (currentAttempt < plannedAttempt) {
       return validateChildBinding(child, run, {
@@ -348,6 +352,25 @@ export function parsePlanInputs(value) {
 }
 
 export function hydrateReusedPlan(plan, evidence) {
+  if (evidence.childReuse) {
+    return plan.map((child) => {
+      const selection = evidence.childReuse[child.key];
+      return child.selected && selection
+        ? {
+            ...child,
+            displayTitle: selection.displayTitle,
+            result: "success",
+            runAttempt: 1,
+            runId: selection.runId,
+            source: "reused",
+            sourceParentAttempt: selection.sourceParentAttempt,
+            url: selection.url,
+            workflowRef: selection.workflowRef,
+            workflowSha: selection.workflowSha,
+          }
+        : child;
+    });
+  }
   const byRole = new Map((evidence.children ?? []).map((child) => [child.role, child]));
   return plan.map((child) => {
     if (!child.selected) {
@@ -389,6 +412,37 @@ function changedPathsValue(value) {
 
 async function validateReuse(executionPlan, signal) {
   const { children: plan, evidenceReuse, trustedWorkflow } = executionPlan;
+  if (executionPlan.childReuse) {
+    const results = await Promise.allSettled(
+      Object.entries(executionPlan.childReuse).map(([role, selection]) =>
+        validateReusableReleaseChild(selection, {
+          repository: executionPlan.repository,
+          targetSha: executionPlan.targetSha,
+          role,
+          inputs: selection.inputs,
+        }),
+      ),
+    );
+    const issues = results.flatMap((result) => {
+      if (result.status === "fulfilled") {
+        return [];
+      }
+      const message =
+        result.reason instanceof Error ? result.reason.message : String(result.reason);
+      return [
+        {
+          child: "<evidence>",
+          kind: API_ERROR_PATTERN.test(message) ? "api_error" : "reused_evidence_invalid",
+          message,
+        },
+      ];
+    });
+    return {
+      blockers: issues.filter((entry) => entry.kind !== "api_error"),
+      children: plan,
+      errors: issues.filter((entry) => entry.kind === "api_error"),
+    };
+  }
   if (!evidenceReuse.requested) {
     return { blockers: [], children: plan, errors: [] };
   }
@@ -1074,7 +1128,8 @@ async function planMode() {
     candidate,
     coveragePolicy: planInputs.coveragePolicy,
     knownFlakyJobs: planInputs.knownFlakyJobs,
-    children: built.children,
+    children: hydrateReusedPlan(built.children, { childReuse: planInputs.childReuse ?? {} }),
+    childReuse: planInputs.childReuse,
     evidenceReuse: evidenceReuseFromInputs(planInputs),
     expected: { ...expected, candidateRequest, parentRunAttempt: currentAttempt },
     gates: built.gates,
@@ -1101,6 +1156,7 @@ async function planMode() {
       coveragePolicy: plan.coveragePolicy,
       knownFlakyJobs: plan.knownFlakyJobs,
       children: plan.children,
+      childReuse: plan.childReuse,
       errors: [
         ...plan.errors,
         {
@@ -1145,6 +1201,7 @@ async function planMode() {
     coveragePolicy: planInputs.coveragePolicy,
     knownFlakyJobs: planInputs.knownFlakyJobs,
     children: reuse.children,
+    childReuse: planInputs.childReuse,
     errors: reuse.errors,
     evidenceReuse: evidenceReuseFromInputs(planInputs, reuse.sourceManifest),
     expected: { ...expected, candidateRequest, parentRunAttempt: currentAttempt },
@@ -1297,7 +1354,7 @@ async function collectMode(mode) {
   process.once("SIGINT", stop);
   process.once("SIGTERM", stop);
 
-  if (mode === "decision" && executionPlan.evidenceReuse.requested) {
+  if (executionPlan.childReuse || (mode === "decision" && executionPlan.evidenceReuse.requested)) {
     decisionReuse = await validateReuse(executionPlan, abortController.signal);
     const exactPlan = JSON.stringify(
       plan.map(({ key, runAttempt, runId }) => ({ key, runAttempt, runId })),
@@ -1344,7 +1401,11 @@ async function collectMode(mode) {
   while (!finished) {
     ghRetryDeadline = transport.deadlineMonotonicMs;
     snapshots = await Promise.all(
-      plan.map((child, index) => readChild(child, snapshots[index], abortController.signal)),
+      plan.map((child, index) =>
+        readChild(child, snapshots[index], abortController.signal, {
+          reuseSelection: executionPlan.childReuse?.[child.key],
+        }),
+      ),
     );
     transport = updateReleaseTransportEpisode(transport, snapshots);
     const transportReadErrors = transport.error ? [transport.error] : [];

@@ -344,12 +344,18 @@ Each selected validation child uploads an immutable
 trusted workflow tooling. The receipt retains normalized dispatch inputs,
 including candidate descriptors, and composes predecessor jobs across attempts.
 Its `workloadConclusion` excludes the running publisher. Collection failure
-loses reuse metadata without changing workload qualification. These receipts
-are not yet consumed for partial reuse: the existing successful-parent manifest
-requirement still applies. Future consumers must independently verify the live
-child attempt and conclusion, main ancestry, exact inputs and artifact identity,
-and successful trusted seal/upload steps; the publisher job's best-effort result
-alone is insufficient. Artifact producers retain their existing sealed receipts.
+loses reuse metadata without changing workload qualification. With
+`reuse_evidence=true`, dispatch checks at most 30 recent runs and five receipts
+per role within two minutes. It can adopt green children from failed, cancelled,
+or active parents for the exact target, inputs/defaults, and candidate descriptor
+bytes; unmatched roles dispatch fresh work. The current-parent adoption witness
+and immutable execution plan bind each selection. Collectors and final verification
+recheck the live child attempt and conclusion, main ancestry, exact inputs,
+artifact identity/digest/expiry, and successful trusted seal/upload steps. A newer
+attempt invalidates reuse; do not rerun an adopted child to repair a collector.
+Current-parent source/publication admission and the separate successful-parent
+changelog reuse path remain unchanged. Artifact producers retain their existing
+sealed receipts.
 
 An early standalone product-performance run is optional beta confidence. If
 useful, start it against the frozen Code SHA in parallel with release work:
