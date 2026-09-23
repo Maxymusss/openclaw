@@ -1293,12 +1293,50 @@ AFTER_CD
     ).toBe(false);
   });
 
-  it("starts Apple builds and screenshots directly on hosted capacity", () => {
+  it("starts Apple builds and screenshot capture directly on hosted capacity", () => {
     const workflow = readCiWorkflow();
-    for (const jobName of ["macos-swift", "ios-build", "ios-screenshot-shard"]) {
+    for (const jobName of [
+      "macos-swift",
+      "ios-build",
+      "ios-screenshot-build",
+      "ios-screenshot-capture",
+    ]) {
       expect(workflow.jobs[jobName]["runs-on"], jobName).toBe("xcode-27");
     }
+    expect(workflow.jobs["ios-screenshot-shard"]["runs-on"]).toBe("ubuntu-24.04");
     expect(workflow.jobs["macos-swift"]["timeout-minutes"]).toBe(30);
+  });
+
+  it("builds iOS screenshot products once and drains four capture shards", () => {
+    const workflow = readCiWorkflow();
+    const build = workflow.jobs["ios-screenshot-build"];
+    const capture = workflow.jobs["ios-screenshot-capture"];
+    const merge = workflow.jobs["ios-screenshot-shard"];
+
+    expect(capture.needs).toContain("ios-screenshot-build");
+    expect(capture.strategy["fail-fast"]).toBe(false);
+    expect(capture.strategy["max-parallel"]).toBe(4);
+    expect(capture.strategy.matrix.include).toEqual([
+      { device_family: "iphone", part: 1, skip_watch: "1" },
+      { device_family: "iphone", part: 2, skip_watch: "1" },
+      { device_family: "ipad-13", part: 1, skip_watch: "0" },
+      { device_family: "ipad-13", part: 2, skip_watch: "1" },
+    ]);
+    expect(
+      build.steps.find((step: WorkflowStep) => step.name === "Build shared iOS screenshot products")
+        .env,
+    ).toMatchObject({ OPENCLAW_SNAPSHOT_BUILD_ONLY: "1" });
+    expect(
+      capture.steps.find(
+        (step: WorkflowStep) => step.name === "Capture iOS device screenshot shard",
+      ).env,
+    ).toMatchObject({
+      OPENCLAW_SNAPSHOT_PART: "${{ matrix.part }}",
+      OPENCLAW_SNAPSHOT_PART_COUNT: "2",
+      OPENCLAW_SNAPSHOT_REUSE_BUILD: "1",
+    });
+    expect(merge.needs).toContain("ios-screenshot-capture");
+    expect(merge.strategy.matrix.device_family).toEqual(["iphone", "ipad-13"]);
   });
 
   it("serializes the shared Swift package suite on hosted macOS retries", () => {
@@ -3182,7 +3220,10 @@ require("node:fs").writeFileSync("scheduler-baseline", process.env.OPENCLAW_UPGR
     expect(codeqlSelect.run).toContain('if [[ "$xcode_version" != 26.6* ]]; then');
 
     for (const [workflowPath, jobNames] of [
-      [".github/workflows/ci.yml", ["macos-swift", "ios-build", "ios-screenshot-shard"]],
+      [
+        ".github/workflows/ci.yml",
+        ["macos-swift", "ios-build", "ios-screenshot-build", "ios-screenshot-capture"],
+      ],
       [".github/workflows/ios-periphery.yml", ["scan"]],
       [".github/workflows/macos-periphery.yml", ["scan"]],
       [".github/workflows/shared-openclawkit-periphery.yml", ["scan-ios", "scan-macos"]],
@@ -7721,7 +7762,7 @@ server.listen(0, "127.0.0.1", () => {
     const workflow = readCiWorkflow();
 
     expect(source.match(/&platform_checkout_step/gu) ?? []).toHaveLength(1);
-    expect(source.match(/\*platform_checkout_step/gu) ?? []).toHaveLength(4);
+    expect(source.match(/\*platform_checkout_step/gu) ?? []).toHaveLength(5);
     expect(source.match(/&owned_checkout_run/gu) ?? []).toHaveLength(1);
     const linuxCheckout = workflow.jobs["checks-fast-core"].steps.find(
       (step: WorkflowStep) => step.name === "Checkout",
@@ -7746,6 +7787,8 @@ server.listen(0, "127.0.0.1", () => {
       "macos-node",
       "macos-swift",
       "ios-build",
+      "ios-screenshot-build",
+      "ios-screenshot-capture",
       "ios-screenshot-shard",
     ]) {
       const checkoutStep = workflow.jobs[jobName].steps.find(
@@ -7861,7 +7904,7 @@ server.listen(0, "127.0.0.1", () => {
     { historical: true, hasWatchRtc: false, expected: false },
   ])("prepares Watch RTC by source capability: %j", ({ historical, hasWatchRtc, expected }) => {
     const workflow = readCiWorkflow();
-    for (const jobName of ["ios-build", "ios-screenshot-shard"]) {
+    for (const jobName of ["ios-build", "ios-screenshot-build", "ios-screenshot-capture"]) {
       const install = workflow.jobs[jobName].steps.find(
         (step: WorkflowStep) => step.name === "Install Watch Rust toolchain",
       );
