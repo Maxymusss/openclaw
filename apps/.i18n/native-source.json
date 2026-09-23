@@ -3226,7 +3226,7 @@
     {"id":"native.apple.b58516a28f60bb75","source":"Remote connection","surface":"apple","sites":[{"kind":"conditional-branch","path":"apps/macos/Sources/OpenClaw/DebugSettings.swift"},{"kind":"ui-call","path":"apps/macos/Sources/OpenClaw/OnboardingView+Pages.swift"}]},
     {"id":"native.apple.d71560681d1e29d7","source":"Remote gateway ready","surface":"apple","sites":[{"kind":"conditional-branch","path":"apps/macos/Sources/OpenClaw/RemoteGatewayProbe.swift"}]},
     {"id":"native.apple.21a35df0d5642bd4","source":"Remove","surface":"apple","sites":[{"kind":"ui-call","path":"apps/macos/Sources/OpenClaw/GatewaySettings.swift"}]},
-    {"id":"native.apple.d898f7816310ec73","source":"Remove %@","surface":"apple","sites":[{"kind":"ui-localized-call","path":"apps/macos/Sources/OpenClaw/GatewaySettings.swift"}]},
+    {"id":"native.apple.d898f7816310ec73","source":"Remove %@","surface":"apple","sites":[{"kind":"ui-localized-call","path":"apps/macos/Sources/OpenClaw/GatewaySettings.swift"},{"kind":"ui-localized-call","path":"apps/shared/OpenClawKit/Sources/OpenClawChatUI/CleanChatComposerControls.swift"}]},
     {"id":"native.apple.d46f9e6fcceb29ce","source":"Remove Gateway?","surface":"apple","sites":[{"kind":"ui-modifier","path":"apps/macos/Sources/OpenClaw/GatewaySettings.swift"}]},
     {"id":"native.apple.5c530f03d3e457eb","source":"Remove attached text context","surface":"apple","sites":[{"kind":"ui-modifier","path":"apps/macos/Sources/OpenClaw/QuickChatView.swift"}]},
     {"id":"native.apple.2c74fd4888273bd5","source":"Remove attachments or wait for delivery before archiving or deleting this thread.","surface":"apple","sites":[{"kind":"ui-localized-call","path":"apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatSessionManagementViews.swift"}]},
