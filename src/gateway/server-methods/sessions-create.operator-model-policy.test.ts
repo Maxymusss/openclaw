@@ -107,7 +107,16 @@ describe("sessions.create initial-turn model policy through authenticated ingres
         getRuntimeConfig: () => committedConfig,
         getCommittedRuntimeConfig: () => committedConfig,
         loadGatewayModelCatalog: async () =>
-          fixtureModels.map((model) => ({ ...model, provider: "fixture" })),
+          fixtureModels.map((model) => ({
+            id: model.id,
+            name: model.name,
+            reasoning: model.reasoning,
+            input: model.input,
+            cost: model.cost,
+            contextWindow: model.contextWindow,
+            maxTokens: model.maxTokens,
+            provider: "fixture",
+          })),
       });
       context.resolveGatewayContext = () => context;
       context.readPreparedGatewayModelCatalog = async () => {

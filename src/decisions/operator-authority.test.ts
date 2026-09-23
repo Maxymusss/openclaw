@@ -114,7 +114,7 @@ describe("Decision direct-tool admission", () => {
             );
             if (state === "invocation-retired") {
               await entered.promise;
-              return;
+              return undefined;
             }
             return await pending;
           },
