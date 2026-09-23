@@ -897,24 +897,20 @@ describe("createTelegramBot typed command pipeline", () => {
       cachedAtAdmission.push(await getCachedSticker(sticker.file_unique_id));
       return { text: "Sticker received" };
     });
+    let receiving: Promise<void> | undefined;
     try {
       const bot = createBot(false, true, cfg);
-      const receive = async (update: Parameters<typeof bot.handleUpdate>[0]) => {
-        // grammY requires undefined at the reply leaf; Telegram JSON omits it.
-        const body = await new Response(JSON.stringify(update)).json();
-        await bot.handleUpdate(body as Parameters<typeof bot.handleUpdate>[0]);
-      };
-      const receiving = receive({ update_id: 2800, message });
+      receiving = bot.handleUpdate({ update_id: 2800, message });
       await Promise.race([
         describeStarted.promise,
         receiving.then(() => {
-          throw new Error("Sticker update completed before description started");
+          throw new Error("Sticker handler completed before description started");
         }),
       ]);
       expect(harness.replySpy).not.toHaveBeenCalled();
       description.resolve({ text: "A curious sticker" });
       await receiving;
-      await receive({
+      await bot.handleUpdate({
         update_id: 2801,
         message: {
           ...message,
@@ -937,7 +933,7 @@ describe("createTelegramBot typed command pipeline", () => {
         fileId: "refreshed-sticker-file",
         description: "A curious sticker",
       });
-      await receive({
+      await bot.handleUpdate({
         update_id: 2802,
         message: {
           ...message,
@@ -966,6 +962,7 @@ describe("createTelegramBot typed command pipeline", () => {
       expect(apiCalls.mock.calls.filter(([method]) => method === "sendMessage")).toHaveLength(3);
     } finally {
       description.resolve({ text: "A curious sticker" });
+      await Promise.allSettled([receiving]);
       setTelegramRuntime(runtime);
     }
   });
