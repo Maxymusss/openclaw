@@ -89,6 +89,8 @@ describe("DiscordMessageListener", () => {
 
     await flushAsyncWork();
     expect(handler).toHaveBeenCalledTimes(2);
+    expect(handler).toHaveBeenNthCalledWith(1, { channel_id: "ch-1" }, {});
+    expect(handler).toHaveBeenNthCalledWith(2, { channel_id: secondChannelId }, {});
     // Both handlers started without waiting for the first to finish.
     expect(order).toContain("start:1");
     expect(order).toContain("start:2");
