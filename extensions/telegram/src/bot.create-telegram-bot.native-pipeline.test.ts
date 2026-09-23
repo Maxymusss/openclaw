@@ -901,32 +901,18 @@ describe("createTelegramBot typed command pipeline", () => {
     });
     try {
       const bot = await createBot(false, true, cfg);
-      const webhook = webhookCallback(bot, "std/http");
-      const receive = async (
-        update: Parameters<typeof bot.handleUpdate>[0],
-        receiveWebhook = webhook,
-      ) => {
-        // grammY requires undefined at the reply leaf; Telegram JSON omits it.
-        const response = await receiveWebhook(
-          new Request("http://localhost/telegram", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify(update),
-          }),
-        );
-        expect(response.status).toBe(200);
-      };
-      const receiving = receive({ update_id: 2800, message });
+      // Durable ingress dispatches accepted updates outside the HTTP request deadline.
+      const receiving = bot.handleUpdate({ update_id: 2800, message });
       await Promise.race([
         describeStarted.promise,
         receiving.then(() => {
-          throw new Error("Sticker webhook completed before description started");
+          throw new Error("Sticker handler completed before description started");
         }),
       ]);
       expect(harness.replySpy).not.toHaveBeenCalled();
       description.resolve({ text: "A curious sticker" });
       await receiving;
-      await receive({
+      await bot.handleUpdate({
         update_id: 2801,
         message: {
           ...message,
@@ -949,7 +935,7 @@ describe("createTelegramBot typed command pipeline", () => {
         fileId: "refreshed-sticker-file",
         description: "A curious sticker",
       });
-      await receive({
+      await bot.handleUpdate({
         update_id: 2802,
         message: {
           ...message,
@@ -978,16 +964,19 @@ describe("createTelegramBot typed command pipeline", () => {
       expect(apiCalls.mock.calls.filter(([method]) => method === "sendMessage")).toHaveLength(3);
       describeImage.mockImplementationOnce(() => lateDescription.promise);
       await expect(
-        receive(
-          {
-            update_id: 2803,
-            message: {
-              ...message,
-              message_id: 2803,
-              sticker: { ...sticker, file_unique_id: lateStickerId },
-            },
-          },
-          webhookCallback(bot, "std/http", { timeoutMilliseconds: 0 }),
+        webhookCallback(bot, "std/http", { timeoutMilliseconds: 0 })(
+          new Request("http://localhost/telegram", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              update_id: 2803,
+              message: {
+                ...message,
+                message_id: 2803,
+                sticker: { ...sticker, file_unique_id: lateStickerId },
+              },
+            }),
+          }),
         ),
       ).rejects.toThrow("Request timed out after 0 ms");
     } finally {
