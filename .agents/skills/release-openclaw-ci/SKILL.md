@@ -53,15 +53,16 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   access first; unset preserves ordinary routing. Shared workers inherit the
   caller group; PR/main CI and unrelated scheduled work remain outside it.
 - Validate provider secrets before dispatching expensive full release matrices.
-- Linux (`ubuntu`) cross-OS lanes gate publication for beta, stable, and full.
-  Windows/macOS cross-OS lanes run in parallel as advisory coverage. Record
-  their actual pass/fail conclusions; failures do not block Release Decision,
-  npm publication, or `pnpm release:candidate`. Keep normal CI, npm
-  qualification, Docker, Package Acceptance, performance, and soak gates intact.
-- macOS app signing/notarization/appcast and Windows Hub asset promotion run
-  in parallel with or after npm publication and never delay npm or GitHub
-  finalization. Their own qualification and artifact gates still apply; track
-  selected platforms through verified assets and updater evidence separately.
+- Normal CI, plugin prerelease, all cross-OS, performance, and QA test results
+  are advisory for npm/ClawHub in every profile. Flaky tests in those suites never
+  hold publication; record failures without requiring a lane waiver or green
+  rerun. A passing replay alone does not prove a fix. Required artifact,
+  install-smoke, survivor, first-hop, pack/npm qualification, target-resolution,
+  and corresponding aggregator proofs remain enforced with exact provenance.
+- Native macOS, Windows, Linux, and Android publication is independent of
+  npm/ClawHub, GitHub finalization, and main closeout. Each platform retains
+  its own signing, qualification, artifact, and updater requirements; report
+  pending platforms accurately and repair native-only failures in parallel.
 - Do not set GitHub secrets from unvalidated 1Password candidates. If a candidate returns 401/403, leave the existing secret alone and report the exact missing provider.
 - Use `$one-password` for secret reads/writes: one persistent tmux session, targeted items only, no secret output.
 - Watch one parent run plus compact child summaries. Avoid broad `gh run view` polling loops; REST quota is easy to burn.
@@ -185,11 +186,13 @@ until their dependent enforcement changes land.
   - `beta-publish`: `release_profile=beta`, `run_release_soak=false`
   - `postpublish-confidence`: published package inputs with
     `run_release_soak=true` or explicit focused groups
-  - `stable-publish`: `release_profile=stable`
+  - `stable-publish`: the default beta profile with an approved soak waiver;
+    explicit `release_profile=stable` selects exhaustive coverage
 - An `all` run without soak for an actual beta package on its matching canonical
   release branch or beta tag records `coveragePolicy=npm-beta-v1`. It keeps
   Linux/macOS/Windows Node, Control UI, plugin, package, install/update,
-  Linux cross-OS, QA parity, runtime-pair/restart, and tool-coverage gates. Native app
+  Linux cross-OS, QA parity, runtime-pair/restart, and tool coverage. Only the
+  required install/update/package proofs gate npm/ClawHub; other tests are advisory. Native app
   CI, performance, and published-package Telegram are deferred to confidence.
   Beta `all` without soak also defers Package Acceptance Telegram, including
   beta-profile checks of `main` or alpha. Record deferred checks as not run,
@@ -281,8 +284,8 @@ and continue dispatch; source changes and the serialized locale-refresh workflow
 can temporarily leave generated output behind. Do not require regeneration before
 starting validation. FRV's normal-CI child retains the strict `control-ui-i18n`
 and `native-i18n` jobs and reports their actual results in the run summary;
-a failed locale job still fails validation. PR-side checks and release-prep and
-publication gates stay unchanged. Keep target execution outside the trusted
+a failed locale job is recorded as advisory for npm/ClawHub. PR-side checks and
+release-prep gates stay unchanged. Keep target execution outside the trusted
 dispatch helper—do not execute an arbitrary target checkout as helper code.
 
 Before expensive full validation, also run `pnpm ui:build` on the same frozen
@@ -375,7 +378,7 @@ An early standalone product-performance run is optional beta confidence. If
 useful, start it against the frozen Code SHA in parallel with release work:
 
 ```bash
-# Optional early beta confidence; stable/full use the required parent child.
+# Optional confidence; performance is advisory for every release profile.
 fail_on_regression=false
 gh workflow run openclaw-performance.yml \
   --repo openclaw/openclaw \
@@ -391,13 +394,11 @@ gh workflow run openclaw-performance.yml \
 - Do not add a separate mandatory prepublish wait for this optional beta signal.
 - Compare available Kova, gateway startup, and CLI startup metrics with earlier
   release evidence or clawgrit reports before publish/closeout.
-- Call out any regression in the release proof. Treat a major regression as a
-  release blocker until it is fixed, waived by the operator, or proven to be
-  infrastructure noise.
-- Full Release Validation requires blocking performance evidence for stable
-  and full profiles. `npm-beta-v1` defers the child; explicit `performance`
-  and soak-enabled beta runs retain advisory performance coverage. Every
-  selected performance child must finish and prove artifact-only publication.
+- Record regressions in release evidence and investigate their product impact.
+  Performance results are advisory for beta, stable, and full profiles; no
+  performance waiver is needed for npm/ClawHub publication or main closeout.
+- `npm-beta-v1` defers the performance child. Every selected child still needs
+  terminal evidence and must prove artifact-only publication.
 
 Prefer an immutable trusted-main workflow revision, target the exact Code SHA:
 
@@ -456,8 +457,9 @@ fresh full run.
 
 If final notes were already committed before fresh full qualification, retain
 that Code SHA as Release SHA and use the same successful parent/attempt and
-its exact prepared bytes for candidate and publication checks. Required gates,
-final channel-specific SDK review and acknowledgement still apply.
+its exact prepared bytes for candidate and publication checks. Required gates
+and final channel-specific SDK review still apply. Publishers consume the sealed
+acknowledgement; the candidate helper retains its explicit argument when needed.
 
 Only if notes change after qualification, commit the selected release entry and
 any matching record/index updates, then
@@ -506,8 +508,8 @@ registry selectors, and immutable bytes. Clear temporary waiver text at closeout
 Publish with `openclaw-release-publish.yml` using `release_profile=from-validation`
 unless a maintainer intentionally wants to cross-check a specific profile; the
 publish workflow reads the effective profile from the full-validation manifest.
-Stable publication requires soak unless the operator supplies `stable_soak_waiver`
-with a reason; the publisher forwards and records that reason in release evidence
+Stable publication requires soak or an approved reason from sealed `publishInputs`
+or the explicit `stable_soak_waiver` override; the publisher records that reason in release evidence
 without changing validation coverage or other publication gates.
 For npm/ClawHub, artifact children, install smoke, both survivor lanes, all
 `update-first-hop-compat*` lanes, pack budget/npm qualification, and target
@@ -669,8 +671,8 @@ Interpret state precisely:
 - `cancelled_with_children`: the collector was cancelled while exact children
   remained active.
 
-Read **advisory** entries separately from Release Decision. Windows/macOS
-cross-OS lanes retain their actual conclusions in the manifest and summary;
+Read **advisory** entries separately from Release Decision. Normal CI, plugin,
+all cross-OS, performance, and QA lanes retain actual conclusions in the manifest and summary;
 `passed` does not mean those advisory lanes passed. Selected lanes still need
 terminal evidence, and filtered-out lanes are not run, never passed.
 
@@ -742,7 +744,7 @@ Record:
 - active full parent run URL, attempt, workflow SHA, and any superseded parent
   with the exact replacement reason
 - selected child run IDs and conclusions: CI, Release Checks, Plugin Prerelease, NPM Telegram, Product Performance; record deferred confidence as not run
-- Windows/macOS cross-OS advisory lane classifications and actual conclusions
+- all advisory lane classifications and actual conclusions, including cross-OS
 - performance comparison result versus earlier releases when available
 - targeted local proof commands
 - provider-secret preflight result

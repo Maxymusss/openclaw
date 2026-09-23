@@ -84,6 +84,20 @@ install-smoke, survivor, all first-hop compatibility, pack/npm qualification,
 and target-resolution proofs remain required. Aggregators follow required inputs;
 identity and provenance verification still apply.
 
+For publication, the sealed manifest supplies the SDK acknowledgement digest,
+per-package npm decisions, and any approved `OPENCLAW_RELEASE_STABLE_SOAK_WAIVER`
+text. Explicit publisher inputs override those defaults; historical manifests
+retain their existing input contract. Publishers still validate live authority,
+artifact bytes, and registry state at the mutation boundary.
+
+Flaky tests never block npm/ClawHub publication: record advisory failures and
+investigate their owners without waiting for a green rerun. A passing replay
+alone does not prove a fix. Required artifact, install, update, target, and
+provenance proofs remain enforced. Native app publication is fully decoupled
+from npm/ClawHub, GitHub finalization, and main closeout; report each platform's
+readiness separately. The approximately 20-minute validation and one-hour
+publication targets require hosted timing evidence before being claimed.
+
 Release closeout refreshes hosted full-release shard costs with
 `node --import ./scripts/tsx.mjs scripts/ci-shard-timings-refresh.mts --run <ci-child-run-id>`.
 The generator records successful hosted job walls, including setup, in the existing
