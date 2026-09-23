@@ -9,6 +9,7 @@ import { useAutoCleanupTempDirTracker } from "../../../../test/helpers/temp-dir.
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../../config/config.js";
 import { patchSessionEntryCore } from "../../../config/sessions/session-accessor.js";
 import { callGateway } from "../../../gateway/call.js";
+import { racePromiseWithAbortSignal } from "../../../infra/abort-signal.js";
 import { onAgentEvent } from "../../../infra/agent-events.js";
 import { flushLogger, setLoggerOverride } from "../../../logging/logger.js";
 import { resolveOpenClawAgentSqlitePath } from "../../../state/openclaw-agent-db.js";
@@ -20,7 +21,6 @@ import {
   resetTaskRegistryForTests,
 } from "../../../tasks/task-runtime.test-helpers.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
-import * as registryHelpers from "./subagent-registry-helpers.js";
 import {
   cleanupSubagentRegistryPersistenceTest,
   readSubagentSessionStore,
@@ -84,7 +84,7 @@ describe("subagent timing completion", () => {
     envSnapshot.restore();
   });
 
-  it.each(["wait-only", "sequential", "overlap"] as const)("%s", async (mode) => {
+  it.for(["wait-only", "sequential", "overlap"] as const)("%s", async (mode, { signal }) => {
     const runId = `timing-repro-${mode}`;
     const childSessionKey = `agent:main:subagent:${mode}`;
     const requesterSessionKey = "agent:main:main";
@@ -154,18 +154,6 @@ describe("subagent timing completion", () => {
     if (mode === "overlap") {
       const entered = createDeferred();
       const released = createDeferred();
-      const firstTimingWriteEntered = createDeferred();
-      const secondTimingWriteEntered = createDeferred();
-      const persistSubagentSessionTiming = registryHelpers.persistSubagentSessionTiming;
-      let timingWriteCount = 0;
-      const timingSpy = vi
-        .spyOn(registryHelpers, "persistSubagentSessionTiming")
-        .mockImplementation((...args) => {
-          const work = persistSubagentSessionTiming(...args);
-          timingWriteCount += 1;
-          (timingWriteCount === 1 ? firstTimingWriteEntered : secondTimingWriteEntered).resolve();
-          return work;
-        });
       // Hold the real FIFO with a no-op patch. There is no open SQLite
       // transaction during this await and no production function is replaced.
       const blocker = patchSessionEntryCore(
@@ -179,21 +167,38 @@ describe("subagent timing completion", () => {
       );
       try {
         await entered.promise;
-        const queueDepth = () =>
-          SQLITE_SESSION_WRITER_QUEUES.get(resolveOpenClawAgentSqlitePath({ agentId: "main" }))
-            ?.pending.length ?? 0;
-        expect(queueDepth()).toBe(0);
-        emitTerminal();
-        await firstTimingWriteEntered.promise;
-        expect(queueDepth()).toBe(1);
-        waiting.resolve(terminal);
-        await secondTimingWriteEntered.promise;
-        expect(queueDepth()).toBe(2);
+        const queue = SQLITE_SESSION_WRITER_QUEUES.get(storePath);
+        if (!queue) {
+          throw new Error("session writer did not retain its queue");
+        }
+        const lifecycleQueued = createDeferred();
+        const waiterQueued = createDeferred();
+        const push = queue.pending.push.bind(queue.pending);
+        // Task finalization awaits a worker before these writes reach the FIFO.
+        const enqueueObserver = vi.spyOn(queue.pending, "push").mockImplementation((...tasks) => {
+          const depth = push(...tasks);
+          if (depth === 1) {
+            lifecycleQueued.resolve();
+          } else if (depth === 2) {
+            waiterQueued.resolve();
+          }
+          return depth;
+        });
+        try {
+          expect(queue.pending.length).toBe(0);
+          emitTerminal();
+          await racePromiseWithAbortSignal(lifecycleQueued.promise, signal);
+          expect(queue.pending.length).toBe(1);
+          waiting.resolve(terminal);
+          await racePromiseWithAbortSignal(waiterQueued.promise, signal);
+          expect(queue.pending.length).toBe(2);
+        } finally {
+          enqueueObserver.mockRestore();
+        }
       } finally {
         waiting.resolve(terminal);
         released.resolve();
         await blocker;
-        timingSpy.mockRestore();
       }
       await waitForCleanup();
     } else {
