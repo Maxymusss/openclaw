@@ -51,6 +51,10 @@ export type PersistedUserTurnMessage = Extract<AgentMessage, { role: "user" }> &
 
 export type UserTurnInput = Pick<PersistedUserTurnMessage, "display" | "excludeFromContext"> & {
   text?: string | null;
+  /** Producer-owned audience; discussion is context, not an agent assignment. */
+  participation?: "agent" | "humans";
+  /** Immutable authenticated discussion input, retained after custody is consumed. */
+  discussionRequestFingerprint?: string;
   /** Authored text and its captured reference; model content stays unchanged. */
   workContext?: AttachedChatWorkContext;
   /** Explicit human selections bound to UTF-16 offsets in text. */

@@ -74,6 +74,10 @@ export function buildPersistedUserTurnMetadata(
     ...(senderUsername ? { senderUsername } : {}),
     ...(senderIdentity && senderIdentity.id === senderId ? { senderIdentity } : {}),
     ...(input.workContext ? { workContext: structuredClone(input.workContext) } : {}),
+    ...(input.participation ? { participation: input.participation } : {}),
+    ...(input.discussionRequestFingerprint
+      ? { discussionRequestFingerprint: input.discussionRequestFingerprint }
+      : {}),
     ...(input.mentions?.length
       ? { humanMentions: input.mentions.map((mention) => ({ ...mention })) }
       : {}),
@@ -155,6 +159,10 @@ export function restorePreparedUserTurnOperationalMetaForRuntime<
   }
   const runtimeMeta = { ...nextMessage["__openclaw"] };
   delete runtimeMeta.intent;
+  delete runtimeMeta.participation;
+  if (preparedMeta?.participation) {
+    runtimeMeta.participation = preparedMeta.participation;
+  }
   if (preparedMeta?.intent) {
     runtimeMeta.intent = preparedMeta.intent;
   }
@@ -224,6 +232,8 @@ export function preparePersistedUserTurnMessageForTranscriptWrite(
     typeof originalIdempotencyKey === "string" ? originalIdempotencyKey : undefined;
   const provenance = normalizeInputProvenance(Reflect.get(message, "provenance"));
   const originalMeta = message["__openclaw"];
+  const participation = originalMeta?.participation;
+  const discussionRequestFingerprint = originalMeta?.discussionRequestFingerprint;
   const originalContent =
     originalMeta?.humanMentions === undefined && originalMeta?.workContext === undefined
       ? undefined
@@ -287,6 +297,14 @@ export function preparePersistedUserTurnMessageForTranscriptWrite(
   };
   if (intent === undefined) {
     delete protectedMeta.intent;
+  }
+  delete protectedMeta.participation;
+  if (participation === "agent" || participation === "humans") {
+    protectedMeta.participation = participation;
+  }
+  delete protectedMeta.discussionRequestFingerprint;
+  if (typeof discussionRequestFingerprint === "string") {
+    protectedMeta.discussionRequestFingerprint = discussionRequestFingerprint;
   }
   // A redacting hook must not leave an alternate copy of the original text visible.
   delete protectedMeta.workContext;

@@ -2,6 +2,7 @@ import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/i
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
 import type { ProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
 import { admitChatSend } from "./chat-send-admission.js";
+import { postChatDiscussion } from "./chat-send-discussion.js";
 import { runChatSendPreAdmission } from "./chat-send-pre-admission.js";
 import { normalizeChatSendRequest } from "./chat-send-request.js";
 import {
@@ -19,6 +20,7 @@ export async function prepareAndAdmitChatSend(
     client,
     hasCurrentClientAuthority,
     sessionMutationAuthorization,
+    sessionMutationCommitGuard,
   }: Pick<
     GatewayRequestHandlerOptions,
     | "params"
@@ -27,6 +29,7 @@ export async function prepareAndAdmitChatSend(
     | "client"
     | "hasCurrentClientAuthority"
     | "sessionMutationAuthorization"
+    | "sessionMutationCommitGuard"
   >,
   onAdmissionOwned?: () => Promise<boolean>,
   options?: {
@@ -100,6 +103,20 @@ export async function prepareAndAdmitChatSend(
       );
       return undefined;
     }
+  }
+  if (normalizedRequest.value.p.participation === "humans") {
+    await postChatDiscussion({
+      request: normalizedRequest.value,
+      session: preparedSession.value,
+      client,
+      context,
+      respond,
+      assertCurrent: () => {
+        sessionMutationCommitGuard?.();
+        assertCurrent?.();
+      },
+    });
+    return undefined;
   }
   const shouldAdmit = await runChatSendPreAdmission({
     request: normalizedRequest.value,

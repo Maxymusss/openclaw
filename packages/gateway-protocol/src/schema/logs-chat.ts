@@ -295,6 +295,9 @@ export const ChatSendParamsSchema = closedObject({
   agentId: Type.Optional(NonEmptyString),
   sessionId: Type.Optional(NonEmptyString),
   message: Type.String(),
+  // Human discussion is recorded without admitting agent work. Omission keeps
+  // the existing user-to-agent contract, including ordinary follow-ups.
+  participation: Type.Optional(Type.Union([Type.Literal("agent"), Type.Literal("humans")])),
   mentions: Type.Optional(HumanMentionsSchema),
   workContext: Type.Optional(ChatWorkContextSchema),
   intent: Type.Optional(ChatSendIntentSchema),

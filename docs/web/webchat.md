@@ -77,6 +77,17 @@ Normal agent-run final answers should be durable because the embedded runtime wr
 
 ## Human mention delivery
 
+Signed-in Control UI clients can record text in an existing conversation with
+`chat.send` participation set to `"humans"` and the current `sessionId`.
+The Gateway commits the human-authored message and returns `status: "posted"`,
+`messageId`, and `messageSeq`. It does not start, queue, steer, interrupt, or
+recover agent work, even if the text looks like a command. This is not a hidden
+agent response: the discussion remains in history for later context. This text-only
+mode rejects attachments, agent options, goals, and outbound delivery overrides.
+It uses the same session access, send policy, committed-mention notification, and
+durable retry checks as ordinary chat. Omitted participation or `"agent"` retains
+the normal agent request contract; a human mention alone does not suppress it.
+
 The Control UI binds each [selected person](/concepts/multi-user#mentioning-people) to the submitted message text. `chat.send`, the initial message on `sessions.create`, and `sessions.send` accept an optional `mentions` array of `{ profileId, start, end }` annotations. There are at most ten annotations. `start` is inclusive and `end` is exclusive, measured in UTF-16 code units. The Gateway validates their text ranges and recipients before accepting the input. Plain `@name` text and agent output do not create human mentions. Copying or quoting text does not copy its recipient selections.
 
 The mention becomes eligible for an Inbox entry and optional browser push only after the original human message is newly committed to the transcript. An early `status: "started"` acknowledgment, a staged initial message, or durable pending-input custody is not that commit. A queued or remotely placed first message therefore does not notify while it is still waiting to be recorded. A later agent failure does not undo a mention whose human message was already committed.

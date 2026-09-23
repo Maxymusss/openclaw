@@ -112,6 +112,42 @@ export function normalizeChatSendRequest(params: {
   }
 
   const p = controlUiReconnectResume.params as ChatSendRequestParams;
+  const humanDiscussion = p.participation === "humans";
+  if (
+    humanDiscussion &&
+    (!p.sessionId ||
+      !isBrowserOperatorUiClient(clientInfo) ||
+      !client?.authenticatedUserProfile ||
+      client.internal?.syntheticClient ||
+      client.internal?.senderAttribution ||
+      params.trustedSystemInput ||
+      params.goalResume ||
+      params.providerReviewAcknowledgment ||
+      p.intent ||
+      p.queueMode ||
+      p.attachments?.length ||
+      p.toolBindings ||
+      p.workContext ||
+      p.systemInputProvenance ||
+      p.systemProvenanceReceipt ||
+      p.suppressCommandInterpretation !== undefined ||
+      p.deliver !== undefined ||
+      p.originatingChannel !== undefined ||
+      p.originatingTo !== undefined ||
+      p.originatingAccountId !== undefined ||
+      p.originatingThreadId !== undefined ||
+      p.thinking !== undefined ||
+      p.fastMode !== undefined ||
+      p.fastAutoOnSeconds !== undefined ||
+      p.timeoutMs !== undefined ||
+      controlUiReconnectResume.resumeRequested)
+  ) {
+    return {
+      ok: false,
+      error:
+        "Human discussion requires signed-in Control UI text without agent or delivery options.",
+    };
+  }
   const providerReview = params.providerReviewAcknowledgment
     ? readProviderReviewAcknowledgment(params.providerReviewAcknowledgment)
     : undefined;
@@ -217,7 +253,10 @@ export function normalizeChatSendRequest(params: {
         }
       : undefined);
   const commandInterpretationSuppressed =
-    suppressCommandInterpretation || goalOperation !== undefined || providerReview !== undefined;
+    humanDiscussion ||
+    suppressCommandInterpretation ||
+    goalOperation !== undefined ||
+    providerReview !== undefined;
   // This text comes from the current provider review, not a browser-supplied command.
   const inboundMessage = p.intent || providerReview ? p.message : sanitizedMessageResult.message;
   const systemInputProvenance = params.goalResume
@@ -277,8 +316,7 @@ export function normalizeChatSendRequest(params: {
       suppressCommandInterpretation ||
       stopCommand ||
       turnKind !== "main" ||
-      rawMessage.startsWith("/") ||
-      rawMessage.startsWith("!"))
+      (!humanDiscussion && (rawMessage.startsWith("/") || rawMessage.startsWith("!"))))
   ) {
     return {
       ok: false,
@@ -309,6 +347,7 @@ export function normalizeChatSendRequest(params: {
     .update(
       JSON.stringify([
         p.message,
+        p.participation ?? "agent",
         p.mentions?.map(({ profileId, start, end }) => [profileId, start, end]) ?? [],
         ...(workContext ? [workContext.snapshot] : []),
         ...(providerReview ? [providerReview.review.id, providerReview.target.sessionId] : []),

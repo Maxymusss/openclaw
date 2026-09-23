@@ -88,6 +88,89 @@ describe("ordinary chat input admission", () => {
     };
   }
 
+  it.each([false, true])(
+    "posts human discussion without agent admission (active=%s)",
+    async (active) => {
+      const fixture = await createMentionFixture({ active });
+      fixture.params.participation = "humans";
+      const entryBefore = loadSessionEntry(fixture.scope);
+      try {
+        const ack = await fixture.send();
+        expect(ack).toHaveBeenCalledWith(
+          true,
+          expect.objectContaining({
+            status: "posted",
+            messageId: expect.any(String),
+            messageSeq: 2,
+          }),
+        );
+        expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+        expect(fixture.context.chatAbortControllers.size).toBe(0);
+        expect(fixture.context.chatQueuedTurns?.size).toBe(0);
+        expect(loadSessionEntry(fixture.scope)?.status).toBe(entryBefore?.status);
+        expect(listSessionPendingInputs(fixture.scope).total).toBe(0);
+        const transcript = loadTranscriptEventsSync(fixture.scope);
+        expect(transcript).toHaveLength(fixture.activeTranscript.length + 1);
+        expect(transcript.at(-1)).toMatchObject({
+          message: {
+            role: "user",
+            __openclaw: {
+              participation: "humans",
+              senderId: fixture.client.authenticatedUserProfile?.profileId,
+            },
+          },
+        });
+        expect(fixture.read()).toHaveLength(1);
+        const retry = await fixture.send();
+        expect(retry.mock.calls[0]).toEqual(ack.mock.calls[0]);
+        expect(loadTranscriptEventsSync(fixture.scope)).toEqual(transcript);
+        expect(fixture.read()).toHaveLength(1);
+        expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+        fixture.params.message = "Different discussion";
+        fixture.params.mentions = undefined;
+        const conflict = await fixture.send();
+        expect(conflict.mock.calls[0]?.[0]).toBe(false);
+        expect(loadTranscriptEventsSync(fixture.scope)).toEqual(transcript);
+      } finally {
+        await fixture.cleanup();
+      }
+    },
+  );
+
+  it("does not interpret a human discussion as a stop command", async () => {
+    const fixture = await createMentionFixture();
+    fixture.params.participation = "humans";
+    fixture.params.message = "/stop";
+    fixture.params.mentions = undefined;
+    try {
+      const ack = await fixture.send();
+      expect(ack.mock.calls[0]?.[1]).toMatchObject({ status: "posted" });
+      expect(fixture.activeRun?.abortSignal.aborted).toBe(false);
+      expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
+  it("rejects discussion when caller authority is revoked before commit", async () => {
+    const fixture = await createMentionFixture();
+    fixture.params.participation = "humans";
+    try {
+      await expect(
+        fixture.send(vi.fn(), {
+          sessionMutationCommitGuard: () => {
+            throw new Error("revoked");
+          },
+        }),
+      ).rejects.toThrow("revoked");
+      expect(loadTranscriptEventsSync(fixture.scope)).toEqual(fixture.activeTranscript);
+      expect(fixture.read()).toEqual([]);
+      expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+    } finally {
+      await fixture.cleanup();
+    }
+  });
+
   it("creates recipient-only mentions at original message commit, never at the queued ACK", async () => {
     const fixture = await createMentionFixture();
     try {

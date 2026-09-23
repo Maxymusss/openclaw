@@ -44,7 +44,12 @@ type GatewayChatUserTurnController = {
 };
 
 export function createGatewayChatUserTurnController(params: {
-  admission: AdmittedChatSend;
+  admission: { sessionBinding: Pick<AdmittedChatSend["sessionBinding"], "sessionId"> } & Partial<
+    Pick<
+      AdmittedChatSend,
+      "initialSessionEntry" | "restartSafeAdmission" | "chatSendTraceAttributes"
+    >
+  >;
   client: GatewayClient | null;
   request: NormalizedChatSendRequest;
   session: PreparedChatSendSession;
@@ -73,6 +78,20 @@ export function createGatewayChatUserTurnController(params: {
     ...params.transcript,
     ...(request.goalOperation?.action === "resume" ? { display: false } : {}),
     text: request.rawMessage,
+    ...(request.p.participation ? { participation: request.p.participation } : {}),
+    ...(request.p.participation === "humans"
+      ? {
+          discussionRequestFingerprint: createHash("sha256")
+            .update(
+              stableStringify([
+                { ...request.p, expectedLeafEntryId: undefined },
+                sender?.identity ?? sender?.id,
+                hasGatewayAdminScope(params.client),
+              ]),
+            )
+            .digest("hex"),
+        }
+      : {}),
     ...(request.workContext ? { workContext: request.workContext } : {}),
     ...(request.mentions ? { mentions: request.mentions } : {}),
     timestamp: session.now,

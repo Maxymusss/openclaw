@@ -42,6 +42,51 @@ function humanClient(): NonNullable<GatewayRequestHandlerOptions["client"]> {
 }
 
 describe("normalizeChatSendRequest", () => {
+  it("keeps agent participation explicit even with a human mention", () => {
+    expect(
+      normalizeChatSendRequest({
+        client: humanClient(),
+        params: validParams({
+          participation: "agent",
+          message: "@Bob, can the assistant check this?",
+          mentions: [{ profileId: "bob", start: 0, end: 4 }],
+        }),
+      }),
+    ).toMatchObject({ ok: true, value: { p: { participation: "agent" } } });
+  });
+
+  it.each([
+    { queueMode: "interrupt" },
+    { attachments: [{ content: "x" }] },
+    { systemInputProvenance: { kind: "internal_system" } },
+    { intent: { kind: "session-goal-start", version: 1, issuedAtMs: 1 } },
+    { participation: "automatic" },
+    { sessionId: undefined },
+  ])("rejects incompatible discussion input: %j", (overrides) => {
+    expect(
+      normalizeChatSendRequest({
+        client: humanClient(),
+        params: validParams({
+          participation: "humans",
+          sessionId: "current-session",
+          ...overrides,
+        }),
+      }).ok,
+    ).toBe(false);
+  });
+
+  it("requires authenticated human authorship for discussion", () => {
+    expect(
+      normalizeChatSendRequest({
+        client: copilotClient(),
+        params: validParams({
+          participation: "humans",
+          sessionId: "current-session",
+        }),
+      }).ok,
+    ).toBe(false);
+  });
+
   it("keeps captured context out of authored text while preserving the model payload", () => {
     const workContext = { page: "chat", title: "Parser work", sessionKey: "agent:main:parser" };
     const result = normalizeChatSendRequest({
