@@ -114,6 +114,8 @@ describe("observed pending-input order", () => {
           text: nextUser.content,
           createdAt: 1,
           sendRunId: "next-run",
+          sendSubmittedAtMs: 1,
+          sendAttempts: sendState === "sending" || sendState === "waiting-reconnect" ? 1 : 0,
           sendState,
         },
       ];
@@ -230,6 +232,7 @@ describe("observed pending-input order", () => {
           text: "Another handoff request.",
           createdAt: 40,
           sendRunId: "new-run",
+          sendSubmittedAtMs: 40,
           sendState: "submitting" as const,
         },
       ];
@@ -274,6 +277,7 @@ describe("observed pending-input order", () => {
         text: "Another handoff request.",
         createdAt: 40,
         sendRunId: "new-run",
+        sendSubmittedAtMs: 40,
         sendState: "submitting" as const,
       },
     ];
