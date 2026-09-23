@@ -154,7 +154,9 @@ function removeTranscriptEvents(
     return id !== undefined && eventIds.includes(id);
   };
   const selected = events.filter(shouldRemove);
-  expect(selected.map(readTranscriptEventId).toSorted()).toEqual(eventIds.toSorted());
+  expect(selected.map((event) => String(readTranscriptEventId(event))).toSorted()).toEqual(
+    eventIds.toSorted(),
+  );
   const next = events.filter((event) => !shouldRemove(event));
   const plan = prepareSqliteTranscriptSuffixMutation(database, scope, events, next);
   runOpenClawAgentWriteTransaction((transaction) => {
@@ -770,7 +772,9 @@ describe("completed legacy index replay", () => {
         message: { role: "assistant", content: "second receipt tail" },
       }),
     ];
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 2);
+    });
     fs.writeFileSync(first.store.storePath, `${JSON.stringify(secondIndex, null, 2)}\n`, {
       mode: 0o600,
     });
