@@ -8472,10 +8472,10 @@ describe("ci workflow guards", () => {
     expect(workflow.on.pull_request).not.toHaveProperty("paths-ignore");
     expect(gate.name).toBe("openclaw/ci-gate");
     expect(gate.needs).toEqual([...requiredJobs, ...selectedJobs]);
-    // Every job in the file is gated; a new lane cannot slip in ungated.
+    // Every workload is gated; the release-only receipt sealer runs after this gate.
     expect(gate.needs.toSorted()).toEqual(
       Object.keys(workflow.jobs)
-        .filter((job) => job !== "ci-gate")
+        .filter((job) => job !== "ci-gate" && job !== "seal_release_child_evidence")
         .toSorted(),
     );
     expect(gate.if).toBe(
