@@ -16,7 +16,7 @@ export type ControlUiE2eBuildIdentity = NonNullable<
 
 let sharedPreview: {
   baseUrl: string;
-  buildInfo: ControlUiE2eBuildIdentity | null;
+  buildInfo: NonNullable<ProvidedContext["controlUiE2ePrebuiltAssets"]>["buildInfo"] | null;
 } | null = null;
 
 export function getSharedControlUiE2ePreview() {
