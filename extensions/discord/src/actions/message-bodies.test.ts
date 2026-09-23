@@ -58,7 +58,11 @@ beforeAll(async () => {
         const form = await new Response(data, {
           headers: { "content-type": contentType },
         }).formData();
-        payload = String(form.get("payload_json"));
+        const payloadJson = form.get("payload_json");
+        if (typeof payloadJson !== "string") {
+          throw new Error("Multipart fixture expected a string payload_json field");
+        }
+        payload = payloadJson;
         for (const [field, value] of form.entries()) {
           if (typeof value !== "string") {
             uploads.push({ field, name: value.name, content: await value.text() });
