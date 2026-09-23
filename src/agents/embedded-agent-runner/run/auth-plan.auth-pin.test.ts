@@ -36,11 +36,11 @@ const subscriptionModel: Model = {
   contextWindow: 16_000,
   maxTokens: 1_024,
 };
-const platformModel: Model = {
+const platformModel = {
   ...subscriptionModel,
   api: "openai-responses",
   baseUrl: "https://api.openai.com/v1",
-};
+} satisfies Model;
 
 const openClawHarness: AgentHarness = {
   id: "openclaw",
