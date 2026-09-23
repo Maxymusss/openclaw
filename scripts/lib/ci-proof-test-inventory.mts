@@ -26,6 +26,11 @@ export const RELEASE_ONLY_RUNTIME_TEST_FILES = [
   "src/infra/update-managed-service-handoff-foreground.test.ts",
   "src/node-host/node-worker-supervisor.recovery.test.ts",
   "src/state/openclaw-database-preflight.lifecycle.test.ts",
+  "test/scripts/ci-linux-git.test.ts",
+  "test/scripts/pr-merge-admission.test.ts",
+  "test/scripts/pr-merge-outcome.test.ts",
+  "test/scripts/pr-merge-rest.test.ts",
+  "test/scripts/pr-worktree-provision.test.ts",
   ...stateStartupCorpusTestFiles,
 ] as const;
 

@@ -4077,7 +4077,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         const beforeFiles = files(before);
         const afterFiles = files(after);
         expect(beforeFiles.filter((file) => !afterFiles.includes(file)).toSorted()).toEqual(
-          [...RELEASE_ONLY_RUNTIME_TEST_FILES].toSorted(),
+          RELEASE_ONLY_RUNTIME_TEST_FILES.filter(
+            (file) => compactMode === "pull-request" || !file.startsWith("test/scripts/"),
+          ).toSorted(),
         );
         expect(afterFiles.filter((file) => !beforeFiles.includes(file))).toEqual([]);
         expect(afterFiles).toContain("src/config/config-startup-corpus.test.ts");
@@ -4085,6 +4087,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           const owns = (group: { shard_name: string }) =>
             group.shard_name === owner || group.shard_name.startsWith(`${owner}-hosted-`);
           const reduced = after.flatMap((shard) => shard.groups).filter(owns);
+          const original = before.flatMap((shard) => shard.groups).filter(owns);
+          if (
+            original.every((group) => group.includePatterns?.every(isReleaseOnlyRuntimeTestFile))
+          ) {
+            expect(reduced, owner).toEqual([]);
+            continue;
+          }
           expect(reduced.length, owner).toBeGreaterThan(0);
           for (const group of reduced) {
             const timingKey = expectDefined(group.timing_key, "reduced runtime timing identity");
