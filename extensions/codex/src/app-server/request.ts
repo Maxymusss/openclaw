@@ -13,10 +13,15 @@ import type {
   CodexGetAccountResponse,
   JsonValue,
 } from "./protocol.js";
-import type {
-  CodexControlRequestFailureCategory,
-  CodexControlRequestObservation,
-  CodexControlRequestPhase,
+import {
+  createCodexStartupObservation,
+  nextCodexDeadlineOperation,
+  recordCodexRequestDeadline,
+  type CodexDeadlineCaller,
+  type CodexStartupObservation,
+  type CodexControlRequestFailureCategory,
+  type CodexControlRequestObservation,
+  type CodexControlRequestPhase,
 } from "./request-observation.js";
 import { CodexAppServerRpcError } from "./rpc-error.js";
 import type { CodexAppServerClientOptions } from "./shared-client.js";
@@ -166,7 +171,11 @@ export async function requestCodexAppServerJson<T = JsonValue | undefined>(
     throw new Error(sandboxBlock);
   }
   return await withCodexAppServerJsonClient(
-    { ...params, timeoutMessage: `codex app-server ${params.method} timed out` },
+    {
+      ...params,
+      deadlineCaller: "generic-rpc",
+      timeoutMessage: `codex app-server ${params.method} timed out`,
+    },
     async (request) =>
       await request<T>({ method: params.method, requestParams: params.requestParams }),
   );
@@ -237,6 +246,7 @@ export async function readCodexAppServerUsage(options: {
       timeoutMs: options.timeoutMs,
       signal: options.signal,
       timeoutMessage: "codex app-server usage read timed out",
+      deadlineCaller: "usage",
       agentDir: options.agentDir,
       ...(options.authProfileId ? { authProfileId: options.authProfileId } : {}),
       config: options.config,
@@ -293,6 +303,7 @@ async function readCodexAccountEmailBestEffort(
 export async function withCodexAppServerJsonClient<T>(
   params: CodexAppServerJsonClientOptions & {
     timeoutMessage?: string;
+    deadlineCaller?: CodexDeadlineCaller;
     // Bounds the isolated-client shutdown. Callers on a tight result deadline
     // pass a small budget so cleanup cannot breach the outer timeout; defaults
     // to the conservative graceful/force-kill window used elsewhere.
@@ -317,6 +328,10 @@ export async function withCodexAppServerJsonClient<T>(
   }
   const deadline =
     Number.isFinite(timeoutMs) && timeoutMs > 0 ? performance.now() + timeoutMs : undefined;
+  const operation = nextCodexDeadlineOperation();
+  let observedAttempt = 0;
+  let startupObservation: CodexStartupObservation | undefined;
+  let methodAtApi: string | undefined;
   const isPastDeadline = () => deadline !== undefined && performance.now() >= deadline;
   const throwIfAbandoned = () => {
     if (timeoutController.signal.aborted && timeoutController.signal.reason instanceof Error) {
@@ -348,6 +363,9 @@ export async function withCodexAppServerJsonClient<T>(
           retireSharedCodexAppServerClientIfCurrent,
         } = await import("./shared-client.js");
         for (let attempt = 0; attempt < 2; attempt += 1) {
+          observedAttempt = attempt + 1;
+          startupObservation = createCodexStartupObservation();
+          methodAtApi = undefined;
           errorPhase = undefined;
           activePhase = "prepare";
           observeControlPhase(params.controlObservation, activePhase);
@@ -356,6 +374,7 @@ export async function withCodexAppServerJsonClient<T>(
             ? createIsolatedCodexAppServerClient
             : getLeasedSharedCodexAppServerClient;
           const acquireOptions = {
+            startupObservation,
             startOptions: params.startOptions,
             pluginConfig: params.pluginConfig,
             timeoutMs: remainingTimeoutMs(),
@@ -428,6 +447,7 @@ export async function withCodexAppServerJsonClient<T>(
               };
               activePhase = "client-request";
               observeControlPhase(params.controlObservation, activePhase);
+              methodAtApi = method;
               return await client.request<R>(method, requestParams, requestOptions);
             };
             return await run(scopedRequest, client, {
@@ -487,6 +507,19 @@ export async function withCodexAppServerJsonClient<T>(
     });
   } catch (error) {
     const deadlineObserved = isPastDeadline();
+    if (deadlineObserved) {
+      recordCodexRequestDeadline({
+        operation,
+        attempt: observedAttempt,
+        caller: params.deadlineCaller,
+        phase: activePhase,
+        errorPhase,
+        timeoutMs,
+        deadline,
+        methodAtApi,
+        startup: startupObservation,
+      });
+    }
     observeControlFailure(
       params.controlObservation,
       deadlineObserved ? activePhase : (errorPhase ?? activePhase),

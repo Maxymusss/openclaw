@@ -28,6 +28,7 @@ import {
   readCodexCatalogDecodeRoute,
   type CodexCatalogDecodeRoute,
 } from "./client-message-frames.js";
+import type { RequestOptions } from "./client-options.js";
 import { dispatchCodexAppServerResponse } from "./client-response.js";
 import type { CodexAppServerStartOptions } from "./config-contracts.js";
 import { resolveCodexAppServerRuntimeOptions } from "./config-runtime.js";
@@ -45,7 +46,7 @@ import {
   type RpcResponse,
 } from "./protocol.js";
 import { createCodexRequestAttempt, type CodexRequestAttempt } from "./request-attempt.js";
-import type { CodexRequestWaiterFinished } from "./request-observation.js";
+import { noteCodexStartup, type CodexStartupObservation } from "./request-observation.js";
 import { CODEX_APP_SERVER_OVERLOADED_ERROR_CODE, CodexAppServerRpcError } from "./rpc-error.js";
 import { CodexServerRequests, type CodexServerRequestHandler } from "./server-requests.js";
 import { createStdioTransport } from "./transport-stdio.js";
@@ -64,16 +65,6 @@ const CODEX_APP_SERVER_OVERLOAD_MAX_RETRIES = 3;
 const CODEX_APP_SERVER_OVERLOAD_RETRY_BASE_MS = 50;
 const CODEX_APP_SERVER_PENDING_STARTUP_WARNINGS_MAX = 32;
 const CODEX_APP_SERVER_CLIENT_INSTANCE_IDS = new WeakMap<object, string>();
-
-type RequestOptions = {
-  timeoutMs?: number;
-  signal?: AbortSignal;
-  assertCurrent?: () => void;
-  catalogPreview?: true;
-  catalogPreviewCache?: CodexCatalogPreviewCache;
-  catalogRows?: number;
-  attemptWaiterFinished?: CodexRequestWaiterFinished;
-};
 
 /** Process-local generation fence for bindings tied to one app-server client instance. */
 export function getCodexAppServerClientInstanceId(client: object): string {
@@ -297,6 +288,7 @@ export class CodexAppServerClient {
   static async start(
     options?: Partial<CodexAppServerStartOptions>,
     assertCurrent?: () => void,
+    startupObservation?: CodexStartupObservation,
   ): Promise<CodexAppServerClient> {
     const defaults = resolveCodexAppServerRuntimeOptions().start;
     const startOptions = {
@@ -314,9 +306,16 @@ export class CodexAppServerClient {
     // stays blocked until registration finishes, without losing startup errors.
     let client!: CodexAppServerClient;
     try {
-      await createStdioTransport(startOptions, process.env, assertCurrent, (child) => {
-        client = new CodexAppServerClient(child);
-      });
+      await createStdioTransport(
+        startOptions,
+        process.env,
+        assertCurrent,
+        (child) => {
+          client = new CodexAppServerClient(child);
+          noteCodexStartup(startupObservation, "client-constructed", client);
+        },
+        startupObservation,
+      );
       return client;
     } catch (error) {
       assertCurrent?.();
