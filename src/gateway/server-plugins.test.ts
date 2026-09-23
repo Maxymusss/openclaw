@@ -455,7 +455,7 @@ function registerActivePluginToolOwnership(
     pluginId,
     factory: () => null,
     names,
-    declaredNames,
+    declaredNames: new Set(declaredNames),
     optional: true,
     source: `/tmp/${pluginId}/index.js`,
   });

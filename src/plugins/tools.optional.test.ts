@@ -220,12 +220,15 @@ function createToolRegistry(
   entries: MockRegistryToolEntry[],
   registrationMode: "full" | "discovery" | "tool-discovery" = "full",
 ) {
+  const tools: Array<
+    Omit<MockRegistryToolEntry, "declaredNames"> & { declaredNames?: ReadonlySet<string> }
+  > = [];
   const registry = {
     ...createEmptyPluginRegistry(),
     plugins: entries.map((entry) =>
       createToolRuntimeRecord(entry.pluginId, entry.source, entry.origin),
     ),
-    tools: entries,
+    tools,
   };
   registry.tools = entries.map((entry, index) => {
     const instance = new PluginInstance(entry.pluginId, {
@@ -246,7 +249,12 @@ function createToolRegistry(
       instance,
     );
     runPluginRegisterSyncInRegistry(() => {}, api, registry as never, entry.pluginId);
-    return { ...entry, factory: instance.wrap(entry.factory) };
+    const { declaredNames, ...registration } = entry;
+    return {
+      ...registration,
+      factory: instance.wrap(entry.factory),
+      ...(declaredNames === undefined ? {} : { declaredNames: new Set(declaredNames) }),
+    };
   });
   return registry;
 }
@@ -2472,6 +2480,49 @@ describe("resolvePluginTools optional tools", () => {
     expect(factory).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps trusted media membership raw and fresh for each resolution", () => {
+    const config = createContext().config;
+    const names = ["exact", " spaced ", "UPPER"];
+    const factory = vi.fn(() => [makeTool("exact"), makeTool("spaced"), makeTool("upper")]);
+    setRegistry(
+      [
+        createNamedToolEntry("media-owner", ["exact", "spaced", "upper"], {
+          declaredNames: ["exact", "spaced", "upper"],
+          factory,
+        }),
+      ],
+      config,
+    );
+    installToolManifestSnapshot({
+      config,
+      plugin: createToolManifest("media-owner", [], { contracts: { tools: names } }),
+    });
+    const first = resolvePluginTools(
+      createResolveToolsParams({ context: { ...createContext(), config } }),
+    );
+    expectResolvedToolNames(first, ["exact", "spaced", "upper"]);
+    expect(first.map((tool) => getPluginToolMeta(tool)?.trustedLocalMedia)).toEqual([
+      true,
+      false,
+      false,
+    ]);
+
+    installToolManifestSnapshot({
+      config,
+      plugin: createToolManifest("media-owner", ["spaced", "upper"]),
+    });
+    const second = resolvePluginTools(
+      createResolveToolsParams({ context: { ...createContext(), config } }),
+    );
+    expectResolvedToolNames(second, ["exact", "spaced", "upper"]);
+    expect(second.map((tool) => getPluginToolMeta(tool)?.trustedLocalMedia)).toEqual([
+      false,
+      true,
+      true,
+    ]);
+    expect(factory).toHaveBeenCalledTimes(2);
+  });
+
   it("rejects plugin id collisions with core tool names", () => {
     const registry = setRegistry([createNamedToolEntry("message", "optional_tool")]);
 
@@ -3798,6 +3849,30 @@ describe("resolvePluginTools optional tools", () => {
     expect(implicitFactory).toHaveBeenCalledTimes(1);
   });
 
+  it.each([undefined, []])(
+    "distinguishes absent from empty declared membership (%j)",
+    (declaredNames) => {
+      const config = createContext().config;
+      const factory = vi.fn(() => makeTool("probe"));
+      const registry = setRegistry(
+        [createNamedToolEntry("dynamic-owner", "probe", { declaredNames, factory })],
+        config,
+      );
+      installToolManifestSnapshot({
+        config,
+        plugin: createToolManifest("dynamic-owner", ["probe"]),
+      });
+      const tools = resolvePluginTools(
+        createResolveToolsParams({ context: { ...createContext(), config } }),
+      );
+      expectResolvedToolNames(tools, declaredNames === undefined ? ["probe"] : []);
+      expect(registry.diagnostics.map((diagnostic) => diagnostic.message)).toEqual(
+        declaredNames === undefined ? [] : ["plugin tool is undeclared (dynamic-owner): probe"],
+      );
+      expect(factory).toHaveBeenCalledOnce();
+    },
+  );
+
   it("skips factory-returned tools outside the manifest tool contract", () => {
     const registry = setRegistry([
       {
@@ -3806,14 +3881,21 @@ describe("resolvePluginTools optional tools", () => {
         source: "/tmp/dynamic-owner.js",
         names: ["declared_tool"],
         declaredNames: ["declared_tool"],
-        factory: () => [makeTool("declared_tool"), makeTool("rogue_tool")],
+        factory: () => [
+          makeTool(" declared_tool "),
+          makeTool("rogue_tool"),
+          makeTool("DECLARED_TOOL"),
+        ],
       },
     ]);
 
     const tools = resolvePluginTools(createResolveToolsParams());
 
-    expectResolvedToolNames(tools, ["declared_tool"]);
-    expectSingleDiagnosticMessage(registry.diagnostics, "plugin tool is undeclared");
+    expectResolvedToolNames(tools, [" declared_tool "]);
+    expect(registry.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      "plugin tool is undeclared (dynamic-owner): rogue_tool",
+      "plugin tool is undeclared (dynamic-owner): DECLARED_TOOL",
+    ]);
   });
 
   it("skips allowlisted optional malformed plugin tools", () => {
