@@ -87,7 +87,7 @@ export function renderJobsFilterPopover(props: CronProps, active: boolean) {
       <div class="cron-filter-popover__panel">
         ${renderJobsFilter(props, "cronJobsScheduleKindFilter", {
           label: t("cron.jobs.schedule"),
-          value: props.jobsScheduleKindFilter,
+          value: props.state.cronJobsScheduleKindFilter,
           testId: "cron-jobs-schedule-filter",
           options: Object.entries(SCHEDULE_KIND_FILTER_LABELS).map(([value, labelKey]) => ({
             value,
@@ -96,7 +96,7 @@ export function renderJobsFilterPopover(props: CronProps, active: boolean) {
         })}
         ${renderJobsFilter(props, "cronJobsLastStatusFilter", {
           label: t("cron.jobs.lastRun"),
-          value: props.jobsLastStatusFilter,
+          value: props.state.cronJobsLastStatusFilter,
           testId: "cron-jobs-last-status-filter",
           options: [
             { value: "all", label: t("cron.jobs.all") },
@@ -108,7 +108,7 @@ export function renderJobsFilterPopover(props: CronProps, active: boolean) {
         })}
         ${renderJobsFilter(props, "cronJobsTriggerFilter", {
           label: t("cron.jobs.condition"),
-          value: props.jobsTriggerFilter,
+          value: props.state.cronJobsTriggerFilter,
           testId: "cron-jobs-trigger-filter",
           options: [
             { value: "all", label: t("cron.jobs.all") },
@@ -118,7 +118,7 @@ export function renderJobsFilterPopover(props: CronProps, active: boolean) {
         })}
         ${renderJobsFilter(props, "cronJobsSortBy", {
           label: t("cron.jobs.sort"),
-          value: props.jobsSortBy,
+          value: props.state.cronJobsSortBy,
           options: [
             { value: "nextRunAtMs", label: t("cron.jobs.nextRun") },
             { value: "updatedAtMs", label: t("cron.jobs.recentlyUpdated") },
@@ -127,7 +127,7 @@ export function renderJobsFilterPopover(props: CronProps, active: boolean) {
         })}
         ${renderJobsFilter(props, "cronJobsSortDir", {
           label: t("cron.jobs.direction"),
-          value: props.jobsSortDir,
+          value: props.state.cronJobsSortDir,
           options: [
             { value: "asc", label: t("cron.jobs.ascending") },
             { value: "desc", label: t("cron.jobs.descending") },
