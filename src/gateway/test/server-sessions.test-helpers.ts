@@ -9,6 +9,10 @@ import type { InternalSessionEntry as SessionEntry } from "../../config/sessions
 import type { InternalHookEvent } from "../../hooks/internal-hooks.js";
 import { resetSystemEventsForTest } from "../../infra/system-events.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
+import {
+  type OpenClawTestState,
+  withOpenClawTestState,
+} from "../../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { flushPendingSessionsChangedEvents } from "../server-methods/session-change-event.js";
 import {
@@ -301,6 +305,21 @@ vi.mock("../../agents/agent-bundle-mcp-tools.js", async (importOriginal) => ({
   disposeAllSessionMcpRuntimes: bundleMcpRuntimeMocks.disposeAllSessionMcpRuntimes,
   retireSessionMcpRuntime: bundleMcpRuntimeMocks.retireSessionMcpRuntime,
 }));
+
+export async function withGatewaySessionsTestState<T>(
+  options: Parameters<typeof withOpenClawTestState>[0],
+  run: (state: OpenClawTestState) => Promise<T>,
+): Promise<T> {
+  return await withOpenClawTestState(options, async (state) => {
+    try {
+      return await run(state);
+    } finally {
+      // Session projections retain accepted worker reads beyond an RPC reply.
+      // Drain them before the nested state fixture removes its SQLite source.
+      await disposeSessionReadContexts();
+    }
+  });
+}
 
 export function setupGatewaySessionsHandlerTestHarness(setup?: GatewaySessionsSuiteSetup) {
   const { getHarness, openClient, ...handlerFixture } = createGatewaySessionsTestHarness(
