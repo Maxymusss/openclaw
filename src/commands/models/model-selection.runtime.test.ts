@@ -21,7 +21,11 @@ import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generati
 import type { RuntimeEnv } from "../../runtime.js";
 import { withEnvAsync } from "../../test-utils/env.js";
 import { cleanupSessionStateForTest } from "../../test-utils/session-state-cleanup.js";
-import { modelsAliasesAddCommand } from "./aliases.js";
+import {
+  modelsAliasesAddCommand,
+  modelsAliasesListCommand,
+  modelsAliasesRemoveCommand,
+} from "./aliases.js";
 import { addFallbackCommand, removeFallbackCommand } from "./fallbacks-shared.js";
 import { modelsSetImageCommand } from "./set-image.js";
 import { modelsSetCommand } from "./set.js";
@@ -92,6 +96,96 @@ describe("model command provider preparation", () => {
   function readConfig(): OpenClawConfig {
     return JSON.parse(fs.readFileSync(configPath, "utf8"));
   }
+
+  it("preserves a retained environment-backed alias after removing an earlier name", async () => {
+    config.agents!.defaults!.models = {
+      "fixture/current": { alias: "primary", aliases: ["drop", "${KEEP_ALIAS}"] },
+    };
+    await withEnvAsync({ KEEP_ALIAS: "keep" }, () =>
+      isolated(async () => {
+        await modelsAliasesRemoveCommand("drop", runtime);
+        expect(readConfig().agents?.defaults?.models?.["fixture/current"]).toEqual({
+          alias: "primary",
+          aliases: ["${KEEP_ALIAS}"],
+        });
+        resetConfigRuntimeState();
+        expect(
+          (await readConfigFileSnapshot()).config.agents?.defaults?.models?.["fixture/current"]
+            ?.aliases,
+        ).toEqual(["keep"]);
+      }),
+    );
+  });
+
+  it.each([false, true])(
+    "round-trips multiple aliases through config writes and reloads (legacy: %s)",
+    async (legacy) => {
+      if (legacy) {
+        config.agents!.defaults!.models = {
+          "fixture/current": { alias: "primary", params: { temperature: 0.2 } },
+          "google/gemini-3.1-pro-preview": {},
+        };
+      }
+      await isolated(async () => {
+        if (!legacy) {
+          await modelsAliasesAddCommand("primary", "fixture/current", runtime);
+        }
+        await modelsAliasesAddCommand("secondary", "primary", runtime);
+        resetConfigRuntimeState();
+        const snapshot = await readConfigFileSnapshot();
+        expect(snapshot.valid).toBe(true);
+        expect(snapshot.sourceConfig.agents?.defaults?.models?.["fixture/current"]).toEqual({
+          alias: "primary",
+          aliases: ["secondary"],
+          ...(legacy ? { params: { temperature: 0.2 } } : {}),
+        });
+        expect(snapshot.sourceConfig.agents?.defaults?.modelPolicy).toEqual(
+          legacy ? { allow: ["fixture/current", "google/gemini-3.1-pro-preview"] } : undefined,
+        );
+        if (legacy) {
+          expect(readConfig().agents?.defaults?.models?.["google/gemini-3.1-pro-preview"]).toEqual(
+            {},
+          );
+          expect(
+            snapshot.config.agents?.defaults?.models?.["google/gemini-3.1-pro-preview"]?.alias,
+          ).toBe("gemini");
+        }
+        const listRuntime = { ...runtime, writeStdout: vi.fn(), writeJson: vi.fn() };
+        await modelsAliasesListCommand({ json: true }, listRuntime);
+        expect(listRuntime.writeJson).toHaveBeenCalledExactlyOnceWith(
+          {
+            aliases: expect.objectContaining({
+              primary: "fixture/current",
+              secondary: "fixture/current",
+            }),
+          },
+          2,
+        );
+        await modelsSetCommand("SECONDARY", runtime);
+        expect(readConfig().agents?.defaults?.model).toEqual({ primary: "fixture/current" });
+        await modelsAliasesRemoveCommand("PRIMARY", runtime);
+        resetConfigRuntimeState();
+        expect(
+          (await readConfigFileSnapshot()).sourceConfig.agents?.defaults?.models?.[
+            "fixture/current"
+          ],
+        ).toEqual({
+          aliases: ["secondary"],
+          ...(legacy ? { params: { temperature: 0.2 } } : {}),
+        });
+        await modelsAliasesRemoveCommand("SECONDARY", runtime);
+        resetConfigRuntimeState();
+        expect(
+          (await readConfigFileSnapshot()).sourceConfig.agents?.defaults?.models?.[
+            "fixture/current"
+          ],
+        ).toEqual({
+          aliases: [],
+          ...(legacy ? { params: { temperature: 0.2 } } : {}),
+        });
+      });
+    },
+  );
 
   it.each([
     { raw: "fixture/legacy", expected: "fixture/current" },
@@ -192,7 +286,13 @@ describe("model command provider preparation", () => {
           await modelsAliasesAddCommand("friendly", "fixture/legacy", runtime);
           const expectedModels = {
             "fixture/current": {
-              alias: "friendly",
+              alias:
+                priorAlias === "same"
+                  ? "${MODEL_ALIAS}"
+                  : priorAlias === "different"
+                    ? "old"
+                    : "friendly",
+              ...(priorAlias === "different" ? { aliases: ["friendly"] } : {}),
               params: {
                 temperature: hasCanonicalEntry ? 0.7 : 0.2,
                 maxTokens: 128,
@@ -504,7 +604,13 @@ describe("model command provider preparation", () => {
       expect(readConfig().agents?.defaults?.model).toEqual({ primary: canonical, fallbacks: [] });
       await modelsAliasesAddCommand("friendly", "sonnet", runtime);
       await modelsAliasesAddCommand("friendly", canonical, runtime);
-      expect(readConfig().agents?.defaults?.models?.[canonical]?.alias).toBe("friendly");
+      expect(readConfig().agents?.defaults?.models?.[canonical]).toEqual({
+        alias: "sonnet",
+        aliases: ["friendly"],
+      });
+      resetConfigRuntimeState();
+      await modelsSetCommand("sonnet", runtime);
+      expect(readConfig().agents?.defaults?.model).toEqual({ primary: canonical, fallbacks: [] });
     });
     expect(fs.existsSync(marker)).toBe(false);
   });

@@ -10,6 +10,7 @@ import {
   resolveAmbientOwnerAgentId,
   tryResolveAmbientOwnerAgentId,
 } from "../agents/agent-scope.js";
+import { resolveDefaultModelForAgent } from "../agents/model-selection-config.js";
 import { resolveSandboxDockerEnv, resolveSandboxScope } from "../agents/sandbox/config-contract.js";
 import { getContainerEnvFileEntryIssue } from "../infra/container-env-file.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
@@ -261,12 +262,20 @@ function collectModelPolicyAllowIssues(config: OpenClawConfig): ConfigValidation
     refs: readonly string[] | undefined,
     configPath: string,
     agentModels?: typeof defaultModels,
-    allowModelPrefix = false,
+    { agentId, allowModelPrefix = false }: { agentId?: string; allowModelPrefix?: boolean } = {},
   ) => {
     if (!refs?.length) {
       return;
     }
-    const isValidRef = createModelPolicyRefValidator(defaultModels, agentModels);
+    const { provider: defaultProvider } = resolveDefaultModelForAgent({
+      cfg: config,
+      agentId,
+      allowManifestNormalization: false,
+      allowPluginNormalization: false,
+    });
+    const isValidRef = createModelPolicyRefValidator(defaultModels, agentModels, {
+      defaultProvider,
+    });
     for (const [index, raw] of refs.entries()) {
       if (isValidRef(raw) || (allowModelPrefix && parseOperatorModelPolicyWildcardRef(raw))) {
         continue;
@@ -287,7 +296,9 @@ function collectModelPolicyAllowIssues(config: OpenClawConfig): ConfigValidation
   for (const { entry: agent, source } of listAgentEntriesWithSource(config)) {
     const pathPrefix =
       source.kind === "entries" ? `agents.entries.${source.key}` : `agents.list.${source.index}`;
-    validateRefs(agent.modelPolicy?.allow, `${pathPrefix}.modelPolicy.allow`, agent.models);
+    validateRefs(agent.modelPolicy?.allow, `${pathPrefix}.modelPolicy.allow`, agent.models, {
+      agentId: agent.id,
+    });
   }
   for (const [role, definition] of Object.entries(config.gateway?.roles?.definitions ?? {})) {
     const policy = definition.modelPolicy;
@@ -309,8 +320,14 @@ function collectModelPolicyAllowIssues(config: OpenClawConfig): ConfigValidation
       continue;
     }
     const models = listAgentEntries(config).find((agent) => agent.id === sourceAgent)?.models;
-    validateRefs(policy.allow, `${pathPrefix}.allow`, models, true);
-    validateRefs(policy.deny, `${pathPrefix}.deny`, models, true);
+    validateRefs(policy.allow, `${pathPrefix}.allow`, models, {
+      agentId: sourceAgent,
+      allowModelPrefix: true,
+    });
+    validateRefs(policy.deny, `${pathPrefix}.deny`, models, {
+      agentId: sourceAgent,
+      allowModelPrefix: true,
+    });
   }
   return issues;
 }

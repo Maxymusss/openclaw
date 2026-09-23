@@ -249,6 +249,22 @@ describe("applyModelDefaults", () => {
     );
   });
 
+  it("preserves additional alias ownership when materializing built-ins", () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: {
+            "openai/custom": { aliases: ["GEMINI"] },
+            "google/gemini-3.1-pro-preview": {},
+            "google/gemini-3-flash-preview": { aliases: ["quick"] },
+          },
+        },
+      },
+    };
+    const next = applyModelDefaults(cfg);
+    expect(next.agents?.defaults?.models).toEqual(cfg.agents?.defaults?.models);
+  });
+
   it("normalizes retired Gemini model keys before applying aliases", () => {
     const cfg = {
       agents: {

@@ -1,6 +1,9 @@
 import { parseModelCatalogRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { normalizeProviderId } from "@openclaw/model-catalog-core/provider-id";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import { DEFAULT_PROVIDER } from "../agents/defaults.js";
+import { getConfiguredModelAliases } from "./model-aliases.js";
+import { normalizeAgentModelRefForConfig } from "./model-input.js";
 
 const MODEL_POLICY_COMPAT_SELECTORS = new Set(["openrouter:auto", "openrouter:free"]);
 
@@ -89,15 +92,34 @@ function isValidExactModelPolicyRef(raw: string): boolean {
 
 /** Share policy grammar and owner-scoped aliases between validation and migration. */
 export function createModelPolicyRefValidator(
-  ...modelMaps: Array<Record<string, { alias?: string }> | undefined>
+  defaultModels: Record<string, { alias?: string; aliases?: string[] }> | undefined,
+  agentModels?: Record<string, { alias?: string; aliases?: string[] }>,
+  options: { defaultProvider?: string } = {},
 ): (raw: string) => boolean {
-  const aliases = new Set(
-    modelMaps
-      .flatMap((models) =>
-        Object.values(models ?? {}).map((entry) => normalizeLowercaseStringOrEmpty(entry?.alias)),
-      )
-      .filter(Boolean),
-  );
+  const aliasesByModel = new Map<string, string[]>();
+  const defaultProvider = options.defaultProvider ?? DEFAULT_PROVIDER;
+  for (const models of [defaultModels, agentModels]) {
+    for (const [key, entry] of Object.entries(models ?? {})) {
+      if (
+        !entry ||
+        typeof entry !== "object" ||
+        parseModelPolicyWildcardRef(key) ||
+        (!Object.hasOwn(entry, "alias") && !Object.hasOwn(entry, "aliases"))
+      ) {
+        continue;
+      }
+      const trimmedKey = key.trim();
+      const normalizedKey = normalizeAgentModelRefForConfig(
+        trimmedKey.includes("/") ? trimmedKey : `${defaultProvider}/${trimmedKey}`,
+      );
+      const ref = parseModelCatalogRef(normalizedKey);
+      aliasesByModel.set(
+        ref ? `${normalizeProviderId(ref.provider)}/${ref.modelId}` : normalizedKey,
+        getConfiguredModelAliases(entry),
+      );
+    }
+  }
+  const aliases = new Set([...aliasesByModel.values()].flat().map(normalizeLowercaseStringOrEmpty));
   return (raw) => {
     const trimmed = raw.trim();
     return Boolean(

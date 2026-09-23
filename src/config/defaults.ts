@@ -14,6 +14,7 @@ import {
   DEFAULT_SUBAGENT_MAX_CONCURRENT,
   resolveAgentMaxConcurrent,
 } from "./agent-limits.js";
+import { getConfiguredModelAliases } from "./model-aliases.js";
 import { mergeModelCost } from "./model-cost.js";
 import {
   normalizeAgentModelMapForConfig,
@@ -430,7 +431,7 @@ export function applyModelDefaults(
       : cfg;
   }
 
-  const nextModels: Record<string, { alias?: string }> = {
+  const nextModels: Record<string, { alias?: string; aliases?: string[] }> = {
     ...existingModels,
   };
 
@@ -439,13 +440,16 @@ export function applyModelDefaults(
     if (!entry) {
       continue;
     }
-    if (entry.alias !== undefined) {
+    if (entry.alias !== undefined || entry.aliases?.length) {
       continue;
     }
     const normalizedAlias = normalizeLowercaseStringOrEmpty(alias);
     const aliasAlreadyOwned = Object.entries(nextModels).some(
       ([modelRef, candidate]) =>
-        modelRef !== target && normalizeLowercaseStringOrEmpty(candidate.alias) === normalizedAlias,
+        modelRef !== target &&
+        getConfiguredModelAliases(candidate).some(
+          (name) => normalizeLowercaseStringOrEmpty(name) === normalizedAlias,
+        ),
     );
     // Preserve explicit alias ownership when a newer default target is also configured.
     if (aliasAlreadyOwned) {

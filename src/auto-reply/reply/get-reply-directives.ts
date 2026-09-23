@@ -158,11 +158,7 @@ export async function resolveReplyDirectives(params: {
   const canInterpretTextDirectives =
     allowTextCommands && command.isAuthorizedSender && ctx.CommandInterpretationSuppressed !== true;
   const commandTextHasSlash = commandText.includes("/");
-  const hasConfiguredModelAliases =
-    commandTextHasSlash &&
-    Object.values(cfg.agents?.defaults?.models ?? {}).some((entry) =>
-      Boolean(normalizeOptionalString(entry.alias)),
-    );
+  const hasConfiguredModelAliases = commandTextHasSlash && params.aliasIndex.byAlias.size > 0;
   const hasSkillReferences =
     canInterpretTextDirectives && hasSkillReferenceCandidate(command.commandBodyNormalized);
   const reservedCommands = new Set<string>();
@@ -177,7 +173,7 @@ export async function resolveReplyDirectives(params: {
 
   const rawAliases = hasConfiguredModelAliases
     ? resolveConfiguredDirectiveAliases({
-        cfg,
+        aliasIndex: params.aliasIndex,
         commandTextHasSlash,
         reservedCommands,
       })

@@ -23,6 +23,11 @@ import { resolveAgentConfig, resolveAgentModelConfigForRuntime } from "./agent-s
 import { resolveConfiguredProviderFallback } from "./configured-provider-fallback.js";
 import { hasExactConfiguredProviderModel } from "./configured-provider-model.js";
 import { DEFAULT_PROVIDER } from "./defaults.js";
+import {
+  listConfiguredModelMaps,
+  listModelAliasCandidates,
+  type ModelAliasCandidate,
+} from "./model-alias-candidates.js";
 import { findModelCatalogEntry } from "./model-catalog-lookup.js";
 import { overlayCatalogMetadata } from "./model-catalog-metadata.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
@@ -40,6 +45,8 @@ import {
 import { findNormalizedProviderValue, parseModelRef } from "./model-selection-normalize.js";
 import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
 import { readUtilityModelSetting } from "./utility-model-setting.js";
+
+export { listModelAliasCandidates } from "./model-alias-candidates.js";
 
 export { resolvePrimaryStringValue as normalizeModelSelection } from "@openclaw/normalization-core/string-coerce";
 
@@ -71,11 +78,6 @@ export type ModelAliasIndex = {
 type ModelManifestPluginContext = {
   peek: () => ModelManifestPlugins;
   get: () => ModelManifestPlugins;
-};
-
-type ModelAliasCandidate = {
-  keyRaw: string;
-  alias: string;
 };
 
 type EffectiveModelAlias = ModelAliasCandidate & {
@@ -160,34 +162,12 @@ function createModelManifestPluginContext(params: {
   };
 }
 
-function listConfiguredModelMaps(cfg: OpenClawConfig, agentId?: string) {
-  return [
-    cfg.agents?.defaults?.models,
-    ...(agentId ? [resolveAgentConfig(cfg, agentId)?.models] : []),
-  ];
-}
-
-export function listModelAliasCandidates(cfg: OpenClawConfig, agentId?: string) {
-  return listConfiguredModelMaps(cfg, agentId).flatMap((models) =>
-    Object.entries(models ?? {}).flatMap(([keyRaw, entryRaw]) => {
-      if (parseModelPolicyWildcardRef(keyRaw)) {
-        return [];
-      }
-      if (!entryRaw || typeof entryRaw !== "object" || !Object.hasOwn(entryRaw, "alias")) {
-        return [];
-      }
-      const alias = normalizeOptionalString((entryRaw as { alias?: unknown }).alias) ?? "";
-      return [{ keyRaw, alias }];
-    }),
-  );
-}
-
 function buildEffectiveModelAliases(
   params: Omit<ConfiguredModelSelectionParams, "manifestPlugins"> & {
     manifestPluginContext: ModelManifestPluginContext;
   },
 ): { aliases: EffectiveModelAlias[]; disabledKeys: Set<string> } {
-  const aliasesByKey = new Map<string, EffectiveModelAlias | null>();
+  const aliasesByKey = new Map<string, EffectiveModelAlias[] | null>();
   const candidates = listModelAliasCandidates(params.cfg, params.agentId);
   if (candidates.length === 0) {
     return { aliases: [], disabledKeys: new Set() };
@@ -223,13 +203,16 @@ function buildEffectiveModelAliases(
     const key = modelKey(ref.provider, ref.model);
     // Reinsert replacements so agent-owned aliases win duplicate-alias lookup
     // while an omitted agent alias leaves the inherited record untouched.
-    aliasesByKey.delete(key);
-    aliasesByKey.set(key, candidate.alias ? { ...candidate, ref } : null);
+    if (candidate.reset) {
+      aliasesByKey.delete(key);
+      aliasesByKey.set(key, candidate.alias ? [] : null);
+    }
+    if (candidate.alias) {
+      aliasesByKey.get(key)?.push({ ...candidate, ref });
+    }
   }
   return {
-    aliases: [...aliasesByKey.values()].filter(
-      (alias): alias is EffectiveModelAlias => alias !== null,
-    ),
+    aliases: [...aliasesByKey.values()].flatMap((aliases) => aliases ?? []),
     disabledKeys: new Set(
       [...aliasesByKey].flatMap(([key, alias]) => (alias === null ? [key] : [])),
     ),
@@ -540,7 +523,7 @@ function buildModelAliasIndexWithManifestContext(
     // Bare aliases retain their existing last-wins behavior. Provider-qualified
     // aliases stay scoped so duplicate display names cannot select another provider.
     byProviderAlias.set(providerAliasKey(ref.provider, alias), match);
-    byKey.set(key, [alias]);
+    byKey.set(key, [...(byKey.get(key) ?? []), alias]);
   }
 
   return { byAlias, byProviderAlias, byKey, disabledKeys };

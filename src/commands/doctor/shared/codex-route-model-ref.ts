@@ -5,7 +5,10 @@ import { normalizeOptionalAgentRuntimeId } from "../../../agents/agent-runtime-i
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../../../agents/defaults.js";
 import { splitTrailingAuthProfile } from "../../../agents/model-ref-profile.js";
 import { normalizeConfiguredProviderCatalogModelId } from "../../../agents/model-ref-shared.js";
-import { resolveConfiguredPrimaryProviderFallback } from "../../../agents/model-selection-shared.js";
+import {
+  buildModelAliasIndex,
+  resolveConfiguredPrimaryProviderFallback,
+} from "../../../agents/model-selection-shared.js";
 import { configuredModelRouteNeedsCodex } from "../../../config/codex-plugin-diagnostics.js";
 import { isLegacyCodexProviderId } from "../../../config/legacy-codex-provider.js";
 import type { AgentRuntimePolicyConfig } from "../../../config/types.agents-shared.js";
@@ -253,11 +256,7 @@ function resolveConfiguredModelAliasRef(params: {
     cfg: params.cfg,
     agentId: params.agentId,
   });
-  return resolveAliasFromModelsMap(
-    asMutableRecord(params.cfg.agents?.defaults?.models),
-    aliasKey,
-    defaultProvider,
-  );
+  return resolveAliasFromModelsConfig(params.cfg, params.agentId, aliasKey, defaultProvider);
 }
 
 function resolveDefaultProviderForAliasContext(params: {
@@ -272,8 +271,9 @@ function resolveDefaultProviderForAliasContext(params: {
       normalizeProviderModelRefAuthProfile(primaryModelRef) ?? primaryModelRef;
     const legacyCodexModel = toCanonicalOpenAIModelRef(effectivePrimaryModelRef);
     const compatModelRef = resolveKnownCompatModelAliasRef(effectivePrimaryModelRef);
-    const primaryAliasRef = resolveAliasFromModelsMap(
-      asMutableRecord(params.cfg.agents?.defaults?.models),
+    const primaryAliasRef = resolveAliasFromModelsConfig(
+      params.cfg,
+      params.agentId,
       normalizeString(effectivePrimaryModelRef) ?? "",
       DEFAULT_PROVIDER,
     );
@@ -308,24 +308,20 @@ function findAgentById(
     ?.agent;
 }
 
-function resolveAliasFromModelsMap(
-  models: MutableRecord | undefined,
+function resolveAliasFromModelsConfig(
+  cfg: OpenClawConfig,
+  agentId: string | undefined,
   aliasKey: string,
   defaultProvider: string,
 ): string | undefined {
-  for (const [modelRef, entry] of Object.entries(models ?? {})) {
-    if (normalizeString(asMutableRecord(entry)?.alias) !== aliasKey) {
-      continue;
-    }
-    const compatRef = resolveKnownCompatModelAliasRef(modelRef);
-    if (compatRef) {
-      return compatRef;
-    }
-    return modelRef.includes("/")
-      ? normalizeDefaultProviderModelRef(modelRef)
-      : `${defaultProvider}/${modelRef}`;
-  }
-  return undefined;
+  const match = buildModelAliasIndex({
+    cfg,
+    agentId,
+    defaultProvider,
+    allowManifestNormalization: false,
+    allowPluginNormalization: false,
+  }).byAlias.get(aliasKey);
+  return match ? `${match.ref.provider}/${match.ref.model}` : undefined;
 }
 
 function resolveConfiguredBareModelRef(params: {

@@ -63,6 +63,117 @@ function createModelNormalizationRegistry(): PluginManifestRegistry {
 }
 
 describe("config model reference validation", () => {
+  it.each(
+    [
+      { agentModel: "anthropic/shared-model", allowed: "inherited", valid: false },
+      { agentModel: "openai/shared-model", allowed: "inherited", valid: true },
+      { agentModel: "anthropic/shared-model", allowed: "worker", valid: true },
+    ].flatMap(({ agentModel, allowed, valid }) =>
+      ["agent", "role"].map((policyScope) => ({ agentModel, allowed, valid, policyScope })),
+    ),
+  )(
+    "uses the policy source agent's provider when matching bare alias owners: %j",
+    ({ agentModel, allowed, valid, policyScope }) => {
+      const result = validateConfigObjectWithPlugins(
+        {
+          agents: {
+            defaults: {
+              model: "openai/gpt-5.4-mini",
+              models: { "shared-model": { alias: "inherited" } },
+            },
+            entries: {
+              worker: {
+                model: "anthropic/claude-sonnet-4-6",
+                models: { [agentModel]: { aliases: ["worker"] } },
+                ...(policyScope === "agent" ? { modelPolicy: { allow: [allowed] } } : {}),
+              },
+            },
+          },
+          ...(policyScope === "role"
+            ? {
+                gateway: {
+                  roles: {
+                    default: "guest",
+                    definitions: {
+                      guest: {
+                        sessions: { others: "view" },
+                        agents: ["worker"],
+                        scopes: ["operator.read"],
+                        modelPolicy: {
+                          sourceAgent: "worker",
+                          allow: [allowed],
+                          deny: ["anthropic/restricted-*"],
+                        },
+                      },
+                    },
+                  },
+                },
+              }
+            : {}),
+        },
+        { pluginValidation: "core-only" },
+      );
+      expect(result.ok).toBe(valid);
+    },
+  );
+
+  it.each(
+    [
+      { entry: { params: { temperature: 0.2 } }, allowed: "inherited", valid: true },
+      { entry: { aliases: ["worker"] }, allowed: "inherited", valid: false },
+      { entry: { aliases: ["worker"] }, allowed: "WORKER", valid: true },
+      { entry: { aliases: [] }, allowed: "inherited", valid: false },
+    ].flatMap(({ entry, allowed, valid }) =>
+      ["openai/gpt-5.4-mini", "gpt-5.4-mini"].map((defaultKey) => ({
+        entry,
+        allowed,
+        valid,
+        defaultKey,
+      })),
+    ),
+  )(
+    "validates policy aliases with agent replacement semantics: %j",
+    ({ entry, allowed, valid, defaultKey }) => {
+      const res = validateConfigObjectWithPlugins(
+        {
+          agents: {
+            defaults: { models: { [defaultKey]: { alias: "inherited" } } },
+            entries: {
+              worker: {
+                models: { "openai/gpt-5.4-mini": entry },
+                modelPolicy: { allow: [allowed] },
+              },
+            },
+          },
+        },
+        { pluginValidation: "core-only" },
+      );
+      expect(res.ok).toBe(valid);
+    },
+  );
+
+  it.each([
+    { aliases: ["second"], allowed: "SECOND", valid: true },
+    { aliases: ["second"], allowed: "unknown", valid: false },
+    { aliases: [" "], allowed: "primary", valid: false },
+  ])(
+    "validates additional aliases and their policy references: %j",
+    ({ aliases, allowed, valid }) => {
+      const res = validateConfigObjectWithPlugins(
+        {
+          agents: {
+            defaults: {
+              models: { "openai/gpt-5.4-mini": { alias: "primary", aliases } },
+              modelPolicy: { allow: [allowed] },
+            },
+          },
+        },
+        { pluginValidation: "core-only" },
+      );
+      expect(res.ok).toBe(valid);
+    },
+  );
+
   it("rejects statically suppressed provider/model pairs during config validation", () => {
     const res = validateConfigObjectWithPlugins(
       {

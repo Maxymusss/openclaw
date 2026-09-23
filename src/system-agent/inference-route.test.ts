@@ -79,6 +79,23 @@ afterEach(() => {
 });
 
 describe("resolveSystemAgentConfiguredRouteFromConfig", () => {
+  it.each(
+    [{ alias: "fast" }, { aliases: ["fast"] }].flatMap((names) => [
+      { names, raw: "FAST", key: "gpt-5.5" },
+      { names, raw: "openai/FAST", key: "openai/gpt-5.5" },
+    ]),
+  )(
+    "retains alias-selected model settings in route projections: $raw / $names",
+    async ({ names, raw, key }) => {
+      const config = devConfig();
+      config.agents!.defaults!.model = raw;
+      config.agents!.defaults!.models = { [key]: { ...names, params: { temperature: 0.2 } } };
+      const projection = await projectDefaultInferenceRoute(config);
+      expect(projection).toHaveProperty("defaults.models", config.agents!.defaults!.models);
+      expect(projection.route).toMatchObject({ model: "gpt-5.5", modelLabel: "openai/gpt-5.5" });
+    },
+  );
+
   it.each([false, true])(
     "retains a literal catalog @ suffix on a native implicit route (ACP=%s)",
     async (acp) => {

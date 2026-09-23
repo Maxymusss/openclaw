@@ -18,6 +18,7 @@ import { waitForContextWindowCacheLoad } from "../agents/context.js";
 import { DEFAULT_PROVIDER } from "../agents/defaults.js";
 import { resolveConfiguredPrimaryProviderFallback } from "../agents/model-selection-shared.js";
 import { parseModelRef, resolvePersistedSelectedModelRef } from "../agents/model-selection.js";
+import { getConfiguredModelAliases } from "../config/model-aliases.js";
 import { resolveAgentModelPrimaryValue } from "../config/model-input.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.js";
@@ -39,9 +40,11 @@ function resolveStatusModelRefFromRaw(params: {
     // Bare model names may be aliases from agents.defaults.models before falling back to default provider.
     const aliasKey = normalizeLowercaseStringOrEmpty(trimmed);
     for (const [modelKey, entry] of Object.entries(configuredModels)) {
-      const aliasValue = (entry as { alias?: unknown } | undefined)?.alias;
-      const alias = normalizeOptionalString(aliasValue) ?? "";
-      if (!alias || normalizeOptionalLowercaseString(alias) !== aliasKey) {
+      if (
+        !getConfiguredModelAliases(entry).some(
+          (alias) => normalizeOptionalLowercaseString(alias) === aliasKey,
+        )
+      ) {
         continue;
       }
       const parsed = parseModelRef(modelKey, params.defaultProvider, {

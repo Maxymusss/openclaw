@@ -5,6 +5,7 @@ import { formatCliCommand } from "../../cli/command-format.js";
 import { promptYesNo } from "../../cli/prompt.js";
 import { readConfigFileSnapshotForWrite, replaceConfigFile } from "../../config/config.js";
 import { formatConfigIssueLines } from "../../config/issue-format.js";
+import { getConfiguredModelAliases } from "../../config/model-aliases.js";
 import type { AgentModelEntryConfig } from "../../config/types.agent-defaults.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { ClawHubRequestError } from "../../infra/clawhub-client.js";
@@ -277,7 +278,9 @@ async function ensureProviderAuth(params: {
 
 function aliasTaken(models: Record<string, AgentModelEntryConfig>, alias: string): boolean {
   const lowered = alias.toLowerCase();
-  return Object.values(models).some((entry) => entry.alias?.toLowerCase() === lowered);
+  return Object.values(models).some((entry) =>
+    getConfiguredModelAliases(entry).some((name) => name.toLowerCase() === lowered),
+  );
 }
 
 export async function promosClaimCommand(

@@ -1390,7 +1390,7 @@ export function applyModelAllowlist(
     };
   }
 
-  const nextModels: Record<string, { alias?: string }> = { ...existingModels };
+  const nextModels = { ...existingModels };
   for (const key of normalized) {
     nextModels[key] = existingModels[key] ?? {};
   }

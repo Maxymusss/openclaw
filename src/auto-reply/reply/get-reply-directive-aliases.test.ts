@@ -6,7 +6,7 @@ import {
   createOpenAiResponsesTextEvent,
 } from "../../agents/embedded-agent-subscribe.openai-responses.test-helpers.js";
 import type { ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
-import type { ModelAliasIndex } from "../../agents/model-selection.js";
+import { buildModelAliasIndex } from "../../agents/model-selection-shared.js";
 import type { ModelDefinitionConfig, OpenClawConfig } from "../../config/config.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import { withPluginMetadataSnapshotScope } from "../../plugins/current-plugin-metadata-snapshot.js";
@@ -85,21 +85,6 @@ function configWithModelAlias(alias: string): OpenClawConfig {
       },
     },
   } as unknown as OpenClawConfig;
-}
-
-function createAliasIndex(): ModelAliasIndex {
-  return {
-    byAlias: new Map([
-      [
-        "fable",
-        {
-          alias: "fable",
-          ref: { provider: "anthropic", model: "claude-opus-4-6" },
-        },
-      ],
-    ]),
-    byKey: new Map([["anthropic/claude-opus-4-6", ["fable"]]]),
-  };
 }
 
 function createSessionEntry(): SessionEntry {
@@ -189,7 +174,7 @@ async function resolveModelDirective(params: {
           commandAuthorized: authorized,
           defaultProvider: "anthropic",
           defaultModel: "claude-opus-4-6",
-          aliasIndex: createAliasIndex(),
+          aliasIndex: buildModelAliasIndex({ cfg, agentId: "main", defaultProvider: "anthropic" }),
           provider: "anthropic",
           model: "claude-opus-4-6",
           hasResolvedHeartbeatModelOverride: false,
@@ -224,6 +209,25 @@ describe("reply directive resolution", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
   });
+
+  it.each([
+    { inherited: "global", agentEntry: { aliases: ["fable"] }, expected: true },
+    { inherited: "fable", agentEntry: { aliases: [] }, expected: false },
+    { inherited: "fable", agentEntry: { alias: "other" }, expected: false },
+  ])(
+    "uses the active agent's effective shorthand aliases: %j",
+    async ({ inherited, agentEntry, expected }) => {
+      const cfg = configWithModelAlias(inherited);
+      cfg.agents!.entries = { main: { models: { "anthropic/claude-opus-4-6": agentEntry } } };
+      const { result } = await resolveModelDirective({ body: "please /fable now", cfg });
+      expect(result.kind).toBe("continue");
+      if (result.kind !== "continue") {
+        throw new Error(`expected continue result, got ${result.kind}`);
+      }
+      expect(result.result.directives.hasModelDirective).toBe(expected);
+      expect(result.result.cleanedBody).toBe(expected ? "please now" : "please /fable now");
+    },
+  );
 
   it("uses prepared thinking defaults for an unrestricted ordinary reply", async () => {
     const model = { ...directiveModel, reasoning: true };
@@ -728,74 +732,89 @@ describe("reply directive resolution", () => {
     expect(sessionEntry).toEqual(createSessionEntry());
   });
 
-  it("parses configured alias session scope through the inline directive boundary", () => {
-    const cfg = configWithModelAlias("fable");
-    const parsed = parseInlineSessionDirectives("/fable -s", {
-      modelAliases: resolveConfiguredDirectiveAliases({
-        cfg,
-        commandTextHasSlash: true,
-        reservedCommands: new Set(),
-      }),
-    });
+  it.each([{ alias: "fable" }, { aliases: ["fable"] }, { alias: "primary", aliases: ["fable"] }])(
+    "parses configured alias session scope through the inline directive boundary: %j",
+    (entry) => {
+      const cfg: OpenClawConfig = {
+        agents: { defaults: { models: { "anthropic/claude-opus-4-6": entry } } },
+      };
+      const parsed = parseInlineSessionDirectives("/fable -s", {
+        modelAliases: resolveConfiguredDirectiveAliases({
+          aliasIndex: buildModelAliasIndex({ cfg, defaultProvider: "anthropic" }),
+          commandTextHasSlash: true,
+          reservedCommands: new Set(),
+        }),
+      });
 
-    expect(parsed).toMatchObject({
-      cleaned: "",
-      hasModelDirective: true,
-      rawModelDirective: "fable",
-      rawModelRuntime: undefined,
-      modelScope: "session",
-    });
-  });
+      expect(parsed).toMatchObject({
+        cleaned: "",
+        hasModelDirective: true,
+        rawModelDirective: "fable",
+        rawModelRuntime: undefined,
+        modelScope: "session",
+      });
+    },
+  );
 
-  it("does not expose skill command names as inline model aliases", () => {
-    const reservedCommands = new Set<string>();
-    const cfg = configWithModelAlias("demo_skill");
+  it.each([{ alias: "demo_skill" }, { alias: "primary", aliases: ["demo_skill"] }])(
+    "does not expose skill command names as inline model aliases: %j",
+    (entry) => {
+      const reservedCommands = new Set<string>();
+      const cfg: OpenClawConfig = {
+        agents: { defaults: { models: { "anthropic/claude-opus-4-6": entry } } },
+      };
 
-    const beforeSkillRegistration = parseInlineSessionDirectives("/demo_skill", {
-      modelAliases: resolveConfiguredDirectiveAliases({
-        cfg,
-        commandTextHasSlash: true,
+      const beforeSkillRegistration = parseInlineSessionDirectives("/demo_skill", {
+        modelAliases: resolveConfiguredDirectiveAliases({
+          aliasIndex: buildModelAliasIndex({ cfg, defaultProvider: "anthropic" }),
+          commandTextHasSlash: true,
+          reservedCommands,
+        }),
+      });
+      expect(beforeSkillRegistration.hasModelDirective).toBe(true);
+      expect(beforeSkillRegistration.cleaned).toBe("");
+
+      reserveSkillCommandNames({
         reservedCommands,
-      }),
-    });
-    expect(beforeSkillRegistration.hasModelDirective).toBe(true);
-    expect(beforeSkillRegistration.cleaned).toBe("");
+        skillCommands: [
+          {
+            name: "demo_skill",
+            skillName: "demo-skill",
+            description: "Demo skill",
+            sourceFilePath: "/tmp/demo/SKILL.md",
+          },
+        ],
+      });
 
-    reserveSkillCommandNames({
-      reservedCommands,
-      skillCommands: [
-        {
-          name: "demo_skill",
-          skillName: "demo-skill",
-          description: "Demo skill",
-          sourceFilePath: "/tmp/demo/SKILL.md",
-        },
-      ],
-    });
+      const afterSkillRegistration = parseInlineSessionDirectives("/demo_skill", {
+        modelAliases: resolveConfiguredDirectiveAliases({
+          aliasIndex: buildModelAliasIndex({ cfg, defaultProvider: "anthropic" }),
+          commandTextHasSlash: true,
+          reservedCommands,
+        }),
+      });
+      expect(afterSkillRegistration.hasModelDirective).toBe(false);
+      expect(afterSkillRegistration.cleaned).toBe("/demo_skill");
+    },
+  );
 
-    const afterSkillRegistration = parseInlineSessionDirectives("/demo_skill", {
-      modelAliases: resolveConfiguredDirectiveAliases({
-        cfg,
-        commandTextHasSlash: true,
-        reservedCommands,
-      }),
-    });
-    expect(afterSkillRegistration.hasModelDirective).toBe(false);
-    expect(afterSkillRegistration.cleaned).toBe("/demo_skill");
-  });
+  it.each([{ alias: " help " }, { alias: "primary", aliases: [" help "] }])(
+    "does not expose chat command names as inline model aliases: %j",
+    (entry) => {
+      const cfg: OpenClawConfig = {
+        agents: { defaults: { models: { "anthropic/claude-opus-4-6": entry } } },
+      };
+      const reservedCommands = new Set(["help"]);
 
-  it("does not expose chat command names as inline model aliases", () => {
-    const cfg = configWithModelAlias(" help ");
-    const reservedCommands = new Set(["help"]);
-
-    const parsed = parseInlineSessionDirectives("/help", {
-      modelAliases: resolveConfiguredDirectiveAliases({
-        cfg,
-        commandTextHasSlash: true,
-        reservedCommands,
-      }),
-    });
-    expect(parsed.hasModelDirective).toBe(false);
-    expect(parsed.cleaned).toBe("/help");
-  });
+      const parsed = parseInlineSessionDirectives("/help", {
+        modelAliases: resolveConfiguredDirectiveAliases({
+          aliasIndex: buildModelAliasIndex({ cfg, defaultProvider: "anthropic" }),
+          commandTextHasSlash: true,
+          reservedCommands,
+        }),
+      });
+      expect(parsed.hasModelDirective).toBe(false);
+      expect(parsed.cleaned).toBe("/help");
+    },
+  );
 });

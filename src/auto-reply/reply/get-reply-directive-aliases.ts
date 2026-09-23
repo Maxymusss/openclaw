@@ -1,9 +1,6 @@
 // Exposes reply directive aliases for parsing and command help.
-import {
-  normalizeLowercaseStringOrEmpty,
-  normalizeOptionalString,
-} from "@openclaw/normalization-core/string-coerce";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
+import type { ModelAliasIndex } from "../../agents/model-selection-shared.js";
 import type { SkillCommandSpec } from "../../skills/types.js";
 
 export function reserveSkillCommandNames(params: {
@@ -16,15 +13,14 @@ export function reserveSkillCommandNames(params: {
 }
 
 export function resolveConfiguredDirectiveAliases(params: {
-  cfg: OpenClawConfig;
+  aliasIndex: ModelAliasIndex;
   commandTextHasSlash: boolean;
   reservedCommands: Set<string>;
 }) {
   if (!params.commandTextHasSlash) {
     return [];
   }
-  return Object.values(params.cfg.agents?.defaults?.models ?? {})
-    .map((entry) => normalizeOptionalString(entry.alias))
-    .filter((alias): alias is string => Boolean(alias))
+  return [...params.aliasIndex.byAlias.values()]
+    .map(({ alias }) => alias)
     .filter((alias) => !params.reservedCommands.has(normalizeLowercaseStringOrEmpty(alias)));
 }

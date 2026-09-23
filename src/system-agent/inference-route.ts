@@ -12,6 +12,7 @@ import {
   resolveCliExecutionAuthProfileId,
 } from "../agents/cli-execution-auth.js";
 import { resolveConfiguredSetupModelForAgent } from "../agents/utility-model.js";
+import { getConfiguredModelAliases } from "../config/model-aliases.js";
 import { copyConfigResolutionFacts } from "../config/resolution-facts.js";
 import { createRuntimeConfigReader } from "../config/runtime-snapshot.js";
 import type { ConfigFileSnapshot, OpenClawConfig } from "../config/types.openclaw.js";
@@ -210,7 +211,7 @@ export async function resolveSystemAgentConfiguredRouteFromConfig(
 }
 
 function projectRelevantModelMap(params: {
-  models: Record<string, { alias?: string }> | undefined;
+  models: Record<string, { alias?: string; aliases?: string[] }> | undefined;
   providerIds: Set<string>;
   modelId: string | undefined;
   rawModel: string | undefined;
@@ -226,7 +227,9 @@ function projectRelevantModelMap(params: {
       return (
         (params.providerIds.has(provider) &&
           (model === params.modelId || model === "*" || key === params.rawModel)) ||
-        entry.alias?.trim() === params.rawModel
+        getConfiguredModelAliases(entry).some(
+          (alias) => alias.toLowerCase() === params.rawModel?.trim().toLowerCase(),
+        )
       );
     }),
   );

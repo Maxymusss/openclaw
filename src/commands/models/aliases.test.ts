@@ -400,6 +400,50 @@ describe("modelsAliasesAddCommand", () => {
     expect(written.agents?.defaults?.models?.["openai/gpt-5.4-mini"]?.alias).toBe("fast");
   });
 
+  it("updates an additional alias's casing without replacing other names or settings", async () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: {
+            "openai/gpt-5.4-mini": {
+              alias: "primary",
+              aliases: ["Fast", "spare"],
+              params: { temperature: 0.2 },
+            },
+          },
+        },
+      },
+    };
+    mocks.readConfigFileSnapshot.mockResolvedValue(snapshot(cfg));
+    await modelsAliasesAddCommand("fast", "openai/gpt-5.4-mini", makeRuntime());
+    expect(
+      mocks.replaceConfigFile.mock.calls[0]?.[0].sourceConfig.agents.defaults.models[
+        "openai/gpt-5.4-mini"
+      ],
+    ).toEqual({
+      alias: "primary",
+      aliases: ["fast", "spare"],
+      params: { temperature: 0.2 },
+    });
+  });
+
+  it("rejects a name already used as another model's additional alias", async () => {
+    const cfg: OpenClawConfig = {
+      agents: {
+        defaults: {
+          models: {
+            "openai/gpt-5.4-mini": { alias: "primary", aliases: ["Fast"] },
+          },
+        },
+      },
+    };
+    mocks.readConfigFileSnapshot.mockResolvedValue(snapshot(cfg));
+    await expect(
+      modelsAliasesAddCommand("FAST", "openai/gpt-5.6-sol", makeRuntime()),
+    ).rejects.toThrow(/already points to openai\/gpt-5\.4-mini/);
+    expect(mocks.replaceConfigFile).not.toHaveBeenCalled();
+  });
+
   it("resolves alias targets from the CAS-fenced snapshot", async () => {
     const staleCfg = {
       agents: { defaults: { models: { "openai/gpt-5.6-sol": { alias: "old-alias" } } } },
@@ -428,31 +472,49 @@ describe("modelsAliasesAddCommand", () => {
     expect(replaceParams?.baseHash).toBe("current-hash");
     expect(replaceParams?.sourceConfig.agents?.defaults?.models).toEqual({
       "openai/gpt-5.6-sol": { params: { temperature: 0.2 } },
-      "anthropic/claude-opus-5": { alias: "new-alias" },
+      "anthropic/claude-opus-5": { alias: "old-alias", aliases: ["new-alias"] },
     });
     expect(runtime.logs).toContain("Alias new-alias -> anthropic/claude-opus-5");
   });
 
-  it("resolves a runtime-only alias while persisting only source config", async () => {
-    const sourceConfig = {
-      agents: { defaults: { models: { "anthropic/claude-sonnet-4-6": {} } } },
-    };
-    const runtimeConfig = {
-      agents: { defaults: { models: { "anthropic/claude-sonnet-4-6": { alias: "sonnet" } } } },
-    };
-    mocks.readConfigFileSnapshot.mockResolvedValue({
-      ...snapshot(sourceConfig as unknown as OpenClawConfig),
-      runtimeConfig,
-    });
-    mocks.replaceConfigFile.mockResolvedValue(undefined);
+  it.each([
+    { requested: "fast", expected: { alias: "sonnet", aliases: ["fast"] } },
+    { requested: "SONNET", expected: { alias: "SONNET" } },
+  ])(
+    "preserves the runtime-only target alias without materializing unrelated defaults: $requested",
+    async ({ requested, expected }) => {
+      const sourceConfig = {
+        agents: {
+          defaults: {
+            models: { "anthropic/claude-sonnet-4-6": {}, "google/gemini-3.1-pro-preview": {} },
+          },
+        },
+      };
+      const runtimeConfig = {
+        agents: {
+          defaults: {
+            models: {
+              "anthropic/claude-sonnet-4-6": { alias: "sonnet" },
+              "google/gemini-3.1-pro-preview": { alias: "gemini" },
+            },
+          },
+        },
+      };
+      mocks.readConfigFileSnapshot.mockResolvedValue({
+        ...snapshot(sourceConfig as unknown as OpenClawConfig),
+        runtimeConfig,
+      });
+      mocks.replaceConfigFile.mockResolvedValue(undefined);
 
-    await modelsAliasesAddCommand("fast", "sonnet", makeRuntime());
+      await modelsAliasesAddCommand(requested, "sonnet", makeRuntime());
 
-    const [replaceParams] = mocks.replaceConfigFile.mock.calls[0] ?? [];
-    expect(replaceParams?.sourceConfig.agents?.defaults?.models).toEqual({
-      "anthropic/claude-sonnet-4-6": { alias: "fast" },
-    });
-  });
+      const [replaceParams] = mocks.replaceConfigFile.mock.calls[0] ?? [];
+      expect(replaceParams?.sourceConfig.agents?.defaults?.models).toEqual({
+        "anthropic/claude-sonnet-4-6": expected,
+        "google/gemini-3.1-pro-preview": {},
+      });
+    },
+  );
 });
 
 describe("modelsAliasesListCommand <-> modelsAliasesRemoveCommand agreement", () => {

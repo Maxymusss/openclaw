@@ -25,6 +25,7 @@ import {
   canonicalizeProviderModelId,
   projectProviderModelRouteConfig,
 } from "../../../agents/provider-model-route.js";
+import { getConfiguredModelAliases } from "../../../config/model-aliases.js";
 import { mergeAgentModelEntryForConfig } from "../../../config/model-input.js";
 import {
   findConfiguredProviderModel,
@@ -452,7 +453,7 @@ function modelSettingsWithoutAlias(value: unknown): unknown {
   if (!record) {
     return value;
   }
-  const { alias: _alias, ...settings } = record;
+  const { alias: _alias, aliases: _aliases, ...settings } = record;
   return settings;
 }
 
@@ -537,7 +538,7 @@ export function repairRetiredModelSlots(params: RetiredModelSlotRepair): void {
       continue;
     }
     const retain = "retirementScope" in decision && decision.retirementScope === "route";
-    if (retain && asOptionalRecord(models[modelRef])?.alias) {
+    if (retain && getConfiguredModelAliases(asOptionalRecord(models[modelRef])).length > 0) {
       params.warnings?.push(
         `Retained ${params.path}.models.${modelRef} alias: applicable authentication routes do not share a verified successor. Choose its model target explicitly.`,
       );
