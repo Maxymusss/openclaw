@@ -696,7 +696,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     (compactMode) => {
       const hybrid = getCommittedCompactPlan(compactMode, "hybrid");
       const runson = getCommittedCompactPlan(compactMode, "runson");
-      const routed = runson.filter((job) => job.runner === "runson-c8i-2xlarge");
+      const routed = runson.filter((job) => job.runner === "runson-c8a-2xlarge");
       expect(routed).toHaveLength(1);
       expect(routed[0]).toMatchObject({
         planConcurrency: 1,
@@ -725,6 +725,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(orderedGroups(runson)).toEqual(orderedGroups(hybrid));
       const capacityRows = runson.filter((job) => job.runner === "runson-c8a-4xlarge");
       expect(capacityRows.length).toBeGreaterThan(0);
+      expect(
+        runson.find((job) =>
+          job.groups.some((group) => group.includePatterns?.includes("src/cli/update-cli.test.ts")),
+        )?.runner,
+      ).toBe("blacksmith-32vcpu-ubuntu-2404");
       for (const job of capacityRows) {
         expect(job.requiresDist).toBe(false);
         expect(job.pretestBuildMode).toBeUndefined();
@@ -734,7 +739,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       }
       expect(
         runson
-          .filter((job) => job.runner !== "runson-c8i-2xlarge")
+          .filter((job) => job.runner !== "runson-c8a-2xlarge")
           .map((job) =>
             Object.assign({}, job, {
               runner:
@@ -1032,7 +1037,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .flatMap((group) => group.includePatterns ?? [])
         .toSorted(),
     ).toEqual(targets.toSorted());
-    expect(runson.filter((job) => job.runner === "runson-c8i-2xlarge")).toMatchObject([
+    expect(runson.filter((job) => job.runner === "runson-c8a-2xlarge")).toMatchObject([
       { groups: [{ includePatterns: [cronTarget] }], planConcurrency: 1 },
     ]);
     expect(
