@@ -4942,6 +4942,8 @@ jobs:
     runs-on: ${{ vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'windows-2025' || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'hybrid' && github.run_attempt > 1) && 'windows-2025' || (github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository && github.run_attempt > 1)) && 'windows-2025' || (github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || contains(fromJSON('["OWNER","MEMBER","COLLABORATOR","CONTRIBUTOR"]'), github.event.pull_request.author_association)) && 'blacksmith-16vcpu-windows-2025' || 'windows-2025') }}
     timeout-minutes: 60
     env:
+      # Node 24.20 includes the Windows native scheduler shutdown fix (nodejs/node#61999).
+      NODE_VERSION: "24.20.0"
       NODE_OPTIONS: --max-old-space-size=8192
       OPENCLAW_TEST_SKIP_FULL_EXTENSIONS_SHARD: 1
     defaults:
@@ -4984,7 +4986,7 @@ jobs:
 
       - name: Setup Node.js
         env:
-          REQUESTED_NODE_VERSION: "24.x"
+          REQUESTED_NODE_VERSION: "${{ env.NODE_VERSION }}"
         run: |
           set -euo pipefail
           source .ci-harness/.github/actions/setup-pnpm-store-cache/ensure-node.sh
@@ -4994,7 +4996,7 @@ jobs:
         uses: ./.ci-harness/.github/actions/setup-pnpm-store-cache
         with:
           cache-mode: ${{ needs.preflight.outputs.cache_mode }}
-          node-version: 24.x
+          node-version: ${{ env.NODE_VERSION }}
 
       - name: Runtime versions
         run: |
