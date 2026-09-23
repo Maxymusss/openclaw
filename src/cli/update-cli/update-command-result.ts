@@ -297,7 +297,14 @@ export async function resolveMutableUpdateFailure(params: {
   ) {
     throw params.cause;
   }
-  const failure = { cause: params.cause, detail: formatErrorMessage(params.cause) };
+  // Keep native inspection causes internal; their messages can contain private paths.
+  const failure = {
+    cause: params.cause,
+    detail:
+      params.cause instanceof FreeBsdPkgOwnershipError
+        ? params.cause.message
+        : formatErrorMessage(params.cause),
+  };
   defaultRuntime.error(failure.detail);
   let phase: string | undefined;
   if (params.run) {

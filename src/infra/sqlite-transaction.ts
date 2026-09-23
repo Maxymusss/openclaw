@@ -10,6 +10,7 @@ import {
   assertTransactionUsable,
   reportSqliteTransactionWarning,
   runSqliteTransactionSync,
+  transactionDiagnosticLabels,
   type SqliteTransactionOptions,
 } from "./sqlite-transaction-core.js";
 
@@ -32,10 +33,9 @@ export function logSlowSqliteCoordinatorWait(
   }
   reportSqliteTransactionWarning(transactionLog, "slow SQLite coordinator lock wait", {
     async: false,
-    database: options.databaseLabel,
+    ...transactionDiagnosticLabels(undefined, options),
     elapsedMs,
     isMainThread,
-    operation: options.operationLabel,
     pid: process.pid,
     threadId,
     thresholdMs: 100,

@@ -9,6 +9,7 @@ import { VERSION } from "../../version.js";
 import { createUpdateProgress } from "./progress.js";
 import {
   confirmUpdateDowngrade,
+  resolveGitInstallDir,
   tryResolveInvocationCwd,
   type UpdateCommandOptions,
 } from "./shared.js";
@@ -431,7 +432,7 @@ async function updateCommandInternal(
   let mutableUpdatePrepared = false;
   const prepareMutableUpdate: Parameters<
     typeof executeMutableUpdate
-  >[0]["prepareMutableUpdate"] = async (env, activationTimeoutMs, admitExecutor) => {
+  >[0]["prepareMutableUpdate"] = async (env, activationTimeoutMs, admitExecutor, installTarget) => {
     if (!mutableUpdatePrepared) {
       assertUpdatePackageActivationAdmission(root, { serviceRoot: managedServiceRoot });
     }
@@ -461,10 +462,27 @@ async function updateCommandInternal(
         }
       : fence;
     preUpdatePluginInstallRecords = await prepareMutableUpdateRuntime(env, mutableAuthority);
+    // Retention can walk the full dependency tree before the first staging step.
+    // Record that work so the completed capacity check does not look stalled.
+    const retentionStep = {
+      name: "updater-runtime-retention",
+      command: "retain running updater runtime",
+      index: 0,
+      total: 0,
+    };
+    const retentionStartedAt = Date.now();
+    progress.onStepStart?.(retentionStep);
     await retainRuntime({
-      mutationRoots: [root],
+      mutationRoots: [root, ...(switchToGit ? [resolveGitInstallDir()] : [])],
+      installTarget,
+      env,
       timeoutMs: updateStepTimeoutMs,
       assertCurrent: () => mutableAuthority.assertCurrent(),
+    });
+    progress.onStepComplete?.({
+      ...retentionStep,
+      durationMs: Date.now() - retentionStartedAt,
+      exitCode: 0,
     });
     mutableUpdatePrepared = true;
   };

@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import * as packageMetadata from "../../infra/update-check-package-target.js";
+import * as writeAdmission from "../../infra/update-freebsd-write-admission.js";
 import * as retainedRuntime from "../../infra/update-retained-runtime.js";
 import { createUpdateRun, finishUpdateRun } from "../../infra/update-run-ledger.js";
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../../state/openclaw-agent-db-contract.js";
@@ -40,7 +41,29 @@ it.each(["current", "root revoked", "executor revoked"] as const)(
     let rootRevoked = false;
     let revokeExecutor: () => void;
     let preparationFailure: unknown;
+    let admittedEnv: NodeJS.ProcessEnv | undefined;
     const mutation = vi.fn();
+    // Let canonical run admission bind this owner before retention records progress.
+    vi.spyOn(writeAdmission, "createFreeBsdUpdateWriteAdmission").mockReturnValue({
+      get canWrite() {
+        return !rootRevoked;
+      },
+      get failure() {
+        return rootRevoked ? rootFailure : undefined;
+      },
+      assertCurrent() {
+        if (rootRevoked) {
+          throw rootFailure;
+        }
+      },
+      revoke(cause) {
+        return cause instanceof Error ? cause : new Error(String(cause));
+      },
+      async revalidate(assertIdle) {
+        assertIdle();
+        this.assertCurrent();
+      },
+    });
     // Keep real command/executor admission and generation cleanup. The supplied
     // write latch proves callback composition, not native ownership.
     const withRuntime = retainedRuntime.withRetainedUpdateRuntime;
@@ -61,26 +84,7 @@ it.each(["current", "root revoked", "executor revoked"] as const)(
       .spyOn(execution, "executeMutableUpdate")
       .mockImplementation(async (params) => {
         const run = params.opts.run!;
-        run.freebsdWriteAdmission = {
-          get canWrite() {
-            return !rootRevoked;
-          },
-          get failure() {
-            return rootRevoked ? rootFailure : undefined;
-          },
-          assertCurrent() {
-            if (rootRevoked) {
-              throw rootFailure;
-            }
-          },
-          revoke(cause) {
-            return cause instanceof Error ? cause : new Error(String(cause));
-          },
-          async revalidate(assertIdle) {
-            assertIdle();
-            this.assertCurrent();
-          },
-        };
+        admittedEnv = run.env;
         try {
           await params.prepareMutableUpdate(run.env, undefined, (fence) => {
             run.executorFence = fence;
@@ -112,6 +116,8 @@ it.each(["current", "root revoked", "executor revoked"] as const)(
     expect(execute).toHaveBeenCalledOnce();
     expect(retain).toHaveBeenCalledExactlyOnceWith({
       mutationRoots: [fixture.root],
+      installTarget: undefined,
+      env: admittedEnv,
       timeoutMs: 5_000,
       assertCurrent: expect.any(Function),
     });
