@@ -1,6 +1,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
+import { loadExactSessionEntry } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { closeOpenClawAgentDatabasesForTest } from "../state/openclaw-agent-db.js";
 import * as sqliteReaders from "./doctor-session-sqlite-readers.js";
 import { inspectSessionSqliteRecovery } from "./doctor-session-sqlite-recovery-inventory.js";
@@ -115,6 +117,24 @@ describe("runDoctorSessionSqlite", () => {
       }));
       const imported = await runDoctorSessionSqlite({ cfg, env, allAgents: true, mode: "import" });
       expect(imported.targets.flatMap((target) => target.issues)).toEqual([]);
+      const currentOwners = new Map<string, ReturnType<typeof loadExactSessionEntry>>();
+      for (const owner of ["main", "work"]) {
+        const scope = {
+          agentId: owner,
+          env,
+          sessionKey: `agent:${owner}:main`,
+          storePath: indexes.find((index) => index.endsWith(`${owner}.json`)) ?? indexes[0]!,
+        };
+        const current = loadExactSessionEntry(scope);
+        expect(current).toBeDefined();
+        await replaceSessionEntry(scope, {
+          ...current!.entry,
+          displayName: `${owner} current`,
+          label: `${owner} current owner`,
+          updatedAt: 900,
+        });
+        currentOwners.set(owner, loadExactSessionEntry(scope));
+      }
       const restored = await runDoctorSessionSqlite({ cfg, env, allAgents: true, mode: "restore" });
       expect(restored.targets.flatMap((target) => target.issues)).toEqual([]);
       for (const original of originals) {
@@ -128,6 +148,15 @@ describe("runDoctorSessionSqlite", () => {
         mode: "import",
       });
       expect(reimported.targets.flatMap((target) => target.issues)).toEqual([]);
+      for (const owner of ["main", "work"]) {
+        const scope = {
+          agentId: owner,
+          env,
+          sessionKey: `agent:${owner}:main`,
+          storePath: indexes.find((index) => index.endsWith(`${owner}.json`)) ?? indexes[0]!,
+        };
+        expect(loadExactSessionEntry(scope)).toEqual(currentOwners.get(owner));
+      }
       closeOpenClawAgentDatabasesForTest();
       const retired = await retireSessionSqliteRecovery({
         env,

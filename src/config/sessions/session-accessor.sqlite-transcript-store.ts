@@ -69,6 +69,8 @@ type TranscriptAppendOptions = {
   eventJson?: string;
   preparedPayload?: PreparedTranscriptPayload;
   allowStoredAlias?: boolean;
+  /** Preserve an already-admitted window's activity time while importing historical events. */
+  windowUpdatedAt?: number;
   idempotencyKeyMode?: "dedupe" | "preserve-owner" | "relocate-owner";
   onProjectionReconcileNeeded?: () => void;
   scheduleProjectionReconcile?: boolean;
@@ -171,6 +173,7 @@ function appendTranscriptEvent(
     options.eventJson === undefined ? canonicalizeTranscriptEventMedia(event) : event;
   const db = getSessionKysely(database.db);
   const createdAt = readEventTimestamp(persistedEvent) ?? Date.now();
+  const windowUpdatedAt = options.windowUpdatedAt ?? createdAt;
   if (cursor.initialized) {
     // The first attempt established this window and the batch cannot delete it.
     // Even rejected identities update recency; keep each attempt's write in order.
@@ -180,9 +183,9 @@ function appendTranscriptEvent(
         .set({ updated_at: parameter((timestamp) => timestamp) })
         .where("session_id", "=", scope.sessionId),
     );
-    cursor.updateWindow(createdAt);
+    cursor.updateWindow(windowUpdatedAt);
   } else {
-    ensureTranscriptSessionRoot(database, scope, createdAt, {
+    ensureTranscriptSessionRoot(database, scope, windowUpdatedAt, {
       allowStoredAlias: options.allowStoredAlias === true,
     });
     ensureTranscriptGenerationInTransaction(database, scope.sessionId);

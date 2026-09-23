@@ -35,6 +35,10 @@ export const MigrationArtifactSchema = z.object({
 });
 export type MigrationArtifact = z.infer<typeof MigrationArtifactSchema>;
 export type MigrationArtifactIdentity = MigrationArtifact["identity"];
+export type MigrationArtifactFingerprint = Pick<
+  fs.BigIntStats,
+  "ctimeNs" | "dev" | "ino" | "mtimeNs" | "size"
+>;
 
 export function statMigrationPath(filePath: string): fs.Stats | undefined {
   try {
@@ -80,16 +84,44 @@ function formatMigrationArtifactRefusal(filePath: string, stat: fs.BigIntStats):
   );
 }
 
+function readMigrationArtifactStat(filePath: string, expectedLinks: bigint): fs.BigIntStats {
+  const stat = fs.lstatSync(filePath, { bigint: true });
+  if (!stat.isFile() || stat.nlink !== expectedLinks) {
+    throw new Error(formatMigrationArtifactRefusal(filePath, stat));
+  }
+  return stat;
+}
+
+export function readMigrationArtifactFingerprint(
+  filePath: string,
+  expectedLinks = 1n,
+): MigrationArtifactFingerprint {
+  const { ctimeNs, dev, ino, mtimeNs, size } = readMigrationArtifactStat(filePath, expectedLinks);
+  return { ctimeNs, dev, ino, mtimeNs, size };
+}
+
+export function assertMigrationArtifactFingerprint(
+  filePath: string,
+  expected: MigrationArtifactFingerprint,
+  expectedLinks = 1n,
+): void {
+  const current = readMigrationArtifactFingerprint(filePath, expectedLinks);
+  if (
+    (["ctimeNs", "dev", "ino", "mtimeNs", "size"] as const).some(
+      (key) => current[key] !== expected[key],
+    )
+  ) {
+    throw new Error("Migration artifact changed after identity verification");
+  }
+}
+
 /** Descriptor reads are bounded; identity and content are checked before and after hashing. */
 export function readMigrationArtifactIdentity(
   filePath: string,
   expectedLinks = 1n,
   importedFingerprint?: Pick<fs.BigIntStats, "ctimeNs" | "dev" | "ino" | "mtimeNs" | "size">,
 ): MigrationArtifactIdentity {
-  const before = fs.lstatSync(filePath, { bigint: true });
-  if (!before.isFile() || before.nlink !== expectedLinks) {
-    throw new Error(formatMigrationArtifactRefusal(filePath, before));
-  }
+  const before = readMigrationArtifactStat(filePath, expectedLinks);
   if (
     importedFingerprint &&
     (["ctimeNs", "dev", "ino", "mtimeNs", "size"] as const).some(

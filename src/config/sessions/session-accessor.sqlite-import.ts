@@ -1,8 +1,12 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   executeSqliteQueryTakeFirstSync,
   iterateSqliteQuerySync,
 } from "../../infra/kysely-sync.js";
-import type { LegacyAcpMigrationSource } from "../../infra/legacy-acp-migration-source.js";
+import {
+  legacyAcpMigrationBindingMatches,
+  type LegacyAcpMigrationSource,
+} from "../../infra/legacy-acp-migration-source.js";
 import {
   runOpenClawAgentWriteTransaction,
   resolveOpenClawAgentSqlitePath,
@@ -29,7 +33,10 @@ import {
   advanceTranscriptMutationAtInTransaction,
   touchTranscriptMutationInTransaction,
 } from "./session-accessor.sqlite-transcript-state.js";
-import { appendTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
+import {
+  appendTranscriptEventsInTransaction,
+  canonicalizeTranscriptEventMedia,
+} from "./session-accessor.sqlite-transcript-store.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
 import { reconcileSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
 import { transcriptEventJsonSql } from "./transcript-payload.js";
@@ -45,6 +52,10 @@ type SqliteSessionImportRowsParams = Pick<
   repairLegacyTranscript?: boolean;
   /** Doctor-discovered history cannot replace the current logical session or window owner. */
   historicalOnly?: boolean;
+  /** A receipt-backed replay may append only to the exact current lifecycle it already owns. */
+  completedIndexReplay?: boolean;
+  /** Receipt rows for aliases may share one bounded on-disk staging source within this batch. */
+  completedReplaySourceKey?: string;
   preserveExactStoredKey?: boolean;
   skipIfExists?: boolean;
   entry: SessionEntry;
@@ -58,6 +69,13 @@ type SqliteSessionImportRowsResult = {
   sessionId: string;
   sessionKey: string;
   skippedExisting?: true;
+  completedIndexReplay?:
+    | "appended"
+    | "generation-changed"
+    | "history-not-appendable"
+    | "owner-missing"
+    | "unchanged"
+    | "window-missing";
   recovery?: { complete: boolean; repaired: boolean; events: number };
   transcriptEvents: number;
 };
@@ -71,6 +89,62 @@ function resolveSqliteSessionImport(params: SqliteSessionImportRowsParams) {
   return { params, resolved };
 }
 
+function classifyCompletedReplayTranscript(
+  database: OpenClawAgentDatabase,
+  stage: SqliteSessionImportStage,
+  source: number,
+  sessionId: string,
+): "append" | "complete" | "refuse" {
+  stage.resetSeen();
+  const sourceRows = stage.rows(source, canonicalizeTranscriptEventMedia)[Symbol.iterator]();
+  let expected = sourceRows.next();
+  if (expected.done) {
+    return "complete";
+  }
+  let currentRows = 0;
+  let matchedRows = 0;
+  try {
+    for (const row of iterateSqliteQuerySync(
+      database.db,
+      getSessionKysely(database.db)
+        .selectFrom("transcript_events")
+        .select(transcriptEventJsonSql(database.db).as("event_json"))
+        .where("session_id", "=", sessionId)
+        .orderBy("seq", "asc"),
+    )) {
+      currentRows += 1;
+      stage.addSeen(row.event_json);
+      const entry: unknown = JSON.parse(row.event_json);
+      if (isRecord(entry) && typeof entry.id === "string") {
+        stage.addSeen(`id\0${entry.id}`);
+      }
+      if (!expected.done && row.event_json === expected.value.eventJson) {
+        matchedRows += 1;
+        expected = sourceRows.next();
+        if (expected.done) {
+          return "complete";
+        }
+      }
+    }
+    if (matchedRows !== currentRows) {
+      return "refuse";
+    }
+    while (!expected.done) {
+      const entry: unknown = JSON.parse(expected.value.eventJson);
+      if (
+        stage.contains(expected.value.eventJson) ||
+        (isRecord(entry) && typeof entry.id === "string" && stage.contains(`id\0${entry.id}`))
+      ) {
+        return "refuse";
+      }
+      expected = sourceRows.next();
+    }
+    return "append";
+  } finally {
+    sourceRows.return?.();
+  }
+}
+
 function importSqliteSessionRowsInTransaction(
   database: OpenClawAgentDatabase,
   prepared: ReturnType<typeof resolveSqliteSessionImport>,
@@ -80,6 +154,7 @@ function importSqliteSessionRowsInTransaction(
 ): SqliteSessionImportRowsResult {
   const { params, resolved } = prepared;
   let transcriptEvents = 0;
+  let completedReplayWindowUpdatedAt: number | undefined;
   // Doctor may have staged another legacy alias in this database already. Inspect only this
   // exact import target; runtime-wide canonical validation runs after the import phase.
   const currentEntry = readExactSessionEntryRowForCanonicalRepair(database, resolved.sessionKey, {
@@ -92,6 +167,99 @@ function importSqliteSessionRowsInTransaction(
       skippedExisting: true,
       transcriptEvents,
     };
+  }
+  if (params.completedIndexReplay) {
+    if (!currentEntry) {
+      return {
+        completedIndexReplay: "owner-missing",
+        sessionId: params.entry.sessionId,
+        sessionKey: resolved.sessionKey,
+        transcriptEvents,
+      };
+    }
+    if (
+      currentEntry.sessionId !== params.entry.sessionId ||
+      currentEntry.lifecycleRevision !== params.entry.lifecycleRevision
+    ) {
+      return {
+        completedIndexReplay: "generation-changed",
+        sessionId: params.entry.sessionId,
+        sessionKey: resolved.sessionKey,
+        transcriptEvents,
+      };
+    }
+    const window = executeSqliteQueryTakeFirstSync(
+      database.db,
+      getSessionKysely(database.db)
+        .selectFrom("session_windows")
+        .select(["session_key", "updated_at"])
+        .where("session_id", "=", params.entry.sessionId),
+    );
+    if (!window || !window.session_key) {
+      return {
+        completedIndexReplay: "window-missing",
+        sessionId: params.entry.sessionId,
+        sessionKey: resolved.sessionKey,
+        transcriptEvents,
+      };
+    }
+    const windowOwner = window.session_key;
+    if (windowOwner !== resolved.sessionKey) {
+      const ownerEntry = readExactSessionEntryRowForCanonicalRepair(database, windowOwner, {
+        allowMalformedRowRepair: params.allowMalformedRowRepair === true,
+      })?.entry;
+      if (!ownerEntry) {
+        return {
+          completedIndexReplay: "window-missing",
+          sessionId: params.entry.sessionId,
+          sessionKey: resolved.sessionKey,
+          transcriptEvents,
+        };
+      }
+      if (
+        ownerEntry.sessionId !== params.entry.sessionId ||
+        ownerEntry.lifecycleRevision !== params.entry.lifecycleRevision
+      ) {
+        return {
+          completedIndexReplay: "generation-changed",
+          sessionId: params.entry.sessionId,
+          sessionKey: resolved.sessionKey,
+          transcriptEvents,
+        };
+      }
+    }
+    completedReplayWindowUpdatedAt = window.updated_at;
+    const transcript = classifyCompletedReplayTranscript(
+      database,
+      stage,
+      source,
+      params.entry.sessionId,
+    );
+    if (transcript === "refuse") {
+      return {
+        completedIndexReplay: "history-not-appendable",
+        sessionId: params.entry.sessionId,
+        sessionKey: resolved.sessionKey,
+        transcriptEvents,
+      };
+    }
+    if (transcript === "complete") {
+      return {
+        completedIndexReplay: "unchanged",
+        sessionId: params.entry.sessionId,
+        sessionKey: resolved.sessionKey,
+        transcriptEvents,
+        ...(repair
+          ? {
+              recovery: {
+                complete: repair.recognized && stage.complete,
+                repaired: repair.repaired,
+                events: repair.events,
+              },
+            }
+          : {}),
+      };
+    }
   }
   assertSessionTranscriptHot(database.db, params.entry.sessionId);
   const preservedHarnessId =
@@ -136,7 +304,8 @@ function importSqliteSessionRowsInTransaction(
     );
   }
   // Historical generations append under their existing node without changing its current pointer.
-  if (!preserveHistoricalNode) {
+  // A completed index replay never owns the canonical entry write.
+  if (!preserveHistoricalNode && !params.completedIndexReplay) {
     invalidateSessionEntryMaintenanceAgeFact(database.db);
     writeSessionEntry(database, resolved.sessionKey, importedEntry, {
       allowStoredAliases: true,
@@ -147,27 +316,47 @@ function importSqliteSessionRowsInTransaction(
         params.legacyAcpMigrationSource,
       ]);
     }
+  } else if (
+    params.completedIndexReplay &&
+    params.legacyAcpMigrationSource &&
+    legacyAcpMigrationBindingMatches(params.legacyAcpMigrationSource, currentEntry)
+  ) {
+    recordLegacyAcpMigrationSources(database.db, resolved.sessionKey, [
+      params.legacyAcpMigrationSource,
+    ]);
   }
-  if (params.readTranscriptEvents) {
+  if (params.readTranscriptEvents || params.completedReplaySourceKey) {
     const transcriptScope = {
       ...resolved,
       sessionId: params.entry.sessionId,
     };
-    stage.resetSeen();
-    for (const row of iterateSqliteQuerySync(
-      database.db,
-      getSessionKysely(database.db)
-        .selectFrom("transcript_events")
-        .select(transcriptEventJsonSql(database.db).as("event_json"))
-        .where("session_id", "=", params.entry.sessionId),
-    )) {
-      stage.addSeen(row.event_json);
+    if (!params.completedIndexReplay) {
+      stage.resetSeen();
+      for (const row of iterateSqliteQuerySync(
+        database.db,
+        getSessionKysely(database.db)
+          .selectFrom("transcript_events")
+          .select(transcriptEventJsonSql(database.db).as("event_json"))
+          .where("session_id", "=", params.entry.sessionId),
+      )) {
+        stage.addSeen(row.event_json);
+      }
     }
     transcriptEvents = appendTranscriptEventsInTransaction(
       database,
       transcriptScope,
-      stage.iterateUnseenEvents(source),
-      { allowStoredAlias: true, scheduleProjectionReconcile: false, touchMutation: false },
+      stage.iterateUnseenEvents(
+        source,
+        params.completedIndexReplay ? canonicalizeTranscriptEventMedia : undefined,
+      ),
+      {
+        allowStoredAlias: true,
+        scheduleProjectionReconcile: false,
+        touchMutation: false,
+        ...(completedReplayWindowUpdatedAt === undefined
+          ? {}
+          : { windowUpdatedAt: completedReplayWindowUpdatedAt }),
+      },
     );
     // Doctor imports run outside gateway requests and must finish with a complete projection.
     reconcileSessionTranscriptIndexInTransaction(database.db, params.entry.sessionId);
@@ -183,6 +372,7 @@ function importSqliteSessionRowsInTransaction(
     touchTranscriptMutationInTransaction(database, params.entry.sessionId);
   }
   return {
+    ...(params.completedIndexReplay ? { completedIndexReplay: "appended" as const } : {}),
     sessionId: params.entry.sessionId,
     sessionKey: resolved.sessionKey,
     transcriptEvents,
@@ -224,7 +414,21 @@ export async function importSqliteSessionRowsBatch(
           number,
           ReturnType<SqliteSessionImportStage["repairLegacyTranscript"]>
         >();
-        for (const [source, { params: importParams }] of prepared.entries()) {
+        const replaySources = new Map<string, number>();
+        const sources = new Map<number, number>();
+        for (const [row, { params: importParams }] of prepared.entries()) {
+          const sharedSource = importParams.completedReplaySourceKey
+            ? replaySources.get(importParams.completedReplaySourceKey)
+            : undefined;
+          if (sharedSource !== undefined) {
+            sources.set(row, sharedSource);
+            continue;
+          }
+          const source = row;
+          sources.set(row, source);
+          if (importParams.completedReplaySourceKey) {
+            replaySources.set(importParams.completedReplaySourceKey, source);
+          }
           let seq = 0;
           const validate = importParams.readTranscriptEvents?.((event) =>
             stage.append(source, seq++, JSON.stringify(event)),
@@ -246,15 +450,16 @@ export async function importSqliteSessionRowsBatch(
         }
         return runOpenClawAgentWriteTransaction(
           (database) =>
-            prepared.map((row, source) =>
-              importSqliteSessionRowsInTransaction(
+            prepared.map((row, index) => {
+              const source = sources.get(index)!;
+              return importSqliteSessionRowsInTransaction(
                 database,
                 row,
                 stage,
                 source,
                 repairs.get(source),
-              ),
-            ),
+              );
+            }),
           toDatabaseOptions(resolved),
         );
       }),

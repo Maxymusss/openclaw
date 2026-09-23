@@ -21,6 +21,7 @@ import {
 } from "./transcript-tree.js";
 
 type StagedTranscriptRow = { seq: number; eventJson: string };
+type StagedTranscriptEventTransform = (event: TranscriptEvent) => TranscriptEvent;
 
 export function withSqliteSessionImportStage<T>(run: (stage: SqliteSessionImportStage) => T): T {
   const directory = createPrivateSqliteTempDirectorySync(os.tmpdir(), "openclaw-session-import-");
@@ -79,9 +80,22 @@ export class SqliteSessionImportStage {
     this.insert.run(source, seq, eventJson);
   }
 
-  rows(source: number): Iterable<StagedTranscriptRow> {
-    // SAFETY: this private table is written only by append; the projection preserves its row types.
-    return this.read.iterate(source) as Iterable<StagedTranscriptRow>;
+  *rows(
+    source: number,
+    eventTransform?: StagedTranscriptEventTransform,
+  ): Iterable<StagedTranscriptRow> {
+    // Repair owns spool mutation. This optional view matches the later persistence transform
+    // without changing the repaired bytes or ordinary import ordering.
+    // SAFETY: append owns this private table; the projection preserves its row types.
+    for (const row of this.read.iterate(source) as Iterable<StagedTranscriptRow>) {
+      if (!eventTransform) {
+        yield row;
+        continue;
+      }
+      // SAFETY: staging serialized the caller's TranscriptEvent before this post-repair view.
+      const event = eventTransform(JSON.parse(row.eventJson) as TranscriptEvent);
+      yield { ...row, eventJson: JSON.stringify(event) };
+    }
   }
 
   resetSeen(): void {
@@ -89,14 +103,17 @@ export class SqliteSessionImportStage {
     this.rejected = false;
   }
 
-  *iterateUnseenEvents(source: number): Generator<TranscriptEvent, void, boolean> {
-    for (const row of this.rows(source)) {
+  *iterateUnseenEvents(
+    source: number,
+    eventTransform?: StagedTranscriptEventTransform,
+  ): Generator<TranscriptEvent, void, boolean> {
+    for (const row of this.rows(source, eventTransform)) {
       const eventHash = hash("sha256", row.eventJson, "buffer");
       // Hash narrows the lookup; exact bytes decide equality even under a hash collision.
       if (this.findSeen.get(eventHash, row.eventJson) !== undefined) {
         continue;
       }
-      // SAFETY: staging serialized the caller's TranscriptEvent without transforming its contents.
+      // SAFETY: the staged row and its optional persistence view are serialized TranscriptEvents.
       const inserted = yield JSON.parse(row.eventJson) as TranscriptEvent;
       // Rejected identities stay unseen so later attempts retain their window recency writes.
       if (inserted) {

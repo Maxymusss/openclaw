@@ -252,6 +252,74 @@ it("deduplicates existing and incoming bytes and identities, preserves aliases, 
   });
 });
 
+it("replays completed-index history only into its exact owned lifecycle", async () => {
+  await withOpenClawTestState({ label: "completed-index-replay" }, async (state) => {
+    const scope = target(state, "replayed");
+    const currentEntry = {
+      ...scope.entry,
+      lifecycleRevision: "current-generation",
+      updatedAt: 900,
+      label: "current owner",
+    };
+    await importSqliteSessionRows({
+      ...scope,
+      entry: currentEntry,
+      readTranscriptEvents: (append) => append(message),
+    });
+    const ownerBefore = loadExactSessionEntry(scope);
+
+    const [sameGeneration] = await importSqliteSessionRowsBatch([
+      {
+        ...scope,
+        completedIndexReplay: true,
+        entry: { ...currentEntry, updatedAt: 1, label: "stale index" },
+        readTranscriptEvents: (append) => {
+          append(message);
+          append({ ...message, id: "suffix", parentId: "one" });
+        },
+      },
+    ]);
+    expect(sameGeneration).toMatchObject({
+      completedIndexReplay: "appended",
+      transcriptEvents: 1,
+    });
+    expect(loadExactSessionEntry(scope)).toEqual(ownerBefore);
+    expect(loadTranscriptEventsSync({ ...scope, sessionId: scope.entry.sessionId })).toEqual([
+      expect.objectContaining({ id: "one" }),
+      expect.objectContaining({ id: "suffix" }),
+    ]);
+
+    const [changedGeneration, missingOwner] = await importSqliteSessionRowsBatch([
+      {
+        ...scope,
+        completedIndexReplay: true,
+        entry: { ...currentEntry, lifecycleRevision: "restored-generation" },
+        readTranscriptEvents: (append) =>
+          append({ ...message, id: "stale-after-reset", parentId: null }),
+      },
+      {
+        ...target(state, "deleted"),
+        completedIndexReplay: true,
+        readTranscriptEvents: (append) => append(message),
+      },
+    ]);
+    expect(changedGeneration).toMatchObject({
+      completedIndexReplay: "generation-changed",
+      transcriptEvents: 0,
+    });
+    expect(loadExactSessionEntry(scope)).toEqual(ownerBefore);
+    expect(loadTranscriptEventsSync({ ...scope, sessionId: scope.entry.sessionId })).toHaveLength(
+      2,
+    );
+
+    expect(missingOwner).toMatchObject({
+      completedIndexReplay: "owner-missing",
+      transcriptEvents: 0,
+    });
+    expect(loadExactSessionEntry(target(state, "deleted"))).toBeUndefined();
+  });
+});
+
 it("keeps legacy Codex assistant rows that precede later transcript rows during repair", async () => {
   await withOpenClawTestState({ label: "import-codex-rows" }, async (state) => {
     const params = target(state, "codex");
