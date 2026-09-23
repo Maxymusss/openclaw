@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as measuredPacking from "../../scripts/lib/ci-measured-compact-packing.mts";
 import { rebalanceMeasuredHybridJobs } from "../../scripts/lib/ci-measured-compact-packing.mts";
 import {
   type CompactNodeTestShard,
@@ -20,18 +21,22 @@ afterEach(() => vi.restoreAllMocks());
 
 describe("measured CI row packing", () => {
   it.each([
-    { compactMode: "push" as const, budget: 720, rows: 3, groupsPerRow: 4 },
-    { compactMode: "pull-request" as const, budget: 600, rows: 4, groupsPerRow: 3 },
+    { compactMode: "push" as const, budget: 720, groupCounts: [6], prices: [620] },
+    { compactMode: "pull-request" as const, budget: 600, groupCounts: [5, 1], prices: [560, 205] },
   ])(
-    "packs $compactMode work up to $budget seconds without changing child execution policies",
-    ({ compactMode, budget, rows, groupsPerRow }) => {
-      const entries = Array.from({ length: 12 }, (_, index) => ({
+    "packs $compactMode by two-slot elapsed time within $budget seconds",
+    ({ compactMode, budget, groupCounts, prices }) => {
+      const entries = Array.from({ length: 6 }, (_, index) => ({
         name: `ordinary-fixture-${index + 1}`,
         config: `fixture-${index + 1}.config.ts`,
         projects: ["test/vitest/vitest.hooks.config.ts"],
       }));
-      vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(
-        Object.fromEntries(entries.map(({ name }) => [name, 170])),
+      const seconds = Object.fromEntries(
+        entries.map(({ name }, index) => [name, index < 3 ? 225 : 95]),
+      );
+      vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue(seconds);
+      vi.spyOn(measuredPacking, "getMeasuredCompactGroupSeconds").mockImplementation(
+        (_job, group) => seconds[group.shard_name],
       );
       vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
       vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
@@ -51,23 +56,21 @@ describe("measured CI row packing", () => {
             }),
         );
         const jobs = createNodeTestShardBundles(options);
-        expect(jobs).toHaveLength(rows);
-        expect(
-          jobs
-            .flatMap((job) => job.groups)
-            .toSorted((a, b) => a.shard_name.localeCompare(b.shard_name)),
-        ).toEqual(declared.toSorted((a, b) => a.shard_name.localeCompare(b.shard_name)));
-        for (const job of jobs) {
+        // Half the 960s aggregate plus setup is 590s, but FIFO slots need 510s + 110s.
+        expect(jobs.map((job) => job.predictedSeconds)).toEqual(prices);
+        expect(jobs.map((job) => job.groups.length)).toEqual(groupCounts);
+        expect(jobs.flatMap((job) => job.groups)).toEqual(declared);
+        for (const [index, job] of jobs.entries()) {
           expect(job).toMatchObject({
             runner: EXTRA_LARGE_NODE_TEST_RUNNER,
-            planConcurrency: 2,
+            planConcurrency: groupCounts[index] === 1 ? 1 : 2,
             requiresDist: false,
             timeoutMinutes: 120,
-            predictedSeconds: groupsPerRow * 170,
           });
-          expect(job.groups).toHaveLength(groupsPerRow);
           expect(job.pretestBuildMode).toBeUndefined();
-          expect(job.env).toBeUndefined();
+          expect(job.env).toEqual(
+            groupCounts[index] === 1 ? { OPENCLAW_VITEST_MAX_WORKERS: "2" } : undefined,
+          );
           expect(job.predictedSeconds).toBeLessThanOrEqual(budget);
         }
         expect(createNodeTestShardBundles(options)).toEqual(jobs);
@@ -113,8 +116,8 @@ describe("measured CI row packing", () => {
   };
 
   it.each([
-    { compactMode: "push" as const, predictedSeconds: 218 },
-    { compactMode: "pull-request" as const, predictedSeconds: 223 },
+    { compactMode: "push" as const, predictedSeconds: 268 },
+    { compactMode: "pull-request" as const, predictedSeconds: 273 },
   ])(
     "packs native serial $compactMode observations with one setup reserve and unchanged children",
     ({ compactMode, predictedSeconds }) => {
@@ -174,29 +177,36 @@ describe("measured CI row packing", () => {
     expect(rebalanceMeasuredHybridJobs(before, measuredSerialOptions)).toEqual(before);
   });
 
-  it("keeps native serial deadline cohorts separate", () => {
-    const before = structuredClone(measuredSerialFixture.jobs);
-    before.forEach((job, index) => {
-      job.timeoutMinutes = 12 + index;
-    });
-    const after = rebalanceMeasuredHybridJobs(before, measuredSerialOptions);
-    expect(after).toHaveLength(before.length);
-    for (const original of before) {
-      expect(after.find((job) => job.checkName === original.checkName)).toMatchObject({
-        groups: original.groups,
-        timeoutMinutes: original.timeoutMinutes,
-        runner: original.runner,
-        planConcurrency: original.planConcurrency,
+  it.each([
+    { deadlines: [12, 13, 14], shortest: 12 },
+    { deadlines: [120, undefined, 120], shortest: 60 },
+  ])(
+    "packs native serial children under the shortest existing deadline: $shortest",
+    ({ deadlines, shortest }) => {
+      const before = structuredClone(measuredSerialFixture.jobs);
+      before.forEach((job, index) => {
+        job.timeoutMinutes = deadlines[index];
       });
-    }
-  });
+      const after = rebalanceMeasuredHybridJobs(before, measuredSerialOptions);
+      expect(after).toHaveLength(1);
+      expect(after[0]).toMatchObject({
+        timeoutMinutes: shortest,
+        runner: DEFAULT_NODE_TEST_RUNNER,
+        planConcurrency: 1,
+      });
+      expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
+    },
+  );
 
   it("keeps a partially unmeasured serial row intact", () => {
     const before = structuredClone(measuredSerialFixture.jobs);
     before[0]!.groups.push(...before[1]!.groups);
     before.splice(1, 1);
     before[0]!.groups[1]!.includePatterns!.push("src/cli/unmeasured-fixture.test.ts");
-    expect(rebalanceMeasuredHybridJobs(before, measuredSerialOptions)).toEqual(before);
+    expect(rebalanceMeasuredHybridJobs(before, measuredSerialOptions)).toEqual([
+      before[0],
+      { ...before[1], predictedSeconds: 147 },
+    ]);
   });
 
   function unmeasuredSerialJobs(runner = EXTRA_LARGE_NODE_TEST_RUNNER) {
@@ -209,8 +219,8 @@ describe("measured CI row packing", () => {
   }
 
   it.each([
-    { compactMode: "push" as const, prices: [705] },
-    { compactMode: "pull-request" as const, prices: [275, 490] },
+    { compactMode: "push" as const, prices: [325, 540] },
+    { compactMode: "pull-request" as const, prices: [325, 540] },
   ])(
     "reserves canonical pricing headroom inside the $compactMode budget",
     ({ compactMode, prices }) => {
@@ -220,7 +230,7 @@ describe("measured CI row packing", () => {
         compactMode,
         estimateSerialGroup: () => 170,
       });
-      // Three 170s children cost 215s each after headroom and admission, plus one setup per row.
+      // Three 215s children plus 110s setup exceed both budgets; two share one row.
       expect(after.map((job) => job.predictedSeconds).toSorted((a, b) => a! - b!)).toEqual(prices);
       expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
       expect(
@@ -230,6 +240,41 @@ describe("measured CI row packing", () => {
       ).toBe(true);
     },
   );
+
+  it("reports an oversized canonical child without changing its execution contract", () => {
+    const before = unmeasuredSerialJobs().slice(0, 1);
+    const after = rebalanceMeasuredHybridJobs(before, {
+      ...measuredSerialOptions,
+      estimateSerialGroup: () => 518,
+    });
+    // 518s receives the existing 25% headroom and admission: 650s + 110s setup.
+    expect(after).toEqual([{ ...before[0], predictedSeconds: 760 }]);
+  });
+
+  it("redistributes an over-budget serial row without adding jobs or changing child contracts", () => {
+    const before = unmeasuredSerialJobs();
+    const large = before[0]!.groups[0]!;
+    const medium = before[1]!.groups[0]!;
+    const small = before[2]!.groups[0]!;
+    before[0]!.groups.push(medium);
+    before.splice(1, 1);
+    const canonicalSeconds = new Map([
+      [large.shard_name, 318],
+      [medium.shard_name, 198],
+      [small.shard_name, 118],
+    ]);
+    const after = rebalanceMeasuredHybridJobs(before, {
+      ...measuredSerialOptions,
+      estimateSerialGroup: (group) => canonicalSeconds.get(group.shard_name)!,
+    });
+    // The original 400s + 250s pair needs 760s; moving the 150s child beside 400s fits.
+    expect(after).toEqual([
+      { ...before[0], groups: [large, small], predictedSeconds: 660 },
+      { ...before[1], groups: [medium], predictedSeconds: 360 },
+    ]);
+    expect(after.every((job) => job.predictedSeconds! <= 720)).toBe(true);
+    expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
+  });
 
   it("does not use canonical fallback for an unmeasured eight-class row", () => {
     const before = unmeasuredSerialJobs(DEFAULT_NODE_TEST_RUNNER);
@@ -250,7 +295,7 @@ describe("measured CI row packing", () => {
       estimateSerialGroup: (group) => (group.shard_name === "agentic-cli" ? 1_000 : 170),
     });
     expect(after).toHaveLength(1);
-    expect(after[0]!.predictedSeconds).toBe(535);
+    expect(after[0]!.predictedSeconds).toBe(585);
     expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
   });
 
@@ -274,7 +319,7 @@ describe("measured CI row packing", () => {
     expect(after[0]).toMatchObject({
       runner: EXTRA_LARGE_NODE_TEST_RUNNER,
       planConcurrency: 1,
-      predictedSeconds: 105,
+      predictedSeconds: 155,
     });
     expect(after[0]!.env).toBeUndefined();
     expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(expected));
@@ -292,7 +337,7 @@ describe("measured CI row packing", () => {
         ...measuredSerialOptions,
         estimateSerialGroup: () => 10,
       }),
-    ).toEqual(before);
+    ).toEqual(before.map((job) => Object.assign({}, job, { predictedSeconds: 125 })));
   });
 
   it.each(["build", "dist", "parallel"] as const)(
@@ -318,10 +363,10 @@ describe("measured CI row packing", () => {
     },
   );
 
-  it("packs the native-wall fixture into four while preserving every child and its supplied prices", () => {
+  it("packs the native-wall fixture into five while preserving every child and its supplied prices", () => {
     const before = measuredToolingFixture();
     const after = rebalanceMeasuredHybridJobs(before, measuredPackingOptions);
-    expect(after).toHaveLength(4);
+    expect(after).toHaveLength(5);
     expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
     expect(Math.max(...after.map((job) => job.predictedSeconds!))).toBeLessThanOrEqual(720);
     expect(after.every((job) => job.predictedSeconds! > 360)).toBe(true);
@@ -433,11 +478,11 @@ describe("measured CI row packing", () => {
       ...measuredPackingOptions,
       estimateGroup: () => ({ seconds: 200, complete: true }),
     };
-    expect(rebalanceMeasuredHybridJobs([observed], options)[0]!.predictedSeconds).toBe(336);
+    expect(rebalanceMeasuredHybridJobs([observed], options)[0]!.predictedSeconds).toBe(386);
     const changed = structuredClone(observed);
     changed.groups[0]!.includePatterns!.push("test/scripts/unmeasured-fixture.test.ts");
     const after = rebalanceMeasuredHybridJobs([changed], options);
-    expect(after[0]!.predictedSeconds).toBe(260);
+    expect(after[0]!.predictedSeconds).toBe(310);
     expect(after[0]!.groups).toEqual(changed.groups);
   });
 
@@ -452,7 +497,7 @@ describe("measured CI row packing", () => {
     });
     expect(after).toHaveLength(1);
     expect(after[0]!.groups).toEqual(before.groups);
-    expect(after[0]!.predictedSeconds).toBe(629);
+    expect(after[0]!.predictedSeconds).toBe(679);
   });
 
   it("splits newly expensive tooling pairs after their historical timing identities expire", () => {
@@ -467,7 +512,7 @@ describe("measured CI row packing", () => {
     });
     expect(after).toHaveLength(2);
     expect(after.flatMap((job) => job.groups)).toEqual(before.groups);
-    expect(after.map((job) => job.predictedSeconds)).toEqual([380, 380]);
+    expect(after.map((job) => job.predictedSeconds)).toEqual([430, 430]);
   });
 
   it("does not pack an unmeasured file using the canonical fallback as a wall observation", () => {
@@ -479,7 +524,7 @@ describe("measured CI row packing", () => {
     const after = rebalanceMeasuredHybridJobs(before, { ...measuredPackingOptions, estimateGroup });
     expect(after).toHaveLength(2);
     expect(after.map((job) => job.groups)).toEqual(before.map((job) => job.groups));
-    expect(after.map((job) => job.predictedSeconds)).toEqual([266, 264]);
+    expect(after.map((job) => job.predictedSeconds)).toEqual([316, 314]);
     expect(
       rebalanceMeasuredHybridJobs(before, {
         ...measuredPackingOptions,
@@ -519,7 +564,7 @@ describe("measured CI row packing", () => {
         "expensive owner",
       );
       expect(expensive.groups).toEqual(before[0]!.groups);
-      expect(expensive.predictedSeconds).toBe(960);
+      expect(expensive.predictedSeconds).toBe(1_010);
       expect(sortedMeasuredGroups(after)).toEqual(sortedMeasuredGroups(before));
     },
   );

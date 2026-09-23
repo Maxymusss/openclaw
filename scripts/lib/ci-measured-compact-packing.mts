@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import { measuredParallelGroupSeconds } from "./ci-measured-parallel-timings.mts";
 import { measuredSerialGroupSeconds } from "./ci-measured-serial-timings.mts";
 import type { CompactNodeTestShard, NodeTestShardGroup } from "./ci-node-test-plan.mts";
 import { mergeVitestPretestBuildModes } from "./vitest-build-prerequisites.mts";
 import { VITEST_PRETEST_BUILD_SECONDS } from "./vitest-shard-metadata.mts";
 
-const FIXED_JOB_SECONDS = 60;
+// Native no-build rows reached 103s outside tests, plus up to 6s between children.
+export const COMPACT_JOB_OVERHEAD_SECONDS = 110;
 const MAX_PACKED_JOB_SECONDS = 720;
 
 // Complete serial BS8/two-worker child observations from 35702479645,
@@ -173,7 +175,7 @@ function isNumberedToolingGroup(group: NodeTestShardGroup): boolean {
   );
 }
 
-function executedSerialGroupFingerprint(
+function executedCompactGroupFingerprint(
   job: CompactNodeTestShard,
   group: NodeTestShardGroup,
 ): string {
@@ -194,6 +196,20 @@ function executedSerialGroupFingerprint(
     .digest("hex");
 }
 
+export function getMeasuredCompactGroupSeconds(
+  job: CompactNodeTestShard,
+  group: NodeTestShardGroup,
+  compactMode: "push" | "pull-request",
+): number | undefined {
+  const timings =
+    job.planConcurrency === 1
+      ? measuredSerialGroupSeconds
+      : job.planConcurrency === 2
+        ? measuredParallelGroupSeconds
+        : undefined;
+  return timings?.[compactMode][executedCompactGroupFingerprint(job, group)];
+}
+
 function packMeasuredSerialJobs(
   jobs: CompactNodeTestShard[],
   options: {
@@ -203,16 +219,22 @@ function packMeasuredSerialJobs(
     estimateSerialGroup?: (group: NodeTestShardGroup) => number;
   },
 ): CompactNodeTestShard[] {
-  if (!options.compactMode) {
+  const compactMode = options.compactMode;
+  if (!compactMode) {
     return jobs;
   }
-  const maxJobSeconds = options.compactMode === "push" ? 720 : 600;
-  const observations = measuredSerialGroupSeconds[options.compactMode];
+  const maxJobSeconds = compactMode === "push" ? 720 : 600;
   type PricedGroup = { group: NodeTestShardGroup; seconds: number };
   const pools = new Map<
     string,
-    { jobs: CompactNodeTestShard[]; groups: PricedGroup[]; env?: Record<string, string> }
+    {
+      jobs: CompactNodeTestShard[];
+      groups: PricedGroup[];
+      env?: Record<string, string>;
+      overBudget: boolean;
+    }
   >();
+  const predictions = new Map<CompactNodeTestShard, number>();
   for (const job of jobs) {
     if (
       job.planConcurrency !== 1 ||
@@ -226,7 +248,7 @@ function packMeasuredSerialJobs(
     const transferWorkerCap =
       job.env?.OPENCLAW_VITEST_MAX_WORKERS === "2" && Object.keys(job.env).length === 1;
     const priced = job.groups.flatMap((group) => {
-      const nativeSeconds = observations[executedSerialGroupFingerprint(job, group)];
+      const nativeSeconds = getMeasuredCompactGroupSeconds(job, group, compactMode);
       const canonicalSeconds =
         job.runner === options.largeRunner ? options.estimateSerialGroup?.(group) : undefined;
       // New files reshuffle complete stripes. Retain the canonical estimator
@@ -253,19 +275,25 @@ function packMeasuredSerialJobs(
             },
           ];
     });
-    if (
-      priced.length !== job.groups.length ||
-      priced.some(({ seconds }) => seconds + FIXED_JOB_SECONDS > maxJobSeconds)
-    ) {
+    if (priced.length !== job.groups.length) {
+      continue;
+    }
+    const predictedSeconds = priced.reduce(
+      (seconds, group) => seconds + group.seconds,
+      COMPACT_JOB_OVERHEAD_SECONDS,
+    );
+    predictions.set(job, predictedSeconds);
+    if (priced.some(({ seconds }) => seconds + COMPACT_JOB_OVERHEAD_SECONDS > maxJobSeconds)) {
       continue;
     }
     // A two-worker row can share a default-capacity host after each child
-    // carries that same ceiling. Other environment and deadline cohorts stay separate.
+    // carries that same ceiling. Other environment overrides stay separate.
     const env = transferWorkerCap ? undefined : job.env;
-    const key = JSON.stringify([job.runner, env, job.timeoutMinutes]);
-    const pool = pools.get(key) ?? { jobs: [], groups: [], env };
+    const key = JSON.stringify([job.runner, env]);
+    const pool = pools.get(key) ?? { jobs: [], groups: [], env, overBudget: false };
     pool.jobs.push(job);
     pool.groups.push(...priced);
+    pool.overBudget ||= predictedSeconds > maxJobSeconds;
     pools.set(key, pool);
   }
   const replacements = new Map<CompactNodeTestShard, CompactNodeTestShard>();
@@ -276,7 +304,7 @@ function packMeasuredSerialJobs(
       (a, b) => b.seconds - a.seconds || a.group.shard_name.localeCompare(b.group.shard_name),
     )) {
       const bin = bins.find(
-        (candidate) => candidate.seconds + seconds + FIXED_JOB_SECONDS <= maxJobSeconds,
+        (candidate) => candidate.seconds + seconds + COMPACT_JOB_OVERHEAD_SECONDS <= maxJobSeconds,
       );
       if (bin) {
         bin.groups.push(group);
@@ -285,9 +313,14 @@ function packMeasuredSerialJobs(
         bins.push({ groups: [group], seconds });
       }
     }
-    if (bins.length >= pool.jobs.length) {
+    if (bins.length > pool.jobs.length || (bins.length === pool.jobs.length && !pool.overBudget)) {
       continue;
     }
+    // Mixed whole-config and selected-file rows keep the shortest existing
+    // deadline. Packing must never extend a child's execution allowance.
+    const timeoutMinutes = pool.jobs.every((job) => job.timeoutMinutes === undefined)
+      ? undefined
+      : Math.min(...pool.jobs.map((job) => job.timeoutMinutes ?? 60));
     pool.jobs.forEach((job, index) => {
       const bin = bins[index];
       if (!bin) {
@@ -297,12 +330,22 @@ function packMeasuredSerialJobs(
           ...job,
           groups: bin.groups,
           env: pool.env,
-          predictedSeconds: bin.seconds + FIXED_JOB_SECONDS,
+          timeoutMinutes,
+          predictedSeconds: bin.seconds + COMPACT_JOB_OVERHEAD_SECONDS,
         });
       }
     });
   }
-  return jobs.filter((job) => !retired.has(job)).map((job) => replacements.get(job) ?? job);
+  return jobs
+    .filter((job) => !retired.has(job))
+    .map((job) => {
+      const replacement = replacements.get(job);
+      if (replacement) {
+        return replacement;
+      }
+      const predictedSeconds = predictions.get(job);
+      return predictedSeconds === undefined ? job : Object.assign({}, job, { predictedSeconds });
+    });
 }
 
 /** Reuse measured serial placement without replacing the general capacity-pricing owner. */
@@ -369,11 +412,10 @@ export function rebalanceMeasuredHybridJobs(
         (nativeSeconds.every((value) => value !== undefined)
           ? nativeSeconds.reduce<number>((sum, value) => sum + value!, 0)
           : seconds.reduce((sum, value) => sum + value, 0)) + Math.max(...buildSeconds),
-      ) + FIXED_JOB_SECONDS;
+      ) + COMPACT_JOB_OVERHEAD_SECONDS;
     // Complete child walls identify existing tails more directly than summed
     // file estimates. Packing still retains the higher canonical price below.
-    const limit = 600;
-    if (!pair && (!tooling || completeWall <= limit)) {
+    if (!pair && (!tooling || completeWall <= maxPackedJobSeconds)) {
       return [job];
     }
     return job.groups.map((group, index) => ({
@@ -386,7 +428,7 @@ export function rebalanceMeasuredHybridJobs(
       pretestBuildMode: group.pretestBuildMode,
       predictedSeconds: Math.max(
         job.predictedSeconds ?? 0,
-        seconds[index]! + buildSeconds[index]! + FIXED_JOB_SECONDS,
+        seconds[index]! + buildSeconds[index]! + COMPACT_JOB_OVERHEAD_SECONDS,
       ),
     }));
   });
@@ -424,13 +466,14 @@ export function rebalanceMeasuredHybridJobs(
       job,
       {
         ...job,
-        predictedSeconds: Math.ceil(seconds + FIXED_JOB_SECONDS),
+        predictedSeconds: Math.ceil(seconds + COMPACT_JOB_OVERHEAD_SECONDS),
       },
     ]),
   );
   const candidates = measured
     .filter(
-      ({ seconds, complete }) => complete && seconds + FIXED_JOB_SECONDS <= maxPackedJobSeconds,
+      ({ seconds, complete }) =>
+        complete && seconds + COMPACT_JOB_OVERHEAD_SECONDS <= maxPackedJobSeconds,
     )
     .toSorted((a, b) => b.seconds - a.seconds || a.job.checkName.localeCompare(b.job.checkName));
   if (candidates.length < 2) {
@@ -441,7 +484,7 @@ export function rebalanceMeasuredHybridJobs(
     return finish(split.map((job) => priced.get(job) ?? job));
   }
 
-  const workBudget = maxPackedJobSeconds - FIXED_JOB_SECONDS;
+  const workBudget = maxPackedJobSeconds - COMPACT_JOB_OVERHEAD_SECONDS;
   const minimumJobs = Math.ceil(
     candidates.reduce((sum, entry) => sum + entry.seconds, 0) / workBudget,
   );
@@ -477,7 +520,7 @@ export function rebalanceMeasuredHybridJobs(
         Object.assign({}, originals[0]!, {
           groups: originals.flatMap((job) => job.groups),
           env: { ...originals[0]!.env, OPENCLAW_VITEST_MAX_WORKERS: "2" },
-          predictedSeconds: Math.ceil(seconds + FIXED_JOB_SECONDS),
+          predictedSeconds: Math.ceil(seconds + COMPACT_JOB_OVERHEAD_SECONDS),
         }),
       );
     return finish([

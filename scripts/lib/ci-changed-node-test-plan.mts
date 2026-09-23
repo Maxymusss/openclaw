@@ -704,6 +704,7 @@ export function createChangedNodeTestShards(
         file === "scripts/lib/ci-node-test-plan.mts" ||
         file === "scripts/lib/ci-measured-compact-packing.mts" ||
         file === "scripts/lib/ci-measured-serial-timings.mts" ||
+        file === "scripts/lib/ci-measured-parallel-timings.mts" ||
         file === "test/scripts/ci-measured-compact-packing.test.ts" ||
         file === "scripts/lib/ci-test-timings.mts" ||
         file === "scripts/lib/vitest-shard-metadata.mts" ||

@@ -55,7 +55,11 @@ import {
   isParallelCommandsGroup,
   estimateCommandWorkerSeconds,
 } from "./ci-command-test-plan.mts";
-import { rebalanceMeasuredHybridJobs } from "./ci-measured-compact-packing.mts";
+import {
+  COMPACT_JOB_OVERHEAD_SECONDS,
+  getMeasuredCompactGroupSeconds,
+  rebalanceMeasuredHybridJobs,
+} from "./ci-measured-compact-packing.mts";
 import {
   COMPACT_EMBEDDED_BASE_GROUP_NAME,
   canSplitWholeConfigGroup,
@@ -4440,12 +4444,11 @@ function createCompactNodeTestShardBundles(
     );
   }
 
-  const finalWorkBudget = compactMode === "push" ? 720 : 600;
+  const finalWallBudget = compactMode === "push" ? 720 : 600;
   // Larger initial bins change which groups reach serial Gateway/runtime rows.
   // Preserve serial membership here; measured serial packing runs after pricing.
   const retiredJobs = new Set<CompactNodeTestShard>();
-  // Keep the settled placement before applying the event's final work budget.
-  for (const finalPacking of [false, true]) {
+  const compactParallelJobs = (finalPacking: boolean) => {
     const parallelJobs: CompactNodeTestShard[] = [];
     for (const job of compactJobs) {
       if (
@@ -4462,14 +4465,49 @@ function createCompactNodeTestShardBundles(
       }
       parallelJobs.push(job);
     }
-    // Keep wider packing inside existing deadline cohorts: moving an
-    // explicit-file group into a whole-config row must not lengthen its deadline.
-    const parallelPools = finalPacking
-      ? [...new Set(parallelJobs.map((job) => job.timeoutMinutes))].map((timeout) =>
-          parallelJobs.filter((job) => job.timeoutMinutes === timeout),
-        )
-      : [parallelJobs];
-    for (const pool of parallelPools) {
+    // Share inherited environments without extending any contributing job's deadline.
+    const parallelPools = new Map<string, CompactNodeTestShard[]>();
+    for (const job of parallelJobs) {
+      const key = finalPacking
+        ? JSON.stringify(Object.entries(job.env ?? {}).toSorted(([a], [b]) => a.localeCompare(b)))
+        : "settled";
+      const pool = parallelPools.get(key) ?? [];
+      pool.push(job);
+      parallelPools.set(key, pool);
+    }
+    for (const pool of parallelPools.values()) {
+      const timeoutMinutes = pool.every((job) => job.timeoutMinutes === undefined)
+        ? undefined
+        : Math.min(...pool.map((job) => job.timeoutMinutes ?? 60));
+      const childSeconds = new Map(
+        pool.flatMap((job) =>
+          job.groups.map(
+            (group) =>
+              [
+                group,
+                finalPacking
+                  ? (getMeasuredCompactGroupSeconds(job, group, compactMode) ??
+                    Math.ceil(estimateStripeSeconds(group) * 1.25) + 2)
+                  : estimateStripeSeconds(group),
+              ] as const,
+          ),
+        ),
+      );
+      const parallelSeconds = (groups: NodeTestShardGroup[]) => {
+        const slots: [number, number] = [0, 0];
+        // The executor takes the next complete child whenever either slot finishes.
+        for (const group of groups) {
+          const slot = slots[0] <= slots[1] ? 0 : 1;
+          slots[slot] += childSeconds.get(group)!;
+        }
+        return Math.max(...slots) + COMPACT_JOB_OVERHEAD_SECONDS;
+      };
+      const cost = finalPacking ? parallelSeconds : estimateBinSeconds;
+      if (finalPacking) {
+        for (const job of pool) {
+          job.predictedSeconds = Math.ceil(cost(job.groups));
+        }
+      }
       if (pool.length < 2) {
         continue;
       }
@@ -4477,21 +4515,25 @@ function createCompactNodeTestShardBundles(
         .flatMap((job) => job.groups)
         .toSorted(
           (a, b) =>
-            estimateStripeSeconds(b) - estimateStripeSeconds(a) ||
-            a.shard_name.localeCompare(b.shard_name),
+            childSeconds.get(b)! - childSeconds.get(a)! || a.shard_name.localeCompare(b.shard_name),
         );
       const bins = packNodeTestGroups(
         groups,
         (candidate, group) =>
           admitsCompactBin(
             [...candidate, group],
-            finalPacking ? finalWorkBudget : COMPACT_FINAL_PARALLEL_NODE_TEST_JOB_SECONDS,
-            estimateBinSeconds,
+            finalPacking ? finalWallBudget : COMPACT_FINAL_PARALLEL_NODE_TEST_JOB_SECONDS,
+            cost,
             { parallel: true, sharedFamily: finalPacking },
           ),
         finalPacking,
       );
-      if (bins.length < pool.length) {
+      const repairsOverBudgetRow =
+        finalPacking && pool.some((job) => job.predictedSeconds! > finalWallBudget);
+      if (
+        (bins.length < pool.length || (repairsOverBudgetRow && bins.length === pool.length)) &&
+        (!finalPacking || bins.every((bin) => cost(bin) <= finalWallBudget))
+      ) {
         pool.forEach((job, index) => {
           const bin = bins[index];
           if (!bin) {
@@ -4499,9 +4541,11 @@ function createCompactNodeTestShardBundles(
             return;
           }
           job.groups = bin;
-          job.predictedSeconds = Math.ceil(estimateBinSeconds(bin));
+          job.predictedSeconds = Math.ceil(cost(bin));
           job.planConcurrency = bin.length > 1 ? 2 : 1;
-          if (!finalPacking) {
+          if (finalPacking) {
+            job.timeoutMinutes = timeoutMinutes;
+          } else {
             job.timeoutMinutes = bin.some((group) => !group.includePatterns)
               ? COMPACT_WHOLE_NODE_TEST_TIMEOUT_MINUTES
               : undefined;
@@ -4513,7 +4557,8 @@ function createCompactNodeTestShardBundles(
         });
       }
     }
-  }
+  };
+  compactParallelJobs(false);
   const finalJobs = compactJobs.filter((job) => !retiredJobs.has(job));
   for (const job of finalJobs) {
     // The 4/8 classes both deliver two CPUs. Routing must not alter placement anchors.
@@ -4558,11 +4603,15 @@ function createCompactNodeTestShardBundles(
     job.predictedSeconds = Math.ceil(job.predictedSeconds! - savedSeconds);
   }
 
+  // Final elapsed admission uses the prepared command prices, not their summed savings.
+  compactParallelJobs(true);
+  const packedJobs = finalJobs.filter((job) => !retiredJobs.has(job));
+
   const toolingFileTimings =
     options.runnerBackend === "hybrid" ? readToolingFileTimings("blacksmith") : undefined;
   const measuredJobs =
-    options.runnerBackend === "hybrid" && options.compactMode !== undefined
-      ? rebalanceMeasuredHybridJobs(finalJobs, {
+    options.runnerBackend === "hybrid"
+      ? rebalanceMeasuredHybridJobs(packedJobs, {
           runner: DEFAULT_NODE_TEST_RUNNER,
           largeRunner: EXTRA_LARGE_NODE_TEST_RUNNER,
           compactMode,
@@ -4581,7 +4630,7 @@ function createCompactNodeTestShardBundles(
           canShare: (groups) =>
             groups.length <= COMPACT_NODE_TEST_JOB_GROUPS && hasDistinctStripeFamilies(groups),
         })
-      : finalJobs;
+      : packedJobs;
   if (measuredJobs.length > compactJobCap) {
     throw new Error(
       `compact ${options.runnerBackend ?? "blacksmith"} node test plan exceeds ${compactJobCap} jobs (${measuredJobs.length} planned)`,

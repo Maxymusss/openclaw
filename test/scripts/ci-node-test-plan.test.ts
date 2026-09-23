@@ -363,16 +363,14 @@ function listAllToolingTestFiles(): string[] {
 
 describe("scripts/lib/ci-node-test-plan.mts", () => {
   it("packs ordinary work more densely while retaining the serial Gateway budget", () => {
+    vi.spyOn(measuredPacking, "getMeasuredCompactGroupSeconds").mockReturnValue(undefined);
     vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({
       "agentic-gateway-server-isolated": 200,
       "agentic-agents-core-models": 160,
-      "agentic-agents-core-runtime": 160,
-      "ordinary-a": 150,
-      "ordinary-b": 150,
-      "ordinary-c": 150,
-      "ordinary-d": 150,
-      "agentic-agents-core-auth": 150,
-      "agentic-agents-core-tools": 150,
+      "core-unit-fast-1": 170,
+      "core-unit-fast-2": 170,
+      "ordinary-a": 170,
+      "ordinary-b": 170,
     });
     vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
     vi.spyOn(buildPrerequisites, "resolveVitestPretestBuildMode").mockReturnValue(undefined);
@@ -384,24 +382,22 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         ...[
           ["agentic-gateway-server-isolated", "gateway-server-isolated"],
           ["agentic-agents-core-models", "unit-support"],
-          ["agentic-agents-core-runtime", "unit-fast-isolated"],
+          ["core-unit-fast", "unit-fast"],
           ["ordinary-a", "hooks"],
           ["ordinary-b", "secrets"],
-          ["ordinary-c", "logging"],
-          ["ordinary-d", "unit-support"],
-          ["agentic-agents-core-auth", "hooks"],
-          ["agentic-agents-core-tools", "secrets"],
         ].map(([name, config]) => ({
           name: name!,
           config: `fixture-${name}.config.ts`,
           projects: [`test/vitest/vitest.${config}.config.ts`],
         })),
       );
-      const jobs = createNodeTestShardBundles({
-        compactMode: "push",
+      const options = {
+        compactMode: "pull-request" as const,
         runnerBackend: "blacksmith",
         includeReleaseOnlyPluginShards: false,
-      });
+      };
+      const declared = createNodeTestShards(options);
+      const jobs = createNodeTestShardBundles(options);
       const gateway = expectDefined(
         jobs.find((job) =>
           job.groups.some((group) =>
@@ -434,22 +430,26 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       );
       expect(ordinary.planConcurrency).toBe(2);
       expect(ordinary.groups.map((group) => group.shard_name).toSorted()).toEqual([
-        "agentic-agents-core-auth",
-        "agentic-agents-core-runtime",
+        "core-unit-fast-1",
+        "core-unit-fast-2",
         "ordinary-a",
+        "ordinary-b",
       ]);
       expect(new Set(ordinary.groups.map((group) => group.runner))).toEqual(
         new Set([BUNDLED_NODE_TEST_RUNNER, DEFAULT_NODE_TEST_RUNNER]),
       );
-      expect(ordinary.predictedSeconds).toBe(460);
-      expect(
-        jobs.find((job) => job.groups.some((group) => group.shard_name === "ordinary-d")),
-      ).toMatchObject({
-        planConcurrency: 2,
-        runner: EXTRA_LARGE_NODE_TEST_RUNNER,
-        predictedSeconds: 450,
-      });
-      expect(jobs).toHaveLength(4);
+      expect(ordinary.groups.filter((group) => group.includePatterns)).toEqual(
+        declared
+          .filter((shard) => shard.shardName.startsWith("core-unit-fast-"))
+          .map(({ checkName: _checkName, shardName, ...group }) =>
+            Object.assign({}, group, { shard_name: shardName }),
+          ),
+      );
+      // Keep the selected-file pair's 60-minute default when sharing with whole configs.
+      expect(ordinary.timeoutMinutes).toBe(60);
+      expect(ordinary.env).toBeUndefined();
+      expect(ordinary.predictedSeconds).toBe(540);
+      expect(jobs).toHaveLength(2);
     } finally {
       fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
     }
@@ -569,9 +569,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         "2",
       ]);
       expect(jobs.filter((job) => job !== gateway).map((job) => job.predictedSeconds)).toEqual([
-        440, 400,
+        668,
       ]);
-      expect(jobs).toHaveLength(3);
+      expect(jobs).toHaveLength(2);
     } finally {
       fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...original);
     }
@@ -663,7 +663,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
               ? undefined
               : env;
           expect(nonWorkerEnv(job.env)).toEqual(nonWorkerEnv(owner.env));
-          expect(job.timeoutMinutes).toBe(owner.timeoutMinutes);
+          expect(job.timeoutMinutes ?? 60).toBeLessThanOrEqual(owner.timeoutMinutes ?? 60);
         }
       }
       return before;
@@ -1008,6 +1008,12 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         readCompactGroupTimings: () => seconds,
         readRuntimePlacementTimings: () => [],
       }));
+      vi.doMock("../../scripts/lib/ci-measured-compact-packing.mts", async (importOriginal) => ({
+        ...(await importOriginal<
+          typeof import("../../scripts/lib/ci-measured-compact-packing.mts")
+        >()),
+        getMeasuredCompactGroupSeconds: () => undefined,
+      }));
       vi.doMock("../../scripts/lib/vitest-shard-metadata.mts", () => ({
         ...shardMetadata,
         estimateVitestTestFileSeconds: fileWeights,
@@ -1029,7 +1035,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           jobs.reduce((sum, job) => sum + (job.predictedSeconds ?? 0), 0);
         const baseline = createPlan(options);
         // The authentication fixture is indivisible; only the two models share work.
-        expect(predicted(baseline)).toBe(runnerBackend === "hybrid" ? 122 : 140);
+        expect(predicted(baseline)).toBe(
+          runnerBackend === "blacksmith" ? 237 : runnerBackend === "hybrid" ? 221 : 140,
+        );
         expect(
           baseline
             .flatMap((job) => job.groups)
@@ -1041,13 +1049,15 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         }
         // One model owns 75% of the serial work; two workers cannot halve it.
         fileWeights.mockImplementation((file) => (file === heavyModel ? 3 : 1));
-        expect(predicted(createPlan(options))).toBe(runnerBackend === "hybrid" ? 166 : 190);
+        expect(predicted(createPlan(options))).toBe(
+          runnerBackend === "blacksmith" ? 300 : runnerBackend === "hybrid" ? 276 : 190,
+        );
         fileWeights.mockReturnValue(1);
         seconds[`${models}-parallel`] = 200;
         const measured = createPlan(options);
         // Hosted splitting turns two concurrent 200s files into two 200s children.
         expect(predicted(measured)).toBe(
-          runnerBackend === "blacksmith" ? 240 : runnerBackend === "hybrid" ? 383 : 440,
+          runnerBackend === "blacksmith" ? 362 : runnerBackend === "hybrid" ? 504 : 440,
         );
         expect(
           measured
@@ -1076,7 +1086,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             seconds[group.timing_key!] = index === 0 ? 180 : 190;
           });
           const childMeasured = createPlan(options);
-          expect(predicted(childMeasured)).toBe(runnerBackend === "hybrid" ? 357 : 410);
+          expect(predicted(childMeasured)).toBe(runnerBackend === "hybrid" ? 476 : 410);
           expect(
             childMeasured
               .flatMap((job) => job.groups)
@@ -1143,6 +1153,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         vi.doUnmock("../../scripts/lib/vitest-build-prerequisites.mts");
         vi.doUnmock("../../scripts/lib/vitest-shard-metadata.mts");
         vi.doUnmock("../../scripts/lib/ci-test-timings.mts");
+        vi.doUnmock("../../scripts/lib/ci-measured-compact-packing.mts");
         vi.doUnmock("../../scripts/lib/list-test-files.mts");
         vi.doUnmock("../vitest/vitest.test-shards.mjs");
         vi.doUnmock("../vitest/vitest.unit-fast-paths.mjs");
@@ -1320,13 +1331,24 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   );
 
   it.each([
-    { profile: "blacksmith", owner: "auto-reply-reply-state-routing", fallback: 60, measured: 99 },
-    { profile: "hybrid", owner: "auto-reply-reply-state-routing", fallback: 52, measured: 86 },
+    {
+      profile: "blacksmith",
+      owner: "auto-reply-reply-state-routing",
+      fallback: 187,
+      measured: 236,
+    },
+    { profile: "hybrid", owner: "auto-reply-reply-state-routing", fallback: 177, measured: 220 },
     { profile: "github", owner: "auto-reply-reply-state-routing", fallback: 60, measured: 99 },
-    { profile: "blacksmith", owner: "auto-reply-reply-dispatch-core", fallback: 120, measured: 99 },
+    {
+      profile: "blacksmith",
+      owner: "auto-reply-reply-dispatch-core",
+      fallback: 262,
+      measured: 236,
+    },
   ])(
     "prices $owner on $profile at two workers without discounting new measurements",
     ({ profile, owner, fallback, measured }) => {
+      vi.spyOn(measuredPacking, "getMeasuredCompactGroupSeconds").mockReturnValue(undefined);
       const original = fullSuiteVitestShards.slice();
       const config = "test/vitest/vitest.auto-reply-reply.config.ts";
       fullSuiteVitestShards.splice(
@@ -1382,7 +1404,10 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           for (const scenario of [
             { observations: { [legacy.timingKeys[0]!]: 240 }, expected: fallback },
             { observations: { [mismatched.timingKeys[0]!]: 240 }, expected: fallback },
-            { observations: complete, expected: profile === "hybrid" ? 104 : 120 },
+            {
+              observations: complete,
+              expected: profile === "blacksmith" ? 262 : profile === "hybrid" ? 242 : 120,
+            },
           ]) {
             Object.assign(timings, scenario.observations);
             const plan = createNodeTestShardBundles(options);
@@ -2174,6 +2199,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   ])(
     "prefers $profile measurements while retaining unmeasured hints and defaults",
     ({ profile, legacy, measured, defaultSeconds }) => {
+      vi.spyOn(measuredPacking, "getMeasuredCompactGroupSeconds").mockReturnValue(undefined);
       const timings = vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
       const options = {
         includeReleaseOnlyPluginShards: false,
@@ -2237,7 +2263,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         expect(packed[0]?.runner).toBe(
           profile === "github" ? base[0]?.runner : EXTRA_LARGE_NODE_TEST_RUNNER,
         );
-        expect(packed[0]?.predictedSeconds).toBe(profile === "hybrid" ? 296 : groupSeconds * 2);
+        expect(packed[0]?.predictedSeconds).toBe(
+          profile === "blacksmith" ? 325 : profile === "hybrid" ? 297 : groupSeconds * 2,
+        );
       } finally {
         fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
       }
@@ -3706,11 +3734,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     expect(embeddedBaseFiles.toSorted((a, b) => a.localeCompare(b))).toEqual(
       embeddedBaseOwnerFiles.toSorted((a, b) => a.localeCompare(b)),
     );
-    expect(
-      compact
-        .filter((shard) => shard.groups.some((group) => !group.includePatterns))
-        .every((shard) => shard.timeoutMinutes === 120),
-    ).toBe(true);
+    for (const shard of compact.filter((job) =>
+      job.groups.some((group) => !group.includePatterns),
+    )) {
+      expect([60, 120]).toContain(shard.timeoutMinutes ?? 60);
+    }
     // Whole-config groups now pack into the same runtime-balanced bins as
     // include-pattern groups; the separate "-whole-" job class is gone.
     expect(compact.some((shard) => shard.checkName.includes("-whole-"))).toBe(false);
@@ -4623,7 +4651,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       ).toBe(true);
       // Preserve the worker/longest-file price independently of hybrid's
       // separately quoted, once-per-job setup allowance.
-      const setupSeconds = profile === "hybrid" ? 60 : 0;
+      const setupSeconds = profile === "hybrid" ? 110 : 0;
       expect(plan.reduce((seconds, job) => seconds + job.predictedSeconds! - setupSeconds, 0)).toBe(
         expectedSeconds,
       );
@@ -5456,6 +5484,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
   it.each(["blacksmith", "github", "hybrid"])(
     "prices parallel cron from serial work until %s has direct measurements",
     (runnerBackend) => {
+      vi.spyOn(measuredPacking, "getMeasuredCompactGroupSeconds").mockReturnValue(undefined);
       const original = fullSuiteVitestShards.slice();
       try {
         const cron = "test/vitest/vitest.cron.config.ts";
@@ -5475,7 +5504,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         const baseline = createNodeTestShardBundles(options);
         const totalSeconds = (plan: typeof baseline) =>
           plan.reduce((total, job) => total + job.predictedSeconds!, 0);
-        expect(totalSeconds(baseline)).toBe(runnerBackend === "hybrid" ? 122 : 140);
+        expect(totalSeconds(baseline)).toBe(
+          runnerBackend === "blacksmith" ? 202 : runnerBackend === "hybrid" ? 228 : 140,
+        );
         expect(baseline.flatMap((job) => job.groups)).toHaveLength(3);
         timings.mockReturnValue({
           "core-runtime-cron-core": 400,
@@ -5486,7 +5517,9 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           "core-runtime-cron-parallel-service": 80,
         });
         const measured = createNodeTestShardBundles(options);
-        expect(totalSeconds(measured)).toBe(runnerBackend === "hybrid" ? 139 : 160);
+        expect(totalSeconds(measured)).toBe(
+          runnerBackend === "blacksmith" ? 214 : runnerBackend === "hybrid" ? 247 : 160,
+        );
         const groups = measured.flatMap((job) => job.groups);
         expect(groups).toHaveLength(3);
         expect(groups.every((group) => group.env === undefined)).toBe(true);

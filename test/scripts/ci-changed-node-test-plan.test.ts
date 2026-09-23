@@ -19,7 +19,6 @@ import {
   hasSqliteSessionLifecycleAffectingChange,
   hasUiE2eAffectingChange,
 } from "../../scripts/lib/ci-changed-node-test-plan.mts";
-import * as measuredPacking from "../../scripts/lib/ci-measured-compact-packing.mts";
 import { encodeNodeTestGroups } from "../../scripts/lib/ci-node-test-groups-codec.mts";
 import {
   createNodeTestShardBundles,
@@ -598,11 +597,8 @@ describe("CI changed Node test plan", () => {
         "src/agents/embedded-agent-runner/run.incomplete-turn.classification.test.ts",
         "src/agents/embedded-agent-runner/run.overflow-compaction.test.ts",
       ];
-      // Precise plans inherit templates before whole-plan placement and packing.
+      // Precise plans inherit templates before whole-plan runtime placement.
       const placement = vi.spyOn(testTimings, "readRuntimePlacementTimings").mockReturnValue([]);
-      const packing = vi
-        .spyOn(measuredPacking, "rebalanceMeasuredHybridJobs")
-        .mockImplementation((jobs) => jobs);
       let full: CompactNodeTestShard[];
       try {
         full = createNodeTestShardBundles({
@@ -612,7 +608,6 @@ describe("CI changed Node test plan", () => {
         });
       } finally {
         placement.mockRestore();
-        packing.mockRestore();
       }
       for (const targets of [[embeddedTest], [...siblings, embeddedTest]]) {
         const shards = createChangedNodeTestShards(targets, { runnerBackend });
@@ -1436,6 +1431,7 @@ describe("CI changed Node test plan", () => {
       "scripts/lib/ci-test-timings.mts",
       "scripts/lib/vitest-shard-metadata.mts",
       "scripts/lib/ci-measured-serial-timings.mts",
+      "scripts/lib/ci-measured-parallel-timings.mts",
       "test/scripts/ci-measured-compact-packing.test.ts",
     ].flatMap((changedPath) =>
       ["blacksmith", "hybrid", "runson"].map((runnerBackend) => ({ changedPath, runnerBackend })),
