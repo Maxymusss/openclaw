@@ -109,64 +109,35 @@ registrations or hosted rows. Real-Gateway E2E also retains its 32-class request
 other main CI placements retain the 16-class sizing.
 Native CI must establish the resulting execution and queue times.
 
-The measured exception is source-only, serial `agentic-gateway-core-1-hosted-*`
-PR rows whose children all retain an explicit two-worker ceiling. Their original
-360-second predicted envelopes can request the 16-class after provider placement.
-Envelopes containing the UI Vitest config retain the 32-class: native
-qualification exceeded both the 600-second PR and 720-second main budgets.
-Builds, SDK/compiler fixtures, measured-worker fallbacks, memory-gated children,
-overlapping plans, and denser envelopes retain their existing capacity. Precise
-changed-file plans keep their original anchors. The executor's worker policy is
-unchanged: the observed four-CPU/15.42-GiB allocation still admits both workers.
+The September 23 qualification retained the existing 32-class placements.
+Three original-source 16-class replays of the ten longest 32-class rows from
+main and PR CI showed why a blanket downgrade is unsafe. The requested 32/16
+labels exposed eight/four CPUs and 30.95/15.42 GiB RAM. Memory-gated rows lost
+an eight-worker allowance, and a two-process row became serial and slowed 67.9%.
+Keep resource admission and worker allowances intact when comparing classes.
 
-Three independent replays at `22dff55f62aef4a74c1d86a81154fad6ff19504b`
-([sample 1](https://github.com/openclaw/openclaw/actions/runs/35818788758),
-[sample 2](https://github.com/openclaw/openclaw/actions/runs/35818791623),
-[sample 3](https://github.com/openclaw/openclaw/actions/runs/35818794007)) retained
-the original source, selectors, setup, and admission policy. The five sampled
-Gateway-core row/shape comparisons passed all 15 jobs. Their 16-class medians
-were 542/527 seconds on main and 551/544/444 seconds on PRs, versus
-506/458 and 510/493/449 seconds on the 32-class: ratios 1.071/1.151 and
-1.080/1.103/0.989. Other classes did not qualify as a group: the overlapping
-row slowed 67.9%, memory-gated rows lost their eight-worker allowance, and the
-storage/chat PR row exceeded 600 seconds. Across the complete 60-job experiment,
-57 jobs passed and three failed in fixture/database teardown; those failures
-are retained evidence, not successful timing samples.
+Serial two-worker Gateway-core rows initially appeared suitable, but later
+qualification rejected their narrower classes too. UI-bearing envelopes reached
+657/623 seconds on PRs and 754 seconds on main, exceeding the 600/720-second
+budgets. A separate original-source non-UI main replay measured 590/463/506
+seconds versus 410 seconds on 32-class: its 23.4% median slowdown exceeded the
+20% limit, even though each row stayed below 720 seconds.
 
-Native qualification of the initial candidate at
-`67df1935207e1a7d0afe02bffff1b8cb3ec67c13` passed all six downsized rows.
-The [main-shaped run](https://github.com/openclaw/openclaw/actions/runs/35826103218)
-finished them in 525/571/531 seconds. The identical inventories in the
-[PR-shaped run](https://github.com/openclaw/openclaw/actions/runs/35826105619)
-took 657/623/540 seconds, so the two UI-bearing PR envelopes remain on 32.
-Their larger test intervals, not just setup, explain the budget overruns;
-the remaining timing variance is unproven. Hosted preflight queues alone consumed
-675/684 seconds, and unrelated QA and lifecycle proof failures prevent claiming
-green whole-workflow qualification from those runs.
+The non-UI PR family had an original-source median of 444 versus 449 seconds,
+but its [last exact-head candidate](https://github.com/openclaw/openclaw/actions/runs/35839629867/job/107114482056)
+passed its assertions in a 654-second job, including 618 seconds of test
+execution. That exceeded the 600-second PR budget. Passing tests or a promising
+historical median alone do not qualify the current placement. No runner,
+worker, inventory, grouping, or deadline change from this experiment was retained.
 
-The next candidate, `d2752e699dbb7c51869ccbaffa3588794077cea4`, retained the
-UI-bearing PR envelopes on 32, where they passed in 593/503 seconds. Its
-[main-shaped run](https://github.com/openclaw/openclaw/actions/runs/35829830558)
-still measured a UI-bearing 16-class envelope at 754 seconds, exceeding 720.
-The identical non-UI inventories passed in 509 seconds on main and 484 seconds
-in the [PR-shaped run](https://github.com/openclaw/openclaw/actions/runs/35829833999).
-Only that non-UI family remained eligible for further measurement.
-The rejected envelope had broad test slowdown without a retry or single stalled
-case; these observations do not establish the underlying variance's cause.
-
-A separate three-sample replay of the historical non-UI main row, which was
-outside the original top ten, measured 590/463/506 seconds on the 16-class versus
-410 seconds on the 32-class. The 506-second median is 23.4% slower, exceeding
-the 20% qualification limit despite staying below 720 seconds. Main therefore
-retains its original capacity. Only the PR class qualifies: its original-source
-median is 444 versus 449 seconds, a 0.989 ratio and about 50.6% lower list-price
-cost for that row. The current hybrid PR plan moves one row.
-
-At the historical $0.064/$0.032 per-minute list rates, these matched Gateway-core
-subsets save about 45%/47% of compute cost on main/PR while consuming 11%/6% more
-machine-minutes. This does not establish a 40% whole-run reduction or a
-15-minute workflow wall. Fuller packing needs its own native qualification;
-rows above the measured prediction envelope are not downsized automatically.
+At the historical $0.064/$0.032 per-minute Linux list rates, halving the runner
+price can reduce dollars while increasing machine-minutes. The experiment did
+not meet the 40% whole-run machine-minute or 15-minute wall targets. Full-run
+comparisons also differed in coverage and source; do not attribute their total
+deltas to sizing. [The qualification report](https://github.com/openclaw/openclaw/pull/156263)
+contains original job IDs, setup and queue times, actual CPU accounting,
+worker ceilings, sampled load, costs, failures, and the rejected candidates.
+Fuller packing and provider changes need their own combined native proof.
 
 Compact groups with a memory-gated worker allowance also request the 32-class,
 including standalone serial bins. The isolated Gateway groups already request

@@ -53,7 +53,7 @@ remaining capacity.
 
 Roomy serial Blacksmith Node jobs use [measured Vitest worker sizing](/ci/capacity#vitest-worker-sizing), with existing hosted, frozen-target, and overlapping-plan limits.
 
-Measured serial non-UI Gateway-core PR rows can use the [16-class with unchanged two-worker ceilings](/ci/runners#blacksmith-runner-capacity); main, envelopes containing UI tests, memory-gated, overlapping, build, and fuller packed rows retain their existing capacity.
+The [32-to-16-class qualification](/ci/runners#blacksmith-runner-capacity) retained existing placements: sampled classes lost required admission capacity, exceeded the slowdown limit, or exceeded native row budgets.
 
 Source-only Linux Node shards can reuse content-validated compiled workers from the protected warmer; [fixed preparation costs](/ci/capacity#fixed-job-preparation) remain separate from test execution and runner capacity.
 
