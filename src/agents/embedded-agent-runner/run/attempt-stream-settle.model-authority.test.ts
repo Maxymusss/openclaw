@@ -125,13 +125,13 @@ describe("prepared attempt credential callback model authority", () => {
           entered.resolve();
           return key.promise;
         });
-      await prepareEmbeddedAttemptTransport({
+      const prepared = await prepareEmbeddedAttemptTransport({
         attempt: {
           admittedRunContext,
           model,
           provider: "fixture",
           modelId: "selected",
-          config: {},
+          config: { agents: { defaults: { params: { transport: "sse" } } } },
           runId: "mapped-stream",
           sessionId: "mapped-stream",
           sessionFile: "mapped-stream",
@@ -141,7 +141,6 @@ describe("prepared attempt credential callback model authority", () => {
           thinkLevel: "off",
           authProfileStore: { version: 1, profiles: {} },
           ...stores,
-          streamParams: { transport: "sse" },
         },
         session,
         settingsManager,
@@ -156,6 +155,9 @@ describe("prepared attempt credential callback model authority", () => {
         codeModeControlsEnabled: false,
         providerPromptState: { state: {}, effectiveContextTokenBudget: 16_000 },
       });
+      expect(prepared.effectiveAgentTransport).toBe("sse");
+      expect(prepared.effectiveExtraParams.transport).toBe("sse");
+      expect(session.agent.transport).toBe("sse");
       expect(getApiKey).toHaveBeenCalledOnce();
       const stream = session.agent.streamFn;
       if (!stream) {
