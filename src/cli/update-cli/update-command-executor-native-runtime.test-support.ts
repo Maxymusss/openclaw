@@ -2,6 +2,11 @@
 const currentModuleUrl = import.meta.url;
 
 export const updateExecutorNativeEntrypoints = {
+  coordinator: {
+    currentModuleUrl,
+    sourceWorkerName: "../../infra/state-database-coordinator",
+    distWorkerPath: "infra/state-database-coordinator.js",
+  },
   activation: {
     currentModuleUrl,
     sourceWorkerName: "update-command-activation",

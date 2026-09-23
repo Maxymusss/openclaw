@@ -186,6 +186,19 @@ type SqliteTransactionContext = SqliteTransactionOptions & {
   logger: NonNullable<SqliteTransactionOptions["logger"]>;
 };
 
+/** Warning delivery must not change transaction results or abandon acquired custody. */
+export function reportSqliteTransactionWarning(
+  logger: SqliteTransactionContext["logger"],
+  message: string,
+  meta: Record<string, unknown>,
+): void {
+  try {
+    logger.warn(message, meta);
+  } catch {
+    // SQL, admission and commit authority remain outside this diagnostic boundary.
+  }
+}
+
 type SqliteTransactionStep = "begin" | "commit";
 type SqliteTransactionMode = "deferred" | "immediate";
 
@@ -215,7 +228,7 @@ function logSlowTransactionHold(params: {
   if (params.elapsedMs < slowTransactionHoldThresholdMs(params.options)) {
     return;
   }
-  params.options.logger.warn("slow SQLite transaction hold", {
+  reportSqliteTransactionWarning(params.options.logger, "slow SQLite transaction hold", {
     async: false,
     ...(params.options?.databaseLabel ? { database: params.options.databaseLabel } : {}),
     elapsedMs: params.elapsedMs,
@@ -236,7 +249,7 @@ function logSlowTransactionStep(params: {
   if (params.elapsedMs < slowBusyWaitThresholdMs(params.options)) {
     return;
   }
-  params.options.logger.warn("slow SQLite transaction lock wait", {
+  reportSqliteTransactionWarning(params.options.logger, "slow SQLite transaction step", {
     async: false,
     ...(params.options?.busyTimeoutMs !== undefined
       ? { busyTimeoutMs: params.options.busyTimeoutMs }
@@ -295,7 +308,7 @@ function execTimedTransactionStep(params: {
     if (isSqliteLockError(error) && shouldReportSqliteLockFailure(params.db)) {
       const sqliteErrcode = sqliteExtendedResultCode(error);
       const sqlitePrimaryCode = sqlitePrimaryResultCode(error);
-      params.options.logger.warn("SQLite transaction lock wait failed", {
+      reportSqliteTransactionWarning(params.options.logger, "SQLite transaction lock wait failed", {
         async: false,
         ...(params.options?.busyTimeoutMs !== undefined
           ? { busyTimeoutMs: params.options.busyTimeoutMs }
@@ -404,10 +417,6 @@ export function runSqliteTransactionSync<T>(
     const result = operation();
     assertSyncTransactionResult(result);
     assertTransactionUsable(db);
-    logSlowTransactionHold({
-      elapsedMs: Date.now() - transactionStartedAt,
-      options,
-    });
     if (options?.withCommit) {
       assertSyncTransactionResult(
         options.withCommit(() => commitImmediateTransaction(db, options)),
@@ -420,5 +429,11 @@ export function runSqliteTransactionSync<T>(
     abortImmediateTransaction(db, error);
     assertTransactionUsable(db);
     throw error;
+  } finally {
+    // Include COMMIT and failed holders: both keep other writers waiting too.
+    logSlowTransactionHold({
+      elapsedMs: Date.now() - transactionStartedAt,
+      options,
+    });
   }
 }

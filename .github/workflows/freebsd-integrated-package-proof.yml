@@ -6,6 +6,7 @@ on:
     paths: [.github/workflows/freebsd-integrated-package-proof.yml]
 permissions:
   contents: read
+  actions: read
   pull-requests: read
 concurrency:
   group: freebsd-integrated-package-155851
@@ -16,7 +17,7 @@ jobs:
       github.repository == 'openclaw/openclaw' && github.run_attempt == 1 &&
       github.event_name == 'push' && github.actor == 'vincentkoc' &&
       github.ref == 'refs/heads/test/freebsd-integrated-package-proof' &&
-      github.event.before == '5a98148a8fa573812cd0a37686518973167e061b' &&
+      github.event.before == '5dea8004191b0c1ca9bc852c3205556c2cac9f64' &&
       github.event.after == github.sha && !github.event.deleted && !github.event.forced
     runs-on: blacksmith-8vcpu-ubuntu-2404
     timeout-minutes: 120
@@ -28,15 +29,18 @@ jobs:
       CI: "true"
       NODE_OPTIONS: --max-old-space-size=8192
       OPENCLAW_VITEST_MAX_WORKERS: "2"
-      CANDIDATE_SHA: 892e4e1aca46d6a5ae8ee699fd78aec606054aa3
-      CANDIDATE_TREE: 7c5bc951d87e603e21ca803cc10abec122cbc987
+      CANDIDATE_SHA: f7ad18ddbeedd52c4520428c1f7aca8bf4173bb3
+      CANDIDATE_TREE: ad4a6a7fd0175b4c3d792ae305075737608067dc
+      PREVIOUS_NATIVE_RUN: '35800110383'
+      PREVIOUS_NATIVE_OUTCOMES: '{"106988282852":["fixtures","success"],"106988536657":["native (x86_64, root, seeded)","failure"],"106988536632":["native (x86_64, ordinary, seeded)","failure"],"106988536558":["native (aarch64, root, fresh)","failure"],"106988536600":["native (aarch64, root, seeded)","failure"],"106988536530":["native (aarch64, ordinary, fresh)","failure"],"106988536507":["native (aarch64, ordinary, seeded)","cancelled"]}'
+      PREVIOUS_NATIVE_ARTIFACTS: '{"106988536657":{"id":10726026929,"name":"freebsd-integrated-x86_64-root-seeded-35800110383-1","bytes":586318,"digest":"sha256:a758db1844c0a93d31c2cdca7b636af9d8fa8f29537d5ed513a616ee6e106fa2","outcome":"failure"},"106988536632":{"id":10726033692,"name":"freebsd-integrated-x86_64-ordinary-seeded-35800110383-1","bytes":586009,"digest":"sha256:fe3f2b6558c81b534ece49aca1b0f67592f193db09cade59d60de5681cf52d88","outcome":"failure"},"106988536558":{"id":10727618578,"name":"freebsd-integrated-aarch64-root-fresh-35800110383-1","bytes":4269,"digest":"sha256:2e6c74a547f9dd4f3ad2cadb0b4697672f415fd6f6efcd82b7f6a196b5a42b59","outcome":"failure"},"106988536600":{"id":10729796376,"name":"freebsd-integrated-aarch64-root-seeded-35800110383-1","bytes":6700,"digest":"sha256:82330a36e7148280221a5bfb8519f1928de993b7781ebe3ce90594e64fb290c8","outcome":"failure"},"106988536530":{"id":10729889991,"name":"freebsd-integrated-aarch64-ordinary-fresh-35800110383-1","bytes":3808,"digest":"sha256:3159ddb624a5d7d39b5e2f679b1ccfe7a8014bd5c61a501933111ccd234a5e99","outcome":"failure"},"106988536507":{"id":10733021999,"name":"freebsd-integrated-aarch64-ordinary-seeded-35800110383-1","bytes":2403,"digest":"sha256:6665c33c2c107b1f8c14a36c4446944c12f4e64fd45af8927d4ecd7c1f6a1ec8","outcome":"cancelled","scope":"admission-and-transfer-only; no guest terminal, update, source-after or cleanup receipt"}}'
       CARRIER_SHA: ${{ github.sha }}
       WORKFLOW_SHA: ${{ github.workflow_sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.sha }}
-          fetch-depth: 4
+          fetch-depth: 8
           persist-credentials: false
       - name: Bind the workflow-only merge and live draft to the reviewed source
         env:
@@ -46,16 +50,18 @@ jobs:
           [[ "$CARRIER_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]]
           test "$(git rev-parse HEAD)" = "$CARRIER_SHA"
-          test "$(git show -s --format=%P HEAD)" = '5a98148a8fa573812cd0a37686518973167e061b 892e4e1aca46d6a5ae8ee699fd78aec606054aa3'
-          test "$(git rev-parse 5a98148a8fa573812cd0a37686518973167e061b^{tree})" = 0ba3d892779d79e846fd31f0b7aa90a8cc508fa8
+          test "$(git show -s --format=%P HEAD)" = '5dea8004191b0c1ca9bc852c3205556c2cac9f64 f7ad18ddbeedd52c4520428c1f7aca8bf4173bb3'
+          test "$(git rev-parse 5dea8004191b0c1ca9bc852c3205556c2cac9f64^{tree})" = 5fde54a1953fb3bd8259740820df8dca4a816a09
           test "$(git rev-parse "$CANDIDATE_SHA^{tree}")" = "$CANDIDATE_TREE"
-          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = '43f22988f4dcd22644a056591428d5849207593c'
-          test "$(git rev-parse HEAD:.github/workflows/freebsd-integrated-native-proof.yml)" = "$(git rev-parse 5a98148a8fa573812cd0a37686518973167e061b:.github/workflows/freebsd-integrated-native-proof.yml)"
+          test "$(git show -s --format=%P "$CANDIDATE_SHA")" = '6df9d25f09e53f65329d4292480ce17d665d8909 741a1c84cde99000a3fba8a67c1c96ecfda6fee4'
+          test "$(git rev-parse HEAD:.github/workflows/freebsd-integrated-native-proof.yml)" = "$(git rev-parse e107ca2cdebb2cd0bee7b61553ab699a1551844d:.github/workflows/freebsd-integrated-native-proof.yml)"
+          test "$(git rev-parse HEAD:.github/workflows/freebsd-refreshed-proof.yml)" = "$(git rev-parse e107ca2cdebb2cd0bee7b61553ab699a1551844d:.github/workflows/freebsd-refreshed-proof.yml)"
           python3 -I -S - <<'PYTHON'
           import os,subprocess
           assert subprocess.check_output(['git','diff','--name-only',os.environ['CANDIDATE_SHA'],'HEAD'],text=True).splitlines()==[
               '.github/workflows/freebsd-integrated-native-proof.yml',
-              '.github/workflows/freebsd-integrated-package-proof.yml']
+              '.github/workflows/freebsd-integrated-package-proof.yml',
+              '.github/workflows/freebsd-refreshed-proof.yml']
           PYTHON
           test -z "$(git status --porcelain)"
           git -c gc.auto=0 -c maintenance.auto=false fetch --no-tags --depth=1 --no-write-fetch-head origin "$WORKFLOW_SHA"
@@ -69,16 +75,47 @@ jobs:
           assert pr['user']['login']=='vincentkoc' and pr['base']['ref']=='main'
           assert pr['head']['sha']==os.environ['CARRIER_SHA'] and pr['head']['ref']=='test/freebsd-integrated-package-proof'
           assert pr['head']['repo']['full_name']==pr['base']['repo']['full_name']=='openclaw/openclaw'
+          # No native success is inferred from terminal predecessor custody.
+          def api(path): return json.loads(subprocess.check_output(['gh','api',path]))
+          repo='openclaw/openclaw';prior_sha='e107ca2cdebb2cd0bee7b61553ab699a1551844d'
+          primary=api(f'repos/{repo}/pulls/149882')
+          assert primary['state']=='open' and primary['head']['sha']==os.environ['CANDIDATE_SHA']
+          candidate=api(f'repos/{repo}/commits/{os.environ["CANDIDATE_SHA"]}')
+          assert candidate['sha']==os.environ['CANDIDATE_SHA'] and candidate['commit']['tree']['sha']==os.environ['CANDIDATE_TREE']
+          assert candidate['commit']['verification']['verified'] is True
+          assert [p['sha'] for p in candidate['parents']]==['6df9d25f09e53f65329d4292480ce17d665d8909','741a1c84cde99000a3fba8a67c1c96ecfda6fee4']
+          outcomes=json.loads(os.environ['PREVIOUS_NATIVE_OUTCOMES']);artifacts=json.loads(os.environ['PREVIOUS_NATIVE_ARTIFACTS'])
+          expected_names={'106988282852':'fixtures','106988536657':'native (x86_64, root, seeded)','106988536632':'native (x86_64, ordinary, seeded)','106988536558':'native (aarch64, root, fresh)','106988536600':'native (aarch64, root, seeded)','106988536530':'native (aarch64, ordinary, fresh)','106988536507':'native (aarch64, ordinary, seeded)'}
+          assert {k:v[0] for k,v in outcomes.items()}==expected_names
+          assert all(v[1] in ['success','failure','cancelled'] for v in outcomes.values()),'predecessor outcome custody is not frozen'
+          assert set(artifacts)==set(expected_names)-{'106988282852'}
+          assert all(isinstance(row,dict) for row in artifacts.values()),'predecessor original custody is not frozen'
+          prior=api(f'repos/{repo}/actions/runs/{os.environ["PREVIOUS_NATIVE_RUN"]}')
+          assert prior['head_sha']==prior_sha and prior['run_attempt']==1 and prior['event']=='push'
+          assert prior['status']=='completed' and prior['conclusion']=='failure'
+          assert prior['path']=='.github/workflows/freebsd-integrated-native-proof.yml'
+          jobs=api(f'repos/{repo}/actions/runs/{prior["id"]}/attempts/1/jobs?per_page=100')
+          assert jobs['total_count']==7 and len(jobs['jobs'])==7
+          assert {str(j['id']) for j in jobs['jobs']}==set(outcomes)
+          for job in jobs['jobs']:
+              assert [job['name'],job['conclusion']]==outcomes[str(job['id'])]
+              assert job['status']=='completed' and job['head_sha']==prior_sha and job['run_id']==prior['id'] and job['run_attempt']==1
+          for job_id,row in artifacts.items():
+              original=api(f'repos/{repo}/actions/artifacts/{row["id"]}')
+              assert not original['expired'] and original['workflow_run']['id']==prior['id'] and original['workflow_run']['head_sha']==prior_sha
+              assert original['name']==row['name'] and original['size_in_bytes']==row['bytes'] and original['digest']==row['digest']
+              assert row['outcome']==outcomes[job_id][1]
+          Path(os.environ['RUNNER_TEMP'],'freebsd-integrated-proof','predecessor-custody.json').write_text(json.dumps(dict(run=prior['id'],head=prior_sha,attempt=1,outcomes=outcomes,artifacts=artifacts,scope='historical outcomes only; no proof transferred to refreshed source'),indent=2)+'\n')
           workflow='.github/workflows/freebsd-integrated-package-proof.yml'
           data=subprocess.check_output(['git','show',os.environ['CARRIER_SHA']+':'+workflow])
           receipt=dict(source=os.environ['CANDIDATE_SHA'],tree=os.environ['CANDIDATE_TREE'],carrier=os.environ['CARRIER_SHA'],workflow=os.environ['WORKFLOW_SHA'],workflowSha256=hashlib.sha256(data).hexdigest(),
             sourceParents=subprocess.check_output(['git','show','-s','--format=%P',os.environ['CANDIDATE_SHA']],text=True).strip().split(),
-            eventSha=os.environ['GITHUB_SHA'],event='push',previousCarrier='5a98148a8fa573812cd0a37686518973167e061b',pullRequest=155851,run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],scope='one canonical package build; native and released-updater proof remain separate')
+            eventSha=os.environ['GITHUB_SHA'],event='push',previousCarrier='5dea8004191b0c1ca9bc852c3205556c2cac9f64',pullRequest=155851,run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],scope='one canonical package build; native and released-updater proof remain separate')
           Path(os.environ['RUNNER_TEMP'],'freebsd-integrated-proof','source-binding.json').write_text(json.dumps(receipt,indent=2)+'\n')
           print(json.dumps(receipt))
           PYTHON
           cat > "$RUNNER_TEMP/freebsd-source-inventory.py" <<'PYTHON'
-          import hashlib,json,os,stat,subprocess,sys
+          import gzip,hashlib,json,os,stat,subprocess,sys
           from pathlib import Path
           rows=[]
           for raw in subprocess.check_output(['git','ls-files','--stage','-z']).split(b'\0'):
@@ -95,7 +132,12 @@ jobs:
           encoded=json.dumps(rows,separators=(',',':'),ensure_ascii=True).encode()
           receipt=dict(source=os.environ['CANDIDATE_SHA'],tree=os.environ['CANDIDATE_TREE'],files=len(rows),sha256=hashlib.sha256(encoded).hexdigest())
           proof=Path(os.environ['RUNNER_TEMP'],'freebsd-integrated-proof');phase=sys.argv[1]
-          if phase=='after': assert receipt==json.loads((proof/'source-before.json').read_text())
+          assert phase in ('before','after') and len(encoded)<=16*1024*1024
+          if phase=='after':
+              assert receipt==json.loads((proof/'source-before.json').read_text())
+              assert encoded==gzip.decompress((proof/'source-before.inventory.json.gz').read_bytes())
+          # Retain every path/mode/length/hash row, not only its aggregate digest.
+          (proof/('source-'+phase+'.inventory.json.gz')).write_bytes(gzip.compress(encoded,mtime=0))
           (proof/('source-'+phase+'.json')).write_text(json.dumps(receipt,indent=2)+'\n')
           print(json.dumps(receipt))
           PYTHON
@@ -131,16 +173,16 @@ jobs:
           assert(process.report.getReport().header.glibcVersionRuntime,'this producer requires the selected GNU native package');
           const require=createRequire(`${root}/package.json`),fsSafeMeta=require.resolve('@openclaw/fs-safe/package.json');
           const fsSafeRoot=path.dirname(fs.realpathSync(fsSafeMeta)),meta=JSON.parse(fs.readFileSync(fsSafeMeta));
-          assert.equal(meta.name,'@openclaw/fs-safe'); assert.equal(meta.version,'0.18.1');
+          assert.equal(meta.name,'@openclaw/fs-safe'); assert.equal(meta.version,'0.18.2');
           const nativeNames=['darwin-arm64','darwin-x64','linux-arm64-gnu','linux-arm64-musl','linux-x64-gnu','linux-x64-musl','win32-x64-msvc'].map(t=>`@openclaw/fs-safe-${t}`);
           assert.deepEqual(Object.keys(meta.optionalDependencies).filter(n=>n.startsWith('@openclaw/fs-safe-')).sort(),nativeNames.toSorted());
-          for(const name of nativeNames) assert.equal(meta.optionalDependencies[name],'0.18.1');
+          for(const name of nativeNames) assert.equal(meta.optionalDependencies[name],'0.18.2');
           const nativeName='@openclaw/fs-safe-linux-x64-gnu';
           const nativeEntry=fs.realpathSync(createRequire(fsSafeMeta).resolve(nativeName));
           let nativeRoot=path.dirname(nativeEntry);
           while(!fs.existsSync(path.join(nativeRoot,'package.json'))) { const parent=path.dirname(nativeRoot); assert.notEqual(parent,nativeRoot); nativeRoot=parent; }
           const nativeMeta=JSON.parse(fs.readFileSync(path.join(nativeRoot,'package.json')));
-          assert.equal(nativeMeta.name,nativeName); assert.equal(nativeMeta.version,'0.18.1');
+          assert.equal(nativeMeta.name,nativeName); assert.equal(nativeMeta.version,'0.18.2');
           function inventory(directory) {
             const files=[];
             function walk(relative) {
@@ -160,23 +202,23 @@ jobs:
           const inputPaths=['package.json','pnpm-lock.yaml','pnpm-workspace.yaml',...['file-transfer','llama-cpp','migrate-claude','onepassword','openshell','signal'].map(n=>`extensions/${n}/package.json`)];
           const inputs=Object.fromEntries(inputPaths.map(p=>[p,sha(fs.readFileSync(p))]));
           for(const p of inputPaths) assert.equal(inputs[p],sha(execFileSync('git',['show',`${process.env.CANDIDATE_SHA}:${p}`])));
-          assert.equal(inputs['package.json'],'daeeae9df9b29e09d88c5040f027e1b295f6a2f072887d56b39e525a860ad7ef');
-          assert.equal(inputs['pnpm-lock.yaml'],'3926f52636eac81ac3f5a282c2bc7b39760ea8350aadee5e681228fed3bcba91');
-          assert.equal(inputs['pnpm-workspace.yaml'],'12bce91e5e9e4bb52f043f60ce465191f83a2eae0ec9e7be088e5cea2e2454af');
+          assert.equal(inputs['package.json'],'871b3c9232120483d606294d97af5e9f8c0452804911f229c63d6ca6e70b3dc5');
+          assert.equal(inputs['pnpm-lock.yaml'],'6b7b9eb4522fef82e8741dcb07836b3cf2843a68a00bd932638bf5f057fad417');
+          assert.equal(inputs['pnpm-workspace.yaml'],'8cd6666eee1dba62d902b42fd06287b77b09429601b73a06168e57dd56d48be9');
           const {parseAllDocuments}=require('yaml');
           const docs=parseAllDocuments(fs.readFileSync('pnpm-lock.yaml','utf8')); assert.equal(docs.length,2);
           for(const doc of docs) assert.equal(doc.errors.length,0);
           const lock=docs[1].toJS();
-          const fsSafeLock=lock.packages['@openclaw/fs-safe@0.18.1'].resolution.integrity;
-          const nativeLock=lock.packages[`${nativeName}@0.18.1`].resolution.integrity;
-          assert.equal(fsSafeLock,'sha512-p56o1BFSQ2Ayc2+WhTJHfiWNyEtl8DOY15uUCUV/lvQILt+58651v964SpqNEgCvaXdccJvK/YHW5+ivOYKt0A==');
-          assert.equal(nativeLock,'sha512-FWug2NdenYPJIVdtdzPH1xqBo5a/HYlZJutKEQkxSSM59Z/tBYiY24MsrjdYC5u2+2zwXPv38noB/hZ89Ec1kQ==');
+          const fsSafeLock=lock.packages['@openclaw/fs-safe@0.18.2'].resolution.integrity;
+          const nativeLock=lock.packages[`${nativeName}@0.18.2`].resolution.integrity;
+          assert.equal(fsSafeLock,'sha512-ZurOE7wousc+xT1HhVw+/lkqLHms378GcHz8O9dlMAsXY+MGNLKpZncmjpuEVHPz292n82FC1mp2SCCRUnvbNg==');
+          assert.equal(nativeLock,'sha512-4h596MLiKBr0frgSkruX6SHUsF8OfRJmwuqAQnGRGRewPZyUczlDFCbzkybg7J96cLA5qr7t25FiyB/wEls+Kw==');
           const nativeBinding=require(nativeEntry); assert.equal(typeof nativeBinding,'object');
           const receipt={source:process.env.CANDIDATE_SHA,node:process.versions.node,pnpm:execFileSync('pnpm',['--version'],{encoding:'utf8'}).trim(),
             platform:process.platform,arch:process.arch,cpus:os.cpus().length,memory:os.totalmem(),dependencyFingerprint:fingerprint,
             toolchainSha256:sha(fs.readFileSync(process.execPath)),inputs,
             fsSafe:{version:meta.version,lockIntegrity:fsSafeLock,...fsSafe},native:{name:nativeName,version:nativeMeta.version,lockIntegrity:nativeLock,loaded:true,entry:path.relative(nativeRoot,nativeEntry),...native},
-            scope:'actual frozen producer install; final operator dependency custody remains separate'};
+            scope:'actual frozen producer install, including ACPX 0.19.1 and Codex importer/override 0.155.1; no Codex runtime compatibility verdict; final operator dependency custody remains separate'};
           fs.writeFileSync(`${process.env.RUNNER_TEMP}/freebsd-integrated-proof/toolchain.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});
           console.log(JSON.stringify(receipt));
           NODE
@@ -228,7 +270,7 @@ jobs:
                   return archive.extractfile(member).read()
               meta=json.loads(read('package.json'));build=json.loads(read('dist/build-info.json'))
               assert meta['name']=='openclaw' and meta['version']=='2026.9.5'
-              assert meta['dependencies']['@openclaw/fs-safe']=='0.18.1'
+              assert meta['dependencies']['@openclaw/fs-safe']=='0.18.2'
               assert build['commit']==os.environ['CANDIDATE_SHA'] and isinstance(build['buildId'],str) and build['buildId']
               worker_path='dist/infra/update-migrated-finalize.worker.js';worker=read(worker_path)
               assert worker==(source/worker_path).read_bytes()
@@ -283,12 +325,42 @@ jobs:
           fs.unlinkSync(originalTar);fs.unlinkSync(originalPack);fs.rmdirSync(`${dir}/unsealed`);
           const receipt={source:process.env.CANDIDATE_SHA,tree:process.env.CANDIDATE_TREE,carrier:process.env.CARRIER_SHA,
             run:process.env.GITHUB_RUN_ID,attempt:process.env.GITHUB_RUN_ATTEMPT,complete:true,packageBuildPassed:true,
-            fsSafe:'0.18.1',packageVersion:manifest.packageVersion,buildId:pkg.build.buildId,
+            fsSafe:'0.18.2',packageVersion:manifest.packageVersion,buildId:pkg.build.buildId,
             manifestSha256:sha(`${dir}/payload/install-smoke-candidate-payload.json`),sourceArchiveSha256:manifest.sourceArchiveSha256,
             packageSha256:pkg.packageSha256,packageBytes:pkg.packageBytes,inventorySha256:pkg.inventorySha256,originalPackSha256,
             nativeProof:'unrun; separate authenticated x64/ARM and Linux released-updater consumers required'};
           fs.writeFileSync(`${dir}/complete.json`,JSON.stringify(receipt,null,2)+'\n',{flag:'wx'});console.log(JSON.stringify(receipt));
           NODE
+      - name: Bind complete original evidence without changing the build outcome
+        if: always()
+        env:
+          ORIGINAL_JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          python3 -I -S - <<'EVIDENCE'
+          import hashlib,json,os,stat,sys
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'],'freebsd-integrated-proof');root.mkdir(exist_ok=True)
+          rows=[];errors=[];total=0
+          for p in sorted(root.rglob('*')):
+              info=p.lstat()
+              if stat.S_ISDIR(info.st_mode): continue
+              relative=p.relative_to(root).as_posix()
+              if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1:
+                  errors.append('nonregular or linked evidence: '+relative);continue
+              total+=info.st_size
+              # Empty regular command logs are original evidence too; command outcome is separate.
+              rows.append(dict(path=relative,bytes=info.st_size,sha256=hashlib.file_digest(p.open('rb'),'sha256').hexdigest()))
+          required={'source-binding.json','predecessor-custody.json','source-before.json','source-before.inventory.json.gz','source-after.json','source-after.inventory.json.gz','toolchain.json','build-command.json','package-build.log','package-inventory.json','package.json','canonical-pack.json','source.tar.gz','complete.json','payload/candidate.tgz','payload/install-smoke-candidate-payload.json'}
+          missing=sorted(required-{row['path'] for row in rows})
+          if os.environ['ORIGINAL_JOB_STATUS']=='success' and missing: errors.append('successful producer missing required originals')
+          if len(rows)>64 or total>1024*1024*1024: errors.append('complete original evidence exceeds bounded producer budget; no truncation performed')
+          receipt=dict(source=os.environ['CANDIDATE_SHA'],tree=os.environ['CANDIDATE_TREE'],carrier=os.environ['CARRIER_SHA'],run=os.environ['GITHUB_RUN_ID'],attempt=os.environ['GITHUB_RUN_ATTEMPT'],originalJobStatus=os.environ['ORIGINAL_JOB_STATUS'],captureComplete=not errors,productPassed=os.environ['ORIGINAL_JOB_STATUS']=='success' and not errors and not missing,missing=missing,errors=errors,files=rows,totalBytes=total,maximumFiles=64,maximumBytes=1024*1024*1024)
+          encoded=(json.dumps(receipt,indent=2)+'\n').encode();assert len(encoded)<=128*1024
+          (root/'evidence-manifest.json').write_bytes(encoded)
+          print(json.dumps(dict(originalJobStatus=receipt['originalJobStatus'],captureComplete=receipt['captureComplete'],productPassed=receipt['productPassed'],files=len(rows),bytes=total,missing=missing,errors=errors)))
+          if errors: sys.exit(1)
+          EVIDENCE
       - name: Retain the exact package, source and original custody receipts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
