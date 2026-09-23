@@ -18,19 +18,21 @@ import {
   registerGetReplyRuntimeOverrides,
 } from "./get-reply.test-fixtures.js";
 import { loadGetReplyModuleForTest } from "./get-reply.test-loader.js";
+import { resolveDeferredReplyModelLevels } from "./reply-model-levels.js";
 import "./get-reply.test-runtime-mocks.js";
 
 const mocks = vi.hoisted(() => ({
   resolveReplyDirectives: vi.fn(),
   handleInlineActions: vi.fn(),
   initSessionState: vi.fn(),
+  loadThinkingCatalog: vi.fn(async () => []),
 }));
 
 registerGetReplyRuntimeOverrides(mocks);
 
 vi.mock("../../agents/model-catalog.runtime.js", () => ({
   loadManifestModelCatalog: vi.fn(() => []),
-  loadProviderScopedThinkingCatalog: vi.fn(async () => []),
+  loadProviderScopedThinkingCatalog: mocks.loadThinkingCatalog,
   loadPreparedModelCatalogSnapshot: vi.fn(async () => ({
     entries: [],
     routeVariants: [],
@@ -54,6 +56,28 @@ async function loadGetReplyRuntimeForTest() {
 
 function emptyAliasIndex() {
   return { byAlias: new Map(), byKey: new Map() };
+}
+
+async function resolveCapturedModelLevels(
+  runParams: Parameters<typeof runPreparedReplyMock>[0] | undefined,
+) {
+  const deferred = runParams?.deferredReplyModelLevels;
+  if (!runParams || !deferred) {
+    throw new Error("Expected the captured reply turn to carry deferred model levels");
+  }
+  // The runner is mocked here. Consume its actual forwarded intent with the same
+  // owner used after auth admission, without rewriting the captured handoff.
+  expect(runParams.resolvedThinkLevel).toBeUndefined();
+  expect(mocks.loadThinkingCatalog).not.toHaveBeenCalled();
+  const levels = await resolveDeferredReplyModelLevels({
+    cfg: runParams.cfg,
+    agentId: runParams.agentId,
+    deferred,
+  });
+  if (levels.kind !== "ready") {
+    throw new Error(`Expected ready model levels: ${levels.reply.text}`);
+  }
+  return levels;
 }
 
 function makeTestModel(id: string, name: string, reasoning: boolean): ModelDefinitionConfig {
@@ -218,6 +242,7 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
     mocks.resolveReplyDirectives.mockReset();
     mocks.handleInlineActions.mockReset();
     mocks.initSessionState.mockReset();
+    mocks.loadThinkingCatalog.mockClear();
     vi.mocked(resolveDefaultModelMock).mockReset();
     vi.mocked(runPreparedReplyMock).mockReset();
     vi.mocked(resolveModelRefFromStringMock).mockImplementation(resolveModelRefFromString);
@@ -336,7 +361,9 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
     const runParams = vi.mocked(runPreparedReplyMock).mock.calls[0]?.[0];
     expect(runParams?.provider).toBe("openai");
     expect(runParams?.model).toBe("gpt-5.5");
-    expect(runParams?.resolvedThinkLevel).toBe("medium");
+    const levels = await resolveCapturedModelLevels(runParams);
+    expect(levels.thinkLevel).toBe("medium");
+    expect(levels.reasoningLevel).toBe("off");
     expect(runParams?.resolvedReasoningLevel).toBe("off");
   });
 
@@ -375,9 +402,10 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
     expect(runParams).toMatchObject({
       provider: "openai",
       model: "gpt-5.5",
-      resolvedThinkLevel: "off",
       resolvedReasoningLevel: "off",
     });
+    const levels = await resolveCapturedModelLevels(runParams);
+    expect(levels).toMatchObject({ thinkLevel: "off", reasoningLevel: "off" });
   });
 
   it("does not re-enable default reasoning for per-agent thinking-off primary probes", async () => {
@@ -392,7 +420,9 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
     const runParams = vi.mocked(runPreparedReplyMock).mock.calls[0]?.[0];
     expect(runParams?.provider).toBe("openai");
     expect(runParams?.model).toBe("gpt-5.5");
-    expect(runParams?.resolvedThinkLevel).toBe("off");
+    const levels = await resolveCapturedModelLevels(runParams);
+    expect(levels.thinkLevel).toBe("off");
+    expect(levels.reasoningLevel).toBe("off");
     expect(runParams?.resolvedReasoningLevel).toBe("off");
   });
 
@@ -410,7 +440,9 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
       const runParams = vi.mocked(runPreparedReplyMock).mock.calls[0]?.[0];
       expect(runParams?.provider).toBe("openai");
       expect(runParams?.model).toBe("gpt-5.5");
-      expect(runParams?.resolvedThinkLevel).toBe("off");
+      const levels = await resolveCapturedModelLevels(runParams);
+      expect(levels.thinkLevel).toBe("off");
+      expect(levels.reasoningLevel).toBe("off");
       expect(runParams?.resolvedReasoningLevel).toBe("off");
     },
   );
@@ -431,7 +463,9 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
     const runParams = vi.mocked(runPreparedReplyMock).mock.calls[0]?.[0];
     expect(runParams?.provider).toBe("openai");
     expect(runParams?.model).toBe("gpt-5.5");
-    expect(runParams?.resolvedThinkLevel).toBe("off");
+    const levels = await resolveCapturedModelLevels(runParams);
+    expect(levels.thinkLevel).toBe("off");
+    expect(levels.reasoningLevel).toBe("off");
     expect(runParams?.resolvedReasoningLevel).toBe("off");
   });
 
@@ -447,7 +481,9 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
     const runParams = vi.mocked(runPreparedReplyMock).mock.calls[0]?.[0];
     expect(runParams?.provider).toBe("openai");
     expect(runParams?.model).toBe("gpt-5.5");
-    expect(runParams?.resolvedThinkLevel).toBe("high");
+    const levels = await resolveCapturedModelLevels(runParams);
+    expect(levels.thinkLevel).toBe("high");
+    expect(levels.reasoningLevel).toBe("off");
     expect(runParams?.resolvedReasoningLevel).toBe("off");
   });
 
@@ -467,7 +503,9 @@ describe("getReplyFromConfig auto-fallback primary probes", () => {
     const runParams = vi.mocked(runPreparedReplyMock).mock.calls[0]?.[0];
     expect(runParams?.provider).toBe("openai");
     expect(runParams?.model).toBe("gpt-5.5");
-    expect(runParams?.resolvedThinkLevel).toBe("high");
+    const levels = await resolveCapturedModelLevels(runParams);
+    expect(levels.thinkLevel).toBe("high");
+    expect(levels.reasoningLevel).toBe("off");
     expect(runParams?.resolvedReasoningLevel).toBe("off");
   });
 });
