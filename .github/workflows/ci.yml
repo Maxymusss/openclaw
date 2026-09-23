@@ -6720,3 +6720,44 @@ jobs:
           done <<< "$JOB_RESULTS"
 
           exit "$failures"
+
+      - name: Checkout CI lane receipt tooling
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          sparse-checkout: |
+            scripts/ci-lane-receipt.mjs
+            scripts/lib/canonical-json.mjs
+          sparse-checkout-cone-mode: false
+          fetch-depth: 1
+          persist-credentials: false
+          submodules: false
+
+      - name: Seal exact-SHA CI lane receipt
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          CI_LANE_RECEIPT_PATH: ${{ runner.temp }}/ci-lane-receipt/receipt.json
+          CAPTURE_UI_PROOF: ${{ inputs.capture_ui_proof && 'true' || 'false' }}
+          CI_SHAPE: ${{ inputs.ci_shape || 'default' }}
+          COMPATIBILITY_TARGET: ${{ needs.preflight.outputs.compatibility_target }}
+          HISTORICAL_TARGET_TAG: ${{ inputs.historical_target_tag || '' }}
+          INCLUDE_ANDROID: ${{ inputs.include_android && 'true' || 'false' }}
+          NODE_RUNNER_BACKEND: ${{ needs.preflight.outputs.node_runner_backend }}
+          RELEASE_CANDIDATE_REF: ${{ inputs.release_candidate_ref || '' }}
+          RELEASE_GATE: ${{ inputs.release_gate && 'true' || 'false' }}
+          RELEASE_SCOPE: ${{ needs.preflight.outputs.release_scope }}
+          REQUESTED_RUNNER_BACKEND: ${{ inputs.runner_backend || 'default' }}
+          RUNNER_PROFILE: ${{ needs.preflight.outputs.runner_profile }}
+          TARGET_SHA: ${{ needs.preflight.outputs.checkout_revision }}
+          TARGET_CONTEXT_REF: ${{ inputs.target_context_ref || '' }}
+        run: node scripts/ci-lane-receipt.mjs
+
+      - name: Upload exact-SHA CI lane receipt
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: normal-ci-lane-receipt-${{ needs.preflight.outputs.checkout_revision }}-${{ github.sha }}-${{ needs.preflight.outputs.release_scope }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/ci-lane-receipt/receipt.json
+          if-no-files-found: error
+          retention-days: 30

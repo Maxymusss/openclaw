@@ -1301,6 +1301,34 @@ AFTER_CD
     expect(workflow.jobs["macos-swift"]["timeout-minutes"]).toBe(30);
   });
 
+  it("publishes an exact-equivalence receipt only after the CI gate passes", () => {
+    const gate = readCiWorkflow().jobs["ci-gate"];
+    const verifyIndex = gate.steps.findIndex(
+      (step: WorkflowStep) => step.name === "Verify selected CI lanes",
+    );
+    const sealIndex = gate.steps.findIndex(
+      (step: WorkflowStep) => step.name === "Seal exact-SHA CI lane receipt",
+    );
+    const uploadIndex = gate.steps.findIndex(
+      (step: WorkflowStep) => step.name === "Upload exact-SHA CI lane receipt",
+    );
+
+    expect(sealIndex).toBeGreaterThan(verifyIndex);
+    expect(uploadIndex).toBeGreaterThan(sealIndex);
+    expect(gate.steps[sealIndex]).toMatchObject({
+      if: "github.event_name == 'workflow_dispatch'",
+      env: {
+        RELEASE_SCOPE: "${{ needs.preflight.outputs.release_scope }}",
+        TARGET_SHA: "${{ needs.preflight.outputs.checkout_revision }}",
+      },
+      run: "node scripts/ci-lane-receipt.mjs",
+    });
+    expect(gate.steps[uploadIndex].with).toMatchObject({
+      "if-no-files-found": "error",
+      "retention-days": 30,
+    });
+  });
+
   it("serializes the shared Swift package suite on hosted macOS retries", () => {
     const macosSwift = readCiWorkflow().jobs["macos-swift"];
 
