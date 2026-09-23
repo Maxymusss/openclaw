@@ -52,7 +52,8 @@ const RELEASE_SUMMARY_PATH =
   fileURLToPath(new URL("./release-ci-summary.mjs", import.meta.url));
 const API_ERROR_PATTERN =
   /HTTP [45][0-9][0-9]|API|Bad credentials|rate limit|network|connection|timeout|ETIMEDOUT|ECONNRESET|EAI_AGAIN/u;
-const DEFAULT_POLL_INTERVAL_MS = 60_000;
+const DEFAULT_DECISION_POLL_INTERVAL_MS = 15_000;
+const DEFAULT_DRAIN_POLL_INTERVAL_MS = 60_000;
 const DEFAULT_HEARTBEAT_INTERVAL_MS = 5 * 60_000;
 const GH_TIMEOUT_MS = 60_000;
 const TRANSPORT_UNCERTAINTY_MS = 15 * 60_000;
@@ -99,6 +100,14 @@ const deadlineDelayMs = (delay, deadline, now) =>
 
 export function releaseGhRetryDelayMs(attempt, deadlineMonotonicMs, nowMonotonicMs) {
   return deadlineDelayMs(Math.min(attempt * 10_000, 60_000), deadlineMonotonicMs, nowMonotonicMs);
+}
+
+export function releaseStatePollIntervalMs(mode, configuredValue) {
+  const configured = Number(configuredValue);
+  if (Number.isFinite(configured) && configured > 0) {
+    return configured;
+  }
+  return mode === "decision" ? DEFAULT_DECISION_POLL_INTERVAL_MS : DEFAULT_DRAIN_POLL_INTERVAL_MS;
 }
 
 async function runGh(args, options = {}) {
@@ -1139,8 +1148,10 @@ async function collectMode(mode) {
   const plan = executionPlan.children;
   const gateFailures = releasePlanGateFailures(executionPlan.gates);
   const failFast = mode === "decision" && process.env.FAIL_FAST === "true";
-  const pollIntervalMs =
-    Number(process.env.FULL_RELEASE_POLL_INTERVAL_MS) || DEFAULT_POLL_INTERVAL_MS;
+  const pollIntervalMs = releaseStatePollIntervalMs(
+    mode,
+    process.env.FULL_RELEASE_POLL_INTERVAL_MS,
+  );
   const heartbeatIntervalMs =
     Number(process.env.FULL_RELEASE_HEARTBEAT_INTERVAL_MS) || DEFAULT_HEARTBEAT_INTERVAL_MS;
   const cancelledRunIds = new Set();

@@ -36,6 +36,7 @@ import {
   readChild,
   releaseGhRetryDelayMs,
   releasePlanGateFailures,
+  releaseStatePollIntervalMs,
   releaseStateChildEvidence,
   serializeReleaseArtifact,
   selectReleaseStateArtifacts,
@@ -1819,6 +1820,13 @@ describe("release decision policy", () => {
   it("caps GitHub retry sleep at the remaining transport deadline", () => {
     expect(releaseGhRetryDelayMs(6, 105_000, 100_000)).toBe(5_000);
     expect(releaseGhRetryDelayMs(6, 100_000, 100_000)).toBe(0);
+  });
+
+  it("polls blockers quickly without making the diagnostic drain fail-fast", () => {
+    expect(releaseStatePollIntervalMs("decision", undefined)).toBe(15_000);
+    expect(releaseStatePollIntervalMs("drain", undefined)).toBe(60_000);
+    expect(releaseStatePollIntervalMs("decision", "2500")).toBe(2_500);
+    expect(releaseStatePollIntervalMs("drain", "2500")).toBe(2_500);
   });
 
   it("cancels only exact active affected children", () => {
