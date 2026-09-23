@@ -407,9 +407,9 @@ export async function prepareSessionPatchRuntimeSelection(params: {
     }
   }
   const validate = () => {
-    const modelError = validateModel?.();
-    if (modelError) {
-      return modelError;
+    const currentModelError = validateModel?.();
+    if (currentModelError) {
+      return currentModelError;
     }
     const selectionError = params.validateModelSelection?.();
     if (selectionError) {

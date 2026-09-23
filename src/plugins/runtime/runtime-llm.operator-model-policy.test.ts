@@ -447,6 +447,158 @@ describe("operator model policy on plugin completions", () => {
     expect(mocks.complete).not.toHaveBeenCalled();
   });
 
+  it.each(["before admission", "during preparation"] as const)(
+    "refuses caller cancellation %s before provider dispatch",
+    async (stage) => {
+      const controller = new AbortController();
+      const reason = new Error("caller cancelled preparation");
+      const entered = createDeferredCore();
+      const resume = createDeferredCore();
+      mocks.acquire.mockImplementation(async () => {
+        entered.resolve();
+        await resume.promise;
+        return preparedModel();
+      });
+      if (stage === "before admission") {
+        controller.abort(reason);
+      }
+      const pending = withWork(() =>
+        asOperator(operator(), () =>
+          completion().complete({ ...request("direct"), signal: controller.signal }),
+        ),
+      );
+      try {
+        if (stage === "during preparation") {
+          await Promise.race([
+            entered.promise,
+            pending.then(() => {
+              throw new Error("completion settled before preparation");
+            }),
+          ]);
+          controller.abort(reason);
+        }
+        resume.resolve();
+        await expect(pending).rejects.toBe(reason);
+        expect(mocks.acquire).toHaveBeenCalledTimes(stage === "before admission" ? 0 : 1);
+        expect(mocks.complete).not.toHaveBeenCalled();
+      } finally {
+        resume.resolve();
+        await Promise.allSettled([pending]);
+      }
+    },
+  );
+
+  it.each(["caller", "source signal", "source currentness", "invocation", "model policy"] as const)(
+    "checks original authority after a normalized provider cancellation: %s",
+    async (changed) => {
+      const caller = new AbortController();
+      const source = new AbortController();
+      const entered = createDeferredCore();
+      const resume = createDeferredCore();
+      let sourceCurrent = true;
+      let invocationCurrent = true;
+      let policy = operator().modelPolicy;
+      const observers = new Set<() => void>();
+      const releases: Array<ReturnType<typeof vi.fn<() => void>>> = [];
+      const authority = createAdmittedRunOperatorAuthority({
+        profileId: "model-reader",
+        scopes: ["operator.write"],
+        signal: source.signal,
+        assertCurrent: () => {
+          if (!sourceCurrent) {
+            throw new Error("requester retired");
+          }
+        },
+        get modelPolicy() {
+          return policy;
+        },
+        onModelPolicyChanged: (listener) => {
+          observers.add(listener);
+          return () => {
+            observers.delete(listener);
+          };
+        },
+        retain: () => {
+          const release = vi.fn<() => void>();
+          releases.push(release);
+          return release;
+        },
+      });
+      const complete = mocks.complete.getMockImplementation();
+      if (!complete) {
+        throw new Error("completion fixture is unavailable");
+      }
+      mocks.complete.mockImplementation(async (params) => {
+        const admitted = await complete(params);
+        entered.resolve();
+        await resume.promise;
+        // Providers normalize accepted cancellation without re-admitting the request.
+        return { ...admitted, content: [], stopReason: "aborted" };
+      });
+      const work = new AsyncWorkScope();
+      const pending = work.track(() =>
+        withPluginRuntimeGatewayRequestScope(
+          {
+            client: createSyntheticPluginRuntimeClient({ operatorRunAuthority: authority }),
+            isWebchatConnect: () => false,
+            hasCurrentClientAuthority: () => invocationCurrent,
+          },
+          () => completion().complete({ ...request("direct"), signal: caller.signal }),
+        ),
+      );
+      try {
+        await Promise.race([
+          entered.promise,
+          pending.then(() => {
+            throw new Error("completion settled before provider work");
+          }),
+        ]);
+        caller.abort(new Error("caller cancelled accepted work"));
+        if (changed === "source signal") {
+          source.abort(new Error("requester revoked"));
+        } else if (changed === "source currentness") {
+          sourceCurrent = false;
+        } else if (changed === "invocation") {
+          invocationCurrent = false;
+        } else if (changed === "model policy") {
+          policy = prepareOperatorModelPolicy({
+            cfg,
+            policy: { sourceAgent: "main", allow: [] },
+            manifestPlugins: [],
+          });
+          for (const listener of observers) {
+            listener();
+          }
+        }
+        expect(mocks.complete.mock.calls[0]?.[0].options?.signal?.aborted).toBe(true);
+        resume.resolve();
+        if (changed === "caller") {
+          await expect(pending).resolves.toMatchObject({ text: "", stopReason: "aborted" });
+        } else {
+          await expect(pending).rejects.toThrow(
+            changed === "source signal"
+              ? "requester revoked"
+              : changed === "source currentness"
+                ? "requester retired"
+                : changed === "invocation"
+                  ? "Gateway caller authority is no longer active"
+                  : "cannot use this model",
+          );
+        }
+        expect(mocks.complete).toHaveBeenCalledOnce();
+      } finally {
+        resume.resolve();
+        await Promise.allSettled([pending]);
+        await work.drain();
+      }
+      expect(observers.size).toBe(0);
+      expect(releases.length).toBeGreaterThan(0);
+      for (const release of releases) {
+        expect(release).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
   it.each(["direct", "isolated"] as const)(
     "retains the requester through %s cleanup after returning the answer",
     async (mode) => {

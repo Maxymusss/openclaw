@@ -901,22 +901,26 @@ describe("actual native resolver custody", () => {
   });
 
   it("refuses legacy partial cleanup if ownership changes during awaited setup", async () => {
+    const setup: {
+      entry?: NonNullable<Awaited<ReturnType<typeof readRegistryEntry>>>;
+      containerId?: string;
+    } = {};
     const h = nativePipeline({
       before: async (args) => {
         if (args[0] === "exec" && args.includes("fixture-setup")) {
-          const name = args[2];
-          if (!name) {
-            throw new Error("missing setup runtime");
+          const allocation = [...h.allocations].find(([, value]) => value.id === args[2]);
+          if (!allocation) {
+            throw new Error("missing setup allocation");
           }
-          await updateRegistry({
-            containerName: name,
-            backendId: "docker",
-            sessionKey: "new-private-owner",
-            createdAtMs: 1,
-            lastUsedAtMs: 1,
-            image: "fixture:local",
-            retirementPolicy: "foreground-owner",
-          });
+          const [name, value] = allocation;
+          const row = await readRegistryEntry(name);
+          if (!row) {
+            throw new Error("missing setup reservation");
+          }
+          expect(row.runtimeState).toBe("pending");
+          setup.containerId = value.id;
+          setup.entry = { ...row, retirementPolicy: "foreground-owner" };
+          await updateRegistry(setup.entry);
           throw new Error("setup failed after ownership changed");
         }
       },
@@ -925,9 +929,14 @@ describe("actual native resolver custody", () => {
       resolveSandboxContext({ config, sessionKey: "agent:test:staff", workspaceDir }),
     ).rejects.toThrow("custody retained");
     expect(h.commands.some((args) => args[0] === "rm")).toBe(false);
-    expect((await readRegistry()).entries).toMatchObject([
-      { retirementPolicy: "foreground-owner" },
+    if (!setup.entry || !setup.containerId) {
+      throw new Error("missing changed setup reservation");
+    }
+    expect((await readRegistry()).entries).toEqual([setup.entry]);
+    expect([...h.allocations]).toEqual([
+      [setup.entry.containerName, expect.objectContaining({ id: setup.containerId })],
     ]);
+    await expect(readRegistryEntry(setup.containerId)).resolves.toBeNull();
   });
 
   it("refuses ordinary hot reuse when ownership changes during awaited inspection", async () => {

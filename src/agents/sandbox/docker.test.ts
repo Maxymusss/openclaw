@@ -361,6 +361,8 @@ describe("resolvePodmanSandboxRuntimeInfo", () => {
   it.each([
     { version: "podman version 5.8.2\n", code: 1 },
     { version: "unrecognized client version\n", code: 0 },
+    { version: "podmanXexe version 5.0.1\n", code: 0 },
+    { version: "podman.exe version 5.0\n", code: 0 },
   ])(
     "rejects ambiguous selection when the client version probe fails: $version / $code",
     async ({ version, code }) => {
@@ -377,6 +379,36 @@ describe("resolvePodmanSandboxRuntimeInfo", () => {
           "--version",
         ]);
       });
+    },
+  );
+
+  it.each(
+    ["podman", "podman-remote", "podman.exe", "podman-remote.exe"].flatMap((binary) =>
+      [
+        { client: "4.7.2", server: "5.8.2", uri: "unix:///tmp/host.sock" },
+        { client: "4.8.0", server: "4.3.0", uri: "unix:///tmp/named.sock" },
+      ].map((version) => ({ binary, ...version })),
+    ),
+  )(
+    "keeps $binary $client precedence independent of server $server",
+    async ({ binary, client, server, uri }) => {
+      spawnState.podmanClientVersion = `${binary} version ${client}\n`;
+      spawnState.podmanInfo = `true\ttrue\t\t${server}\n`;
+      spawnState.podmanConnections = JSON.stringify([
+        { Name: "named", URI: "unix:///tmp/named.sock", Default: true },
+      ]);
+      await withEnvAsync(
+        { CONTAINER_HOST: "unix:///tmp/host.sock", CONTAINER_CONNECTION: "named" },
+        async () => {
+          await expect(resolvePodmanSandboxRuntimeInfo()).resolves.toMatchObject({
+            version: server,
+            target: { globalArgs: ["--url", uri] },
+          });
+          expect(spawnState.calls.filter((call) => call.args[0] === "--version")).toEqual([
+            { command: "podman", args: ["--version"] },
+          ]);
+        },
+      );
     },
   );
 
@@ -413,6 +445,31 @@ describe("resolvePodmanSandboxRuntimeInfo", () => {
         },
       ]);
     });
+
+    it.each(["podman.exe", "podman-remote.exe"])(
+      "selects the recorded Machine with %s 5.0.1 and both environment selectors",
+      async (binary) => {
+        spawnState.podmanClientVersion = `${binary} version 5.0.1\n`;
+        spawnState.podmanConnections = JSON.stringify([
+          { Name: "machine", URI: machineUri, Identity: machineKey, Default: true },
+        ]);
+        await withEnvAsync(
+          {
+            CONTAINER_HOST: machineUri,
+            CONTAINER_CONNECTION: "machine",
+            CONTAINER_SSHKEY: "/tmp/unrelated-key",
+          },
+          async () => {
+            await expect(resolvePodmanSandboxRuntimeInfo()).resolves.toMatchObject({
+              target: { globalArgs: ["--url", machineUri, "--identity", machineKey] },
+            });
+            expect(spawnState.calls.filter((call) => call.args[0] === "--version")).toEqual([
+              { command: "podman", args: ["--version"] },
+            ]);
+          },
+        );
+      },
+    );
 
     it.each([
       { identity: machineKey, sshKey: "/tmp/unrelated-key", connection: "machine" },

@@ -88,14 +88,12 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
         return;
       }
       const targets = params.targets;
-      {
-        modelSource = captureGatewayOperatorRunAuthority({
-          client,
-          context,
-          hasCurrentClientAuthority,
-          invocationAuthority: { assertCurrent: () => sessionMutationCommitGuard?.(), signal },
-        });
-      }
+      modelSource = captureGatewayOperatorRunAuthority({
+        client,
+        context,
+        hasCurrentClientAuthority,
+        invocationAuthority: { assertCurrent: () => sessionMutationCommitGuard?.(), signal },
+      });
       const executed = await executeSessionPatchMutations({
         client,
         context,
@@ -172,20 +170,18 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
       }
       const patch = { ...params, key };
       const target = sessionPatchTargetIdentity(patch);
-      {
-        modelSource = captureGatewayOperatorRunAuthority({
-          client,
-          context,
-          hasCurrentClientAuthority,
-          invocationAuthority: {
-            assertCurrent: () => {
-              sessionMutationCommitGuard?.();
-              sessionMutationAuthorization?.assertCurrent();
-            },
-            signal,
+      modelSource = captureGatewayOperatorRunAuthority({
+        client,
+        context,
+        hasCurrentClientAuthority,
+        invocationAuthority: {
+          assertCurrent: () => {
+            sessionMutationCommitGuard?.();
+            sessionMutationAuthorization?.assertCurrent();
           },
-        });
-      }
+          signal,
+        },
+      });
       const executed = await executeSessionPatchMutations({
         client,
         context,

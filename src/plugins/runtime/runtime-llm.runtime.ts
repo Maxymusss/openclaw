@@ -665,7 +665,10 @@ export function createRuntimeLlm(
                     signal: modelSignal,
                   },
                 });
-                assertPreparedCurrent();
+                // Accepted provider cancellation resolves as a terminal message. The original
+                // source and selected model must still be authorized to publish that result.
+                source.assertAuthorityCurrent();
+                modelExecution?.assertCurrent();
 
                 const text = result.content
                   .filter((c): c is { type: "text"; text: string } => c.type === "text")

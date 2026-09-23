@@ -185,7 +185,7 @@ async function createContainerSandboxBackend(
   operatorAuthority?: AdmittedRunOperatorAuthority,
   native?: NativeSandboxContainerCustody,
 ): Promise<SandboxBackendHandle> {
-  let allocatedContainerName: string | undefined;
+  let allocatedContainerName: string | undefined = undefined;
   const assertCurrent = () => {
     operatorAuthority?.assertCurrent();
     params.assertRuntimeCurrent?.();

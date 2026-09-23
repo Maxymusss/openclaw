@@ -151,7 +151,7 @@ async function podmanClientPrefersConnectionEnv(engine: SandboxContainerEngine):
     allowFailure: true,
     signal: AbortSignal.timeout(SANDBOX_ENGINE_PROBE_TIMEOUT_MS),
   });
-  const match = /^podman(?:-remote)? version (\d+)\.(\d+)\.\d+(?:[-+]\S+)?\s*$/u.exec(
+  const match = /^podman(?:-remote)?(?:\.exe)? version (\d+)\.(\d+)\.\d+(?:[-+]\S+)?\s*$/u.exec(
     result.stdout,
   );
   if (result.code !== 0 || !match) {

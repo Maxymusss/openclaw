@@ -13,6 +13,7 @@ type CompletionOperatorSource = {
   operatorAuthority?: AdmittedRunOperatorAuthority;
   signal?: AbortSignal;
   assertCurrent: () => void;
+  assertAuthorityCurrent: () => void;
   bindModelExecution: (
     model: ModelRef | undefined,
   ) => ReturnType<typeof bindOperatorModelExecution>;
@@ -36,6 +37,7 @@ export function bindLlmOperatorAuthority(
           return await complete(params, {
             signal: params.signal,
             assertCurrent: () => params.signal?.throwIfAborted(),
+            assertAuthorityCurrent: () => {},
             bindModelExecution: () => undefined,
           });
         }
@@ -60,9 +62,13 @@ export function bindLlmOperatorAuthority(
             ? AbortSignal.any([params.signal, operatorAuthority.signal])
             : operatorAuthority.signal
           : params.signal;
-        const assertCurrent = () => {
+        const assertAuthorityCurrent = () => {
           capturedOperator.assertInvocationCurrent?.();
           operatorAuthority?.assertCurrent();
+          operatorAuthority?.signal?.throwIfAborted();
+        };
+        const assertCurrent = () => {
+          assertAuthorityCurrent();
           signal?.throwIfAborted();
         };
         assertCurrent();
@@ -71,6 +77,7 @@ export function bindLlmOperatorAuthority(
             operatorAuthority,
             signal,
             assertCurrent,
+            assertAuthorityCurrent,
             bindModelExecution: (model) => {
               const execution = bindOperatorModelExecution(operatorAuthority, model);
               if (execution) {

@@ -359,16 +359,71 @@ describe("runtime.llm.complete isolated agent runtime", () => {
   });
 
   it("validates isolated reasoning against the host-resolved model and runtime", async () => {
-    const llm = createRuntimeLlm({ getConfig: () => cfg, authority: { allowComplete: true } });
+    const provider = "reasoning-fixture";
+    const model = "plain-model";
+    const reasoningConfig: OpenClawConfig = {
+      agents: { defaults: { model: `${provider}/${model}` } },
+      models: {
+        providers: {
+          [provider]: {
+            api: "openai-completions",
+            baseUrl: "https://fixture.invalid/v1",
+            models: [
+              {
+                id: model,
+                name: "Plain model",
+                reasoning: false,
+                input: ["text"],
+                cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                contextWindow: 8192,
+                maxTokens: 1024,
+                agentRuntime: { id: "openclaw" },
+              },
+            ],
+          },
+        },
+      },
+    };
+    hoisted.resolveSimpleCompletionSelectionForAgent.mockReturnValue({
+      provider,
+      modelId: model,
+      agentDir: "/tmp/main",
+    });
+    hoisted.runIsolatedCompletion.mockResolvedValue({
+      text: "isolated",
+      provider,
+      model,
+      owner: { kind: "harness", id: "openclaw" },
+    });
+    const llm = createRuntimeLlm({
+      getConfig: () => reasoningConfig,
+      authority: { agentId: "main", allowComplete: true },
+    });
 
+    await expect(
+      llm.complete({
+        messages: [{ role: "user", content: "Return JSON" }],
+        reasoning: "high",
+        execution: { mode: "isolated-agent-runtime" },
+      }),
+    ).rejects.toMatchObject({ code: "LLM_ISOLATED_INPUT_REJECTED" });
+    expect(hoisted.runIsolatedCompletion).not.toHaveBeenCalled();
     await expect(
       llm.complete({
         messages: [{ role: "user", content: "Return JSON" }],
         reasoning: "ultra",
         execution: { mode: "isolated-agent-runtime" },
       }),
-    ).rejects.toMatchObject({ code: "LLM_ISOLATED_INPUT_REJECTED" });
-    expect(hoisted.runIsolatedCompletion).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({ text: "isolated", provider, model });
+    expectSingleCallFirstArg(hoisted.runIsolatedCompletion, {
+      config: reasoningConfig,
+      agentId: "main",
+      provider,
+      model,
+      thinkLevel: "ultra",
+    });
+    expect(hoisted.acquireSimpleCompletionModelForAgent).not.toHaveBeenCalled();
+    expect(hoisted.completeWithPreparedSimpleCompletionModel).not.toHaveBeenCalled();
   });
 
   it("denies request-level auth profiles without host policy", async () => {

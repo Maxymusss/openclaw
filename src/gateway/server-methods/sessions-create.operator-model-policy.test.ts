@@ -17,6 +17,7 @@ import {
 import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getSessionWorkAdmissionRelease } from "../../sessions/session-lifecycle-admission.js";
+import { AsyncWorkScope } from "../../shared/async-work-scope.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { resolveGatewayAuthPolicyGeneration } from "../auth-policy.js";
 import { publishOperatorRoleConfigChange } from "../operator-role-policy.js";
@@ -180,14 +181,17 @@ describe("sessions.create initial-turn model policy through authenticated ingres
           });
         }
       };
-      const creation = harness.dispatcher.dispatch(
-        {
-          type: "req",
-          id: "create",
-          method: "sessions.create",
-          params: { key, displayName: "Model policy fixture", message: "Initial request" },
-        },
-        client,
+      const owner = new AsyncWorkScope();
+      const creation = owner.run(() =>
+        harness.dispatcher.dispatch(
+          {
+            type: "req",
+            id: "create",
+            method: "sessions.create",
+            params: { key, displayName: "Model policy fixture", message: "Initial request" },
+          },
+          client,
+        ),
       );
       try {
         await Promise.race([
@@ -224,44 +228,76 @@ describe("sessions.create initial-turn model policy through authenticated ingres
         expect(() => child.assertCurrent()).not.toThrow();
         expect(client.internal).not.toHaveProperty("operatorRunAuthority");
         expect(effects).not.toHaveBeenCalled();
+        const entry = expectDefined(
+          loadSessionEntry({ sessionKey: key, storePath }),
+          "committed initial session",
+        );
+        const childReleased = expectDefined(
+          getSessionWorkAdmissionRelease({
+            scope: storePath,
+            identities: [key, entry.sessionId],
+          }),
+          "held initial child admission",
+        );
         releaseChild.resolve();
         await Promise.all(callbackWork);
-        await drainChild();
-        expect(effects.mock.calls).toEqual([["model-a"]]);
-        expect(() => child.assertCurrent()).toThrow();
-
-        await harness.dispatcher.dispatch(
-          {
-            type: "req",
-            id: "fresh",
-            method: "chat.send",
-            params: {
-              sessionKey: key,
-              message: "Fresh request",
-              idempotencyKey: "fresh-model-policy",
-            },
+        await childReleased;
+        // Title and provider cleanup can outlive session admission. Observe their natural
+        // completion without closing the work owner and aborting the source under test.
+        await AsyncWorkScope.runWhenAllIdle(
+          () => [owner],
+          () => {
+            expect(owner.signal.aborted).toBe(false);
+            expect(child.signal?.aborted).toBe(false);
+            expect(effects.mock.calls).toEqual([["model-a"]]);
+            expect(() => child.assertCurrent()).toThrow();
           },
-          client,
+        );
+
+        await owner.run(() =>
+          harness.dispatcher.dispatch(
+            {
+              type: "req",
+              id: "fresh",
+              method: "chat.send",
+              params: {
+                sessionKey: key,
+                message: "Fresh request",
+                idempotencyKey: "fresh-model-policy",
+              },
+            },
+            client,
+          ),
         );
         const fresh = await harness.awaitResponseFrame("fresh");
         expect(fresh.ok).toBe(true);
         expect(isRecord(fresh.payload) && fresh.payload.status).toBe("started");
         await drainChild();
         await Promise.all(callbackWork);
-        expect(sources).toHaveLength(2);
-        expect(sources[1]?.modelPolicy?.allows({ provider: "fixture", model: "model-b" })).toBe(
-          true,
+        await AsyncWorkScope.runWhenAllIdle(
+          () => [owner],
+          () => {
+            expect(owner.signal.aborted).toBe(false);
+            expect(sources).toHaveLength(2);
+            expect(sources[1]?.modelPolicy?.allows({ provider: "fixture", model: "model-b" })).toBe(
+              true,
+            );
+            expect(effects.mock.calls).toEqual(
+              failPrimary ? [["model-a"], ["model-a"], ["model-b"]] : [["model-a"], ["model-a"]],
+            );
+            expect(harness.close).not.toHaveBeenCalled();
+          },
         );
-        expect(effects.mock.calls).toEqual(
-          failPrimary ? [["model-a"], ["model-a"], ["model-b"]] : [["model-a"], ["model-a"]],
-        );
-        expect(harness.close).not.toHaveBeenCalled();
       } finally {
         releaseInitialSend.resolve();
         releaseChild.resolve();
         try {
           await Promise.allSettled([creation, ...callbackWork]);
           await drainChild();
+          await AsyncWorkScope.runWhenAllIdle(
+            () => [owner],
+            () => owner.drain(),
+          );
         } finally {
           harness.clients.delete(client);
           creator.mockRestore();

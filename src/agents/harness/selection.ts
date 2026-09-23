@@ -231,15 +231,19 @@ export async function runAgentHarnessAttempt(
         model: params.modelId,
       });
     }
-    const operatorAuthority = assertHarnessModelPolicySupport(harness, params);
-    assertOperatorModelHarnessSupported(operatorAuthority, harness);
-    assertOperatorModelTupleAllowed(operatorAuthority, prepared.provider, prepared.modelId);
-    assertOperatorModelTupleAllowed(operatorAuthority, prepared.model.provider, prepared.model.id);
+    const preparedOperatorAuthority = assertHarnessModelPolicySupport(harness, params);
+    assertOperatorModelHarnessSupported(preparedOperatorAuthority, harness);
+    assertOperatorModelTupleAllowed(preparedOperatorAuthority, prepared.provider, prepared.modelId);
+    assertOperatorModelTupleAllowed(
+      preparedOperatorAuthority,
+      prepared.model.provider,
+      prepared.model.id,
+    );
     const modelExecution =
       selection.builtIn || (nativeOwnsModel && nativeModelPolicySupported)
         ? undefined
         : bindOperatorModelExecution(
-            operatorAuthority,
+            preparedOperatorAuthority,
             !nativeModelPolicySupported
               ? undefined
               : nativeSessionRuntime
