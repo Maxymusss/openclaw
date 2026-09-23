@@ -8320,6 +8320,8 @@ describe("ci workflow guards", () => {
       "macos-node",
       "macos-swift",
       "ios-build",
+      "ios-screenshot-build",
+      "ios-screenshot-capture",
       "ios-screenshot-shard",
       "ios-screenshot-evidence",
       "android",
