@@ -21,7 +21,12 @@ import { withCodexAppServerJsonClient } from "./request.js";
 import { createCodexTestBindingStore } from "./session-binding.test-helpers.js";
 import { retireSharedCodexAppServerClientsBeforeDesktopGeneration } from "./shared-client-lifecycle.js";
 import { registerSharedClientLifetimeTests } from "./shared-client-lifetime.test-support.js";
-import { createClientHarness } from "./test-support.js";
+import {
+  createAutoInitializingClientHarness,
+  createClientHarness,
+  createInitializingClientHarness,
+  sendInitializeResult,
+} from "./test-support.js";
 import { CODEX_APP_SERVER_VERSION, MIN_SUPPORTED_CODEX_APP_SERVER_VERSION } from "./version.js";
 
 const mocks = vi.hoisted(() => ({
@@ -145,38 +150,6 @@ let retireSharedCodexAppServerClientIfCurrent: typeof import("./shared-client.js
 let waitForCodexAppServerClientDesktopGenerationDrain: typeof import("./shared-client.js").waitForCodexAppServerClientDesktopGenerationDrain;
 let resetSharedCodexAppServerClientForTests: typeof import("./shared-client.js").resetSharedCodexAppServerClientForTests;
 let withLeasedCodexAppServerClientStartSelectionRetry: typeof import("./shared-client.js").withLeasedCodexAppServerClientStartSelectionRetry;
-
-function createAutoInitializingClientHarness() {
-  return createClientHarness({
-    onWrite(line, send) {
-      const request = JSON.parse(line) as { id: number; method: string };
-      if (request.method === "initialize") {
-        send({ id: request.id, result: { userAgent: `codex-cli/${CODEX_APP_SERVER_VERSION}` } });
-      }
-    },
-  });
-}
-
-async function sendInitializeResult(
-  harness: ReturnType<typeof createClientHarness>,
-  userAgent: string,
-): Promise<void> {
-  const initialize = JSON.parse(await harness.waitForWrite(0)) as { id: number; method: string };
-  expect(initialize.method).toBe("initialize");
-  harness.send({ id: initialize.id, result: { userAgent } });
-}
-
-// Capture reads runtime files before startup; respond when initialize reaches the wire.
-function createInitializingClientHarness(userAgent: string) {
-  return createClientHarness({
-    onWrite: (line, send) => {
-      const request = JSON.parse(line) as { id: number; method: string };
-      if (request.method === "initialize") {
-        send({ id: request.id, result: { userAgent } });
-      }
-    },
-  });
-}
 
 async function sendEmptyModelList(harness: ReturnType<typeof createClientHarness>): Promise<void> {
   const modelList = JSON.parse(await harness.waitForWrite(2)) as { id: number; method: string };
@@ -362,6 +335,12 @@ describe("shared Codex app-server client", () => {
       expect(startSpy).toHaveBeenCalledWith(
         expect.objectContaining({ transport: "websocket", url: "ws://127.0.0.1:39175" }),
         expect.anything(),
+        kind === "shared"
+          ? expect.objectContaining({
+              contextReachedAtMs: {},
+              current: expect.objectContaining({ id: expect.any(Number) }),
+            })
+          : undefined,
       );
       await client.closeAndWait();
     },
@@ -389,6 +368,10 @@ describe("shared Codex app-server client", () => {
     expect(startSpy).toHaveBeenCalledWith(
       expect.objectContaining({ transport: "websocket", url: "ws://127.0.0.1:39176" }),
       expect.anything(),
+      expect.objectContaining({
+        contextReachedAtMs: {},
+        current: expect.objectContaining({ id: expect.any(Number) }),
+      }),
     );
     await client.closeAndWait();
   });
@@ -427,6 +410,12 @@ describe("shared Codex app-server client", () => {
               env: { CODEX_HOME: "/native/codex" },
             }),
             expect.anything(),
+            kind === "shared"
+              ? expect.objectContaining({
+                  contextReachedAtMs: {},
+                  current: expect.objectContaining({ id: expect.any(Number) }),
+                })
+              : undefined,
           );
           await client.closeAndWait();
         },
@@ -740,6 +729,10 @@ describe("shared Codex app-server client", () => {
     expect(startSpy).toHaveBeenCalledWith(
       expect.objectContaining({ command: "/cache/openclaw/codex" }),
       expect.any(Function),
+      expect.objectContaining({
+        contextReachedAtMs: {},
+        current: expect.objectContaining({ id: expect.any(Number) }),
+      }),
     );
     expect(mocks.reconcileCodexComputerUseStartArtifacts).toHaveBeenCalledTimes(2);
     expect(mocks.reconcileCodexComputerUseStartArtifacts.mock.calls[0]?.[0]).toEqual(

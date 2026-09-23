@@ -21,6 +21,7 @@ import {
   type CodexAppServerClientFactory,
   type CodexAppServerClientOptions,
 } from "./shared-client.js";
+import { CODEX_APP_SERVER_VERSION } from "./version.js";
 
 /** Minimal deterministic host terminal observer for Codex harness tests. */
 export function createCodexTestToolTerminalObserver(): NonNullable<
@@ -273,6 +274,38 @@ export function createClientHarness(
       stdout.write(`${JSON.stringify(message)}\n`);
     },
   };
+}
+
+export function createAutoInitializingClientHarness() {
+  return createClientHarness({
+    onWrite(line, send) {
+      const request = JSON.parse(line) as { id: number; method: string };
+      if (request.method === "initialize") {
+        send({ id: request.id, result: { userAgent: `codex-cli/${CODEX_APP_SERVER_VERSION}` } });
+      }
+    },
+  });
+}
+
+export async function sendInitializeResult(
+  harness: ReturnType<typeof createClientHarness>,
+  userAgent: string,
+): Promise<void> {
+  const initialize = JSON.parse(await harness.waitForWrite(0)) as { id: number; method: string };
+  expect(initialize.method).toBe("initialize");
+  harness.send({ id: initialize.id, result: { userAgent } });
+}
+
+// Capture reads runtime files before startup; respond when initialize reaches the wire.
+export function createInitializingClientHarness(userAgent: string) {
+  return createClientHarness({
+    onWrite: (line, send) => {
+      const request = JSON.parse(line) as { id: number; method: string };
+      if (request.method === "initialize") {
+        send({ id: request.id, result: { userAgent } });
+      }
+    },
+  });
 }
 
 /** Stock read-only replies from an authenticated managed native app-server. */
