@@ -41,7 +41,7 @@ import {
   buildReleaseCandidateState,
   buildPublishCommand,
   buildTelegramArtifactInputs,
-  assertPlannedReleaseTagIsAbsent,
+  assertReleaseCandidateTag,
   candidateCumulativeShippedPullRequests,
   candidateParallelsArgs,
   candidateParallelsShellCommand,
@@ -440,7 +440,7 @@ describe("release candidate checklist", () => {
             workflowSha: toolingSha,
           }),
           gitTrackedStatus: () => "",
-          assertPlannedReleaseTagIsAbsent: () => {},
+          assertReleaseCandidateTag: () => {},
           validateTrustedToolingPin,
           validateCandidateCheckout,
           buildReleaseCandidateState,
@@ -994,12 +994,25 @@ describe("release candidate checklist", () => {
     const options = parseArgs(["--tag", "v2026.7.1-beta.4", "--target-sha", "a".repeat(40)]);
 
     expect(options.targetSha).toBe("a".repeat(40));
-    expect(() => assertPlannedReleaseTagIsAbsent("v2026.7.1-beta.4", () => true)).toThrow(
-      "already exists",
-    );
-    expect(() => assertPlannedReleaseTagIsAbsent("v2026.7.1-beta.4", () => false)).not.toThrow();
     expect(() => parseArgs(["--tag", "v2026.7.1-beta.4", "--target-sha", "not-a-sha"])).toThrow(
       "--target-sha must be a full lowercase commit SHA",
+    );
+  });
+
+  it("accepts absent and exact lightweight or annotated tags, rejecting mismatches and lookup errors", () => {
+    const { root, git } = candidateGitFixture({ "package.json": "{}" });
+    git("remote", "add", "origin", root);
+    const targetSha = git("rev-parse", "HEAD");
+    expect(() => assertReleaseCandidateTag("v2026.7.1-beta.4", targetSha, root)).not.toThrow();
+    git("tag", "v2026.7.1-beta.4");
+    git("-c", "tag.gpgSign=false", "tag", "-a", "v2026.7.1-beta.5", "-m", "candidate");
+    for (const tag of ["v2026.7.1-beta.4", "v2026.7.1-beta.5"]) {
+      expect(() => assertReleaseCandidateTag(tag, targetSha, root)).not.toThrow();
+      expect(() => assertReleaseCandidateTag(tag, "f".repeat(40), root)).toThrow("expected");
+    }
+    git("remote", "set-url", "origin", join(root, "missing-origin"));
+    expect(() => assertReleaseCandidateTag("v2026.7.1-beta.4", targetSha, root)).toThrow(
+      "could not resolve release candidate tag",
     );
   });
 

@@ -19,6 +19,9 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   Tooling SHA + rerun group**. Validation SHA maps to the Code SHA for product validation or
   the Release SHA for changelog-only validation; it is not a third release
   identity. A branch or temporary ref is context and transport.
+- The candidate helper accepts an absent release tag or an existing lightweight
+  or annotated tag resolving to the exact candidate SHA. A conflicting tag or
+  failed remote lookup stops validation; never move a tag to recover.
 - Freeze the candidate SHA/ref and Tooling SHA/ref once. Main lineage authorizes
   the initial Tooling SHA selection; it does not authorize replacing that
   tooling after `main` advances.
