@@ -39,6 +39,8 @@ export type OpenClawAgentDatabaseExecution = {
   readonly agentId: string;
   readonly path: string;
   assertCurrent(): void;
+  /** Initialize first-use storage through the same admitted native owner. */
+  prepare(source: AgentDatabaseRequestExecutionSource): Promise<void>;
   /** Admit a write against existing storage; a missing store remains missing. */
   runExisting<T>(
     source: AgentDatabaseRequestExecutionSource,
@@ -79,7 +81,9 @@ const IDLE_EXECUTION_MS = 60_000;
 const runInExecutionOwnerContext = AsyncLocalStorage.snapshot();
 
 /** These native-only scopes still need their complete owning caller cutover. */
-function supportsOpenClawAgentDatabaseExecution(options: OpenClawAgentDatabaseOptions): boolean {
+export function supportsOpenClawAgentDatabaseExecution(
+  options: OpenClawAgentDatabaseOptions,
+): boolean {
   return (
     !isIncognitoOpenClawAgentSqlitePath(resolveOpenClawAgentSqlitePath(options), options) &&
     getOpenClawDatabaseMaintenanceScope()?.ownsSchemaMaintenance !== true &&
@@ -271,15 +275,11 @@ export function captureOpenClawAgentDatabaseExecution(
     }
     const current = generation;
     try {
-      if (creatingIdentity) {
-        return {
-          value: await current.runCreate(source, operation, creatingIdentity, assertCallerCurrent),
-        };
-      }
-      return await current.runExisting(
+      return await current.run(
         source,
         async (scope) => ({ value: await operation(scope) }),
         assertCallerCurrent,
+        creatingIdentity,
       );
     } catch (error) {
       const nativeFailed = current.failed();
@@ -346,6 +346,20 @@ export function captureOpenClawAgentDatabaseExecution(
         agentId,
         path: pathname,
         assertCurrent: assertBorrowed,
+        async prepare(source) {
+          assertBorrowed();
+          const result = run(
+            source,
+            async () => undefined,
+            assertReferenceCurrent,
+            expectedIdentity,
+            false,
+            true,
+          );
+          pending.add(result);
+          void result.finally(() => pending.delete(result)).catch(() => undefined);
+          await result;
+        },
         async runExisting(source, operation, runOptions) {
           assertBorrowed();
           const result = run(

@@ -33,7 +33,7 @@ import {
   readSessionEntryInWorker,
   withSessionEntriesFromStoresInWorker,
 } from "./session-entry-read-runtime.js";
-import { historyPages } from "./session-transcript-worker-resources.js";
+import { historyLane } from "./session-transcript-worker-resources.js";
 
 let state: OpenClawTestState;
 beforeAll(async () => {
@@ -274,15 +274,15 @@ it.each(["before-open", "after-row", "after-release", "after-discovery-cleanup"]
         await release.promise;
       }
     };
-    const closeResources = historyPages.closeResources.bind(historyPages);
-    const rotate = historyPages.rotate.bind(historyPages);
+    const closeResources = historyLane.pool.closeResources.bind(historyLane.pool);
+    const rotate = historyLane.pool.rotate.bind(historyLane.pool);
     const closeIntercept = vi
-      .spyOn(historyPages, "closeResources")
+      .spyOn(historyLane.pool, "closeResources")
       .mockImplementation(async (key) => {
         await closeResources(key);
         await holdDiscoveryCleanup();
       });
-    const rotateIntercept = vi.spyOn(historyPages, "rotate").mockImplementation(async () => {
+    const rotateIntercept = vi.spyOn(historyLane.pool, "rotate").mockImplementation(async () => {
       await rotate();
       await holdDiscoveryCleanup();
     });

@@ -41,7 +41,11 @@ import {
   type SessionStoreTargetReadRequest,
   type SessionStoreTargetReadResult,
 } from "./session-store-target-inventory.js";
-import { withSessionHistoryWorkerReadCandidates } from "./session-transcript-worker-resources.js";
+import {
+  maintenanceLane,
+  withSessionHistoryWorkerReadCandidates,
+  type SessionHistoryWorkerLane,
+} from "./session-transcript-worker-resources.js";
 import { withSessionHistoryWorkerDatabase } from "./session-transcript-worker-runtime.js";
 import type {
   SessionExactEntriesWorkerResult,
@@ -60,85 +64,90 @@ async function withSessionStoreTarget<T>(
   request: Omit<SessionStoreTargetReadRequest, "registeredDatabases">,
   operation: (target: PreparedStoreTarget, owner: StoreTargetReadOwner) => Promise<T>,
   assertCallerCurrent?: () => void,
+  { lane }: { lane?: SessionHistoryWorkerLane } = {},
 ): Promise<T> {
   assertCallerCurrent?.();
   const { candidates, ...targetRequest } = request;
   const registryRead = prepareOpenClawAgentDatabaseRegistrySnapshotRead({ env: targetRequest.env });
-  return withSessionHistoryWorkerReadCandidates(candidates, async (discovery) => {
-    let resolved = await discovery.readStoreTarget({
-      ...targetRequest,
-      registeredDatabases: { status: "deferred" },
-    });
-    let registry: Awaited<ReturnType<typeof registryRead.read>> | undefined;
-    if (resolved.kind === "session-target-registry-required") {
-      registry = await registryRead.read();
-      registry.assertCurrent();
-      discovery.assertCurrent();
-      assertCallerCurrent?.();
-      resolved = await discovery.readStoreTarget({
+  return withSessionHistoryWorkerReadCandidates(
+    candidates,
+    async (discovery) => {
+      let resolved = await discovery.readStoreTarget({
         ...targetRequest,
-        registeredDatabases:
-          registry.result.status === "available"
-            ? registry.result.entries
-            : { status: "unavailable" },
+        registeredDatabases: { status: "deferred" },
       });
+      let registry: Awaited<ReturnType<typeof registryRead.read>> | undefined;
       if (resolved.kind === "session-target-registry-required") {
-        throw new Error("Session store target requested registry rows twice");
-      }
-    }
-    registry?.assertCurrent();
-    const target = resolved;
-    const assertCurrent = () => {
-      registry?.assertCurrent();
-      discovery.assertCurrent();
-      assertSessionStoreReadCandidate(target.sourcePath, candidates);
-      assertCallerCurrent?.();
-    };
-    let registrationChanged = false;
-    assertCurrent();
-    // A synchronous consumer may already publish; its operation owns the final currentness check.
-    const result = await operation(target, {
-      assertCurrent,
-      onRegistryChange(change) {
-        if (registry) {
-          registry.followRegistration(change);
-          registrationChanged = true;
-        }
-      },
-      async revalidateTarget() {
-        assertCurrent();
-        if (!registrationChanged) {
-          return;
-        }
-        const currentRegistry = await registryRead.read();
-        assertCurrent();
-        currentRegistry.assertCurrent();
-        const current = await discovery.readStoreTarget({
+        registry = await registryRead.read();
+        registry.assertCurrent();
+        discovery.assertCurrent();
+        assertCallerCurrent?.();
+        resolved = await discovery.readStoreTarget({
           ...targetRequest,
           registeredDatabases:
-            currentRegistry.result.status === "available"
-              ? currentRegistry.result.entries
+            registry.result.status === "available"
+              ? registry.result.entries
               : { status: "unavailable" },
         });
-        assertCurrent();
-        currentRegistry.assertCurrent();
-        if (
-          current.kind !== "session-store-target" ||
-          current.logicalAgentId !== target.logicalAgentId ||
-          current.sourcePath !== target.sourcePath ||
-          current.database.agentId !== target.database.agentId ||
-          current.database.path !== target.database.path
-        ) {
-          throw new Error("Session store registration changed its selected target");
+        if (resolved.kind === "session-target-registry-required") {
+          throw new Error("Session store target requested registry rows twice");
         }
-        registrationChanged = false;
-      },
-    });
-    if (registrationChanged) {
-      throw new Error("Session read released its owner before confirming registration");
-    }
-    return result;
-  });
+      }
+      registry?.assertCurrent();
+      const target = resolved;
+      const assertCurrent = () => {
+        registry?.assertCurrent();
+        discovery.assertCurrent();
+        assertSessionStoreReadCandidate(target.sourcePath, candidates);
+        assertCallerCurrent?.();
+      };
+      let registrationChanged = false;
+      assertCurrent();
+      // A synchronous consumer may already publish; its operation owns the final currentness check.
+      const result = await operation(target, {
+        assertCurrent,
+        onRegistryChange(change) {
+          if (registry) {
+            registry.followRegistration(change);
+            registrationChanged = true;
+          }
+        },
+        async revalidateTarget() {
+          assertCurrent();
+          if (!registrationChanged) {
+            return;
+          }
+          const currentRegistry = await registryRead.read();
+          assertCurrent();
+          currentRegistry.assertCurrent();
+          const current = await discovery.readStoreTarget({
+            ...targetRequest,
+            registeredDatabases:
+              currentRegistry.result.status === "available"
+                ? currentRegistry.result.entries
+                : { status: "unavailable" },
+          });
+          assertCurrent();
+          currentRegistry.assertCurrent();
+          if (
+            current.kind !== "session-store-target" ||
+            current.logicalAgentId !== target.logicalAgentId ||
+            current.sourcePath !== target.sourcePath ||
+            current.database.agentId !== target.database.agentId ||
+            current.database.path !== target.database.path
+          ) {
+            throw new Error("Session store registration changed its selected target");
+          }
+          registrationChanged = false;
+        },
+      });
+      if (registrationChanged) {
+        throw new Error("Session read released its owner before confirming registration");
+      }
+      return result;
+    },
+    lane,
+  );
 }
 
 /** Preserve logical lookup and writable open semantics on the canonical file-backed actor. */
@@ -310,7 +319,7 @@ async function withSessionEntriesFromStoreInWorker<T>(
       assertCurrent();
       return consume({ result, database, assertCurrent });
     },
-    input.projection === "backing",
+    { backing: input.projection === "backing" },
   );
 }
 
@@ -341,6 +350,7 @@ export async function readExpiredCronRunEntriesInWorker(
       assertCurrent();
       return entries;
     },
+    { lane: maintenanceLane },
   );
 }
 
@@ -352,7 +362,7 @@ async function withSessionStoreReaderInWorker<T>(
     continuation: CanonicalSessionReaderContinuation | undefined,
     assertCurrent: () => void,
   ) => Promise<T>,
-  backing = false,
+  { backing = false, lane }: { backing?: boolean; lane?: SessionHistoryWorkerLane } = {},
 ): Promise<T> {
   const env = cloneEnvWithPlatformSemantics(input.env ?? process.env);
   env.OPENCLAW_STATE_DIR = resolveStateDir(env);
@@ -390,27 +400,31 @@ async function withSessionStoreReaderInWorker<T>(
       assertRoute: () => void,
     ) => {
       const continuation = continuations.find((item) => item.path === database.path)?.owner;
-      return withSessionHistoryWorkerDatabase({ ...database, env }, async (owner) => {
-        let active = true;
-        const assertCurrent = () => {
-          if (!active) {
-            throw new Error("Session entry read consumer is no longer active");
+      return withSessionHistoryWorkerDatabase(
+        { ...database, env },
+        async (owner) => {
+          let active = true;
+          const assertCurrent = () => {
+            if (!active) {
+              throw new Error("Session entry read consumer is no longer active");
+            }
+            owner.assertCurrent();
+            continuation?.assertCurrent();
+            assertRoute();
+          };
+          try {
+            return await read(
+              owner,
+              { ...database, env: { ...env } },
+              continuation?.receipt,
+              assertCurrent,
+            );
+          } finally {
+            active = false;
           }
-          owner.assertCurrent();
-          continuation?.assertCurrent();
-          assertRoute();
-        };
-        try {
-          return await read(
-            owner,
-            { ...database, env: { ...env } },
-            continuation?.receipt,
-            assertCurrent,
-          );
-        } finally {
-          active = false;
-        }
-      });
+        },
+        lane,
+      );
     };
     if (direct && target.agentId) {
       resolveSqliteAgentId({ scopedAgentId: agentId, storeAgentId: target.agentId });
@@ -421,6 +435,8 @@ async function withSessionStoreReaderInWorker<T>(
     return await withSessionStoreTarget(
       { agentId, storePath, env, candidates },
       (resolvedTarget, owner) => readDatabase(resolvedTarget.database, owner.assertCurrent),
+      undefined,
+      { lane },
     );
   } finally {
     for (const { owner } of continuations.toReversed()) {
