@@ -187,7 +187,19 @@ final class IOSChatViewModelOwner {
         currentPresentation: @MainActor () -> Presentation) async
     {
         let presentation = currentPresentation()
-        guard let origin = NewChatOrigin(appModel: appModel, presentation: presentation) else { return }
+        #if DEBUG
+        func observeOrdinarySync(_ event: String) {
+            guard presentation.binding == nil else { return }
+            presentation.router?.testLifetimeObservation?("ordinary-sync-\(event)")
+        }
+        observeOrdinarySync("entered")
+        #endif
+        guard let origin = NewChatOrigin(appModel: appModel, presentation: presentation) else {
+            #if DEBUG
+            observeOrdinarySync("origin-refused")
+            #endif
+            return
+        }
         let pending = self.newChatRequest
         let inputs = appModel.activeGatewayConnectConfig?.controlUIInputs
         let generation = appModel.gatewayConnectGeneration
@@ -197,15 +209,44 @@ final class IOSChatViewModelOwner {
         }
         // Restore may resolve cached routing, but cannot renew user/account
         // authority. A first connection invalidates this attempt, not its intent.
-        guard !Task.isCancelled, origin.isCurrent(appModel: appModel, presentation: currentPresentation()),
-              inputs == appModel.activeGatewayConnectConfig?.controlUIInputs,
-              generation == appModel.gatewayConnectGeneration,
-              accountGeneration == appModel.operatorAuthorityGeneration else { return }
+        guard !Task.isCancelled else {
+            #if DEBUG
+            observeOrdinarySync("restore-cancelled")
+            #endif
+            return
+        }
+        guard origin.isCurrent(appModel: appModel, presentation: currentPresentation()) else {
+            #if DEBUG
+            observeOrdinarySync("restore-origin-changed")
+            #endif
+            return
+        }
+        guard inputs == appModel.activeGatewayConnectConfig?.controlUIInputs else {
+            #if DEBUG
+            observeOrdinarySync("restore-inputs-changed")
+            #endif
+            return
+        }
+        guard generation == appModel.gatewayConnectGeneration else {
+            #if DEBUG
+            observeOrdinarySync("restore-gateway-generation-changed")
+            #endif
+            return
+        }
+        guard accountGeneration == appModel.operatorAuthorityGeneration else {
+            #if DEBUG
+            observeOrdinarySync("restore-account-generation-changed")
+            #endif
+            return
+        }
         self.sync(
             appModel: appModel,
             nativeBinding: presentation.binding,
             nativeActions: presentation.router,
             presentationID: presentation.id)
+        #if DEBUG
+        observeOrdinarySync("return modelPresent=\(self.viewModel != nil)")
+        #endif
         guard let pending, pending.scope == nil, self.newChatRequest === pending,
               pending.id == appModel.newChatRequestID,
               pending.origin.isCurrent(appModel: appModel, presentation: currentPresentation()),

@@ -196,6 +196,13 @@ final class NativeActionVisualProofTests: XCTestCase {
         case pagesAdmission, pagesAdmissionCover, pagesHeldOpen, pagesHeldInspect, pagesHeldPrepare
         case pagesPrepared, pagesRemoval
 
+        var testsPromptAdmission: Bool {
+            switch self {
+            case .agentDeepLink, .approvalDashboard, .gatewayDetails, .gatewayTrust, .notificationGuidance: true
+            default: false
+            }
+        }
+
         var testsPagesEditor: Bool {
             switch self {
             case .pagesAdmission, .pagesAdmissionCover, .pagesHeldOpen, .pagesHeldInspect, .pagesHeldPrepare,
@@ -353,7 +360,12 @@ final class NativeActionVisualProofTests: XCTestCase {
                     "native-visual-lifetime total=\(lifetimeTotal) truncated=\(lifetimeTotal > 32) \(lifetimeRows.joined(separator: " | "))")
             }
             let originalLifetimeObservation = router.testLifetimeObservation
-            router.testLifetimeObservation = { observeLifetime($0) }
+            router.testLifetimeObservation = {
+                // Keep the existing bounded trace intact outside the missing ordinary setup evidence.
+                if $0.hasPrefix("ordinary-sync-"),
+                   scenario != .sidebarNewChatOrdinary || lifetimePhase != "setup" { return }
+                observeLifetime($0)
+            }
             defer { router.testLifetimeObservation = originalLifetimeObservation }
             let originalSelectionDidChange = model.chatSelectionDidChange
             model.chatSelectionDidChange = {
@@ -457,7 +469,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 "permissionMode": "guarded", "toolOverrides": [:],
                                 "activeRunIds": !scenario
                                     .testsNativeAdoption && !scenario.testsChatModal && !scenario.testsPagesEditor &&
-                                    !scenario.testsSidebarNewChat &&
+                                    !scenario.testsSidebarNewChat && !scenario.testsPromptAdmission &&
                                     scenario != .nativePreparedSendAccountABA &&
                                     agent == session.agentID && key == session
                                     .sessionKey ? [run.runID] : [],
@@ -915,7 +927,9 @@ final class NativeActionVisualProofTests: XCTestCase {
                     try await self.waitForNavigationTitle("Pages", in: ownedWindow)
                     let sheet = try XCTUnwrap(hosting.presentedViewController)
                     if scenario == .pagesAdmissionCover || scenario == .pagesRemoval {
-                        try await self.waitUntil { hosting.view.window == nil }
+                        try await self.waitUntil(failureFacts: { [weak hosting, weak ownedWindow] in
+                            self.coverFailureFacts(hosting: hosting, window: ownedWindow)
+                        }) { hosting.view.window == nil }
                     }
                     // Pages uses ordinary departure. A cover can postpone idle VM
                     // replacement; assert the live editor, not a required transport kind.
@@ -990,14 +1004,17 @@ final class NativeActionVisualProofTests: XCTestCase {
                         XCTAssertNil(rootState.nativePresentationID)
                         XCTAssertNil(rootState.pagesEditor)
                         XCTAssertFalse(rootState.chatModals.hasActivePresentation)
-                        for _ in 0..<2 {
+                        for expectedReason in [
+                            "The action route changed. Select the session again.",
+                            "Reconnect to the selected account to check this operation. Do not send it again.",
+                        ] {
                             do {
                                 _ = try await oldConfirmation.submit()
                                 XCTFail("Removed Pages Root retained native confirmation authority")
                             } catch {
                                 XCTAssertEqual(
                                     error.localizedDescription,
-                                    "The action route changed. Select the session again.")
+                                    expectedReason)
                             }
                         }
                         XCTAssertEqual(sends, 0)
@@ -1064,7 +1081,11 @@ final class NativeActionVisualProofTests: XCTestCase {
                         rootActions.userModalBinding(rootActions.binding(\.pagesEditor)).wrappedValue = nil
                         try await self.waitUntil { hosting.presentedViewController == nil }
                         try await self.selectSidebarDestination("overview", using: rootActions)
-                        try await self.waitForNavigationTitle("Overview", in: ownedWindow)
+                        try await self.waitForOverviewOwner(
+                            in: ownedWindow,
+                            hosting: hosting,
+                            state: rootState,
+                            router: router)
                         XCTAssertEqual(UserDefaults.standard.string(forKey: "sidebar.pinnedPages"), "usage,overview")
                         try await self.showSidebar(using: rootActions)
                         rootActions.userModalBinding(rootActions.binding(\.pagesEditor)).wrappedValue = .init()
@@ -1080,18 +1101,25 @@ final class NativeActionVisualProofTests: XCTestCase {
                             selectOverview()
                         }
                         try await self.waitUntil { hosting.presentedViewController == nil }
-                        try await self.waitForNavigationTitle("Overview", in: ownedWindow)
+                        try await self.waitForOverviewOwner(
+                            in: ownedWindow,
+                            hosting: hosting,
+                            state: rootState,
+                            router: router)
                         XCTAssertEqual(UserDefaults.standard.string(forKey: "sidebar.pinnedPages"), "usage,overview")
                     }
                     if let prepared {
-                        for _ in 0..<2 {
+                        for expectedReason in [
+                            "The action route changed. Select the session again.",
+                            "Reconnect to the selected account to check this operation. Do not send it again.",
+                        ] {
                             do {
                                 _ = try await prepared.submit()
                                 XCTFail("Pages open-close revived an old confirmation")
                             } catch {
                                 XCTAssertEqual(
                                     error.localizedDescription,
-                                    "The action route changed. Select the session again.")
+                                    expectedReason)
                             }
                         }
                         XCTAssertEqual(sends, 0)
@@ -1192,7 +1220,9 @@ final class NativeActionVisualProofTests: XCTestCase {
                     if scenario == .chatModalNewOptionsCover {
                         // Compact height uses the actual full-screen adaptation. The UI
                         // transition owner survives cover; native permits do not.
-                        try await self.waitUntil { hosting.view.window == nil }
+                        try await self.waitUntil(failureFacts: { [weak hosting, weak ownedWindow] in
+                            self.coverFailureFacts(hosting: hosting, window: ownedWindow)
+                        }) { hosting.view.window == nil }
                     }
                     XCTAssertTrue(model.chatPresentation.viewModel === chat)
                     XCTAssertEqual(router.chatRegistrationID, registration)
@@ -1315,14 +1345,17 @@ final class NativeActionVisualProofTests: XCTestCase {
                             XCTAssertEqual(heldResult, .cancelled)
                         }
                         if let prepared {
-                            for _ in 0..<2 {
+                            for expectedReason in [
+                                "The action route changed. Select the session again.",
+                                "Reconnect to the selected account to check this operation. Do not send it again.",
+                            ] {
                                 do {
                                     _ = try await prepared.submit()
                                     XCTFail("A modal open-close revived an old confirmation")
                                 } catch {
                                     XCTAssertEqual(
                                         error.localizedDescription,
-                                        "The action route changed. Select the session again.")
+                                        expectedReason)
                                 }
                             }
                             XCTAssertEqual(sends, 0)
@@ -1738,7 +1771,11 @@ final class NativeActionVisualProofTests: XCTestCase {
                     if ["settings", "usage"].contains(scenario.initialDestination) {
                         try await self.waitForNavigationTitle("Settings", in: ownedWindow)
                     } else {
-                        try await self.waitForNavigationTitle("Overview", in: ownedWindow)
+                        try await self.waitForOverviewOwner(
+                            in: ownedWindow,
+                            hosting: hosting,
+                            state: rootState,
+                            router: router)
                     }
                     if let panel = scenario.initialPanel {
                         rootActions.userSettingsPath.wrappedValue.append(panel.route)
@@ -1974,8 +2011,17 @@ final class NativeActionVisualProofTests: XCTestCase {
                             await requireRefusal()
                             XCTAssertEqual(model.pendingAgentDeepLinkPrompt, prompt)
                             XCTAssertTrue(hosting.presentedViewController === alert)
+                            let declinedPromptID = prompt.id
                             model.declinePendingAgentDeepLinkPrompt()
-                            try await self.waitUntil {
+                            try await self.waitUntil(failureFacts: { [weak model, weak hosting, weak alert] in
+                                let pendingID = model?.pendingAgentDeepLinkPrompt?.id
+                                let presented = hosting?.presentedViewController
+                                return "modelPresent=\(model != nil) promptPresent=\(pendingID != nil) " +
+                                    "promptSame=\(pendingID != nil && pendingID == declinedPromptID) " +
+                                    "hostPresent=\(hosting != nil) presented=\(presented != nil) " +
+                                    "sameAlert=\(alert != nil && presented === alert) " +
+                                    "presentedIsAlert=\(presented is UIAlertController)"
+                            }) {
                                 model.pendingAgentDeepLinkPrompt == nil && hosting.presentedViewController == nil
                             }
                             model.gatewayConnected = originalNodeConnected
@@ -2143,10 +2189,18 @@ final class NativeActionVisualProofTests: XCTestCase {
                         let dismissal = rootActions.chatSheetBinding
                         dismissal.wrappedValue = nil
                         try await self.waitUntil { hosting.presentedViewController == nil }
-                        try await self.waitForNavigationTitle("Overview", in: ownedWindow)
+                        try await self.waitForOverviewOwner(
+                            in: ownedWindow,
+                            hosting: hosting,
+                            state: rootState,
+                            router: router)
                     case .externalDashboard:
                         try await model.handleDeepLink(url: XCTUnwrap(URL(string: "openclaw://dashboard")))
-                        try await self.waitForNavigationTitle("Overview", in: ownedWindow)
+                        try await self.waitForOverviewOwner(
+                            in: ownedWindow,
+                            hosting: hosting,
+                            state: rootState,
+                            router: router)
                     case .inspection, .inspectionDone, .inspectionEscape, .inspectionReplacement,
                          .nativeFromSettingsPath, .nativeAfterUserChat, .sidebarFork, .sidebarNewChat, .gatewayDetails,
                          .sidebarNewChatProtected, .sidebarNewChatOrdinary,
@@ -2206,13 +2260,42 @@ final class NativeActionVisualProofTests: XCTestCase {
         }
     }
 
+    private func coverFailureFacts(hosting: UIViewController?, window: UIWindow?) -> String {
+        guard let hosting else { return "hostPresent=false" }
+        let presented = hosting.presentedViewController
+        let presenter = presented?.presentingViewController
+        // Query only an active presentation: this UIKit getter can create a controller
+        // for a view controller that has not been presented.
+        let presentation = presenter != nil ? presented?.presentationController : nil
+        let removesPresenter = presentation.map { String($0.shouldRemovePresentersView) } ?? "unobserved"
+        return "hostPresent=true presented=\(presented != nil) presenterPresent=\(presenter != nil) " +
+            "presenterIsHost=\(presenter != nil && presenter === hosting) " +
+            "presentationStyle=\(presentation?.presentationStyle.rawValue ?? -99) " +
+            "modalStyle=\(presented?.modalPresentationStyle.rawValue ?? -99) removesPresenter=\(removesPresenter) " +
+            "hostInWindow=\(window != nil && hosting.viewIfLoaded?.window === window) " +
+            "presentedInWindow=\(window != nil && presented?.viewIfLoaded?.window === window) " +
+            "hostH=\(hosting.traitCollection.horizontalSizeClass.rawValue) " +
+            "hostV=\(hosting.traitCollection.verticalSizeClass.rawValue) " +
+            "presentedH=\(presented?.traitCollection.horizontalSizeClass.rawValue ?? -99) " +
+            "presentedV=\(presented?.traitCollection.verticalSizeClass.rawValue ?? -99)"
+    }
+
     private func reportFailure(_ error: Error, window: UIWindow?, hosting: UIViewController?) {
         guard let observation = self.failureObservation else { return }
+        let errorKind = if error is CancellationError {
+            "cancellation"
+        } else if error is OpenClawNativeActionError {
+            "native"
+        } else if (error as NSError).domain == "Gateway" {
+            "gateway code=\((error as NSError).code)"
+        } else {
+            "other"
+        }
         // These fresh failure-time facts do not identify an earlier predicate or state writer.
         let fields = [
             "native-visual-failure scenario=\(observation.scenario) stage=\(observation.stage)",
             "lastWaitLine=\(observation.waitLine) lastWaitPhase=\(observation.waitPhase) cancellation=\(error is CancellationError)",
-            "failureTime taskCancelled=\(Task.isCancelled) windowPresent=\(window != nil)",
+            "errorKind=\(errorKind) failureTime taskCancelled=\(Task.isCancelled) windowPresent=\(window != nil)",
             "windowKey=\(window?.isKeyWindow == true) windowHidden=\(window?.isHidden == true)",
             "sceneActive=\(window?.windowScene?.activationState == .foregroundActive)",
             "hostInWindow=\(window != nil && hosting?.viewIfLoaded?.window === window)",
@@ -2245,6 +2328,26 @@ final class NativeActionVisualProofTests: XCTestCase {
             pending.append(contentsOf: view.subviews)
         }
         return result
+    }
+
+    private func waitForOverviewOwner(
+        in window: UIWindow,
+        hosting: UIViewController,
+        state: RootTabsPresentationState,
+        router: NativeActionRouter) async throws
+    {
+        let rootID = try XCTUnwrap(state.nativePresentationID)
+        // Overview hides its navigation bar. This checks its canonical owner state;
+        // the paired XCUI witness owns proof of the rendered header and controls.
+        try await self.waitUntil {
+            state.nativePresentationID == rootID && router.presentationRegistrationID == rootID &&
+                state.selectedSidebarDestination == .overview && state.selectedSettingsRoute == nil &&
+                state.activeSettingsRoute == nil && state.sidebarNavigationPath.isEmpty &&
+                state.isSidebarDetailRootVisible && window.rootViewController === hosting &&
+                window.isKeyWindow && !window.isHidden &&
+                window.windowScene?.activationState == .foregroundActive &&
+                hosting.viewIfLoaded?.window === window && hosting.presentedViewController == nil
+        }
     }
 
     private func waitForNavigationTitle(_ title: String, in window: UIWindow) async throws {
