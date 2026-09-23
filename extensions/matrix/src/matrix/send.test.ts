@@ -32,6 +32,7 @@ import {
 } from "./send.js";
 import {
   createEncryptedMediaPayload,
+  createMatrixTestDecryptionFailure,
   makeClient,
   makeEncryptedMediaClient,
 } from "./send.test-support.js";
@@ -112,20 +113,6 @@ const runtimeStub = {
 } as unknown as PluginRuntime;
 
 const requireRecord = createRequireRecord("object", "expected-label");
-
-function createMatrixTestDecryptionFailure(event: MatrixEvent) {
-  const failed = new MatrixEvent({
-    ...event.event,
-    type: "m.room.message",
-    content: {
-      msgtype: "m.bad.encrypted",
-      body: "Synthetic missing session key",
-      "m.relates_to": event.getWireContent()["m.relates_to"],
-    },
-  });
-  vi.spyOn(failed, "isDecryptionFailure").mockReturnValue(true);
-  return failed;
-}
 
 function requireArray(value: unknown, label: string): Array<unknown> {
   expect(Array.isArray(value), label).toBe(true);
