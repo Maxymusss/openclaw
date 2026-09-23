@@ -33,10 +33,7 @@ export default definePluginEntry({
     });
     const changeEvents = createWorkboardChangeEventService(store);
     resourceServices.push(changeEvents);
-    const automationNudge = createWorkboardAutomationNudgeService({
-      store,
-      gateway: api.runtime.gateway,
-    });
+    const automationNudge = createWorkboardAutomationNudgeService({ store });
     resourceServices.push(automationNudge);
     const lifecycleSync = createWorkboardLifecycleService({
       store,

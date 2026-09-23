@@ -2,7 +2,7 @@ import type { WorkboardCard } from "@openclaw/workboard-contract";
 import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
 import { isCronSessionKey } from "openclaw/plugin-sdk/routing";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type { OpenClawPluginApi, OpenClawPluginService } from "../api.js";
+import type { OpenClawPluginService } from "../api.js";
 import { cardBoardId } from "./store-card-helpers.js";
 import { MAX_CARDS } from "./store-constants.js";
 import type { WorkboardStore } from "./store.js";
@@ -26,6 +26,7 @@ type PendingBoardNudge = {
 type WorkboardAutomationNudgeState = {
   owner?: object;
   logger?: Parameters<OpenClawPluginService["start"]>[0]["logger"];
+  getCron?: Parameters<OpenClawPluginService["start"]>[0]["getCron"];
   pendingByBoard: Map<string, PendingBoardNudge>;
 };
 
@@ -49,6 +50,7 @@ function getWorkboardAutomationNudgeState(): WorkboardAutomationNudgeState {
     (state) => {
       state.owner = undefined;
       state.logger = undefined;
+      state.getCron = undefined;
       clearPendingBoardNudges(state);
     },
   );
@@ -63,13 +65,17 @@ function isCronOriginSession(sessionKey: string | undefined): boolean {
 
 export function createWorkboardAutomationNudgeService(params: {
   store: WorkboardStore;
-  gateway: Pick<OpenClawPluginApi["runtime"]["gateway"], "request">;
 }): WorkboardAutomationNudgeService {
   const serviceOwner = {};
 
   const nudgeBoard = async (boardId: string, jobId: string, owner: object) => {
     const state = getWorkboardAutomationNudgeState();
-    if (state.owner !== owner || !state.logger || state.pendingByBoard.has(boardId)) {
+    if (
+      state.owner !== owner ||
+      !state.logger ||
+      !state.getCron ||
+      state.pendingByBoard.has(boardId)
+    ) {
       return;
     }
     if (state.pendingByBoard.size >= MAX_CARDS) {
@@ -84,11 +90,14 @@ export function createWorkboardAutomationNudgeService(params: {
     // second lifecycle event can never overlap the first automation run request.
     state.pendingByBoard.set(boardId, pending);
     try {
-      const result = await params.gateway.request(
-        "cron.run",
-        { id: jobId, mode: "if-enabled" },
-        { scopes: ["operator.admin"] },
-      );
+      const cron = state.getCron();
+      if (!cron) {
+        throw new Error("Gateway cron scheduler is unavailable");
+      }
+      if (!cron.enqueueRun) {
+        throw new Error("Gateway cron scheduler does not support queued run acceptance");
+      }
+      const result = await cron.enqueueRun(jobId, "if-enabled");
       if (isRecord(result) && result.ran === false) {
         const reason = typeof result.reason === "string" ? result.reason : "not-run";
         state.logger.warn(
@@ -130,6 +139,7 @@ export function createWorkboardAutomationNudgeService(params: {
       clearPendingBoardNudges(state);
       state.owner = serviceOwner;
       state.logger = ctx.logger;
+      state.getCron = ctx.getCron;
     },
     stop() {
       const state = getWorkboardAutomationNudgeState();
@@ -138,6 +148,7 @@ export function createWorkboardAutomationNudgeService(params: {
       }
       state.owner = undefined;
       state.logger = undefined;
+      state.getCron = undefined;
       clearPendingBoardNudges(state);
     },
     async nudge(input) {

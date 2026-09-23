@@ -70,6 +70,10 @@ export function createPluginServiceCronGetter(params: {
         commitGuard();
         return await cron.remove(id, { commitGuard });
       },
+      enqueueRun: async (id, mode) => {
+        commitGuard();
+        return await cron.enqueueRun(id, mode, { commitGuard });
+      },
       removeStaleJobFamily: async (family) => {
         commitGuard();
         return await cron.removeStaleJobFamily(family, { commitGuard });

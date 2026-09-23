@@ -4576,10 +4576,7 @@ describe("startGatewayPostAttachRuntime", () => {
       expect(ctx.config).toBe(params.gatewayPluginConfigAtStart);
       expect(ctx.workspaceDir).toBe(testState.workspaceDir);
       const getCron = ctx.getCron;
-      if (!getCron) {
-        throw new Error("gateway_start context did not expose getCron");
-      }
-      expect(getCron()).toBe(initialCron);
+      expect(getCron?.()).toBe(initialCron);
       const serviceGetter = vi.mocked(runtimeDeps.startGatewaySidecars).mock.calls[0]?.[0]
         .getCronService;
       expect(serviceGetter?.()).toBe(closing === "restart" ? initialCron : undefined);
@@ -4587,7 +4584,7 @@ describe("startGatewayPostAttachRuntime", () => {
       const reloadedCron = createCronHost();
       currentCron = reloadedCron;
       params.deps.cron = (closing === "close" ? reloadedCron : depsCron) as never;
-      expect(getCron()).toBe(reloadedCron);
+      expect(getCron?.()).toBe(reloadedCron);
       expect(serviceGetter?.()).toBe(closing === "restart" ? reloadedCron : undefined);
       expect(ctx.abortSignal?.aborted).toBe(false);
       if (closing === "close") {
@@ -4640,6 +4637,7 @@ function createCronHost() {
     add: vi.fn<PluginServiceCronHost["add"]>(),
     update: vi.fn<PluginServiceCronHost["update"]>(),
     remove: vi.fn<PluginServiceCronHost["remove"]>(),
+    enqueueRun: vi.fn<PluginServiceCronHost["enqueueRun"]>(),
     removeStaleJobFamily: vi.fn<PluginServiceCronHost["removeStaleJobFamily"]>(),
   } satisfies PluginServiceCronHost;
 }

@@ -166,6 +166,21 @@ export type PluginHookGatewayCronService = {
   add: (input: PluginHookGatewayCronCreateInput) => Promise<unknown>;
   update: (id: string, patch: PluginHookGatewayCronUpdateInput) => Promise<unknown>;
   remove: (id: string) => Promise<PluginHookGatewayCronRemoveResult>;
+  /**
+   * Queue a manual run and resolve once durable scheduler admission completes.
+   * The automation payload may still be running when this acknowledgement resolves.
+   * Older hosts may omit this capability.
+   */
+  enqueueRun?: (
+    id: string,
+    mode?: "due" | "force" | "if-enabled",
+  ) => Promise<{
+    ok: boolean;
+    enqueued?: boolean;
+    ran?: boolean;
+    reason?: string;
+    runId?: string;
+  }>;
   removeStaleJobFamily: (family: {
     declarationKey: string;
     name: string;

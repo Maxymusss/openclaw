@@ -188,6 +188,7 @@ describe("plugin service scheduler ownership", () => {
         service.add({ ...createJob("late addition"), declarationKey: "test-plugin:late" }),
         service.update(job.id, { name: "late update" }),
         service.remove(job.id),
+        expectDefined(service.enqueueRun, "scheduler queued run acceptance")(job.id, "if-enabled"),
         service.removeStaleJobFamily(family),
       ];
       const results = Promise.allSettled(queued);
@@ -218,6 +219,7 @@ describe("plugin service scheduler ownership", () => {
       }
       await blocker;
       expect((await results).map((result) => result.status)).toEqual([
+        "rejected",
         "rejected",
         "rejected",
         "rejected",

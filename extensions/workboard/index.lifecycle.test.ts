@@ -120,7 +120,7 @@ describe("Workboard registration cleanup", () => {
           register(api) {
             const runtime = new Proxy(api.runtime, {
               get(target, property) {
-                if (property === "gateway") {
+                if (property === "worktrees") {
                   throw failure;
                 }
                 return Reflect.get(target, property, target);
