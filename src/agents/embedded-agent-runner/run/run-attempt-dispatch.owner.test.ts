@@ -331,6 +331,7 @@ it.each(dispatchCases)(
         supports: () => ({ supported: true }),
         conversationToolPolicySupport: "exact",
         operatorModelPolicySupport: operatorModel ? "exact" : undefined,
+        nativeModelPolicySupport: operatorModel ? "exact" : undefined,
         runAttempt,
       });
       const runtimePluginToolGrant = { pluginId: "owner-tools", toolNames: ["owner_only"] };
