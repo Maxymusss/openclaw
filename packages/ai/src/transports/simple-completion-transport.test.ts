@@ -232,6 +232,7 @@ describe("prepareModelForSimpleCompletion", () => {
       apiRegistry,
       "ollama",
       expect.any(Function),
+      undefined,
     );
     const registeredStream = ensureCustomApiRegistered.mock.calls[0]?.[2] as StreamFn;
     void registeredStream(
@@ -285,6 +286,7 @@ describe("prepareModelForSimpleCompletion", () => {
       apiRegistry,
       expectedApi,
       expect.any(Function),
+      undefined,
     );
     expect(result).toEqual({ ...model, api: expectedApi });
     apiRegistry.getApiProvider("openai-completions")?.stream(model, { messages: [] });
@@ -387,6 +389,7 @@ describe("prepareModelForSimpleCompletion", () => {
       apiRegistry,
       "openclaw-anthropic-vertex-simple:https%3A%2F%2Fus-central1-aiplatform.googleapis.com",
       "vertex-stream",
+      undefined,
     );
     expect(result).toEqual({
       ...model,
@@ -424,6 +427,7 @@ describe("prepareModelForSimpleCompletion", () => {
       apiRegistry,
       "openclaw-openai-responses-transport",
       "transport-stream",
+      undefined,
     );
     expect(result).toEqual({
       ...model,
@@ -510,6 +514,7 @@ describe("prepareModelForSimpleCompletion", () => {
       apiRegistry,
       "google-generative-ai",
       expect.any(Function),
+      undefined,
     );
   });
 
@@ -561,6 +566,7 @@ describe("prepareModelForSimpleCompletion", () => {
         apiRegistry,
         "openclaw-openai-chatgpt-responses-transport",
         "codex-transport-stream",
+        undefined,
       );
       expect(result).toEqual({
         ...model,

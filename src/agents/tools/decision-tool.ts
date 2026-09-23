@@ -1,8 +1,16 @@
 import { getRuntimeConfig } from "../../config/config.js";
+import {
+  assertOperatorDecisionRuntimeAllowed,
+  captureDecisionOperatorAuthority,
+  isOperatorDecisionRuntimeAllowed,
+  runWithDecisionOperatorAuthority,
+} from "../../decisions/operator-authority.js";
 import { getGatewayPluginMetadataSnapshot } from "../../plugins/current-plugin-metadata-state.js";
 import { listAvailableManifestContractPlugins } from "../../plugins/manifest-contract-eligibility.js";
+import type { AdmittedRunOperatorAuthority } from "../admitted-run-operator-authority.js";
 import { resolveDecisionModelSetting } from "../decision-model-setting.js";
 import type { OpenClawToolsOptions } from "../openclaw-tools.types.js";
+import { runWithOperatorModelAuthority } from "../operator-model-policy.js";
 import type { AnyAgentTool } from "./common.js";
 import {
   capabilityGuidance,
@@ -17,7 +25,16 @@ import {
 export function createDecisionTool(
   agentId: string,
   options?: Pick<OpenClawToolsOptions, "config" | "preparedModelRuntime">,
+  decisionAuthority?: AdmittedRunOperatorAuthority,
 ): AnyAgentTool | null {
+  const caller = captureDecisionOperatorAuthority();
+  if (
+    !isOperatorDecisionRuntimeAllowed(caller) ||
+    !isOperatorDecisionRuntimeAllowed(decisionAuthority)
+  ) {
+    return null;
+  }
+  const original = decisionAuthority ?? caller;
   const config = options?.config ?? getRuntimeConfig();
   const selected = resolveDecisionModelSetting(config, agentId);
   if (!agentId.trim() || !selected) {
@@ -49,33 +66,39 @@ export function createDecisionTool(
     outputSchema: DecisionEvaluateOutput,
     resultContentSource: "network",
     async execute(_id, params, signal) {
-      const operationSignal = signal ?? new AbortController().signal;
-      operationSignal.throwIfAborted();
-      const batch = parseDecisionEvaluateInput(params);
-      if (!batch) {
-        // Host bounds are independent of the provider selected after this definition was built.
-        return decisionToolResult({ status: "unavailable", reason: "unsupported-input" });
-      }
-      // Load execution only on invocation; the runtime rereads selection and checks live authority.
-      const { evaluateDecision } = await import("../../decisions/runtime.js");
-      operationSignal.throwIfAborted();
-      const currentConfig = getRuntimeConfig();
-      const currentSelection = resolveDecisionModelSetting(currentConfig, agentId);
-      const currentCapabilities =
-        currentSelection &&
-        models.find(
-          (model) =>
-            model.provider === currentSelection.provider && model.id === currentSelection.model,
-        )?.capabilities;
-      const outcome = await evaluateDecision(batch, {
-        agentId,
-        purpose: "decision_evaluate",
-        rubricVersion: rubricVersion(batch),
-        timeoutMs: 30_000,
-        signal: operationSignal,
-      });
-      operationSignal.throwIfAborted();
-      return decisionToolResult(outcome, currentCapabilities);
+      // Check the enclosing caller before restoring a retained tool source.
+      assertOperatorDecisionRuntimeAllowed(original);
+      return runWithDecisionOperatorAuthority(() =>
+        runWithOperatorModelAuthority(original, async () => {
+          const operationSignal = signal ?? new AbortController().signal;
+          operationSignal.throwIfAborted();
+          const batch = parseDecisionEvaluateInput(params);
+          if (!batch) {
+            // Host bounds are independent of the provider selected after this definition was built.
+            return decisionToolResult({ status: "unavailable", reason: "unsupported-input" });
+          }
+          // Load execution only on invocation; the runtime rereads selection and checks live authority.
+          const { evaluateDecision } = await import("../../decisions/runtime.js");
+          operationSignal.throwIfAborted();
+          const currentConfig = getRuntimeConfig();
+          const currentSelection = resolveDecisionModelSetting(currentConfig, agentId);
+          const currentCapabilities =
+            currentSelection &&
+            models.find(
+              (model) =>
+                model.provider === currentSelection.provider && model.id === currentSelection.model,
+            )?.capabilities;
+          const outcome = await evaluateDecision(batch, {
+            agentId,
+            purpose: "decision_evaluate",
+            rubricVersion: rubricVersion(batch),
+            timeoutMs: 30_000,
+            signal: operationSignal,
+          });
+          operationSignal.throwIfAborted();
+          return decisionToolResult(outcome, currentCapabilities);
+        }),
+      );
     },
   };
 }

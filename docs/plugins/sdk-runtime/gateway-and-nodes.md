@@ -50,26 +50,27 @@ from revocation. A policy must preserve independent staff access; it must not
 infer the requesting person's authority from a session's creator, display name,
 or sandbox state. Shared-secret system authority remains outside person policies.
 
-### Foreground execution restriction (draft)
+### Foreground execution restriction
 
-The access-authority contract reserves `executionPolicy: "foreground-only"`.
+An access authority can return `executionPolicy: "foreground-only"`.
 A policy must require that value in the host's `supportedExecutionPolicies`
 before returning restricted access. An absent acknowledgement does not mean
-support. This build does not acknowledge the restriction yet: ordinary tool
-cleanup and compatible-client behavior still need qualification. Do not enable
-a visitor preset on the basis of the new field alone.
+support. The Gateway advertises this restriction in a frozen list. The
+acknowledgement does not grant access, select a model, or change a visitor preset.
 
-The Gateway retains session admission through tracked cleanup, but the Control
-UI's draining indication still needs qualification. Detached plugin callbacks
-and external runtimes also need proof that they retain the original caller and
-stop their work. An absent request context is not evidence of system authority.
+The Gateway retains session admission through tracked cleanup. The Control UI
+preserves the draft while cleanup prevents another request. Plugin callbacks
+must retain the original caller and join their work with the owning turn;
+an absent request context is not evidence of system authority.
 
-The local POSIX builtin exec draft gives each restricted tool generation its own
-process scope. Stop, deadline expiry and permission changes retain that scope
-through descendant and backend cleanup. Staff background processes keep their
-separate scope. Restricted commands cannot request background execution, yield
-to a later turn, detach approval, or fall back from required sandbox isolation.
-Node, Windows and external sandbox execution remain unqualified.
+Builtin exec gives each restricted tool generation its own process scope for
+local POSIX execution and native Docker or Podman Unix-service sandboxes with a
+Linux daemon and private PID namespace. Stop, deadline expiry and permission
+changes retain that scope through descendant and backend cleanup. Staff
+background processes keep their separate scope. Restricted commands cannot
+request background execution, yield to a later turn, detach approval, or fall
+back from required sandbox isolation. Remote-node, Windows and custom sandbox
+execution remain unqualified.
 
 If cleanup cannot confirm extinction, the Gateway refuses new work for that
 exact thread with `UNAVAILABLE`, including after promotion to a staff role.
@@ -77,9 +78,11 @@ The original turn keeps its terminal outcome. The operator must reconcile the
 remaining processes, then replace the Gateway process before continuing. An
 in-process Gateway restart does not clear this refusal, and process replacement
 alone does not prove that the remaining processes stopped. No durable
-grant, database change, global setting or support acknowledgement is added.
+grant, new table, column, database, schema-version change or global setting is
+added. Negative ownership and recovery markers are
+persisted in existing JSON records; they are not reusable execution grants.
 
-The draft lifecycle accepts one fresh Control UI turn in an existing local
+The lifecycle accepts one fresh Control UI turn in an existing local
 thread, with an absolute deadline from an explicitly configured positive
 `agents.defaults.timeoutSeconds`. It does not change that setting or staff
 defaults. Children, deferred work, scheduled work, cross-thread continuation,

@@ -92,10 +92,12 @@ Omission keeps existing model behavior, and `allow: []` denies all inference.
 The field also works with `agents: "*"`. Invitation, renewal, and expiry still use
 the same live grant authority.
 
-Finite model limits are not ready for visitor rollout. The built-in runtime does
-not declare enforcement support, and provider-boundary qualification plus the
-collector restart/rollback authority policy remain release requirements. Keep
-existing deployments unchanged until those requirements are complete. See
+The built-in OpenClaw runtime enforces exact model ceilings on qualified physical
+provider routes. The standard OpenAI API-key route already defaults to supported
+SSE; explicit `auto`, WebSocket and unqualified routes remain unavailable to
+finite callers. Unsupported runtimes are refused without substitution. Qualify
+the deployed route before applying the guest configuration; this support does
+not change the Visitor Access preset or restore interrupted work. See
 [Operator model ceilings](https://docs.openclaw.ai/gateway/operator-scopes#optional-model-ceiling).
 
 Guest admission is unsupported on Gateway versions that predate this role

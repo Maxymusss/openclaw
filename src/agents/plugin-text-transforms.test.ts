@@ -50,6 +50,22 @@ function makeAssistantToolMessage(toolCall: ToolCall): AssistantMessage {
 }
 
 describe("plugin text transforms", () => {
+  it.each([false, true])(
+    "retains only the supplied delegate binding (qualified=%s)",
+    (qualified) => {
+      const streamFn: StreamFn = () => createAssistantMessageEventStream();
+      if (qualified) {
+        Object.assign(streamFn, { modelRequestBinding: "wire-model-v1" as const });
+      }
+      const wrapped = wrapStreamFnTextTransforms({
+        streamFn,
+        input: [{ from: /before/g, to: "after" }],
+      });
+      expect(wrapped).not.toBe(streamFn);
+      expect(wrapped.modelRequestBinding).toBe(streamFn.modelRequestBinding);
+    },
+  );
+
   it("merges registered transform groups in order", () => {
     const merged = mergePluginTextTransforms(
       { input: [{ from: /red basket/g, to: "blue basket" }] },

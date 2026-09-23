@@ -6,6 +6,7 @@ import path from "node:path";
 import type { AgentMessage } from "openclaw/plugin-sdk/agent-core";
 import type { ImageContent } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
   attachRuntimePromptMediaFacts,
   readRuntimePromptMediaFacts,
@@ -734,6 +735,71 @@ describe("installHistoryImagePruneContextTransform", () => {
         { type: "image", data: TINY_PNG_BASE64, mimeType: "image/png" },
       ]);
     } finally {
+      restore();
+      await fs.rm(workspaceDir, { recursive: true, force: true });
+    }
+  });
+
+  it("pins in-flight history hydration to its generation and uses the successor only on a new call", async () => {
+    const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-history-generation-"));
+    const imagePath = path.join(workspaceDir, "photo.png");
+    await fs.writeFile(imagePath, Buffer.from(TINY_PNG_BASE64, "base64"));
+    const entered = createDeferred();
+    const release = createDeferred();
+    const oldSource = new AbortController();
+    const base = createHostSandboxFsBridge(workspaceDir);
+    const oldRead = vi.fn(async (params: Parameters<typeof base.readFile>[0]) => {
+      entered.resolve();
+      await release.promise;
+      return await base.readFile(params);
+    });
+    const nextRead = vi.fn((params: Parameters<typeof base.readFile>[0]) => base.readFile(params));
+    const options = { workspaceDir, model: { input: ["text", "image"] }, workspaceOnly: true };
+    let snapshot = {
+      options: {
+        ...options,
+        sandbox: { root: workspaceDir, bridge: { ...base, readFile: oldRead } },
+      },
+      assertCurrent: () => oldSource.signal.throwIfAborted(),
+    };
+    const agent: { transformContext?: (messages: AgentMessage[]) => Promise<AgentMessage[]> } = {};
+    const restore = installHistoryImagePruneContextTransform(agent, undefined, () => snapshot);
+    const message = attachRuntimePromptMediaFacts(
+      castAgentMessage({ role: "user", content: [{ type: "text", text: "describe" }] }),
+      [{ path: imagePath, contentType: "image/png" }],
+    );
+    const pending = agent.transformContext?.([message]);
+    const observed = Promise.resolve(pending).catch((error: unknown) => error);
+    const reason = new Error("old history generation retired");
+    try {
+      await Promise.race([
+        entered.promise,
+        observed.then(() => {
+          throw new Error("old bridge was not used");
+        }),
+      ]);
+      oldSource.abort(reason);
+      snapshot = {
+        options: {
+          ...options,
+          sandbox: { root: workspaceDir, bridge: { ...base, readFile: nextRead } },
+        },
+        assertCurrent() {},
+      };
+      release.resolve();
+      expect(await observed).toBe(reason);
+      expect(nextRead).not.toHaveBeenCalled();
+      const current = await agent.transformContext?.([message]);
+      expect(nextRead).toHaveBeenCalled();
+      expect(oldRead).toHaveBeenCalledOnce();
+      expect(expectArrayMessageContent(current?.[0], "successor image")).toContainEqual({
+        type: "image",
+        data: TINY_PNG_BASE64,
+        mimeType: "image/png",
+      });
+    } finally {
+      release.resolve();
+      await observed;
       restore();
       await fs.rm(workspaceDir, { recursive: true, force: true });
     }

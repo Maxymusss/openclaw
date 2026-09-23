@@ -24,6 +24,10 @@ import { ensureAuthProfileStore } from "./auth-profiles/store-runtime.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import { reconcileAuthProfileQuotaBlocks } from "./auth-profiles/usage.js";
 import {
+  resolvePreparedExtraParams,
+  resolveSupportedTransport,
+} from "./embedded-agent-runner/extra-params.js";
+import {
   fingerprintAuthProfileCredential,
   fingerprintResolvedProviderAuth,
 } from "./execution-auth-binding.js";
@@ -41,7 +45,11 @@ import {
 import { resolveModelRouteIntent } from "./model-runtime-policy.js";
 import { resolveDefaultModelForAgent } from "./model-selection.js";
 import { resolveOpenAIModelRoutes } from "./openai-model-routes.js";
-import { assertOperatorModelAllowed, isOperatorModelPolicyError } from "./operator-model-policy.js";
+import {
+  assertOperatorModelAllowed,
+  isOperatorModelPolicyError,
+  runWithOperatorModelAuthority,
+} from "./operator-model-policy.js";
 import {
   acquireAgentRunPreparedModelRuntime,
   type PreparedModelRuntimeSnapshot,
@@ -126,6 +134,20 @@ export async function prepareSimpleCompletionModel(
 }
 
 async function prepareSimpleCompletionModelCore(
+  params: PrepareSimpleCompletionModelParams,
+  context: PreparedSimpleCompletionResolverContext,
+  assertCurrent?: () => void,
+): Promise<PreparedSimpleCompletionModel> {
+  return runWithOperatorModelAuthority(params.operatorAuthority, (operatorAuthority) =>
+    prepareSimpleCompletionModelWithAuthority(
+      { ...params, operatorAuthority },
+      context,
+      assertCurrent,
+    ),
+  );
+}
+
+async function prepareSimpleCompletionModelWithAuthority(
   params: PrepareSimpleCompletionModelParams,
   context: PreparedSimpleCompletionResolverContext,
   assertCurrent?: () => void,
@@ -367,6 +389,18 @@ async function prepareSimpleCompletionModelCore(
     pluginMetadataSnapshot: context.preparedModelRuntime.metadataSnapshot,
   });
   const preparedModel = attachModelProviderRuntimePluginHandle(model, providerRuntimeHandle);
+  const transport = resolveSupportedTransport(
+    resolvePreparedExtraParams({
+      cfg: params.cfg,
+      agentId: params.agentId,
+      agentDir: params.agentDir,
+      workspaceDir,
+      provider: model.provider,
+      modelId: model.id,
+      model: preparedModel,
+      providerRuntimeHandle,
+    }).transport,
+  );
   // Capture this generation's transport hooks while keeping the logical model API
   // visible to callers that build prompts before dispatch.
   const completionTransport = attachModelProviderRuntimePluginHandle(
@@ -374,6 +408,7 @@ async function prepareSimpleCompletionModelCore(
       apiRegistry: modelRuntime.apiRegistry,
       model: preparedModel,
       cfg: params.cfg,
+      transport,
     }),
     providerRuntimeHandle,
   );
@@ -384,7 +419,12 @@ async function prepareSimpleCompletionModelCore(
   );
 
   return {
-    model: bindModelLlmRuntime(preparedModel, modelRuntime.llmRuntime, completionTransport),
+    model: bindModelLlmRuntime(
+      preparedModel,
+      modelRuntime.llmRuntime,
+      completionTransport,
+      transport,
+    ),
     auth: resolvedAuth,
     ...(sourceAuthFingerprint ? { sourceAuthFingerprint } : {}),
   };

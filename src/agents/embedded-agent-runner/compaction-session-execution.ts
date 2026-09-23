@@ -63,6 +63,7 @@ import {
 } from "./compaction-safety-timeout.js";
 import { prepareCompactionSessionAgent } from "./compaction-session-agent.js";
 import { prepareCompactionSessionSettings } from "./compaction-session-settings.js";
+import { resolveSupportedTransport } from "./extra-params.js";
 import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "./history.js";
 import { log } from "./logger.js";
 import type { PreparedCompactionRuntime } from "./prepared-compaction-runtime.js";
@@ -201,6 +202,7 @@ export async function executePreparedCompactionSession(runtime: PreparedCompacti
       config: params.config,
       agentDir,
       effectiveWorkspace,
+      preparedTransport: resolveSupportedTransport(settingsManager.getTransport()),
       apiRegistry: getModelRegistryRuntime(modelRegistry).apiRegistry,
     });
     while (true) {

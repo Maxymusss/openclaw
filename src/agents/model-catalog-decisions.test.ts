@@ -23,6 +23,7 @@ import {
 } from "./model-catalog-decisions.js";
 import type { ModelCatalogEntry } from "./model-catalog.types.js";
 import * as openaiRoutes from "./openai-model-routes.js";
+import type { PreparedModelRequestBindingReader } from "./prepared-model-request-binding.js";
 
 const entry: ModelCatalogEntry = { provider: "openai", id: "gpt-5.4", name: "GPT" };
 const config: OpenClawConfig = {
@@ -64,6 +65,59 @@ function nativeOwner(complete: boolean, loggedIn: boolean, isCurrent = () => tru
 
 describe("captured model decisions", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it.each(["api_key", "oauth"] as const)(
+    "checks binding against the selected %s account route",
+    async (type) => {
+      let current = true;
+      const readModelRequestBinding = vi.fn<PreparedModelRequestBindingReader>(
+        ({ route }) => route?.api === platformRoute.api,
+      );
+      const owner = createModelCatalogDecisions({
+        cfg: {},
+        agentId: "main",
+        agentDir: "/unused/agent",
+        workspaceDir: "/unused/workspace",
+        snapshot: { entries: [entry], routeVariants: [entry] },
+        metadataSnapshot: metadata,
+        preparedAuthStore: {
+          version: 1,
+          profiles: {
+            selected:
+              type === "api_key"
+                ? { type: "api_key", provider: "openai", key: "fixture-key" }
+                : {
+                    type: "oauth",
+                    provider: "openai",
+                    access: "fixture-access",
+                    refresh: "fixture-refresh",
+                    expires: Date.now() + 60_000,
+                  },
+          },
+        },
+        preparedSyntheticAuthComplete: true,
+        pluginRegistry: createEmptyPluginRegistry(),
+        routeResolverFactory: routeResolverFactory(dualRoutes),
+        isCurrent: () => current,
+        readModelRequestBinding,
+      });
+      const evaluation = await owner.evaluateEntry(entry, undefined, "openclaw");
+      const route = type === "api_key" ? platformRoute : subscriptionRoute;
+      expect(evaluation.selectedProfileId).toBe("selected");
+      expect(evaluation.selectedRoute).toMatchObject(route);
+      expect(owner.supportsModelRequestBinding(entry, evaluation)).toBe(type === "api_key");
+      expect(readModelRequestBinding).toHaveBeenCalledExactlyOnceWith({
+        provider: entry.provider,
+        modelId: entry.id,
+        route: evaluation.selectedRoute,
+        api: route.api,
+        baseUrl: route.baseUrl,
+      });
+      current = false;
+      expect(owner.supportsModelRequestBinding(entry, evaluation)).toBe(false);
+      expect(readModelRequestBinding).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([true, false])(
     "preserves provider auth for a non-CLI harness (authenticated=%s)",

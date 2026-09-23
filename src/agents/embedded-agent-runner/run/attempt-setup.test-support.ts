@@ -4,6 +4,7 @@ import { createEmbeddedRunStageTracker } from "./attempt-stage-timing.js";
 export function createAttemptSetupFixture(
   overrides: Partial<EmbeddedAttemptSetup> = {},
 ): EmbeddedAttemptSetup {
+  let environment = { sandbox: overrides.sandbox ?? null, assertCurrent: () => {} };
   return {
     agentCoreThinkingLevel: "off",
     providerThinkingLevel: undefined,
@@ -13,7 +14,17 @@ export function createAttemptSetupFixture(
     resolvedWorkspace: "/tmp/workspace",
     sessionPermissionRoot: "/tmp/workspace",
     sessionPermissionPolicy: undefined,
-    sandbox: null,
+    get sandbox() {
+      return environment.sandbox;
+    },
+    readEnvironment: () => environment,
+    prepareEnvironment: async (custody) => ({
+      sandbox: environment.sandbox,
+      assertCurrent: custody.assertCurrent,
+    }),
+    publishEnvironment: (next) => {
+      environment = next;
+    },
     sandboxSessionKey: "session",
     sessionAgentId: "main",
     emitCorePluginToolStageSummary: () => {},

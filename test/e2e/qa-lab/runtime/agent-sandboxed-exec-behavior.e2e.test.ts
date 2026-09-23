@@ -3,46 +3,19 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { expect, test } from "vitest";
-import { createOpenClawCodingTools } from "../../../../src/agents/agent-tools.js";
-import { resolveAttemptWorkspaceSandbox } from "../../../../src/agents/workspace-sandbox.js";
-import type { OpenClawConfig } from "../../../../src/config/types.openclaw.js";
 import { captureEnv, setTestEnvValue } from "../../../../src/test-utils/env.js";
-
-function createConfig(params: {
-  image: string;
-  prefix: string;
-  workspaceRoot: string;
-}): OpenClawConfig {
-  return {
-    agents: {
-      defaults: {
-        skipBootstrap: true,
-        sandbox: {
-          mode: "all",
-          backend: "docker",
-          scope: "session",
-          workspaceAccess: "rw",
-          workspaceRoot: params.workspaceRoot,
-          docker: {
-            image: params.image,
-            containerPrefix: params.prefix,
-          },
-          browser: { enabled: false },
-          prune: { idleHours: 0, maxAgeDays: 0 },
-        },
-      },
-    },
-    tools: {
-      exec: {
-        host: "auto",
-        security: "full",
-        ask: "off",
-      },
-    },
-  };
-}
+// Install the retained transport delegate before importing sandbox owners.
+import {
+  createSandboxExecTestConfig,
+  registerNativeSandboxLifecycleTests,
+} from "./agent-sandboxed-exec-native.test-support.js";
 
 test("host:auto executes inside the resolved Docker sandbox", async () => {
+  const { createOpenClawCodingTools } = await import("../../../../src/agents/agent-tools.js");
+  const { execDocker } = await import("../../../../src/agents/sandbox/docker.js");
+  const { removeSandboxContainer } = await import("../../../../src/agents/sandbox/manage.js");
+  const { resolveAttemptWorkspaceSandbox } =
+    await import("../../../../src/agents/workspace-sandbox.js");
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-sandboxed-exec-"));
   const stateDir = path.join(root, "state");
   const workspaceDir = path.join(root, "workspace");
@@ -68,7 +41,8 @@ test("host:auto executes inside the resolved Docker sandbox", async () => {
   try {
     const sessionId = randomUUID();
     const sessionKey = `agent:sandboxed-exec:qa:${sessionId}`;
-    const config = createConfig({
+    const config = createSandboxExecTestConfig({
+      backend: "docker",
       image,
       prefix: `oc-qa-exec-${process.pid}-`,
       workspaceRoot: path.join(root, "sandboxes"),
@@ -125,10 +99,6 @@ test("host:auto executes inside the resolved Docker sandbox", async () => {
     await expect(fs.readFile(outsideScript, "utf8")).resolves.toContain("printf executed");
   } finally {
     if (runtimeId) {
-      const [{ removeSandboxContainer }, { execDocker }] = await Promise.all([
-        import("../../../../src/agents/sandbox/manage.js"),
-        import("../../../../src/agents/sandbox/docker.js"),
-      ]);
       await removeSandboxContainer(runtimeId);
       await execDocker(["rm", "-f", runtimeId], { allowFailure: true });
     }
@@ -136,3 +106,5 @@ test("host:auto executes inside the resolved Docker sandbox", async () => {
     await fs.rm(root, { recursive: true, force: true });
   }
 }, 120_000);
+
+registerNativeSandboxLifecycleTests("docker");

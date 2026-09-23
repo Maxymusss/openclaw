@@ -18,6 +18,10 @@ import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import { openAIModelCatalogRoutePolicy } from "../../agents/openai-model-routes.js";
 import { resolveCompatibleAgentRuntimeForProvider } from "../../agents/session-runtime-compat.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import {
+  bindModelCatalogRequestBinding,
+  modelCatalogRequestBindingSupported,
+} from "../model-catalog-request-binding.js";
 
 type CatalogDecisions = ReturnType<typeof createModelCatalogDecisions>;
 
@@ -97,6 +101,7 @@ export async function prepareModelPickerRuntimeChoices(params: {
               routePolicy: openAIModelCatalogRoutePolicy,
             }).routeProjection,
           ).runtimeEntry;
+          const publicChoice = projectPublic(projected, evaluation, runtimeId);
           const {
             id: _id,
             name: _name,
@@ -107,7 +112,7 @@ export async function prepareModelPickerRuntimeChoices(params: {
             runtimeChoices: _runtimeChoices,
             agentRuntime,
             ...capabilities
-          } = projectPublic(projected, evaluation, runtimeId);
+          } = publicChoice;
           const runtime = { id: runtimeId, source: "model" as const, ...agentRuntime };
           if (!selectable || availableRuntimes?.includes(runtimeId) !== true) {
             const compatibleRuntimes = evaluation.selectedRoute?.runtimePolicy?.compatibleIds;
@@ -126,11 +131,14 @@ export async function prepareModelPickerRuntimeChoices(params: {
                 : { unavailableUntil: evaluation.unavailableUntil }),
             } satisfies ModelRuntimeChoice;
           }
-          return {
-            ...capabilities,
-            agentRuntime: runtime,
-            available: evaluation.availability === true,
-          } satisfies ModelRuntimeChoice;
+          return bindModelCatalogRequestBinding(
+            {
+              ...capabilities,
+              agentRuntime: runtime,
+              available: evaluation.availability === true,
+            } satisfies ModelRuntimeChoice,
+            () => modelCatalogRequestBindingSupported(publicChoice),
+          );
         };
       }),
   );

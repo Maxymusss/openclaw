@@ -19,7 +19,9 @@ export const GATEWAY_OPERATOR_ACCESS_DENIED_MESSAGE =
   "Gateway access is no longer active; ask a Gateway administrator to restore it.";
 
 // A restriction is advertised only after every ingress and recovery owner enforces it.
-const supportedExecutionPolicies: readonly OperatorExecutionPolicy[] = Object.freeze([]);
+const supportedExecutionPolicies: readonly OperatorExecutionPolicy[] = Object.freeze([
+  "foreground-only",
+]);
 
 export class GatewayOperatorAccessDeniedError extends Error {
   constructor() {

@@ -1,4 +1,3 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { withContainerEnvFile } from "../../infra/container-env-file.js";
 /**
  * Low-level Docker command helpers for sandbox runtimes.
@@ -15,7 +14,7 @@ import {
   execContainerRaw,
   readNativeSandboxEngineTarget,
   execNativeSandboxCreate,
-  type NativeSandboxCustody,
+  execNativeSandboxStart,
   type ExecContainerRawOptions,
   type ExecDockerRawResult,
   type SandboxContainerEngine,
@@ -23,6 +22,11 @@ import {
 } from "./container-engine.js";
 import { handleHotSandboxConfigMismatch } from "./current-config.js";
 import { buildSandboxCreateArgs } from "./docker-create-args.js";
+import {
+  assertNativeSandboxCreatedContainer,
+  assertNativeSandboxEngineCurrent,
+  type NativeSandboxContainerCustody,
+} from "./docker-native-custody.js";
 import { throwAfterPartialSandboxCleanup } from "./docker-partial-cleanup.js";
 import {
   prepareSandboxMountPlan,
@@ -67,6 +71,7 @@ export type {
   SandboxContainerEngineTarget,
 } from "./container-engine.js";
 export { buildSandboxCreateArgs } from "./docker-create-args.js";
+export { assertNativeSandboxCreatedContainer } from "./docker-native-custody.js";
 export {
   bindPodmanSandboxEngine,
   resolvePodmanSandboxRuntimeInfo,
@@ -288,57 +293,6 @@ function appendCustomBinds(args: string[], cfg: SandboxDockerConfig): void {
   }
 }
 
-/** Private allocation facts captured by the generation before any engine request. */
-export type NativeSandboxContainerCustody = {
-  custody: NativeSandboxCustody;
-  reservation?: SandboxRegistryEntry;
-  containerId?: string;
-  createAttempted: boolean;
-  startAttempted: boolean;
-};
-
-/** Construction policy only: this does not prove target identity or later extinction. */
-export async function assertNativeSandboxCreatedContainer(
-  engine: SandboxContainerEngine,
-  containerId: string,
-  reservation: Pick<
-    SandboxRegistryEntry,
-    "containerName" | "sessionKey" | "createdAtMs" | "configHash"
-  >,
-): Promise<void> {
-  if (!readNativeSandboxEngineTarget(engine) || !/^[a-f0-9]{64}$/u.test(containerId)) {
-    throw new Error("Native sandbox inspection requires its captured target and immutable ID.");
-  }
-  const result = await execContainer(engine, ["inspect", "--format", "{{json .}}", containerId]);
-  const value: unknown = JSON.parse(result.stdout);
-  const config = isRecord(value) && isRecord(value.Config) ? value.Config : undefined;
-  const labels = config && isRecord(config.Labels) ? config.Labels : undefined;
-  const host = isRecord(value) && isRecord(value.HostConfig) ? value.HostConfig : undefined;
-  const restart = host && isRecord(host.RestartPolicy) ? host.RestartPolicy : undefined;
-  // Moby preserves the empty private PID mode; Podman's actual Linux inspect
-  // producer reports "private". Neither host nor joined namespaces are owned here.
-  const expectedPidMode = engine.id === "docker" ? "" : "private";
-  const expectedName =
-    engine.id === "docker" ? `/${reservation.containerName}` : reservation.containerName;
-  if (
-    !isRecord(value) ||
-    value.Id !== containerId ||
-    value.Name !== expectedName ||
-    labels?.["openclaw.sandbox"] !== "1" ||
-    labels?.["openclaw.sessionKey"] !== reservation.sessionKey ||
-    labels?.["openclaw.createdAtMs"] !== String(reservation.createdAtMs) ||
-    (reservation.configHash !== undefined &&
-      labels?.["openclaw.configHash"] !== reservation.configHash) ||
-    host?.PidMode !== expectedPidMode ||
-    host?.AutoRemove !== false ||
-    !(restart?.Name === "no" || (engine.id === "docker" && restart?.Name === ""))
-  ) {
-    throw new Error(
-      "Native sandbox allocation did not match its reserved owner or construction policy.",
-    );
-  }
-}
-
 async function createSandboxContainer(params: {
   engine: SandboxContainerEngine;
   name: string;
@@ -400,15 +354,30 @@ async function createSandboxContainer(params: {
       if (!reservation) {
         throw new Error("Native allocation requires its retained reservation.");
       }
-      native.createAttempted = true;
-      await execNativeSandboxCreate(engine, args, (id) => {
-        // Receipt custody precedes late cancellation and env-file cleanup.
-        native.containerId = id;
-      });
+      await assertNativeSandboxEngineCurrent(native);
+      params.assertCurrent?.();
+      await execNativeSandboxCreate(
+        engine,
+        args,
+        (id) => {
+          // Receipt custody precedes late cancellation and env-file cleanup.
+          native.containerId = id;
+        },
+        () => {
+          native.createAttempted = true;
+        },
+      );
       if (!native.containerId) {
         throw new Error("Native create returned without an allocation receipt.");
       }
-      await assertNativeSandboxCreatedContainer(engine, native.containerId, reservation);
+      const inspected = await assertNativeSandboxCreatedContainer(
+        engine,
+        native.containerId,
+        reservation,
+      );
+      if (engine.id === "podman" && typeof inspected.Namespace === "string") {
+        native.namespace = inspected.Namespace;
+      }
     } else {
       await execContainer(engine, args);
     }
@@ -417,9 +386,15 @@ async function createSandboxContainer(params: {
   params.assertCurrent?.();
   const executionId = params.native?.containerId ?? name;
   if (params.native) {
-    params.native.startAttempted = true;
+    await assertNativeSandboxEngineCurrent(params.native);
+    params.assertCurrent?.();
+    const native = params.native;
+    await execNativeSandboxStart(engine, executionId, () => {
+      native.startAttempted = true;
+    });
+  } else {
+    await execContainer(engine, ["start", executionId]);
   }
-  await execContainer(engine, ["start", executionId]);
 
   if (cfg.setupCommand?.trim()) {
     params.assertCurrent?.();

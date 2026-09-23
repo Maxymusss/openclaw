@@ -35,6 +35,7 @@ import {
   openAIModelCatalogRoutePolicy,
   resolveModelCatalogIdentityKey,
 } from "./openai-model-routes.js";
+import type { PreparedModelRequestBindingReader } from "./prepared-model-request-binding.js";
 import { PreparedModelRuntimePublicationSupersededError } from "./prepared-model-runtime.errors.js";
 import { isPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalog.js";
 import { resolveProviderIdForAuth } from "./provider-auth-aliases.js";
@@ -177,6 +178,7 @@ function createModelsListEntryEvaluator(params: {
 }
 
 export type ModelCatalogDecisionParams = {
+  readModelRequestBinding?: PreparedModelRequestBindingReader;
   cfg: OpenClawConfig;
   agentId: string;
   agentDir?: string;
@@ -348,6 +350,19 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
     Date.now() < authValidUntil && (params.isCurrent?.() ?? params.observationConfig === undefined);
   return {
     evaluateEntry,
+    readModelRequestBinding: params.readModelRequestBinding,
+    supportsModelRequestBinding: (
+      entry: ModelCatalogEntry,
+      evaluation: ModelAuthAvailabilityEvaluation,
+    ) =>
+      isCurrent() &&
+      params.readModelRequestBinding?.({
+        provider: entry.provider,
+        modelId: entry.id,
+        route: evaluation.selectedRoute,
+        api: evaluation.selectedRoute?.api ?? entry.api,
+        baseUrl: evaluation.selectedRoute?.baseUrl ?? entry.baseUrl,
+      }) === true,
     evaluateNative,
     snapshot,
     metadataSnapshot,

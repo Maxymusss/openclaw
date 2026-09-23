@@ -686,10 +686,12 @@ describe("prepareEmbeddedAttemptTransport", () => {
     });
   });
 
-  it("materializes native video from the prepared session agent workspace", async () => {
+  it("pins deferred provider media to its invocation generation and materializes fresh calls in the successor", async () => {
     const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-transport-video-"));
     const videoPath = path.join(workspaceDir, "history.mp4");
     await fs.writeFile(videoPath, MP4);
+    const oldSource = new AbortController();
+    let environment = { sandbox: null, assertCurrent: () => oldSource.signal.throwIfAborted() };
     let providerOptions: ProviderStreamOptions | undefined;
     const providerStream = vi.fn((_model, _context, options) => {
       providerOptions = options as ProviderStreamOptions;
@@ -733,6 +735,7 @@ describe("prepareEmbeddedAttemptTransport", () => {
           getProjectSettings: () => ({}),
         },
         sessionAgentId: "marketing",
+        readEnvironment: () => environment,
         workspaceDir,
         workspaceOnly: false,
         agentDir: workspaceDir,
@@ -748,6 +751,11 @@ describe("prepareEmbeddedAttemptTransport", () => {
       );
       const context = { systemPrompt: "system", messages: [message], tools: [] };
 
+      session.agent.streamFn(model as never, context as never, {});
+      const revoked = new Error("old provider generation retired");
+      oldSource.abort(revoked);
+      environment = { sandbox: null, assertCurrent() {} };
+      await expect(resolveProviderContext(context as never, providerOptions)).rejects.toBe(revoked);
       session.agent.streamFn(model as never, context as never, {});
       const provider = await resolveProviderContext(context as never, providerOptions);
 

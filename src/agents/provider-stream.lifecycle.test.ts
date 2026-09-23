@@ -164,6 +164,7 @@ describe("provider stream lifecycle registration", () => {
     expect(apiRegistry.getApiProvider("ollama")).toBeUndefined();
     const streamFn = resolveCompactionProviderStream({
       effectiveModel: model,
+      preparedTransport: undefined,
       agentDir: "/tmp/test-agent",
       effectiveWorkspace: "/tmp/test-workspace",
       apiRegistry,

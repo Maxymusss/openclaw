@@ -30,7 +30,6 @@ import {
   readBrowserRegistry,
   assertSandboxRegistryEntryCurrent,
   completeSandboxRegistryReservation,
-  insertSandboxRegistryEntryIfMissing,
   reserveSandboxRegistryEntry,
   assertSandboxBrowserRegistryEntryCurrent,
   readRegisteredSandboxRuntimeIds,
@@ -193,7 +192,7 @@ describe("registry race safety", () => {
     // updateRegistry intentionally preserves several of these identity fields.
     await removeRegistryEntry(reservation.containerName);
     const successor = { ...reservation, ...changed };
-    insertSandboxRegistryEntryIfMissing(successor);
+    await updateRegistry(successor);
     expect(() => assertSandboxRegistryEntryCurrent(reservation)).toThrow();
     expect(() => completeSandboxRegistryReservation(reservation, reservation)).toThrow();
     await expect(readRegistryEntry(reservation.containerName)).resolves.toEqual(successor);

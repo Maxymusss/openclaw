@@ -1,17 +1,29 @@
 import { afterEach, expect, it, vi } from "vitest";
+import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import { createRuntimeSystem } from "../plugins/runtime/runtime-system.js";
-import { enqueueSystemEventFromSdk } from "../plugins/runtime/system-events.js";
+import {
+  drainSystemEventsFromSdk,
+  enqueueSystemEventFromSdk,
+  peekSystemEventsFromSdk,
+} from "../plugins/runtime/system-events.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createAdmittedRunOperatorAuthority } from "./admitted-run-context.js";
 import {
   assertOperatorBackgroundWorkAllowed,
   isOperatorForegroundWork,
 } from "./operator-foreground-work.js";
+import {
+  runWithOperatorModelAuthority,
+  runWithOperatorModelRequest,
+} from "./operator-model-policy.js";
 import { spawnAcpDirect } from "./subagents/spawn/acp-spawn.js";
 import * as spawnRequest from "./subagents/spawn/subagent-spawn-request.js";
 import { spawnSubagentDirect } from "./subagents/spawn/subagent-spawn.js";
 import { createCronTool } from "./tools/cron-tool.js";
-import { withGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
+import {
+  getGatewayToolCallerIdentity,
+  withGatewayToolCallerIdentity,
+} from "./tools/gateway-caller-context.js";
 import { createCreateGoalTool } from "./tools/goal-tools.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 import { maybeSpawnVisibleSession } from "./tools/sessions-spawn-visible.js";
@@ -43,6 +55,110 @@ function withForeground<T>(run: () => Promise<T>) {
     () => withGatewayToolCallerIdentity({ agentId: "main", sessionKey }, run),
   );
 }
+
+it.each(["request", "retained"] as const)(
+  "checks model-only %s authority at every producer before and after await",
+  async (kind) => {
+    await withOpenClawTestState({ label: "model-foreground-producers" }, async () => {
+      const run = kind === "request" ? runWithOperatorModelRequest : runWithOperatorModelAuthority;
+      const resolve = vi.spyOn(spawnRequest, "resolveSubagentSpawnRequest");
+      const effects = vi.fn();
+      const gateway = vi.fn();
+      const system = createRuntimeSystem();
+      const cron = createCronTool({}, { callGatewayTool: gateway });
+      try {
+        for (const policy of ["foreground", "finite-model", "staff"] as const) {
+          const operatorAuthority = createAdmittedRunOperatorAuthority({
+            profileId: "model-producer-person",
+            scopes: ["operator.sessions.write"],
+            ...(policy === "foreground" ? { executionPolicy: "foreground-only" as const } : {}),
+            ...(policy === "finite-model"
+              ? { permissions: { models: { allow: ["fixture/allowed"] } } }
+              : {}),
+            assertCurrent() {},
+          });
+          await run(operatorAuthority, async () => {
+            for (const phase of ["before", "after"] as const) {
+              if (phase === "after") {
+                await Promise.resolve();
+              }
+              expect(getGatewayToolCallerIdentity()).toBeUndefined();
+              expect(getPluginRuntimeGatewayRequestScope()?.client).toBeUndefined();
+              expect(isOperatorForegroundWork()).toBe(policy === "foreground");
+              if (policy === "foreground") {
+                expect(() => enqueueSystemEventFromSdk("later work", { sessionKey })).toThrow(
+                  foregroundWorkError,
+                );
+                expect(() => system.requestHeartbeatNow({ sessionKey })).toThrow(
+                  foregroundWorkError,
+                );
+                expect(() => system.runHeartbeatOnce({ sessionKey })).toThrow(foregroundWorkError);
+                expect(() =>
+                  system.runCommandWithTimeout(["echo", "unexpected"], { timeoutMs: 100 }),
+                ).toThrow(foregroundWorkError);
+                await expect(
+                  spawnSubagentDirect(
+                    { task: "child task" },
+                    { agentSessionKey: sessionKey, onSpawnEffectsStart: effects },
+                  ),
+                ).rejects.toThrow(foregroundWorkError);
+                await expect(
+                  cron.execute("schedule", { action: "wake", text: "later work" }),
+                ).rejects.toThrow(foregroundWorkError);
+                expect(peekSystemEventsFromSdk(sessionKey)).toEqual([]);
+              } else {
+                expect(enqueueSystemEventFromSdk(`${policy}-${phase}`, { sessionKey })).toBe(true);
+              }
+            }
+          });
+          expect(drainSystemEventsFromSdk(sessionKey)).toEqual(
+            policy === "foreground" ? [] : [`${policy}-before`, `${policy}-after`],
+          );
+        }
+        expect(resolve).not.toHaveBeenCalled();
+        expect(effects).not.toHaveBeenCalled();
+        expect(gateway).not.toHaveBeenCalled();
+      } finally {
+        drainSystemEventsFromSdk(sessionKey);
+      }
+    });
+  },
+);
+
+it.each(["request", "retained"] as const)(
+  "rechecks a revoked or expired model-only %s source",
+  async (kind) => {
+    const run = kind === "request" ? runWithOperatorModelRequest : runWithOperatorModelAuthority;
+    for (const expired of [false, true]) {
+      const abort = new AbortController();
+      const deadline = Date.now() + 60_000;
+      const authority = createAdmittedRunOperatorAuthority({
+        profileId: "model-producer-person",
+        scopes: ["operator.sessions.write"],
+        executionPolicy: "foreground-only",
+        foregroundRunId: "original-turn",
+        foregroundDeadlineAt: deadline,
+        signal: abort.signal,
+        assertCurrent() {},
+      });
+      await run(authority, async () => {
+        await Promise.resolve();
+        const clock = expired ? vi.spyOn(Date, "now").mockReturnValue(deadline) : undefined;
+        try {
+          if (!expired) {
+            abort.abort(new Error("model producer source revoked"));
+          }
+          expect(() => enqueueSystemEventFromSdk("must not queue", { sessionKey })).toThrow(
+            expired ? /deadline has expired/ : /model producer source revoked/,
+          );
+          expect(peekSystemEventsFromSdk(sessionKey)).toEqual([]);
+        } finally {
+          clock?.mockRestore();
+        }
+      });
+    }
+  },
+);
 
 it("preserves explicit no-policy access without clearing the inherited foreground restriction", async () => {
   const source = { accessAuthority: null };

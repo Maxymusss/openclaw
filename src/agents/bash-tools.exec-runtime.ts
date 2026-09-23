@@ -1,7 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
-import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { emitDiagnosticEventWithTrustedTraceContext } from "../infra/diagnostic-events.js";
 import { recordDiagnosticToolExecutionDeadline } from "../infra/diagnostic-tool-execution-liveness.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -57,6 +56,7 @@ import {
 import { prepareHostExecSpawn } from "./bash-tools.exec-host-spawn.js";
 import {
   appendExecTimeoutRetryGuidance,
+  compactNotifyOutput,
   renderExecExitLabel,
   renderExecOutputText,
   renderExecUpdateText,
@@ -66,6 +66,7 @@ import type { BashSandboxConfig } from "./bash-tools.shared.js";
 import { chunkString, clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
 import { recordAgentCleanupFailure } from "./run-cleanup-timeout.js";
 import type { AgentToolResult } from "./runtime/index.js";
+import { readNativeSandboxExecTarget } from "./sandbox/native-exec-binding.js";
 import { createSessionSlug } from "./session-slug.js";
 import { createStreamingBinaryOutputSanitizer } from "./shell-utils.js";
 import { registerTrustedToolNoStartError } from "./tool-result-error.js";
@@ -113,7 +114,6 @@ export const DEFAULT_PATH =
   process.env.PATH ?? "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 /** Tail length used in background completion notifications. */
 const DEFAULT_NOTIFY_TAIL_CHARS = 400;
-const DEFAULT_NOTIFY_SNIPPET_CHARS = 180;
 /** Default time an approval can remain pending. */
 export const DEFAULT_APPROVAL_TIMEOUT_MS = DEFAULT_EXEC_APPROVAL_TIMEOUT_MS;
 /** Gateway request timeout for approval registration/wait calls. */
@@ -308,23 +308,6 @@ export function resolveExecTarget(params: {
     selectedTarget: resolvedTarget,
     effectiveHost,
   };
-}
-
-/** Normalizes notification snippets to a compact single-line form. */
-export function normalizeNotifyOutput(value: string) {
-  return value.replace(/\s+/g, " ").trim();
-}
-
-function compactNotifyOutput(value: string, maxChars = DEFAULT_NOTIFY_SNIPPET_CHARS) {
-  const normalized = normalizeNotifyOutput(value);
-  if (!normalized) {
-    return "";
-  }
-  if (normalized.length <= maxChars) {
-    return normalized;
-  }
-  const safe = Math.max(1, maxChars - 1);
-  return `${truncateUtf16Safe(normalized, safe)}…`;
 }
 
 /** Merges shell-discovered PATH entries into an exec environment. */
@@ -753,6 +736,7 @@ export async function runExecProcess({
   };
 
   const timeoutMs = resolveExecTimeoutMs(opts.timeoutSec);
+  let ownsLocalCli = !opts.sandbox;
   let sandboxFinalizeToken: unknown;
   let assertSandboxCurrent: (() => void) | undefined;
   let sandboxPrepared = false;
@@ -780,7 +764,7 @@ export async function runExecProcess({
     session.finalizing = true;
     onActivity?.(Date.now());
     try {
-      if (!opts.sandbox && managedRun?.waitForExtinction) {
+      if (ownsLocalCli && managedRun?.waitForExtinction) {
         // Root completion does not release descendants that retained the group's lineage fd.
         managedRun.cancel();
         await managedRun.waitForExtinction();
@@ -919,9 +903,17 @@ export async function runExecProcess({
     assertSourceActive?.();
     const spawnSpec = await prepareSpawnSpec();
     usingPty = spawnSpec.mode === "pty";
+    // Capture admitted custody once; cleanup must not consult revoked work authority.
+    ownsLocalCli =
+      !opts.sandbox || Boolean(readNativeSandboxExecTarget(opts.sandbox, opts.scopeKey));
     const spawnBase = {
       runId: sessionId,
-      ...(opts.sandbox ? { cleanupOwnership: "external" as const, exactEnv: true as const } : {}),
+      ...(opts.sandbox
+        ? {
+            ...(ownsLocalCli ? {} : { cleanupOwnership: "external" as const }),
+            exactEnv: true as const,
+          }
+        : {}),
       scopeKey: opts.scopeKey,
       cwd: spawnSpec.cwd ?? opts.workdir,
       env: spawnSpec.env,

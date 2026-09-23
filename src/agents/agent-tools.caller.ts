@@ -1,3 +1,4 @@
+import type { PluginHookToolRequesterContext } from "../plugins/hook-types.js";
 import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
 import type { OpenClawCodingToolsOptions } from "./agent-tools.options.js";
 import type { ResolvedConversationCapabilityProfile } from "./conversation-capability-profile.js";
@@ -35,4 +36,19 @@ export function createCodingToolsGatewayCaller(params: {
       : undefined;
   return (tool: Parameters<typeof wrapToolWithGatewayCallerIdentity>[0]) =>
     wrapToolWithGatewayCallerIdentity(tool, identity);
+}
+
+/** Copy requesting identity without exposing mutable role arrays to tool hooks. */
+export function resolveCodingToolRequester(
+  options?: OpenClawCodingToolsOptions,
+): PluginHookToolRequesterContext | undefined {
+  const turnSourceChannel = options?.messageChannel ?? options?.messageProvider;
+  const requester = {
+    ...(turnSourceChannel ? { channel: turnSourceChannel } : {}),
+    ...(options?.agentAccountId ? { accountId: options.agentAccountId } : {}),
+    ...(options?.senderId ? { senderId: options.senderId } : {}),
+    ...(options?.senderIsOwner !== undefined ? { senderIsOwner: options.senderIsOwner } : {}),
+    ...(options?.memberRoleIds?.length ? { roleIds: [...options.memberRoleIds] } : {}),
+  } satisfies PluginHookToolRequesterContext;
+  return Object.keys(requester).length > 0 ? requester : undefined;
 }

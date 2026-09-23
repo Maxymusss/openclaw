@@ -27,6 +27,7 @@ import {
   dockerSandboxBackendManager,
   podmanSandboxBackendManager,
 } from "./docker-backend.js";
+import { replaceNativeSandboxBackend as replaceNativeHandle } from "./native-exec-binding.js";
 import { SandboxRuntimeRetiredError } from "./provisioning-error.js";
 import {
   assertSandboxRegistryEntryCurrent,
@@ -187,11 +188,7 @@ export function requireSandboxBackendFactory(id: string): SandboxBackendFactory 
 }
 
 /** Capture the actual builtin registration, never an ID supplied by an override. */
-export function captureNativeSandboxBackend(
-  id: string,
-  custody: NativeSandboxCustody,
-): SandboxBackendFactory {
-  custody.assertCurrent();
+function requireNativeSandboxBackend(id: string) {
   const registration = resolveSandboxBackendRegistration(id);
   const builtin = builtinSandboxBackends.get(normalizeSandboxBackendId(id));
   if (
@@ -202,6 +199,25 @@ export function captureNativeSandboxBackend(
   ) {
     throw new Error("Foreground sandbox setup requires the selected native builtin registration.");
   }
+  return registration;
+}
+
+export function replaceNativeSandboxBackend(
+  id: string,
+  previous: SandboxBackendHandle,
+  custody: NativeSandboxCustody,
+) {
+  custody.assertCurrent();
+  requireNativeSandboxBackend(id);
+  return replaceNativeHandle(previous, custody);
+}
+
+export function captureNativeSandboxBackend(
+  id: string,
+  custody: NativeSandboxCustody,
+): SandboxBackendFactory {
+  custody.assertCurrent();
+  const registration = requireNativeSandboxBackend(id);
   const engine = captureNativeSandboxEngine(
     registration.factory === createDockerSandboxBackend
       ? DOCKER_SANDBOX_ENGINE

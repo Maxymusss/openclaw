@@ -17,7 +17,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function prepare(foreground = true) {
+async function prepare(foreground = true, setup = createAttemptSetupFixture()) {
   const runId = "foreground-generation";
   const authority = foreground
     ? createAdmittedRunOperatorAuthority({
@@ -76,7 +76,7 @@ async function prepare(foreground = true) {
     const tools = await prepareEmbeddedAttemptToolBase({
       agentDir: "/tmp/foreground-agent",
       attempt,
-      setup: createAttemptSetupFixture(),
+      setup,
       markCoreToolStage() {},
       onYield() {},
       runAbortController,
@@ -88,7 +88,7 @@ async function prepare(foreground = true) {
         throw new Error("unexpected catalog execution");
       },
     });
-    return { tools, authority, admission, runAbortController };
+    return { tools, authority, admission, runAbortController, setup };
   } catch (error) {
     admission.close();
     throw error;
@@ -228,6 +228,107 @@ it("initiates staff cleanup before synchronously constructing the next generatio
     expect(factory).toHaveBeenCalledTimes(2);
   } finally {
     released.resolve();
+    await Promise.all(owner.tools.runCleanups.map((run) => run("cancel")));
+    owner.admission.close();
+  }
+});
+
+it("joins an unpublished successor when the permission publication receipt refuses it", async () => {
+  const cleanupEntered = createDeferred();
+  const cleanupFinished = createDeferred();
+  const setup = createAttemptSetupFixture();
+  const publish = vi.spyOn(setup, "publishEnvironment");
+  const prepareEnvironment = vi
+    .spyOn(setup, "prepareEnvironment")
+    .mockImplementation(async (custody) => {
+      custody.registerCleanup(async () => {
+        cleanupEntered.resolve();
+        await cleanupFinished.promise;
+      });
+      return { sandbox: null, assertCurrent: custody.assertCurrent };
+    });
+  const factory = vi.spyOn(codingTools, "createOpenClawCodingToolsInternal").mockReturnValue([]);
+  const owner = await prepare(true, setup);
+  const staleReceipt = new Error("publication receipt superseded");
+  let settled = false;
+  const pending = Promise.resolve(
+    owner.tools.refreshPermissionMode(
+      "full",
+      () => {},
+      () => {
+        throw staleReceipt;
+      },
+    ),
+  ).catch((error: unknown) => {
+    settled = true;
+    return error;
+  });
+  try {
+    await Promise.race([
+      cleanupEntered.promise,
+      pending.then(() => {
+        throw new Error("cleanup was not joined");
+      }),
+    ]);
+    expect(settled).toBe(false);
+    expect(prepareEnvironment).toHaveBeenCalledOnce();
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(publish).not.toHaveBeenCalled();
+    const successorSignal = factory.mock.calls[1]?.[0]?.abortSignal;
+    expect(successorSignal?.aborted).toBe(true);
+    cleanupFinished.resolve();
+    expect(await pending).toBe(staleReceipt);
+  } finally {
+    cleanupFinished.resolve();
+    await pending;
+    await Promise.all(owner.tools.runCleanups.map((run) => run("cancel")));
+    owner.admission.close();
+  }
+});
+
+it("publishes only the newest successor when refresh overlaps native preparation", async () => {
+  const preparing = createDeferred();
+  const finishPreparation = createDeferred();
+  const setup = createAttemptSetupFixture();
+  const snapshots: Array<Awaited<ReturnType<typeof setup.prepareEnvironment>>> = [];
+  const prepareEnvironment = vi
+    .spyOn(setup, "prepareEnvironment")
+    .mockImplementation(async (custody) => {
+      const snapshot = { sandbox: null, assertCurrent: custody.assertCurrent };
+      snapshots.push(snapshot);
+      if (snapshots.length === 1) {
+        preparing.resolve();
+        await finishPreparation.promise;
+      }
+      return snapshot;
+    });
+  const publish = vi.spyOn(setup, "publishEnvironment");
+  const factory = vi.spyOn(codingTools, "createOpenClawCodingToolsInternal").mockReturnValue([]);
+  const owner = await prepare(true, setup);
+  const first = Promise.resolve(owner.tools.refreshPermissionMode("full", () => {})).catch(
+    (error: unknown) => error,
+  );
+  let second: void | Promise<void> = undefined;
+  try {
+    await Promise.race([
+      preparing.promise,
+      first.then(() => {
+        throw new Error("preparation was not entered");
+      }),
+    ]);
+    second = owner.tools.refreshPermissionMode("read-only", () => {});
+    finishPreparation.resolve();
+    expect(await first).toBeInstanceOf(Error);
+    await second;
+    expect(prepareEnvironment).toHaveBeenCalledTimes(2);
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenCalledExactlyOnceWith(snapshots[1]);
+    expect(() => snapshots[0]?.assertCurrent()).toThrow();
+    expect(() => snapshots[1]?.assertCurrent()).not.toThrow();
+    expect(owner.tools.toolAbortSignal.aborted).toBe(false);
+  } finally {
+    finishPreparation.resolve();
+    await Promise.allSettled([first, second]);
     await Promise.all(owner.tools.runCleanups.map((run) => run("cancel")));
     owner.admission.close();
   }

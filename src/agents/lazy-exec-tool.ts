@@ -37,7 +37,7 @@ export function createLazyExecTool(
 ): AnyAgentTool {
   // Native tool callbacks can arrive outside the scope that constructed this lazy tool.
   const installationTarget = getInstallationTarget();
-  const foregroundPolicy = captureForegroundExecPolicy(operatorAuthority);
+  const foregroundPolicy = captureForegroundExecPolicy(operatorAuthority, defaults);
   let loadedTool: LoadedExecTool | undefined;
   let loadingTool: Promise<LoadedExecTool> | undefined;
   const loadTool = () => {

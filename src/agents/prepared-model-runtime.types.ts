@@ -12,6 +12,7 @@ import type { InlineModelEntry } from "./embedded-agent-runner/model.inline-prov
 import type { AgentHarnessPluginSelection } from "./harness/runtime-plugin-load-plan.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "./model-catalog.types.js";
 import type { PublishedModelCatalogOwnerCandidate } from "./prepared-model-catalog.types.js";
+import type { PreparedModelRequestBindingReader } from "./prepared-model-request-binding.js";
 import type { AuthStorage, AuthStorageData } from "./sessions/auth-storage.js";
 import type { ModelRegistry } from "./sessions/model-registry.js";
 
@@ -128,6 +129,7 @@ export type PreparedModelRuntimeSnapshot = Readonly<{
   /** Inline provider projection prepared once for all resolutions owned by this snapshot. */
   inlineProviderModels: readonly InlineModelEntry[];
   createStores: () => PreparedModelRuntimeStores;
+  readModelRequestBinding?: PreparedModelRequestBindingReader;
   /** Bounded metadata shared by runs; replacing the model/auth generation drops the memo. */
   routeModelResolutionMemo?: Map<string, Promise<Model>>;
 }>;

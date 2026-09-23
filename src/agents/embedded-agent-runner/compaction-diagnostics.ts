@@ -2,6 +2,7 @@
 import type { ApiRegistry } from "@openclaw/ai";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { generateSecureToken } from "../../infra/secure-random.js";
+import type { SimpleStreamOptions } from "../../llm/types.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
 import { isRealConversationMessage } from "../compaction-real-conversation.js";
 import { registerProviderStreamForModel } from "../provider-stream.js";
@@ -19,9 +20,11 @@ export function resolveCompactionProviderStream(params: {
   agentDir: string;
   effectiveWorkspace: string;
   apiRegistry: ApiRegistry;
+  preparedTransport: SimpleStreamOptions["transport"];
 }) {
   return registerProviderStreamForModel({
     model: params.effectiveModel,
+    preparedTransport: params.preparedTransport,
     cfg: params.config,
     agentDir: params.agentDir,
     workspaceDir: params.effectiveWorkspace,

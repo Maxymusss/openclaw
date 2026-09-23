@@ -13,6 +13,7 @@ export const BUILTIN_AGENT_HARNESS_METADATA: Pick<
 > = {
   id: "openclaw",
   label: "OpenClaw embedded agent",
+  operatorModelPolicySupport: "exact",
   contextEngineHostCapabilities: OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST.capabilities,
   supports: () => ({ supported: true, priority: 0 }),
 };

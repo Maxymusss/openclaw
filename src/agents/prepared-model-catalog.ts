@@ -23,6 +23,7 @@ import {
   setPreparedModelRuntimeAuthLoader,
   setPreparedModelRuntimeAuthStore,
 } from "./prepared-model-runtime-auth.js";
+import { capturePreparedModelRuntimeCatalog } from "./prepared-model-runtime.capture.js";
 import { isPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalog.js";
 import {
   acquireAgentRunPreparedModelRuntime,
@@ -122,7 +123,7 @@ export function materializePreparedModelCatalogOwner(
     throw new Error("prepared full model catalog omitted its auth generation");
   }
   const materialized = Object.freeze({
-    ...snapshot,
+    ...capturePreparedModelRuntimeCatalog(snapshot, snapshot),
     authModes: fullAuth.authModes,
     modelCatalog,
   });

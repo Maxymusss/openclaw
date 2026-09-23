@@ -120,7 +120,7 @@ vi.mock("./channel-tools.js", () => ({
 vi.mock("./openclaw-tools.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./openclaw-tools.js")>();
   return {
-    createOpenClawTools: () => [],
+    createOpenClawToolsInternal: () => [],
     filterToolsByClientCaps: actual.filterToolsByClientCaps,
   };
 });

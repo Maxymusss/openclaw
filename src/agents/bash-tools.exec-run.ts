@@ -91,7 +91,7 @@ export function createExecTool(
   defaults?: ExecToolDefaults,
   operatorAuthority?: AdmittedRunOperatorAuthority,
 ): AgentToolWithMeta<typeof execSchema, ExecToolDetails> {
-  const foregroundPolicy = captureForegroundExecPolicy(operatorAuthority);
+  const foregroundPolicy = captureForegroundExecPolicy(operatorAuthority, defaults);
   const secretEgressEnabled = isSecretEgressProxyActive();
   const cleanupMs = defaults?.cleanupMs;
   const preparedRunEnvironment = resolveExecPreparedRunEnvironment(defaults);

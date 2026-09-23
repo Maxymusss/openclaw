@@ -5,8 +5,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { inheritModelRequestBinding } from "@openclaw/llm-core";
-import type { Api, Model, StreamFn, StreamOptions } from "@openclaw/llm-core";
-import type { ApiRegistry } from "../api-registry.js";
+import type { Api, Model, StreamFn, StreamOptions, SimpleStreamOptions } from "@openclaw/llm-core";
+import type { ApiRegistry, ModelRequestBindingLeafSupport } from "../api-registry.js";
 import { getAiTransportHost, resolveAiTransportHeaderSentinels } from "../host.js";
 import {
   buildTransportAwareSimpleStreamFn,
@@ -14,6 +14,7 @@ import {
   createTransportAwareStreamFnForModel,
   prepareTransportAwareSimpleModel,
   resolveTransportAwareSimpleApi,
+  readTransportModelRequestBindingSupport,
 } from "./provider-transport-stream.js";
 import { resolveOpencodeSessionHeaders } from "./session-affinity.js";
 
@@ -35,8 +36,13 @@ const PROVIDER_STREAM_API_PREFIX = "openclaw-provider-stream:";
 const INVALID_CODEX_BASE_URL_MESSAGE =
   "OpenAI Codex Responses baseUrl must not include query parameters or fragments";
 
-function registerCustomApi(registry: ApiRegistry, api: Api, streamFn: StreamFn): boolean {
-  getAiTransportHost().registerCustomApi(registry, api, streamFn);
+function registerCustomApi(
+  registry: ApiRegistry,
+  api: Api,
+  streamFn: StreamFn,
+  support?: ModelRequestBindingLeafSupport,
+): boolean {
+  getAiTransportHost().registerCustomApi(registry, api, streamFn, support);
   return registry.getApiProvider(api) !== undefined;
 }
 
@@ -112,6 +118,8 @@ function applyProviderSimpleCompletionWrapper(
   model: Model,
   cfg?: unknown,
   hookSourceApi: Api = model.api,
+  transport?: SimpleStreamOptions["transport"],
+  support?: ModelRequestBindingLeafSupport,
 ): Model {
   if (model.api.startsWith(PROVIDER_SIMPLE_COMPLETION_API_PREFIX)) {
     return model;
@@ -122,18 +130,26 @@ function applyProviderSimpleCompletionWrapper(
   }
 
   const dispatchApi = model.api;
-  const sourceStreamFn = inheritModelRequestBinding<StreamFn>(
-    (runtimeModel, context, options) =>
-      sourceProvider.streamSimple(
-        projectModel(runtimeModel, { api: dispatchApi }),
-        context,
-        options,
-      ),
-    sourceProvider.streamSimple,
-  );
+  const sourceStreamFn = inheritModelRequestBinding<StreamFn>((runtimeModel, context, options) => {
+    const policy = getAiTransportHost().modelRequests;
+    if (registry.getApiProvider(dispatchApi) !== sourceProvider) {
+      policy?.requireDelegateSupport(undefined);
+    }
+    policy?.requireLeafSupport?.(
+      runtimeModel,
+      sourceProvider.modelRequestBindingSupport?.streamSimple,
+      options?.transport,
+    );
+    return sourceProvider.streamSimple(
+      projectModel(runtimeModel, { api: dispatchApi }),
+      context,
+      options,
+    );
+  }, sourceProvider.streamSimple);
   const streamFn = getAiTransportHost().plugin.wrapSimpleCompletionStream({
     provider: model.provider,
     config: cfg,
+    preparedTransport: transport,
     context: {
       config: cfg,
       provider: model.provider,
@@ -148,7 +164,7 @@ function applyProviderSimpleCompletionWrapper(
   }
 
   const api = resolveProviderSimpleCompletionApi(model);
-  return registerCustomApi(registry, api, streamFn) ? projectModel(model, { api }) : model;
+  return registerCustomApi(registry, api, streamFn, support) ? projectModel(model, { api }) : model;
 }
 
 function prepareCodexSimpleTransportModel<TApi extends Api>(
@@ -209,6 +225,8 @@ function prepareProviderStreamModel<TApi extends Api>(params: {
   model: Model<TApi>;
   cfg?: unknown;
   apiRegistry: ApiRegistry;
+  transport?: SimpleStreamOptions["transport"];
+  support?: ModelRequestBindingLeafSupport;
 }): Model | undefined {
   const pluginModel = resolveModelTransportSentinels(
     params.model,
@@ -217,6 +235,7 @@ function prepareProviderStreamModel<TApi extends Api>(params: {
   const providerStreamFn = getAiTransportHost().plugin.resolveProviderStream({
     provider: params.model.provider,
     config: params.cfg,
+    preparedTransport: params.transport,
     context: {
       config: params.cfg,
       provider: params.model.provider,
@@ -250,45 +269,82 @@ function prepareProviderStreamModel<TApi extends Api>(params: {
       streamFn(projectModel(runtimeModel, { api: sourceApi }), context, options),
     streamFn,
   );
-  if (!registerCustomApi(params.apiRegistry, api, sourceStreamFn)) {
+  if (!registerCustomApi(params.apiRegistry, api, sourceStreamFn, params.support)) {
     return undefined;
   }
   return api === params.model.api ? params.model : projectModel(params.model, { api });
+}
+
+/** Read the same leaf that transport preparation selects without constructing it. */
+export function readSimpleCompletionModelRequestBindingSupport(
+  apiRegistry: ApiRegistry,
+  model: Model,
+): ModelRequestBindingLeafSupport | undefined {
+  return getAiTransportHost().requiresManagedTransport(model)
+    ? readTransportModelRequestBindingSupport(model)
+    : apiRegistry.getApiProvider(model.api)?.modelRequestBindingSupport?.streamSimple;
 }
 
 export function prepareModelForSimpleCompletion<TApi extends Api>(params: {
   apiRegistry: ApiRegistry;
   model: Model<TApi>;
   cfg?: unknown;
+  transport?: SimpleStreamOptions["transport"];
 }): Model {
-  const { apiRegistry, model, cfg } = params;
-  const providerStreamModel = prepareProviderStreamModel({ model, cfg, apiRegistry });
+  const { apiRegistry, cfg } = params;
+  const host = getAiTransportHost();
+  const leaf = readSimpleCompletionModelRequestBindingSupport(apiRegistry, params.model);
+  const preparation = host.plugin.prepareModelRequestBinding?.({
+    model: params.model,
+    config: cfg,
+    transport: params.transport,
+    leaf,
+    wrapper: "wrapSimpleCompletionStreamFn",
+  });
+  const model = preparation?.model ?? params.model;
+  const support = preparation?.support;
+  const wrap = (selected: Model) =>
+    applyProviderSimpleCompletionWrapper(
+      apiRegistry,
+      selected,
+      cfg,
+      model.api,
+      params.transport,
+      support,
+    );
+  const providerStreamModel = prepareProviderStreamModel({
+    model,
+    cfg,
+    apiRegistry,
+    transport: params.transport,
+    support,
+  });
   if (providerStreamModel) {
-    return applyProviderSimpleCompletionWrapper(apiRegistry, providerStreamModel, cfg, model.api);
+    return wrap(providerStreamModel);
   }
 
   const codexTransportModel = prepareCodexSimpleTransportModel(apiRegistry, model, cfg);
   if (codexTransportModel) {
-    return applyProviderSimpleCompletionWrapper(apiRegistry, codexTransportModel, cfg, model.api);
+    return wrap(codexTransportModel);
   }
 
   const transportAwareModel = prepareTransportAwareSimpleModel(model, { cfg });
   if (transportAwareModel !== model) {
     const streamFn = buildTransportAwareSimpleStreamFn(model, { cfg });
-    if (streamFn && registerCustomApi(apiRegistry, transportAwareModel.api, streamFn)) {
-      return applyProviderSimpleCompletionWrapper(apiRegistry, transportAwareModel, cfg, model.api);
+    if (streamFn && registerCustomApi(apiRegistry, transportAwareModel.api, streamFn, support)) {
+      return wrap(transportAwareModel);
     }
   }
 
   if (model.provider === "anthropic-vertex") {
     const api = resolveAnthropicVertexSimpleApi(model.baseUrl);
-    const host = getAiTransportHost();
-    const streamFn = host.plugin.createAnthropicVertexStream(model);
+    const vertexHost = getAiTransportHost();
+    const streamFn = vertexHost.plugin.createAnthropicVertexStream(model);
     if (registerCustomApi(apiRegistry, api, streamFn)) {
       const transportModel = projectModel(model, { api });
-      return applyProviderSimpleCompletionWrapper(apiRegistry, transportModel, cfg, model.api);
+      return wrap(transportModel);
     }
   }
 
-  return applyProviderSimpleCompletionWrapper(apiRegistry, model, cfg);
+  return wrap(model);
 }

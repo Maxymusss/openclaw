@@ -17,6 +17,7 @@ import { normalizeCatalogRouteBaseUrl } from "./model-catalog-metadata.js";
 import { compareModelCatalogEntries } from "./model-catalog-order.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
 import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
+import { createPreparedModelRequestBindingReader } from "./prepared-model-request-binding.js";
 import {
   copyPreparedModelFullCatalogAuth,
   getPreparedModelFullCatalogAuth,
@@ -552,6 +553,18 @@ export function createPreparedModelRuntimeSnapshot(
     ),
     inlineProviderModels,
     createStores,
+    readModelRequestBinding: createPreparedModelRequestBindingReader(
+      {
+        config: publishedConfig,
+        agentId: input.agentId,
+        agentDir: input.agentDir,
+        workspaceDir: input.workspaceDir,
+        metadataSnapshot: pluginMetadataSnapshot,
+        pluginRegistry,
+        isCurrent: catalogAccess.isCurrent,
+      },
+      templateModelRegistry,
+    ),
     routeModelResolutionMemo: new Map<string, Promise<Model>>(),
   });
   setPreparedModelRuntimeAuthLabels(

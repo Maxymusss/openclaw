@@ -11,6 +11,7 @@ import {
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { getPluginRegistryState } from "../plugins/runtime-state.js";
 import { getPluginRegistryForContext } from "../plugins/runtime/gateway-request-scope.js";
+import { runWithDecisionOperatorAuthority } from "./operator-authority.js";
 import type { DecisionProviderHost } from "./provider-host.js";
 import type { DecisionBatch, DecisionOutcome, DecisionRuntimeV1 } from "./types.js";
 import { DecisionContractError, validateDecisionBatch } from "./validation.js";
@@ -31,6 +32,18 @@ export async function evaluateDecision(
 }
 
 export async function evaluateDecisionInRegistry(
+  batch: DecisionBatch,
+  options: Options,
+  registry: PluginRegistry | null,
+  config: OpenClawConfig,
+  consumerId?: string,
+): Promise<DecisionOutcome> {
+  return runWithDecisionOperatorAuthority(() =>
+    evaluateAdmittedDecision(batch, options, registry, config, consumerId),
+  );
+}
+
+async function evaluateAdmittedDecision(
   batch: DecisionBatch,
   options: Options,
   registry: PluginRegistry | null,

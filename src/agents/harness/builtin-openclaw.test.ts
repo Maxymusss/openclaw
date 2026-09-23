@@ -51,11 +51,15 @@ describe("createOpenClawAgentHarness", () => {
   });
 
   it("brands only host-created instances as the built-in runtime", () => {
-    expect(isBuiltInOpenClawAgentHarness(createOpenClawAgentHarness())).toBe(true);
+    const harness = createOpenClawAgentHarness();
+    expect(harness.operatorModelPolicySupport).toBe("exact");
+    expect(isBuiltInOpenClawAgentHarness(harness)).toBe(true);
+    expect(isBuiltInOpenClawAgentHarness({ ...harness })).toBe(false);
     expect(
       isBuiltInOpenClawAgentHarness({
         id: "openclaw",
         label: "forged",
+        operatorModelPolicySupport: "exact",
         supports: () => ({ supported: true }),
         runAttempt: async () => {
           throw new Error("must not run");

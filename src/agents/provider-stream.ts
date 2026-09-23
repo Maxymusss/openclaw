@@ -1,5 +1,9 @@
 import type { ApiRegistry } from "@openclaw/ai";
-import { createTransportAwareStreamFnForModel } from "@openclaw/ai/transports";
+import {
+  createTransportAwareStreamFnForModel,
+  isTransportAwareApiSupported,
+  readTransportModelRequestBindingSupport,
+} from "@openclaw/ai/transports";
 import "./ai-transport-runtime-host.js";
 /**
  * Provider stream registration entry point.
@@ -9,16 +13,30 @@ import "./ai-transport-runtime-host.js";
 import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getModelLlmRuntime } from "../llm/model-runtime-binding.js";
-import type { Api, Model } from "../llm/types.js";
+import type { Api, Model, SimpleStreamOptions } from "../llm/types.js";
 import {
   attachModelProviderRuntimePluginHandle,
   getModelProviderRuntimePluginHandle,
   resolveProviderRuntimePluginHandle,
   type ProviderRuntimePluginHandle,
 } from "../plugins/provider-hook-runtime.js";
+import { readProviderModelRequestBindingSupport } from "../plugins/provider-model-request-binding.js";
 import { resolveProviderStreamFn } from "../plugins/provider-runtime.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
 import { ensureCustomApiRegistered } from "./custom-api-registry.js";
-import { guardOperatorModelProviderStream } from "./operator-model-policy.js";
+import {
+  resolvePreparedExtraParams,
+  resolveSupportedTransport,
+} from "./embedded-agent-runner/extra-params.js";
+import {
+  guardOperatorModelProviderStream,
+  runWithOperatorModelRequest,
+} from "./operator-model-policy.js";
+import {
+  assertProviderModelRequestBinding,
+  constructProviderModelStreamWrapper,
+  guardProviderModelRequestBinding,
+} from "./provider-model-request-binding.js";
 import {
   unwrapHeaderSentinelsForProviderEgress,
   unwrapModelHeaderSentinelsForProviderEgress,
@@ -29,6 +47,9 @@ import type { StreamFn } from "./runtime/index.js";
 /** Resolves and registers the stream function for a provider-backed model. */
 export function registerProviderStreamForModel<TApi extends Api>(params: {
   model: Model<TApi>;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
+  preparedExtraParams?: Record<string, unknown>;
+  preparedTransport?: SimpleStreamOptions["transport"];
   cfg?: OpenClawConfig;
   agentDir?: string;
   workspaceDir?: string;
@@ -37,6 +58,14 @@ export function registerProviderStreamForModel<TApi extends Api>(params: {
   wrapProviderStream?: boolean;
   apiRegistry?: ApiRegistry;
 }): StreamFn | undefined {
+  return runWithOperatorModelRequest(params.operatorAuthority, (operatorAuthority) =>
+    registerProviderStreamCore({ ...params, operatorAuthority }),
+  );
+}
+
+function registerProviderStreamCore<TApi extends Api>(
+  params: Parameters<typeof registerProviderStreamForModel<TApi>>[0],
+): StreamFn | undefined {
   const apiRegistry = params.apiRegistry ?? getModelLlmRuntime(params.model)?.registry;
   const runtimeHandle =
     getModelProviderRuntimePluginHandle(params.model) ??
@@ -52,6 +81,33 @@ export function registerProviderStreamForModel<TApi extends Api>(params: {
   const runtimeModel = runtimeHandle
     ? attachModelProviderRuntimePluginHandle(params.model, runtimeHandle)
     : params.model;
+  const extraParams =
+    params.preparedExtraParams ??
+    resolvePreparedExtraParams({
+      cfg: params.cfg,
+      provider: runtimeModel.provider,
+      modelId: runtimeModel.id,
+      model: runtimeModel,
+      agentDir: params.agentDir,
+      workspaceDir: params.workspaceDir,
+      providerRuntimeHandle: runtimeHandle,
+    });
+  // An explicitly prepared unknown transport must not fall back to a provider default.
+  const transport = Object.hasOwn(params, "preparedTransport")
+    ? params.preparedTransport
+    : resolveSupportedTransport(extraParams?.transport);
+  const leaf = isTransportAwareApiSupported(runtimeModel.api)
+    ? readTransportModelRequestBindingSupport(runtimeModel)
+    : apiRegistry?.getApiProvider(runtimeModel.api)?.modelRequestBindingSupport?.streamSimple;
+  const binding = {
+    model: runtimeModel,
+    plugin: runtimeHandle?.plugin,
+    isCurrent: runtimeHandle?.isModelRequestBindingCurrent,
+    transport,
+    leaf,
+    ...(params.wrapProviderStream ? { wrapper: "wrapStreamFn" as const } : {}),
+  };
+  assertProviderModelRequestBinding(binding);
   // Plugin stream factories may capture model headers, so construction is the
   // last safe boundary for providers that do not expose the host fetch seam.
   const pluginModel = unwrapModelHeaderSentinelsForProviderEgress(
@@ -65,6 +121,7 @@ export function registerProviderStreamForModel<TApi extends Api>(params: {
     env: params.env,
     runtimeHandle,
     allowRuntimePluginLoad: params.allowRuntimePluginLoad,
+    preparedTransport: transport,
     context: {
       config: params.cfg,
       agentDir: params.agentDir,
@@ -96,26 +153,41 @@ export function registerProviderStreamForModel<TApi extends Api>(params: {
   const streamFn = guardOperatorModelProviderStream(baseStreamFn);
   const providerWrappedStreamFn =
     params.wrapProviderStream && runtimeHandle
-      ? (runtimeHandle.plugin?.wrapStreamFn?.({
-          config: params.cfg,
-          agentDir: params.agentDir,
-          workspaceDir: params.workspaceDir,
-          provider: runtimeModel.provider,
-          modelId: runtimeModel.id,
-          model: runtimeModel,
-          streamFn,
+      ? (constructProviderModelStreamWrapper({
+          ...binding,
+          hook: "wrapStreamFn",
+          context: {
+            config: params.cfg,
+            agentDir: params.agentDir,
+            workspaceDir: params.workspaceDir,
+            provider: runtimeModel.provider,
+            modelId: runtimeModel.id,
+            model: runtimeModel,
+            streamFn,
+          },
         }) ?? streamFn)
       : streamFn;
   const preparedStreamFn = runtimeHandle
     ? bindProviderRuntimeHandle(
-        guardOperatorModelProviderStream(providerWrappedStreamFn),
+        guardProviderModelRequestBinding(
+          guardOperatorModelProviderStream(providerWrappedStreamFn),
+          binding,
+        ),
         runtimeHandle,
       )
-    : guardOperatorModelProviderStream(providerWrappedStreamFn);
+    : guardProviderModelRequestBinding(
+        guardOperatorModelProviderStream(providerWrappedStreamFn),
+        binding,
+      );
   // Register custom APIs only after a concrete stream exists, so later callers
   // can route by model.api without reloading provider runtime hooks.
   if (apiRegistry) {
-    ensureCustomApiRegistered(apiRegistry, runtimeModel.api, preparedStreamFn);
+    ensureCustomApiRegistered(
+      apiRegistry,
+      runtimeModel.api,
+      preparedStreamFn,
+      readProviderModelRequestBindingSupport(binding),
+    );
   }
   return preparedStreamFn;
 }

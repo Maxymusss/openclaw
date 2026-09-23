@@ -2,7 +2,10 @@ import { createServer } from "node:http";
 import { createApiRegistry, createLlmRuntime } from "@openclaw/ai";
 import { responsesRequestLifecycle } from "@openclaw/ai/internal/openai";
 import { registerBuiltInApiProviders } from "@openclaw/ai/providers";
-import { createOpenClawTransportStreamFnForModel } from "@openclaw/ai/transports";
+import {
+  createOpenClawTransportStreamFnForModel,
+  prepareModelForSimpleCompletion,
+} from "@openclaw/ai/transports";
 import type { StreamOptions } from "@openclaw/llm-core";
 import { expectDefined } from "@openclaw/normalization-core";
 import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
@@ -134,12 +137,20 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
         id: transportModel.provider,
         label: "Loopback model authority fixture",
         auth: [],
+        resolveModelRequestBindingSupport: ({ model: selected, transport }) =>
+          selected.provider === transportModel.provider &&
+          selected.id === transportModel.id &&
+          selected.api === transportModel.api &&
+          selected.baseUrl === transportModel.baseUrl &&
+          transport === "sse"
+            ? { createStreamFn: "wire-model-v1" }
+            : undefined,
         // Register the real transport before any caller enters its authority scope.
         createStreamFn: () => createOpenClawTransportStreamFnForModel(transportModel),
       },
     });
     expectDefined(
-      registerProviderStreamForModel({ model, apiRegistry: registry }),
+      registerProviderStreamForModel({ model, apiRegistry: registry, preparedTransport: "sse" }),
       "registered real Completions transport",
     );
   });
@@ -162,6 +173,101 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
       });
     }
   });
+
+  it.each(["openai-completions", "openai-responses"] as const)(
+    "keeps managed %s aliases qualified across staff-first and finite-first preparation",
+    async (api) => {
+      for (const firstFinite of [false, true]) {
+        for (const staffTransport of [undefined, "auto"] as const) {
+          const selected = attachModelProviderRequestTransport(
+            makeProviderModelFixture({
+              provider: model.provider,
+              id: model.id,
+              api,
+              baseUrl: model.baseUrl,
+            }),
+            { allowPrivateNetwork: true, tls: {} },
+          );
+          const bound = attachModelProviderRuntimePluginHandle(selected, {
+            provider: selected.provider,
+            modelId: selected.id,
+            plugin: {
+              id: selected.provider,
+              label: "Transparent fixture",
+              auth: [],
+              wrapSimpleCompletionStreamFn: ({ streamFn }) => streamFn,
+              resolveModelRequestBindingSupport: ({ model: route, transport }) =>
+                route.provider === selected.provider &&
+                route.id === selected.id &&
+                route.api === api &&
+                route.baseUrl === selected.baseUrl &&
+                transport === "sse"
+                  ? { wrapSimpleCompletionStreamFn: "preserves-delegate" }
+                  : undefined,
+            },
+          });
+          const apiRegistry = createApiRegistry();
+          registerBuiltInApiProviders(apiRegistry);
+          const localRuntime = createLlmRuntime(apiRegistry);
+          const authority = createAdmittedRunOperatorAuthority({
+            profileId: "finite-operator",
+            scopes: ["operator.sessions.write"],
+            permissions: { models: { allow: [`${selected.provider}/${selected.id}`] } },
+            assertCurrent() {},
+          });
+          const prepare = (finite: boolean) =>
+            runWithOperatorModelRequest(finite ? authority : undefined, () =>
+              prepareModelForSimpleCompletion({
+                model: bound,
+                apiRegistry,
+                transport: finite ? "sse" : staffTransport,
+              }),
+            );
+          try {
+            const first = prepare(firstFinite);
+            const firstProviders = apiRegistry.getApiProviders();
+            const second = prepare(!firstFinite);
+            expect(second.api).toBe(first.api);
+            expect(first.api).toMatch(/^openclaw-provider-simple:/);
+            expect(apiRegistry.getApiProviders()).toEqual(firstProviders);
+            for (const registration of firstProviders) {
+              expect(apiRegistry.getApiProvider(registration.api)).toBe(registration);
+            }
+            const before = requests.length;
+            for (const finite of [true, false]) {
+              const message = await runWithOperatorModelRequest(
+                finite ? authority : undefined,
+                () =>
+                  localRuntime.completeSimple(
+                    second,
+                    { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
+                    { apiKey: "loopback-test-key", transport: "sse" },
+                  ),
+              );
+              expect(message, JSON.stringify(message)).toMatchObject({
+                stopReason: "stop",
+                content: [{ type: "text", text: "accepted" }],
+              });
+            }
+            expect(requests).toHaveLength(before + 2);
+            expect(
+              requests.slice(before).map((request) => asNonArrayRecord(request.payload).model),
+            ).toEqual(["allowed", "allowed"]);
+            for (const transport of [undefined, "auto", "websocket"] as const) {
+              expect(() =>
+                runWithOperatorModelRequest(authority, () =>
+                  prepareModelForSimpleCompletion({ model: bound, apiRegistry, transport }),
+                ),
+              ).toThrow(/cannot enforce/);
+            }
+            expect(requests).toHaveLength(before + 2);
+          } finally {
+            apiRegistry.clearApiProviders();
+          }
+        }
+      }
+    },
+  );
 
   it.each([
     "allowed",
@@ -203,6 +309,7 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
         { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
         {
           apiKey: "loopback-test-key", // pragma: allowlist secret
+          transport: "sse",
           signal: controller.signal,
           onPayload: async (payload, hookModel) => {
             // Capture the JSON wire shape, including values omitted during serialization.
@@ -303,6 +410,7 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
           { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
           {
             apiKey: "loopback-test-key",
+            transport: "sse",
             onPayload: (payload) => {
               borrowed = payload;
             },
@@ -389,6 +497,7 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
           { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
           {
             apiKey: "loopback-test-key",
+            transport: "sse",
             onPayload: async (payload) => {
               entered.resolve();
               await release.promise;
@@ -476,6 +585,7 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
                 { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
                 {
                   apiKey: "loopback-test-key",
+                  transport: "sse",
                   onPayload: async (payload) => {
                     await Promise.resolve();
                     if (mode === "revoked") {
@@ -544,6 +654,7 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
         { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
         {
           apiKey: "loopback-test-key",
+          transport: "sse",
           onPayload: async (payload) => {
             await Promise.resolve();
             preparations++;
@@ -615,7 +726,7 @@ describe("operator model authority at real Completions dispatch", { concurrent: 
       const release = createDeferredCore();
       const accepted = vi.fn();
       const settled = vi.fn();
-      const options: StreamOptions = { apiKey: "loopback-test-key" };
+      const options: StreamOptions = { apiKey: "loopback-test-key", transport: "sse" };
       responsesRequestLifecycle.set(options, {
         beforeDispatch: async () => {
           entered.resolve();

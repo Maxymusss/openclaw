@@ -26,7 +26,13 @@ export function createLlmRuntime(registry: ApiRegistry = createApiRegistry()) {
     context: Context,
     options?: ProviderStreamOptions,
   ): AssistantMessageEventStreamContract {
-    const delegate = resolveApiProvider(model.api).stream;
+    const selected = resolveApiProvider(model.api);
+    const delegate = selected.stream;
+    getAiTransportHost().modelRequests?.requireLeafSupport?.(
+      model,
+      selected.modelRequestBindingSupport?.stream,
+      options?.transport,
+    );
     getAiTransportHost().modelRequests?.requireDelegateSupport(delegate.modelRequestBinding);
     return delegate(model, context, options as StreamOptions);
   }
@@ -44,7 +50,13 @@ export function createLlmRuntime(registry: ApiRegistry = createApiRegistry()) {
     context: Context,
     options?: SimpleStreamOptions,
   ): AssistantMessageEventStreamContract {
-    const delegate = resolveApiProvider(model.api).streamSimple;
+    const selected = resolveApiProvider(model.api);
+    const delegate = selected.streamSimple;
+    getAiTransportHost().modelRequests?.requireLeafSupport?.(
+      model,
+      selected.modelRequestBindingSupport?.streamSimple,
+      options?.transport,
+    );
     getAiTransportHost().modelRequests?.requireDelegateSupport(delegate.modelRequestBinding);
     return delegate(model, context, options);
   }

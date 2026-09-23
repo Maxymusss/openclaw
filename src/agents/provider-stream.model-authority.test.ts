@@ -99,6 +99,17 @@ function preparedProvider(
     label: "Fixture",
     auth: [],
     createStreamFn,
+    resolveModelRequestBindingSupport: ({ model, transport }) =>
+      model.api === "fixture-model-authority" &&
+      model.baseUrl === "https://provider.example/v1" &&
+      transport === "sse"
+        ? {
+            createStreamFn: "wire-model-v1",
+            ...(mode === "completion"
+              ? { wrapSimpleCompletionStreamFn: "preserves-delegate" as const }
+              : { wrapStreamFn: "preserves-delegate" as const }),
+          }
+        : undefined,
     ...(mode === "completion" ? { wrapSimpleCompletionStreamFn: wrap } : { wrapStreamFn: wrap }),
   };
   const model = attachModelProviderRuntimePluginHandle(
@@ -116,7 +127,8 @@ function preparedProvider(
       ? bindModelLlmRuntime(
           model,
           runtime,
-          prepareModelForSimpleCompletion({ apiRegistry: registry, model }),
+          prepareModelForSimpleCompletion({ apiRegistry: registry, model, transport: "sse" }),
+          "sse",
         )
       : model;
   const prepared = completionOwner
@@ -130,6 +142,7 @@ function preparedProvider(
             model,
             apiRegistry: registry,
             wrapProviderStream: true,
+            preparedTransport: "sse",
           }),
           "registered provider stream",
         );
@@ -160,7 +173,12 @@ function preparedProvider(
         operatorAuthority,
       });
       if (mode === "agent") {
-        const agent = new Agent({ initialState: { model: prepared }, streamFn, sessionId });
+        const agent = new Agent({
+          initialState: { model: prepared },
+          streamFn,
+          sessionId,
+          transport: "sse",
+        });
         result = agent.prompt("hello").then(() =>
           expectDefined(
             agent.state.messages.findLast((message) => message.role === "assistant"),
@@ -168,9 +186,9 @@ function preparedProvider(
           ),
         );
       } else {
-        result = Promise.resolve(streamFn(prepared, { messages: [] }, { sessionId })).then(
-          (stream) => stream.result(),
-        );
+        result = Promise.resolve(
+          streamFn(prepared, { messages: [] }, { sessionId, transport: "sse" }),
+        ).then((stream) => stream.result());
       }
     }
     return {

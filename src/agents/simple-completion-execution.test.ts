@@ -89,7 +89,7 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
       if (mode === "allowed") {
         await expect(completion).resolves.toEqual({ content: [{ type: "text", text: "ok" }] });
         expect(completionRequests()).toEqual([
-          { model: preparedModel, context, options: { apiKey: "test-key" } },
+          { model: preparedModel, context, options: { transport: "sse", apiKey: "test-key" } },
         ]);
       } else {
         await expect(completion).rejects.toMatchObject({ code: "OPERATOR_MODEL_POLICY_DENIED" });
@@ -271,7 +271,11 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
         {
           model,
           context,
-          options: { ...(expected ? { reasoning: expected } : {}), apiKey: "sk-test" },
+          options: {
+            ...(provider === "openai" ? { transport: "sse" } : {}),
+            ...(expected ? { reasoning: expected } : {}),
+            apiKey: "sk-test",
+          },
         },
       ]);
     },
@@ -287,6 +291,7 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
         options: serviceTier ? { serviceTier } : {},
       });
       expect(completionRequests()[0]?.options).toEqual({
+        transport: "sse",
         apiKey: "test",
         ...(serviceTier ? { serviceTier } : {}),
       });
@@ -302,7 +307,7 @@ describe("completeWithPreparedSimpleCompletionModel", () => {
     });
     const options = mocks.complete.mock.calls[0]?.[2] as object | undefined;
     expect(reasoningTagTextPolicy.isStrict(options)).toBe(true);
-    expect(Object.keys(options ?? {})).toEqual(["apiKey"]);
+    expect(Object.keys(options ?? {})).toEqual(["transport", "apiKey"]);
   });
 
   it("preserves explicit off for a prepared Claude Sonnet 5 alias", async () => {

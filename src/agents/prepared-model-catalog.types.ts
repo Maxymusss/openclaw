@@ -4,6 +4,7 @@ import type { PluginRegistry } from "../plugins/registry-types.js";
 import type { PreparedAgentCredentialModes } from "./agent-auth-credential-modes.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
+import type { PreparedModelRequestBindingReader } from "./prepared-model-request-binding.js";
 
 export type PublishedModelCatalogOwnerCandidate = Readonly<{
   /** Captured during preparation; undefined is a known-unbound runtime. */
@@ -21,6 +22,7 @@ export type PublishedModelCatalogOwnerCandidate = Readonly<{
   /** Reports whether this exact lifecycle generation is still published. */
   isCurrent: () => boolean;
   modelCatalog: ModelCatalogSnapshot;
+  readModelRequestBinding?: PreparedModelRequestBindingReader;
 }>;
 
 export type ResolvedPublishedModelCatalogOwner = Readonly<{
@@ -36,4 +38,5 @@ export type ResolvedPublishedModelCatalogOwner = Readonly<{
   pluginRegistry?: PluginRegistry;
   isCurrent: () => boolean;
   modelCatalog: ModelCatalogSnapshot;
+  readModelRequestBinding?: PreparedModelRequestBindingReader;
 }>;

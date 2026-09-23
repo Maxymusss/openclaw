@@ -10,16 +10,23 @@ import { resetPluginLoaderTestStateForTest } from "../plugins/loader.test-fixtur
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import {
+  drainSystemEventsFromSdk,
+  peekSystemEventsFromSdk,
+} from "../plugins/runtime/system-events.js";
+import {
   createColdPluginFixture,
   createColdPluginHermeticEnv,
 } from "../plugins/test-helpers/cold-plugin-fixtures.js";
 import { createSyncSuiteTempRootTracker } from "../plugins/test-helpers/fs-fixtures.js";
-import { getAsyncWorkSignal, trackAsyncWork } from "../shared/async-work-scope.js";
+import { AsyncWorkScope, getAsyncWorkSignal, trackAsyncWork } from "../shared/async-work-scope.js";
 import { withEnvAsync } from "../test-utils/env.js";
+import { createAdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
 import { clearRuntimeAuthProfileStoreSnapshots } from "./auth-profiles/runtime-snapshots.js";
 import { runIsolatedCompletion } from "./isolated-completion.js";
+import { runWithOperatorModelRequest } from "./operator-model-policy.js";
 import { resetPreparedModelRuntimeSnapshotsForTest } from "./prepared-model-runtime.test-support.js";
 import { ModelRegistry } from "./sessions/model-registry.js";
+import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 it.for(["overlap", "callback-tail", "cancel-tail", "auth-tail", "auth-failure"] as const)(
   "retains standalone isolated completion resources through %s",
@@ -341,6 +348,293 @@ it.for(["overlap", "callback-tail", "cancel-tail", "auth-tail", "auth-failure"] 
       await new Promise<void>((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
       });
+      roots.cleanup();
+    }
+  },
+);
+
+it.each(["foreground", "finite-model", "staff", "revoked", "deadline", "cancelled"] as const)(
+  "keeps isolated %s authority through a real provider callback and SDK producer",
+  async (mode) => {
+    const roots = createSyncSuiteTempRootTracker("isolated-foreground-producer");
+    const root = fs.realpathSync(roots.makeTempDir());
+    const providerDir = path.join(root, "provider");
+    fs.mkdirSync(providerDir);
+    const fixture = createColdPluginFixture({
+      rootDir: providerDir,
+      pluginId: "isolated-producer-fixture",
+      providerId: "isolated-producer-provider",
+    });
+    const sessionKey = "agent:main:isolated-provider-event";
+    const entered = createDeferred();
+    const attemptProducer = createDeferred();
+    const attempted = createDeferred();
+    const finishCallback = createDeferred();
+    const owner = new AsyncWorkScope();
+    const source = new AbortController();
+    const caller = new AbortController();
+    const deadline = Date.now() + 60_000;
+    const activeHolds = new Set<object>();
+    const holds: Array<{ token: object; release: () => void }> = [];
+    let callbackEntered = false;
+    let callbackFinished = false;
+    let lostAuthorityDuringCallback = false;
+    const retain = vi.fn(() => {
+      const token = {};
+      activeHolds.add(token);
+      const release = vi.fn(() => {
+        activeHolds.delete(token);
+        if (callbackEntered && !callbackFinished && activeHolds.size === 0) {
+          lostAuthorityDuringCallback = true;
+        }
+      });
+      holds.push({ token, release });
+      return release;
+    });
+    const allowed = mode === "finite-model" || mode === "staff";
+    const authority = createAdmittedRunOperatorAuthority({
+      profileId: "isolated-producer-person",
+      scopes: ["operator.sessions.write"],
+      ...(!allowed
+        ? {
+            executionPolicy: "foreground-only" as const,
+            foregroundRunId: "isolated-turn",
+            foregroundDeadlineAt: deadline,
+          }
+        : {}),
+      ...(mode === "finite-model"
+        ? { permissions: { models: { allow: [`${fixture.providerId}/isolated-model`] } } }
+        : {}),
+      signal: source.signal,
+      assertCurrent() {},
+      retain,
+    });
+    const callbackWork: Promise<void>[] = [];
+    const callback = vi.fn((enqueue: () => boolean) => {
+      const work = (async () => {
+        callbackEntered = true;
+        expect(activeHolds.size).toBeGreaterThan(0);
+        expect(getGatewayToolCallerIdentity()).toBeUndefined();
+        expect(getPluginRuntimeGatewayRequestScope()?.client ?? null).toBeNull();
+        expect(runWithOperatorModelRequest(undefined, (original) => original?.source)).toBe(
+          authority.source,
+        );
+        entered.resolve();
+        await attemptProducer.promise;
+        const clock =
+          mode === "deadline" ? vi.spyOn(Date, "now").mockReturnValue(deadline) : undefined;
+        try {
+          if (allowed) {
+            expect(enqueue()).toBe(true);
+          } else {
+            expect(enqueue).toThrow(
+              mode === "revoked"
+                ? /original provider source revoked/
+                : mode === "deadline"
+                  ? /deadline has expired/
+                  : /foreground turn only/,
+            );
+          }
+        } finally {
+          clock?.mockRestore();
+          attempted.resolve();
+          await finishCallback.promise;
+          callbackFinished = true;
+        }
+      })();
+      callbackWork.push(work);
+      return work;
+    });
+    const globalKey = `__isolatedProducer_${path.basename(root)}`;
+    Object.defineProperty(globalThis, globalKey, { configurable: true, value: callback });
+    let requests = 0;
+    const server = createServer((request, response) => {
+      request.resume();
+      requests++;
+      writeOpenAiResponsesSse(response, [
+        {
+          id: "isolated-producer-response",
+          object: "chat.completion.chunk",
+          model: "isolated-model",
+          choices: [{ index: 0, delta: { content: "accepted" }, finish_reason: "stop" }],
+        },
+      ]);
+    });
+    const calls: Promise<unknown>[] = [];
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(0, "127.0.0.1", () => {
+          server.removeListener("error", reject);
+          resolve();
+        });
+      });
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        throw new Error("Isolated producer fixture has no TCP port");
+      }
+      const baseUrl = `http://127.0.0.1:${address.port}/v1`;
+      fs.writeFileSync(
+        fixture.runtimeSource,
+        `module.exports = { id: ${JSON.stringify(fixture.pluginId)}, register(api) {
+        api.registerProvider({
+          id: ${JSON.stringify(fixture.providerId)}, label: "Isolated producer", auth: [],
+          resolveModelRequestBindingSupport({ model, transport }) {
+            return model.provider === ${JSON.stringify(fixture.providerId)} && model.id === "isolated-model" &&
+              model.api === "openai-completions" && model.baseUrl === ${JSON.stringify(baseUrl)} && transport === "sse"
+              ? { wrapSimpleCompletionStreamFn: "preserves-delegate" } : undefined;
+          },
+          wrapSimpleCompletionStreamFn({ streamFn }) {
+            const wrapped = (model, context, options) => streamFn(model, context, { ...options,
+              onResponse: async (response, responseModel) => {
+                await options?.onResponse?.(response, responseModel);
+                await globalThis[${JSON.stringify(globalKey)}](() => api.runtime.system.enqueueSystemEvent("provider callback event", { sessionKey: ${JSON.stringify(sessionKey)} }));
+              }
+            });
+            return Object.assign(wrapped, { modelRequestBinding: streamFn.modelRequestBinding });
+          }
+        });
+      } };`,
+      );
+      const config: OpenClawConfig = {
+        agents: {
+          defaults: {
+            workspace: root,
+            model: `${fixture.providerId}/isolated-model`,
+            models: { [`${fixture.providerId}/isolated-model`]: { params: { transport: "sse" } } },
+          },
+        },
+        models: {
+          providers: {
+            [fixture.providerId]: {
+              api: "openai-completions",
+              apiKey: "synthetic-isolated-key",
+              baseUrl,
+              models: [
+                {
+                  id: "isolated-model",
+                  name: "Isolated model",
+                  reasoning: false,
+                  input: ["text"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 8192,
+                  maxTokens: 1024,
+                },
+              ],
+            },
+          },
+        },
+        plugins: {
+          load: { paths: [fixture.rootDir] },
+          slots: { memory: "none" },
+          entries: { [fixture.pluginId]: { enabled: true } },
+        },
+      };
+      await withEnvAsync(
+        {
+          ...createColdPluginHermeticEnv(root, { bundledPluginsDir: roots.makeTempDir() }),
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+          OPENCLAW_STATE_DIR: path.join(root, "state"),
+        },
+        async () => {
+          expect(peekSystemEventsFromSdk(sessionKey)).toEqual([]);
+          const pending = owner.run(() =>
+            runIsolatedCompletion({
+              config,
+              operatorAuthority: authority,
+              provider: fixture.providerId,
+              model: "isolated-model",
+              agentId: "main",
+              agentHarnessRuntimeOverride: "openclaw",
+              systemPrompt: "Return a short reply.",
+              prompt: "Fixture input",
+              timeoutMs: 10_000,
+              abortSignal: caller.signal,
+            }),
+          );
+          calls.push(pending);
+          const cancellation = new Error("isolated caller stopped");
+          const checked =
+            mode === "cancelled"
+              ? expect(pending).rejects.toBe(cancellation)
+              : mode === "revoked" || mode === "deadline"
+                ? expect(pending).rejects.toMatchObject({ code: "OPERATOR_MODEL_POLICY_DENIED" })
+                : expect(pending).resolves.toMatchObject({
+                    text: "accepted",
+                    owner: { kind: "harness", id: "openclaw" },
+                  });
+          calls.push(checked);
+          try {
+            await Promise.race([
+              entered.promise,
+              pending.then(() => {
+                throw new Error("Completion missed its provider callback");
+              }),
+            ]);
+            expect(requests).toBe(1);
+            expect(callback).toHaveBeenCalledOnce();
+            expect(retain.mock.calls.length).toBeGreaterThan(0);
+            expect(activeHolds.size).toBeGreaterThan(0);
+            expect(lostAuthorityDuringCallback).toBe(false);
+            if (mode === "revoked") {
+              source.abort(new Error("original provider source revoked"));
+            }
+            if (mode === "cancelled") {
+              caller.abort(cancellation);
+              await checked;
+              expect(callbackFinished).toBe(false);
+              expect(activeHolds.size).toBeGreaterThan(0);
+              expect(lostAuthorityDuringCallback).toBe(false);
+            }
+            attemptProducer.resolve();
+            await Promise.race([attempted.promise, Promise.all(callbackWork)]);
+            expect(peekSystemEventsFromSdk(sessionKey)).toEqual(
+              allowed ? ["provider callback event"] : [],
+            );
+            expect(callbackFinished).toBe(false);
+            expect(activeHolds.size).toBeGreaterThan(0);
+            expect(lostAuthorityDuringCallback).toBe(false);
+            finishCallback.resolve();
+            await Promise.all(callbackWork);
+            await checked;
+            await owner.drain();
+            expect(callbackFinished).toBe(true);
+            expect(lostAuthorityDuringCallback).toBe(false);
+            expect(activeHolds.size).toBe(0);
+            expect(holds).toHaveLength(retain.mock.calls.length);
+            for (const hold of holds) {
+              expect(hold.release).toHaveBeenCalledOnce();
+            }
+            expect(requests).toBe(1);
+          } finally {
+            caller.abort(cancellation);
+            attemptProducer.resolve();
+            finishCallback.resolve();
+            await Promise.allSettled(calls);
+            await Promise.allSettled(callbackWork);
+            await owner.drain();
+            drainSystemEventsFromSdk(sessionKey);
+          }
+        },
+      );
+    } finally {
+      caller.abort();
+      attemptProducer.resolve();
+      finishCallback.resolve();
+      await Promise.allSettled(calls);
+      await Promise.allSettled(callbackWork);
+      await owner.drain();
+      await resetPreparedModelRuntimeSnapshotsForTest();
+      clearRuntimeAuthProfileStoreSnapshots();
+      clearPluginMetadataLifecycleCaches();
+      resetPluginLoaderTestStateForTest();
+      Reflect.deleteProperty(globalThis, globalKey);
+      if (server.listening) {
+        server.closeAllConnections();
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
       roots.cleanup();
     }
   },

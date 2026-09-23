@@ -1,4 +1,4 @@
-import type { ApiRegistry } from "../api-registry.js";
+import type { ApiRegistry, ModelRequestBindingLeafSupport } from "../api-registry.js";
 // Built-in provider registration installs lazy protocol adapters.
 import { getAiTransportHost } from "../host.js";
 import type {
@@ -84,6 +84,7 @@ function createLazyRegistration<TApi extends Api, TOptions extends StreamOptions
   api: TApi,
   importModule: () => Promise<TModule>,
   select: (module: TModule) => ProviderStreams<TApi, TOptions>,
+  support?: ModelRequestBindingLeafSupport,
 ): RegisterBuiltIn {
   let streamsPromise: Promise<ProviderStreams<TApi, TOptions>> | undefined;
   const load = () => (streamsPromise ??= importModule().then(select));
@@ -93,9 +94,24 @@ function createLazyRegistration<TApi extends Api, TOptions extends StreamOptions
     (streams) => streams.streamSimple,
   );
   return (registry) => {
-    registry.registerApiProvider({ api, stream, streamSimple }, BUILT_IN_API_PROVIDER_SOURCE_ID);
+    registry.registerApiProvider(
+      {
+        api,
+        stream,
+        streamSimple,
+        ...(support
+          ? { modelRequestBindingSupport: { stream: support, streamSimple: support } }
+          : {}),
+      },
+      BUILT_IN_API_PROVIDER_SOURCE_ID,
+    );
   };
 }
+
+const sseModelRequestBinding: ModelRequestBindingLeafSupport = Object.freeze({
+  contract: "wire-model-v1",
+  transports: Object.freeze(["sse"] as const),
+});
 
 const registerBuiltIns: RegisterBuiltIn[] = [
   // Registration is transport-free; each lazy adapter owns its fetch or construction unwrap.
@@ -111,6 +127,7 @@ const registerBuiltIns: RegisterBuiltIn[] = [
       stream: module.streamOpenAICompletions,
       streamSimple: module.streamSimpleOpenAICompletions,
     }),
+    sseModelRequestBinding,
   ),
   createLazyRegistration(
     "mistral-conversations",
@@ -124,6 +141,7 @@ const registerBuiltIns: RegisterBuiltIn[] = [
       stream: module.streamOpenAIResponses,
       streamSimple: module.streamSimpleOpenAIResponses,
     }),
+    sseModelRequestBinding,
   ),
   createLazyRegistration(
     "azure-openai-responses",
@@ -132,6 +150,7 @@ const registerBuiltIns: RegisterBuiltIn[] = [
       stream: module.streamAzureOpenAIResponses,
       streamSimple: module.streamSimpleAzureOpenAIResponses,
     }),
+    sseModelRequestBinding,
   ),
   createLazyRegistration(
     "openai-chatgpt-responses",

@@ -1,6 +1,7 @@
 import { resolveSandboxWorkspaceAuthority } from "../../agents/sandbox/workspace-authority.js";
 // Plugin runtime entrypoint assembles runtime helpers available to activated plugins.
 import { getRuntimeConfig } from "../../config/config.js";
+import { runWithDecisionOperatorAuthority } from "../../decisions/operator-authority.js";
 import {
   listImageGenerationProviders,
   listMusicGenerationProviders,
@@ -213,8 +214,10 @@ export const createPluginRuntime: PluginRuntimeFactory = (
     // always see the same version the CLI reports, avoiding API-version drift.
     version: VERSION,
     decisions: {
-      evaluate: async (...args) =>
-        (await import("../../decisions/runtime.js")).evaluateDecision(...args),
+      evaluate: (...args) =>
+        runWithDecisionOperatorAuthority(async () =>
+          (await import("../../decisions/runtime.js")).evaluateDecision(...args),
+        ),
     },
     gateway: _options.gateway ?? createRuntimeGateway(),
     config: base.config,

@@ -6,6 +6,8 @@ import {
   isAnthropicServerToolClearingEnabled,
   resolveCompactionReplayEligibility,
 } from "@openclaw/ai/transports";
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
+import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 import type { ModelCompatConfig } from "../../../config/types.models.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
 import { createCodexNativeWebSearchWrapper } from "../../../llm/providers/stream-wrappers/openai.js";
@@ -36,6 +38,7 @@ import {
   resolveAgentTransportOverride,
   resolveExplicitSettingsTransport,
   resolvePreparedExtraParams,
+  resolveSupportedTransport,
 } from "../extra-params.js";
 import { log } from "../logger.js";
 import type { PromptCacheRequestObservation } from "../prompt-cache-request-observer.js";
@@ -67,6 +70,7 @@ import {
   resolveAttemptStreamAuthProfileId,
   resolveAttemptToolPolicyMessageProvider,
 } from "./attempt-run-decisions.js";
+import type { EmbeddedAttemptSetup } from "./attempt-setup.js";
 import { appendAttemptCacheTtlIfNeeded } from "./attempt-thread-helpers.js";
 import {
   flushSessionManagerTranscript,
@@ -458,6 +462,7 @@ export async function prepareEmbeddedAttemptTransport(input: {
   getProviderRuntimeHandle: () => ProviderRuntimePluginHandle;
   sandboxSessionKey: string;
   sandbox?: SandboxContext | null;
+  readEnvironment?: EmbeddedAttemptSetup["readEnvironment"];
   codeModeControlsEnabled: boolean;
   providerPromptState: {
     state: ProviderPromptState;
@@ -508,37 +513,52 @@ export async function prepareEmbeddedAttemptTransport(input: {
       model: attempt.model,
       resolvedTransport,
     });
+  const agentTransportOverride = resolveAgentTransportOverride({
+    settingsManager: input.settingsManager,
+    effectiveExtraParams,
+  });
+  const effectiveAgentTransport = agentTransportOverride ?? session.agent.transport;
+  const preparedTransport = resolveSupportedTransport(effectiveAgentTransport);
   const providerStreamFn = registerProviderStreamForModel({
+    operatorAuthority,
+    preparedExtraParams: effectiveExtraParams,
+    preparedTransport,
     model: attempt.model,
     cfg: attempt.config,
     agentDir: input.agentDir,
     workspaceDir: input.workspaceDir,
   });
-  const directProviderStreamFn = providerStreamFn
-    ? wrapStreamFnWithMessageTransform(
-        providerStreamFn,
-        (messages) => messages,
-        async ({ context, ...provider }) => {
-          assertRunCurrent?.();
-          const prepared = await materializeProviderContext({
-            ...provider,
-            context,
-            workspaceDir: input.workspaceDir,
-            agentWorkspaceDir: attempt.workspaceDir,
-            workspaceOnly: input.workspaceOnly,
-            localRoots: input.workspaceOnly
-              ? undefined
-              : getAgentScopedMediaLocalRoots(attempt.config ?? {}, input.sessionAgentId),
-            onCurrentTurnImageFailure: input.onCurrentTurnImageFailure,
-            sandbox:
-              input.sandbox?.enabled && input.sandbox.fsBridge
-                ? { root: input.sandbox.workspaceDir, bridge: input.sandbox.fsBridge }
-                : undefined,
-          });
-          assertRunCurrent?.();
-          return prepared;
-        },
-      )
+  const directProviderStreamFn: StreamFn | undefined = providerStreamFn
+    ? inheritModelRequestBinding<StreamFn>((model, context, options) => {
+        const environment = input.readEnvironment?.();
+        const sandbox = environment ? environment.sandbox : input.sandbox;
+        return wrapStreamFnWithMessageTransform(
+          providerStreamFn,
+          (messages) => messages,
+          async ({ context: providerContext, ...provider }) => {
+            assertRunCurrent?.();
+            environment?.assertCurrent();
+            const prepared = await materializeProviderContext({
+              ...provider,
+              context: providerContext,
+              workspaceDir: input.workspaceDir,
+              agentWorkspaceDir: attempt.workspaceDir,
+              workspaceOnly: input.workspaceOnly,
+              localRoots: input.workspaceOnly
+                ? undefined
+                : getAgentScopedMediaLocalRoots(attempt.config ?? {}, input.sessionAgentId),
+              onCurrentTurnImageFailure: input.onCurrentTurnImageFailure,
+              sandbox:
+                sandbox?.enabled && sandbox.fsBridge
+                  ? { root: sandbox.workspaceDir, bridge: sandbox.fsBridge }
+                  : undefined,
+            });
+            assertRunCurrent?.();
+            environment?.assertCurrent();
+            return prepared;
+          },
+        )(model, context, options);
+      }, providerStreamFn)
     : undefined;
   const transportApiKey = await resolveEmbeddedAgentApiKey({
     provider: attempt.model.provider,
@@ -627,6 +647,8 @@ export async function prepareEmbeddedAttemptTransport(input: {
     resolvedTransport,
     {
       preparedExtraParams: effectiveExtraParams,
+      preparedTransport,
+      operatorAuthority,
       nativeWebSearchPolicyContext,
     },
   );
@@ -646,11 +668,6 @@ export async function prepareEmbeddedAttemptTransport(input: {
     attempt.model.api,
     attempt.modelId,
   );
-  const agentTransportOverride = resolveAgentTransportOverride({
-    settingsManager: input.settingsManager,
-    effectiveExtraParams,
-  });
-  const effectiveAgentTransport = agentTransportOverride ?? session.agent.transport;
   if (agentTransportOverride && session.agent.transport !== agentTransportOverride) {
     const previousTransport = session.agent.transport;
     log.debug(

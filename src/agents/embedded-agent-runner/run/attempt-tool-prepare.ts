@@ -44,6 +44,7 @@ import type {
   CronToolsAllowCaptureRef,
 } from "../../tools/cron-tool.js";
 import { log } from "../logger.js";
+import { rebindSandboxCodeModeSkills } from "../skill-runtime.js";
 import { resolveAttemptToolPolicyMessageProvider } from "./attempt-run-decisions.js";
 import type { EmbeddedAttemptSetup } from "./attempt-setup.js";
 import { resolveAttemptSpawnWorkspaceDir } from "./attempt-thread-helpers.js";
@@ -161,7 +162,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   const skillInstructionDeliveryCache = createSkillInstructionDeliveryCache();
   const toolSearchCatalogRef = toolSurfaceRuntime.toolSearchCatalogRef;
   const nestedToolActivities: NestedToolActivity[] = [];
-  const codeModeSkills = toolPolicyRestrictsTools({ allow: attempt.toolsAllow })
+  let codeModeSkills = toolPolicyRestrictsTools({ allow: attempt.toolsAllow })
     ? []
     : params.codeModeSkills;
   const cronCreatorToolAllowlist: CronCreatorToolAllowlistEntry[] = [];
@@ -262,6 +263,9 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   const constructTools = (
     sessionPermissionPolicy: PreparedSessionPermissionPolicy | undefined,
     abortSignal: AbortSignal,
+    sandbox = params.setup.sandbox,
+    skills = codeModeSkills,
+    execOverrides = attempt.execOverrides,
   ) => {
     const constructedToolsRaw = !shouldConstructTools
       ? []
@@ -273,7 +277,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             agentId: params.setup.sessionAgentId,
             ...buildConversationContext(),
             exec: {
-              ...attempt.execOverrides,
+              ...execOverrides,
               ...(scopeKey ? { scopeKey, allowBackground: false } : {}),
               ...(sessionPermissionPolicy
                 ? { mode: resolveSessionPermissionExecMode(sessionPermissionPolicy) }
@@ -282,7 +286,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
               elevated: attempt.bashElevated,
               reviewTranscript: params.reviewTranscript,
             },
-            sandbox: params.setup.sandbox,
+            sandbox,
             stagedMediaPaths: resolveStagedInputMediaPaths(attempt.media),
             sessionPermissionPolicy,
             channelContext: attempt.channelContext,
@@ -293,7 +297,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             conversationRecall: attempt.conversationRecall,
             oneShotCliRun: attempt.oneShotCliRun,
             toolSearchCatalogRef,
-            codeModeSkills,
+            codeModeSkills: skills,
             preparedModelRuntime: attempt.preparedModelRuntime,
             requireWorkspaceOnly: attempt.requireWorkspaceOnly,
             sessionReadScopeKey: attempt.sessionReadScopeKey,
@@ -374,6 +378,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   const releaseToolGeneration = (reason: string) => generations.release(reason);
   runCleanups.push(releaseToolGeneration);
   let toolsRaw: ReturnType<typeof constructTools>;
+  let refreshOwner: object | undefined;
   try {
     toolsRaw = constructTools(params.setup.sessionPermissionPolicy, toolAbortSignal);
   } catch (error) {
@@ -402,12 +407,18 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     get toolAbortSignal() {
       return toolAbortSignal;
     },
-    refreshPermissionMode: (mode: SessionPermissionMode | null, revokeApprovals: () => void) => {
+    refreshPermissionMode: (
+      mode: SessionPermissionMode | null,
+      revokeApprovals: () => void,
+      publish?: (commit: () => void) => void,
+    ) => {
       // Revoke prepared calls before resolving approval waiters; their old
       // signal must already be closed when an allowed decision wakes them.
       generations.current.abort(createCodeModePermissionChangeReason());
       revokeApprovals();
       const retired = generations.retire("cancel");
+      const owner = {};
+      refreshOwner = owner;
       const replace = () => {
         params.runAbortController.signal.throwIfAborted();
         generations.replace();
@@ -419,16 +430,59 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         toolsRaw.splice(0, toolsRaw.length, ...nextTools);
       };
       if (foregroundOnly) {
-        return retired.then(() => {
+        return retired.then(async () => {
           generations.assertCleanupConfirmed();
-          replace();
+          params.runAbortController.signal.throwIfAborted();
+          if (refreshOwner !== owner) {
+            throw new Error("Permission replacement was superseded.");
+          }
+          const next = generations.replace();
+          try {
+            if (!next.nativeCustody) {
+              throw new Error("Foreground replacement lost its generation custody.");
+            }
+            const environment = await params.setup.prepareEnvironment(next.nativeCustody);
+            next.assertCurrent();
+            if (refreshOwner !== owner || generations.current !== next) {
+              throw new Error("Permission replacement was superseded.");
+            }
+            const nextSkills = environment.sandbox
+              ? rebindSandboxCodeModeSkills(codeModeSkills, environment.sandbox, next.assertCurrent)
+              : codeModeSkills;
+            const policy = mode ? { root: params.setup.sessionPermissionRoot, mode } : undefined;
+            const nextTools = constructTools(
+              policy,
+              next.signal,
+              environment.sandbox,
+              nextSkills,
+              baseExecOverrides,
+            );
+            const commit = () => {
+              next.assertCurrent();
+              if (refreshOwner !== owner || generations.current !== next) {
+                throw new Error("Permission replacement was superseded.");
+              }
+              params.setup.publishEnvironment(environment);
+              toolAbortSignal = next.signal;
+              attempt.permissionMode = mode ?? undefined;
+              attempt.execOverrides = { ...baseExecOverrides };
+              codeModeSkills = nextSkills;
+              toolsRaw.splice(0, toolsRaw.length, ...nextTools);
+            };
+            (publish ?? ((apply) => apply()))(commit);
+          } catch (error) {
+            await next.close("error");
+            throw error;
+          }
         });
       }
       replace();
       return undefined;
     },
     codeModeControlsEnabledForRun,
-    codeModeSkills,
+    get codeModeSkills() {
+      return codeModeSkills;
+    },
     computerContextEpoch,
     skillInstructionDeliveryCache,
     cronCreatorToolAllowlist,

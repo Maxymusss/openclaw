@@ -1,5 +1,6 @@
 import type { Model } from "../llm/types.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
+import { createPreparedModelRequestBindingReader } from "./prepared-model-request-binding.js";
 import { copyPreparedModelRuntimeAuthBindings } from "./prepared-model-runtime-auth.js";
 import { mergePreparedNativeCatalog } from "./prepared-model-runtime.full-catalog.js";
 import type { PreparedModelRuntimeSnapshot } from "./prepared-model-runtime.types.js";
@@ -55,6 +56,7 @@ export function capturePreparedModelRuntimeCatalog(
     ...capturedNative,
     readPublishedModels: () => models,
     routeModelResolutionMemo: cached.memo,
+    readModelRequestBinding: createPreparedModelRequestBindingReader(capturedNative, registry),
     createStores: () => {
       const authStorage = AuthStorage.inMemory(credentials);
       return { authStorage, modelRegistry: registry.fork(authStorage) };

@@ -32,6 +32,39 @@ describe("LLM API registry", () => {
     defaultApiRegistry.unregisterApiProviders(TEST_SOURCE_ID);
   });
 
+  it("copies method-specific support and retires it with the exact registration", () => {
+    const registry = createApiRegistry();
+    const transports: Array<"sse" | "websocket"> = ["sse"];
+    const support = { contract: "wire-model-v1" as const, transports };
+    registry.registerApiProvider(
+      {
+        api: "test-api",
+        stream: emptyStream,
+        streamSimple: emptyStream,
+        modelRequestBindingSupport: { streamSimple: support },
+      },
+      TEST_SOURCE_ID,
+    );
+    const registered = registry.getApiProvider("test-api");
+    transports.push("websocket");
+    expect(registered?.modelRequestBindingSupport?.stream).toBeUndefined();
+    expect(registered?.modelRequestBindingSupport?.streamSimple).toEqual({
+      contract: "wire-model-v1",
+      transports: ["sse"],
+    });
+    expect(Object.isFrozen(registered?.modelRequestBindingSupport?.streamSimple?.transports)).toBe(
+      true,
+    );
+    registry.registerApiProvider(
+      { api: "test-api", stream: emptyStream, streamSimple: emptyStream },
+      TEST_SOURCE_ID,
+    );
+    expect(registry.getApiProvider("test-api")).not.toBe(registered);
+    expect(registry.getApiProvider("test-api")?.modelRequestBindingSupport).toBeUndefined();
+    registry.unregisterApiProviders(TEST_SOURCE_ID);
+    expect(registry.getApiProvider("test-api")).toBeUndefined();
+  });
+
   it("rejects mismatched model API calls", () => {
     const registry = createApiRegistry();
     registry.registerApiProvider(

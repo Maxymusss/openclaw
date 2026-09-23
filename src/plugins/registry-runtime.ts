@@ -4,6 +4,7 @@ import { createChannelIngressDrain } from "../channels/message/ingress-drain.js"
 import { createChannelIngressQueue } from "../channels/message/ingress-queue.js";
 import { getRuntimeConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions/types.js";
+import { runWithDecisionOperatorAuthority } from "../decisions/operator-authority.js";
 import {
   createPluginBlobStore,
   type OpenBlobStoreOptions,
@@ -346,21 +347,22 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
         }
         if (prop === "decisions") {
           return {
-            evaluate: async (batch, options) => {
-              assertRuntimeCurrent();
-              const { evaluateDecisionInRegistry } = await import("../decisions/runtime.js");
-              assertRuntimeCurrent();
-              const result = await evaluateDecisionInRegistry(
-                batch,
-                options,
-                currentDecisionRegistry(),
-                getRuntimeConfig(),
-                record.id,
-              );
-              assertRuntimeCurrent();
-              options.signal.throwIfAborted();
-              return result;
-            },
+            evaluate: (batch, options) =>
+              runWithDecisionOperatorAuthority(async () => {
+                assertRuntimeCurrent();
+                const { evaluateDecisionInRegistry } = await import("../decisions/runtime.js");
+                assertRuntimeCurrent();
+                const result = await evaluateDecisionInRegistry(
+                  batch,
+                  options,
+                  currentDecisionRegistry(),
+                  getRuntimeConfig(),
+                  record.id,
+                );
+                assertRuntimeCurrent();
+                options.signal.throwIfAborted();
+                return result;
+              }),
           } satisfies PluginRuntime["decisions"];
         }
         if (prop === "llm") {

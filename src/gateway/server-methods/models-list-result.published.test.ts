@@ -1,6 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it, vi } from "vitest";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { modelCatalogRequestBindingSupported } from "../model-catalog-request-binding.js";
 import {
   readPreparedCatalog,
   registerGatewayModelCatalogPrivateAccess,
@@ -37,6 +38,48 @@ async function withPublishedCatalog(
 }
 
 describe("models.list published inventory", () => {
+  it("carries the private prepared support reader to request-local choices without serializing it", async () => {
+    await withPublishedCatalog(async (context) => {
+      const published = expectDefined(
+        await readPreparedCatalog(context, "main"),
+        "published owner",
+      );
+      let current = true;
+      const readModelRequestBinding = vi.fn(() => current);
+      const owner = { ...published, readModelRequestBinding };
+      registerGatewayModelCatalogPrivateAccess(context.loadGatewayModelCatalogSnapshot, {
+        loadDeferred: async () => {
+          throw new Error("ordinary projection must not discover providers");
+        },
+        readPrepared: async () => owner,
+      });
+      const result = await buildModelsListResult({
+        source: { kind: "gateway", context },
+        agentId: "main",
+        params: { view: "all" },
+      });
+      const choice = expectDefined(
+        result.models.find((model) => model.id === "published-model"),
+        "published choice",
+      );
+      expect(readModelRequestBinding).not.toHaveBeenCalled();
+      expect(modelCatalogRequestBindingSupported(choice)).toBe(true);
+      expect(readModelRequestBinding).toHaveBeenCalledWith(
+        expect.objectContaining({
+          provider: "ollama",
+          modelId: "published-model",
+          api: "openai-completions",
+        }),
+      );
+      // Exercise the JSON response boundary without evaluating its private support reader.
+      const wireJson = JSON.stringify(choice);
+      expect(readModelRequestBinding).toHaveBeenCalledOnce();
+      const serialized: object = JSON.parse(wireJson);
+      expect(modelCatalogRequestBindingSupported(serialized)).toBe(false);
+      current = false;
+      expect(modelCatalogRequestBindingSupported(choice)).toBe(false);
+    });
+  });
   it("refuses a retired generation and permits a later current read without discovery", async () => {
     await withPublishedCatalog(async (context) => {
       const first = expectDefined(

@@ -1,3 +1,4 @@
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 /** Runs prompt assembly, admission, submission, and prompt-local recovery. */
 import { formatErrorMessage } from "../../../infra/errors.js";
 import {
@@ -87,7 +88,7 @@ export async function runEmbeddedAttemptPromptPhase(
       compactionReplayEnabled,
     },
   } = sessionRuntime;
-  const { effectiveFsWorkspaceOnly, effectiveWorkspace, sandbox, sessionAgentId } = input.setup;
+  const { effectiveFsWorkspaceOnly, effectiveWorkspace, sessionAgentId } = input.setup;
   const {
     history: {
       contextEngineAssemblySucceeded,
@@ -265,25 +266,30 @@ export async function runEmbeddedAttemptPromptPhase(
       const { onModelRequest } = preparedStreamRuntime.cache;
       if (onModelRequest) {
         const streamFn = activeSession.agent.streamFn;
-        activeSession.agent.streamFn = (model, context, options) => {
-          // Observe canonical inputs before managed caches consume system/tools.
-          if (!activeSession.isCompacting) {
-            onModelRequest(model, context);
-          }
-          return streamFn(model, context, options);
-        };
+        activeSession.agent.streamFn = inheritModelRequestBinding<typeof streamFn>(
+          (model, context, options) => {
+            // Observe canonical inputs before managed caches consume system/tools.
+            if (!activeSession.isCompacting) {
+              onModelRequest(model, context);
+            }
+            return streamFn(model, context, options);
+          },
+          streamFn,
+        );
       }
     }
 
+    const environment = input.setup.readEnvironment();
     const imageResult = await prepareEmbeddedAttemptPromptExecution({
       mediaOwnerAgentId: sessionAgentId,
       effectiveFsWorkspaceOnly,
       effectiveWorkspace,
-      sandbox,
+      sandbox: environment.sandbox,
       attempt,
       prompt: promptContext.promptSubmission.prompt,
       skipPromptSubmission,
     });
+    environment.assertCurrent();
     const reserveTokens = settingsManager.getCompactionReserveTokens();
     const terminal = projectAgentRunAttemptTerminal(input.state.terminal);
     let state: PromptPreflightState = {

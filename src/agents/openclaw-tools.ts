@@ -8,14 +8,11 @@ import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.
 import { getActiveRuntimeWebToolsMetadataFromState } from "../secrets/runtime-web-tools-state.js";
 import { isCronRunSessionKey } from "../sessions/session-key-utils.js";
 import { resolveSkillWorkshopToolConstructionBlock } from "../skills/workshop/tool-availability.js";
+import type { AdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
 import { resolveAgentWorkspaceDir, resolveSessionAgentIds } from "./agent-scope.js";
 import { finalizeAgentToolAvailability } from "./agent-tool-availability.js";
 import { bindAssembledAgentToolActionDescriptor } from "./agent-tool-metadata.js";
-import {
-  type HookContext,
-  isToolWrappedWithBeforeToolCallHook,
-  wrapToolWithBeforeToolCallHook,
-} from "./agent-tools.before-tool-call.js";
+import { finalizeOpenClawToolHooks } from "./agent-tools.finalize.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
 import { filterToolsByClientCaps } from "./openclaw-tools.client-caps.js";
 import {
@@ -36,7 +33,6 @@ import { createOpenClawSwarmToolGroups } from "./openclaw-tools.swarm.js";
 import { resolveTranscriptsTool } from "./openclaw-tools.transcripts.js";
 import type { OpenClawToolsOptions } from "./openclaw-tools.types.js";
 import { resolveWidgetPresentationForRun } from "./openclaw-tools.widget-presentation.js";
-import { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
 import { createAskUserTool } from "./tools/ask-user-tool.js";
 import type { AnyAgentTool } from "./tools/common.js";
@@ -50,7 +46,6 @@ import { createCronTool } from "./tools/cron-tool.js";
 import { createDashboardTool } from "./tools/dashboard-tool.js";
 import { createDecisionTool } from "./tools/decision-tool.js";
 import { createEmbeddedCallGateway } from "./tools/embedded-gateway-stub.js";
-import { createGatewayToolCallerWrapper } from "./tools/gateway-caller-context.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
 import { createGitHubIdentityStatusTool } from "./tools/github-identity-status-tool.js";
 import { createGitHubPublishTool } from "./tools/github-publish-tool.js";
@@ -94,6 +89,14 @@ import { resolveWorkspaceRoot } from "./workspace-dir.js";
 
 export { filterToolsByClientCaps } from "./openclaw-tools.client-caps.js";
 export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentTool[] {
+  return createOpenClawToolsInternal(options);
+}
+
+/** Internal source plumbing applies only to Decision construction. */
+export function createOpenClawToolsInternal(
+  options?: OpenClawToolsOptions,
+  decisionAuthority?: AdmittedRunOperatorAuthority,
+): AnyAgentTool[] {
   const resolvedConfig = options?.config;
   const sessionConfig = options?.sessionConfigSource === "runtime" ? undefined : resolvedConfig;
   const activeProjectKeys = options?.preparedModelRuntime?.activeProjectKeys ?? [];
@@ -447,7 +450,10 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
             presenterContext: widgetPresentation.context,
           }),
         ]),
-    ...collectPresentOpenClawTools([heartbeatTool, createDecisionTool(sessionAgentId, options)]),
+    ...collectPresentOpenClawTools([
+      heartbeatTool,
+      createDecisionTool(sessionAgentId, options, decisionAuthority),
+    ]),
     createTtsTool({
       agentChannel: options?.agentChannel,
       config: resolvedConfig,
@@ -688,30 +694,11 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     bindAssembledAgentToolActionDescriptor(tool);
   }
 
-  const hookAgentId = options?.requesterAgentIdOverride ?? sessionAgentId;
-  const wrapGatewayCallerIdentity = createGatewayToolCallerWrapper(
-    hookAgentId,
-    options ? { ...options, agentAccountId: gatewayCallerAccountId } : options,
-  );
-
-  if (options?.wrapBeforeToolCallHook === false) {
-    return allTools.map(wrapGatewayCallerIdentity);
-  }
-  const defaultHookContext: HookContext = {
-    ...(hookAgentId ? { agentId: hookAgentId } : {}),
-    ...(resolvedConfig ? { config: resolvedConfig } : {}),
-    ...(options?.agentSessionKey ? { sessionKey: options.agentSessionKey } : {}),
-    ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
-    ...(options?.currentChannelId ? { channelId: options.currentChannelId } : {}),
-    loopDetection: resolveToolLoopDetectionConfig({ cfg: resolvedConfig, agentId: hookAgentId }),
-  };
-  const hookContext = { ...defaultHookContext, ...options?.beforeToolCallHookContext };
-  options?.recordToolPrepStage?.("openclaw-tools:tool-hooks");
-  return allTools
-    .map((tool) =>
-      isToolWrappedWithBeforeToolCallHook(tool)
-        ? tool
-        : wrapToolWithBeforeToolCallHook(tool, hookContext),
-    )
-    .map(wrapGatewayCallerIdentity);
+  return finalizeOpenClawToolHooks({
+    allTools,
+    options,
+    sessionAgentId,
+    resolvedConfig,
+    gatewayCallerAccountId,
+  });
 }

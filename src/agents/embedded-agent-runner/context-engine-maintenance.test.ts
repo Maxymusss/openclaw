@@ -1292,12 +1292,10 @@ describe("runContextEngineMaintenance", () => {
         const sessionKey = "agent:main:session-3";
         const sessionLane = resolveSessionLane(sessionKey);
         const events: string[] = [];
-        let releaseFirstForeground: (() => void) | undefined;
+        const releaseFirstForeground = createDeferred();
         const firstForeground = enqueueCommandInLane(sessionLane, async () => {
           events.push("foreground-1-start");
-          await new Promise<void>((resolve) => {
-            releaseFirstForeground = resolve;
-          });
+          await releaseFirstForeground.promise;
           events.push("foreground-1-end");
         });
         await Promise.resolve();
@@ -1338,10 +1336,7 @@ describe("runContextEngineMaintenance", () => {
           ).toBe("succeeded"),
         );
 
-        if (!releaseFirstForeground) {
-          throw new Error("Expected first foreground release callback to be initialized");
-        }
-        releaseFirstForeground();
+        releaseFirstForeground.resolve();
         await waitForAssertion(() =>
           expect(events).toEqual([
             "foreground-1-start",

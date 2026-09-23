@@ -65,7 +65,8 @@ export const modelsHandlers: GatewayRequestHandlers = {
       if (!resolved) {
         return;
       }
-      if (!access.allowsAgent(resolved.agentId)) {
+      access.assertCurrent();
+      if (!scope?.sessionEntry && !access.allowsAgent(resolved.agentId)) {
         throw new OperatorModelPolicyError(
           "Your operator role has no access to this agent's model catalog.",
         );
@@ -83,7 +84,8 @@ export const modelsHandlers: GatewayRequestHandlers = {
       });
       scope?.draftAccountSelection?.assertCurrent();
       scope?.assertCurrent?.();
-      if (!access.allowsAgent(resolved.agentId)) {
+      access.assertCurrent();
+      if (!scope?.sessionEntry && !access.allowsAgent(resolved.agentId)) {
         throw new OperatorModelPolicyError(
           "Your operator role has no access to this agent's model catalog.",
         );

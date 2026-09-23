@@ -147,11 +147,17 @@ export async function handleChatMetadataRequest(
     if (!scope) {
       return;
     }
+    access.assertCurrent();
+    if (!scope.sessionEntry && !access.allowsAgent(scope.agentId)) {
+      throw new OperatorModelPolicyError(
+        "Your operator role has no access to this agent's model catalog.",
+      );
+    }
     const metadata = await context.readChatMetadata(scope);
     scope.draftAccountSelection?.assertCurrent();
     scope.assertCurrent?.();
     access.assertCurrent();
-    if (!scope.sessionKey && !access.allowsAgent(scope.agentId)) {
+    if (!scope.sessionEntry && !access.allowsAgent(scope.agentId)) {
       throw new OperatorModelPolicyError(
         "Your operator role has no access to this agent's model catalog.",
       );

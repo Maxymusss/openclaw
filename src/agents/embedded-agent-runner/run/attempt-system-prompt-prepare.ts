@@ -63,17 +63,17 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
       systemPromptText: "",
     };
   }
-  const resolveSandboxInfo = () => {
+  const resolveSandboxInfo = (environment = params.setup.readEnvironment()) => {
     const sandboxInfoExecPolicy = resolveEmbeddedSandboxInfoExecPolicy({
       config: attempt.config,
       agentId: params.setup.sessionAgentId,
       sessionKey: attempt.sessionKey,
       permissionMode: attempt.permissionMode,
-      sandboxAvailable: params.setup.sandbox?.enabled === true,
+      sandboxAvailable: environment.sandbox?.enabled === true,
       execOverrides: attempt.execOverrides,
     });
     return buildEmbeddedSandboxInfo(
-      params.setup.sandbox ?? undefined,
+      environment.sandbox ?? undefined,
       attempt.bashElevated,
       sandboxInfoExecPolicy,
     );
@@ -330,6 +330,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
   params.setup.prepStages.mark("system-prompt");
 
   let toolPromptPreparation: {
+    environment: ReturnType<EmbeddedAttemptSetup["readEnvironment"]>;
     mode: EmbeddedRunAttemptParams["permissionMode"];
     tools: PromptTools;
     capabilities: string[];
@@ -337,6 +338,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
     permissionChanged: boolean;
     promise: Promise<(currentSystemPrompt: string) => string>;
   } = {
+    environment: params.setup.readEnvironment(),
     mode: attempt.permissionMode,
     tools: [...params.effectiveTools],
     capabilities: [...params.capabilityToolNames].toSorted(),
@@ -354,10 +356,12 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
       effectiveTools: PromptTools = params.effectiveTools,
       { permissionChanged = false }: { permissionChanged?: boolean } = {},
     ) => {
+      const environment = params.setup.readEnvironment();
       const mode = attempt.permissionMode;
       const capabilities = [...params.capabilityToolNames].toSorted();
       const catalogEntries = params.toolSearchCatalogRef?.current?.entries;
       if (
+        toolPromptPreparation.environment === environment &&
         toolPromptPreparation.mode === mode &&
         toolPromptPreparation.permissionChanged === permissionChanged &&
         toolPromptPreparation.catalogEntries === catalogEntries &&
@@ -371,7 +375,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
       // Prepare once per tool/policy generation. Memory supplements may await;
       // keep their immutable context separate until the model boundary accepts it.
       const tools = [...effectiveTools];
-      const refreshedSandboxInfo = resolveSandboxInfo();
+      const refreshedSandboxInfo = resolveSandboxInfo(environment);
       const embeddedSystemPrompt = {
         ...promptInputs.embeddedSystemPrompt,
         tools,
@@ -388,6 +392,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
             refreshedSandboxInfo?.enabled === true,
           ),
         );
+        environment.assertCurrent();
         const nextSystemPrompt = buildAttemptSystemPrompt({
           ...promptInputs,
           embeddedSystemPrompt,
@@ -396,6 +401,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
           ? `## Permission change\nThe operator changed workspace permissions to ${mode ?? "configured defaults"}. Continue the current task with the updated tools and permissions. Inspect interrupted actions before retrying; do not repeat completed actions.`
           : undefined;
         return (currentSystemPrompt: string) => {
+          environment.assertCurrent();
           if (params.isRawModelRun) {
             return currentSystemPrompt;
           }
@@ -416,6 +422,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
         };
       })();
       toolPromptPreparation = {
+        environment,
         mode,
         tools,
         capabilities,

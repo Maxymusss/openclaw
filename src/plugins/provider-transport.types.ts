@@ -2,7 +2,23 @@ import type { StreamFn } from "../../packages/agent-core/src/types.js";
 import type { ProviderLocalServiceReconcileContext } from "../agents/provider-local-service-reconcile.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ProviderRuntimeModel } from "./provider-runtime-model.types.js";
-import type { ProviderPrepareExtraParamsContext } from "./provider-runtime.types.js";
+import type {
+  ProviderExtraParamsForTransportContext,
+  ProviderPrepareExtraParamsContext,
+} from "./provider-runtime.types.js";
+
+/** Pure, bounded query for the already prepared physical route; no credentials or callbacks. */
+export type ProviderModelRequestBindingContext = Readonly<{
+  model: Readonly<Pick<ProviderRuntimeModel, "provider" | "id" | "api" | "baseUrl">>;
+  transport: ProviderExtraParamsForTransportContext["transport"];
+}>;
+
+/** Affirmative wrapper support promises no inference egress except through the supplied delegate. */
+export type ProviderModelRequestBindingResult = Readonly<{
+  createStreamFn?: "wire-model-v1";
+  wrapStreamFn?: "preserves-delegate";
+  wrapSimpleCompletionStreamFn?: "preserves-delegate";
+}>;
 
 /**
  * Provider-owned transport creation.
@@ -21,8 +37,8 @@ export type ProviderCreateStreamFnContext = {
 };
 
 /**
- * Provider-owned stream wrapper hook after OpenClaw applies its generic
- * transport-independent wrappers.
+ * Provider-owned stream wrapper hook before OpenClaw applies its final
+ * generic transport-independent adapters.
  *
  * Use this for provider-specific payload/header/model mutations that still run
  * through the normal `shared model runtime` stream path.

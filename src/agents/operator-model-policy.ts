@@ -2,9 +2,14 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { inheritModelRequestBinding, type Model } from "@openclaw/llm-core";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
-import { operatorModelAllowed } from "../shared/operator-permissions.js";
+import {
+  intersectOperatorPermissionCeilings,
+  operatorModelAllowed,
+} from "../shared/operator-permissions.js";
+import { intersectOperatorScopes } from "../shared/operator-scope-compat.js";
 import {
   assertAdmittedRunOperatorAuthority,
+  createAdmittedRunOperatorAuthority,
   type AdmittedRunOperatorAuthority,
 } from "./admitted-run-operator-authority.js";
 import type { ModelFallbackCandidate } from "./model-fallback.types.js";
@@ -14,8 +19,125 @@ const operatorModelRequest = new AsyncLocalStorage<{
   authority: AdmittedRunOperatorAuthority | undefined;
 }>();
 
+// Weak provenance only: compositions belong to their request, never a global pair cache.
+const composedAuthorityLeaves = new WeakMap<
+  AdmittedRunOperatorAuthority,
+  readonly AdmittedRunOperatorAuthority[]
+>();
+
+function retainAuthorityLeaves(leaves: readonly AdmittedRunOperatorAuthority[]): () => void {
+  const releases: Array<() => void> = [];
+  const release = () => {
+    const errors: unknown[] = [];
+    for (const close of releases.splice(0).toReversed()) {
+      try {
+        close();
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    if (errors.length) {
+      throw new AggregateError(errors, "Operator model source release failed.");
+    }
+  };
+  try {
+    for (const leaf of leaves) {
+      leaf.assertCurrent();
+      if (leaf.retain) {
+        releases.push(leaf.retain());
+      }
+    }
+  } catch (error) {
+    const failures = [error];
+    try {
+      release();
+    } catch (cleanupError) {
+      failures.push(cleanupError);
+    }
+    if (failures.length > 1) {
+      throw new AggregateError(failures, "Operator model source acquisition failed.", {
+        cause: error,
+      });
+    }
+    throw error;
+  }
+  return release;
+}
+
 function currentOperatorModelAuthority(authority: AdmittedRunOperatorAuthority | undefined) {
-  return authority ?? operatorModelRequest.getStore()?.authority;
+  const ambient = operatorModelRequest.getStore()?.authority;
+  if (!authority || !ambient || authority === ambient) {
+    return authority ?? ambient;
+  }
+  try {
+    assertAdmittedRunOperatorAuthority(authority);
+    assertAdmittedRunOperatorAuthority(ambient);
+  } catch (cause) {
+    throw new OperatorModelPolicyError("Operator model authority must be issued by the host.", {
+      cause,
+    });
+  }
+  const originalLeaves = composedAuthorityLeaves.get(ambient) ?? [ambient];
+  const suppliedLeaves = composedAuthorityLeaves.get(authority) ?? [authority];
+  if (suppliedLeaves.every((leaf) => originalLeaves.includes(leaf))) {
+    return ambient;
+  }
+  if (originalLeaves.every((leaf) => suppliedLeaves.includes(leaf))) {
+    return authority;
+  }
+  const leaves = Object.freeze([...new Set([...originalLeaves, ...suppliedLeaves])]);
+  let permissions = ambient.permissions;
+  let scopes = ambient.scopes;
+  let executionPolicy = ambient.executionPolicy;
+  let foregroundRunId = ambient.foregroundRunId;
+  let foregroundDeadlineAt = ambient.foregroundDeadlineAt;
+  for (const leaf of leaves) {
+    const originalGrant = ambient.gatewayAccessGrant;
+    const grant = leaf.gatewayAccessGrant;
+    if (
+      leaf.source !== ambient.source ||
+      leaf.profileId !== ambient.profileId ||
+      (originalGrant && grant
+        ? originalGrant.pluginId !== grant.pluginId || originalGrant.grantId !== grant.grantId
+        : originalGrant !== grant) ||
+      (foregroundRunId !== undefined &&
+        leaf.foregroundRunId !== undefined &&
+        foregroundRunId !== leaf.foregroundRunId)
+    ) {
+      throw new OperatorModelPolicyError(
+        "The retained model source does not belong to this request. Start a new request with current authority.",
+      );
+    }
+    permissions = intersectOperatorPermissionCeilings(permissions, leaf.permissions);
+    scopes = intersectOperatorScopes(scopes, leaf.scopes);
+    executionPolicy ??= leaf.executionPolicy;
+    foregroundRunId ??= leaf.foregroundRunId;
+    if (leaf.foregroundDeadlineAt !== undefined) {
+      foregroundDeadlineAt = Math.min(
+        foregroundDeadlineAt ?? leaf.foregroundDeadlineAt,
+        leaf.foregroundDeadlineAt,
+      );
+    }
+  }
+  const signals = [...new Set(leaves.flatMap((leaf) => (leaf.signal ? [leaf.signal] : [])))];
+  const combined = createAdmittedRunOperatorAuthority({
+    ...ambient,
+    permissions,
+    scopes,
+    executionPolicy,
+    foregroundRunId,
+    foregroundDeadlineAt,
+    signal: signals.length > 1 ? AbortSignal.any(signals) : signals[0],
+    // Call the original captures directly; resolving ALS here would compose recursively.
+    assertCurrent: () => {
+      for (const leaf of leaves) {
+        leaf.assertCurrent();
+      }
+    },
+    retain: () => retainAuthorityLeaves(leaves),
+  });
+  composedAuthorityLeaves.set(combined, leaves);
+  return combined;
 }
 
 /** Optional nested SDK calls keep the original ceiling; omission is not system provenance. */

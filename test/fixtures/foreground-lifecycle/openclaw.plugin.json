@@ -1,0 +1,11 @@
+{
+  "id": "foreground-lifecycle",
+  "providers": ["foreground-lifecycle"],
+  "activation": { "onStartup": true },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": { "origin": { "type": "string" } },
+    "required": ["origin"]
+  }
+}

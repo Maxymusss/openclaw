@@ -1,3 +1,4 @@
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 /**
  * Plugin-defined text replacement transforms for stream boundaries.
@@ -197,7 +198,7 @@ export function wrapStreamFnTextTransforms(params: {
   output?: PluginTextReplacement[];
   transformSystemPrompt?: boolean;
 }): StreamFn {
-  return (model, context, options) => {
+  return inheritModelRequestBinding<StreamFn>((model, context, options) => {
     const nextContext = transformStreamContextText(context, params.input, {
       systemPrompt: params.transformSystemPrompt,
     });
@@ -208,5 +209,5 @@ export function wrapStreamFnTextTransforms(params: {
       );
     }
     return wrapStreamTextTransforms(maybeStream, params.output);
-  };
+  }, params.streamFn);
 }

@@ -180,6 +180,14 @@ export function createFixture({ pendingPrompt = "hello", pendingImageCount = 1 }
     submissionInput.onSteeringAcknowledged();
   });
   mocks.handlePromptError.mockResolvedValue({});
+  const environment: ReturnType<PromptPhaseInput["setup"]["readEnvironment"]> = {
+    sandbox: null,
+    assertCurrent: vi.fn(),
+  };
+  const readEnvironment = vi.fn<PromptPhaseInput["setup"]["readEnvironment"]>(() => {
+    environment.assertCurrent();
+    return environment;
+  });
   const input = {
     attempt: {
       model: { id: "model-1", provider: "test" },
@@ -198,6 +206,7 @@ export function createFixture({ pendingPrompt = "hello", pendingImageCount = 1 }
       effectiveFsWorkspaceOnly: false,
       effectiveWorkspace: "/tmp/workspace",
       sandbox: null,
+      readEnvironment,
       sessionAgentId: "main",
     },
     diagnostics: { diagnosticTrace: {}, runTrace: {} },
@@ -268,6 +277,8 @@ export function createFixture({ pendingPrompt = "hello", pendingImageCount = 1 }
 
   return {
     input,
+    environment,
+    readEnvironment,
     order,
     promptState,
     sessionRuntimeState,

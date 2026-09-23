@@ -1,7 +1,7 @@
 /**
  * Registers caller-supplied custom API stream functions with the LLM registry.
  */
-import type { ApiRegistry } from "@openclaw/ai";
+import type { ApiRegistry, ModelRequestBindingLeafSupport } from "@openclaw/ai";
 import {
   inheritModelRequestBinding,
   type StreamFunction,
@@ -63,6 +63,7 @@ export function ensureCustomApiRegistered(
   registry: ApiRegistry,
   api: Api,
   streamFn: StreamFn,
+  support?: ModelRequestBindingLeafSupport,
 ): boolean {
   if (registry.getApiProvider(api)) {
     return false;
@@ -71,6 +72,9 @@ export function ensureCustomApiRegistered(
   registry.registerApiProvider(
     {
       api,
+      ...(support
+        ? { modelRequestBindingSupport: { stream: support, streamSimple: support } }
+        : {}),
       stream: inheritModelRequestBinding<StreamFunction>(
         (model, context, options) => adaptCustomStream(model, streamFn(model, context, options)),
         streamFn,

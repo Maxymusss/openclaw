@@ -256,11 +256,25 @@ ceiling. An allowed explicit selection can be used when the agent default is
 hidden. The agent allowlist governs catalog selection; it does not remove an
 otherwise authorized shared session's history or read access.
 
-**Release status:** finite runtime support is not yet qualified. The built-in
-runtime does not declare enforcement support. Provider-boundary proof and the
-authority policy for queued collector work across restart or rollback remain
-release requirements. Do not enable finite model ceilings for deployed visitors
-until those requirements are complete.
+A finite caller's catalog choices must also have a qualified physical provider
+route and captured config/default transport. Execution rechecks the actual
+session/settings transport. The standard OpenAI API-key route already defaults
+to SSE; no extra setting is needed for that default. Explicit `auto`, WebSocket,
+unresolved routes, and unqualified provider hooks remain unavailable. See
+[OpenAI transport settings](/providers/openai/advanced).
+
+Compaction uses its existing session/settings transport. If that selection is
+`auto`, it is refused before factory construction even when normal turns prepare
+SSE from model parameters. A policy error identifies the unsupported route;
+select a qualified SSE transport in the existing session settings before retrying.
+The caller's ceiling is retained, and OpenClaw does not silently switch transports
+or retry without it.
+
+The built-in OpenClaw runtime declares exact model enforcement. This declaration
+does not qualify another runtime or a provider's physical route. Native and worker
+runtimes without that support remain unavailable to finite callers. Interrupted
+foreground work is not resumed automatically; a fresh explicit request needs
+current authority, including after restart or rollback.
 
 ## Identity scope grants
 

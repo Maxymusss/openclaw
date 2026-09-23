@@ -11,6 +11,11 @@ import type {
   ProviderDecisionOutcome,
 } from "../decisions/types.js";
 import {
+  createContext,
+  createOperatorClient,
+} from "../gateway/server-plugin-in-process-dispatch.test-support.js";
+import { createRuntimePluginManifestLookup } from "../plugins/active-runtime-registry.js";
+import {
   clearCurrentPluginMetadataSnapshot,
   setCurrentPluginMetadataSnapshotState,
 } from "../plugins/current-plugin-metadata-state.js";
@@ -18,12 +23,23 @@ import { runPluginRegisterSyncInRegistry } from "../plugins/loader-module-runtim
 import { createPluginRecord } from "../plugins/loader-records.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
+import { bindPluginRuntimeArtifactSelection } from "../plugins/plugin-runtime-artifact-binding.js";
+import { resolvePluginRuntimeArtifactSelection } from "../plugins/plugin-runtime-artifact-selection.js";
 import { createTestPluginRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { createOpenClawCodingTools } from "./agent-tools.js";
+import { createAdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
+import { createOpenClawCodingTools, createOpenClawCodingToolsInternal } from "./agent-tools.js";
 import { isDecisionAssistanceEligible } from "./decision-assistance.js";
 import { createOpenClawTools } from "./openclaw-tools.js";
+import {
+  OperatorModelPolicyError,
+  runWithOperatorModelAuthority,
+  runWithOperatorModelRequest,
+} from "./operator-model-policy.js";
+import { withGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 const batch: DecisionBatch = {
   state: { message: "Please refund this order." },
@@ -101,7 +117,7 @@ function fixture(
     prepareDecisionProviderReload(builder.registry, new Set([record.id]));
     await getPluginInstance(record)?.dispose();
   });
-  return builder;
+  return { ...builder, api, record };
 }
 
 // Disable unrelated plugin tool discovery; the core factory and wrappers remain real.
@@ -129,6 +145,205 @@ afterEach(() => {
 });
 
 describe("core decision_evaluate registered flow", () => {
+  it.each(["model", "foreground"] as const)(
+    "refuses a retained staff tool in a request-only %s scope",
+    async (restriction) => {
+      const evaluate = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
+      const isReady = vi.fn(() => true);
+      fixture(evaluate, isReady);
+      const staff = createAdmittedRunOperatorAuthority({
+        profileId: "staff",
+        scopes: ["operator.admin"],
+        assertCurrent: () => {},
+      });
+      const retained = runWithOperatorModelRequest(staff, () => requiredTool());
+      const release = vi.fn();
+      const retain = vi.fn(() => release);
+      const guest = createAdmittedRunOperatorAuthority({
+        profileId: "guest",
+        scopes: ["operator.read"],
+        retain,
+        ...(restriction === "model"
+          ? { permissions: { models: { allow: ["fixture/default"] } } }
+          : { executionPolicy: "foreground-only" as const }),
+        assertCurrent: () => {},
+      });
+      const client = createOperatorClient({ profileId: "guest", scopes: ["operator.read"] });
+      client.internal = { operatorRunAuthority: guest };
+      const work = new AsyncWorkScope();
+      try {
+        await expect(
+          work.run(() =>
+            withPluginRuntimeGatewayRequestScope(
+              {
+                client,
+                context: createContext(),
+                isWebchatConnect: () => false,
+              },
+              () => retained.execute("request-only", batch),
+            ),
+          ),
+        ).rejects.toBeInstanceOf(OperatorModelPolicyError);
+      } finally {
+        await work.drain();
+      }
+      expect(retain).toHaveBeenCalledOnce();
+      expect(release).toHaveBeenCalledOnce();
+      expect(isReady).not.toHaveBeenCalled();
+      expect(evaluate).not.toHaveBeenCalled();
+      expect((await retained.execute("staff", batch)).details).toMatchObject({ status: "ok" });
+      expect(evaluate).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("does not replace ambient model authority in sibling plugin factories", async () => {
+    const builder = fixture();
+    const selected: OpenClawConfig = {
+      ...config,
+      plugins: { enabled: true, allow: [builder.record.id] },
+      tools: { allow: ["decision_evaluate", "decision_source_probe"] },
+    };
+    const artifact = {
+      source: builder.record.source,
+      rootDir: "/synthetic",
+      origin: builder.record.origin,
+      preferBuiltPluginArtifacts: false,
+    };
+    builder.record.contracts = {
+      ...builder.record.contracts,
+      tools: ["decision_source_probe"],
+    };
+    bindPluginRuntimeArtifactSelection(builder.record, {
+      preferBuiltPluginArtifacts: false,
+      runtimeEntry: resolvePluginRuntimeArtifactSelection({ ...artifact, entryKind: "runtime" }),
+    });
+    const snapshot = createPluginMetadataSnapshotFixture({
+      plugins: [{ id: builder.record.id, ...artifact, contracts: builder.record.contracts }],
+    });
+    setCurrentPluginMetadataSnapshotState(
+      snapshot,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "gateway",
+    );
+    setRuntimeConfigSnapshot(selected);
+    const guest = createAdmittedRunOperatorAuthority({
+      profileId: "guest",
+      scopes: ["operator.sessions.write"],
+      permissions: { models: { allow: [] } },
+      assertCurrent: () => {},
+    });
+    const staff = createAdmittedRunOperatorAuthority({
+      profileId: "staff",
+      scopes: ["operator.admin"],
+      assertCurrent: () => {},
+    });
+    let observed: typeof guest | undefined;
+    const factory = vi.fn(() => {
+      observed = runWithOperatorModelRequest(undefined, (original) => original);
+      return null;
+    });
+    runPluginRegisterSyncInRegistry(
+      (api) => api.registerTool(factory, { names: ["decision_source_probe"] }),
+      builder.api,
+      builder.registry,
+      builder.record.id,
+    );
+    expect(builder.registry.diagnostics).toEqual([]);
+    expect(builder.registry.tools).toContainEqual(
+      expect.objectContaining({
+        pluginId: builder.record.id,
+        names: ["decision_source_probe"],
+      }),
+    );
+    expect(
+      createRuntimePluginManifestLookup(builder.registry, snapshot.plugins)(builder.record.id),
+    ).toBe(builder.record);
+    await runWithOperatorModelAuthority(guest, async () => {
+      const tools = createOpenClawCodingToolsInternal(
+        {
+          config: selected,
+          sessionKey: "agent:main:main",
+        },
+        undefined,
+        staff,
+      );
+      expect(tools.map((tool) => tool.name)).not.toContain("decision_evaluate");
+      expect(factory).toHaveBeenCalledOnce();
+      expect(observed).toBe(guest);
+    });
+  });
+
+  it.each(["model", "foreground"] as const)(
+    "omits the tool under %s restrictions and refuses a retained staff tool in that scope",
+    async (restriction) => {
+      const evaluate = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
+      const isReady = vi.fn(() => true);
+      fixture(evaluate, isReady);
+      const staff = createAdmittedRunOperatorAuthority({
+        profileId: "staff",
+        scopes: ["operator.admin"],
+        assertCurrent: () => {},
+      });
+      const retained = runWithOperatorModelRequest(staff, () => requiredTool());
+      const guest = createAdmittedRunOperatorAuthority({
+        profileId: "guest",
+        scopes: ["operator.sessions.write"],
+        ...(restriction === "model"
+          ? { permissions: { models: { allow: ["fixture/default"] } } }
+          : { executionPolicy: "foreground-only" as const }),
+        assertCurrent: () => {},
+      });
+      await runWithOperatorModelAuthority(guest, async () => {
+        expect(assembled()).toBeUndefined();
+        expect(
+          createOpenClawCodingTools({
+            config: { ...config, tools: { allow: ["decision_evaluate"] } },
+            sessionKey: "agent:main:main",
+          }).map((tool) => tool.name),
+        ).not.toContain("decision_evaluate");
+        await expect(retained.execute("nested", batch)).rejects.toBeInstanceOf(
+          OperatorModelPolicyError,
+        );
+      });
+      expect(isReady).not.toHaveBeenCalled();
+      expect(evaluate).not.toHaveBeenCalled();
+      expect((await retained.execute("staff", batch)).details).toMatchObject({ status: "ok" });
+      expect(evaluate).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("retains the tool source across later unrestricted callers and lazy runtime loading", async () => {
+    const evaluate = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
+    const isReady = vi.fn(() => true);
+    fixture(evaluate, isReady);
+    const abort = new AbortController();
+    const cancellation = new Error("original tool source revoked");
+    const source = createAdmittedRunOperatorAuthority({
+      profileId: "original",
+      scopes: ["operator.sessions.write"],
+      signal: abort.signal,
+      assertCurrent: () => {},
+    });
+    const retained = await withGatewayToolCallerIdentity(
+      {
+        agentId: "main",
+        sessionKey: "agent:main:main",
+        operatorAuthority: source,
+      },
+      () => requiredTool(),
+    );
+    abort.abort(cancellation);
+    await expect(retained.execute("later", batch)).rejects.toMatchObject({
+      code: "OPERATOR_MODEL_POLICY_DENIED",
+      cause: cancellation,
+    });
+    expect(isReady).not.toHaveBeenCalled();
+    expect(evaluate).not.toHaveBeenCalled();
+  });
+
   it("keeps the explicit tool independent of automatic eligibility through Labs on/off transitions", async () => {
     const evaluate = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
     fixture(evaluate);

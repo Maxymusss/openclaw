@@ -16,6 +16,7 @@ import {
 } from "../shared/operator-permissions.js";
 import { resolveGatewayAgentSelectionState } from "./agent-list.js";
 import type { UserModelAccountSelection } from "./model-account-authority.js";
+import { modelCatalogRequestBindingSupported } from "./model-catalog-request-binding.js";
 import {
   resolveGatewayOperatorRoleActor,
   resolveOperatorPermissionCeiling,
@@ -126,7 +127,8 @@ export function captureOperatorModelCatalogAccess(
         operatorModelAllowed(ceiling, row.provider, row.id),
       )) {
         const runtimeChoices = model.runtimeChoices?.map((choice) =>
-          runtimeSupportsModelCeiling(choice.agentRuntime.id)
+          runtimeSupportsModelCeiling(choice.agentRuntime.id) &&
+          modelCatalogRequestBindingSupported(choice)
             ? choice
             : {
                 ...choice,
@@ -137,7 +139,8 @@ export function captureOperatorModelCatalogAccess(
         );
         projected.push({
           ...model,
-          ...(runtimeSupportsModelCeiling(model.agentRuntime?.id ?? "openclaw")
+          ...(runtimeSupportsModelCeiling(model.agentRuntime?.id ?? "openclaw") &&
+          modelCatalogRequestBindingSupported(model)
             ? {}
             : {
                 available: false,

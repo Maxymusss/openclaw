@@ -6,10 +6,10 @@
 
 import { HEARTBEAT_RESPONSE_TOOL_NAME } from "../auto-reply/heartbeat-tool-response.js";
 import { messageToolOwnsVisibleReply } from "../auto-reply/source-reply-delivery-mode.js";
+import { isOperatorDecisionRuntimeAllowed } from "../decisions/operator-authority.js";
 import { resolveEventSessionRoutingPolicy } from "../infra/event-session-routing.js";
 import { mergeGatewayAgentCliPath } from "../infra/openclaw-cli-shim.js";
 import { logWarn } from "../logger.js";
-import type { PluginHookToolRequesterContext } from "../plugins/hook-types.js";
 import { appendRuntimePluginToolGrant } from "../plugins/tool-grant-allowlist.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
@@ -22,7 +22,10 @@ import {
   bindAssembledAgentToolActionDescriptor,
   copyAgentToolMetadata,
 } from "./agent-tool-metadata.js";
-import { createCodingToolsGatewayCaller } from "./agent-tools.caller.js";
+import {
+  createCodingToolsGatewayCaller,
+  resolveCodingToolRequester,
+} from "./agent-tools.caller.js";
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
 import {
   filterToolsByMessageProvider,
@@ -56,7 +59,7 @@ import { resolveExecToolConfig } from "./lazy-exec-tool.js";
 import { resolveLocalModelLeanPreserveToolNames } from "./local-model-lean.js";
 import { createMemoryWriteProvenanceObserver } from "./memory-write-provenance.js";
 import { resolveOpenClawPluginToolsForOptions } from "./openclaw-plugin-tools.js";
-import { createOpenClawTools, filterToolsByClientCaps } from "./openclaw-tools.js";
+import { createOpenClawToolsInternal, filterToolsByClientCaps } from "./openclaw-tools.js";
 import { filterRequesterYieldTools } from "./openclaw-tools.requester-yield.js";
 import { applySwarmCollectorToolContract } from "./openclaw-tools.swarm.js";
 import { resolveSandboxFileIdentity } from "./sandbox/file-mutation-identity.js";
@@ -98,6 +101,7 @@ export function createOpenClawCodingToolsInternal(
   skillReadResources?: SkillSnapshot["resolvedSkills"],
   operatorAuthority?: AdmittedRunOperatorAuthority,
 ): AnyAgentTool[] {
+  const decisionAllowed = isOperatorDecisionRuntimeAllowed(operatorAuthority);
   const sandbox = options?.sandbox?.enabled ? options.sandbox : undefined;
   const isMemoryFlushRun = options?.trigger === "memory";
   if (isMemoryFlushRun && !options?.memoryFlushWritePath) {
@@ -518,133 +522,136 @@ export function createOpenClawCodingToolsInternal(
     ...(includeOpenClawTools
       ? mergeAgentRingZeroTools(
           ringZeroTools,
-          createOpenClawTools({
-            ...(options?.systemAgentTool ? { systemAgentTool: options.systemAgentTool } : {}),
-            sandboxBrowserBridgeUrl: sandbox?.browser?.bridgeUrl,
-            allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
-            agentSessionKey: options?.sessionKey,
-            runId: options?.runId,
-            ...(options?.questionPrompt ? { questionPrompt: options.questionPrompt } : {}),
-            requesterThinkingLevel: options?.requesterThinkingLevel,
-            requesterModel: options?.requesterModel,
-            sessionPermissionPolicy,
-            execSession: sessionPermissionPolicy
-              ? { permissionMode: sessionPermissionPolicy.mode }
-              : undefined,
-            execOverrides: {
-              host: effectiveExecPolicy.host,
-              mode: effectiveExecPolicy.mode,
-              security: effectiveExecPolicy.security,
-              ask: effectiveExecPolicy.ask,
-              node: options?.exec?.node ?? execConfig.node,
+          createOpenClawToolsInternal(
+            {
+              ...(options?.systemAgentTool ? { systemAgentTool: options.systemAgentTool } : {}),
+              sandboxBrowserBridgeUrl: sandbox?.browser?.bridgeUrl,
+              allowHostBrowserControl: sandbox ? sandbox.browserAllowHostControl : true,
+              agentSessionKey: options?.sessionKey,
+              runId: options?.runId,
+              ...(options?.questionPrompt ? { questionPrompt: options.questionPrompt } : {}),
+              requesterThinkingLevel: options?.requesterThinkingLevel,
+              requesterModel: options?.requesterModel,
+              sessionPermissionPolicy,
+              execSession: sessionPermissionPolicy
+                ? { permissionMode: sessionPermissionPolicy.mode }
+                : undefined,
+              execOverrides: {
+                host: effectiveExecPolicy.host,
+                mode: effectiveExecPolicy.mode,
+                security: effectiveExecPolicy.security,
+                ask: effectiveExecPolicy.ask,
+                node: options?.exec?.node ?? execConfig.node,
+              },
+              approvalReviewerDeviceIds: options?.approvalReviewerDeviceId
+                ? [options.approvalReviewerDeviceId]
+                : undefined,
+              runSessionKey: options?.runSessionKey,
+              agentChannel: resolveGatewayMessageChannel(
+                options?.messageChannel ?? options?.messageProvider,
+              ),
+              agentAccountId: options?.agentAccountId,
+              gatewayCallerAccountId: gatewayCaller.accountId,
+              gatewayCallerChannel: gatewayCaller.channel,
+              gatewayCallerLocal: gatewayCaller.local,
+              gatewayCallerScheduled: gatewayCaller.scheduled,
+              agentTo: options?.messageTo,
+              agentThreadId: options?.messageThreadId,
+              nativeChannelId: options?.nativeChannelId,
+              messageActionTurnCapability: options?.messageActionTurnCapability,
+              admitScheduledMessageInvocation: options?.messageActionTurnCapability
+                ? messageInvocationPolicy.admit
+                : undefined,
+              agentGroupId: options?.groupId ?? null,
+              agentGroupChannel: options?.groupChannel ?? null,
+              agentGroupSpace: options?.groupSpace ?? null,
+              agentMemberRoleIds: options?.memberRoleIds,
+              agentDir: options?.agentDir,
+              preparedModelRuntime: options?.preparedModelRuntime,
+              sandboxRoot,
+              sandboxContainerWorkdir: sandbox?.containerWorkdir,
+              sandboxFsBridge,
+              sandboxReadOnlyResourceMounts: sandbox?.readOnlyResourceMounts,
+              stagedMediaPaths: options?.stagedMediaPaths,
+              sandboxWorkspaceMediaReadAllowed,
+              fsPolicy,
+              workspaceDir: workspaceRoot,
+              spawnWorkspaceDir: capabilityProfile.workspace.spawnWorkspaceRoot,
+              // Sandboxes execute against copied roots, but accepted suggestions create host
+              // worktrees. Unsandboxed task-repo sessions must stay on their runtime cwd.
+              cwd: sandbox
+                ? (capabilityProfile.workspace.spawnWorkspaceRoot ?? runtimeRoot)
+                : runtimeRoot,
+              sandboxed: Boolean(sandbox),
+              config: options?.config,
+              sessionConfigSource: options?.sessionConfigSource,
+              sessionReadScopeKey: options?.sessionReadScopeKey,
+              webFetchHostnameAllowlistRef: options?.webFetchHostnameAllowlistRef,
+              webSearchEnabled: options?.webSearchEnabled,
+              clientCaps: options?.clientCaps,
+              pinnedWidgetAuthoring: options?.pinnedWidgetAuthoring,
+              gatewayUiCommandTarget: options?.gatewayUiCommandTarget,
+              toolBindings: options?.toolBindings,
+              pluginToolAllowlist,
+              pluginToolDenylist,
+              gatewayConfigReadAllowed: capabilityProfile.policy.gatewayConfigReadAllowed,
+              runtimeToolAllowlist: options?.runtimeToolAllowlist,
+              githubPublicationAvailable: options?.githubPublicationAvailable,
+              cronCreatorToolAllowlist,
+              cronCreatorToolAllowlistCaptureRef,
+              resolveCronCreatorToolAuthority: cronCreatorAuthorityResolver,
+              cronCreatorAuthorityUnavailableReason: options?.cronCreatorAuthorityUnavailableReason,
+              currentChannelId: options?.currentChannelId,
+              currentChatType: options?.chatType,
+              currentMessagingTarget: options?.currentMessagingTarget,
+              currentThreadTs: options?.currentThreadTs,
+              currentMessageId: options?.currentMessageId,
+              currentInboundAudio: options?.currentInboundAudio,
+              hasCurrentInboundAudio: options?.hasCurrentInboundAudio,
+              modelProvider: options?.modelProvider,
+              modelId: options?.modelId,
+              modelContextWindowTokens: options?.modelContextWindowTokens,
+              skillWorkshop: options?.skillWorkshop,
+              replyToMode: options?.replyToMode,
+              hasRepliedRef: options?.hasRepliedRef,
+              modelHasVision: options?.modelHasVision,
+              computerContextEpoch: options?.computerContextEpoch,
+              computerTransport:
+                options?.computerTransport === null
+                  ? null
+                  : (options?.computerTransport ??
+                    resolveSessionPlacementComputer(options?.operationalRunInstance)),
+              pairedNodeComputerUse: options?.pairedNodeComputerUse,
+              registerRunCleanup: options?.registerRunCleanup,
+              requireExplicitMessageTarget: options?.requireExplicitMessageTarget,
+              sourceReplyDeliveryMode: options?.sourceReplyDeliveryMode,
+              sourceReplyOnly,
+              taskSuggestionDeliveryMode: options?.taskSuggestionDeliveryMode,
+              inboundEventKind: options?.inboundEventKind,
+              disableMessageTool: options?.disableMessageTool || options?.swarmCollector,
+              swarmCollector: options?.swarmCollector,
+              swarmOutputSchema: options?.swarmOutputSchema,
+              enableHeartbeatTool,
+              disablePluginTools: !includePluginTools,
+              wrapBeforeToolCallHook: false,
+              ...(cronSelfRemoveOnlyJobId ? { cronSelfRemoveOnlyJobId } : {}),
+              requesterAgentIdOverride: executionAgentId,
+              requesterSenderId: options?.senderId,
+              senderIsOwner: options?.senderIsOwner,
+              authProfileStore: options?.authProfileStore,
+              sessionId: options?.sessionId,
+              conversationRecall: options?.conversationRecall,
+              oneShotCliRun: options?.oneShotCliRun,
+              inheritedToolAllowlist,
+              inheritedToolDenylist,
+              onYield: options?.onYield,
+              claimYieldCompletion: options?.claimYieldCompletion,
+              processScopeKey: scopeKey,
+              allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
+              recordToolPrepStage: options?.recordToolPrepStage,
             },
-            approvalReviewerDeviceIds: options?.approvalReviewerDeviceId
-              ? [options.approvalReviewerDeviceId]
-              : undefined,
-            runSessionKey: options?.runSessionKey,
-            agentChannel: resolveGatewayMessageChannel(
-              options?.messageChannel ?? options?.messageProvider,
-            ),
-            agentAccountId: options?.agentAccountId,
-            gatewayCallerAccountId: gatewayCaller.accountId,
-            gatewayCallerChannel: gatewayCaller.channel,
-            gatewayCallerLocal: gatewayCaller.local,
-            gatewayCallerScheduled: gatewayCaller.scheduled,
-            agentTo: options?.messageTo,
-            agentThreadId: options?.messageThreadId,
-            nativeChannelId: options?.nativeChannelId,
-            messageActionTurnCapability: options?.messageActionTurnCapability,
-            admitScheduledMessageInvocation: options?.messageActionTurnCapability
-              ? messageInvocationPolicy.admit
-              : undefined,
-            agentGroupId: options?.groupId ?? null,
-            agentGroupChannel: options?.groupChannel ?? null,
-            agentGroupSpace: options?.groupSpace ?? null,
-            agentMemberRoleIds: options?.memberRoleIds,
-            agentDir: options?.agentDir,
-            preparedModelRuntime: options?.preparedModelRuntime,
-            sandboxRoot,
-            sandboxContainerWorkdir: sandbox?.containerWorkdir,
-            sandboxFsBridge,
-            sandboxReadOnlyResourceMounts: sandbox?.readOnlyResourceMounts,
-            stagedMediaPaths: options?.stagedMediaPaths,
-            sandboxWorkspaceMediaReadAllowed,
-            fsPolicy,
-            workspaceDir: workspaceRoot,
-            spawnWorkspaceDir: capabilityProfile.workspace.spawnWorkspaceRoot,
-            // Sandboxes execute against copied roots, but accepted suggestions create host
-            // worktrees. Unsandboxed task-repo sessions must stay on their runtime cwd.
-            cwd: sandbox
-              ? (capabilityProfile.workspace.spawnWorkspaceRoot ?? runtimeRoot)
-              : runtimeRoot,
-            sandboxed: Boolean(sandbox),
-            config: options?.config,
-            sessionConfigSource: options?.sessionConfigSource,
-            sessionReadScopeKey: options?.sessionReadScopeKey,
-            webFetchHostnameAllowlistRef: options?.webFetchHostnameAllowlistRef,
-            webSearchEnabled: options?.webSearchEnabled,
-            clientCaps: options?.clientCaps,
-            pinnedWidgetAuthoring: options?.pinnedWidgetAuthoring,
-            gatewayUiCommandTarget: options?.gatewayUiCommandTarget,
-            toolBindings: options?.toolBindings,
-            pluginToolAllowlist,
-            pluginToolDenylist,
-            gatewayConfigReadAllowed: capabilityProfile.policy.gatewayConfigReadAllowed,
-            runtimeToolAllowlist: options?.runtimeToolAllowlist,
-            githubPublicationAvailable: options?.githubPublicationAvailable,
-            cronCreatorToolAllowlist,
-            cronCreatorToolAllowlistCaptureRef,
-            resolveCronCreatorToolAuthority: cronCreatorAuthorityResolver,
-            cronCreatorAuthorityUnavailableReason: options?.cronCreatorAuthorityUnavailableReason,
-            currentChannelId: options?.currentChannelId,
-            currentChatType: options?.chatType,
-            currentMessagingTarget: options?.currentMessagingTarget,
-            currentThreadTs: options?.currentThreadTs,
-            currentMessageId: options?.currentMessageId,
-            currentInboundAudio: options?.currentInboundAudio,
-            hasCurrentInboundAudio: options?.hasCurrentInboundAudio,
-            modelProvider: options?.modelProvider,
-            modelId: options?.modelId,
-            modelContextWindowTokens: options?.modelContextWindowTokens,
-            skillWorkshop: options?.skillWorkshop,
-            replyToMode: options?.replyToMode,
-            hasRepliedRef: options?.hasRepliedRef,
-            modelHasVision: options?.modelHasVision,
-            computerContextEpoch: options?.computerContextEpoch,
-            computerTransport:
-              options?.computerTransport === null
-                ? null
-                : (options?.computerTransport ??
-                  resolveSessionPlacementComputer(options?.operationalRunInstance)),
-            pairedNodeComputerUse: options?.pairedNodeComputerUse,
-            registerRunCleanup: options?.registerRunCleanup,
-            requireExplicitMessageTarget: options?.requireExplicitMessageTarget,
-            sourceReplyDeliveryMode: options?.sourceReplyDeliveryMode,
-            sourceReplyOnly,
-            taskSuggestionDeliveryMode: options?.taskSuggestionDeliveryMode,
-            inboundEventKind: options?.inboundEventKind,
-            disableMessageTool: options?.disableMessageTool || options?.swarmCollector,
-            swarmCollector: options?.swarmCollector,
-            swarmOutputSchema: options?.swarmOutputSchema,
-            enableHeartbeatTool,
-            disablePluginTools: !includePluginTools,
-            wrapBeforeToolCallHook: false,
-            ...(cronSelfRemoveOnlyJobId ? { cronSelfRemoveOnlyJobId } : {}),
-            requesterAgentIdOverride: executionAgentId,
-            requesterSenderId: options?.senderId,
-            senderIsOwner: options?.senderIsOwner,
-            authProfileStore: options?.authProfileStore,
-            sessionId: options?.sessionId,
-            conversationRecall: options?.conversationRecall,
-            oneShotCliRun: options?.oneShotCliRun,
-            inheritedToolAllowlist,
-            inheritedToolDenylist,
-            onYield: options?.onYield,
-            claimYieldCompletion: options?.claimYieldCompletion,
-            processScopeKey: scopeKey,
-            allowGatewaySubagentBinding: options?.allowGatewaySubagentBinding,
-            recordToolPrepStage: options?.recordToolPrepStage,
-          }),
+            operatorAuthority,
+          ),
         )
       : pluginToolsOnly),
     ...toolSearchTools,
@@ -713,7 +720,7 @@ export function createOpenClawCodingToolsInternal(
       swarmCollector: options?.swarmCollector,
       structuredOutputTool: swarmStructuredOutputTool,
     },
-  );
+  ).filter((tool) => decisionAllowed || tool.name !== "decision_evaluate");
   authorizedTools.forEach(bindAssembledAgentToolActionDescriptor);
   processToolAvailabilityRef.value = authorizedTools.some((tool) => tool.name === "process");
   if (shouldInheritEffectiveToolAllowlist) {
@@ -748,14 +755,7 @@ export function createOpenClawCodingToolsInternal(
   options?.recordToolPrepStage?.("authorization-policy");
   const turnSourceChannel = options?.messageChannel ?? options?.messageProvider;
   const turnSourceTo = options?.currentMessagingTarget ?? options?.currentChannelId;
-  const requester = {
-    ...(turnSourceChannel ? { channel: turnSourceChannel } : {}),
-    ...(options?.agentAccountId ? { accountId: options.agentAccountId } : {}),
-    ...(options?.senderId ? { senderId: options.senderId } : {}),
-    ...(options?.senderIsOwner !== undefined ? { senderIsOwner: options.senderIsOwner } : {}),
-    ...(options?.memberRoleIds?.length ? { roleIds: [...options.memberRoleIds] } : {}),
-  } satisfies PluginHookToolRequesterContext;
-  const hasRequester = Object.keys(requester).length > 0;
+  const requester = resolveCodingToolRequester(options);
   const hookContext = {
     agentId: executionAgentId,
     ...(options?.config ? { config: options.config } : {}),
@@ -772,7 +772,7 @@ export function createOpenClawCodingToolsInternal(
     trigger: options?.trigger,
     approvalReviewerDeviceId: options?.approvalReviewerDeviceId,
     channelId: options?.hookChannelId ?? options?.currentChannelId,
-    ...(hasRequester ? { requester } : {}),
+    ...(requester ? { requester } : {}),
     ...(turnSourceChannel ? { turnSourceChannel } : {}),
     ...(turnSourceTo ? { turnSourceTo } : {}),
     ...(options?.agentAccountId ? { turnSourceAccountId: options.agentAccountId } : {}),

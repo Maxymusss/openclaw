@@ -35,8 +35,8 @@ function installRawPolicy(policy: PluginGatewayAccessPolicy) {
   return registry;
 }
 
-it.each(["foreground-only", "unknown", null, false])(
-  "refuses an unqualified raw instance-free restriction %s at the host boundary",
+it.each(["unknown", null, false])(
+  "refuses an invalid raw instance-free restriction %s at the host boundary",
   async (restriction) => {
     await withOpenClawTestState({ label: "foreground-policy" }, async () => {
       const authorize = vi.fn(() =>
@@ -55,11 +55,40 @@ it.each(["foreground-only", "unknown", null, false])(
         GatewayOperatorAccessDeniedError,
       );
       expect(authorize).toHaveBeenCalledWith(
-        expect.objectContaining({ supportedExecutionPolicies: [] }),
+        expect.objectContaining({ supportedExecutionPolicies: ["foreground-only"] }),
       );
     });
   },
 );
+
+it("acknowledges foreground policy without replacing its original lifetime", async () => {
+  await withOpenClawTestState({ label: "foreground-policy-supported" }, async () => {
+    const grant = new AbortController();
+    const authorize = vi.fn<PluginGatewayAccessPolicy["authorize"]>((context) => {
+      expect(context.supportedExecutionPolicies).toEqual(["foreground-only"]);
+      expect(Object.isFrozen(context.supportedExecutionPolicies)).toBe(true);
+      return {
+        executionPolicy: "foreground-only",
+        signal: grant.signal,
+        assertCurrent: () => grant.signal.throwIfAborted(),
+      };
+    });
+    const registry = installRawPolicy({ authorize });
+    const profile = ensureProfileForEmail("foreground@example.test");
+    const authority = resolveGatewayOperatorAccessAuthority(profile.id, {});
+    expect(authorize).toHaveBeenCalledOnce();
+    expect(authority?.executionPolicy).toBe("foreground-only");
+    expect(authority?.gatewayAccessGrant).toBeUndefined();
+    expect(authority?.signal.aborted).toBe(false);
+    expect(() => authority?.assertCurrent()).not.toThrow();
+    registry.gatewayAccessPolicies.length = 0;
+    const revoked = new Error("original foreground access ended");
+    grant.abort(revoked);
+    expect(authority?.signal.aborted).toBe(true);
+    expect(authority?.signal.reason).toBe(revoked);
+    expect(() => authority?.assertCurrent()).toThrow(GatewayOperatorAccessDeniedError);
+  });
+});
 
 it("preserves unrestricted null access versus a non-durable policy authority", async () => {
   await withOpenClawTestState({ label: "foreground-policy-unrestricted" }, async () => {

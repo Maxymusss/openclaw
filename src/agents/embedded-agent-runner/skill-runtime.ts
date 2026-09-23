@@ -5,7 +5,11 @@ import {
   applySkillEnvOverridesFromSnapshot,
 } from "../../skills/runtime/env-overrides.js";
 import { resolveSkillResourceCandidates } from "../../skills/runtime/resource-candidates.js";
-import { resolveCodeModeSkills, type CodeModeSkillReader } from "../code-mode-skills.js";
+import {
+  resolveCodeModeSkills,
+  type CodeModeSkill,
+  type CodeModeSkillReader,
+} from "../code-mode-skills.js";
 import type { SandboxContext } from "../sandbox/types.js";
 import { isToolExecutionAllowed } from "../tool-policy-shared.js";
 import { getAgentWorkspaceAccess, WorkspaceAccessUnavailableError } from "../workspace-access.js";
@@ -15,6 +19,33 @@ import {
   mapSandboxSkillEntriesForPrompt,
   resolveSandboxSkillRuntimeInputs,
 } from "./sandbox-skills.js";
+
+/** New descriptors pin new readers; retained descriptors never acquire a successor bridge. */
+export function rebindSandboxCodeModeSkills(
+  skills: readonly CodeModeSkill[],
+  sandbox: SandboxContext,
+  assertCurrent: () => void,
+): CodeModeSkill[] {
+  return skills.map((skill) => ({
+    name: skill.name,
+    description: skill.description,
+    location: skill.location,
+    source: skill.source,
+    reader: async ({ location, signal }) => {
+      assertCurrent();
+      if (!sandbox.fsBridge) {
+        throw new Error("Sandbox filesystem bridge is unavailable for skill reads.");
+      }
+      const content = await sandbox.fsBridge.readFile({
+        filePath: location,
+        cwd: sandbox.containerWorkdir,
+        signal,
+      });
+      assertCurrent();
+      return content.toString("utf8");
+    },
+  }));
+}
 
 /** Prepares readable skills and owns environment rollback until the caller takes custody. */
 export async function prepareEmbeddedSkills(params: {

@@ -5,6 +5,7 @@ import type { AuthProfileStore } from "../../agents/auth-profiles/types.js";
 import { readSessionRuntimeOwnership } from "../../agents/harness/session-runtime-ownership.js";
 import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../../agents/model-catalog.types.js";
 import { getPreparedModelRuntimeAuthMaterializations } from "../../agents/prepared-model-runtime-auth.js";
+import { capturePreparedModelRuntimeCatalog } from "../../agents/prepared-model-runtime.capture.js";
 import type { PreparedModelRuntimeSnapshot } from "../../agents/prepared-model-runtime.js";
 import { resolveSessionModelRef } from "../../agents/session-model-ref.js";
 import { resolveCollapsedSessionAuthPinSource } from "../../config/sessions/auth-profile-override-provenance.js";
@@ -21,6 +22,8 @@ import type { GatewayModelCatalogContext } from "./models-list-context.js";
 export type ChatMetadataProjectionFacts = {
   agentId: string;
   owner: PreparedModelRuntimeSnapshot;
+  publishedModels?: ReturnType<NonNullable<PreparedModelRuntimeSnapshot["readPublishedModels"]>>;
+  publishedModelCatalog?: ModelCatalogSnapshot;
   authStore: AuthProfileStore;
   authModes: PreparedAgentCredentialModes;
   modelCatalog: ModelCatalogSnapshot;
@@ -42,6 +45,14 @@ export async function prepareChatMetadataModelProjection(params: {
   runtimeOverride?: string;
   assertCurrent?: () => void;
 }): Promise<PreparedAgentProjection<{ models?: ModelChoice[] }>> {
+  // Fork only the executable inventory captured with these catalog facts; later
+  // publication must not retarget a projection across lazy loading.
+  params.assertCurrent?.();
+  const captured = capturePreparedModelRuntimeCatalog(params.facts.owner, {
+    ...params.facts.owner,
+    readPublishedModels: () => params.facts.publishedModels,
+    readPublishedModelCatalog: () => params.facts.publishedModelCatalog,
+  });
   const { prepareModelsListResult, createGatewayAgentModelCatalogProjector } =
     await import("./models-list-result.js");
   // A draft has no persisted session grant: recheck its live human before hydrating private auth.
@@ -64,6 +75,7 @@ export async function prepareChatMetadataModelProjection(params: {
     pluginRegistry: params.facts.owner.pluginRegistry,
     isCurrent: params.facts.owner.isCurrent,
     observationConfig: params.facts.owner.observationConfig,
+    readModelRequestBinding: captured.readModelRequestBinding,
     ...(params.preferredProfileId ? { preferredProfileId: params.preferredProfileId } : {}),
     ...(params.pinnedProfileId ? { pinnedProfileId: params.pinnedProfileId } : {}),
     ...(params.profileProvider ? { profileProvider: params.profileProvider } : {}),

@@ -3,8 +3,8 @@
 // the embedding application (OpenClaw core installs its implementations via
 // configureAiTransportHost); the library defaults below are inert so external
 // consumers get safe, dependency-free behavior without wiring anything.
-import type { Api, Context, Model, StreamFn } from "@openclaw/llm-core";
-import type { ApiRegistry } from "./api-registry.js";
+import type { Api, Context, Model, StreamFn, SimpleStreamOptions } from "@openclaw/llm-core";
+import type { ApiRegistry, ModelRequestBindingLeafSupport } from "./api-registry.js";
 import { transformMessages } from "./transcript-transform.js";
 
 /** Provider capability facts needed by the package-owned transports. */
@@ -43,6 +43,14 @@ export interface AiProviderStreamHookContext {
 
 /** Narrow plugin-runtime port used by package-owned transports. */
 export interface AiTransportPluginHost {
+  /** Reads the prepared route before secrets or provider factories cross the boundary. */
+  prepareModelRequestBinding?(params: {
+    model: Model;
+    config?: unknown;
+    transport: SimpleStreamOptions["transport"];
+    leaf?: ModelRequestBindingLeafSupport;
+    wrapper?: "wrapSimpleCompletionStreamFn";
+  }): Readonly<{ model: Model; support?: ModelRequestBindingLeafSupport }> | undefined;
   resolveProviderStream(
     this: void,
     params: {
@@ -51,6 +59,7 @@ export interface AiTransportPluginHost {
       workspaceDir?: string;
       env?: NodeJS.ProcessEnv;
       allowRuntimePluginLoad?: boolean;
+      preparedTransport?: SimpleStreamOptions["transport"];
       context: AiProviderStreamHookContext;
     },
   ): StreamFn | undefined;
@@ -88,6 +97,7 @@ export interface AiTransportPluginHost {
     params: {
       provider: string;
       config?: unknown;
+      preparedTransport?: SimpleStreamOptions["transport"];
       context: AiProviderStreamHookContext & { streamFn: StreamFn };
     },
   ): StreamFn | undefined;
@@ -132,6 +142,11 @@ export interface AiTransportHost {
   /** Optional finite-model policy; standalone and unrestricted hosts remain unchanged. */
   modelRequests?: {
     requireDelegateSupport(support: "wire-model-v1" | undefined): void;
+    requireLeafSupport?(
+      model: Model,
+      support: ModelRequestBindingLeafSupport | undefined,
+      transport: SimpleStreamOptions["transport"],
+    ): void;
     capture(model: Model):
       | {
           assertCurrent(): void;
@@ -198,7 +213,12 @@ export interface AiTransportHost {
   /** Applies host-owned transcript replay and pairing rules. */
   transformTransportMessages: AiTransformTransportMessages;
   /** Registers a custom transport API with the host's stream error bridge. */
-  registerCustomApi(registry: ApiRegistry, api: Api, streamFn: StreamFn): boolean;
+  registerCustomApi(
+    registry: ApiRegistry,
+    api: Api,
+    streamFn: StreamFn,
+    support?: ModelRequestBindingLeafSupport,
+  ): boolean;
   /**
    * Emits one transport diagnostic; build runs only when the host logs it and
    * may return null to suppress the entry (e.g. de-duplication).
@@ -219,22 +239,29 @@ type PendingCustomApiRegistration = {
   registry: ApiRegistry;
   api: Api;
   streamFn: StreamFn;
+  support?: ModelRequestBindingLeafSupport;
 };
 
 const pendingCustomApiRegistrations: PendingCustomApiRegistration[] = [];
 
-function queueCustomApiRegistration(registry: ApiRegistry, api: Api, streamFn: StreamFn): boolean {
+function queueCustomApiRegistration(
+  registry: ApiRegistry,
+  api: Api,
+  streamFn: StreamFn,
+  support?: ModelRequestBindingLeafSupport,
+): boolean {
   const existing = pendingCustomApiRegistrations.find(
     (registration) => registration.registry === registry && registration.api === api,
   );
   if (existing) {
     existing.streamFn = streamFn;
+    existing.support = support;
     return false;
   }
   if (pendingCustomApiRegistrations.length >= MAX_PENDING_CUSTOM_API_REGISTRATIONS) {
     throw new Error("Too many custom transport APIs were registered before host configuration");
   }
-  pendingCustomApiRegistrations.push({ registry, api, streamFn });
+  pendingCustomApiRegistrations.push({ registry, api, streamFn, support });
   return false;
 }
 
@@ -311,6 +338,7 @@ export function configureAiTransportHost(host: Partial<AiTransportHost>): void {
         registration.registry,
         registration.api,
         registration.streamFn,
+        registration.support,
       );
     } catch (error) {
       pendingCustomApiRegistrations.unshift(...pending.slice(index));

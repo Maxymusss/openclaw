@@ -35,6 +35,64 @@ afterEach(() => {
 
 describe("prompt projection write admission", () => {
   it.each([false, true])(
+    "pins the image environment across an await (retired: %s)",
+    async (retired) => {
+      const fixture = createFixture();
+      const original = new AbortController();
+      const reason = new Error("image generation retired");
+      const assertOriginal = vi.fn(() => original.signal.throwIfAborted());
+      const environment = { sandbox: null, assertCurrent: assertOriginal };
+      fixture.readEnvironment.mockImplementation(() => {
+        environment.assertCurrent();
+        return environment;
+      });
+      const entered = createDeferredCore();
+      const release = createDeferredCore();
+      const prepareImages = mocks.preparePromptExecution.getMockImplementation();
+      if (!prepareImages) {
+        throw new Error("Missing image preparation fixture");
+      }
+      mocks.preparePromptExecution.mockImplementationOnce(async (...args) => {
+        entered.resolve();
+        await release.promise;
+        return prepareImages(...args);
+      });
+      const pending = runEmbeddedAttemptPromptPhase(fixture.input, fixture.promptState);
+      try {
+        await Promise.race([
+          entered.promise,
+          pending.then(() => {
+            throw new Error("Prompt phase settled before image preparation");
+          }),
+        ]);
+        const assertSuccessor = vi.fn();
+        fixture.readEnvironment.mockReturnValue({ sandbox: null, assertCurrent: assertSuccessor });
+        if (retired) {
+          original.abort(reason);
+        }
+        release.resolve();
+        await pending;
+        expect(fixture.readEnvironment).toHaveBeenCalledOnce();
+        expect(assertOriginal).toHaveBeenCalledTimes(2);
+        expect(assertSuccessor).not.toHaveBeenCalled();
+        if (retired) {
+          expect(mocks.handlePromptError).toHaveBeenCalledWith(
+            expect.objectContaining({ error: reason }),
+          );
+          expect(mocks.observePrompt).not.toHaveBeenCalled();
+          expect(mocks.submitPrompt).not.toHaveBeenCalled();
+        } else {
+          expect(mocks.handlePromptError).not.toHaveBeenCalled();
+          expect(mocks.submitPrompt).toHaveBeenCalledOnce();
+        }
+      } finally {
+        release.resolve();
+        await pending;
+      }
+    },
+  );
+
+  it.each([false, true])(
     "admits projection persistence before provider dispatch and rechecks cancellation (abort: %s)",
     async (abort) => {
       const stateDir = tempStateDirs.make("openclaw-prompt-projection-admission-");

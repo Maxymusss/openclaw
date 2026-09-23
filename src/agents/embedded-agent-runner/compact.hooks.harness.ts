@@ -633,13 +633,7 @@ export function resetCompactHooksHarnessMocks(workspaceDir: string): void {
   });
 }
 
-export async function loadCompactHooksHarness(options: { durableSession?: boolean } = {}): Promise<{
-  compactEmbeddedAgentSessionDirect: typeof import("./compact.js").compactEmbeddedAgentSessionDirect;
-  compactEmbeddedAgentSession: typeof import("./compact.queued.js").compactEmbeddedAgentSession;
-  testing: typeof import("./compact.js").testing;
-  onSessionTranscriptUpdate: typeof import("../../sessions/transcript-events.js").onSessionTranscriptUpdate;
-  onInternalSessionTranscriptUpdate: typeof import("../../sessions/transcript-events.js").onInternalSessionTranscriptUpdate;
-}> {
+export async function loadCompactHooksHarness(options: { durableSession?: boolean } = {}) {
   vi.resetModules();
   if (options.durableSession) {
     vi.doUnmock("./server-endpoint-compaction.js");
@@ -908,11 +902,15 @@ export async function loadCompactHooksHarness(options: { durableSession?: boolea
     resolveEmbeddedAgentStream: resolveEmbeddedAgentStreamMock,
   }));
 
-  vi.doMock("./extra-params.js", () => ({
-    applyExtraParamsToAgent: applyExtraParamsToAgentMock,
-    resolveAgentTransportOverride: resolveAgentTransportOverrideMock,
-    resolvePreparedExtraParams: vi.fn(() => ({})),
-  }));
+  vi.doMock("./extra-params.js", async () => {
+    const actual = await vi.importActual<typeof import("./extra-params.js")>("./extra-params.js");
+    return {
+      applyExtraParamsToAgent: applyExtraParamsToAgentMock,
+      resolveAgentTransportOverride: resolveAgentTransportOverrideMock,
+      resolvePreparedExtraParams: vi.fn(() => ({})),
+      resolveSupportedTransport: actual.resolveSupportedTransport,
+    };
+  });
 
   vi.doMock("./tool-split.js", () => ({
     splitSdkTools: vi.fn(({ tools }: { tools?: unknown[] }) => ({

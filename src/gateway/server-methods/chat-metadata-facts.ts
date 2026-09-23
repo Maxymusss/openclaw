@@ -57,6 +57,8 @@ export function generationFactsMatch(
     return (
       candidate?.agentId === agent.agentId &&
       candidate.owner === agent.owner &&
+      candidate.publishedModels === agent.publishedModels &&
+      candidate.publishedModelCatalog === agent.publishedModelCatalog &&
       candidate.authStoreRevision === agent.authStoreRevision &&
       candidate.modelCatalog === agent.modelCatalog &&
       candidate.catalogRefreshFailed === agent.catalogRefreshFailed &&

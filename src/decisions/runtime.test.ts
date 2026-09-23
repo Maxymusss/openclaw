@@ -1,14 +1,28 @@
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { createAdmittedRunOperatorAuthority } from "../agents/admitted-run-operator-authority.js";
+import {
+  OperatorModelPolicyError,
+  runWithOperatorModelAuthority,
+} from "../agents/operator-model-policy.js";
+import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import {
+  createContext,
+  createOperatorClient,
+} from "../gateway/server-plugin-in-process-dispatch.test-support.js";
 import { runPluginRegisterSyncInRegistry } from "../plugins/loader-module-runtime.js";
 import { createPluginRecord } from "../plugins/loader-records.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { createTestPluginRegistry } from "../plugins/registry-runtime.test-helpers.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
+import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
+import { createPluginRuntime } from "../plugins/runtime/index.js";
+import { ensureProfileForEmail } from "../state/user-profiles.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { evaluateDecisionInRegistry, prepareDecisionProviderReload } from "./runtime.js";
 import type {
   DecisionBatch,
@@ -88,6 +102,169 @@ afterEach(() => {
 });
 
 describe("registered decision capability", () => {
+  it.each([
+    ["direct", "model"],
+    ["direct", "foreground"],
+    ["registry", "model"],
+    ["registry", "foreground"],
+    ["facade", "model"],
+    ["facade", "foreground"],
+  ] as const)(
+    "captures request-only %s/%s authority before lazy loading and promotion",
+    async (entry, restriction) => {
+      await withOpenClawTestState({ scenario: "minimal" }, async () => {
+        const call = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
+        const isReady = vi.fn(() => true);
+        const host = registered(call, isReady);
+        const profile = ensureProfileForEmail("decision-operator@example.test");
+        const client = createOperatorClient({ profileId: profile.id, scopes: ["operator.read"] });
+        const context = createContext();
+        let current: OpenClawConfig = {
+          ...config,
+          gateway: {
+            roles: {
+              default: "guest",
+              definitions: {
+                guest: {
+                  sessions: { others: "view" },
+                  agents: "*",
+                  scopes: ["operator.read"],
+                  ...(restriction === "model" ? { models: { allow: ["fixture/fixture-v1"] } } : {}),
+                },
+              },
+            },
+          },
+        };
+        context.getRuntimeConfig = () => current;
+        if (restriction === "foreground") {
+          client.internal = {
+            operatorAccessAuthority: {
+              executionPolicy: "foreground-only",
+              signal: new AbortController().signal,
+              assertCurrent: () => {},
+            },
+          };
+        }
+        setRuntimeConfigSnapshot(current);
+        const invoke =
+          entry === "direct"
+            ? () => host.run()
+            : entry === "registry"
+              ? () => host.api.runtime.decisions.evaluate(batch, options())
+              : () => createPluginRuntime().decisions.evaluate(batch, options());
+        const pending = withPluginRuntimeGatewayRequestScope(
+          {
+            client,
+            context,
+            pluginRegistry: host.registry,
+            isWebchatConnect: () => false,
+          },
+          invoke,
+        );
+        current = config;
+        client.internal = undefined;
+        await expect(pending).rejects.toBeInstanceOf(OperatorModelPolicyError);
+        expect(isReady).not.toHaveBeenCalled();
+        expect(call).not.toHaveBeenCalled();
+        await expect(
+          withPluginRuntimeGatewayRequestScope(
+            {
+              client,
+              context,
+              pluginRegistry: host.registry,
+              isWebchatConnect: () => false,
+            },
+            invoke,
+          ),
+        ).resolves.toMatchObject({ status: "ok" });
+        expect(call).toHaveBeenCalledOnce();
+      });
+    },
+  );
+
+  it.each(["model", "foreground"] as const)(
+    "refuses %s authority before provider readiness, including a nested staff caller",
+    async (restriction) => {
+      const call = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
+      const isReady = vi.fn(() => true);
+      const host = registered(call, isReady);
+      const source = createAdmittedRunOperatorAuthority({
+        profileId: "restricted",
+        scopes: ["operator.sessions.write"],
+        ...(restriction === "model"
+          ? { permissions: { models: { allow: ["fixture/fixture-v1"] } } }
+          : { executionPolicy: "foreground-only" as const }),
+        assertCurrent: () => {},
+      });
+      const staff = createAdmittedRunOperatorAuthority({
+        profileId: "staff",
+        scopes: ["operator.admin"],
+        assertCurrent: () => {},
+      });
+      await expect(runWithOperatorModelAuthority(source, () => host.run())).rejects.toBeInstanceOf(
+        OperatorModelPolicyError,
+      );
+      await expect(
+        runWithOperatorModelAuthority(source, () =>
+          withGatewayToolCallerIdentity(
+            {
+              agentId: "main",
+              sessionKey: "agent:main:main",
+              operatorAuthority: staff,
+            },
+            () => host.run(),
+          ),
+        ),
+      ).rejects.toBeInstanceOf(OperatorModelPolicyError);
+      expect(isReady).not.toHaveBeenCalled();
+      expect(call).not.toHaveBeenCalled();
+      await expect(runWithOperatorModelAuthority(staff, () => host.run())).resolves.toMatchObject({
+        status: "ok",
+      });
+      expect(call).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["revoked", "expired"] as const)(
+    "keeps a %s original Gateway source terminal before readiness",
+    async (state) => {
+      const call = vi.fn<DecisionProviderV1["evaluate"]>(async () => answer);
+      const isReady = vi.fn(() => true);
+      const host = registered(call, isReady);
+      const cancellation = new Error("original source revoked");
+      const source = createAdmittedRunOperatorAuthority({
+        profileId: "original",
+        scopes: ["operator.sessions.write"],
+        ...(state === "revoked"
+          ? { signal: AbortSignal.abort(cancellation) }
+          : {
+              executionPolicy: "foreground-only" as const,
+              foregroundRunId: "original",
+              foregroundDeadlineAt: Date.now() - 1,
+            }),
+        assertCurrent: () => {},
+      });
+      await expect(
+        withGatewayToolCallerIdentity(
+          {
+            agentId: "main",
+            sessionKey: "agent:main:main",
+            operatorAuthority: source,
+          },
+          () => host.run(),
+        ),
+      ).rejects.toMatchObject({
+        code: "OPERATOR_MODEL_POLICY_DENIED",
+        cause:
+          state === "revoked"
+            ? cancellation
+            : expect.objectContaining({ message: expect.stringContaining("deadline has expired") }),
+      });
+      expect(isReady).not.toHaveBeenCalled();
+      expect(call).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([" fixture", "fixture ", "fixture/model"])(
     "rejects a provider ID that cannot round-trip through selection: %j",
     async (providerId) => {

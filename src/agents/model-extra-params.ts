@@ -86,3 +86,62 @@ export function hasAuthoredProviderRequestParams(
     Object.entries(modelParams ?? {}).some(([key, value]) => !isAgentRuntimeModelParam(key, value)),
   );
 }
+
+export function resolveAliasedParamValue(
+  sources: Array<Record<string, unknown> | undefined>,
+  snakeCaseKey: string,
+  camelCaseKey: string,
+): unknown {
+  return resolveAliasedParamValueFromKeys(sources, [snakeCaseKey, camelCaseKey]);
+}
+
+export function resolveAliasedParamValueFromKeys(
+  sources: Array<Record<string, unknown> | undefined>,
+  keys: readonly string[],
+): unknown {
+  let resolved: unknown = undefined;
+  let seen = false;
+  for (const source of sources) {
+    if (!source) {
+      continue;
+    }
+    for (const key of keys) {
+      if (!Object.hasOwn(source, key)) {
+        continue;
+      }
+      resolved = source[key];
+      seen = true;
+      break;
+    }
+  }
+  return seen ? resolved : undefined;
+}
+
+export function canonicalizeExtraParamAlias(
+  merged: Record<string, unknown>,
+  sources: Array<Record<string, unknown> | undefined>,
+  keys: readonly [string, string],
+  canonical = keys[0],
+): void {
+  const resolved = resolveAliasedParamValueFromKeys(sources, keys);
+  if (resolved !== undefined) {
+    merged[canonical] = resolved;
+    delete merged[keys[0] === canonical ? keys[1] : keys[0]];
+  }
+}
+
+export function applyCanonicalAliasedParamValue(params: {
+  merged: Record<string, unknown>;
+  sources: Array<Record<string, unknown> | undefined>;
+  keys: readonly string[];
+  canonicalKey: string;
+}): void {
+  const resolved = resolveAliasedParamValueFromKeys(params.sources, params.keys);
+  if (resolved === undefined) {
+    return;
+  }
+  for (const key of params.keys) {
+    delete params.merged[key];
+  }
+  params.merged[params.canonicalKey] = resolved;
+}

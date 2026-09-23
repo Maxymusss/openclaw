@@ -67,6 +67,7 @@ vi.mock("../openclaw-tools.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../openclaw-tools.js")>();
   return {
     createOpenClawTools: createOpenClawToolsMock,
+    createOpenClawToolsInternal: createOpenClawToolsMock,
     filterToolsByClientCaps: actual.filterToolsByClientCaps,
     testing: {
       setDepsForTest: () => {},

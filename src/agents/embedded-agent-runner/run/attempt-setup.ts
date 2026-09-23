@@ -33,6 +33,7 @@ import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import type { EmbeddedContextFile } from "../../embedded-agent-helpers.js";
 import { resolveImageSanitizationLimits } from "../../image-sanitization.js";
 import type { NativeSandboxCustody } from "../../sandbox/container-engine.js";
+import { replaceNativeSandboxContext } from "../../sandbox/context.js";
 import type { SandboxContext } from "../../sandbox/types.js";
 import type { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import { sanitizeToolUseResultPairingForModel } from "../../session-transcript-repair.js";
@@ -126,6 +127,10 @@ export async function prepareEmbeddedAttemptSetup(
 
   const workspace = await resolveAttemptWorkspaceSandbox(params, custody);
   const { effectiveWorkspace } = workspace;
+  let environment = Object.freeze({
+    sandbox: workspace.sandbox,
+    assertCurrent: () => custody?.assertCurrent(),
+  });
 
   const getCurrentAttemptPluginMetadataSnapshot = (): PluginMetadataSnapshot | undefined =>
     params.preparedModelRuntime?.metadataSnapshot;
@@ -164,6 +169,25 @@ export async function prepareEmbeddedAttemptSetup(
   return {
     agentCoreThinkingLevel,
     ...workspace,
+    get sandbox() {
+      return environment.sandbox;
+    },
+    readEnvironment: () => {
+      environment.assertCurrent();
+      return environment;
+    },
+    prepareEnvironment: async (next: NativeSandboxCustody) => {
+      next.assertCurrent();
+      const sandbox = environment.sandbox
+        ? await replaceNativeSandboxContext(environment.sandbox, next)
+        : environment.sandbox;
+      next.assertCurrent();
+      return Object.freeze({ sandbox, assertCurrent: next.assertCurrent });
+    },
+    publishEnvironment: (next: typeof environment) => {
+      next.assertCurrent();
+      environment = next;
+    },
     emitCorePluginToolStageSummary,
     emitPrepStageSummary,
     getCurrentAttemptPluginMetadataSnapshot,
@@ -202,6 +226,7 @@ export function installEmbeddedAttemptContextGuards(input: {
   sessionManager: ReturnType<typeof guardSessionManager>;
   settingsManager: AgentSession["settingsManager"];
   sandbox?: SandboxContext | null;
+  readEnvironment?: EmbeddedAttemptSetup["readEnvironment"];
 }): {
   getAfterTurnCheckpoint: () => number | null;
   recordCacheTouch: (startedAt: number) => void;
@@ -360,24 +385,33 @@ export function installEmbeddedAttemptContextGuards(input: {
     ...midTurnPrecheckOptions,
   });
 
+  const captureHistoryMedia = () => {
+    const environment = input.readEnvironment?.();
+    const sandbox = environment?.sandbox ?? input.sandbox;
+    return {
+      assertCurrent: environment?.assertCurrent ?? (() => {}),
+      options: {
+        workspaceDir: input.effectiveWorkspace,
+        agentWorkspaceDir: attempt.workspaceDir,
+        model: attempt.model,
+        maxBytes: MAX_IMAGE_BYTES,
+        maxDimensionPx: resolveImageSanitizationLimits(attempt.config).maxDimensionPx,
+        workspaceOnly: input.effectiveFsWorkspaceOnly,
+        localRoots: input.effectiveFsWorkspaceOnly
+          ? undefined
+          : getAgentScopedMediaLocalRoots(attempt.config ?? {}, input.sessionAgentId),
+        sandbox:
+          sandbox?.enabled && sandbox.fsBridge
+            ? { root: sandbox.workspaceDir, bridge: sandbox.fsBridge }
+            : undefined,
+        onCurrentTurnImageFailure: input.onCurrentTurnImageFailure,
+      },
+    };
+  };
   const removeHistoryImagePruneContextTransform = installHistoryImagePruneContextTransform(
     activeSession.agent,
-    {
-      workspaceDir: input.effectiveWorkspace,
-      agentWorkspaceDir: attempt.workspaceDir,
-      model: attempt.model,
-      maxBytes: MAX_IMAGE_BYTES,
-      maxDimensionPx: resolveImageSanitizationLimits(attempt.config).maxDimensionPx,
-      workspaceOnly: input.effectiveFsWorkspaceOnly,
-      localRoots: input.effectiveFsWorkspaceOnly
-        ? undefined
-        : getAgentScopedMediaLocalRoots(attempt.config ?? {}, input.sessionAgentId),
-      sandbox:
-        input.sandbox?.enabled && input.sandbox.fsBridge
-          ? { root: input.sandbox.workspaceDir, bridge: input.sandbox.fsBridge }
-          : undefined,
-      onCurrentTurnImageFailure: input.onCurrentTurnImageFailure,
-    },
+    undefined,
+    captureHistoryMedia,
   );
   const previousComputerFrameTransform = activeSession.agent.transformContext;
   activeSession.agent.transformContext = async (messages, signal) => {

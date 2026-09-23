@@ -10,6 +10,7 @@ import {
   setActivePluginRegistry,
 } from "../plugins/runtime.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import { bindModelCatalogRequestBinding } from "./model-catalog-request-binding.js";
 import {
   captureOperatorModelCatalogAccess,
   resolveOperatorModelCatalogAgentId,
@@ -49,7 +50,7 @@ function fixture(allow?: string[]) {
 }
 
 function neutralCatalog(): ModelsListResult {
-  return {
+  const catalog: ModelsListResult = {
     models: [
       {
         provider: "fixture",
@@ -84,9 +85,49 @@ function neutralCatalog(): ModelsListResult {
     ],
     accountSelection: { kind: "shared", label: "Hidden account", authProfileId: "hidden-account" },
   };
+  for (const model of catalog.models) {
+    bindModelCatalogRequestBinding(model, () => true);
+    for (const choice of model.runtimeChoices ?? []) {
+      bindModelCatalogRequestBinding(choice, () => true);
+    }
+  }
+  return catalog;
 }
 
 describe("caller-local operator catalogs", () => {
+  it("requires both physical-route support and an exact runtime while staff keeps the ordinary catalog", async () => {
+    await withOpenClawTestState({ scenario: "minimal" }, async () => {
+      const f = fixture(["fixture/allowed"]);
+      const access = captureOperatorModelCatalogAccess(f);
+      const source = neutralCatalog();
+      const missingFact = { ...expectDefined(source.models[0], "allowed model") };
+      try {
+        expect(access.projectCatalog({ models: [missingFact] }).models[0]).toMatchObject({
+          available: false,
+          unavailableReason: "unsupported-runtime",
+        });
+        let supported = true;
+        const bound = bindModelCatalogRequestBinding({ ...missingFact }, () => supported);
+        expect(access.projectCatalog({ models: [bound] }).models[0]?.available).toBe(true);
+        supported = false;
+        expect(
+          access.projectMetadata({ swarmEnabled: false, models: [bound] }).models?.[0],
+        ).toMatchObject({ available: false, unavailableReason: "unsupported-runtime" });
+        expect(JSON.stringify(bound)).toBe(JSON.stringify(missingFact));
+        delete f.role.models;
+        const staff = captureOperatorModelCatalogAccess(f);
+        try {
+          const catalog = { models: [bound] };
+          expect(staff.projectCatalog(catalog)).toBe(catalog);
+          expect(bound.available).toBe(true);
+        } finally {
+          staff.release();
+        }
+      } finally {
+        access.release();
+      }
+    });
+  });
   it("leaves omitted unrestricted agent selection to the canonical Gateway resolver", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const f = fixture();

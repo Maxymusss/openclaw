@@ -1,5 +1,3 @@
-import { stripSystemPromptCacheBoundary } from "@openclaw/ai/internal/shared";
-import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import {
   findNormalizedProviderValue,
   normalizeProviderId,
@@ -14,7 +12,6 @@ import {
   mergePluginTextTransforms,
 } from "../agents/plugin-text-transforms.js";
 import { unwrapSecretSentinelsForProviderEgress } from "../agents/provider-secret-egress.js";
-import type { StreamFn } from "../agents/runtime/index.js";
 import type { ProviderSystemPromptContribution } from "../agents/system-prompt-contribution.js";
 import type { ModelProviderConfig } from "../config/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -65,7 +62,6 @@ import type {
   ProviderAugmentModelCatalogContext,
   ProviderDeferSyntheticProfileAuthContext,
   ProviderResolveSyntheticAuthContext,
-  ProviderCreateStreamFnContext,
   ProviderFetchUsageSnapshotContext,
   ProviderNormalizeConfigContext,
   ProviderReasoningOutputMode,
@@ -82,6 +78,8 @@ import type {
   ProviderTransportTurnState,
   PluginTextTransforms,
 } from "./types.js";
+
+export { resolveProviderStreamFn } from "./provider-runtime-stream.js";
 
 type ProviderRuntimeLookup = Pick<
   Parameters<typeof resolveProviderRuntimePlugin>[0],
@@ -502,37 +500,6 @@ export function resolveProviderReasoningOutputModeWithPlugin(
     runtimeHandle: params.runtimeHandle,
   }).plugin?.resolveReasoningOutputMode?.(params.context);
   return mode === "native" || mode === "tagged" ? mode : undefined;
-}
-
-export function resolveProviderStreamFn(
-  params: ProviderRuntimeLookup & {
-    runtimeHandle?: ProviderRuntimePluginHandle;
-    allowRuntimePluginLoad?: boolean;
-    context: ProviderCreateStreamFnContext;
-  },
-): StreamFn | undefined {
-  // Transport families may explicitly ask for a different fallback owner.
-  const plugin =
-    params.runtimeHandle?.provider === params.provider
-      ? ensureProviderRuntimePluginHandle(params).plugin
-      : params.allowRuntimePluginLoad === false
-        ? resolveLoadedProviderRuntimePlugin(params)
-        : resolveProviderRuntimePlugin(params);
-  const streamFn = plugin?.createStreamFn?.(params.context);
-  if (!streamFn || plugin?.supportsSystemPromptCacheBoundary) {
-    return streamFn ?? undefined;
-  }
-  return inheritModelRequestBinding<StreamFn>(
-    (model, context, options) =>
-      streamFn(
-        model,
-        context.systemPrompt
-          ? { ...context, systemPrompt: stripSystemPromptCacheBoundary(context.systemPrompt) }
-          : context,
-        options,
-      ),
-    streamFn,
-  );
 }
 
 export function resolveProviderTransportTurnStateWithPlugin(params: {

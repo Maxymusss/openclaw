@@ -8,7 +8,7 @@ import type { AdmittedRunOperatorAuthority } from "../admitted-run-context.js";
 import { assertOperatorModelAllowed } from "../operator-model-policy.js";
 import { wrapStreamFnTextTransforms } from "../plugin-text-transforms.js";
 import type { AgentRuntimePlan } from "../runtime-plan/types.js";
-import { applyExtraParamsToAgent } from "./extra-params.js";
+import { applyExtraParamsToAgent, resolveSupportedTransport } from "./extra-params.js";
 import {
   resolveEmbeddedAgentApiKey,
   resolveEmbeddedAgentBaseStreamFn,
@@ -18,7 +18,7 @@ import { mapThinkingLevelForProvider } from "./utils.js";
 
 export async function prepareCompactionSessionAgent(params: {
   operatorAuthority?: AdmittedRunOperatorAuthority;
-  session: { agent: { streamFn?: unknown } };
+  session: { agent: { streamFn?: unknown; transport?: unknown } };
   llmRuntime: LlmRuntime;
   providerStreamFn: unknown;
   sessionId: string;
@@ -118,6 +118,8 @@ export async function prepareCompactionSessionAgent(params: {
     undefined,
     {
       ...(preparedRuntimeExtraParams ? { preparedExtraParams: preparedRuntimeExtraParams } : {}),
+      operatorAuthority: params.operatorAuthority,
+      preparedTransport: resolveSupportedTransport(params.session.agent.transport),
       nativeWebSearchPolicyContext: {
         // Summaries have no tool loop; provider-hosted tools must not inherit
         // the originating conversation's broader web-search authority.

@@ -1,3 +1,4 @@
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
 /**
  * Wraps stream functions with pre-call message transforms.
@@ -24,7 +25,7 @@ export function wrapStreamFnWithMessageTransform(
   transform: MessageTransform,
   materializeProviderContext?: ProviderContextMaterializer,
 ): StreamFn {
-  return (model, context, options) => {
+  return inheritModelRequestBinding<StreamFn>((model, context, options) => {
     const messages = context?.messages;
     const nextMessages = Array.isArray(messages)
       ? transform(messages as AgentMessage[], model)
@@ -56,5 +57,5 @@ export function wrapStreamFnWithMessageTransform(
       ...options,
       [PROVIDER_CONTEXT_HANDOFF]: handoff,
     } as ProviderStreamOptions & NonNullable<Parameters<StreamFn>[2]>);
-  };
+  }, streamFn);
 }

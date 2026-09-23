@@ -4,6 +4,7 @@
  * Routes models that need OpenClaw-managed proxy/TLS/local-service semantics onto built-in transport implementations.
  */
 import type { Api, Model, StreamFn } from "@openclaw/llm-core";
+import type { ModelRequestBindingLeafSupport } from "../api-registry.js";
 import { getAiTransportHost } from "../host.js";
 import { createAnthropicMessagesTransportStreamFn } from "./anthropic-transport-stream.js";
 import { createOpenAICompletionsTransportStreamFn } from "./openai-completions-transport.js";
@@ -13,15 +14,6 @@ import {
   createOpenAIResponsesTransportStreamFn,
 } from "./openai-responses-transport.js";
 import { resolveOpencodeSessionHeaders } from "./session-affinity.js";
-
-const SUPPORTED_TRANSPORT_APIS = new Set<Api>([
-  "openai-responses",
-  "openai-chatgpt-responses",
-  "openai-completions",
-  "azure-openai-responses",
-  "anthropic-messages",
-  "google-generative-ai",
-]);
 
 const SIMPLE_TRANSPORT_API_ALIAS: Record<string, Api> = {
   "openai-completions": "openclaw-openai-completions-transport",
@@ -79,25 +71,50 @@ function createProviderOwnedGoogleTransportStreamFn(
     : undefined;
 }
 
+const sseModelRequestBinding: ModelRequestBindingLeafSupport = Object.freeze({
+  contract: "wire-model-v1",
+  transports: Object.freeze(["sse"] as const),
+});
+
+type TransportDescriptor = Readonly<{
+  create: (model: Model, ctx?: ProviderTransportStreamContext) => StreamFn | undefined;
+  modelRequestBindingSupport?: ModelRequestBindingLeafSupport;
+}>;
+
+// Selection and secret-free support inspection share the exact implementation owner.
+const transportDescriptors: Readonly<Partial<Record<Api, TransportDescriptor>>> = Object.freeze({
+  "openai-responses": {
+    create: createOpenAIResponsesTransportStreamFn,
+    modelRequestBindingSupport: sseModelRequestBinding,
+  },
+  "openai-chatgpt-responses": { create: createOpenAIResponsesTransportStreamFn },
+  "openai-completions": {
+    create: createOpenAICompletionsTransportStreamFn,
+    modelRequestBindingSupport: sseModelRequestBinding,
+  },
+  "azure-openai-responses": {
+    create: createAzureOpenAIResponsesTransportStreamFn,
+    modelRequestBindingSupport: sseModelRequestBinding,
+  },
+  "anthropic-messages": { create: createAnthropicMessagesTransportStreamFn },
+  "google-generative-ai": { create: createProviderOwnedGoogleTransportStreamFn },
+});
+
+function readTransportDescriptor(api: Api): TransportDescriptor | undefined {
+  return Object.hasOwn(transportDescriptors, api) ? transportDescriptors[api] : undefined;
+}
+
+export function readTransportModelRequestBindingSupport(
+  model: Pick<Model, "api">,
+): ModelRequestBindingLeafSupport | undefined {
+  return readTransportDescriptor(model.api)?.modelRequestBindingSupport;
+}
+
 function createSupportedTransportStreamFn(
   model: Model,
   ctx?: ProviderTransportStreamContext,
 ): StreamFn | undefined {
-  switch (model.api) {
-    case "openai-responses":
-    case "openai-chatgpt-responses":
-      return createOpenAIResponsesTransportStreamFn();
-    case "openai-completions":
-      return createOpenAICompletionsTransportStreamFn();
-    case "azure-openai-responses":
-      return createAzureOpenAIResponsesTransportStreamFn();
-    case "anthropic-messages":
-      return createAnthropicMessagesTransportStreamFn();
-    case "google-generative-ai":
-      return createProviderOwnedGoogleTransportStreamFn(model, ctx);
-    default:
-      return undefined;
-  }
+  return readTransportDescriptor(model.api)?.create(model, ctx);
 }
 
 function hasOpenClawTransportRequirement(model: Model): boolean {
@@ -105,8 +122,8 @@ function hasOpenClawTransportRequirement(model: Model): boolean {
 }
 
 /** Returns whether OpenClaw has a managed transport implementation for this API. */
-function isTransportAwareApiSupported(api: Api): boolean {
-  return SUPPORTED_TRANSPORT_APIS.has(api);
+export function isTransportAwareApiSupported(api: Api): boolean {
+  return readTransportDescriptor(api) !== undefined;
 }
 
 /** Maps public model APIs to the internal transport API id used by simple runtime dispatch. */

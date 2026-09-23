@@ -458,7 +458,9 @@ async function runEmbeddedAttemptOwned(
         state: executionState,
         lifecycle: {
           applyPermissionMode: (mode, revokeApprovals) => {
+            let commitGeneration: (() => void) | undefined;
             const publish = () => {
+              commitGeneration?.();
               preparedBundleTools.refreshTools();
               preparedToolCatalog.refreshTools();
               preparedSessionRuntime.agentSession.refreshTools();
@@ -486,9 +488,16 @@ async function runEmbeddedAttemptOwned(
                     publish();
                     params.permissionChange?.recordApplied(mode);
                   };
-            const refreshed = preparedToolBase.refreshPermissionMode(mode, revokeApprovals);
+            const refreshed = preparedToolBase.refreshPermissionMode(
+              mode,
+              revokeApprovals,
+              (commit) => {
+                commitGeneration = commit;
+                complete();
+              },
+            );
             if (refreshed) {
-              return refreshed.then(complete);
+              return refreshed;
             }
             complete();
             return undefined;

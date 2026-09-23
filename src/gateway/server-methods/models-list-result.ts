@@ -62,6 +62,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveProviderModelCatalogId } from "../../plugins/provider-model-routes.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
+import { bindModelCatalogRequestBinding } from "../model-catalog-request-binding.js";
 import { loadDeferredCatalog, readPreparedCatalog } from "../server-model-catalog-auth.js";
 import { resolveGatewayModelThinkingProfile } from "../session-utils-model.js";
 import { projectWorkerPlacementAgentRuntime } from "../worker-environments/placement-session-runtime.js";
@@ -130,6 +131,9 @@ export function createGatewayAgentModelCatalogProjector(params: ModelCatalogDeci
 }
 
 function createPublicModelsListProjector(params: {
+  supportsModelRequestBinding: ReturnType<
+    typeof createModelCatalogDecisions
+  >["supportsModelRequestBinding"];
   pluginRegistry?: ModelCatalogDecisionParams["pluginRegistry"];
   thinkingCatalog: ModelCatalogEntry[];
   fastMode: ReturnType<typeof createModelFastModeResolver>;
@@ -221,27 +225,30 @@ function createPublicModelsListProjector(params: {
       ? evaluation.availability
       : (evaluation.availability ?? false);
     const supportsFastMode = params.fastMode(entry, evaluation, preparedEntry.agentRuntime?.id);
-    return Object.assign(
-      {},
-      preparedEntry,
-      params.manualSelectionAllowed
-        ? {
-            manualSelectionAllowed: params.manualSelectionAllowed({
-              provider: entry.provider,
-              model: entry.id,
-            }),
-          }
-        : {},
-      supportsFastMode === undefined ? {} : { supportsFastMode },
-      projectedAvailability === undefined ? {} : { available: projectedAvailability },
-      projectedAvailability === false && evaluation.unavailableReason
-        ? {
-            unavailableReason: evaluation.unavailableReason,
-            ...(evaluation.unavailableUntil !== undefined
-              ? { unavailableUntil: evaluation.unavailableUntil }
-              : {}),
-          }
-        : {},
+    return bindModelCatalogRequestBinding(
+      Object.assign(
+        {},
+        preparedEntry,
+        params.manualSelectionAllowed
+          ? {
+              manualSelectionAllowed: params.manualSelectionAllowed({
+                provider: entry.provider,
+                model: entry.id,
+              }),
+            }
+          : {},
+        supportsFastMode === undefined ? {} : { supportsFastMode },
+        projectedAvailability === undefined ? {} : { available: projectedAvailability },
+        projectedAvailability === false && evaluation.unavailableReason
+          ? {
+              unavailableReason: evaluation.unavailableReason,
+              ...(evaluation.unavailableUntil !== undefined
+                ? { unavailableUntil: evaluation.unavailableUntil }
+                : {}),
+            }
+          : {},
+      ),
+      () => params.supportsModelRequestBinding(entry, evaluation),
     );
   };
 }
@@ -420,6 +427,7 @@ export async function prepareModelsListResult(
       pluginRegistry: preparedPluginRegistry,
       isCurrent,
       observationConfig: preparedProjectionOwner?.observationConfig,
+      readModelRequestBinding: preparedProjectionOwner?.readModelRequestBinding,
     });
   const catalog = dedupeModelCatalogEntries([
     ...preparedCatalog.catalog,
@@ -525,6 +533,7 @@ export async function prepareModelsListResult(
       pluginRegistry: preparedPluginRegistry,
       isCurrent,
       observationConfig: preparedProjectionOwner?.observationConfig,
+      readModelRequestBinding: preparedProjectionOwner?.readModelRequestBinding,
       ...(params.routeResolverFactory ? { routeResolverFactory: params.routeResolverFactory } : {}),
     });
     const inventory = await inventoryProjector.projectCatalog();
@@ -535,6 +544,7 @@ export async function prepareModelsListResult(
       })),
     );
     const projectPublic = createPublicModelsListProjector({
+      supportsModelRequestBinding: inventoryProjector.supportsModelRequestBinding,
       pluginRegistry: preparedPluginRegistry,
       thinkingCatalog: catalog,
       fastMode: createModelFastModeResolver({
@@ -568,6 +578,7 @@ export async function prepareModelsListResult(
   const evaluations = new Map<string, ModelAuthAvailabilityEvaluation>();
   const runtimeChoiceReaders = new Map<string, () => ModelRuntimeChoice[]>();
   const projectPublic = createPublicModelsListProjector({
+    supportsModelRequestBinding: projector.supportsModelRequestBinding,
     pluginRegistry: preparedPluginRegistry,
     thinkingCatalog: catalog,
     fastMode: createModelFastModeResolver({

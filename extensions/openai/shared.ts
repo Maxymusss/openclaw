@@ -74,6 +74,7 @@ type OpenAIResponsesProviderHooks = Pick<
   | "buildReplayPolicy"
   | "prepareExtraParams"
   | "wrapStreamFn"
+  | "resolveModelRequestBindingSupport"
   | "resolveTransportTurnState"
   | "isCacheTtlEligible"
 >;
@@ -91,7 +92,14 @@ const wrapOpenAIResponsesProviderStreamFn: NonNullable<
   const loadStream = createLazyRuntimeSurface(loadResponsesStream, (runtime) =>
     runtime.wrapOpenAIResponsesStream(ctx),
   );
-  return async (...args) => (await loadStream())(...args);
+  const wrapped: NonNullable<typeof ctx.streamFn> = async (...args) =>
+    (await loadStream())(...args);
+  // This owned chain patches payload/options and delegates inference to the supplied base.
+  // Its lazy import must not erase the base's final wire-model enforcement contract.
+  return ctx.model?.api === "openai-responses" &&
+    ctx.streamFn?.modelRequestBinding === "wire-model-v1"
+    ? Object.assign(wrapped, { modelRequestBinding: "wire-model-v1" as const })
+    : wrapped;
 };
 
 export function buildOpenAIResponsesProviderHooks(options?: {
@@ -106,6 +114,10 @@ export function buildOpenAIResponsesProviderHooks(options?: {
     buildReplayPolicy: buildOpenAIReplayPolicy,
     prepareExtraParams: (ctx) => defaultOpenAIResponsesExtraParams(ctx.extraParams, options),
     wrapStreamFn: wrapOpenAIResponsesProviderStreamFn,
+    resolveModelRequestBindingSupport: ({ model, transport }) =>
+      model.api === "openai-responses" && transport === "sse"
+        ? { wrapStreamFn: "preserves-delegate" }
+        : undefined,
     resolveTransportTurnState: resolveOpenAIResponsesTransportTurnState,
   };
 }

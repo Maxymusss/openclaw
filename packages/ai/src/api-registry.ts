@@ -26,6 +26,17 @@ export type ApiStreamSimpleFunction = ((
 ) => AssistantMessageEventStreamContract) &
   ModelRequestBindingSupport;
 
+/** Exact selected leaf capability, independent of lazy invocation-adapter markers. */
+export type ModelRequestBindingLeafSupport = Readonly<{
+  contract: NonNullable<ModelRequestBindingSupport["modelRequestBinding"]>;
+  transports: readonly NonNullable<SimpleStreamOptions["transport"]>[];
+}>;
+
+type ApiModelRequestBindingSupport = Readonly<{
+  stream?: ModelRequestBindingLeafSupport;
+  streamSimple?: ModelRequestBindingLeafSupport;
+}>;
+
 /** Provider implementation registered by core or plugins for a specific model API. */
 export interface ApiProvider<
   TApi extends Api = Api,
@@ -37,6 +48,7 @@ export interface ApiProvider<
   stream: StreamFunction<TApi, TOptions>;
   /** Simple streaming adapter used by agent and plugin runtime defaults. */
   streamSimple: StreamFunction<TApi, SimpleStreamOptions>;
+  modelRequestBindingSupport?: ApiModelRequestBindingSupport;
 }
 
 /** Type-erased provider returned by a registry after API guards are installed. */
@@ -44,6 +56,17 @@ export interface RegisteredApiProvider {
   api: Api;
   stream: ApiStreamFunction;
   streamSimple: ApiStreamSimpleFunction;
+  modelRequestBindingSupport?: ApiModelRequestBindingSupport;
+}
+
+function copyLeafSupport(support: ModelRequestBindingLeafSupport | undefined) {
+  return (
+    support &&
+    Object.freeze({
+      contract: support.contract,
+      transports: Object.freeze([...support.transports]),
+    })
+  );
 }
 
 type RegisteredApiProviderEntry = {
@@ -89,6 +112,14 @@ export function createApiRegistry() {
         api: provider.api,
         stream: wrapStream(provider.api, provider.stream),
         streamSimple: wrapStreamSimple(provider.api, provider.streamSimple),
+        ...(provider.modelRequestBindingSupport
+          ? {
+              modelRequestBindingSupport: Object.freeze({
+                stream: copyLeafSupport(provider.modelRequestBindingSupport.stream),
+                streamSimple: copyLeafSupport(provider.modelRequestBindingSupport.streamSimple),
+              }),
+            }
+          : {}),
       },
       sourceId,
     });

@@ -5,7 +5,12 @@ import {
 } from "@openclaw/ai";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import "../llm/ai-transport-host.js";
-import { getModelProviderRuntimePluginHandle } from "../plugins/provider-hook-runtime.js";
+import {
+  attachModelProviderRuntimePluginHandle,
+  getModelProviderRuntimePluginHandle,
+  resolveProviderRuntimePluginHandle,
+} from "../plugins/provider-hook-runtime.js";
+import { readProviderModelRequestBindingSupport } from "../plugins/provider-model-request-binding.js";
 import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.types.js";
 import {
   resolveProviderStreamFn,
@@ -21,6 +26,7 @@ import {
   attachModelProviderLocalService,
   getModelProviderLocalService,
 } from "./provider-local-service.js";
+import { assertProviderModelRequestBinding } from "./provider-model-request-binding.js";
 import {
   attachModelProviderRequestTransport,
   getModelProviderRequestTransport,
@@ -42,6 +48,29 @@ export function configureAiTransportRuntimeHost(): void {
     ...host,
     plugin: {
       ...host.plugin,
+      prepareModelRequestBinding: (params) => {
+        const captured = getModelProviderRuntimePluginHandle(params.model);
+        const handle =
+          captured ??
+          resolveProviderRuntimePluginHandle({
+            provider: params.model.provider,
+            modelId: params.model.id,
+            // SAFETY: the package port keeps config opaque; core passes OpenClawConfig through unchanged.
+            config: params.config as OpenClawConfig | undefined,
+          });
+        const binding = {
+          ...params,
+          plugin: handle.plugin,
+          isCurrent: handle.isModelRequestBindingCurrent,
+        };
+        assertProviderModelRequestBinding(binding);
+        return {
+          model: captured
+            ? params.model
+            : attachModelProviderRuntimePluginHandle(params.model, handle),
+          support: readProviderModelRequestBindingSupport(binding),
+        };
+      },
       resolveProviderStream: (params) =>
         resolveProviderStreamFn({
           ...params,

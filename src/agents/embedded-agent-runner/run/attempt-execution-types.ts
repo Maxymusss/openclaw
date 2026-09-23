@@ -54,6 +54,7 @@ export type EmbeddedAttemptExecutionPhaseInput = {
     | "effectiveWorkspace"
     | "emitPrepStageSummary"
     | "prepStages"
+    | "readEnvironment"
     | "sandbox"
     | "sandboxSessionKey"
     | "sessionAgentId"

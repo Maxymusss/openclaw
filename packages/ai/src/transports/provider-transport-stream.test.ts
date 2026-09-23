@@ -10,6 +10,7 @@ import {
   createTransportAwareStreamFnForModel,
   prepareTransportAwareSimpleModel,
   resolveTransportAwareSimpleApi,
+  readTransportModelRequestBindingSupport,
 } from "./provider-transport-stream.js";
 
 const managedTransportModels = new WeakSet<object>();
@@ -67,6 +68,23 @@ function buildModel<TApi extends Api>(
 }
 
 describe("provider transport stream contracts", () => {
+  it.each(["constructor", "toString", "__proto__", "unregistered-api"])(
+    "keeps unknown API %s unsupported",
+    (api) => {
+      const model = buildModel(api, {
+        id: "fixture",
+        provider: "fixture",
+        baseUrl: "https://example.invalid",
+      });
+      expect(readTransportModelRequestBindingSupport(model)).toBeUndefined();
+      expect(createBoundaryAwareStreamFnForModel(model)).toBeUndefined();
+      expect(createOpenClawTransportStreamFnForModel(model)).toBeUndefined();
+      expect(createTransportAwareStreamFnForModel(model)).toBeUndefined();
+      managedTransportModels.add(model);
+      expect(() => createTransportAwareStreamFnForModel(model)).toThrow("not yet supported");
+    },
+  );
+
   it("covers the supported transport api alias matrix", () => {
     // Supported APIs can be projected to OpenClaw transport aliases when needed.
     const cases = [

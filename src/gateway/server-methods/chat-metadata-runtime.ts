@@ -139,6 +139,8 @@ function captureGenerationFacts(deps: ChatMetadataRuntimeDeps): PreparedGenerati
             {
               agentId,
               owner,
+              publishedModels: owner.readPublishedModels?.(),
+              publishedModelCatalog: owner.readPublishedModelCatalog?.(),
               authStore: fullCatalogAuth?.authStore ??
                 deps.getPreparedAuthStore(owner.agentDir, owner.inheritedAuthDir) ?? {
                   version: 1,

@@ -4,6 +4,7 @@ import {
   detectOpenAICompletionsCompat,
   resolveOpenAICompletionsCompat,
 } from "@openclaw/ai/transports";
+import { inheritModelRequestBinding } from "@openclaw/llm-core";
 import {
   type NativeWebSearchToolPolicyParams,
   isNativeWebSearchAllowedByToolPolicy,
@@ -37,7 +38,16 @@ import {
   type ProviderRuntimePluginHandle,
 } from "../../plugins/provider-hook-runtime.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
-import { resolveModelExtraParamSources } from "../model-extra-params.js";
+import type { AdmittedRunOperatorAuthority } from "../admitted-run-operator-authority.js";
+import {
+  applyCanonicalAliasedParamValue,
+  canonicalizeExtraParamAlias,
+  resolveAliasedParamValue,
+  resolveAliasedParamValueFromKeys,
+  resolveModelExtraParamSources,
+} from "../model-extra-params.js";
+import { wrapOperatorModelStream } from "../operator-model-policy.js";
+import { constructProviderModelStreamWrapper } from "../provider-model-request-binding.js";
 import {
   getModelProviderRequestRouteFacts,
   resolveProviderRequestPolicyConfig,
@@ -122,7 +132,7 @@ type CacheRetentionStreamOptions = Partial<SimpleStreamOptions> & {
 };
 type SupportedTransport = AgentRuntimeTransport;
 
-function resolveSupportedTransport(value: unknown): SupportedTransport | undefined {
+export function resolveSupportedTransport(value: unknown): SupportedTransport | undefined {
   return value === "sse" ||
     value === "websocket" ||
     value === "websocket-cached" ||
@@ -446,65 +456,6 @@ function createStreamFnWithExtraParams(
   };
 
   return wrappedStreamFn;
-}
-
-function resolveAliasedParamValue(
-  sources: Array<Record<string, unknown> | undefined>,
-  snakeCaseKey: string,
-  camelCaseKey: string,
-): unknown {
-  return resolveAliasedParamValueFromKeys(sources, [snakeCaseKey, camelCaseKey]);
-}
-
-function resolveAliasedParamValueFromKeys(
-  sources: Array<Record<string, unknown> | undefined>,
-  keys: readonly string[],
-): unknown {
-  let resolved: unknown = undefined;
-  let seen = false;
-  for (const source of sources) {
-    if (!source) {
-      continue;
-    }
-    for (const key of keys) {
-      if (!Object.hasOwn(source, key)) {
-        continue;
-      }
-      resolved = source[key];
-      seen = true;
-      break;
-    }
-  }
-  return seen ? resolved : undefined;
-}
-
-function canonicalizeExtraParamAlias(
-  merged: Record<string, unknown>,
-  sources: Array<Record<string, unknown> | undefined>,
-  keys: readonly [string, string],
-  canonical = keys[0],
-): void {
-  const resolved = resolveAliasedParamValueFromKeys(sources, keys);
-  if (resolved !== undefined) {
-    merged[canonical] = resolved;
-    delete merged[keys[0] === canonical ? keys[1] : keys[0]];
-  }
-}
-
-function applyCanonicalAliasedParamValue(params: {
-  merged: Record<string, unknown>;
-  sources: Array<Record<string, unknown> | undefined>;
-  keys: readonly string[];
-  canonicalKey: string;
-}): void {
-  const resolved = resolveAliasedParamValueFromKeys(params.sources, params.keys);
-  if (resolved === undefined) {
-    return;
-  }
-  for (const key of params.keys) {
-    delete params.merged[key];
-  }
-  params.merged[params.canonicalKey] = resolved;
 }
 
 function canonicalizeOpenRouterResponseCacheParams(
@@ -956,6 +907,8 @@ export function applyExtraParamsToAgent(
   resolvedTransport?: SupportedTransport,
   options?: {
     preparedExtraParams?: Record<string, unknown>;
+    preparedTransport?: SupportedTransport;
+    operatorAuthority?: AdmittedRunOperatorAuthority;
     nativeWebSearchPolicyContext?: NativeWebSearchToolPolicyParams;
   },
 ) {
@@ -1013,8 +966,16 @@ export function applyExtraParamsToAgent(
         ...options.nativeWebSearchPolicyContext,
       })
     : undefined;
-  const pluginWrappedStreamFn =
-    providerRuntimeHandle.plugin?.wrapStreamFn?.({
+  const pluginWrappedStreamFn = constructProviderModelStreamWrapper({
+    plugin: providerRuntimeHandle.plugin,
+    hook: "wrapStreamFn",
+    authority: options?.operatorAuthority,
+    isCurrent: providerRuntimeHandle.isModelRequestBindingCurrent,
+    transport:
+      options && Object.hasOwn(options, "preparedTransport")
+        ? options.preparedTransport
+        : (resolvedTransport ?? resolveSupportedTransport(effectiveExtraParams.transport)),
+    context: {
       config: cfg,
       agentDir,
       workspaceDir,
@@ -1026,8 +987,13 @@ export function applyExtraParamsToAgent(
       thinkingLevel,
       model,
       streamFn: providerStreamBase,
-    }) ?? undefined;
-  agent.streamFn = pluginWrappedStreamFn ?? providerStreamBase;
+    },
+  });
+  agent.streamFn =
+    pluginWrappedStreamFn && pluginWrappedStreamFn !== providerStreamBase
+      ? wrapOperatorModelStream(pluginWrappedStreamFn, options?.operatorAuthority)
+      : providerStreamBase;
+  const delegatedStream = agent.streamFn;
   // Apply caller/config extra params outside provider defaults so explicit runtime
   // transport values can override provider-added defaults.
   applyPrePluginStreamWrappers(wrapperContext);
@@ -1037,6 +1003,11 @@ export function applyExtraParamsToAgent(
     ...wrapperContext,
     providerWrapperHandled,
   });
+  // These core adapters patch options/payloads and delegate to this exact base.
+  // Preserve its contract only after the separate plugin wrapper has qualified itself.
+  if (agent.streamFn && delegatedStream) {
+    agent.streamFn = inheritModelRequestBinding(agent.streamFn, delegatedStream);
+  }
 
   return { effectiveExtraParams, nativeWebSearchAllowedByToolPolicy };
 }

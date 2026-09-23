@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { attachModelProviderLocalServiceReconciler } from "../agents/provider-local-service-reconcile.js";
+import { constructProviderModelStreamWrapper } from "../agents/provider-model-request-binding.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataRegistryView } from "./plugin-metadata-snapshot.types.js";
 import {
@@ -9,6 +10,7 @@ import {
 } from "./provider-config-owner.js";
 import { findProviderRuntimeRegistrationInRegistry } from "./provider-registry-selection.js";
 import { matchesProviderPluginRef } from "./provider-registry-shared.js";
+import type { ProviderModelRequestBindingContext } from "./provider-transport.types.js";
 import type { createProviderRegistryResolver } from "./providers.runtime-core.js";
 import type {
   ProviderPlugin,
@@ -31,6 +33,8 @@ type ProviderRuntimePluginLookupParams = {
 
 export type ProviderRuntimePluginHandle = ProviderRuntimePluginLookupParams & {
   plugin?: ProviderPlugin;
+  /** Exact registration/hook identity; no provider-handle clone comparison or rediscovery. */
+  isModelRequestBindingCurrent?: () => boolean;
 };
 
 const MODEL_PROVIDER_RUNTIME_PLUGIN_HANDLE_SYMBOL = Symbol.for(
@@ -159,9 +163,35 @@ export function createProviderHookRuntime(
           isOwnerEligible: (id) => selection.isProviderOwnerEligible(id, params.provider),
         })
       : undefined;
+    const bindingHooks = registration && [
+      registration.provider.createStreamFn,
+      registration.provider.wrapStreamFn,
+      registration.provider.wrapSimpleCompletionStreamFn,
+      registration.provider.resolveModelRequestBindingSupport,
+    ];
     return {
       ...params,
       ...(selection ? { workspaceDir: selection.workspaceDir } : {}),
+      isModelRequestBindingCurrent: selection
+        ? () => {
+            const current = findProviderRuntimeRegistrationInRegistry({
+              registry: selection.registry,
+              provider: params.provider,
+              ownerRefs,
+              isOwnerEligible: (id) => selection.isProviderOwnerEligible(id, params.provider),
+            });
+            return (
+              current === registration &&
+              (!current ||
+                [
+                  current.provider.createStreamFn,
+                  current.provider.wrapStreamFn,
+                  current.provider.wrapSimpleCompletionStreamFn,
+                  current.provider.resolveModelRequestBindingSupport,
+                ].every((hook, index) => hook === bindingHooks?.[index]))
+            );
+          }
+        : undefined,
       plugin: registration
         ? Object.assign({}, registration.provider, { pluginId: registration.pluginId })
         : undefined,
@@ -261,13 +291,18 @@ export function createProviderHookRuntime(
   }
 
   function wrapProviderSimpleCompletionStreamFn(
-    params: ProviderHookParams<ProviderWrapStreamFnContext>,
+    params: ProviderHookParams<ProviderWrapStreamFnContext> & {
+      preparedTransport?: ProviderModelRequestBindingContext["transport"];
+    },
   ) {
-    return (
-      ensureProviderRuntimePluginHandle(params).plugin?.wrapSimpleCompletionStreamFn?.(
-        params.context,
-      ) ?? undefined
-    );
+    const handle = ensureProviderRuntimePluginHandle(params);
+    return constructProviderModelStreamWrapper({
+      plugin: handle.plugin,
+      isCurrent: handle.isModelRequestBindingCurrent,
+      context: params.context,
+      hook: "wrapSimpleCompletionStreamFn",
+      transport: params.preparedTransport,
+    });
   }
 
   return {

@@ -206,16 +206,43 @@ authority and canonical model to its serialized wire model, owns that routing
 snapshot across hooks, and rechecks authority at final dispatch, including retries.
 Do not capture caller authority in a cached factory or registry entry.
 
-Package-owned Completions and Responses HTTP transports implement this contract.
-Responses WebSocket modes are refused under finite model restrictions; OpenClaw
-does not silently switch transports. Unrestricted requests retain their existing
-behavior. This contract does not qualify a native agent runtime.
+Providers with custom factories or wrappers must also implement the optional
+synchronous `resolveModelRequestBindingSupport({ model, transport })` query.
+`model` contains only `provider`, `id`, `api`, and `baseUrl`; `transport` is the
+actual prepared selection, or `undefined` when unresolved. The query must be
+pure and bounded. It receives no credentials, config, environment, authority,
+or stream callback and must not construct a transport or perform I/O.
 
-Custom wrappers do not inherit qualification automatically. A transparent wrapper
-may declare it only when it performs no inference egress itself and always calls
-a qualified delegate. Custom transports without the contract are unavailable to
-callers with finite model restrictions. Select models through normal model
-selection before request preparation; `onPayload` cannot reroute a finite request.
+The result can declare these obligations independently:
+
+- `createStreamFn: "wire-model-v1"`: the factory returns a qualified delegate.
+- `wrapStreamFn: "preserves-delegate"`: the embedded wrapper performs no inference
+  egress of its own and delegates to the supplied qualified base.
+- `wrapSimpleCompletionStreamFn: "preserves-delegate"`: the same obligation for
+  direct completion.
+
+A present but undeclared hook is unavailable to finite callers before credential
+unwrap or hook invocation. A declared factory returning `null`, `undefined`, or
+an unqualified function is a terminal policy error; it does not fall back to
+another transport. A wrapper can retain its supplied base, but a distinct returned
+function must carry its own `wire-model-v1` declaration. Core does not stamp
+arbitrary plugin wrappers. Unrestricted callers retain their existing behavior.
+
+API registrations separately declare `modelRequestBindingSupport.stream` and
+`.streamSimple`, each with `contract: "wire-model-v1"` and supported `transports`.
+Those copied facts describe the actual selected leaf, not an API name or a lazy
+router. Replacing a registration or provider hook invalidates the prepared fact.
+Catalog availability uses the captured physical model, provider hooks, and
+config/default transport, without invoking factories. Execution rechecks the
+actual session/settings transport, which the catalog reader does not represent.
+
+Package-owned Completions and Responses HTTP transports implement the SSE
+contract. The standard OpenAI API-key route already prepares SSE by default;
+see [OpenAI transport settings](/providers/openai/advanced).
+An unresolved transport, `auto`, or a WebSocket mode does not qualify, and
+OpenClaw does not silently replace it with SSE. This contract does not qualify
+a native agent runtime. Select models through normal model selection before
+request preparation; `onPayload` cannot reroute a finite request.
 
 For custom `createStreamFn` transports that accumulate JSON tool arguments,
 use `createToolArgumentPreviewSchedule()` from `openclaw/plugin-sdk/llm`.

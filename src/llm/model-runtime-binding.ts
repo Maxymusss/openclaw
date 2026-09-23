@@ -1,5 +1,5 @@
 import type { LlmRuntime } from "@openclaw/ai";
-import type { Model } from "./types.js";
+import type { Model, SimpleStreamOptions } from "./types.js";
 
 const MODEL_LLM_RUNTIME = Symbol("openclaw.modelLlmRuntime");
 const streamLlmRuntimes = new WeakMap<object, LlmRuntime>();
@@ -12,6 +12,7 @@ type ModelCompletionOwner = {
 type ModelRuntimeBinding = {
   runtime?: LlmRuntime;
   completionTransport?: Model;
+  completionTransportKind?: SimpleStreamOptions["transport"];
   completionOwner?: ModelCompletionOwner;
 };
 
@@ -33,10 +34,12 @@ export function bindModelLlmRuntime(
   model: Model,
   runtime: LlmRuntime,
   completionTransport?: Model,
+  completionTransportKind?: SimpleStreamOptions["transport"],
 ): Model {
   return bindModelRuntime(model, {
     runtime,
     completionTransport,
+    completionTransportKind,
     completionOwner: getModelCompletionOwner(model),
   });
 }
@@ -60,6 +63,12 @@ export function getModelLlmRuntime(model: RuntimeBoundModel): LlmRuntime | undef
 
 export function getModelCompletionTransport(model: RuntimeBoundModel): Model | undefined {
   return model[MODEL_LLM_RUNTIME]?.completionTransport;
+}
+
+export function getModelCompletionTransportKind(
+  model: RuntimeBoundModel,
+): SimpleStreamOptions["transport"] {
+  return model[MODEL_LLM_RUNTIME]?.completionTransportKind;
 }
 
 /** Associates a prepared stream entry point with the runtime that owns it. */

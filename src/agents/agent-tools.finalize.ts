@@ -1,4 +1,5 @@
 import type { ModelCompatConfig } from "../config/types.models.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { wrapToolWithAbortSignal } from "./agent-tools.abort.js";
 import type { HookContext } from "./agent-tools.before-tool-call.types.js";
 import {
@@ -9,6 +10,9 @@ import { applyToolAvailabilityDescriptions } from "./agent-tools.deferred-follow
 import { normalizeToolParameters } from "./agent-tools.schema.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { isToolWrappedWithBeforeToolCallHook } from "./before-tool-call-metadata.js";
+import type { OpenClawToolsOptions } from "./openclaw-tools.types.js";
+import { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
+import { createGatewayToolCallerWrapper } from "./tools/gateway-caller-context.js";
 
 type FinalizeAgentToolsOptions = {
   tools: AnyAgentTool[];
@@ -54,4 +58,41 @@ export function finalizeAgentTools(options: FinalizeAgentToolsOptions): AnyAgent
   const finalized = applyToolAvailabilityDescriptions(withAbort);
   options.recordToolPrepStage?.("deferred-followup-descriptions");
   return finalized;
+}
+
+/** Preserve existing OpenClaw hooks before binding the requesting Gateway identity. */
+export function finalizeOpenClawToolHooks(params: {
+  allTools: AnyAgentTool[];
+  options?: OpenClawToolsOptions;
+  sessionAgentId: string;
+  resolvedConfig?: OpenClawConfig;
+  gatewayCallerAccountId?: string;
+}): AnyAgentTool[] {
+  const { allTools, options, sessionAgentId, resolvedConfig, gatewayCallerAccountId } = params;
+  const hookAgentId = options?.requesterAgentIdOverride ?? sessionAgentId;
+  const wrapGatewayCallerIdentity = createGatewayToolCallerWrapper(
+    hookAgentId,
+    options ? { ...options, agentAccountId: gatewayCallerAccountId } : options,
+  );
+
+  if (options?.wrapBeforeToolCallHook === false) {
+    return allTools.map(wrapGatewayCallerIdentity);
+  }
+  const defaultHookContext: HookContext = {
+    ...(hookAgentId ? { agentId: hookAgentId } : {}),
+    ...(resolvedConfig ? { config: resolvedConfig } : {}),
+    ...(options?.agentSessionKey ? { sessionKey: options.agentSessionKey } : {}),
+    ...(options?.sessionId ? { sessionId: options.sessionId } : {}),
+    ...(options?.currentChannelId ? { channelId: options.currentChannelId } : {}),
+    loopDetection: resolveToolLoopDetectionConfig({ cfg: resolvedConfig, agentId: hookAgentId }),
+  };
+  const hookContext = { ...defaultHookContext, ...options?.beforeToolCallHookContext };
+  options?.recordToolPrepStage?.("openclaw-tools:tool-hooks");
+  return allTools
+    .map((tool) =>
+      isToolWrappedWithBeforeToolCallHook(tool)
+        ? tool
+        : wrapToolWithBeforeToolCallHook(tool, hookContext),
+    )
+    .map(wrapGatewayCallerIdentity);
 }

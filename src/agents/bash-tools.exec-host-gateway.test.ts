@@ -435,7 +435,6 @@ vi.mock("./bash-tools.exec-host-shared.js", () => ({
 
 vi.mock("./bash-tools.exec-runtime.js", () => ({
   createApprovalSlug: vi.fn(() => "slug"),
-  normalizeNotifyOutput: vi.fn((value) => value),
   runExecProcess: runExecProcessMock,
 }));
 

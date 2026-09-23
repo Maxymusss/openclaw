@@ -26,6 +26,7 @@ import {
 } from "../subagents/subagent-attachment-paths.js";
 import {
   captureNativeSandboxBackend,
+  replaceNativeSandboxBackend,
   createSandboxBackend,
   getSandboxBackendWorkdirResolver,
 } from "./backend.js";
@@ -44,6 +45,23 @@ import type { SandboxContext, SandboxIsolationSubject, SandboxWorkspaceInfo } fr
 import { ensureSandboxWorkspace } from "./workspace.js";
 
 const sandboxLog = createSubsystemLogger("agent/sandbox");
+
+const nativeReplacements = new WeakMap<
+  SandboxContext,
+  (custody: NativeSandboxCustody) => Promise<SandboxContext>
+>();
+
+/** Reuse the prepared workspace and projection owner, never a new ambient selection. */
+export function replaceNativeSandboxContext(
+  previous: SandboxContext,
+  custody: NativeSandboxCustody,
+) {
+  const replace = nativeReplacements.get(previous);
+  if (!replace) {
+    throw new Error("Sandbox context has no native generation replacement owner.");
+  }
+  return replace(custody);
+}
 
 const loadSyncWorkspaceSkills = createLazyRuntimeNamedExport(
   () => import("../../skills/loading/workspace-skill-sync.runtime.js"),
@@ -487,6 +505,43 @@ async function resolveProvisionedSandboxContext(
       sandboxContext,
       localWorkspace,
     );
+  }
+  if (nativeBackend) {
+    const retainReplacement = (context: SandboxContext) => {
+      const prepared = { ...context };
+      nativeReplacements.set(context, async (custody) => {
+        custody.assertCurrent();
+        const previousBackend = prepared.backend;
+        if (!previousBackend) {
+          throw new Error("Native sandbox context lost its backend owner.");
+        }
+        const provision = () =>
+          replaceNativeSandboxBackend(resolvedCfg.backend, previousBackend, custody);
+        const nextBackend = localWorkspace
+          ? await localWorkspace.provision(provision)
+          : await provision();
+        custody.assertCurrent();
+        const next: SandboxContext = {
+          ...prepared,
+          backend: nextBackend,
+          runtimeId: nextBackend.runtimeId,
+          runtimeLabel: nextBackend.runtimeLabel,
+          containerName: nextBackend.runtimeId,
+          containerWorkdir: nextBackend.workdir,
+          fsBridge: undefined,
+        };
+        next.fsBridge =
+          nextBackend.createFsBridge?.({ sandbox: next }) ??
+          createSandboxFsBridge({ sandbox: next });
+        if (localWorkspace) {
+          (await import("./local-workspace.js")).bindLocalSandboxWorkspace(next, localWorkspace);
+        }
+        custody.assertCurrent();
+        retainReplacement(next);
+        return next;
+      });
+    };
+    retainReplacement(sandboxContext);
   }
   return sandboxContext;
 }

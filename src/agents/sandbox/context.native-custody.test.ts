@@ -6,30 +6,40 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import * as executablePath from "../../infra/executable-path.js";
 import * as privateTemp from "../../infra/private-temp-workspace.js";
+import { CommandProcessCleanupError } from "../../process/exec-result.js";
+import { resolveCommandProcessSignal } from "../../process/exec-spawn.js";
+import { getProcessSupervisor } from "../../process/supervisor/index.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../../state/openclaw-state-db.js";
-import {
-  createAdmittedRunOperatorAuthority,
-  prepareSystemAgentRunAdmission,
-} from "../admitted-run-context.js";
-import { createEmbeddedAttemptToolGenerationOwner } from "../embedded-agent-runner/run/attempt-tool-generation.js";
+import { resetProcessRegistryForTests } from "../bash-process-registry.test-support.js";
+import { captureForegroundExecPolicy } from "../bash-tools.exec-foreground.js";
+import { runExecProcess } from "../bash-tools.exec-runtime.js";
 import { registerSandboxBackend } from "./backend.js";
 import type { ReservedSandboxBackendFactoryV1 } from "./backend.types.js";
 import {
   bindNativeSandboxEngineTarget,
   captureNativeSandboxEngine,
   DOCKER_SANDBOX_ENGINE,
-  PODMAN_SANDBOX_ENGINE,
   execContainer,
   execNativeSandboxCreate,
   readNativeSandboxExecution,
 } from "./container-engine.js";
-import { resolveSandboxContext, resolveSandboxContextInternal } from "./context.js";
+import {
+  replaceNativeSandboxContext,
+  resolveSandboxContext,
+  resolveSandboxContextInternal,
+} from "./context.js";
+import {
+  commandResult,
+  createNativeGeneration,
+  createNativePipeline,
+  type NativePipelineOptions,
+} from "./context.native-custody.test-support.js";
 import { dockerSandboxBackendManager } from "./docker-backend.js";
-import { assertNativeSandboxCreatedContainer } from "./docker.js";
 import { removeSandboxContainer } from "./manage.js";
+import { bindNativeSandboxExecTarget } from "./native-exec-binding.js";
 import {
   readRegistry,
   readRegistryEntry,
@@ -50,25 +60,11 @@ vi.mock("../exec-defaults.js", () => ({ resolveNodeExecEligibility: () => ({ can
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const releases: Array<() => Promise<void>> = [];
-let nextRun = 0;
 let endpoint: string;
 let executable: string;
 let stateDir: string;
 let workspaceDir: string;
 let config: OpenClawConfig;
-
-function commandResult(stdout = "", failure?: "cancel" | "exit") {
-  return {
-    failed: failure !== undefined,
-    isCanceled: failure === "cancel",
-    isTerminated: false,
-    timedOut: false,
-    isMaxBuffer: false,
-    exitCode: failure === "exit" ? 1 : 0,
-    stdout: Buffer.from(stdout),
-    stderr: Buffer.alloc(0),
-  };
-}
 
 beforeEach(() => {
   stateDir = tempDirs.make("native-sandbox-custody-");
@@ -101,48 +97,15 @@ afterEach(async () => {
   for (const release of releases.splice(0)) {
     await release();
   }
+  resetProcessRegistryForTests();
   await closeOpenClawStateDatabaseAsync();
   closeOpenClawStateDatabaseForTest();
   vi.unstubAllEnvs();
   vi.restoreAllMocks();
 });
 
-async function generation() {
-  const runId = `native-generation-${++nextRun}`;
-  const source = new AbortController();
-  const authority = createAdmittedRunOperatorAuthority({
-    profileId: "foreground-person",
-    scopes: ["operator.sessions.write"],
-    executionPolicy: "foreground-only",
-    foregroundRunId: runId,
-    foregroundDeadlineAt: Date.now() + 60_000,
-    signal: source.signal,
-    assertCurrent: () => source.signal.throwIfAborted(),
-  });
-  const admission = prepareSystemAgentRunAdmission(
-    {},
-    runId,
-    "test",
-    "native-custody-test",
-    undefined,
-    authority,
-  );
-  const owner = createEmbeddedAttemptToolGenerationOwner(
-    {
-      runId,
-      admittedRunContext: await admission.admit("embedded"),
-    },
-    source.signal,
-  );
-  releases.push(async () => {
-    await owner.release("completion");
-    admission.close();
-  });
-  const custody = owner.current.nativeCustody;
-  if (!custody) {
-    throw new Error("missing actual foreground generation custody");
-  }
-  return { owner, custody, source };
+function generation() {
+  return createNativeGeneration(releases);
 }
 
 describe("captured native command transport", () => {
@@ -255,215 +218,8 @@ describe("captured native command transport", () => {
   });
 });
 
-describe("private native allocation construction policy", () => {
-  const reservation = {
-    containerName: "reserved-generation",
-    sessionKey: "foreground-generation",
-    createdAtMs: 1234,
-    configHash: "captured-config",
-  };
-  const id = "c".repeat(64);
-
-  it.each([DOCKER_SANDBOX_ENGINE, PODMAN_SANDBOX_ENGINE])(
-    "accepts the exact $id construction shape on its captured endpoint",
-    async (engine) => {
-      const { custody } = await generation();
-      const bound = bindNativeSandboxEngineTarget(captureNativeSandboxEngine(engine, custody), {
-        key: "selected-engine",
-        globalArgs: [engine.id === "docker" ? "--host" : "--url", endpoint],
-      });
-      transport.spawn.mockResolvedValue(
-        commandResult(
-          JSON.stringify({
-            Id: id,
-            Name:
-              engine.id === "docker" ? `/${reservation.containerName}` : reservation.containerName,
-            Config: {
-              Labels: {
-                "openclaw.sandbox": "1",
-                "openclaw.sessionKey": reservation.sessionKey,
-                "openclaw.createdAtMs": String(reservation.createdAtMs),
-                "openclaw.configHash": reservation.configHash,
-              },
-            },
-            HostConfig: {
-              PidMode: engine.id === "docker" ? "" : "private",
-              RestartPolicy: { Name: "no" },
-              AutoRemove: false,
-            },
-          }),
-        ),
-      );
-      await assertNativeSandboxCreatedContainer(bound, id, reservation);
-      expect(transport.spawn).toHaveBeenCalledExactlyOnceWith(
-        [
-          executable,
-          engine.id === "docker" ? "--host" : "--url",
-          endpoint,
-          "inspect",
-          "--format",
-          "{{json .}}",
-          id,
-        ],
-        expect.anything(),
-      );
-    },
-  );
-
-  it.each([
-    { changed: "ID", top: { Id: "d".repeat(64) } },
-    { changed: "name", top: { Name: "/other-generation" } },
-    { changed: "owner", labels: { "openclaw.sessionKey": "other-owner" } },
-    { changed: "creation receipt", labels: { "openclaw.createdAtMs": "5678" } },
-    { changed: "configuration", labels: { "openclaw.configHash": "other-config" } },
-    { changed: "host PID namespace", host: { PidMode: "host" } },
-    { changed: "joined PID namespace", host: { PidMode: "container:other" } },
-    { changed: "restart policy", host: { RestartPolicy: { Name: "always" } } },
-    { changed: "automatic removal", host: { AutoRemove: true } },
-    { changed: "missing host policy", top: { HostConfig: null } },
-  ])(
-    "refuses a mismatched $changed without addressing a reusable name",
-    async ({ top, labels, host }) => {
-      const { custody } = await generation();
-      const bound = bindNativeSandboxEngineTarget(
-        captureNativeSandboxEngine(DOCKER_SANDBOX_ENGINE, custody),
-        {
-          key: "selected-engine",
-          globalArgs: ["--host", endpoint],
-        },
-      );
-      const inspected = {
-        Id: id,
-        Name: `/${reservation.containerName}`,
-        Config: {
-          Labels: {
-            "openclaw.sandbox": "1",
-            "openclaw.sessionKey": reservation.sessionKey,
-            "openclaw.createdAtMs": String(reservation.createdAtMs),
-            "openclaw.configHash": reservation.configHash,
-            ...labels,
-          },
-        },
-        HostConfig: { PidMode: "", RestartPolicy: { Name: "no" }, AutoRemove: false, ...host },
-        ...top,
-      };
-      transport.spawn.mockResolvedValue(commandResult(JSON.stringify(inspected)));
-      await expect(assertNativeSandboxCreatedContainer(bound, id, reservation)).rejects.toThrow(
-        "reserved owner or construction policy",
-      );
-      expect(transport.spawn).toHaveBeenCalledExactlyOnceWith(
-        [executable, "--host", endpoint, "inspect", "--format", "{{json .}}", id],
-        expect.anything(),
-      );
-    },
-  );
-});
-
-// This fixture mocks only transport. Resolver, native factory, env staging,
-// generation cleanup and the SQLite reservation owner remain real.
-function nativePipeline(
-  options: {
-    before?: (args: string[]) => Promise<void>;
-    createOutput?: string;
-    inspectOverride?: Record<string, unknown>;
-  } = {},
-) {
-  const allocations = new Map<string, { id: string; labels: Record<string, string> }>();
-  const commands: string[][] = [];
-  transport.spawn.mockImplementation(async (argv: string[]) => {
-    const args = argv.slice(argv[1] === "--host" || argv[1] === "--url" ? 3 : 1);
-    commands.push(args);
-    await options.before?.(args);
-    if (args[0] === "info") {
-      return commandResult("false\ttrue\t" + endpoint.slice("unix://".length) + "\t5.8.2\n");
-    }
-    if (args[0] === "system") {
-      return commandResult("[]");
-    }
-    if (args[0] === "image") {
-      return commandResult();
-    }
-    if (args[0] === "create") {
-      const name = args[args.indexOf("--name") + 1];
-      if (!name) {
-        throw new Error("missing real create name");
-      }
-      const labels: Record<string, string> = {};
-      for (let index = 0; index < args.length; index++) {
-        if (args[index] !== "--label") {
-          continue;
-        }
-        const pair = args[index + 1] ?? "";
-        const separator = pair.indexOf("=");
-        labels[pair.slice(0, separator)] = pair.slice(separator + 1);
-      }
-      const id = String(allocations.size + 1).padStart(64, "a");
-      allocations.set(name, { id, labels });
-      return commandResult(options.createOutput ?? id);
-    }
-    if (args.includes("--type")) {
-      // Containerized test runners still exercise the canonical namespace probe.
-      return commandResult(
-        JSON.stringify({
-          Id: "f".repeat(64),
-          Mounts: [{ Type: "bind", Source: stateDir, Destination: stateDir, RW: true }],
-          Tmpfs: null,
-        }),
-      );
-    }
-    if (args[0] === "exec" && args.includes("-e")) {
-      return commandResult(
-        JSON.stringify([
-          fs.readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim(),
-          fs.readlinkSync("/proc/self/ns/mnt"),
-        ]),
-      );
-    }
-    const allocation = [...allocations.entries()].find(
-      ([name, value]) => args.includes(name) || args.includes(value.id),
-    );
-    if (args[0] === "inspect") {
-      if (!allocation) {
-        return { ...commandResult("", "exit"), stderr: Buffer.from("No such container") };
-      }
-      const [name, value] = allocation;
-      if (args.includes("{{json .}}")) {
-        return commandResult(
-          JSON.stringify({
-            Id: value.id,
-            Name: argv[1] === "--url" ? name : "/" + name,
-            Config: { Labels: value.labels },
-            HostConfig: {
-              PidMode: argv[1] === "--url" ? "private" : "",
-              RestartPolicy: { Name: "no" },
-              AutoRemove: false,
-            },
-            ...options.inspectOverride,
-          }),
-        );
-      }
-      if (args.includes("{{.Id}}")) {
-        return commandResult(value.id);
-      }
-      if (args.includes("{{.State.Running}}")) {
-        return commandResult("true");
-      }
-      if (args.some((arg) => arg.includes("openclaw.configHash"))) {
-        return commandResult(value.labels["openclaw.configHash"]);
-      }
-      if (args.some((arg) => arg.includes("Mounts"))) {
-        return commandResult(JSON.stringify({ Mounts: [], Tmpfs: null }));
-      }
-    }
-    if (args.includes("/proc/self/mountinfo")) {
-      return commandResult("1 1 0:1 / / rw - overlay overlay rw\n");
-    }
-    if (args[0] === "start" || args[0] === "exec" || args[0] === "rm") {
-      return commandResult();
-    }
-    throw new Error("unexpected native fixture command: " + args[0]);
-  });
-  return { commands, allocations };
+function nativePipeline(options: NativePipelineOptions = {}) {
+  return createNativePipeline({ spawn: transport.spawn, stateDir, endpoint }, options);
 }
 
 function expectUncertainCleanup(
@@ -563,17 +319,19 @@ describe("actual native resolver custody", () => {
         timedOut: false,
       });
     }
-    await first.owner.release("completion");
-    await first.owner.release("completion");
-    expectUncertainCleanup(first.owner, "qualified extinction");
-    expect(() => first.owner.replace()).toThrow("qualified cleanup");
-    await closeOpenClawStateDatabaseAsync();
-    closeOpenClawStateDatabaseForTest();
-    await expect(readRegistry()).resolves.toEqual({ entries: rows });
     const before = h.commands.length;
     await expect(removeSandboxContainer(a.runtimeId)).rejects.toThrow("custody retained");
     expect(h.commands).toHaveLength(before);
-    expect(h.commands.some((args) => args[0] === "rm")).toBe(false);
+    await first.owner.release("completion");
+    await first.owner.release("completion");
+    expect(() => first.owner.assertCleanupConfirmed()).not.toThrow();
+    expect(h.commands.filter((args) => args[0] === "rm")).toEqual([["rm", allocation.id]]);
+    expect(h.allocations.get(b.runtimeId)?.state).toBe("running");
+    await closeOpenClawStateDatabaseAsync();
+    closeOpenClawStateDatabaseForTest();
+    await expect(readRegistry()).resolves.toEqual({
+      entries: rows.filter((row) => row.containerName === b.runtimeId),
+    });
   });
 
   it.each(["create", "start"] as const)(
@@ -581,9 +339,11 @@ describe("actual native resolver custody", () => {
     async (heldCommand) => {
       const entered = createDeferred();
       const finish = createDeferred();
+      let dispatchedSignal: AbortSignal | undefined;
       const h = nativePipeline({
         before: async (args) => {
           if (args[0] === heldCommand) {
+            dispatchedSignal = resolveCommandProcessSignal();
             entered.resolve();
             await finish.promise;
           }
@@ -600,6 +360,8 @@ describe("actual native resolver custody", () => {
         expect(pendingRows).toHaveLength(1);
         expect(pendingRows[0]?.retirementPolicy).toBe("foreground-owner");
         source.abort(new Error("native stop"));
+        expect(dispatchedSignal).toBeDefined();
+        expect(dispatchedSignal?.aborted).toBe(false);
         release = owner.release("abort").then(() => {
           released = true;
         });
@@ -608,18 +370,18 @@ describe("actual native resolver custody", () => {
         finish.resolve();
         await failed;
         await release;
-        expectUncertainCleanup(
-          owner,
-          heldCommand === "start" ? "qualified extinction" : "removal remains unconfirmed",
-        );
+        expect(() => owner.assertCleanupConfirmed()).not.toThrow();
         expect(h.commands.filter((args) => args[0] === "start")).toHaveLength(
           heldCommand === "start" ? 1 : 0,
         );
         expect(
           h.commands.some((args) => args[0] === "exec" && args.includes("fixture-setup")),
         ).toBe(false);
-        expect(h.commands.some((args) => args[0] === "rm")).toBe(false);
-        await expect(readRegistry()).resolves.toEqual({ entries: pendingRows });
+        expect(h.commands.filter((args) => args[0] === "rm")).toEqual([
+          ["rm", "1".padStart(64, "a")],
+        ]);
+        expect(h.allocations.size).toBe(0);
+        await expect(readRegistry()).resolves.toEqual({ entries: [] });
       } finally {
         finish.resolve();
         await Promise.allSettled([pending, release, failed]);
@@ -627,7 +389,33 @@ describe("actual native resolver custody", () => {
     },
   );
 
-  it("retains successful allocation when the real env-file cleanup reports failure", async () => {
+  it.each(["create", "start"] as const)(
+    "does not record queued %s as dispatched after Stop",
+    async (command) => {
+      const h = nativePipeline();
+      const { owner, custody, source } = await generation();
+      const runProducer = custody.runProducer;
+      let enqueued = 0;
+      vi.spyOn(custody, "runProducer").mockImplementation((run, options) => {
+        const pending = runProducer(run, options);
+        if (options?.settleAfterAbort && ++enqueued === (command === "create" ? 1 : 2)) {
+          source.abort(new Error("stopped before dispatch"));
+        }
+        return pending;
+      });
+      await expect(resolveNative(custody)).rejects.toThrow("stopped before dispatch");
+      await owner.release("abort");
+      expect(() => owner.assertCleanupConfirmed()).not.toThrow();
+      expect(h.commands.filter((args) => args[0] === command)).toEqual([]);
+      expect(h.commands.filter((args) => args[0] === "rm")).toEqual(
+        command === "start" ? [["rm", "1".padStart(64, "a")]] : [],
+      );
+      expect(h.commands.some((args) => args[0] === "kill" || args[0] === "wait")).toBe(false);
+      await expect(readRegistry()).resolves.toEqual({ entries: [] });
+    },
+  );
+
+  it("retires the never-started allocation while preserving the real env-file cleanup failure", async () => {
     const h = nativePipeline();
     const cleanupFailure = new Error("env cleanup failed");
     const realWorkspace = privateTemp.tempWorkspace;
@@ -650,10 +438,10 @@ describe("actual native resolver custody", () => {
     expect(h.commands.some((args) => args.includes("{{json .}}"))).toBe(true);
     expect(h.commands.some((args) => args[0] === "start" || args[0] === "rm")).toBe(false);
     await owner.release("error");
-    expectUncertainCleanup(owner, "removal remains unconfirmed");
-    expect((await readRegistry()).entries).toMatchObject([
-      { retirementPolicy: "foreground-owner", runtimeState: "pending" },
-    ]);
+    expect(() => owner.assertCleanupConfirmed()).not.toThrow();
+    expect(h.commands.filter((args) => args[0] === "rm")).toEqual([["rm", "1".padStart(64, "a")]]);
+    expect(h.commands.some((args) => args[0] === "kill" || args[0] === "wait")).toBe(false);
+    await expect(readRegistry()).resolves.toEqual({ entries: [] });
   });
 
   it.each([
@@ -674,7 +462,7 @@ describe("actual native resolver custody", () => {
       const { owner, custody } = await generation();
       await expect(resolveNative(custody)).rejects.toThrow(message);
       await owner.release("error");
-      expectUncertainCleanup(owner, "removal remains unconfirmed");
+      expectUncertainCleanup(owner, createOutput ? "receipt is missing" : "reserved owner");
       expect(h.commands.some((args) => args[0] === "start" || args[0] === "rm")).toBe(false);
       expect((await readRegistry()).entries).toMatchObject([
         { retirementPolicy: "foreground-owner" },
@@ -727,6 +515,321 @@ describe("actual native resolver custody", () => {
       }
     },
   );
+
+  it("replaces only the retired generation on its original target and permanently revokes old handles", async () => {
+    const h = nativePipeline();
+    const { owner, custody } = await generation();
+    const initial = await resolveNative(custody);
+    if (!initial?.backend) {
+      throw new Error("missing initial context");
+    }
+    const oldSpec = await initial.backend.buildExecSpec({
+      command: "true",
+      env: {},
+      usePty: false,
+    });
+    await initial.backend.finalizeExec?.({
+      token: oldSpec.finalizeToken,
+      status: "completed",
+      exitCode: 0,
+      timedOut: false,
+    });
+    await owner.retire("permission-change");
+    owner.assertCleanupConfirmed();
+    const next = owner.replace();
+    if (!next.nativeCustody) {
+      throw new Error("missing successor custody");
+    }
+    vi.stubEnv("DOCKER_HOST", "unix:///changed-after-retirement.sock");
+    const successor = await replaceNativeSandboxContext(initial, next.nativeCustody);
+    expect(successor.runtimeId).not.toBe(initial.runtimeId);
+    expect(successor.workspaceDir).toBe(initial.workspaceDir);
+    expect(successor.agentWorkspaceDir).toBe(initial.agentWorkspaceDir);
+    expect(successor.fsBridge).not.toBe(initial.fsBridge);
+    expect(successor.backend).not.toBe(initial.backend);
+    await expect(initial.backend.runShellCommand({ script: "true" })).rejects.toThrow();
+    await expect(
+      initial.backend.buildExecSpec({ command: "true", env: {}, usePty: false }),
+    ).rejects.toThrow();
+    if (!successor.backend) {
+      throw new Error("missing successor backend");
+    }
+    const spec = await successor.backend.buildExecSpec({ command: "true", env: {}, usePty: false });
+    expect(spec.argv.slice(0, 3)).toEqual([executable, "--host", endpoint]);
+    expect(spec.argv).toContain(h.allocations.get(successor.runtimeId)?.id);
+    expect(spec.argv).not.toContain("1".padStart(64, "a"));
+    await successor.backend.finalizeExec?.({
+      token: spec.finalizeToken,
+      status: "completed",
+      exitCode: 0,
+      timedOut: false,
+    });
+    const target = bindNativeSandboxExecTarget(
+      {
+        containerName: successor.containerName,
+        workspaceDir,
+        containerWorkdir: "/workspace",
+        env: {},
+      },
+      successor.backend,
+    );
+    const policy = captureForegroundExecPolicy(owner.operatorAuthority, {
+      sandbox: target,
+      scopeKey: next.scopeKey,
+    });
+    expect(() =>
+      policy?.assertAllowed({ command: "true" }, "sandbox", {
+        sandbox: target,
+        scopeKey: next.scopeKey,
+      }),
+    ).not.toThrow();
+    expect(() =>
+      policy?.assertAllowed({ command: "true" }, "sandbox", {
+        sandbox: target,
+        scopeKey: custody.runtimeKey,
+      }),
+    ).toThrow("different tool generation");
+    expect(() =>
+      policy?.assertAllowed({ command: "true" }, "sandbox", {
+        sandbox: { ...target },
+        scopeKey: next.scopeKey,
+      }),
+    ).toThrow("unavailable");
+    await owner.release("completion");
+    owner.assertCleanupConfirmed();
+    expect(() => policy?.assertCurrent()).toThrow();
+    await expect(readRegistry()).resolves.toEqual({ entries: [] });
+  });
+
+  it.each([
+    { name: "replaced daemon", info: { ID: "other-daemon" }, message: "identity changed" },
+    { name: "non-Linux daemon", info: { OSType: "windows" }, message: "Linux Docker" },
+    {
+      name: "synthetic conmon loss",
+      state: { ExitCode: -1, Error: "conmon disappeared" },
+      message: "extinction is unconfirmed",
+    },
+    {
+      name: "never-started exit history",
+      state: { StartedAt: "0001-01-01T00:00:00Z" },
+      message: "extinction is unconfirmed",
+    },
+    { name: "unconfirmed removal", fail: "rm", message: "command failed" },
+    { name: "missing container", fail: "inspect", message: "command failed" },
+  ])(
+    "retains custody after $name and forbids a successor",
+    async ({ info, state, fail, message }) => {
+      const options: Parameters<typeof nativePipeline>[0] = {};
+      const h = nativePipeline(options);
+      const { owner, custody } = await generation();
+      const context = await resolveNative(custody);
+      if (!context) {
+        throw new Error("missing context");
+      }
+      const before = await readRegistry();
+      options.infoOverride = info;
+      if (state) {
+        options.inspectOverride = {
+          State: {
+            Status: "exited",
+            Running: false,
+            Paused: false,
+            Restarting: false,
+            Dead: false,
+            Pid: 0,
+            Error: "",
+            ExitCode: 137,
+            StartedAt: "2026-01-01T00:00:00Z",
+            FinishedAt: "2026-01-01T00:00:01Z",
+            ...state,
+          },
+        };
+        const allocation = h.allocations.get(context.runtimeId);
+        if (!allocation) {
+          throw new Error("missing allocation");
+        }
+        allocation.state = "exited";
+      }
+      options.fail = (args) => args[0] === fail;
+      await owner.release("completion");
+      expectUncertainCleanup(owner, message);
+      expect(() => owner.replace()).toThrow("confirmed cleanup");
+      await expect(readRegistry()).resolves.toEqual(before);
+      if (fail !== "rm") {
+        expect(h.commands.some((args) => args[0] === "rm")).toBe(false);
+      }
+    },
+  );
+
+  it("joins owned native CLI extinction before env finalization after work revocation", async () => {
+    nativePipeline();
+    const { owner, custody, source } = await generation();
+    const context = await resolveNative(custody);
+    if (!context?.backend) {
+      throw new Error("missing native backend");
+    }
+    const rootExit = createDeferred();
+    const extinction = createDeferred();
+    const joining = createDeferred();
+    const cancel = vi.fn();
+    const spawn = vi.spyOn(getProcessSupervisor(), "spawn").mockImplementation(async (input) => ({
+      activity: { resultSettled: false, lastOutputAtMs: Date.now() },
+      runId: input.runId ?? "native-cli",
+      startedAtMs: Date.now(),
+      cancel,
+      wait: async () => {
+        await rootExit.promise;
+        return {
+          reason: "exit" as const,
+          exitCode: 0,
+          exitSignal: null,
+          durationMs: 1,
+          stdout: "",
+          stderr: "",
+          timedOut: false,
+          noOutputTimedOut: false,
+        };
+      },
+      waitForExtinction: async () => {
+        joining.resolve();
+        await extinction.promise;
+      },
+    }));
+    const finalize = vi.fn(context.backend.finalizeExec?.bind(context.backend));
+    const target = bindNativeSandboxExecTarget(
+      {
+        containerName: context.containerName,
+        workspaceDir,
+        containerWorkdir: "/workspace",
+        buildExecSpec: context.backend.buildExecSpec.bind(context.backend),
+        finalizeExec: finalize,
+      },
+      context.backend,
+    );
+    const run = await runExecProcess({
+      command: "true",
+      workdir: workspaceDir,
+      env: {},
+      sandbox: target,
+      scopeKey: custody.runtimeKey,
+      usePty: false,
+      warnings: [],
+      maxOutput: 1000,
+      pendingMaxOutput: 1000,
+      notifyOnExit: false,
+      timeoutSec: null,
+    });
+    try {
+      expect(spawn.mock.calls[0]?.[0].cleanupOwnership).toBeUndefined();
+      rootExit.resolve();
+      await Promise.race([
+        joining.promise,
+        run.promise.then(() => {
+          throw new Error("CLI extinction was not joined");
+        }),
+      ]);
+      source.abort(new Error("source revoked after native launch"));
+      expect(run.session.finalizing).toBe(true);
+      expect(run.session.exited).toBe(false);
+      expect(finalize).not.toHaveBeenCalled();
+      expect(cancel).toHaveBeenCalledOnce();
+      extinction.resolve();
+      await expect(run.promise).resolves.toMatchObject({ status: "completed", exitCode: 0 });
+      expect(finalize).toHaveBeenCalledOnce();
+      expect(run.session.exited).toBe(true);
+    } finally {
+      rootExit.resolve();
+      extinction.resolve();
+      await run.promise;
+      await owner.release("completion");
+      owner.assertCleanupConfirmed();
+    }
+  });
+
+  it.each([
+    { uncertain: false, allocated: false },
+    { uncertain: true, allocated: false },
+    { uncertain: false, allocated: true },
+    { uncertain: true, allocated: true },
+  ])(
+    "joins local cleanup before native retirement CAS (uncertain=$uncertain, allocated=$allocated)",
+    async ({ uncertain, allocated }) => {
+      const local = createDeferred();
+      const localCleanup = vi.fn(async () => await local.promise);
+      vi.spyOn(getProcessSupervisor(), "acquireScopeCleanup").mockReturnValue(localCleanup);
+      const h = nativePipeline({
+        before: async (args) => {
+          if (!allocated && args[0] === "image") {
+            throw new Error("fixture image unavailable before dispatch");
+          }
+        },
+      });
+      const { owner, custody } = await generation();
+      if (allocated) {
+        await resolveNative(custody);
+      } else {
+        await expect(resolveNative(custody)).rejects.toThrow(
+          "fixture image unavailable before dispatch",
+        );
+      }
+      const before = await readRegistry();
+      const failure = new CommandProcessCleanupError({
+        cause: new Error("local CLI descendant uncertain"),
+      });
+      const closing = owner.release("completion");
+      try {
+        expect(localCleanup).toHaveBeenCalledOnce();
+        expect(h.commands.some((args) => args[0] === "rm")).toBe(false);
+        await expect(readRegistry()).resolves.toEqual(before);
+        if (uncertain) {
+          local.reject(failure);
+        } else {
+          local.resolve();
+        }
+        await closing;
+        // Native retirement is still attempted after a sibling failure, but the
+        // durable reservation cannot be forgotten by that later successful removal.
+        expect(h.commands.filter((args) => args[0] === "rm")).toHaveLength(allocated ? 1 : 0);
+        if (uncertain) {
+          expect(() => owner.assertCleanupConfirmed()).toThrow(failure);
+          await expect(readRegistry()).resolves.toEqual(before);
+        } else {
+          owner.assertCleanupConfirmed();
+          await expect(readRegistry()).resolves.toEqual({ entries: [] });
+        }
+      } finally {
+        local.resolve();
+        await closing;
+      }
+    },
+  );
+
+  it("rereads the exact SQLite owner after wait before any removal", async () => {
+    let replaceDuringWait = false;
+    let replacements = 0;
+    const h = nativePipeline({
+      before: async (args) => {
+        if (replaceDuringWait && args[0] === "wait") {
+          const row = (await readRegistry()).entries[0];
+          if (!row) {
+            throw new Error("missing retained reservation");
+          }
+          const configHash = `${row.configHash}-replacement`;
+          await updateRegistry({ ...row, configHash });
+          expect(await readRegistryEntry(row.containerName)).toEqual({ ...row, configHash });
+          replacements++;
+        }
+      },
+    });
+    const { owner, custody } = await generation();
+    await resolveNative(custody);
+    replaceDuringWait = true;
+    await owner.release("completion");
+    expect(replacements).toBe(1);
+    expect(() => owner.assertCleanupConfirmed()).toThrow();
+    expect(h.commands.some((args) => args[0] === "rm")).toBe(false);
+    expect((await readRegistry()).entries).toHaveLength(1);
+  });
 
   it("preserves ordinary shared reuse and builtin manager cleanup for an unmarked reserved plugin row", async () => {
     const h = nativePipeline();
@@ -861,57 +964,68 @@ describe("actual native resolver custody", () => {
     expect((await readRegistryEntry(first.runtimeId))?.retirementPolicy).toBe("foreground-owner");
   });
 
-  it("keeps the actual Podman pipeline bound to its captured Unix selection after ambient drift", async () => {
-    config.agents = {
-      defaults: {
-        sandbox: {
-          mode: "all",
-          backend: "podman",
-          scope: "shared",
-          workspaceAccess: "rw",
-          workspaceRoot: path.join(stateDir, "sandboxes"),
-          docker: { image: "fixture:local", setupCommand: "fixture-setup" },
-          prune: { idleHours: 0, maxAgeDays: 0 },
+  it.each([
+    { terminalState: "exited", restartName: "" },
+    { terminalState: "exited", restartName: "no" },
+    { terminalState: "stopped", restartName: "" },
+    { terminalState: "stopped", restartName: "no" },
+  ] as const)(
+    "retires Podman $terminalState with restart policy '$restartName' after ambient drift",
+    async ({ terminalState, restartName }) => {
+      config.agents = {
+        defaults: {
+          sandbox: {
+            mode: "all",
+            backend: "podman",
+            scope: "shared",
+            workspaceAccess: "rw",
+            workspaceRoot: path.join(stateDir, "sandboxes"),
+            docker: { image: "fixture:local", setupCommand: "fixture-setup" },
+            prune: { idleHours: 0, maxAgeDays: 0 },
+          },
         },
-      },
-    };
-    vi.stubEnv("CONTAINER_HOST", endpoint);
-    vi.stubEnv("CONTAINER_CONNECTION", "");
-    const h = nativePipeline({
-      before: async (args) => {
-        if (args[0] === "create") {
-          vi.stubEnv("CONTAINER_HOST", "unix:///ambient-other.sock");
-          vi.stubEnv("CONTAINER_CONNECTION", "other-selection");
-        }
-      },
-    });
-    const { custody, owner } = await generation();
-    const context = await resolveNative(custody);
-    if (!context?.backend) {
-      throw new Error("missing Podman backend");
-    }
-    expect(context.backendId).toBe("podman");
-    const row = await readRegistryEntry(context.runtimeId);
-    expect(row?.backendTarget?.globalArgs).toEqual(["--url", endpoint]);
-    expect(row?.retirementPolicy).toBe("foreground-owner");
-    const id = h.allocations.get(context.runtimeId)?.id;
-    expect(id).toMatch(/^[a-f0-9]{64}$/);
-    expect(h.commands.filter((args) => args[0] === "start")).toEqual([["start", id]]);
-    const spec = await context.backend.buildExecSpec({ command: "true", env: {}, usePty: false });
-    try {
-      expect(spec.argv.slice(0, 3)).toEqual([executable, "--url", endpoint]);
-      expect(spec.env.CONTAINER_HOST).toBe(endpoint);
-      expect(spec.env.CONTAINER_CONNECTION).toBe("");
-    } finally {
-      await context.backend.finalizeExec?.({
-        token: spec.finalizeToken,
-        status: "completed",
-        exitCode: 0,
-        timedOut: false,
+      };
+      vi.stubEnv("CONTAINER_HOST", endpoint);
+      vi.stubEnv("CONTAINER_CONNECTION", "");
+      const h = nativePipeline({
+        terminalState,
+        restartPolicy: { Name: restartName },
+        before: async (args) => {
+          if (args[0] === "create") {
+            vi.stubEnv("CONTAINER_HOST", "unix:///ambient-other.sock");
+            vi.stubEnv("CONTAINER_CONNECTION", "other-selection");
+          }
+        },
       });
-    }
-    await owner.release("completion");
-    expectUncertainCleanup(owner, "qualified extinction");
-    expect(h.commands.some((args) => args[0] === "rm")).toBe(false);
-  });
+      const { custody, owner } = await generation();
+      const context = await resolveNative(custody);
+      if (!context?.backend) {
+        throw new Error("missing Podman backend");
+      }
+      expect(context.backendId).toBe("podman");
+      const row = await readRegistryEntry(context.runtimeId);
+      expect(row?.backendTarget?.globalArgs).toEqual(["--url", endpoint]);
+      expect(row?.retirementPolicy).toBe("foreground-owner");
+      const id = h.allocations.get(context.runtimeId)?.id;
+      expect(id).toMatch(/^[a-f0-9]{64}$/);
+      expect(h.commands.filter((args) => args[0] === "start")).toEqual([["start", id]]);
+      const spec = await context.backend.buildExecSpec({ command: "true", env: {}, usePty: false });
+      try {
+        expect(spec.argv.slice(0, 3)).toEqual([executable, "--url", endpoint]);
+        expect(spec.env.CONTAINER_HOST).toBe(endpoint);
+        expect(spec.env.CONTAINER_CONNECTION).toBe("");
+      } finally {
+        await context.backend.finalizeExec?.({
+          token: spec.finalizeToken,
+          status: "completed",
+          exitCode: 0,
+          timedOut: false,
+        });
+      }
+      await owner.release("completion");
+      expect(() => owner.assertCleanupConfirmed()).not.toThrow();
+      expect(h.commands.filter((args) => args[0] === "rm")).toEqual([["rm", id]]);
+      await expect(readRegistry()).resolves.toEqual({ entries: [] });
+    },
+  );
 });

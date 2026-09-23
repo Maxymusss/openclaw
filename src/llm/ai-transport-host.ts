@@ -9,6 +9,7 @@ import {
   isOperatorModelPolicyError,
   requireOperatorModelDelegateSupport,
 } from "../agents/operator-model-policy.js";
+import { assertProviderModelRequestBinding } from "../agents/provider-model-request-binding.js";
 import { unwrapModelHeaderSentinelsForProviderEgress } from "../agents/provider-secret-egress.js";
 import {
   buildGuardedModelFetch,
@@ -21,6 +22,7 @@ import {
 } from "../logging/redact.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { normalizeAnthropicInlineContentBlocks } from "../media/anthropic-inline-images.js";
+import { getModelProviderRuntimePluginHandle } from "../plugins/provider-hook-runtime.js";
 import { swapSecretSentinelsInText } from "../secrets/sentinel.js";
 import { trackAsyncWork } from "../shared/async-work-scope.js";
 
@@ -49,6 +51,14 @@ configureAiTransportHost({
   modelRequests: {
     capture: captureOperatorModelRequest,
     requireDelegateSupport: requireOperatorModelDelegateSupport,
+    requireLeafSupport: (model, leaf, transport) => {
+      assertProviderModelRequestBinding({
+        model,
+        leaf,
+        transport,
+        isCurrent: getModelProviderRuntimePluginHandle(model)?.isModelRequestBindingCurrent,
+      });
+    },
   },
   observePendingProviderWork: (pending) => {
     void trackAsyncWork(() => pending).catch(() => {});

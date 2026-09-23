@@ -4,6 +4,10 @@
 import { createAbortError } from "../../infra/abort-signal.js";
 import { toErrorObject } from "../../infra/errors.js";
 import { resolveExecutableFromPathEnv } from "../../infra/executable-path.js";
+import {
+  runOutsideCommandProcessScope,
+  withCommandProcessScope,
+} from "../../process/exec-spawn.js";
 import { isPlainCommandExitFailure, spawnCommand } from "../../process/exec.js";
 import { SANDBOX_COMMAND_MAX_BUFFER_BYTES } from "./constants.js";
 
@@ -12,9 +16,14 @@ export type NativeSandboxCustody = {
   readonly runtimeKey: string;
   readonly signal: AbortSignal;
   assertCurrent: () => void;
+  assertCleanupConfirmed: () => void;
   registerCleanup: (cleanup: (reason: string) => Promise<void>) => void;
-  runProducer: <T>(run: () => Promise<T>) => Promise<T>;
+  runProducer: <T>(run: () => Promise<T>, options?: { settleAfterAbort: true }) => Promise<T>;
 };
+
+// A dispatched control request needs its receipt even after the turn stops.
+// This bound is independent of execution permission and also bounds retirement.
+export const NATIVE_SANDBOX_SETTLEMENT_MS = 30_000;
 
 const nativeBinding = Symbol("native sandbox transport");
 type NativeBinding = {
@@ -75,6 +84,21 @@ export function bindNativeSandboxEngineTarget(
       ...engine[nativeBinding],
       target: Object.freeze({ key: target.key, globalArgs }),
     }),
+  });
+}
+
+/** Successors keep the original executable, environment and endpoint selection. */
+export function rebindNativeSandboxEngineCustody(
+  engine: SandboxContainerEngine,
+  custody: NativeSandboxCustody,
+): SandboxContainerEngine {
+  if (!isBoundEngine(engine) || !engine[nativeBinding].target) {
+    throw new Error("Native sandbox replacement requires its captured transport.");
+  }
+  custody.assertCurrent();
+  return Object.freeze({
+    ...engine,
+    [nativeBinding]: Object.freeze({ ...engine[nativeBinding], custody }),
   });
 }
 
@@ -159,12 +183,17 @@ async function runContainerRaw(
   args: string[],
   opts?: ExecContainerRawOptions,
   onCreated?: (containerId: string) => void,
+  lifecycle: "work" | "settlement" | "cleanup" = "work",
+  onDispatch?: () => void,
 ): Promise<ExecDockerRawResult> {
   const binding = isBoundEngine(engine) ? engine[nativeBinding] : undefined;
   const execute = async () => {
-    binding?.custody.assertCurrent();
+    if (lifecycle !== "cleanup") {
+      binding?.custody.assertCurrent();
+    }
     let result;
     try {
+      onDispatch?.();
       result = await spawnCommand(
         [binding?.executable ?? engine.command, ...(engine.globalArgs ?? []), ...args],
         {
@@ -206,7 +235,9 @@ async function runContainerRaw(
       }
       onCreated(containerId);
     }
-    binding?.custody.assertCurrent();
+    if (lifecycle !== "cleanup") {
+      binding?.custody.assertCurrent();
+    }
     if (opts?.signal?.aborted || result.isCanceled) {
       throw createAbortError("Aborted");
     }
@@ -243,7 +274,12 @@ async function runContainerRaw(
     }
     return { stdout, stderr, code: exitCode };
   };
-  return binding ? await binding.custody.runProducer(execute) : await execute();
+  return binding && lifecycle !== "cleanup"
+    ? await binding.custody.runProducer(
+        execute,
+        lifecycle === "settlement" ? { settleAfterAbort: true } : undefined,
+      )
+    : await execute();
 }
 
 /** Same runner, with a receipt observed before cancellation translation and env cleanup. */
@@ -251,11 +287,52 @@ export async function execNativeSandboxCreate(
   engine: SandboxContainerEngine,
   args: string[],
   onCreated: (containerId: string) => void,
+  onDispatch?: () => void,
 ): Promise<void> {
   if (!isBoundEngine(engine) || !engine[nativeBinding].target || args[0] !== "create") {
     throw new Error("Native sandbox create requires its captured target and custody.");
   }
-  await runContainerRaw(engine, args, undefined, onCreated);
+  await runContainerRaw(engine, args, undefined, onCreated, "settlement", onDispatch);
+}
+
+export async function execNativeSandboxStart(
+  engine: SandboxContainerEngine,
+  containerId: string,
+  onDispatch?: () => void,
+) {
+  if (!isBoundEngine(engine) || !engine[nativeBinding].target) {
+    throw new Error("Native sandbox start requires its captured target and custody.");
+  }
+  await runContainerRaw(
+    engine,
+    ["start", containerId],
+    undefined,
+    undefined,
+    "settlement",
+    onDispatch,
+  );
+}
+
+/** Cleanup never re-enters the revoked producer set it is joining. */
+export async function runNativeSandboxCleanup<T>(
+  engine: SandboxContainerEngine,
+  run: (
+    exec: (args: string[], allowFailure?: boolean) => Promise<ExecDockerRawResult>,
+  ) => Promise<T>,
+): Promise<T> {
+  if (!isBoundEngine(engine) || !engine[nativeBinding].target) {
+    throw new Error("Native sandbox cleanup requires its captured target and custody.");
+  }
+  const signal = AbortSignal.timeout(NATIVE_SANDBOX_SETTLEMENT_MS);
+  return await runOutsideCommandProcessScope(() =>
+    withCommandProcessScope(
+      () =>
+        run((args, allowFailure) =>
+          runContainerRaw(engine, args, { signal, allowFailure }, undefined, "cleanup"),
+        ),
+      signal,
+    ),
+  );
 }
 
 export async function execContainer(

@@ -216,6 +216,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     sessionManager,
     settingsManager,
     sandbox,
+    readEnvironment: input.setup.readEnvironment,
   });
   resources.removeToolResultContextGuard = contextGuards.remove;
 
@@ -266,6 +267,7 @@ export async function prepareEmbeddedAttemptSessionRuntime(input: {
     onCurrentTurnImageFailure: recordCurrentTurnImageFailure,
     sandboxSessionKey,
     ...(sandbox !== undefined ? { sandbox } : {}),
+    readEnvironment: input.setup.readEnvironment,
     codeModeControlsEnabled: codeModeControlsEnabledForRun,
     providerPromptState: {
       state: getProviderPromptState(attempt.runId),

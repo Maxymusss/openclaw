@@ -11,11 +11,16 @@ import {
   bindModelLlmRuntime,
   getModelCompletionOwner,
   getModelCompletionTransport,
+  getModelCompletionTransportKind,
   getModelLlmRuntime,
 } from "../llm/model-runtime-binding.js";
 import { completeSimple } from "../llm/stream.js";
 import type { AssistantMessage, Model, SimpleStreamOptions } from "../llm/types.js";
 import type { AdmittedRunOperatorAuthority } from "./admitted-run-context.js";
+import {
+  resolvePreparedExtraParams,
+  resolveSupportedTransport,
+} from "./embedded-agent-runner/extra-params.js";
 import type { ResolvedProviderAuth } from "./model-auth.js";
 import {
   assertOperatorModelAllowed,
@@ -77,6 +82,16 @@ async function completePreparedModel(params: PreparedCompletionParams): Promise<
   params.assertCurrent?.();
   params.options?.signal?.throwIfAborted();
   const runtime = getModelLlmRuntime(params.model);
+  const transport =
+    getModelCompletionTransportKind(params.model) ??
+    resolveSupportedTransport(
+      resolvePreparedExtraParams({
+        cfg: params.cfg,
+        provider: params.model.provider,
+        modelId: params.model.id,
+        model: params.model,
+      }).transport,
+    );
   let completionModel =
     getModelCompletionTransport(params.model) ??
     prepareModelForSimpleCompletion({
@@ -85,6 +100,7 @@ async function completePreparedModel(params: PreparedCompletionParams): Promise<
       apiRegistry: runtime?.registry ?? defaultApiRegistry,
       model: params.model,
       cfg: params.cfg,
+      transport,
     });
   if (runtime) {
     completionModel = bindModelLlmRuntime(completionModel, runtime);
@@ -104,6 +120,7 @@ async function completePreparedModel(params: PreparedCompletionParams): Promise<
   const headers = prepareHeadersForSimpleCompletion(completionModel, options);
   const completionOptions: SimpleStreamOptions = {
     ...options,
+    ...(transport ? { transport } : {}),
     ...(reasoning ? { reasoning } : {}),
     apiKey: params.auth.apiKey,
     ...(headers ? { headers } : {}),

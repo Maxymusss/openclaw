@@ -78,6 +78,8 @@ import type {
 } from "./provider-thinking.types.js";
 import type {
   ProviderCreateStreamFnContext,
+  ProviderModelRequestBindingContext,
+  ProviderModelRequestBindingResult,
   ProviderWrapStreamFnContext,
   ProviderTransportTurnState,
   ProviderResolveTransportTurnStateContext,
@@ -310,6 +312,10 @@ export type ProviderPlugin = {
    * wrapper around the normal `streamSimple` path.
    */
   createStreamFn?: (ctx: ProviderCreateStreamFnContext) => StreamFn | null | undefined;
+  /** Synchronous, pure support query. Missing facts leave restricted routes unavailable. */
+  resolveModelRequestBindingSupport?: (
+    ctx: ProviderModelRequestBindingContext,
+  ) => ProviderModelRequestBindingResult | undefined;
   /**
    * Opt custom streams into the internal stable/dynamic system-prompt boundary.
    * The transport must consume the boundary before sending its provider payload.

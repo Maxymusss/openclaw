@@ -5,6 +5,7 @@ import {
   assertAdmittedRunOperatorAuthority,
   type AdmittedRunOperatorAuthority,
 } from "./admitted-run-context.js";
+import { runWithOperatorModelRequest } from "./operator-model-policy.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 class OperatorForegroundWorkError extends Error {
@@ -24,6 +25,8 @@ export function isOperatorForegroundWork(source?: {
   const scope = getPluginRuntimeGatewayRequestScope();
   const caller = getGatewayToolCallerIdentity();
   const authorities = new Set([
+    // Isolated/provider callbacks retain model authority without a Gateway/tool source.
+    runWithOperatorModelRequest(undefined, (authority) => authority),
     source?.operatorAuthority,
     caller?.operatorAuthority,
     scope?.client?.internal?.operatorRunAuthority,

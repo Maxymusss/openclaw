@@ -132,6 +132,8 @@ export type {
   ProviderValidateReplayTurnsContext,
   ProviderWebSocketSessionPolicy,
   ProviderWrapStreamFnContext,
+  ProviderModelRequestBindingContext,
+  ProviderModelRequestBindingResult,
   RealtimeTranscriptionProviderPlugin,
   SpeechProviderPlugin,
   TranscriptSourceProvider,
