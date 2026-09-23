@@ -187,6 +187,10 @@ function createLookupFn(dns: Record<string, string>): RealGuardLookupFn {
 }
 
 function installRealComfyFetchGuard(options: RealComfyFetchOptions): RealGuardHarness {
+  // Keep injected DNS authoritative and avoid ambient proxy capture.
+  vi.stubEnv("OPENCLAW_PROXY_ACTIVE", undefined);
+  vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", undefined);
+
   const promptId = options.promptId ?? "real-guard-prompt-1";
   const body = options.body ?? Buffer.from("png-data");
   const contentType = options.contentType ?? "image/png";
@@ -527,55 +531,6 @@ describe("comfy image-generation provider", () => {
     expect(seedFromBody(parseJsonBody(1), "4")).toBe(12345);
   });
 
-  it("honors local private-network access for service-discovery hostnames", async () => {
-    mockLocalImageResponses("compose-prompt-1");
-
-    const provider = buildComfyImageGenerationProvider();
-    await provider.generateImage({
-      provider: "comfy",
-      model: "workflow",
-      prompt: "draw a lobster",
-      cfg: buildComfyConfig({
-        baseUrl: "http://comfyui:8188",
-        workflow: {
-          "6": { inputs: { text: "" } },
-          "9": { inputs: {} },
-        },
-        promptNodeId: "6",
-        outputNodeId: "9",
-      }),
-    });
-
-    const submitRequest = fetchRequest(1);
-    expect(submitRequest.url).toBe("http://comfyui:8188/prompt");
-    expect(submitRequest.policy).toEqual(COMFY_SERVICE_HOST_LOCAL_POLICY);
-    expect(fetchRequest(2).policy).toEqual(COMFY_SERVICE_HOST_LOCAL_POLICY);
-    expect(fetchRequest(3).policy).toEqual(COMFY_SERVICE_HOST_LOCAL_POLICY);
-  });
-
-  it("keeps local public-looking hostnames strict without explicit private-network access", async () => {
-    mockLocalImageResponses("public-host-prompt-1");
-
-    const provider = buildComfyImageGenerationProvider();
-    await provider.generateImage({
-      provider: "comfy",
-      model: "workflow",
-      prompt: "draw a lobster",
-      cfg: buildComfyConfig({
-        baseUrl: "http://images.example.com:8188",
-        workflow: {
-          "6": { inputs: { text: "" } },
-          "9": { inputs: {} },
-        },
-        promptNodeId: "6",
-        outputNodeId: "9",
-      }),
-    });
-
-    expect(fetchRequest(1).url).toBe("http://images.example.com:8188/prompt");
-    expect(fetchRequest(1).policy).toEqual(COMFY_PUBLIC_LOCAL_HOST_POLICY);
-  });
-
   it("keeps cloud service-discovery hostnames strict without explicit private-network access", async () => {
     mockComfyCloudJobResponses(fetchWithSsrFGuardMock, {
       body: Buffer.from("cloud-data"),
@@ -660,6 +615,11 @@ describe("comfy image-generation provider", () => {
       ),
     });
 
+    expect(harness.guardCalls).toHaveLength(3);
+    expect(harness.guardCalls[0]?.url).toBe("http://comfyui:8188/prompt");
+    expect(harness.guardCalls[0]?.policy).toEqual(COMFY_SERVICE_HOST_LOCAL_POLICY);
+    expect(harness.guardCalls[1]?.policy).toEqual(COMFY_SERVICE_HOST_LOCAL_POLICY);
+    expect(harness.guardCalls[2]?.policy).toEqual(COMFY_SERVICE_HOST_LOCAL_POLICY);
     expect(harness.fetchUrls).toContain("http://comfyui:8188/prompt");
     expect(result.images[0]?.buffer).toEqual(Buffer.from("png-data"));
   });
@@ -682,6 +642,9 @@ describe("comfy image-generation provider", () => {
         ),
       }),
     ).rejects.toThrow("Blocked: resolves to private/internal/special-use IP address");
+    expect(harness.guardCalls).toHaveLength(1);
+    expect(harness.guardCalls[0]?.url).toBe("http://images.example.com:8188/prompt");
+    expect(harness.guardCalls[0]?.policy).toEqual(COMFY_PUBLIC_LOCAL_HOST_POLICY);
     expect(harness.fetchUrls).toEqual([]);
   });
 
