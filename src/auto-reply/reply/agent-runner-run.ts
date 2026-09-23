@@ -40,7 +40,6 @@ import {
   isAudioPayload,
 } from "./agent-runner-helpers.js";
 import { runReplyQuestionInput } from "./agent-runner-question-input.js";
-import { resetReplyRunSession } from "./agent-runner-session-reset.js";
 import { runActiveReplySteer } from "./agent-runner-steer-adoption.js";
 import { resolveQueuedReplyExecutionConfig } from "./agent-runner-utils.js";
 import { createAudioAsVoiceBuffer, createBlockReplyPipeline } from "./block-reply-pipeline.js";
@@ -116,7 +115,6 @@ export async function runReplyAgent(
   const releaseAdmissionTicket = () => opts?.[REPLY_ADMISSION_TICKET]?.release();
   let activeSessionEntry = sessionEntry;
   const activeSessionStore = sessionStore;
-  let activeIsNewSession = isNewSession;
   const effectiveResetTriggered = resetTriggered === true;
   const activeRunQueueMode = effectiveResetTriggered ? "interrupt" : resolvedQueue.mode;
 
@@ -633,27 +631,6 @@ export async function runReplyAgent(
     },
     storePath,
   });
-  const resetSessionAfterRoleOrderingConflict = async (reason: string): Promise<boolean> =>
-    await resetReplyRunSession({
-      options: {
-        failureLabel: "role ordering conflict",
-        buildLogMessage: (nextSessionId) =>
-          `Role ordering conflict (${reason}). Restarting session ${sessionKey} -> ${nextSessionId}.`,
-        cleanupTranscripts: true,
-      },
-      sessionKey,
-      queueKey,
-      activeSessionEntry,
-      activeSessionStore,
-      storePath,
-      followupRun,
-      onActiveSessionEntry: (nextEntry) => {
-        activeSessionEntry = nextEntry;
-      },
-      onNewSession: () => {
-        activeIsNewSession = true;
-      },
-    });
   try {
     return await executePreparedReplyAgentRun({
       ...params,
@@ -665,7 +642,7 @@ export async function runReplyAgent(
       cfg,
       checkpointBeforeAgentReply,
       resolveVisibleReplyDelivery,
-      getActiveIsNewSession: () => activeIsNewSession,
+      activeIsNewSession: isNewSession,
       getActiveSessionEntry: () => activeSessionEntry,
       isHeartbeat,
       isRestartRecoveryArmed,
@@ -676,7 +653,6 @@ export async function runReplyAgent(
       replyRouteThreadId,
       replyToChannel,
       replyToMode,
-      resetSessionAfterRoleOrderingConflict,
       returnWithQueuedFollowupDrain,
       runFollowupTurn,
       sendDirectCompactionNotice,
