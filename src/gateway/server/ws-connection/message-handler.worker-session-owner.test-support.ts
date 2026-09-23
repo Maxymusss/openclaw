@@ -261,7 +261,19 @@ async function createOwnerFixture(
     placements.releaseTurn(claim);
   });
   await rootAdmission.run(async () => {
-    bindWorkerTurnOwner(placements, claim, undefined, run, OWNER_SOURCE, () => {});
+    bindWorkerTurnOwner(
+      placements,
+      claim,
+      undefined,
+      run,
+      {
+        ...OWNER_SOURCE,
+        storePath: resolveSessionStorePathCore(cfg.session?.store, {
+          agentId: OWNER_SOURCE.agentId,
+        }),
+      },
+      () => {},
+    );
   });
   const service = createWorkerEnvironmentService({
     store: environments,

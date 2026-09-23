@@ -37,7 +37,7 @@ import {
   prepareGatewaySessionStoreTargetReadOnly,
   type GatewaySessionStoreDiscoveryCache,
 } from "./session-utils-store-lookup.js";
-import { resolveCanonicalSessionStoreMatchFromStoreKeys } from "./session-utils-store.js";
+import { findCanonicalStoreMatch } from "./session-utils-store-selection.js";
 
 type ExistingSessionMutationFacts = PreparedSessionMutationFacts & {
   target: NonNullable<PreparedSessionMutationFacts["target"]>;
@@ -423,10 +423,7 @@ export async function prepareSessionMutationFacts(
         canonicalKey: selected.canonicalKey,
         storePath: selected.storePath,
       };
-      const match = resolveCanonicalSessionStoreMatchFromStoreKeys(
-        selected.store,
-        selected.storeKeys,
-      );
+      const match = findCanonicalStoreMatch(selected.store, selected.storeKeys);
       const sharing = members.get(selected.storePath);
       if ((!match && !params.allowMissing) || (match && !sharing)) {
         throw new SessionMutationFactsUnavailableError();
