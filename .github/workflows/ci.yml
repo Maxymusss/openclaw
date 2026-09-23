@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       s4_probe:
-        description: Temporary S4 replay of the 20 frozen baseline rows on Blacksmith 16-class.
+        description: Temporary S4 replay of the historical main non-UI row on Blacksmith 16-class.
         required: false
         default: false
         type: boolean
@@ -6741,7 +6741,7 @@ jobs:
 
   # Temporary S4 benchmark only; never merge these frozen replays into normal CI.
   s4-probe-manifest:
-    name: S4 frozen baseline manifest
+    name: S4 historical main non-UI baseline manifest
     if: ${{ github.event_name == 'workflow_dispatch' && inputs.s4_probe && github.run_attempt == 1 && github.repository == 'openclaw/openclaw' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -6763,12 +6763,12 @@ jobs:
         run: |
           python3 - <<'PY'
           import json, os
-          from collections import Counter
           from pathlib import Path
           rows = json.loads(Path("scripts/ci/s4-blacksmith-probe-rows.json").read_text())
-          assert len(rows) == 20
-          assert Counter(row["shape"] for row in rows) == {"main": 10, "pr": 10}
-          assert len({row["sample_id"] for row in rows}) == 20
+          assert len(rows) == 1
+          assert rows[0]["shape"] == "main"
+          assert rows[0]["run_id"] == 35810905247
+          assert rows[0]["job_id"] == 107022908332
           for row in rows:
               assert row["baseline_runner_label"] == "blacksmith-32vcpu-ubuntu-2404"
               assert row["checkout_sha"] == row["workflow_sha"]
@@ -6791,7 +6791,7 @@ jobs:
       CHECKOUT_GIT_COMMITS_JSON: ${{ toJson(matrix.git_commits) }}
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 1
       matrix: ${{ fromJson(needs.s4-probe-manifest.outputs.matrix) }}
     steps:
       - name: Checkout
