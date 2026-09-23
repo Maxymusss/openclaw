@@ -51,7 +51,10 @@ extension OpenClawChatViewModel {
         case .tick:
             let context = self.currentSessionSnapshot()
             Task { await self.pollHealthIfNeeded(force: false, sessionSnapshot: context) }
-        case .chatMetadataChanged:
+        case .chatMetadataChanged, .modelSelectionChanged:
+            if case .modelSelectionChanged = evt {
+                self.invalidateModelChoices()
+            }
             self.refreshSourceContext()
             self.refreshAgentsIfRequested()
             let session = self.currentSessionSnapshot()
@@ -81,6 +84,7 @@ extension OpenClawChatViewModel {
             self.resolveQuestionEvent(resolved)
             self.reconcileQuestionsAfterEvent()
         case .routeChanged, .seqGap:
+            self.invalidateModelChoices()
             self.refreshSourceContext()
             self.invalidateAgentCatalog(clear: true)
             self.refreshAgentsIfRequested()

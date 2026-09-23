@@ -29,6 +29,7 @@ import {
 } from "../chat-abort.js";
 import { resolveEffectiveChatHistoryMaxChars } from "../chat-display-projection.js";
 import { resolveClaudeCliBindingSessionId } from "../cli-session-history.js";
+import { projectOperatorModelRead } from "../operator-model-presentation.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import { resolveSessionHistoryUnavailableMessage } from "../session-history-error.js";
@@ -79,6 +80,7 @@ export async function handleChatHistoryRequest({
   context,
   method,
   signal,
+  sessionMutationAuthorization,
   retainedSessionId,
 }: GatewayRequestHandlerOptions & {
   method: ChatHistoryMethod;
@@ -100,28 +102,16 @@ export async function handleChatHistoryRequest({
     inputRunIds,
   } = params;
   const requestedSessionId = retainedSessionId ?? wireSessionId;
+  let selectorError: string | undefined;
   if (offset !== undefined && messageId !== undefined) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "offset and messageId cannot be used together"),
-    );
-    return;
+    selectorError = "offset and messageId cannot be used together";
+  } else if (cursor !== undefined && (offset !== undefined || messageId !== undefined)) {
+    selectorError = "cursor cannot be used with offset or messageId";
+  } else if (wireSessionId !== undefined && messageId === undefined) {
+    selectorError = "sessionId requires messageId";
   }
-  if (cursor !== undefined && (offset !== undefined || messageId !== undefined)) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "cursor cannot be used with offset or messageId"),
-    );
-    return;
-  }
-  if (wireSessionId !== undefined && messageId === undefined) {
-    respond(
-      false,
-      undefined,
-      errorShape(ErrorCodes.INVALID_REQUEST, "sessionId requires messageId"),
-    );
+  if (selectorError) {
+    respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, selectorError));
     return;
   }
   if (!getSubagentSessionListReadSnapshotIdentity()) {
@@ -131,6 +121,7 @@ export async function handleChatHistoryRequest({
   const agentIdOverride = normalizeOptionalText((params as { agentId?: string }).agentId);
   const selection = await prepareChatHistorySessionRead({
     context,
+    sessionMutationAuthorization,
     client,
     respond,
     signal,
@@ -354,6 +345,12 @@ export async function handleChatHistoryRequest({
     const startupProjection = await (startupProjectionPromise ?? readStartupProjection());
     const startupMetadata = method === "chat.startup" ? startupProjection?.metadata : undefined;
     const { sessionModelCatalog, defaultModelCatalog } = startupProjection ?? {};
+    const modelReadScope = {
+      context,
+      client,
+      agentId: sessionAgentId,
+      catalog: defaultModelCatalog,
+    };
     const query = {
       key: canonicalKey,
       agentId: sessionAgentId,
@@ -569,7 +566,7 @@ export async function handleChatHistoryRequest({
               getMessagesBytes: () => delta.messagesBytes,
               maxBytes: maxHistoryBytes - delta.activityBytes,
             });
-            respond(true, {
+            const payload = {
               kind: "delta",
               messages: delta.messages,
               ...(delta.activity.length > 0 ? { activity: delta.activity } : {}),
@@ -579,7 +576,8 @@ export async function handleChatHistoryRequest({
               sessionInfo,
               ...(boundedInFlightRun ? { inFlightRun: boundedInFlightRun } : {}),
               ...(startupMetadata ? { metadata: startupMetadata } : {}),
-            });
+            };
+            respond(true, projectOperatorModelRead(modelReadScope, payload));
             return undefined;
           });
         };
@@ -590,7 +588,7 @@ export async function handleChatHistoryRequest({
         getMessagesBytes: () => byteCounter.messagesBytes(capped),
         maxBytes: responseHistoryBytes,
       });
-      respond(true, {
+      const payload = {
         sessionKey,
         sessionId,
         messages: composeTranscriptDisplay(capped),
@@ -615,7 +613,8 @@ export async function handleChatHistoryRequest({
         verboseLevel,
         ...(boundedInFlightRun ? { inFlightRun: boundedInFlightRun } : {}),
         ...(startupMetadata ? { metadata: startupMetadata } : {}),
-      });
+      };
+      respond(true, projectOperatorModelRead(modelReadScope, payload));
       return undefined;
     });
     await publishDelta?.();
