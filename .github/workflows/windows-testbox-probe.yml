@@ -980,14 +980,14 @@ jobs:
           Remove-Item -LiteralPath $env:TEST_ROOT -Recurse -Force -ErrorAction SilentlyContinue
 
   f113-diagnostic:
-    name: F113 Windows shutdown cohort ${{ matrix.node }} / ${{ matrix.part }}
+    name: F113 native scheduler ${{ matrix.node }}
     runs-on: blacksmith-16vcpu-windows-2025
     timeout-minutes: 60
     strategy:
       fail-fast: false
-      max-parallel: 4
+      max-parallel: 2
       matrix:
-        part: [1, 2]
+        part: [1]
         node: [24.19.0, 24.20.0]
     defaults:
       run:
@@ -1018,23 +1018,13 @@ jobs:
         run: |
           source .github/actions/setup-pnpm-store-cache/ensure-node.sh
           openclaw_ensure_node "$F113_NODE_VERSION"
-      - uses: ./.github/actions/setup-pnpm-store-cache
-        with:
-          node-version: ${{ matrix.node }}
-          cache-mode: off
-      - name: Install frozen dependencies
-        run: |
-          node --version
-          pnpm --version
-          git rev-parse HEAD
-          pnpm install --frozen-lockfile --prefer-offline --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
-      - name: Run fixed diagnostic cohort
-        run: node scripts/f113-cohort.mjs
+      - name: Probe native scheduler shutdown
+        run: node scripts/f113-native-owner.mjs
       - name: Upload diagnostic evidence
         if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: f113-${{ github.run_id }}-${{ matrix.node }}-${{ matrix.part }}
+          name: f113-native-${{ github.run_id }}-${{ matrix.node }}
           path: .artifacts/f113
           if-no-files-found: error
           retention-days: 7
