@@ -336,12 +336,13 @@ async function sendPreparedChatMessage(
       host.providerPolicyNotice = null;
     }
     setChatError(host, null);
-    if (prepared.participation !== "humans")
+    if (prepared.participation !== "humans") {
       reconcileChatRunLifecycle(host, {
         clearRunStatus: true,
         // A send has not replaced the active run; its progress and approvals still belong to it.
         clearIndicators: !host.chatRunId,
       });
+    }
   }
 
   try {
@@ -441,7 +442,7 @@ async function sendPreparedChatMessage(
       removeQueuedMessageWithoutReleasing(host, id);
       retirementFailed = storageMode === "durable" && readQueuedMessageById(host, id) !== null;
     }
-    if (isVisible())
+    if (isVisible()) {
       applyVisibleChatSendAck({
         host,
         ack,
@@ -459,6 +460,7 @@ async function sendPreparedChatMessage(
           );
         },
       });
+    }
     if (prepared.refreshSessions) {
       const target = { sessionKey, agentId: prepared.agentId };
       if (ack.status === "ok") {

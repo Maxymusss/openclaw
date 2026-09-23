@@ -20,10 +20,15 @@ export function createChatPaneSendHandler(params: {
       !params.canSend ||
       (params.modelRequiredReason &&
         (params.hasAttachments() || !isModelIndependentChatCommand(params.getDraft())))
-    )
+    ) {
       return;
-    if (params.continueCatalog) return params.continueCatalog();
-    if (params.addSuggestion) return params.addSuggestion();
+    }
+    if (params.continueCatalog) {
+      return params.continueCatalog();
+    }
+    if (params.addSuggestion) {
+      return params.addSuggestion();
+    }
     return params.send(
       undefined,
       {

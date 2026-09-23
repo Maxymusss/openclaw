@@ -321,7 +321,9 @@ export function renderChatComposer(props: ChatComposerProps) {
         : undefined,
     );
     state.mentionInput = undefined;
-    if (!humanDiscussion) goalComposer.activateDraft(target.value);
+    if (!humanDiscussion) {
+      goalComposer.activateDraft(target.value);
+    }
     if (!goalComposer.active && !humanDiscussion) {
       updateSlashMenu(target.value, state, slashMenuHost, requestUpdate);
       updateSkillMenu(target.value, target.selectionStart, state, skillMenuHost, requestUpdate);
