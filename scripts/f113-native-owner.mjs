@@ -65,7 +65,7 @@ for (const stress of [false, true]) {
         [...flags, fileURLToPath(import.meta.url), "child", cleanup],
         {
           stdio: ["ignore", descriptor, descriptor],
-          env: { ...process.env, NODE_DEBUG_NATIVE: "PLATFORM_MINIMAL" },
+          env: { ...process.env, NODE_DEBUG_NATIVE: "" },
         },
       );
       closeSync(descriptor);
