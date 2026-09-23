@@ -1839,7 +1839,7 @@ describe("ci workflow guards", () => {
       return rows;
     }
 
-    it("counts hosted qualification controls and preflight without counting the AWS cron row", () => {
+    it("counts hosted qualification preflight without counting either cron provider", () => {
       const common = {
         bundledPlanner: true,
         historicalCompatibility: false,
@@ -1866,10 +1866,10 @@ describe("ci workflow guards", () => {
           runnerProfile: "hybrid",
         },
       );
-      expect(actual.filter((job) => job === "checks-node-core-test-nondist-shard")).toHaveLength(1);
+      expect(actual.filter((job) => job === "checks-node-core-test-nondist-shard")).toHaveLength(0);
       expect(actual).toContain("preflight");
       expect(Number(qualification.outputs.hybrid_hosted_base_rows)).toBe(
-        Number(ordinary.outputs.hybrid_hosted_base_rows) + 2,
+        Number(ordinary.outputs.hybrid_hosted_base_rows) + 1,
       );
       expect(Number(qualification.outputs.hybrid_hosted_total_rows)).toBe(actual.length);
     });
