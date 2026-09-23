@@ -221,6 +221,9 @@ struct OpenClawChatAttachmentsStrip: View {
                             Image(systemName: "xmark.circle.fill")
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(Text(verbatim: String(
+                            format: String(localized: "Remove %@"),
+                            attachment.fileName)))
                     }
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
