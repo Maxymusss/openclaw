@@ -35,7 +35,7 @@ import {
   prepareGatewaySessionStoreTargetReadOnly,
   type GatewaySessionStoreDiscoveryCache,
 } from "./session-utils-store-lookup.js";
-import { resolveCanonicalSessionStoreMatchFromStoreKeys } from "./session-utils-store.js";
+import { findCanonicalStoreMatch } from "./session-utils-store-selection.js";
 import type { GatewaySessionStoreTarget } from "./session-utils-store.types.js";
 
 type ExistingSessionMutationFacts = PreparedSessionMutationFacts & {
@@ -374,10 +374,7 @@ export async function prepareSessionMutationFacts(
         canonicalKey: selected.canonicalKey,
         storePath: selected.storePath,
       });
-      const match = resolveCanonicalSessionStoreMatchFromStoreKeys(
-        selected.store,
-        selected.storeKeys,
-      );
+      const match = findCanonicalStoreMatch(selected.store, selected.storeKeys);
       const sharing = members.get(selected.storePath);
       selectedPaths.add(path.resolve(selected.storePath));
       if (sharing) {

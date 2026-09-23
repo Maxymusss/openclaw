@@ -394,6 +394,8 @@ function resolveInProcessGatewayDispatch(
     operatorScopes,
     scopedClientScopes: scope?.client?.connect.scopes,
     registeredScope: context.getGatewayMethodRegistry?.().getScope(method),
+    allowOwnSessionScope: context.getGatewayMethodRegistry?.().getSessionAccess?.(method)
+      ?.allowOwnSessionScope,
   });
   const baseSyntheticClient = createSyntheticPluginRuntimeClient({
     ...(operatorAuthority
@@ -409,15 +411,9 @@ function resolveInProcessGatewayDispatch(
     internalDeliverySuppressText: options?.internalDeliverySuppressText,
     ...(pluginRuntimeOwnerId ? { pluginRuntimeOwnerId } : {}),
     ...(nodeInvokeApprovalSessionKey ? { nodeInvokeApprovalSessionKey } : {}),
-    ...(options?.pluginSubagentRequester
-      ? { pluginSubagentRequester: options.pluginSubagentRequester }
-      : {}),
-    ...(options?.runtimePluginToolGrant
-      ? { runtimePluginToolGrant: options.runtimePluginToolGrant }
-      : {}),
-    ...(options?.pluginSubagentToolsAllow
-      ? { pluginSubagentToolsAllow: options.pluginSubagentToolsAllow }
-      : {}),
+    pluginSubagentRequester: options?.pluginSubagentRequester,
+    runtimePluginToolGrant: options?.runtimePluginToolGrant,
+    pluginSubagentToolsAllow: options?.pluginSubagentToolsAllow,
     delegatedToolPolicyHandoffId,
     ...(options?.sessionCreation ? { sessionCreation: options.sessionCreation } : {}),
     scopes: syntheticScopes,

@@ -183,6 +183,7 @@ type ChatConnectionIdentityInput = {
 export function registerChatConnectionIdentityTest(harness: {
   withDirectChatSession: (run: () => Promise<void>) => Promise<void>;
   prepareSession: () => Promise<void>;
+  waitForSessionWork: () => Promise<void> | undefined;
   sendControlUiChat: (
     params: ChatConnectionIdentityInput & { context: GatewayRequestContext; respond: RespondFn },
   ) => Promise<void>;
@@ -199,10 +200,8 @@ export function registerChatConnectionIdentityTest(harness: {
           ...params,
           respond: vi.fn() as RespondFn,
         });
-        await vi.waitFor(
-          () => expect(context.removeChatRun).toHaveBeenCalledTimes(removeCount + 1),
-          { timeout: 2_000, interval: 1 },
-        );
+        await harness.waitForSessionWork();
+        expect(context.removeChatRun).toHaveBeenCalledTimes(removeCount + 1);
       };
 
       await send({

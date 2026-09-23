@@ -206,15 +206,7 @@ export function authorizeCurrentOperatorRoleScopes(
   client: GatewayClient | null,
   cfg: OpenClawConfig,
 ): ErrorShape | undefined {
-  let policy: GatewayOperatorRoleDefinition | undefined;
-  try {
-    policy = resolveOperatorRolePolicy(client, cfg);
-  } catch (error) {
-    if (!client?.internal?.operatorRunAuthority) {
-      throw error;
-    }
-    return errorShape(ErrorCodes.FORBIDDEN, "Gateway requester authority changed");
-  }
+  const policy = resolveOperatorRolePolicy(client, cfg);
   if (
     policy &&
     !roleScopesAllow({
