@@ -3846,7 +3846,16 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       toolingGroups.every((group) => group.configs[0] === "test/vitest/vitest.tooling.config.ts"),
     ).toBe(true);
     expect(new Set(toolingFiles).size).toBe(toolingFiles.length);
-    expect(toolingFiles.toSorted((a, b) => a.localeCompare(b))).toEqual(listAllToolingTestFiles());
+    const allToolingFiles = listAllToolingTestFiles();
+    expect(toolingFiles.toSorted((a, b) => a.localeCompare(b))).toEqual(
+      allToolingFiles.filter((file) => !isCiProofTestFile(file)),
+    );
+    expect(
+      base
+        .filter((shard) => shard.configs[0] === "test/vitest/vitest.tooling.config.ts")
+        .flatMap((shard) => shard.includePatterns ?? [])
+        .toSorted((a, b) => a.localeCompare(b)),
+    ).toEqual(allToolingFiles);
   }
   it.each(plannerHosts)(
     "preserves coverage and execution policies with committed compact measurements ($label)",
