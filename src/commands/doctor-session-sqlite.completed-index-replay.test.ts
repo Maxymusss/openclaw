@@ -11,6 +11,7 @@ import type { TranscriptEvent } from "../config/sessions/session-accessor.sqlite
 import { rehomeSessionWindows } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import { loadExactSessionEntry } from "../config/sessions/session-accessor.sqlite-entry.js";
 import {
+  readTranscriptEventId,
   readTranscriptEventRows,
   readTranscriptStorageRows,
 } from "../config/sessions/session-accessor.sqlite-read.js";
@@ -148,22 +149,22 @@ function removeTranscriptEvents(
   const events = readTranscriptEventRows(database, scope.sessionId).map(
     (row) => JSON.parse(row.eventJson) as TranscriptEvent,
   );
-  const selected = events.filter((event) => {
-    return typeof event.id === "string" && eventIds.includes(event.id);
-  });
-  expect(selected.map((event) => String(event.id)).toSorted()).toEqual(eventIds.toSorted());
-  const next = events.filter(
-    (event) => typeof event.id !== "string" || !eventIds.includes(event.id),
-  );
+  const shouldRemove = (event: TranscriptEvent) => {
+    const id = readTranscriptEventId(event);
+    return id !== undefined && eventIds.includes(id);
+  };
+  const selected = events.filter(shouldRemove);
+  expect(selected.map(readTranscriptEventId).toSorted()).toEqual(eventIds.toSorted());
+  const next = events.filter((event) => !shouldRemove(event));
   const plan = prepareSqliteTranscriptSuffixMutation(database, scope, events, next);
   runOpenClawAgentWriteTransaction((transaction) => {
     replaceSqliteTranscriptSuffixInTransaction(transaction, scope, plan);
   }, scope);
   const remaining = readTranscriptEventRows(database, scope.sessionId).map(
-    (row) => JSON.parse(row.eventJson) as { id?: unknown },
+    (row) => JSON.parse(row.eventJson) as TranscriptEvent,
   );
   expect(remaining).toHaveLength(events.length - eventIds.length);
-  expect(remaining.some((event) => eventIds.includes(String(event.id)))).toBe(false);
+  expect(remaining.some(shouldRemove)).toBe(false);
 }
 
 describe("completed legacy index replay", () => {
