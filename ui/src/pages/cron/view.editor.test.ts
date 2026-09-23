@@ -50,7 +50,7 @@ describe("cron view editor", () => {
     const onFormChange = vi.fn();
     const container = renderView({
       createOpen: true,
-      channels: ["telegram"],
+      channelIds: ["telegram"],
       channelMeta: [{ id: "telegram", label: "", detailLabel: "Telegram" }],
       channelLabels: { telegram: "Telegram fallback" },
       form: {
@@ -304,7 +304,7 @@ describe("cron view editor", () => {
   it("shows announce channel/to rows and webhook URL row per delivery mode", async () => {
     const announce = renderView({
       createOpen: true,
-      channels: ["telegram"],
+      channelIds: ["telegram"],
       form: { ...DEFAULT_CRON_FORM, deliveryMode: "announce" },
     });
     await updatePickers(announce);
@@ -315,7 +315,6 @@ describe("cron view editor", () => {
       createOpen: true,
       form: { ...DEFAULT_CRON_FORM, deliveryMode: "webhook" },
       fieldErrors: { deliveryTo: "cron.errors.webhookUrlRequired" },
-      canSubmit: false,
     });
     const urlInput = getElement(webhook, "#cron-delivery-to", HTMLInputElement);
     expect(urlInput.getAttribute("aria-invalid")).toBe("true");
@@ -434,7 +433,6 @@ describe("cron view editor", () => {
         triggerScript: "json({ fire: true })",
       },
       fieldErrors: { triggerScript: "cron.errors.triggerScriptPayloadUnsupported" },
-      canSubmit: false,
     });
 
     expect(findToggleByLabel(container, "Condition trigger")).toBeNull();
@@ -447,7 +445,6 @@ describe("cron view editor", () => {
   it("attaches the triggered minimum-interval error to the visible recurring interval", () => {
     const container = renderView({
       createOpen: true,
-      canSubmit: false,
       form: {
         ...DEFAULT_CRON_FORM,
         everyAmount: "5",
@@ -504,7 +501,6 @@ describe("cron view editor", () => {
   it("disables submit and lists blocking fields when validation fails", () => {
     const container = renderView({
       createOpen: true,
-      canSubmit: false,
       form: { ...DEFAULT_CRON_FORM, name: "" },
       fieldErrors: { name: "cron.errors.nameRequired" },
     });
@@ -751,12 +747,13 @@ describe("cron view editor", () => {
   it("renders model-picker suggestions with the remaining text datalists", async () => {
     const container = renderView({
       createOpen: true,
-      agentSuggestions: ["main"],
-      modelSuggestions: ["openai/gpt-5.2"],
-      thinkingSuggestions: ["low"],
-      timezoneSuggestions: ["UTC"],
-      deliveryToSuggestions: ["+15551234"],
-      accountSuggestions: ["default"],
+      suggestions: {
+        agentSuggestions: ["main"],
+        modelSuggestions: ["openai/gpt-5.2"],
+        timezoneSuggestions: ["UTC"],
+        deliveryToSuggestions: ["+15551234"],
+        accountTargets: ["default"],
+      },
     });
     for (const id of [
       "cron-agent-suggestions",
