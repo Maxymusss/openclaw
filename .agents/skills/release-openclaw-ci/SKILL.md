@@ -28,6 +28,11 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   for postpublish confidence or the next beta.
 - Frozen CI children use the pinned Tooling SHA's Node shard planner and measured
   costs, while discovering and executing tests from the candidate checkout.
+  Hosted full-release plans split measured rows above 12 minutes; preserve file
+  coverage, worker limits, and complete timing generations. An indivisible
+  over-budget owner must be split rather than increasing the release budget.
+  After the child completes, closeout runs `scripts/ci-shard-timings-refresh.mts`
+  for that exact run and commits generated costs; do not hand-edit measurements.
 - Use trusted `main` workflow revisions as immutable dispatch sources. Do not
   adopt newer main code, repair unrelated main CI, wait for broad main health,
   or expand a release fix because the workflow source lives on `main`.

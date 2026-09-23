@@ -73,6 +73,16 @@ Frozen-target CI loads its Node shard planner, planning helpers, and measured
 costs from the pinned `workflow_sha` checkout. Test discovery and execution still
 use the candidate source, so current shard budgets do not replace release bytes.
 
+Release closeout refreshes hosted full-release shard costs with
+`node --import ./scripts/tsx.mjs scripts/ci-shard-timings-refresh.mts --run <ci-child-run-id>`.
+The generator records successful hosted job walls, including setup, in the existing
+`config/ci-test-timings.json` store. Release keys stay separate from compact CI
+spans and survive the daily refit. The hosted full planner splits measured rows
+above 12 minutes after file bundling, retaining exact coverage and worker settings.
+Complete split generations keep subsequent plans from recombining expensive work.
+An indivisible over-budget test fails planning with its owner named; unmeasured
+rows still need native timing evidence before claiming the 20-minute objective.
+
 Full Release Validation's exact-target UI job retains the current three native
 shards for both runtimes. Historical compatibility targets keep their original
 unsharded package command; see [UI job budgets](/ci/scope-and-routing/job-budgets).

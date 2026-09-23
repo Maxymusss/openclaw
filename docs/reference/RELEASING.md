@@ -628,6 +628,7 @@ Stable publication is not complete until `main` carries the actual shipped relea
 1. Start from fresh latest `main`. Audit `release/YYYY.M.PATCH` against it and forward-port real fixes absent from `main`. Do not blindly merge release-only compatibility, test, or validation adapters into newer `main`.
 2. For the normal path, set `main` to the shipped stable version. A late closeout may use `main` after it has advanced to a later stable OpenClaw CalVer; do not downgrade an already-started release train solely to close the prior release. The validator still requires the exact shipped changelog section and records the actual `main` version and SHA. It requires the matching appcast entry once the macOS release has published; until then it records `appcast: pending`. Run `pnpm release:prep` after any root version change.
 3. Resolve the shipped release through the shared changelog owner. Its initial-format `CHANGELOG/YYYY.M.PATCH.md` section on `main` must exactly match the tagged release, with the matching contribution record retained separately. If `main` already has an approved docs mirror, preserve that prose and require its frozen contribution record to match the shipped accounting instead. Keep the generated root index current. Include the stable `appcast.xml` update when the mac release published one.
+   Refresh hosted shard costs from the exact completed normal-CI child recorded in the verified validation evidence: `node --import ./scripts/tsx.mjs scripts/ci-shard-timings-refresh.mts --run <ci-child-run-id>`. Review and commit the generated `config/ci-test-timings.json` with closeout; never hand-edit measured numbers. The generator keeps successful job walls from failed children too and preserves unrelated or larger prior costs.
 4. Do not add `YYYY.M.PATCH+1`, a beta version, or an empty future changelog section to `main` until the operator explicitly starts that release train.
 5. Run `pnpm release:generated:check`, `pnpm deps:npm-lock:check`, and `OPENCLAW_TESTBOX=1 pnpm check:changed`. Push, then verify `origin/main` contains the shipped version and changelog before calling the stable release done.
 6. Keep the repository variables `RELEASE_ROLLBACK_DRILL_ID` and `RELEASE_ROLLBACK_DRILL_DATE` current after each private rollback drill.
@@ -902,7 +903,10 @@ prerelease, infers `beta` for that beta path and `stable` for final versions, an
 dispatches `Full Release Validation` with the Validation SHA as `expected_sha`.
 Target resolution rejects a mismatch before child dispatch. Frozen CI children
 load the Node shard planner and its measured costs from the pinned Tooling SHA;
-the candidate checkout remains the test discovery and execution root. Every child workflow
+the candidate checkout remains the test discovery and execution root. Hosted full
+plans split measured jobs above 12 minutes, leaving headroom for the 20-minute
+objective; indivisible over-budget tests require an owner-level split. Unmeasured
+jobs still require native timing evidence. Every child workflow
 `headSha` must match the Tooling SHA. Pass `-f reuse_evidence=false` to force a
 fresh run or `-f release_profile=full` for the broad advisory sweep. Never
 replace the recorded Tooling SHA with a fresh `main` lookup. The helper rejects
