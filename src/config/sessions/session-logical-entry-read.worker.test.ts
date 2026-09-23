@@ -256,20 +256,21 @@ it("refuses malformed folded candidate state while retaining the healthy request
 });
 
 it.each([
-  { stage: "while-queued", change: "registry" },
-  { stage: "while-queued", change: "file" },
-  { stage: "while-queued", change: "caller" },
-  { stage: "before-open", change: "registry" },
-  { stage: "after-row", change: "registry" },
-  { stage: "after-release", change: "registry" },
-  { stage: "after-discovery-cleanup", change: "registry" },
+  { stage: "while-queued", change: "registry", registration: "changed" },
+  { stage: "while-queued", change: "file", registration: "changed" },
+  { stage: "while-queued", change: "file", registration: "unchanged" },
+  { stage: "while-queued", change: "caller", registration: "changed" },
+  { stage: "before-open", change: "registry", registration: "changed" },
+  { stage: "after-row", change: "registry", registration: "changed" },
+  { stage: "after-release", change: "registry", registration: "changed" },
+  { stage: "after-discovery-cleanup", change: "registry", registration: "changed" },
 ] as const)(
-  "refuses $change replacement $stage instead of returning the previously selected row",
-  async ({ stage, change }) => {
+  "refuses $change replacement $stage ($registration registration)",
+  async ({ stage, change, registration }) => {
     const scope = {
       agentId: "ops",
       env: state.env,
-      storePath: state.statePath(stage, change, "sessions.json"),
+      storePath: state.statePath(stage, change, registration, "sessions.json"),
       sessionKey: "global",
     };
     replaceSessionEntrySync(scope, { sessionId: "selected-row", updatedAt: 1 });
@@ -374,11 +375,13 @@ it.each([
       } else {
         callerCurrent = false;
       }
-      registerOpenClawAgentDatabase({
-        agentId: change === "registry" ? "other" : "ops",
-        path: databasePath,
-        env: state.env,
-      });
+      if (registration === "changed") {
+        registerOpenClawAgentDatabase({
+          agentId: change === "registry" ? "other" : "ops",
+          path: databasePath,
+          env: state.env,
+        });
+      }
       release.resolve();
       const result = await reading;
       expect(result.value).toBeUndefined();

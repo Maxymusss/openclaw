@@ -214,6 +214,16 @@ export async function readSessionEntryInWorker(
       const options = { ...target.database, env };
       const targetIdentity = readDatabasePathIdentitySync(options.path);
       const execution = captureOpenClawAgentDatabaseExecution(options);
+      const assertRetainedTarget = () => {
+        execution.assertCurrent();
+        const currentIdentity = readDatabasePathIdentitySync(options.path);
+        if (
+          currentIdentity.key !== targetIdentity.key ||
+          currentIdentity.canonicalPath !== targetIdentity.canonicalPath
+        ) {
+          throw new Error("Session database identity changed while awaiting admission");
+        }
+      };
       const assertCurrent = () => {
         execution.assertCurrent();
         owner.assertCurrent();
@@ -221,16 +231,8 @@ export async function readSessionEntryInWorker(
       let entry: SessionEntry | undefined;
       try {
         entry = await runOpenClawAgentWorkerWrite(options, async () => {
-          await owner.refreshBeforeDispatch(() => {
-            execution.assertCurrent();
-            const currentIdentity = readDatabasePathIdentitySync(options.path);
-            if (
-              currentIdentity.key !== targetIdentity.key ||
-              currentIdentity.canonicalPath !== targetIdentity.canonicalPath
-            ) {
-              throw new Error("Session database identity changed while awaiting admission");
-            }
-          });
+          await owner.refreshBeforeDispatch(assertRetainedTarget);
+          assertRetainedTarget();
           return execution.runCreate(
             {
               assertCurrent,
