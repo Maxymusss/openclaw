@@ -1362,7 +1362,7 @@ describe("ci workflow guards", () => {
       changedPaths: ["ui/src/components/app-sidebar.ts"],
       includeReleaseOnlyTests: true,
     },
-  ])("forwards the UI release-tier selection for $name to both test jobs", (scenario) => {
+  ])("forwards the UI release-tier selection for $name to all three test jobs", (scenario) => {
     const manifest = runCiManifestFixture({
       bundledPlanner: true,
       uiReleaseTier: true,
@@ -1388,6 +1388,13 @@ describe("ci workflow guards", () => {
         "ui_e2e_test_groups_gzip_base64",
         "checks-ui-e2e",
         "Test Control UI end-to-end",
+      ],
+      [
+        "e2e",
+        "test/vitest/vitest.ui-e2e.config.ts",
+        "ui_e2e_test_groups_gzip_base64",
+        "checks-ui-e2e-real-gateway",
+        "Test Control UI suites with a real Gateway",
       ],
     ] as const) {
       const packed = expectDefined(manifest.outputs[output], `${name} packed test selection`);
@@ -7471,7 +7478,6 @@ describe("ci workflow guards", () => {
     });
     expect(uiE2eRealGateway.steps.indexOf(desktopProof)).toBeGreaterThan(realGatewayBuildIndex);
     expect(uiE2eRealGateway.steps.indexOf(desktopProof)).toBeLessThan(realGatewayIndex);
-    expect(realGatewayStep.run).not.toContain("desktop-resize.real-gateway.e2e.test.ts");
     const desktopUpload = expectDefined(
       uiE2eRealGateway.steps.find(
         (step: WorkflowStep) => step.name === "Upload sanitized desktop resize proof",
@@ -7497,6 +7503,8 @@ describe("ci workflow guards", () => {
       OPENCLAW_UI_E2E_ARTIFACT_DIR: proofUpload.with.path,
       OPENCLAW_UI_E2E_DIAGNOSTIC_DIR:
         ".artifacts/control-ui-e2e-timeouts/real-gateway-attempt-${{ github.run_attempt }}",
+      OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64:
+        "${{ needs.preflight.outputs.ui_e2e_test_groups_gzip_base64 }}",
     });
     expect(proofUploadIndex).toBeGreaterThan(realGatewayIndex);
   });

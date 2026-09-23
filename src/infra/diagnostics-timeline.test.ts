@@ -7,7 +7,6 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setImmediate as yieldToEventLoop } from "node:timers/promises";
-import { fileURLToPath } from "node:url";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -19,10 +18,14 @@ import {
   measureDiagnosticsTimelineSpan,
   measureDiagnosticsTimelineSpanSync,
 } from "./diagnostics-timeline.js";
+import { nativeProcessTestEntrypoints } from "./native-process-runtime.test-support.js";
+import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "./runtime-worker-url.js";
+import { workerTaskPoolEntrypoints } from "./worker-task-pool-runtime.test-support.js";
 import { WorkerTaskPool } from "./worker-task-pool.js";
 import type { PoolFixtureInput, PoolFixtureResult } from "./worker-task-pool.test-support.js";
 
 const tempDirs: string[] = [];
+const timelineUrl = resolveRuntimeWorkerUrl(nativeProcessTestEntrypoints.diagnosticsTimeline);
 
 async function createTimelineEnv() {
   const dir = await mkdtemp(join(tmpdir(), "openclaw-diagnostics-timeline-"));
@@ -67,7 +70,7 @@ describe("diagnostics timeline", () => {
   it("attributes queued and reused real worker completions before each submitting span settles", async () => {
     const { env, path } = await createTimelineEnv();
     const pool = new WorkerTaskPool<PoolFixtureInput, PoolFixtureResult>({
-      workerUrl: new URL("./worker-task-pool.test-support.ts", import.meta.url),
+      workerUrl: resolveRuntimeWorkerUrl(workerTaskPoolEntrypoints.worker),
       maxWorkers: 1,
     });
     const counters = new SharedArrayBuffer(8);
@@ -280,7 +283,7 @@ describe("diagnostics timeline", () => {
     async (mode) => {
       const { env, path } = await createTimelineEnv();
       const script = `
-        import { emitDiagnosticsTimelineEvent } from ${JSON.stringify(new URL("./diagnostics-timeline.ts", import.meta.url).href)};
+        import { emitDiagnosticsTimelineEvent } from ${JSON.stringify(timelineUrl.href)};
         const env = ${JSON.stringify(env)};
         process.on("exit", () => emitDiagnosticsTimelineEvent({ type: "mark", name: "last" }, { env }));
         ${mode === "first-event-at-exit" ? "" : 'emitDiagnosticsTimelineEvent({ type: "mark", name: "first" }, { env });'}
@@ -289,8 +292,7 @@ describe("diagnostics timeline", () => {
       const result = spawnSync(
         process.execPath,
         [
-          "--import",
-          fileURLToPath(new URL("../../scripts/tsx.mjs", import.meta.url)),
+          ...resolveRuntimeWorkerArgv(timelineUrl).slice(0, -1),
           "--input-type=module",
           "--eval",
           script,
