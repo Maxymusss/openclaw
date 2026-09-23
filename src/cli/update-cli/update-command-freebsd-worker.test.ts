@@ -3,6 +3,7 @@ import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createConfigIO } from "../../config/io.js";
 import { hasNodeErrorCode } from "../../infra/path-guards.js";
+import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import * as temporaryState from "../../infra/tmp-openclaw-dir.js";
 import { createFreeBsdUpdateWriteAdmission } from "../../infra/update-freebsd-write-admission.js";
 import { nativeFreeBsd, withFreeBsdFixture } from "../../infra/update-freebsd.test-support.js";
@@ -59,11 +60,17 @@ it.skipIf(!nativeFreeBsd).each(["api origin", "campaign origin"])(
       await fs.mkdir(control, { mode: 0o700 });
       vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
       const nativeCommand = childCommands.runUtf8CommandWithTimeout;
+      const finalizerWorker = path.join(
+        root,
+        "dist",
+        runtimeProcessEntrypoints.updateMigratedFinalize.distWorkerPath,
+      );
       const receipts: Awaited<ReturnType<typeof nativeCommand>>[] = [];
       vi.spyOn(childCommands, "runUtf8CommandWithTimeout").mockImplementation(
         async (argv, options) => {
           const child = await nativeCommand(argv, options);
-          if (argv.at(-1) !== "--check") {
+          // Metadata probes share this executor but do not carry a finalizer envelope.
+          if (argv.length === 2 && argv[0] === process.execPath && argv[1] === finalizerWorker) {
             expect(typeof options).toBe("object");
             if (typeof options !== "object" || typeof options.input !== "string") {
               throw new Error("Candidate continuation input is missing.");
@@ -164,11 +171,17 @@ it.skipIf(!nativeFreeBsd).each([
       await fs.mkdir(control, { mode: 0o700 });
       vi.spyOn(temporaryState, "resolvePreferredOpenClawTmpDir").mockReturnValue(control);
       const nativeCommand = childCommands.runUtf8CommandWithTimeout;
+      const finalizerWorker = path.join(
+        root,
+        "dist",
+        runtimeProcessEntrypoints.updateMigratedFinalize.distWorkerPath,
+      );
       const receipts: Awaited<ReturnType<typeof nativeCommand>>[] = [];
       vi.spyOn(childCommands, "runUtf8CommandWithTimeout").mockImplementation(
         async (argv, options) => {
           const child = await nativeCommand(argv, options);
-          if (argv.at(-1) !== "--check") {
+          // Metadata probes share this executor but do not carry a finalizer envelope.
+          if (argv.length === 2 && argv[0] === process.execPath && argv[1] === finalizerWorker) {
             if (typeof options !== "object" || typeof options.input !== "string") {
               throw new Error("Candidate continuation input is missing.");
             }
