@@ -35,6 +35,7 @@ import {
   type ModelCatalogVercelGatewayRouting,
   type NormalizedModelCatalogRow,
 } from "./model-catalog-types.js";
+import { ModelInferenceCapabilitiesSchema } from "./model-inference-capabilities.js";
 import { normalizeProviderId } from "./provider-id.js";
 export { normalizeOpenRouterModelReasoning } from "./model-catalog-reasoning.js";
 
@@ -449,6 +450,14 @@ function normalizeModelCatalogModel(value: unknown): ModelCatalogModel | undefin
   if (!id) {
     return undefined;
   }
+  const inference =
+    value.inference === undefined
+      ? undefined
+      : ModelInferenceCapabilitiesSchema.safeParse(value.inference);
+  // Dropping an invalid task declaration could turn a classifier into a legacy chat row.
+  if (inference && !inference.success) {
+    return undefined;
+  }
   const name = normalizeOptionalString(value.name) ?? "";
   const api = normalizeModelCatalogApi(value.api);
   const baseUrl = normalizeOptionalString(value.baseUrl) ?? "";
@@ -471,6 +480,7 @@ function normalizeModelCatalogModel(value: unknown): ModelCatalogModel | undefin
   return {
     id,
     ...(name ? { name } : {}),
+    ...(inference?.success ? { inference: inference.data } : {}),
     ...(api ? { api } : {}),
     ...(baseUrl ? { baseUrl } : {}),
     ...(headers ? { headers } : {}),
