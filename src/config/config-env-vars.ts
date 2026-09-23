@@ -90,9 +90,7 @@ function envSnapshotKey(key: string): string {
   return process.platform === "win32" ? key.toUpperCase() : key;
 }
 
-function snapshotEnvByPlatformKey(
-  env: Readonly<Record<string, string | undefined>>,
-): Map<string, EnvSnapshotEntry> {
+function snapshotEnvByPlatformKey(env: Readonly<NodeJS.ProcessEnv>): Map<string, EnvSnapshotEntry> {
   // Windows has one logical slot per case-insensitive key. Retain its exact spelling so
   // publication and rollback can compare-and-swap the slot without losing the original key.
   const snapshot = new Map<string, EnvSnapshotEntry>();
@@ -616,19 +614,15 @@ function prepareConfigRuntimeEnvPublication(params: {
           replaceEnvSnapshotEntry(targetEnv, currentEntry, afterEntry);
         }
       }
-      const publicationGeneration = processPublication
-        ? publishedConfigRuntimeEnvState.generation + 1
-        : null;
+      const generation = processPublication ? publishedConfigRuntimeEnvState.generation + 1 : null;
       const publicationEpoch = publishedConfigRuntimeEnvEpoch;
       let processPublicationState: PendingConfigRuntimeEnvPublication | null = null;
-      if (publicationGeneration !== null) {
+      if (generation !== null) {
         const ownedEnv: Record<string, string> = {};
-        let publishedEnv: ReadonlyMap<string, EnvSnapshotEntry> | undefined;
+        let owned: ReadonlyMap<string, EnvSnapshotEntry> | undefined;
         for (const [key, value] of Object.entries(params.configState?.ownedEnv ?? {})) {
           const platformKey = envSnapshotKey(key);
-          const currentEntry = (publishedEnv ??= snapshotEnvByPlatformKey(targetEnv)).get(
-            platformKey,
-          );
+          const currentEntry = (owned ??= snapshotEnvByPlatformKey(targetEnv)).get(platformKey);
           const preparedEntry = afterByPlatformKey.get(platformKey);
           const previousOwnedKey = findCaseInsensitiveEnvKey(previousOwnedEnv, key);
           if (
@@ -641,7 +635,7 @@ function prepareConfigRuntimeEnvPublication(params: {
           }
         }
         publishedConfigRuntimeEnvState = {
-          generation: publicationGeneration,
+          generation,
           ownedEnv: params.configState ? ownedEnv : previousPublishedState.ownedEnv,
           sourceConfig: params.configState?.sourceConfig ?? previousPublishedState.sourceConfig,
         };
@@ -672,9 +666,9 @@ function prepareConfigRuntimeEnvPublication(params: {
           unwindRequestedConfigRuntimeEnvPublications();
           return;
         }
-        let current: ReadonlyMap<string, EnvSnapshotEntry> | undefined;
+        let rollbackEnv: ReadonlyMap<string, EnvSnapshotEntry> | undefined;
         for (const [key, publication] of published) {
-          const currentEntry = (current ??= snapshotEnvByPlatformKey(targetEnv)).get(key);
+          const currentEntry = (rollbackEnv ??= snapshotEnvByPlatformKey(targetEnv)).get(key);
           if (!envSnapshotEntriesEqual(currentEntry, publication.after)) {
             continue;
           }
