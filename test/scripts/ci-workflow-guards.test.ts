@@ -1286,9 +1286,13 @@ AFTER_CD
     expect(openClawKitTests?.run).toContain("--no-parallel");
   });
 
-  it("keeps Testbox pull request validation off leased runner capacity", () => {
+  it("keeps Testbox runner admission and job budget compatible with delegated proof", () => {
     const workflow = readTestboxWorkflow();
 
+    expect(workflow.on.workflow_dispatch.inputs.timeout_minutes.default).toBe(240);
+    expect(workflow.jobs.check["timeout-minutes"]).toBe(
+      "${{ fromJSON(inputs.timeout_minutes || '240') }}",
+    );
     expect(workflow.jobs.check["runs-on"]).toBe(
       "${{ github.event_name == 'pull_request' && 'ubuntu-24.04' || 'blacksmith-16vcpu-ubuntu-2404' }}",
     );
