@@ -4244,11 +4244,13 @@ describe("createTelegramBot", () => {
 
   it("retries a deferred spooled update after its queued turn is abandoned", async () => {
     configureOpenDm();
-    const queued = createDeferred<GetReplyOptions["turnAdoptionLifecycle"]>();
+    // The first dispatch hydrates the per-test message cache before getReply
+    // runs; wait on the lifecycle itself instead of racing a polling timeout.
+    const queuedLifecycleReady = createDeferred<GetReplyOptions["turnAdoptionLifecycle"]>();
     replySpy
       .mockImplementationOnce(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
         opts?.turnAdoptionLifecycle?.onDeferred?.();
-        queued.resolve(opts?.turnAdoptionLifecycle);
+        queuedLifecycleReady.resolve(opts?.turnAdoptionLifecycle);
         return undefined;
       })
       .mockImplementationOnce(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
@@ -4265,7 +4267,7 @@ describe("createTelegramBot", () => {
       messageId: 702,
       text: "retry after queued turn abandonment",
     });
-    const queuedLifecycle = await queued.promise;
+    const queuedLifecycle = await queuedLifecycleReady.promise;
     expect(queuedLifecycle?.onAbandoned).toEqual(expect.any(Function));
     queuedLifecycle?.onAbandoned?.();
     const firstReplay = await firstReplayPromise;
