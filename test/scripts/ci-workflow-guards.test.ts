@@ -10383,7 +10383,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
     }
   });
 
-  it("routes admitted RunsOn rows with unique Spot labels and portable cache readers", () => {
+  it("routes admitted RunsOn rows across bounded instance pools with portable caches", () => {
     const job = readCiWorkflow().jobs["checks-node-core-test-nondist-shard"];
     const context = {
       eventName: "pull_request",
@@ -10396,11 +10396,16 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       runnerProfile: "hybrid",
       runnerEnvironment: "self-hosted",
       preflightOutputs: { node_runner_backend: "runson" },
-      matrix: { runner: "runson-c8a-2xlarge", check_name: "cron-1", shard_name: "runson-cron" },
+      matrix: {
+        runner: "runson-general-16",
+        check_name: "cron-1",
+        shard_name: "runson-cron",
+        runson_spot: true,
+      },
     } as const;
     const label = evaluateWorkflowExpression(job["runs-on"], context);
     expect(label).toBe(
-      "runs-on=123-cron-1/family=c8a.2xlarge/cpu=8/ram=16/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
+      "runs-on=123-cron-1/family=m8azn.xlarge+m8a.xlarge+c8a.2xlarge+m7a.xlarge+c7a.2xlarge/cpu=4+8/ram=16/spot=cop/retry=false/image=ubuntu24-full-x64/volume=80gb/region=us-east-1",
     );
     expect(
       evaluateWorkflowExpression(job["runs-on"], {
@@ -10437,7 +10442,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       [
         "checks-ui-e2e",
         { task: "control-ui", shard: 1 },
-        "runs-on=123-ui-e2e-1/family=c8i.2xlarge/cpu=8/ram=16/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
+        "runs-on=123-ui-e2e-1/family=m8a.xlarge+m8azn.xlarge+c8a.2xlarge+m7a.xlarge+c7a.2xlarge/cpu=4+8/ram=16/spot=false/retry=false/image=ubuntu24-full-x64/volume=80gb/region=us-east-1",
         "ubuntu-24.04",
       ],
       [
@@ -10520,12 +10525,39 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         preflightOutputs: { node_runner_backend: "runson", frozen_target: "true" },
       }),
     ).toBe("ubuntu-24.04");
+    const retainedUi = {
+      ...context,
+      matrix: { task: "control-ui", shard: 10, retained: true, vitest_shard_count: 1 },
+      preflightOutputs: {
+        node_runner_backend: "runson",
+        ui_e2e_test_groups_gzip_base64: "ordinary-groups",
+        ui_e2e_blacksmith_test_groups_gzip_base64: "retained-groups",
+      },
+    };
+    expect(evaluateWorkflowExpression(uiJob["runs-on"], retainedUi)).toBe(
+      "blacksmith-16vcpu-ubuntu-2404",
+    );
+    expect(evaluateWorkflowExpression(uiSetup.with["dependency-cache"], retainedUi)).toBe("true");
+    const uiTest = expectDefined(
+      uiJob.steps.find((step: WorkflowStep) => step.name === "Test Control UI end-to-end"),
+      "UI test",
+    );
+    expect(
+      evaluateWorkflowExpression(uiTest.env.OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64, retainedUi),
+    ).toBe("retained-groups");
+    expect(evaluateWorkflowExpression(uiTest.env.VITEST_SHARD_INDEX, retainedUi)).toBe(1);
+    expect(evaluateWorkflowExpression(uiTest.env.VITEST_SHARD_COUNT, retainedUi)).toBe(1);
+    const uiInitialize = expectDefined(
+      uiJob.steps.find((step: WorkflowStep) => step.name === "Initialize RunsOn"),
+      "UI initialization",
+    );
+    expect(evaluateWorkflowExpression(`\${{ ${uiInitialize.if} }}`, retainedUi)).toBe(false);
     const bounded = {
       ...context,
-      matrix: { runner: "runson-c8a-4xlarge", check_name: "bounded-node" },
+      matrix: { runner: "runson-memory-32", check_name: "bounded-node", runson_spot: true },
     };
     expect(evaluateWorkflowExpression(job["runs-on"], bounded)).toBe(
-      "runs-on=123-bounded-node/family=c8a.4xlarge/cpu=16/ram=32/spot=true/retry=false/image=ubuntu24-full-x64/volume=80gb",
+      "runs-on=123-bounded-node/family=m8azn.3xlarge+m8a.2xlarge+c8a.4xlarge+m7a.2xlarge+c7a.4xlarge/cpu=8+16/ram=32+48/spot=cop/retry=false/image=ubuntu24-full-x64/volume=80gb/region=us-east-1",
     );
     expect(evaluateWorkflowExpression(setup.with["dependency-cache"], bounded)).toBe("false");
     expect(
@@ -10533,7 +10565,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
         ...bounded,
         env: { NODE_VERSION: "24.19.0" },
       }),
-    ).toBe("24.x");
+    ).toBe("24.19.0");
     expect(setup.with).toMatchObject({ "vitest-fs-cache": "true", "node-compile-cache": "true" });
     const resources = expectDefined(
       job.steps.find((step: WorkflowStep) => step.name === "Configure Node test resources"),
@@ -10571,12 +10603,32 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       job.steps.find((step: WorkflowStep) => step.name === "Record RunsOn allocation"),
       "RunsOn allocation",
     );
-    expect(evaluateWorkflowExpression(allocation.env.EXPECTED_RUNSON_INSTANCE_TYPE, bounded)).toBe(
-      "c8a.4xlarge",
+    expect(evaluateWorkflowExpression(allocation.env.EXPECTED_RUNSON_INSTANCE_TYPES, bounded)).toBe(
+      "m8azn.3xlarge+m8a.2xlarge+c8a.4xlarge+m7a.2xlarge+c7a.4xlarge",
     );
-    expect(evaluateWorkflowExpression(allocation.env.EXPECTED_RUNSON_INSTANCE_TYPE, context)).toBe(
-      "c8a.2xlarge",
+    expect(evaluateWorkflowExpression(allocation.env.EXPECTED_RUNSON_INSTANCE_TYPES, context)).toBe(
+      "m8azn.xlarge+m8a.xlarge+c8a.2xlarge+m7a.xlarge+c7a.2xlarge",
     );
+    for (const candidate of [context, bounded]) {
+      const onDemand = { ...candidate, matrix: { ...candidate.matrix, runson_spot: false } };
+      const onDemandLabel = String(evaluateWorkflowExpression(job["runs-on"], onDemand));
+      expect(onDemandLabel).toContain("/spot=false/retry=false/");
+      expect(onDemandLabel).toMatch(/\/family=m8a\.(?:xlarge|2xlarge)\+m8azn\./u);
+      expect(onDemandLabel.length).toBeLessThanOrEqual(255);
+      expect(evaluateWorkflowExpression(allocation.env.EXPECTED_RUNSON_MARKET, onDemand)).toBe(
+        "on-demand",
+      );
+      expect(evaluateWorkflowExpression(allocation.env.EXPECTED_RUNSON_MARKET, candidate)).toBe(
+        "spot-or-on-demand",
+      );
+    }
+    expect(
+      evaluateWorkflowExpression(uiSetup.with["node-version"], {
+        ...context,
+        matrix: { task: "control-ui" },
+        env: { NODE_VERSION: "24.19.0" },
+      }),
+    ).toBe("24.19.0");
     const initialize = expectDefined(
       job.steps.find((step: WorkflowStep) => step.name === "Initialize RunsOn"),
       "RunsOn initialization",

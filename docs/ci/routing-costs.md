@@ -55,14 +55,61 @@ Numbered compact bins change when membership changes. A matching suffix does not
 
 ## RunsOn remains unqualified
 
-The next qualification extends the existing opt-in route to non-build 32-class
-Node rows on AMD `c8a.4xlarge` (16 vCPUs, 32 GiB) and Control UI E2E on
-`c8i.2xlarge` (8 vCPUs, 16 GiB). Cron uses AMD `c8a.2xlarge` at 8 vCPUs and
-16 GiB after the Intel comparison below exceeded the slowdown limit.
-Hybrid remains the packing owner. Test selectors, worker caps, serial admission,
-memory gates and timeouts are unchanged. No additional hosted rows are admitted
-while hosted queue pressure remains unresolved. Runtime builds and the measured
-update-CLI storage envelope stay on Blacksmith.
+The next candidate diversifies every RunsOn request across five AMD types and
+both AZs exposed by the installed stack. Node rows need at least eight CPUs and
+32 GiB; UI/cron need 4–8 CPUs and 16 GiB. Existing memory gates and worker limits
+still admit execution. Runtime builds and the measured update-CLI envelope
+retain Blacksmith. The slow retained CLI process cohort is split using the
+existing runtime admission owner and complete file costs; its former seven-file
+child took 720 seconds inside a 1,142-second job.
+
+A known planner prediction plus a 150-second launch/setup reserve must fit
+480 seconds to use prioritized Spot. Longer or unknown rows use on-demand;
+UI has no complete per-row forecast. This market-only reserve covers the
+125-second observed overhead maximum and never changes a deadline. The
+GitHub-projects UI spec stays on Blacksmith in a disjoint inventory partition
+until its previous AWS RPC timeout has an established cause. No coverage or
+hosted lint/type routing changes accompany these placements.
+
+The final single-pool controls at `791e06f63af6` all failed and exceeded 15 minutes:
+
+| Shape | Hybrid run    | RunsOn run    | Blacksmith minutes | Combined reference cost | Raw wall        |
+| ----- | ------------- | ------------- | ------------------ | ----------------------- | --------------- |
+| Main  | `35856548503` | `35859004781` | 558.583 → 213.650  | $28.9979 → $10.9620     | 19m24s → 21m28s |
+| PR    | `35861500888` | `35863745223` | 674.683 → 238.267  | $31.6341 → $10.5561     | 20m19s → 21m13s |
+
+Raw Blacksmith reductions of 61.75% and 64.68% include interrupted partial work;
+they are not successful equivalent-coverage savings. The same-source, same-Node
+cron comparison did pass 255 files / 3,488 tests on both providers, taking
+479 seconds on Blacksmith and 297 on AMD Spot. Its allocation estimates were
+$0.510933 and $0.014176 respectively. Ordinary migrated rows used different
+Node versions; the new candidate pins the actual runtime.
+
+The two RunsOn runs lost all 19 `c8a.4xlarge` Spot allocations in two correlated
+waves in one AZ. Across all types, 19 of 36 Spot allocations were interrupted;
+none of 78 on-demand allocations was interrupted. This does not estimate a
+stationary failure probability for the diversified pool. At the old
+$0.3081/hour Spot and $0.86216/hour on-demand references, repeated full-length
+attempts break even at a 64.26% interruption probability. A hypothetical single
+Spot attempt followed by on-demand replacement, using the observed 189.84-second
+mean lost allocation, breaks even at 81.97% for an eight-minute job. No such
+retry is enabled. The observed AMD cohort exceeds both thresholds; the pooled
+52.78% mixture does not establish an eight-minute statistical boundary. The
+480-second cutoff protects critical-path slack instead of claiming a fitted
+hazard model.
+
+Reference hourly prices on September 23 are $0.1655 Spot / $0.48688 on-demand
+for `m8a.2xlarge`, versus $0.4256 / $1.23876 for `m8azn.3xlarge`.
+A 400-minute Node allocation envelope would cost about $3.25 on-demand on M8a
+or $8.26 on M8azn, before ancillary charges; that is a sizing reference, not a
+measured complete run. Direct on-demand prefers M8a; Spot's faster-family
+preference can fall back to higher-priced on-demand capacity. Every final
+report must price actual types and markets from allocation receipts, include
+failed work, and report each exact-head workflow's wall. Regional public rates
+are not invoices and exclude storage, networking, control-plane and teardown.
+
+The following earlier measurements explain retained placements and superseded
+candidates; they do not qualify the diversified candidate.
 
 The first expanded [main qualification](https://github.com/openclaw/openclaw/actions/runs/35815956831)
 at `c2bca829359` used 166.45 Blacksmith machine-minutes / $5.8117 versus the

@@ -1477,10 +1477,20 @@ const RELEASE_ONLY_UI_TEST_FILES = new Set([
   "extensions/qa-lab/src/control-ui-media-transcript.real-gateway.e2e.test.ts",
   "extensions/qa-lab/src/session-host-command-state.real-gateway.e2e.test.ts",
 ]);
+// Retain Blacksmith placement while the AWS RPC wait remains unexplained.
+const RUNSON_RETAINED_BLACKSMITH_UI_E2E_TEST_FILES = new Set([
+  "ui/src/e2e/new-session-page.github-projects.e2e.test.ts",
+]);
+
+type UiTestShardGroup = Pick<NodeTestShardGroup, "configs" | "shard_name" | "includePatterns">;
 
 export function createUiTestShardGroups(
-  options: { includeReleaseOnlyTests?: boolean; changedPaths?: readonly string[] } = {},
-) {
+  options: {
+    includeReleaseOnlyTests?: boolean;
+    changedPaths?: readonly string[];
+    runnerBackend?: string;
+  } = {},
+): { ui: UiTestShardGroup[]; e2e: UiTestShardGroup[]; e2eBlacksmith?: UiTestShardGroup[] } {
   const includeReleaseOnlyTests = options.includeReleaseOnlyTests ?? true;
   const changedPaths = new Set(options.changedPaths ?? []);
   const files = includeReleaseOnlyTests
@@ -1488,21 +1498,36 @@ export function createUiTestShardGroups(
     : listTrackedTestFiles(".").filter(
         (file) => !RELEASE_ONLY_UI_TEST_FILES.has(file) || changedPaths.has(file),
       );
-  const group = (config: string, ownsFile: (file: string) => boolean) => [
-    {
-      configs: [config],
-      shard_name: config,
-      ...(files ? { includePatterns: files.filter(ownsFile) } : {}),
-    },
-  ];
+  const group = (config: string, ownsFile: (file: string) => boolean, selectedFiles = files) => ({
+    configs: [config],
+    shard_name: config,
+    ...(selectedFiles ? { includePatterns: selectedFiles.filter(ownsFile) } : {}),
+  });
+  const ui = [group("ui/vitest.config.ts", isUiTestTarget)];
+  const e2e = group(
+    "test/vitest/vitest.ui-e2e.config.ts",
+    (file) =>
+      controlUiE2eTestGlobs.some((pattern) => matchesGlob(file, pattern)) ||
+      uiE2eRealGatewayTestFiles.includes(file),
+    options.runnerBackend === "runson" ? (files ?? listTrackedTestFiles(".")) : files,
+  );
+  if (options.runnerBackend !== "runson") {
+    return { ui, e2e: [e2e] };
+  }
+  const retained = e2e.includePatterns!.filter((file) =>
+    RUNSON_RETAINED_BLACKSMITH_UI_E2E_TEST_FILES.has(file),
+  );
   return {
-    ui: group("ui/vitest.config.ts", isUiTestTarget),
-    e2e: group(
-      "test/vitest/vitest.ui-e2e.config.ts",
-      (file) =>
-        controlUiE2eTestGlobs.some((pattern) => matchesGlob(file, pattern)) ||
-        uiE2eRealGatewayTestFiles.includes(file),
-    ),
+    ui,
+    e2e: [
+      {
+        ...e2e,
+        includePatterns: e2e.includePatterns!.filter(
+          (file) => !RUNSON_RETAINED_BLACKSMITH_UI_E2E_TEST_FILES.has(file),
+        ),
+      },
+    ],
+    ...(retained.length ? { e2eBlacksmith: [{ ...e2e, includePatterns: retained }] } : {}),
   };
 }
 
@@ -3515,7 +3540,33 @@ function splitOversizedCompactGroup(
         isCliProcess || isTooling ? batchWeight : undefined,
       );
     }
-    const partitioned = runtimePartition ? [runtimePartition.runtimeFiles, ...stripes] : stripes;
+    // Share a runtime build only while its serial CLI consumers fit the same
+    // runtime admission budget. A growing update corpus must not become an
+    // indivisible child merely because every file needs the prepared runtime.
+    const runtimeStripes =
+      runtimePartition && isCliProcess
+        ? packNodeTestGroups(
+            runtimePartition.runtimeFiles.toSorted(
+              (a, b) =>
+                weightForFile(b) - weightForFile(a) ||
+                includePatterns.indexOf(a) - includePatterns.indexOf(b),
+            ),
+            (batch, file) =>
+              (seconds * [...batch, file].reduce((sum, entry) => sum + weightForFile(entry), 0)) /
+                totalWeight +
+                VITEST_PRETEST_BUILD_SECONDS.runtime *
+                  (runnerBackend === "github" ? COMPACT_GITHUB_GROUP_SECONDS_SCALE : 1) <=
+              COMPACT_HYBRID_RUNTIME_JOB_SECONDS,
+          ).map((batch) =>
+            batch.toSorted((a, b) => includePatterns.indexOf(a) - includePatterns.indexOf(b)),
+          )
+        : runtimePartition
+          ? [runtimePartition.runtimeFiles]
+          : [];
+    // Preserve unchanged ordinary child identities and their native-wall samples.
+    const partitioned = runtimeStripes.length
+      ? [runtimeStripes[0]!, ...stripes, ...runtimeStripes.slice(1)]
+      : stripes;
     // Preserve prerequisite ownership and the existing weighted stripes. The
     // family guard prevents cost packing from joining these serial chunks again.
     return storageStateFileLimit === undefined
@@ -4006,7 +4057,7 @@ function routeRunsOnJobs(
     routed.push({
       checkName: "checks-node-runson-cron",
       shardName: "runson-cron",
-      runner: "runson-c8a-2xlarge",
+      runner: "runson-general-16",
       groups: cronGroups,
       requiresDist: false,
       planConcurrency: 1,
@@ -4045,7 +4096,7 @@ function routeRunsOnJobs(
       ) {
         return job;
       }
-      return Object.assign({}, job, { runner: "runson-c8a-4xlarge" });
+      return Object.assign({}, job, { runner: "runson-memory-32" });
     })
     .toSorted((a, b) => a.checkName.localeCompare(b.checkName));
 }

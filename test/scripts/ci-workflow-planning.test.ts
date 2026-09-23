@@ -216,6 +216,7 @@ function runCiManifestFixture(options: {
   uiE2eProjectsCapability?: boolean;
   uiReleaseTier?: boolean;
   uiRealGatewayShards?: boolean;
+  uiRetainedE2e?: boolean;
   remoteTagRefs?: Record<string, string>;
   scopeEnv?: Record<string, string>;
 }) {
@@ -284,7 +285,7 @@ function runCiManifestFixture(options: {
                 OPENCLAW_CI_TEST_PROOF_TIER: String(options.includeProofTests),
               },
               requiresDist: false,
-              runner: runson ? "runson-c8a-2xlarge" : "ubuntu-24.04",
+              runner: runson ? "runson-general-16" : "ubuntu-24.04",
               shardName: runson ? "changed-runson-cron" : "bundled-node-plan",
             }];
           };
@@ -316,12 +317,15 @@ function runCiManifestFixture(options: {
         `\nexport { isToolingTestOwnerPath } from ${JSON.stringify(pathToFileURL(path.resolve("scripts/lib/ci-node-test-plan.mts")).href)};\n`,
       );
     }
-    if (options.uiReleaseTier) {
+    if (options.uiReleaseTier || options.uiRetainedE2e) {
       appendFileSync(
         path.join(scriptsDir, "ci-node-test-plan.mts"),
         `\nexport const createUiTestShardGroups = (options) => ({
           ui: [{configs: ["ui/vitest.config.ts"], shard_name: "ui", env: {fixtureTier: JSON.stringify(options)}}],
           e2e: [{configs: ["test/vitest/vitest.ui-e2e.config.ts"], shard_name: "e2e", env: {fixtureTier: JSON.stringify(options)}}],
+          ...(options.runnerBackend === "runson" && ${Boolean(options.uiRetainedE2e)} ? {
+            e2eBlacksmith: [{configs: ["test/vitest/vitest.ui-e2e.config.ts"], shard_name: "e2e-blacksmith", includePatterns: ["ui/src/e2e/new-session-page.github-projects.e2e.test.ts"]}],
+          } : {}),
         });\n`,
       );
       if (options.uiRealGatewayShards !== false) {
@@ -4030,6 +4034,85 @@ describe("ci workflow guards", () => {
     },
   );
 
+  it("schedules the retained UI inventory once without expanding hosted placement", () => {
+    const fixture = {
+      bundledPlanner: true,
+      eventName: "push" as const,
+      runnerBackend: "hybrid" as const,
+      nodeRunnerBackend: "runson" as const,
+      uiRetainedE2e: true,
+      scopeEnv: { OPENCLAW_CI_RUN_UI_TESTS: "true" },
+    };
+    const manifest = runCiManifestFixture(fixture);
+    const baseline = runCiManifestFixture({ ...fixture, uiRetainedE2e: false });
+    expect(manifest.status, manifest.output).toBe(0);
+    expect(baseline.status, baseline.output).toBe(0);
+    const rows = JSON.parse(expectDefined(manifest.outputs.ui_e2e_matrix, "UI rows")).include;
+    const baselineRows = JSON.parse(
+      expectDefined(baseline.outputs.ui_e2e_matrix, "baseline UI rows"),
+    ).include;
+    expect(rows.filter((row: { retained?: boolean }) => !row.retained)).toEqual(baselineRows);
+    expect(rows.filter((row: { retained?: boolean }) => row.retained)).toEqual([
+      {
+        shard: baselineRows.length + 1,
+        shard_count: baselineRows.length + 1,
+        task: "control-ui",
+        retained: true,
+        vitest_shard_count: 1,
+        vitest_max_workers: 2,
+      },
+    ]);
+    expect(
+      decodeNodeTestGroups(
+        expectDefined(
+          manifest.outputs.ui_e2e_blacksmith_test_groups_gzip_base64,
+          "retained UI groups",
+        ),
+      ),
+    ).toEqual([
+      {
+        configs: ["test/vitest/vitest.ui-e2e.config.ts"],
+        shard_name: "e2e-blacksmith",
+        includePatterns: ["ui/src/e2e/new-session-page.github-projects.e2e.test.ts"],
+      },
+    ]);
+    expect(manifest.outputs.hybrid_hosted_base_rows).toBe(baseline.outputs.hybrid_hosted_base_rows);
+  });
+
+  it("admits Spot only when the forecast leaves launch and setup inside eight minutes", () => {
+    const forecasts = [undefined, 0, -1, 330, 331, 900];
+    const manifest = runCiManifestFixture({
+      bundledPlanner: true,
+      eventName: "push",
+      runnerBackend: "hybrid",
+      nodeRunnerBackend: "runson",
+      nodeTestShards: forecasts.map((predictedSeconds, index) => ({
+        checkName: `market-${index}`,
+        shardName: `market-${index}`,
+        configs: ["test/vitest/fixture.config.ts"],
+        runner: "runson-memory-32",
+        requiresDist: false,
+        predictedSeconds,
+      })),
+    });
+    expect(manifest.status, manifest.output).toBe(0);
+    const rows = JSON.parse(
+      expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "market Node rows"),
+    ).include as { check_name: string; runson_spot: boolean }[];
+    expect(
+      rows
+        .toSorted((a, b) => a.check_name.localeCompare(b.check_name))
+        .map((row) => [row.check_name, row.runson_spot]),
+    ).toEqual([
+      ["market-0", false],
+      ["market-1", false],
+      ["market-2", false],
+      ["market-3", true],
+      ["market-4", false],
+      ["market-5", false],
+    ]);
+  });
+
   it("passes RunsOn only to the Node planner and keeps default qualification dispatches PR-shaped", () => {
     const fixture = {
       bundledPlanner: true,
@@ -4062,18 +4145,21 @@ describe("ci workflow guards", () => {
       expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "qualification Node rows"),
     ).include as Record<string, unknown>[];
     const cron = expectDefined(
-      rows.find((row) => row.runner === "runson-c8a-2xlarge"),
+      rows.find((row) => row.runner === "runson-general-16"),
       "RunsOn cron row",
     );
     expect(cron.env).toMatchObject({ OPENCLAW_VITEST_MAX_WORKERS: "2" });
-    expect(
-      rows.find((row) => row.check_name === "checks-node-runson-cron-blacksmith-control"),
-    ).toEqual({
+    expect(cron.runson_spot).toBe(false);
+    const control: Record<string, unknown> = {
       ...cron,
       check_name: "checks-node-runson-cron-blacksmith-control",
       shard_name: "runson-cron-blacksmith-control",
       runner: "blacksmith-32vcpu-ubuntu-2404",
-    });
+    };
+    delete control.runson_spot;
+    expect(
+      rows.find((row) => row.check_name === "checks-node-runson-cron-blacksmith-control"),
+    ).toEqual(control);
     const ordinaryPr = runCiManifestFixture({
       ...fixture,
       eventName: "pull_request",
@@ -4084,7 +4170,7 @@ describe("ci workflow guards", () => {
       expectDefined(ordinaryPr.outputs.checks_node_core_nondist_matrix, "ordinary PR Node rows"),
     ).include as Record<string, unknown>[];
     expect(rows).toHaveLength(ordinaryRows.length + 1);
-    expect(ordinaryRows.some((row) => row.runner === "runson-c8a-2xlarge")).toBe(true);
+    expect(ordinaryRows.some((row) => row.runner === "runson-general-16")).toBe(true);
     expect(ordinaryRows.some((row) => String(row.check_name).endsWith("-control"))).toBe(false);
     const fastRows = JSON.parse(
       expectDefined(manifest.outputs.checks_fast_core_matrix, "qualification fast checks"),
@@ -7425,6 +7511,8 @@ describe("ci workflow guards", () => {
     } as const;
     const expectedUiE2eSetup = {
       ...expectedSharedUiE2eSetup,
+      "node-version":
+        "${{ needs.preflight.outputs.node_runner_backend == 'runson' && matrix.task == 'control-ui' && env.NODE_VERSION || '24.x' }}",
       "restore-test-caches":
         "${{ (needs.preflight.outputs.runner_profile == 'github' || needs.preflight.outputs.runner_profile == 'hybrid') && 'true' || 'false' }}",
     } as const;
@@ -7641,11 +7729,11 @@ describe("ci workflow guards", () => {
     expect(scenario.env).toEqual({
       OPENCLAW_UI_E2E_DIAGNOSTIC_DIR:
         ".artifacts/control-ui-e2e-timeouts/shard-${{ matrix.shard }}-attempt-${{ github.run_attempt }}",
-      VITEST_SHARD_INDEX: "${{ matrix.shard }}",
+      VITEST_SHARD_INDEX: "${{ matrix.retained && 1 || matrix.shard }}",
       VITEST_SHARD_COUNT: "${{ matrix.vitest_shard_count }}",
       OPENCLAW_VITEST_MAX_WORKERS: "${{ matrix.vitest_max_workers || 2 }}",
       OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64:
-        "${{ needs.preflight.outputs.ui_e2e_test_groups_gzip_base64 }}",
+        "${{ matrix.retained && needs.preflight.outputs.ui_e2e_blacksmith_test_groups_gzip_base64 || needs.preflight.outputs.ui_e2e_test_groups_gzip_base64 }}",
     });
     expect(scenario.run).not.toContain("--project");
     const timeoutDiagnostics = expectDefined(

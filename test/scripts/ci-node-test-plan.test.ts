@@ -33,6 +33,7 @@ import {
 import * as proofTestInventory from "../../scripts/lib/ci-proof-test-inventory.mts";
 import { isRuntimePlacementIncludePatterns } from "../../scripts/lib/ci-test-timings-schema.mts";
 import * as testTimings from "../../scripts/lib/ci-test-timings.mts";
+import * as testFileInventory from "../../scripts/lib/list-test-files.mts";
 import { isExclusiveCiTestConfig } from "../../scripts/lib/local-check-runtime.mts";
 import * as buildPrerequisites from "../../scripts/lib/vitest-build-prerequisites.mts";
 import { listVitestRuntimeConsumerFiles } from "../../scripts/lib/vitest-build-prerequisites.mts";
@@ -90,6 +91,7 @@ import { fullSuiteVitestShards } from "../vitest/vitest.test-shards.mjs";
 import { createToolingIsolatedVitestConfig } from "../vitest/vitest.tooling-isolated.config.ts";
 import { createToolingVitestConfig } from "../vitest/vitest.tooling.config.ts";
 import { createTuiVitestConfig } from "../vitest/vitest.tui.config.ts";
+import { createUiE2eVitestConfig } from "../vitest/vitest.ui-e2e.config.ts";
 import { createUiIsolatedVitestConfig } from "../vitest/vitest.ui-isolated.config.ts";
 import { uiE2eRealGatewayTestFiles, uiTimingTestFiles } from "../vitest/vitest.ui-paths.mjs";
 import { createUiTimingVitestConfig } from "../vitest/vitest.ui-timing.config.ts";
@@ -247,18 +249,62 @@ describe("Control UI release-only inventories", () => {
     );
   });
 
-  it("leaves the complete canonical config inventories in full release validation", () => {
-    const groups = createUiTestShardGroups();
-    expect(groups).toEqual({
-      ui: [{ configs: ["ui/vitest.config.ts"], shard_name: "ui/vitest.config.ts" }],
-      e2e: [
-        {
-          configs: ["test/vitest/vitest.ui-e2e.config.ts"],
-          shard_name: "test/vitest/vitest.ui-e2e.config.ts",
-        },
-      ],
-    });
-    expectRealGatewayCoverage(groups.e2e, uiE2eRealGatewayTestFiles);
+  it.each([undefined, "hybrid", "blacksmith", "github"])(
+    "leaves the complete canonical config inventories in full release validation on %s",
+    (runnerBackend) => {
+      const groups = createUiTestShardGroups({ runnerBackend });
+      expect(groups).toEqual({
+        ui: [{ configs: ["ui/vitest.config.ts"], shard_name: "ui/vitest.config.ts" }],
+        e2e: [
+          {
+            configs: ["test/vitest/vitest.ui-e2e.config.ts"],
+            shard_name: "test/vitest/vitest.ui-e2e.config.ts",
+          },
+        ],
+      });
+      expectRealGatewayCoverage(groups.e2e, uiE2eRealGatewayTestFiles);
+    },
+  );
+
+  it.each([
+    { name: "ordinary", options: { includeReleaseOnlyTests: false } },
+    {
+      name: "directly edited release-only matrices",
+      options: { includeReleaseOnlyTests: false, changedPaths: [entry, automationManagement] },
+    },
+    { name: "full release", options: {} },
+  ])("partitions RunsOn $name E2E coverage without changing selected files", ({ options }) => {
+    const retained = "ui/src/e2e/new-session-page.github-projects.e2e.test.ts";
+    const baseline = createUiTestShardGroups(options);
+    const groups = createUiTestShardGroups({ ...options, runnerBackend: "runson" });
+    const expected =
+      baseline.e2e[0]!.includePatterns ?? listMatchedTestFiles(createUiE2eVitestConfig({}, []));
+    const ordinary = groups.e2e.flatMap((group) => group.includePatterns ?? []);
+    const blacksmith = groups.e2eBlacksmith?.flatMap((group) => group.includePatterns ?? []);
+    expect(blacksmith).toEqual([retained]);
+    expect(ordinary).not.toContain(retained);
+    expect([...ordinary, ...blacksmith!].toSorted()).toEqual(expected.toSorted());
+    expect(new Set([...ordinary, ...blacksmith!]).size).toBe(expected.length);
+    expect(groups.ui).toEqual(baseline.ui);
+    expect(groups.e2eBlacksmith).toEqual([
+      {
+        configs: ["test/vitest/vitest.ui-e2e.config.ts"],
+        shard_name: "test/vitest/vitest.ui-e2e.config.ts",
+        includePatterns: [retained],
+      },
+    ]);
+  });
+
+  it("omits the retained E2E group when the selected inventory has no retained file", () => {
+    const file = "ui/src/e2e/chat-flow.navigation-presentation.e2e.test.ts";
+    const inventory = vi.spyOn(testFileInventory, "listTrackedTestFiles").mockReturnValue([file]);
+    try {
+      const groups = createUiTestShardGroups({ runnerBackend: "runson" });
+      expect(groups).not.toHaveProperty("e2eBlacksmith");
+      expect(groups.e2e[0]?.includePatterns).toEqual([file]);
+    } finally {
+      inventory.mockRestore();
+    }
   });
 });
 
@@ -400,6 +446,17 @@ function isCombinedUnbuiltCliJob(job: CompactNodeTestShard) {
         ),
       ),
     )
+  );
+}
+function isRuntimeCliProcessJob(job: CompactNodeTestShard) {
+  const [group] = job.groups;
+  return (
+    job.groups.length === 1 &&
+    job.pretestBuildMode === "runtime" &&
+    !job.requiresDist &&
+    group?.pretestBuildMode === "runtime" &&
+    group.configs.length === 1 &&
+    group.configs[0] === "test/vitest/vitest.cli-process.config.ts"
   );
 }
 const STORE_ALIAS_CHANGED_PATHS = [
@@ -696,7 +753,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     (compactMode) => {
       const hybrid = getCommittedCompactPlan(compactMode, "hybrid");
       const runson = getCommittedCompactPlan(compactMode, "runson");
-      const routed = runson.filter((job) => job.runner === "runson-c8a-2xlarge");
+      const routed = runson.filter((job) => job.runner === "runson-general-16");
       expect(routed).toHaveLength(1);
       expect(routed[0]).toMatchObject({
         planConcurrency: 1,
@@ -723,7 +780,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           .toSorted((a, b) => a.shard_name.localeCompare(b.shard_name));
       // Coverage and the complete executor contract survive the provider move.
       expect(orderedGroups(runson)).toEqual(orderedGroups(hybrid));
-      const capacityRows = runson.filter((job) => job.runner === "runson-c8a-4xlarge");
+      const capacityRows = runson.filter((job) => job.runner === "runson-memory-32");
       expect(capacityRows.length).toBeGreaterThan(0);
       expect(
         runson.find((job) =>
@@ -739,11 +796,11 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       }
       expect(
         runson
-          .filter((job) => job.runner !== "runson-c8a-2xlarge")
+          .filter((job) => job.runner !== "runson-general-16")
           .map((job) =>
             Object.assign({}, job, {
               runner:
-                job.runner === "runson-c8a-4xlarge" ? "blacksmith-32vcpu-ubuntu-2404" : job.runner,
+                job.runner === "runson-memory-32" ? "blacksmith-32vcpu-ubuntu-2404" : job.runner,
             }),
           ),
       ).toEqual(
@@ -1037,7 +1094,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .flatMap((group) => group.includePatterns ?? [])
         .toSorted(),
     ).toEqual(targets.toSorted());
-    expect(runson.filter((job) => job.runner === "runson-c8a-2xlarge")).toMatchObject([
+    expect(runson.filter((job) => job.runner === "runson-general-16")).toMatchObject([
       { groups: [{ includePatterns: [cronTarget] }], planConcurrency: 1 },
     ]);
     expect(
@@ -2586,7 +2643,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         .every(
           (shard) =>
             (shard.predictedSeconds ?? Infinity) <=
-            (usesParallelPacking(shard) ? 500 : isCombinedUnbuiltCliJob(shard) ? 250 : 210),
+            (usesParallelPacking(shard)
+              ? 500
+              : isRuntimeCliProcessJob(shard)
+                ? 440
+                : isCombinedUnbuiltCliJob(shard)
+                  ? 250
+                  : 210),
         ),
     ).toBe(true);
     // Slow process files retain singleton envelopes without inheriting the
@@ -2598,7 +2661,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           shard.groups.some((group) => isExclusiveCompactShardName(group.shard_name)),
         )
         .filter((shard) => !((shard.predictedSeconds ?? Infinity) <= 150))
-        .filter((shard) => !isCombinedUnbuiltCliJob(shard))
+        .filter((shard) => !isCombinedUnbuiltCliJob(shard) && !isRuntimeCliProcessJob(shard))
         .map((shard) => ({
           groups: shard.groups.map((group) => ({
             configs: group.configs,
@@ -2849,12 +2912,23 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
 
   it("partitions whole-config runtime consumers from ordinary serial CLI work", () => {
     const originalShards = fullSuiteVitestShards.slice();
+    const originalProcessFiles = cliProcessTestFiles.slice();
+    const runtimeFiles = [
+      "src/cli/acp-cli-exit.process.test.ts",
+      "src/cli/update-dry-run-state.process.test.ts",
+      "src/cli/update-cli/update-command-migrated.test.ts",
+    ];
+    const catalogFiles = [...runtimeFiles, "src/cli/help-exit.process.test.ts"];
+    cliProcessTestFiles.splice(0, cliProcessTestFiles.length, ...catalogFiles);
     const config = "test/vitest/vitest.cli-process.config.ts";
     const selected = originalShards
       .map((shard) => ({ ...shard, projects: shard.projects.filter((entry) => entry === config) }))
       .filter((shard) => shard.projects.length > 0);
     fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...selected);
-    const timings = vi.spyOn(testTimings, "readCompactGroupTimings").mockReturnValue({});
+    const timings = vi
+      .spyOn(testTimings, "readCompactGroupTimings")
+      .mockReturnValue({ "agentic-cli-process": 1 });
+    const weights = vi.spyOn(shardMetadata, "estimateVitestTestFileSeconds").mockReturnValue(15);
     const options = {
       includeReleaseOnlyPluginShards: false,
       compactMode: "push" as const,
@@ -2868,15 +2942,13 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       expect(runtimeJob).toMatchObject({ planConcurrency: 1, pretestBuildMode: "runtime" });
       expect(runtimeJob!.predictedSeconds).toBeLessThanOrEqual(150);
       expect(runtimeJob!.groups).toHaveLength(1);
-      const runtimeFiles = listVitestRuntimeConsumerFiles([config]).toSorted();
-      expect(runtimeJob!.groups[0]!.includePatterns?.toSorted()).toEqual(runtimeFiles);
-      const catalogFiles = listMatchedTestFiles(createCliProcessVitestConfig({})).toSorted();
+      expect(runtimeJob!.groups[0]!.includePatterns).toEqual(runtimeFiles);
       const ordinaryJobs = plan.filter((job) => !job.pretestBuildMode);
       expect(
         ordinaryJobs
           .flatMap((job) => job.groups.flatMap((group) => group.includePatterns ?? []))
           .toSorted(),
-      ).toEqual(catalogFiles.filter((file) => !runtimeFiles.includes(file)));
+      ).toEqual(catalogFiles.filter((file) => !runtimeFiles.includes(file)).toSorted());
       for (const job of plan) {
         expect(job).toMatchObject({ planConcurrency: 1, requiresDist: false });
         for (const group of job.groups) {
@@ -2890,21 +2962,64 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         plan
           .flatMap((job) => job.groups.flatMap((group) => group.includePatterns ?? []))
           .toSorted(),
-      ).toEqual(catalogFiles);
+      ).toEqual(catalogFiles.toSorted());
 
       // An oversized measured runtime child remains truthful and alone; ordinary
       // files must not inherit its prerequisite through a sibling exemption.
       timings.mockReturnValue(
-        Object.fromEntries(runtimeJob!.groups.map((group) => [group.timing_key!, 100])),
+        Object.fromEntries([
+          ["agentic-cli-process", 1],
+          ...runtimeJob!.groups.map((group) => [group.timing_key!, 100]),
+        ]),
       );
       const expensive = createNodeTestShardBundles(options).filter((job) => job.pretestBuildMode);
       expect(expensive).toHaveLength(1);
       // Hybrid scales the 100s sample to 87s, then charges one 100s runtime build.
       expect(expensive[0]).toMatchObject({ predictedSeconds: 187, planConcurrency: 1 });
       expect(expensive[0]!.groups).toHaveLength(1);
-      expect(expensive[0]!.groups[0]!.includePatterns?.toSorted()).toEqual(runtimeFiles);
+      expect(expensive[0]!.groups[0]!.includePatterns).toEqual(runtimeFiles);
+
+      // Runtime preparation cannot make a serial cohort indivisible when the
+      // file costs grow beyond the 440s build-inclusive admission budget.
+      timings.mockReturnValue({ "agentic-cli-process": 1 });
+      weights.mockImplementation((file) => (runtimeFiles.includes(file) ? 200 : 15));
+      const split = createNodeTestShardBundles(options);
+      const splitRuntime = split.filter((job) => job.pretestBuildMode);
+      expect(splitRuntime).toHaveLength(3);
+      expect(
+        splitRuntime.flatMap((job) => job.groups.flatMap((group) => group.includePatterns!)),
+      ).toEqual(runtimeFiles);
+      for (const job of splitRuntime) {
+        expect(job).toMatchObject({
+          planConcurrency: 1,
+          pretestBuildMode: "runtime",
+          predictedSeconds: 300,
+          requiresDist: false,
+        });
+        expect(job.timeoutMinutes).toBe(runtimeJob!.timeoutMinutes);
+        expect(job.groups).toHaveLength(1);
+        expect(job.groups[0]).toMatchObject({
+          configs: [config],
+          env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+          pretestBuildMode: "runtime",
+          requiresDist: false,
+        });
+      }
+      expect(
+        split.flatMap((job) => job.groups.flatMap((group) => group.includePatterns!)).toSorted(),
+      ).toEqual(catalogFiles.toSorted());
+      expect(split.filter((job) => !job.pretestBuildMode).flatMap((job) => job.groups)).toEqual([
+        expect.objectContaining({
+          configs: [config],
+          env: { OPENCLAW_VITEST_MAX_WORKERS: "2" },
+          includePatterns: ["src/cli/help-exit.process.test.ts"],
+          pretestBuildMode: undefined,
+          requiresDist: false,
+        }),
+      ]);
     } finally {
       fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
+      cliProcessTestFiles.splice(0, cliProcessTestFiles.length, ...originalProcessFiles);
     }
   });
 
@@ -2959,7 +3074,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
         combined.every((job) => job.predictedSeconds! <= 250 && job.planConcurrency === 1),
       ).toBe(true);
       for (const job of plan.filter((candidate) => candidate.pretestBuildMode)) {
-        expect(job.predictedSeconds).toBeLessThanOrEqual(150);
+        expect(job.predictedSeconds).toBeLessThanOrEqual(isRuntimeCliProcessJob(job) ? 440 : 150);
         expect(job.groups.every((group) => group.pretestBuildMode === "runtime")).toBe(true);
       }
       const combinedProcessGroups = combined
@@ -3342,15 +3457,17 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
             expect(shard.predictedSeconds).toBeGreaterThanOrEqual(observedFloor);
             continue;
           }
-          // Hosted runtime groups share one preparation within 210s; no-build
-          // gateway files retain 200s and complete hybrid CLI bins retain 250s.
+          // A single runtime CLI child uses the build-inclusive 440s budget;
+          // shared hosted builds, no-build Gateway and combined CLI caps stay put.
           const budget = gatewayJobs.has(shard)
             ? 200
-            : profile.name === "GitHub-hosted" && shard.pretestBuildMode
-              ? 210
-              : profile.name === "hybrid" && isCombinedUnbuiltCliJob(shard)
-                ? 250
-                : 150;
+            : isRuntimeCliProcessJob(shard)
+              ? 440
+              : profile.name === "GitHub-hosted" && shard.pretestBuildMode
+                ? 210
+                : profile.name === "hybrid" && isCombinedUnbuiltCliJob(shard)
+                  ? 250
+                  : 150;
           if (profile.name === "GitHub-hosted" && shard.pretestBuildMode) {
             expect(shard.groups.every((group) => group.pretestBuildMode)).toBe(true);
           }
