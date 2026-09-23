@@ -14,6 +14,8 @@ import {
 import { startQaGatewayRpcProxy } from "../test/fixtures/qa-gateway-rpc-proxy.mjs";
 import { createBoundedChildOutput } from "../test/helpers/bounded-child-output.js";
 import { runQaGatewayFixture } from "../test/helpers/qa-gateway-cleanup.js";
+import { nativeUIPhases, type NativeUIKind } from "./lib/installed-native-ui-contract.mts";
+import type { InstalledNativeUIReceipt } from "./lib/installed-native-ui-driver.mts";
 import {
   assertInstalledIntentRegistration,
   createInstalledShortcutsMatrix,
@@ -21,7 +23,6 @@ import {
   installedExplicitCases,
 } from "./lib/installed-shortcuts-matrix.mts";
 import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
-import { nativeUIPhases, type NativeUIKind } from "./lib/installed-native-ui-contract.mts";
 
 const proofCondition = "OPENCLAW_INSTALLED_NATIVE_ACTION_PROOF";
 const selectedTest = "InstalledShortcutsUITests/testInstalledAutomaticRunOpeningPreservesOrigin";
@@ -81,7 +82,8 @@ export function createInstalledCommandRunner(
     assert(!(options.ui && options.nativeUI), "UI proof inventories must remain separate");
     const nativeExpected = options.nativeUI ? nativeUIPhases(options.nativeUI) : undefined;
     const nativeObserved = options.nativeUI
-      ? (state.nativePhases ??= { phone: [], tablet: [] })[options.nativeUI] : undefined;
+      ? (state.nativePhases ??= { phone: [], tablet: [] })[options.nativeUI]
+      : undefined;
     if (options.nativeUI) {
       assert(!attemptedNative.has(options.nativeUI), "Native UI selector was already invoked");
       attemptedNative.add(options.nativeUI);
@@ -127,7 +129,9 @@ export function createInstalledCommandRunner(
                   for (const line of lines) {
                     if (options.nativeUI) {
                       const trimmed = line.trim();
-                      if (!trimmed.startsWith("[ios-native-ui]")) continue;
+                      if (!trimmed.startsWith("[ios-native-ui]")) {
+                        continue;
+                      }
                       const native = trimmed.match(/^\[ios-native-ui\] phase=([a-z:-]+)$/);
                       if (!native || native[1] !== nativeExpected![nativeObserved!.length]) {
                         invalidPhase = true;
@@ -243,6 +247,8 @@ async function main() {
     nodeOperatorHandoffVerified: false,
     nativeProfileVerified: false,
     phases: [] as string[],
+    nativePhases: { phone: [], tablet: [] } as Record<NativeUIKind, string[]>,
+    nativeUI: [] as InstalledNativeUIReceipt[],
     cases: [] as Array<Record<string, unknown>>,
     selectedTest,
     testResult: "NotRun",
@@ -608,6 +614,21 @@ async function main() {
       () => !receipt.unjoinedWork,
     );
     receipt.fixtureClosed = true;
+    const { runInstalledNativeUIProof } = await import("./lib/installed-native-ui-driver.mts");
+    await runInstalledNativeUIProof({
+      root,
+      scratch,
+      buildArgs,
+      appExecutable: path.join(product.TARGET_BUILD_DIR!, product.EXECUTABLE_PATH!),
+      runtime,
+      existingSimulator: created,
+      suffix,
+      command,
+      state: receipt,
+      setPhase: (next) => {
+        phase = next;
+      },
+    });
     assert.equal(await read("git", ["rev-parse", "HEAD"]), targetSHA);
     await command("git", ["diff", "--quiet"]);
     await command("git", ["diff", "--cached", "--quiet"]);
