@@ -7,12 +7,14 @@ import {
   replaceSessionEntry,
   updateSessionEntry,
 } from "../../config/sessions/session-accessor.js";
+import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
-import type { FollowupRun } from "./queue.js";
+import { scheduleFollowupDrain, type FollowupRun } from "./queue.js";
 import {
   REPLY_OPERATION_RUN_STATE,
   type ReplyOperationRunState,
@@ -70,6 +72,63 @@ export function registerReplyAdmissionCases({
   makeSessionFixture,
   runEmbeddedAgentMock,
 }: AdmissionFixture): void {
+  it.each(["backend", "adoption"] as const)(
+    "settles a tracked reply after lifecycle rotation during %s completion",
+    async (stage) => {
+      const { sessionEntry, sessionStore, storePath } = await makeSessionFixture({
+        status: "running",
+        restartRecoveryDeliveryRunId: "msg",
+      });
+      let operation: ReplyOperation | undefined;
+      const retire = () => {
+        expect(loadSessionEntry({ storePath, sessionKey: "main" })).toMatchObject({
+          restartRecoveryDeliveryRunId: "msg",
+        });
+        operation = replyRunRegistry.get("main");
+        expect(operation).toBeDefined();
+        rotateAgentEventLifecycleGeneration();
+        expect(operation?.result).toEqual({ kind: "aborted", code: "aborted_for_restart" });
+      };
+      if (stage === "backend") {
+        runEmbeddedAgentMock.mockImplementationOnce(async () => {
+          retire();
+          return { payloads: [{ text: "retired backend output" }], meta: {} };
+        });
+      }
+      const { run } = createMinimalRun({
+        sessionEntry,
+        sessionStore,
+        storePath,
+        opts:
+          stage === "adoption"
+            ? {
+                turnAdoptionLifecycle: {
+                  onAdopted: async () => {
+                    retire();
+                    throw new Error("Adoption notification stopped during restart");
+                  },
+                },
+              }
+            : undefined,
+      });
+      try {
+        await expect(run()).resolves.toMatchObject({
+          text:
+            stage === "backend"
+              ? SILENT_REPLY_TOKEN
+              : "⚠️ Gateway is restarting. Please wait a few seconds and try again.",
+        });
+        expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(stage === "backend" ? 1 : 0);
+        expect(scheduleFollowupDrain).toHaveBeenCalledOnce();
+        expect(loadSessionEntry({ storePath, sessionKey: "main" })).toMatchObject({
+          restartRecoveryDeliveryRunId: "msg",
+        });
+      } finally {
+        operation?.complete();
+      }
+    },
+  );
+
   it("runs visible turns with the session id returned by admission", async () => {
     const active = createReplyOperation({
       sessionKey: "main",

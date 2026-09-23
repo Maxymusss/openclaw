@@ -18,8 +18,14 @@ import {
 } from "../../config/sessions/session-transcript-turn-state.js";
 import type { InternalSessionEntry as SessionEntry } from "../../config/sessions/types.js";
 import { resolveSessionWorkerPlacementContext } from "../../gateway/session-worker-placement-context.js";
-import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
-import { createAgentRunStaleLifecycleError } from "../../infra/agent-lifecycle-error.js";
+import {
+  assertAgentRunLifecycleGenerationCurrent,
+  isAgentEventLifecycleGenerationCurrent,
+} from "../../infra/agent-events.js";
+import {
+  createAgentRunStaleLifecycleError,
+  isAgentRunStaleLifecycleError,
+} from "../../infra/agent-lifecycle-error.js";
 import type {
   UserTurnTranscriptRecorder,
   UserTurnTranscriptTarget,
@@ -118,6 +124,7 @@ export function createReplyRestartRecoveryClaimController(params: {
   let recoveryRunId: string = randomUUID();
   let recoverySourceRunId: string | undefined;
   let tracked = false;
+  let confirmedArmed = false;
   const assertReadCurrent = () => {
     if (params.lifecycleGeneration) {
       assertAgentRunLifecycleGenerationCurrent(params.lifecycleGeneration);
@@ -521,12 +528,30 @@ export function createReplyRestartRecoveryClaimController(params: {
     if (!tracked || !params.sessionKey || !params.storePath) {
       return false;
     }
-    const persisted = await readSessionEntryInWorker(
-      { agentId: params.agentId, sessionKey: params.sessionKey, storePath: params.storePath },
-      assertReadCurrent,
-    );
-    assertReadCurrent();
-    return persisted?.abortedLastRun === true || params.getEntry()?.abortedLastRun === true;
+    const isRetiredRestart = () =>
+      params.lifecycleGeneration
+        ? params.isRestartAbort() &&
+          !isAgentEventLifecycleGenerationCurrent(params.lifecycleGeneration)
+        : false;
+    // Terminal settlement may reuse confirmed facts, but must not read successor storage.
+    if (isRetiredRestart()) {
+      return confirmedArmed;
+    }
+    try {
+      const persisted = await readSessionEntryInWorker(
+        { agentId: params.agentId, sessionKey: params.sessionKey, storePath: params.storePath },
+        assertReadCurrent,
+      );
+      assertReadCurrent();
+      confirmedArmed =
+        persisted?.abortedLastRun === true || params.getEntry()?.abortedLastRun === true;
+      return confirmedArmed;
+    } catch (error) {
+      if (isAgentRunStaleLifecycleError(error) && isRetiredRestart()) {
+        return confirmedArmed;
+      }
+      throw error;
+    }
   };
 
   return {
