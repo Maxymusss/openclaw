@@ -81,25 +81,28 @@ struct ChatProTab: View {
     }
 
     var body: some View {
-        self.content
-            .disabled(self.isGatewayTransitionPending)
-            .task(id: self.visibleChatIdentity) {
-                guard !Task.isCancelled else { return }
-                await self.registerVisibleChat()
+        // Content identity changes must not dismantle the ChatProTab lifetime anchor.
+        ZStack {
+            self.content
+        }
+        .disabled(self.isGatewayTransitionPending)
+        .task(id: self.visibleChatIdentity) {
+            guard !Task.isCancelled else { return }
+            await self.registerVisibleChat()
+        }
+        .background(IOSNativePresentationAnchor(lifetime: self.lifetime).frame(width: 0, height: 0))
+        .onDisappear {
+            #if DEBUG
+            self.nativeActions?.testLifetimeObservation?("chat-on-disappear")
+            #endif
+            if self.retainModalPresentation() {
+                _ = self.nativeActions?.userNavigationDidChange(
+                    presentationID: self.nativePresentationID,
+                    disposition: .chatModal)
+            } else {
+                self.lifetime.release()
             }
-            .background(IOSNativePresentationAnchor(lifetime: self.lifetime).frame(width: 0, height: 0))
-            .onDisappear {
-                #if DEBUG
-                self.nativeActions?.testLifetimeObservation?("chat-on-disappear")
-                #endif
-                if self.retainModalPresentation() {
-                    _ = self.nativeActions?.userNavigationDidChange(
-                        presentationID: self.nativePresentationID,
-                        disposition: .chatModal)
-                } else {
-                    self.lifetime.release()
-                }
-            }
+        }
     }
 
     private var visibleChatIdentity: VisibleChatIdentity {
