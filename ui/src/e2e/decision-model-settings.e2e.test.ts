@@ -254,7 +254,7 @@ suite.define(() => {
           decisionModels: entries(false),
         });
         await gateway.emitGatewayEvent("chat.metadata.changed", {});
-        await expect.poll(() => picker.textContent()).toContain("Setup needed");
+        await expect.poll(() => picker.textContent()).toContain("Add API key");
         await selectPickerValue(picker, "typesafe/jev-latest");
         await dialog.getByRole("heading", { name: "Connect TypeSafe", exact: true }).waitFor();
         await gateway.setMethodResponse("models.list", {

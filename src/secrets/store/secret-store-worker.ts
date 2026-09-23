@@ -4,25 +4,14 @@ import { executeExistingOpenClawStateRead } from "../../state/openclaw-state-db-
 import type { OpenClawStateDatabaseOptions } from "../../state/openclaw-state-db.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
-import type {
-  SecretStoreWriteParams,
-  SecretStoreWriteReceipt,
-  readSecretStoreValue,
-} from "./secret-store.js";
-
-export type SecretStoreWorkerOperations = {
-  "secrets.store.stage": {
-    input: Omit<SecretStoreWriteParams, "database">;
-    output: SecretStoreWriteReceipt;
-  };
-  "secrets.store.rollback": { input: SecretStoreWriteReceipt; output: boolean };
-};
+import type { SecretStoreReadResult } from "./secret-store-worker-contract.js";
+import type { SecretStoreWriteParams } from "./secret-store.js";
 
 export async function readSecretStoreValueAsync(params: {
   scope: { kind: "team" };
   name: string;
   database?: OpenClawStateDatabaseOptions;
-}): Promise<ReturnType<typeof readSecretStoreValue>> {
+}): Promise<SecretStoreReadResult> {
   try {
     const reply = await executeExistingOpenClawStateRead(params.database ?? {}, {
       type: "secrets.store.read",

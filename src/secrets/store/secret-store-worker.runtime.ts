@@ -4,7 +4,7 @@ import {
   runOpenClawStateWriteTransaction,
   type OpenClawStateDatabaseOptions,
 } from "../../state/openclaw-state-db.js";
-import type { SecretStoreWorkerOperations } from "./secret-store-worker.js";
+import type { SecretStoreWorkerOperations } from "./secret-store-worker-contract.js";
 import { stageSecretStoreEntryWrite, rollbackSecretStoreEntryWrite } from "./secret-store.js";
 
 /** Worker-only persistence boundary: every credential stage/compensation retains both live grants. */

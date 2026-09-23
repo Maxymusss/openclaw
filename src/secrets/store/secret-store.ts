@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
-import { err, ok, type Result } from "@openclaw/normalization-core/result";
+import { err, ok } from "@openclaw/normalization-core/result";
 import type { Selectable } from "kysely";
 import { isRedactedSecretValue } from "../../config/redact-sentinel.js";
 import { ENV_SECRET_REF_ID_RE } from "../../config/types.secrets.js";
@@ -35,6 +35,11 @@ import {
   assertSecretStoreEnvName,
   SecretStoreValidationError,
 } from "./secret-store-validation-error.js";
+import type {
+  SecretStoreWriteInput,
+  SecretStoreWriteReceipt,
+  SecretStoreReadResult,
+} from "./secret-store-worker-contract.js";
 
 export {
   deleteHiddenGitHubSecretRecord,
@@ -52,35 +57,12 @@ export {
 
 type SecretStoreDatabase = Pick<OpenClawStateKyselyDatabase, "secret_store_entries">;
 type SecretStoreRow = Selectable<OpenClawStateKyselyDatabase["secret_store_entries"]>;
-type SecretStoreScope = { kind: "team" };
-type SecretStoreKind = "secret" | "env";
-
-export type SecretStoreWriteParams = {
-  scope: SecretStoreScope;
-  name: string;
-  value: string;
-  /** Replace only the matching value during repair, preserving the current kind and host policy. */
-  expectedValue?: string;
-  kind: SecretStoreKind;
-  allowedHosts?: readonly string[];
-  updatedBy: string | null;
+type SecretStoreScope = SecretStoreWriteInput["scope"];
+type SecretStoreKind = SecretStoreWriteInput["kind"];
+export type SecretStoreWriteParams = SecretStoreWriteInput & {
   database?: OpenClawStateDatabaseOptions;
 };
-
-type SecretStoreWriteSnapshot = {
-  value: string;
-  kind: SecretStoreKind;
-  allowedHosts: string | null;
-  updatedBy: string | null;
-};
-
-/** Private compensation data; never projected onto a Gateway response. */
-export type SecretStoreWriteReceipt = {
-  scope: SecretStoreScope;
-  name: string;
-  expectedUpdatedBy: string;
-  previous: SecretStoreWriteSnapshot | undefined;
-};
+type SecretStoreWriteSnapshot = NonNullable<SecretStoreWriteReceipt["previous"]>;
 
 export type SecretStoreEntryMetadata = {
   name: string;
@@ -105,11 +87,6 @@ export type SecretStoreExecEnvironment = {
   secretSentinels?: Record<string, string>;
   secretEgressBindings?: SecretStoreEgressBinding[];
 };
-
-type SecretStoreReadError =
-  | { code: "SECRET_STORE_NOT_FOUND"; message: string }
-  | { code: "SECRET_STORE_INVALID_NAME"; message: string }
-  | { code: "SECRET_STORE_UNAVAILABLE"; message: string; cause: unknown };
 
 const log = createSubsystemLogger("secrets/store");
 
@@ -327,7 +304,7 @@ export function readSecretStoreExecEnvironment(params: {
 export function readSecretStoreValueInDatabase(
   sqlite: DatabaseSync,
   name: string,
-): Result<string, SecretStoreReadError> {
+): SecretStoreReadResult {
   try {
     assertSecretStoreEnvName(name);
     const db = getNodeSqliteKysely<SecretStoreDatabase>(sqlite);
@@ -367,7 +344,7 @@ export function readSecretStoreValue(params: {
   scope: SecretStoreScope;
   name: string;
   database?: OpenClawStateDatabaseOptions;
-}): Result<string, SecretStoreReadError> {
+}): SecretStoreReadResult {
   try {
     assertSecretStoreEnvName(params.name);
     return (

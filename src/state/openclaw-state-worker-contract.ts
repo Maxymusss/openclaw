@@ -66,7 +66,7 @@ import type {
   ProjectRegistryRecord,
 } from "../projects/project-registry.kernel.js";
 import type { SecretStoreExpiryCutoffs } from "../secrets/store/secret-store-expiry.kernel.js";
-import type { SecretStoreWorkerOperations } from "../secrets/store/secret-store-worker.js";
+import type { SecretStoreWorkerOperations } from "../secrets/store/secret-store-worker-contract.js";
 import type {
   SessionStateEventInput,
   SessionStateNotice,

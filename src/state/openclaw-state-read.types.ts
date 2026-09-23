@@ -57,7 +57,7 @@ import type {
   PluginBlobReadCommand,
   PluginBlobReadReply,
 } from "../plugin-state/plugin-blob-worker-contract.js";
-import type { readSecretStoreValue } from "../secrets/store/secret-store.js";
+import type { SecretStoreReadResult } from "../secrets/store/secret-store-worker-contract.js";
 import type { AsyncWorkScope } from "../shared/async-work-scope.js";
 import type { SkillLibraryReadOnlyOperations } from "../skills/library/selection-read.kernel.js";
 import type {
@@ -191,7 +191,7 @@ export type OpenClawStateReadReply = (
       ok: true;
       type: "secrets.store.read";
       sourceAdmitted: true;
-      value: ReturnType<typeof readSecretStoreValue>;
+      value: SecretStoreReadResult;
     }
   | {
       ok: true;
