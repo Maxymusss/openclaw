@@ -45,6 +45,7 @@ import type {
   TraceLevel,
   VerboseLevel,
 } from "../directives.js";
+import type { DeferredReplyModelLevels } from "../reply-model-levels.js";
 import type { ReplyOperationRunState } from "../reply-operation-run-state.js";
 
 export type QueueDropPolicy = "old" | "new" | "summarize";
@@ -251,7 +252,10 @@ export type FollowupRun = {
     authProfileIdSource?: "auto" | "user";
     /** Prepared model metadata reused when fallbacks revalidate the immutable thinking request. */
     thinkingCatalog?: ThinkingCatalogEntry[];
+    deferredReplyModelLevels?: DeferredReplyModelLevels;
     thinkLevel?: ThinkLevel;
+    /** Actual candidate level for accounting; never replaces the original fallback intent. */
+    effectiveThinkLevel?: ThinkLevel;
     /** Original turn request; model retargeting changes only the effective thinkLevel. */
     readonly thinkLevelOverride?: ThinkLevel | "default";
     fastMode?: FastMode;

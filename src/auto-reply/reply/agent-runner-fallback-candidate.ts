@@ -254,7 +254,10 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
         if (activeProbe && provider === activeProbe.provider && model === activeProbe.model) {
           markAutoFallbackPrimaryProbe({ probe: activeProbe, sessionKey: turn.sessionKey });
         }
-        turn.opts?.onModelSelected?.({ provider, model, thinkLevel: candidateThinkLevel });
+        turn.followupRun.run.effectiveThinkLevel = candidateThinkLevel;
+        if (!candidateRun.deferredReplyModelLevels) {
+          turn.opts?.onModelSelected?.({ provider, model, thinkLevel: candidateThinkLevel });
+        }
         const signalExecutionPhaseForCandidate: AgentFallbackCandidateCommonParams["signalExecutionPhaseForTyping"] =
           (info) => {
             if (
@@ -275,6 +278,7 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
             messageActionTurnCapability,
             turn,
             candidateRun,
+            effectiveRun: params.effectiveRun,
             runtimeConfig: params.runtimeConfig,
             provider,
             model,

@@ -1,3 +1,5 @@
+import { resolveRunModelHasVision } from "../../../auto-reply/reply/agent-runner-run-params.js";
+import { resolveDeferredReplyModelLevels } from "../../../auto-reply/reply/reply-model-levels.js";
 import { loadSessionEntryReadOnly } from "../../../config/sessions/session-accessor.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../../infra/agent-events.js";
 import { requireActivePluginRegistry } from "../../../plugins/runtime.js";
@@ -14,13 +16,16 @@ import { selectAgentHarness } from "../../harness/selection.js";
 import { readSessionRuntimeOwnership } from "../../harness/session-runtime-ownership.js";
 import { assertPluginHarnessConversationToolPolicySupport } from "../../harness/support.js";
 import type { AgentHarness } from "../../harness/types.js";
+import { prepareModelRunCapabilities } from "../../model-catalog-lookup.js";
 import type { ModelCatalogEntry } from "../../model-catalog.types.js";
+import { buildConfiguredModelCatalog } from "../../model-selection-shared.js";
 import type { ModelRef } from "../../model-selection.js";
 import { resolveSelectedOpenAIRuntimeProvider } from "../../openai-routing.js";
 import { assertPreparedModelRuntimeInputCurrent } from "../../prepared-model-runtime.errors.js";
 import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.js";
 import { resolveTieredModel } from "../model-resolution.js";
 import { createEmptyAgentDiscoveryStores } from "../model.js";
+import { admitEmbeddedRunSelectedAuthProfile } from "./auth-store.js";
 import type { RunEmbeddedAgentInternalParams } from "./internal-params.js";
 import { resolveRequestStreamTransportOverrides } from "./runtime-resolution.js";
 import type { assertAgentHarnessRunAdmission } from "./session-bootstrap.js";
@@ -213,6 +218,26 @@ export async function resolveEmbeddedRunModelSetup(params: {
     );
   }
 
+  if (
+    nativeSessionRuntime?.auth !== "native" &&
+    runParams.authProfileIdSource === "user" &&
+    runParams.authProfileId?.trim()
+  ) {
+    // Hooks and native ownership select the host tuple. Admit its explicit pin before
+    // discovery can fail; the late auth planner reads current credentials again after awaits.
+    await nativeSessionRuntime?.assertCurrent();
+    params.assertCurrent();
+    admitEmbeddedRunSelectedAuthProfile({
+      runParams,
+      provider,
+      modelId,
+      agentDir: params.agentDir,
+      workspaceDir: params.workspaceDir,
+      harness: agentHarness,
+      metadataSnapshot: params.preparedModelRuntime?.metadataSnapshot,
+    });
+  }
+
   let catalog = params.preparedModelRuntime?.modelCatalog;
   let nativeCatalogFailure: { error: unknown } | undefined;
   const ownsSelectedNativeModel = (entry: ModelCatalogEntry) =>
@@ -300,7 +325,45 @@ export async function resolveEmbeddedRunModelSetup(params: {
   }
   const { model, authStorage, modelRegistry } = modelResolution;
 
+  const deferred = runParams.deferredReplyModelLevels;
+  const replyLevels = deferred
+    ? await resolveDeferredReplyModelLevels({
+        cfg: runParams.config ?? {},
+        agentId: deferred.thinking.agentId,
+        deferred,
+      })
+    : undefined;
+  params.assertCurrent();
+  if (replyLevels?.kind === "ready" && deferred) {
+    runParams.thinkLevel = replyLevels.thinkLevel;
+    runParams.reasoningLevel = replyLevels.reasoningLevel;
+    runParams.modelThinkingCapability = prepareModelRunCapabilities(
+      [replyLevels.thinkingCatalog, buildConfiguredModelCatalog({ cfg: runParams.config ?? {} })],
+      [provider, modelId, agentHarness.id],
+    ).modelThinkingCapability;
+  }
+  if (runParams.deferModelInput && replyLevels?.kind !== "reply") {
+    runParams.modelHasVision = await resolveRunModelHasVision({
+      run: {
+        config: runParams.config ?? {},
+        agentId: runParams.agentId,
+        agentDir: params.agentDir,
+        workspaceDir: params.workspaceDir,
+        thinkingCatalog:
+          replyLevels?.kind === "ready"
+            ? replyLevels.thinkingCatalog
+            : (runParams.modelInputCatalog ?? catalog?.entries),
+      },
+      provider,
+      model: modelId,
+    });
+    params.assertCurrent();
+  }
+
   return {
+    modelLevelReply: replyLevels?.kind === "reply" ? replyLevels.reply : undefined,
+    replyThinkingCatalog: replyLevels?.kind === "ready" ? replyLevels.thinkingCatalog : undefined,
+    replyOriginalThinkLevel: replyLevels?.kind === "ready" ? replyLevels.thinkLevel : undefined,
     provider,
     modelId,
     requestedModelId,

@@ -7,7 +7,10 @@ import type { ProviderRuntimeModel } from "../plugins/provider-runtime-model.typ
 import { createLazyPromise } from "../shared/lazy-promise.js";
 import { FailoverError } from "./failover/error.js";
 import type { AgentHarness } from "./harness/types.js";
-import type { ModelRuntimeChoiceObservation } from "./model-catalog-decisions.js";
+import type {
+  ModelAuthOverlayObservation,
+  ModelRuntimeChoiceObservation,
+} from "./model-catalog-decisions.js";
 import { findModelInCatalog } from "./model-catalog-lookup.js";
 import { modelKey, type ModelRef } from "./model-ref-shared.js";
 import { createModelCatalogIdentityKeyResolver } from "./openai-model-routes.js";
@@ -309,6 +312,11 @@ export async function preparePublishedModelRuntimeChoice(params: {
       // Direct observations have the same nonthrowing contract as candidate callbacks.
     }
   };
+  let readAuthOverlay:
+    | ((
+        host: NonNullable<ModelRuntimeChoiceObservation["host"]>,
+      ) => ModelAuthOverlayObservation | undefined)
+    | undefined;
   const observeChoices = diagnostic
     ? (event: ModelRuntimeChoiceObservation) =>
         observeDiagnostic(() => {
@@ -331,6 +339,21 @@ export async function preparePublishedModelRuntimeChoice(params: {
                 ? null
                 : value.selectedProfileId === params.sessionEntry.authProfileOverride;
           }
+          const overlay = event.host ? readAuthOverlay?.(event.host) : undefined;
+          facts.hostOverlayObserved = overlay !== undefined;
+          facts.hostBeforeOverlayAvailable = overlay?.before.availability ?? null;
+          facts.hostBeforeOverlayReason = overlay?.before.unavailableReason ?? null;
+          facts.hostBeforeOverlayUntil = overlay?.before.unavailableUntil ?? null;
+          facts.hostBeforeOverlayMode = identifier(overlay?.before.selectedAuthMode);
+          facts.hostBeforeOverlayRequestedProfileMatches =
+            overlay?.before.selectedProfileId === undefined ||
+            params.sessionEntry?.authProfileOverride === undefined
+              ? null
+              : overlay.before.selectedProfileId === params.sessionEntry.authProfileOverride;
+          facts.hostOverlayApplied = overlay?.applied ?? null;
+          facts.hostOverlayChanged = overlay?.changed ?? null;
+          facts.hostOverlayRejectionScope = overlay?.rejectionScope ?? null;
+          facts.hostOverlaySelectedProfileMatches = overlay?.selectedProfileMatches ?? null;
           record(event.stage, facts);
         })
     : undefined;
@@ -403,7 +426,9 @@ export async function preparePublishedModelRuntimeChoice(params: {
         ? params.sessionEntry.authProfileOverride
         : undefined,
     profileProvider: params.sessionEntry?.providerOverride ?? params.sessionEntry?.modelProvider,
+    captureAuthOverlay: diagnostic,
   });
+  readAuthOverlay = decisions.getAuthOverlayObservation;
   let entry =
     findModelInCatalog(decisions.snapshot.entries, params.provider, params.model) ??
     decisions.snapshot.entries.find(

@@ -36,7 +36,6 @@ import {
 
 export async function runEmbeddedFallbackCandidate(
   params: AgentFallbackCandidateCommonParams & {
-    effectiveRun: AgentFallbackCandidateCommonParams["candidateRun"];
     directBlockDeliveries: DirectBlockDelivery[];
     sessionRuntimeOverride?: string;
     getLifecycleGeneration: () => string;
@@ -138,6 +137,35 @@ export async function runEmbeddedFallbackCandidate(
         groupSpace: normalizeOptionalString(turn.sessionCtx.GroupSpace),
         ...senderContext,
         ...runBaseParams,
+        onReplyModelLevelsResolved: ({
+          provider,
+          model,
+          thinkLevel,
+          originalThinkLevel,
+          reasoningLevel,
+          thinkingCatalog,
+        }) => {
+          const facts = {
+            effectiveThinkLevel: thinkLevel,
+            reasoningLevel,
+            ...(thinkingCatalog ? { thinkingCatalog } : {}),
+          };
+          for (const run of new Set([
+            turn.followupRun.run,
+            params.effectiveRun,
+            params.candidateRun,
+          ])) {
+            Object.assign(run, facts);
+            if (originalThinkLevel !== undefined) {
+              // Every fallback owner retains the original default, not this candidate's clamp.
+              run.thinkLevel = originalThinkLevel;
+              delete run.deferredReplyModelLevels;
+            }
+          }
+          if (originalThinkLevel !== undefined) {
+            turn.opts?.onModelSelected?.({ provider, model, thinkLevel });
+          }
+        },
         contextWindow: turn.getActiveSessionEntry()?.contextWindow,
         lane: params.runLane,
         provider: embeddedRunProvider,

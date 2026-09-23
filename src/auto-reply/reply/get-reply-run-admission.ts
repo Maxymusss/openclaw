@@ -113,7 +113,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   // Extract first-token think hint from the user body BEFORE prepending system events.
   // If done after, the System: prefix becomes the first token and silently shadows any
   // low|medium|high shorthand the user typed.
-  if (!resolvedThinkLevel && prefixedBodyBase) {
+  if (!params.deferredReplyModelLevels && !resolvedThinkLevel && prefixedBodyBase) {
     const firstToken = prefixedBodyBase.split(/\s+/, 1)[0] ?? "";
     const maybeLevel = normalizeThinkLevel(firstToken);
     const thinkingCatalog = maybeLevel
@@ -228,58 +228,68 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   const skillsSnapshot = skillResult.skillsSnapshot;
   let promptBodies = await traceRunPhase("reply.build_prompt_bodies", () => rebuildPromptBodies());
   const isRoomEvent = inboundEventKind === "room_event";
-  if (!resolvedThinkLevel) {
-    resolvedThinkLevel = await traceRunPhase("reply.resolve_default_thinking", () =>
-      modelState.resolveDefaultThinkingLevel({ provider, model, agentRuntime: thinkingRuntime }),
-    );
-  }
   const allowedThinkingCatalog = modelState.allowedModelCatalog ?? [];
   let thinkingCatalog = allowedThinkingCatalog.length > 0 ? allowedThinkingCatalog : undefined;
-  let thinkingSelection = resolveThinkingSelectionForModel({
-    provider,
-    model,
-    level: resolvedThinkLevel,
-    catalog: thinkingCatalog,
-    agentRuntime: thinkingRuntime,
-  });
-  const shouldHydrateThinkingCatalog =
-    !thinkingSelection.supported ||
-    (resolvedThinkLevel !== "off" &&
-      !hasResolvedThinkingCatalogEntry({ catalog: thinkingCatalog, provider, model }));
-  if (shouldHydrateThinkingCatalog) {
-    // Hydrate the runtime model catalog only when the lightweight catalog cannot
-    // prove support or lacks reasoning metadata for the selected model. The full
-    // catalog load was a 14s+ reply-blocking cost for known Codex models that
-    // already publish authoritative thinking metadata.
-    thinkingCatalog = await traceRunPhase("reply.resolve_thinking_catalog", () =>
-      modelState.resolveThinkingCatalog({ provider, model }),
-    );
-    thinkingSelection = resolveThinkingSelectionForModel({
+  const deferredReplyModelLevels = params.deferredReplyModelLevels
+    ? {
+        ...params.deferredReplyModelLevels,
+        explicitThink:
+          (directives.hasThinkDirective && directives.thinkLevel !== undefined) ||
+          explicitThinkingLevelOverride !== undefined,
+      }
+    : undefined;
+  if (!deferredReplyModelLevels) {
+    if (!resolvedThinkLevel) {
+      resolvedThinkLevel = await traceRunPhase("reply.resolve_default_thinking", () =>
+        modelState.resolveDefaultThinkingLevel({ provider, model, agentRuntime: thinkingRuntime }),
+      );
+    }
+    let thinkingSelection = resolveThinkingSelectionForModel({
       provider,
       model,
       level: resolvedThinkLevel,
       catalog: thinkingCatalog,
       agentRuntime: thinkingRuntime,
     });
-  }
-  if (!thinkingSelection.supported) {
-    const explicitThink =
-      (directives.hasThinkDirective && directives.thinkLevel !== undefined) ||
-      explicitThinkingLevelOverride !== undefined;
-    if (explicitThink) {
-      typing.cleanup();
-      return {
-        kind: "reply",
-        reply: {
-          text: `Thinking level "${resolvedThinkLevel}" is not supported for ${provider}/${model}. Use one of: ${formatThinkingLevels(provider, model, ", ", thinkingCatalog, thinkingRuntime)}.`,
-        },
-      } as const;
+    const shouldHydrateThinkingCatalog =
+      !thinkingSelection.supported ||
+      (resolvedThinkLevel !== "off" &&
+        !hasResolvedThinkingCatalogEntry({ catalog: thinkingCatalog, provider, model }));
+    if (shouldHydrateThinkingCatalog) {
+      // Hydrate the runtime model catalog only when the lightweight catalog cannot
+      // prove support or lacks reasoning metadata for the selected model. The full
+      // catalog load was a 14s+ reply-blocking cost for known Codex models that
+      // already publish authoritative thinking metadata.
+      thinkingCatalog = await traceRunPhase("reply.resolve_thinking_catalog", () =>
+        modelState.resolveThinkingCatalog({ provider, model }),
+      );
+      thinkingSelection = resolveThinkingSelectionForModel({
+        provider,
+        model,
+        level: resolvedThinkLevel,
+        catalog: thinkingCatalog,
+        agentRuntime: thinkingRuntime,
+      });
     }
-    const fallbackThinkLevel = thinkingSelection.level;
-    if (fallbackThinkLevel !== resolvedThinkLevel) {
-      // Execution fallbacks are turn-local; directive/model persistence owns
-      // durable thinking remaps so explicit session overrides survive replies.
-      resolvedThinkLevel = fallbackThinkLevel;
+    if (!thinkingSelection.supported) {
+      const explicitThink =
+        (directives.hasThinkDirective && directives.thinkLevel !== undefined) ||
+        explicitThinkingLevelOverride !== undefined;
+      if (explicitThink) {
+        typing.cleanup();
+        return {
+          kind: "reply",
+          reply: {
+            text: `Thinking level "${resolvedThinkLevel}" is not supported for ${provider}/${model}. Use one of: ${formatThinkingLevels(provider, model, ", ", thinkingCatalog, thinkingRuntime)}.`,
+          },
+        } as const;
+      }
+      const fallbackThinkLevel = thinkingSelection.level;
+      if (fallbackThinkLevel !== resolvedThinkLevel) {
+        // Execution fallbacks are turn-local; directive/model persistence owns
+        // durable thinking remaps so explicit session overrides survive replies.
+        resolvedThinkLevel = fallbackThinkLevel;
+      }
     }
   }
 
@@ -643,6 +653,7 @@ export async function prepareReplyRunAdmission(context: PreparedReplyRunContext)
   return {
     kind: "ready",
     context,
+    deferredReplyModelLevels,
     resolvedThinkLevel,
     thinkLevelOverride,
     thinkingCatalog,

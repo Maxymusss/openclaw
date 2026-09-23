@@ -102,6 +102,17 @@ export async function runPreparedEmbeddedLoop(
       }),
     { config: params.config },
   );
+  if (preparedRuntime.kind === "reply") {
+    return {
+      payloads: [preparedRuntime.reply],
+      meta: {
+        durationMs: Date.now() - started,
+        agentMeta: { sessionId: params.sessionId, provider, model: modelId },
+        finalAssistantVisibleText: preparedRuntime.reply.text,
+        finalAssistantRawText: preparedRuntime.reply.text,
+      },
+    };
+  }
   params = { ...params, admittedRunContext: preparedRuntime.admittedRunContext };
   const abortSignal = params.abortSignal;
   const accountingAuthority = getAdmittedRunDelegatedAuthority(preparedRuntime.admittedRunContext);

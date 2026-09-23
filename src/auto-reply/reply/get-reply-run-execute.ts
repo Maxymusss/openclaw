@@ -69,6 +69,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     resolvedThinkLevel,
     thinkLevelOverride,
     thinkingCatalog,
+    deferredReplyModelLevels,
     skillsSnapshot,
     prefixedCommandBody,
     queuedBody,
@@ -506,6 +507,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       authProfileId,
       authProfileIdSource,
       thinkingCatalog,
+      deferredReplyModelLevels,
       thinkLevel: resolvedThinkLevel,
       thinkLevelOverride,
       ...(() => {

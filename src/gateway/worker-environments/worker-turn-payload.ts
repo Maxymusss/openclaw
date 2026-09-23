@@ -14,6 +14,8 @@ import {
   normalizeOptionalAgentRuntimeId,
   OPENCLAW_AGENT_RUNTIME_ID,
 } from "../../agents/agent-runtime-id.js";
+import { resolveAgentDir, resolveSessionAgentId } from "../../agents/agent-scope.js";
+import { admitEmbeddedRunSelectedAuthProfile } from "../../agents/embedded-agent-runner/run/auth-store.js";
 import {
   buildUsageAgentMetaFields,
   resolveFinalAssistantRawText,
@@ -27,8 +29,13 @@ import {
 import { resolveDefaultModelForAgent } from "../../agents/model-selection-config.js";
 import type { AgentMessage } from "../../agents/runtime/index.js";
 import type { SessionPlacementTurnParams } from "../../agents/session-placement-admission.js";
-import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
+import {
+  resolveCandidateThinkingLevel,
+  resolveEffectiveAgentRuntime,
+} from "../../agents/thinking-runtime.js";
 import { hasNonzeroUsage, normalizeUsage } from "../../agents/usage.js";
+import { resolveRunModelHasVision } from "../../auto-reply/reply/agent-runner-run-params.js";
+import { resolveDeferredReplyModelLevels } from "../../auto-reply/reply/reply-model-levels.js";
 import { emitTrustedDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import type { WorkerLaunchPlan } from "../../worker/launch-descriptor.js";
 import {
@@ -374,4 +381,74 @@ export function assertSupportedTurn(params: SessionPlacementTurnParams): {
     throw new Error(`Cloud worker turns require the OpenClaw runtime, not ${runtime}`);
   }
   return modelRef;
+}
+
+/** Placement bypasses local setup, so consume metadata against its fixed host model here. */
+export async function prepareWorkerTurnModelMetadata(params: {
+  turn: SessionPlacementTurnParams;
+  modelRef: { provider: string; model: string };
+  assertCurrent: () => void;
+}) {
+  const { turn, modelRef, assertCurrent } = params;
+  if (!turn.deferredReplyModelLevels && !turn.deferModelInput) {
+    return undefined;
+  }
+  assertCurrent();
+  const config = turn.config ?? {};
+  const agentId = turn.agentId ?? resolveSessionAgentId({ config, sessionKey: turn.sessionKey });
+  admitEmbeddedRunSelectedAuthProfile({
+    runParams: turn,
+    provider: modelRef.provider,
+    modelId: modelRef.model,
+    agentDir: turn.agentDir ?? resolveAgentDir(config, agentId),
+    workspaceDir: turn.workspaceDir,
+    harness: { id: OPENCLAW_AGENT_RUNTIME_ID },
+  });
+  const levels = turn.deferredReplyModelLevels
+    ? await resolveDeferredReplyModelLevels({
+        cfg: config,
+        agentId,
+        deferred: turn.deferredReplyModelLevels,
+      })
+    : undefined;
+  assertCurrent();
+  if (levels?.kind === "reply") {
+    return levels.reply;
+  }
+  if (turn.deferModelInput) {
+    turn.modelHasVision = await resolveRunModelHasVision({
+      run: {
+        config,
+        agentId,
+        agentDir: turn.agentDir,
+        workspaceDir: turn.workspaceDir,
+        thinkingCatalog: levels?.thinkingCatalog ?? turn.modelInputCatalog,
+      },
+      provider: modelRef.provider,
+      model: modelRef.model,
+    });
+    assertCurrent();
+  }
+  if (levels?.kind === "ready") {
+    turn.thinkLevel =
+      resolveCandidateThinkingLevel({
+        cfg: config,
+        agentId,
+        provider: modelRef.provider,
+        modelId: modelRef.model,
+        level: levels.thinkLevel,
+        catalog: levels.thinkingCatalog,
+        sessionKey: turn.sessionKey,
+        agentRuntime: OPENCLAW_AGENT_RUNTIME_ID,
+      }) ?? levels.thinkLevel;
+    turn.reasoningLevel = levels.reasoningLevel;
+    turn.onReplyModelLevelsResolved?.({
+      ...modelRef,
+      thinkLevel: turn.thinkLevel,
+      originalThinkLevel: levels.thinkLevel,
+      reasoningLevel: levels.reasoningLevel,
+      thinkingCatalog: levels.thinkingCatalog,
+    });
+  }
+  return undefined;
 }

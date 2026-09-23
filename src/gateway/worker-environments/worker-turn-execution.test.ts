@@ -4,11 +4,14 @@ import {
   WORKER_EXECUTION_CONTEXT_PROTOCOL_FEATURE,
 } from "../../../packages/gateway-protocol/src/schema/worker-admission.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { persistAuthProfileBatch } from "../../agents/auth-profiles/upsert-with-lock.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import {
   makeAgentAssistantMessage,
   makeAgentUserMessage,
 } from "../../agents/test-helpers/agent-message-fixtures.js";
+import { createModelSelectionStateFixture } from "../../auto-reply/reply/model-selection.test-support.js";
+import { createReplyModelLevelResolver } from "../../auto-reply/reply/reply-model-levels.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { setActiveNodeContext } from "../../infra/active-node-context.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
@@ -42,9 +45,158 @@ import {
   type WorkerTurnEnvironmentService,
 } from "./worker-turn-launcher.test-support.js";
 
+const loadThinkingCatalog = vi.hoisted(() => vi.fn());
+vi.mock("../../agents/model-catalog.runtime.js", () => ({
+  loadProviderScopedThinkingCatalog: loadThinkingCatalog,
+}));
+
 describe("worker turn execution", () => {
   beforeEach(setupWorkerTurnLauncherTest);
   afterEach(cleanupWorkerTurnLauncherTest);
+
+  it.each(["missing", "current", "revoked", "reply"] as const)(
+    "settles selected-profile metadata before worker credential acquisition (%s)",
+    async (change) => {
+      seedActivePlacement();
+      await persistAuthProfileBatch({
+        profiles: [
+          {
+            profileId: "openai:A",
+            credential: { type: "api_key", provider: "openai", key: "fixture-A" },
+          },
+          ...(change !== "missing"
+            ? [
+                {
+                  profileId: "openai:B",
+                  credential: { type: "api_key" as const, provider: "openai", key: "fixture-B" },
+                },
+              ]
+            : []),
+        ],
+      });
+      const input = turn(`metadata-${change}`);
+      const entered = createDeferred();
+      const release = createDeferred();
+      loadThinkingCatalog.mockReset().mockImplementation(async () => {
+        entered.resolve();
+        await release.promise;
+        return [
+          {
+            provider: "openai",
+            id: "gpt-test",
+            name: "Test",
+            reasoning: change !== "reply",
+            input: ["text", "image"],
+          },
+        ];
+      });
+      const deferred = createReplyModelLevelResolver({
+        modelState: createModelSelectionStateFixture({
+          provider: "openai",
+          model: "gpt-test",
+          agentCfg: { thinkingDefault: "high" },
+        }),
+        selection: {
+          provider: "openai",
+          model: "gpt-test",
+          thinkingExplicit: false,
+          reasoningLevel: "off",
+          reasoningExplicit: true,
+        },
+      }).defer();
+      deferred.explicitThink = change === "reply";
+      const deliberateStop = new WorkerRunnerCapacityError();
+      const acquireTurnCredential = vi.fn(async () => {
+        throw deliberateStop;
+      });
+      const startTunnel = vi.fn();
+      const runLocal = vi.fn();
+      const provider = createWorkerSessionTurnPlacementProvider({
+        environments: {
+          ...unusedEnvironments(),
+          get: attachedEnvironment,
+          acquireTurnCredential,
+          startTunnel,
+        },
+        placements,
+        reconcileActivePlacement: async () => {},
+      });
+      let current = true;
+      const operation = provider
+        .executeTurn(
+          { ...sessionTarget, runId: input.runId },
+          {
+            ...input,
+            authProfileId: "openai:B",
+            authProfileIdSource: "user",
+            deferredReplyModelLevels: deferred,
+            deferModelInput: true,
+          },
+          runLocal,
+          undefined,
+          () => {
+            if (!current) {
+              throw new Error("fixture authority revoked during metadata");
+            }
+          },
+        )
+        .then(
+          (result) => result,
+          (error: unknown) => error,
+        );
+      try {
+        if (change === "missing") {
+          expect(await operation).toMatchObject({
+            code: "selected_auth_profile_unavailable",
+            profileId: "openai:B",
+          });
+          expect(loadThinkingCatalog).not.toHaveBeenCalled();
+        } else {
+          expect(await Promise.race([entered.promise.then(() => "entered"), operation])).toBe(
+            "entered",
+          );
+          expect(acquireTurnCredential).not.toHaveBeenCalled();
+          current = change !== "revoked";
+          release.resolve();
+          const outcome = await operation;
+          if (change === "current") {
+            expect(outcome).toBe(deliberateStop);
+            expect(acquireTurnCredential).toHaveBeenCalledOnce();
+          } else if (change === "reply") {
+            expect(outcome).toMatchObject({
+              payloads: [{ text: expect.stringContaining("not supported") }],
+            });
+            expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+          } else {
+            expect(outcome).toBeInstanceOf(Error);
+          }
+          expect(loadThinkingCatalog).toHaveBeenCalledOnce();
+        }
+        if (change !== "current") {
+          expect(acquireTurnCredential).not.toHaveBeenCalled();
+        }
+        expect(startTunnel).not.toHaveBeenCalled();
+        expect(runLocal).not.toHaveBeenCalled();
+        if (change === "reply") {
+          const next = turn("metadata-next");
+          try {
+            await expect(
+              provider.executeTurn({ ...sessionTarget, runId: next.runId }, next, runLocal),
+            ).rejects.toBe(deliberateStop);
+            expect(acquireTurnCredential).toHaveBeenCalledOnce();
+            expect(startTunnel).not.toHaveBeenCalled();
+            expect(placements.get(SESSION_ID)?.turnClaim).toBeNull();
+          } finally {
+            next.preparedRunAdmission.close();
+          }
+        }
+      } finally {
+        release.resolve();
+        await operation;
+        input.preparedRunAdmission.close();
+      }
+    },
+  );
 
   it.each(["current", "cancel"] as const)(
     "waits for execution-start settlement before new-turn work (%s)",

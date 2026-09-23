@@ -219,10 +219,11 @@ function resolvePreparedProviderEntryApiKeyProfileReference(
   return reference;
 }
 
-/** Selects concrete provider routes and ordered credentials as one immutable preparation. */
-export function prepareAgentRuntimeAuth(
-  input: PrepareAgentRuntimeAuthPlanParams,
-): PreparedAgentRuntimeAuth {
+/**
+ * Missing selected credentials can be rejected before discovery. Present credentials still
+ * need the materialized route's endpoint-aware eligibility decision in prepareAgentRuntimeAuth.
+ */
+export function prepareSelectedAgentRuntimeAuthProfile(input: PrepareAgentRuntimeAuthPlanParams) {
   const params = { ...input, config: resolveModelProviderAuthConfig(input) };
   const requestedProfileId = params.sessionAuthProfileId?.trim() || undefined;
   const userPinnedProfileId =
@@ -245,6 +246,45 @@ export function prepareAgentRuntimeAuth(
   }
   const store = params.authProfileStore;
   const authProfileSelectionProvider = harnessOwnsOpenAIAuth ? "openai" : params.provider;
+  if (
+    userPinnedProfileId &&
+    !store?.profiles[userPinnedProfileId] &&
+    params.config?.auth?.profiles?.[userPinnedProfileId]?.mode !== "aws-sdk"
+  ) {
+    throw createSelectedAuthProfileUnavailableError({
+      profileId: userPinnedProfileId,
+      provider: authProfileSelectionProvider,
+      modelId: params.modelId,
+    });
+  }
+
+  return {
+    params,
+    requestedProfileId,
+    userPinnedProfileId,
+    harnessOwnsOpenAIAuth,
+    runtimeAuthOwner,
+    harnessAllowsAuthProfileForwarding,
+    store,
+    authProfileSelectionProvider,
+  };
+}
+
+/** Selects concrete provider routes and ordered credentials as one immutable preparation. */
+export function prepareAgentRuntimeAuth(
+  input: PrepareAgentRuntimeAuthPlanParams,
+): PreparedAgentRuntimeAuth {
+  const {
+    params,
+    requestedProfileId,
+    userPinnedProfileId,
+    harnessOwnsOpenAIAuth,
+    runtimeAuthOwner,
+    harnessAllowsAuthProfileForwarding,
+    store,
+    authProfileSelectionProvider,
+  } = prepareSelectedAgentRuntimeAuthProfile(input);
+
   if (userPinnedProfileId) {
     const eligibility = store
       ? resolveAuthProfileEligibility({
@@ -257,16 +297,6 @@ export function prepareAgentRuntimeAuth(
         })
       : { eligible: false };
     if (!eligibility.eligible) {
-      if (
-        !store?.profiles[userPinnedProfileId] &&
-        params.config?.auth?.profiles?.[userPinnedProfileId]?.mode !== "aws-sdk"
-      ) {
-        throw createSelectedAuthProfileUnavailableError({
-          profileId: userPinnedProfileId,
-          provider: authProfileSelectionProvider,
-          modelId: params.modelId,
-        });
-      }
       throw new Error(
         `Auth profile "${userPinnedProfileId}" is not configured for ${authProfileSelectionProvider}.`,
       );

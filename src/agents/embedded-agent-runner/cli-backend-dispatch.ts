@@ -12,11 +12,16 @@
  * to run through the CLI backend on plan limits instead.
  */
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { resolveRunModelHasVision } from "../../auto-reply/reply/agent-runner-run-params.js";
+import { resolveDeferredReplyModelLevels } from "../../auto-reply/reply/reply-model-levels.js";
 import type { SessionTranscriptRuntimeTarget } from "../../config/sessions/session-accessor.js";
 import { onAgentEventForRun } from "../../infra/agent-events.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { resolvePreparedRunAdmission } from "../admitted-run-context.js";
+import { resolveAgentDir, resolveSessionAgentId } from "../agent-scope.js";
+import { resolveCliExecutionAuthProfileId } from "../cli-execution-auth.js";
 import { stripOpenClawMcpToolPrefix } from "../cli-runner/tool-policy.js";
+import { resolveCandidateThinkingLevel } from "../thinking-runtime.js";
 import { normalizeToolPolicyName } from "../tool-policy.js";
 import { isToolResultError } from "../tool-result-error.js";
 import { resolveEmbeddedCliBackendDispatchEligibility } from "./cli-backend-dispatch-eligibility.js";
@@ -109,6 +114,81 @@ async function runEmbeddedAgentViaCliBackend(
     admittedRunContext: params.admittedRunContext,
     preparedRunAdmission: params.preparedRunAdmission,
   });
+  const deferred = params.deferredReplyModelLevels;
+  if (deferred || params.deferModelInput) {
+    // This branch bypasses embedded model setup. Its CLI owner admits explicit
+    // account selection before either deferred thinking or input discovery.
+    const config = params.config ?? {};
+    const agentId =
+      params.agentId ??
+      deferred?.thinking.agentId ??
+      resolveSessionAgentId({ sessionKey: params.sessionKey, config });
+    if (params.authProfileIdSource === "user") {
+      resolveCliExecutionAuthProfileId({
+        cliExecutionProvider: dispatch.provider,
+        authProfileProvider: params.provider ?? dispatch.provider,
+        config,
+        agentDir: params.agentDir ?? resolveAgentDir(config, agentId),
+        selected: params,
+      });
+    }
+    const levels = deferred
+      ? await resolveDeferredReplyModelLevels({ cfg: config, agentId, deferred })
+      : undefined;
+    params.abortSignal?.throwIfAborted();
+    params.assertCurrent?.();
+    if (levels?.kind === "reply") {
+      return {
+        payloads: [levels.reply],
+        meta: {
+          durationMs: 0,
+          finalAssistantVisibleText: levels.reply.text,
+          finalAssistantRawText: levels.reply.text,
+        },
+      };
+    }
+    const provider = params.provider ?? dispatch.provider;
+    const model = params.model ?? deferred?.thinking.model;
+    if (levels?.kind === "ready" && model) {
+      params.thinkLevel =
+        resolveCandidateThinkingLevel({
+          cfg: config,
+          agentId,
+          provider,
+          modelId: model,
+          level: levels.thinkLevel,
+          catalog: levels.thinkingCatalog,
+          sessionKey: params.sessionKey,
+          agentRuntime: dispatch.provider,
+        }) ?? levels.thinkLevel;
+      params.reasoningLevel = levels.reasoningLevel;
+    }
+    if (params.deferModelInput && model) {
+      params.modelHasVision = await resolveRunModelHasVision({
+        run: {
+          config,
+          agentId,
+          agentDir: params.agentDir,
+          workspaceDir: params.workspaceDir,
+          thinkingCatalog: levels?.thinkingCatalog ?? params.modelInputCatalog,
+        },
+        provider,
+        model,
+      });
+      params.abortSignal?.throwIfAborted();
+      params.assertCurrent?.();
+    }
+    if (levels?.kind === "ready" && model) {
+      params.onReplyModelLevelsResolved?.({
+        provider,
+        model,
+        thinkLevel: params.thinkLevel ?? levels.thinkLevel,
+        originalThinkLevel: levels.thinkLevel,
+        reasoningLevel: levels.reasoningLevel,
+        thinkingCatalog: levels.thinkingCatalog,
+      });
+    }
+  }
   // The dispatch gate guarantees a non-empty named allowlist; translate it to
   // the selectable-backend surface: no native tools, only the listed loopback
   // MCP tools. The MCP list also bounds the loopback grant server-side (tools

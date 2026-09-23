@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ThinkLevel } from "../../../auto-reply/thinking.js";
+import type { Model } from "../../../llm/types.js";
 import { DEFAULT_MODEL, DEFAULT_PROVIDER } from "../../defaults.js";
 import {
   buildModelAliasIndex,
@@ -9,6 +10,7 @@ import {
 import { resolveThinkingDefault } from "../../model-thinking-default.js";
 import { OPENAI_PROVIDER_ID } from "../../openai-routing.js";
 import type { AgentRuntimePlan } from "../../runtime-plan/types.js";
+import { resolveCandidateThinkingLevel } from "../../thinking-runtime.js";
 import type { RunEmbeddedAgentParams } from "./params.js";
 
 export const CODEX_HARNESS_ID = "codex";
@@ -57,25 +59,41 @@ export function resolveInitialThinkLevel(params: {
   agentId?: string;
   provider: string;
   modelId: string;
-  model: { reasoning?: boolean };
+  model: Partial<Pick<Model, "reasoning" | "api" | "params" | "compat">>;
+  clampToModel?: boolean;
+  agentRuntime?: string;
+  sessionKey?: string;
 }): ThinkLevel {
-  if (params.requested) {
-    return params.requested;
-  }
-  return resolveThinkingDefault({
-    cfg: params.config ?? {},
-    agentId: params.agentId,
-    provider: params.provider,
-    model: params.modelId,
-    catalog: [
-      {
+  const requested =
+    params.requested ??
+    resolveThinkingDefault({
+      cfg: params.config ?? {},
+      agentId: params.agentId,
+      provider: params.provider,
+      model: params.modelId,
+      catalog: [
+        {
+          provider: params.provider,
+          id: params.modelId,
+          name: params.modelId,
+          reasoning: params.model.reasoning,
+        },
+      ],
+    });
+  // A deferred primary default and a hook override both need the actual route's
+  // clamp. The caller keeps the original level separately for later fallbacks.
+  return params.clampToModel
+    ? (resolveCandidateThinkingLevel({
+        cfg: params.config,
         provider: params.provider,
-        id: params.modelId,
-        name: params.modelId,
-        reasoning: params.model.reasoning,
-      },
-    ],
-  });
+        modelId: params.modelId,
+        level: requested,
+        agentId: params.agentId,
+        sessionKey: params.sessionKey,
+        agentRuntime: params.agentRuntime,
+        catalog: [{ provider: params.provider, id: params.modelId, ...params.model }],
+      }) ?? requested)
+    : requested;
 }
 
 /** Marks only request parameters that OpenClaw applies to provider egress. */

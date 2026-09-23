@@ -1,5 +1,7 @@
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createModelSelectionStateFixture } from "../../../auto-reply/reply/model-selection.test-support.js";
+import { createReplyModelLevelResolver } from "../../../auto-reply/reply/reply-model-levels.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { setCurrentPluginMetadataSnapshot } from "../../../plugins/current-plugin-metadata.test-support.js";
 import { loadPluginManifest } from "../../../plugins/manifest.js";
@@ -23,6 +25,7 @@ import {
 } from "../../auth-profiles.js";
 import type { ResolvedProviderAuth } from "../../model-auth.js";
 import { prepareModelRunCapabilities } from "../../model-catalog-lookup.js";
+import * as thinkingCatalogRuntime from "../../model-catalog.runtime.js";
 import type { ModelCatalogEntry } from "../../model-catalog.types.js";
 import type { PreparedModelRuntimeSnapshot } from "../../prepared-model-runtime.js";
 import { createEmptyAgentDiscoveryStores } from "../model.js";
@@ -148,11 +151,111 @@ describe("selected route thinking metadata at runtime preparation", () => {
     setCurrentPluginMetadataSnapshot(undefined);
     resetPluginRuntimeStateForTest();
     clearPluginMetadataLifecycleCaches();
+    vi.restoreAllMocks();
     vi.unstubAllEnvs();
     vi.unstubAllGlobals();
     clearRuntimeAuthProfileStoreSnapshots();
     await state.cleanup();
   });
+
+  it.each([false, true])(
+    "keeps the canonical late auth admission before an unsupported-level reply (removed=%s)",
+    async (removed) => {
+      const modelState = createModelSelectionStateFixture({
+        provider: "openai",
+        model: MODEL_ID,
+        agentCfg: undefined,
+      });
+      const deferred = createReplyModelLevelResolver({
+        modelState,
+        selection: {
+          provider: "openai",
+          model: MODEL_ID,
+          agentRuntime: "codex",
+          thinkLevel: "high",
+          thinkingExplicit: true,
+          reasoningLevel: "off",
+          reasoningExplicit: true,
+        },
+      }).defer();
+      deferred.explicitThink = true;
+      const catalog = vi
+        .spyOn(thinkingCatalogRuntime, "loadProviderScopedThinkingCatalog")
+        .mockImplementationOnce(async () => {
+          if (removed) {
+            await state.writeAuthProfiles({
+              version: 1,
+              profiles: {
+                "openai:subscription": {
+                  type: "token",
+                  provider: "openai",
+                  token: "fixture-token",
+                },
+              },
+            });
+            clearRuntimeAuthProfileStoreSnapshots();
+          }
+          return [
+            {
+              provider: "openai",
+              id: MODEL_ID,
+              name: "No thinking",
+              reasoning: false,
+              nativeRuntime: "codex",
+            },
+          ];
+        });
+      const runId = `late-admission-${removed}`;
+      const preparing = prepareEmbeddedRunRuntime({
+        assertCurrent: () => {},
+        runParams: {
+          runId,
+          admittedRunContext: createTestAdmittedRunContext(runId),
+          sessionId: "late-admission",
+          sessionKey: "agent:main:late-admission",
+          agentId: "main",
+          prompt: "high remains prompt text",
+          workspaceDir: root,
+          timeoutMs: 5_000,
+          config: preparedModelRuntime.config,
+          authProfileId: "openai:platform",
+          authProfileIdSource: "user",
+          deferredReplyModelLevels: deferred,
+          deferModelInput: true,
+        },
+        provider: "openai",
+        modelId: MODEL_ID,
+        agentDir: preparedModelRuntime.agentDir,
+        workspaceDir: root,
+        globalLane: "test",
+        hookRunner: undefined,
+        hookContext: { sessionId: "late-admission", workspaceDir: root },
+        markStartupStage: () => {},
+        notifyExecutionPhase: () => {},
+        fallbackConfigured: false,
+        preparedModelRuntime,
+      });
+      if (removed) {
+        await expect(preparing).rejects.toMatchObject({
+          code: "selected_auth_profile_unavailable",
+          profileId: "openai:platform",
+        });
+      } else {
+        const runtime = await preparing;
+        try {
+          expect(runtime.kind).toBe("reply");
+          if (runtime.kind === "reply") {
+            expect(runtime.reply.text).toContain('Thinking level "high" is not supported');
+          }
+        } finally {
+          if (runtime.kind === "ready") {
+            runtime.stopRuntimeAuthRefreshTimer();
+          }
+        }
+      }
+      expect(catalog).toHaveBeenCalledOnce();
+    },
+  );
 
   it.each([
     ["platform", "absent"],
@@ -227,6 +330,9 @@ describe("selected route thinking metadata at runtime preparation", () => {
       fallbackConfigured: false,
       preparedModelRuntime,
     });
+    if (runtime.kind !== "ready") {
+      throw new Error("Expected admitted model runtime");
+    }
     try {
       const { effectiveModel, activePreparedAuthPlan } = runtime.snapshot();
       expect(activePreparedAuthPlan.modelRoute?.authRequirement).toBe(

@@ -126,6 +126,10 @@ async function createFixture(
   const resolve = (
     assertCurrent = () => {},
     preparedModelRuntime: PreparedModelRuntimeSnapshot = generation.preparedModelRuntime,
+    selected: Pick<
+      Partial<Parameters<typeof resolveEmbeddedRunModelSetup>[0]>,
+      "provider" | "modelId" | "hookRunner"
+    > = {},
   ) =>
     resolveEmbeddedRunModelSetup({
       assertCurrent,
@@ -143,11 +147,12 @@ async function createFixture(
       },
       onHooksResolved: () => {},
       preparedModelRuntime,
+      ...selected,
     });
   const withRuntime = async (
     overrides: Partial<RunEmbeddedAgentParams>,
     use: (
-      runtime: Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>,
+      runtime: Extract<Awaited<ReturnType<typeof prepareEmbeddedRunRuntime>>, { kind: "ready" }>,
       admission: ReturnType<typeof prepareSystemAgentRunAdmission>,
     ) => void | Promise<void>,
   ) => {
@@ -176,9 +181,14 @@ async function createFixture(
         fallbackConfigured: false,
         preparedModelRuntime: generation.preparedModelRuntime,
       });
+      if (runtime.kind !== "ready") {
+        throw new Error("Expected admitted model runtime");
+      }
       await use(runtime, admission);
     } finally {
-      runtime?.stopRuntimeAuthRefreshTimer();
+      if (runtime?.kind === "ready") {
+        runtime.stopRuntimeAuthRefreshTimer();
+      }
       admission.close();
     }
   };
@@ -280,6 +290,66 @@ describe("model chat and native model ownership", () => {
       }
     },
   );
+
+  it("rejects a missing USER pin before optional native catalog or model resolution with usable A present", async () => {
+    const fixture = await createFixture();
+    await fixture.state.writeAuthProfiles({
+      version: 1,
+      profiles: {
+        "openai:A": { type: "api_key", provider: "openai", key: "fixture-A" },
+      },
+    });
+    fixture.runParams.authProfileId = "openai:B";
+    fixture.runParams.authProfileIdSource = "user";
+    fixture.generation.resolveDynamicModel.mockClear();
+    fixture.harness.loadModelCatalog = vi.fn(async () => []);
+    registerAgentHarness(fixture.harness);
+    const loadNativeModelCatalog = vi.fn(async () => {
+      throw new Error("Optional discovery must not win over missing B");
+    });
+    await expect(
+      fixture.resolve(undefined, {
+        ...fixture.generation.preparedModelRuntime,
+        loadNativeModelCatalog,
+      }),
+    ).rejects.toMatchObject({ code: "selected_auth_profile_unavailable", profileId: "openai:B" });
+    expect(loadNativeModelCatalog).not.toHaveBeenCalled();
+    expect(fixture.generation.resolveDynamicModel).not.toHaveBeenCalled();
+    expect(fixture.harness.runAttempt).not.toHaveBeenCalled();
+    expect(loadSessionEntryReadOnly(fixture.target)).toMatchObject(fixture.entry);
+  });
+
+  it("lets the single model hook choose the admitted profile scope before discovery", async () => {
+    const fixture = await createFixture();
+    await fixture.state.writeAuthProfiles({
+      version: 1,
+      profiles: {
+        "openai:A": { type: "api_key", provider: "openai", key: "fixture-A" },
+      },
+    });
+    Object.assign(fixture.runParams, {
+      modelSelectionLocked: false,
+      authProfileId: "openai:A",
+      authProfileIdSource: "user",
+    });
+    const runBeforeModelResolve = vi.fn(async () => ({
+      providerOverride: "openai",
+      modelOverride: "fixture-model",
+    }));
+    const setup = await fixture.resolve(undefined, undefined, {
+      provider: "unselected",
+      modelId: "before-hook",
+      hookRunner: { hasHooks: () => true, runBeforeModelResolve },
+    });
+    expect(runBeforeModelResolve).toHaveBeenCalledOnce();
+    expect(runBeforeModelResolve).toHaveBeenCalledWith({ prompt: "hello" }, expect.anything());
+    expect(setup).toMatchObject({
+      provider: "openai",
+      modelId: "fixture-model",
+      modelSelectionChangedByHook: true,
+    });
+    expect(fixture.harness.runAttempt).not.toHaveBeenCalled();
+  });
 
   it("resolves the concrete locked model instead of treating a runtime request as native ownership", async () => {
     const fixture = await createFixture();

@@ -181,8 +181,7 @@ export async function accountAgentTurn(context: AgentTurnAccountingContext) {
     fallbackExhausted,
     winnerProvider,
     winnerModel,
-    reasoningEffort:
-      typeof followupRun.run.thinkLevel === "string" ? followupRun.run.thinkLevel : undefined,
+    reasoningEffort: followupRun.run.effectiveThinkLevel ?? followupRun.run.thinkLevel,
     fastMode: resolveFastModeState({
       cfg,
       provider: providerUsed ?? "",

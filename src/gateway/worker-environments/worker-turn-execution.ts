@@ -31,7 +31,7 @@ import { sameWorkerSessionTurnClaim } from "./placement-record.js";
 import { prepareWorkerDesktopLaunchPlan } from "./worker-desktop-launch-plan.js";
 import { prepareWorkerGitHubBinding } from "./worker-github-binding.js";
 import { registerWorkerSkillAuthoring } from "./worker-skill-authoring.js";
-import { waitForTurnOperation } from "./worker-turn-admission.js";
+import { releaseClaimIfOwned, waitForTurnOperation } from "./worker-turn-admission.js";
 import {
   WorkerTurnExecutionError,
   type WorkerTurnEnvironmentService,
@@ -45,6 +45,7 @@ import {
   fitLaunchDescriptorWithRuntimeIdentity,
   parseRuntimeResult,
   prepareWorkerAgentRuntimeIdentity,
+  prepareWorkerTurnModelMetadata,
   windowInitialMessages,
 } from "./worker-turn-payload.js";
 import { resolveWorkerTurnTranscriptTarget } from "./worker-turn-transcript-target.js";
@@ -165,6 +166,25 @@ export async function executeWorkerTurn(
   });
 
   assertContextCurrent();
+  const modelLevelReply = await prepareWorkerTurnModelMetadata({
+    turn,
+    modelRef,
+    assertCurrent: assertContextCurrent,
+  });
+  assertContextCurrent();
+  if (modelLevelReply) {
+    // No remote work began, so there is no workspace result to reconcile. Settle
+    // this exact admission before returning a successful validation reply.
+    await releaseClaimIfOwned(params.placements, params.turnClaim);
+    return {
+      payloads: [modelLevelReply],
+      meta: {
+        durationMs: Date.now() - startedAt,
+        finalAssistantVisibleText: modelLevelReply.text,
+        finalAssistantRawText: modelLevelReply.text,
+      },
+    };
+  }
   const credential = await params.environments.acquireTurnCredential(params.turnClaim);
   const tunnel = await waitForTurnOperation({
     operation: params.environments.startTunnel({

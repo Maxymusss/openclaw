@@ -1,3 +1,9 @@
+import type { DeferredReplyModelLevels } from "../../../auto-reply/reply/reply-model-levels.js";
+import type {
+  ReasoningLevel,
+  ThinkLevel,
+  ThinkingCatalogEntry,
+} from "../../../auto-reply/thinking.js";
 import type { SessionTranscriptRuntimeTarget } from "../../../config/sessions/session-accessor.js";
 import type { InternalSessionEntry } from "../../../config/sessions/types.js";
 import type { AgentExecutionAuthBinding } from "../../execution-auth-binding.js";
@@ -34,6 +40,19 @@ export type CompactionAccountingFact = Readonly<
 >;
 
 export type RunEmbeddedAgentInternalParams = RunEmbeddedAgentParams & {
+  /** Original reply intent only: no credential, reader, or persisted session ownership. */
+  deferredReplyModelLevels?: DeferredReplyModelLevels;
+  /** Input discovery follows the single hook/native-owner profile admission. */
+  deferModelInput?: boolean;
+  modelInputCatalog?: ThinkingCatalogEntry[];
+  onReplyModelLevelsResolved?: (levels: {
+    provider: string;
+    model: string;
+    thinkLevel: ThinkLevel;
+    originalThinkLevel?: ThinkLevel;
+    reasoningLevel?: ReasoningLevel;
+    thinkingCatalog?: ThinkingCatalogEntry[];
+  }) => void;
   /** Reset deferred terminal facts when the host admits a new attempt, before preparation. */
   onAttemptStart?: () => void;
   /** Keep a bounded auxiliary tool set directly visible after runtime admission. */

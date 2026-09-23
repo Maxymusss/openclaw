@@ -3,7 +3,11 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import type { QueueMode } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import type { ModelCatalogEntry } from "../../../agents/model-catalog.types.js";
 import type { ModelFallbackRouteResolution } from "../../../agents/model-fallback.types.js";
-import { resolveThinkingSelection } from "../../../agents/model-thinking-default.js";
+import {
+  resolveConfiguredThinkingDefault,
+  resolveThinkingSelection,
+} from "../../../agents/model-thinking-default.js";
+import { resolveEffectiveAgentRuntime } from "../../../agents/thinking-runtime.js";
 import { resolveGlobalMap } from "../../../shared/global-singleton.js";
 import { applyQueueRuntimeSettings } from "../../../utils/queue-helpers.js";
 import { normalizeThinkLevel } from "../../thinking.js";
@@ -272,6 +276,50 @@ export function refreshQueuedFollowupSession(params: {
       if (Object.hasOwn(params, "nextAuthProfileIdSource")) {
         run.authProfileIdSource = run.authProfileId ? params.nextAuthProfileIdSource : undefined;
       }
+      if (run.deferredReplyModelLevels && (hasNextModelRoute || params.nextThinking)) {
+        const deferred = run.deferredReplyModelLevels;
+        const agentRuntime =
+          params.nextThinking?.agentRuntime ??
+          resolveEffectiveAgentRuntime({
+            cfg: run.config,
+            agentId: run.agentId,
+            sessionKey: run.sessionKey,
+            provider: run.provider,
+            modelId: run.model,
+          });
+        const requested = params.nextThinking
+          ? run.thinkLevelOverride === "default"
+            ? undefined
+            : (run.thinkLevelOverride ?? normalizeThinkLevel(params.nextThinking.level))
+          : deferred.selection.thinkLevel;
+        run.deferredReplyModelLevels = {
+          ...deferred,
+          selection: {
+            ...deferred.selection,
+            provider: run.provider,
+            model: run.model,
+            agentRuntime,
+            thinkLevel: requested,
+          },
+          thinking: {
+            ...deferred.thinking,
+            provider: run.provider,
+            model: run.model,
+            agentRuntime,
+            catalog: params.nextThinking?.catalog ?? [],
+            allowedModelCatalog: params.nextThinking?.catalog ?? [],
+            configuredThinkingDefault: resolveConfiguredThinkingDefault({
+              cfg: run.config,
+              agentId: run.agentId,
+              provider: run.provider,
+              model: run.model,
+            }),
+          },
+          // A queued model switch remaps a previously selected turn level.
+          explicitThink: hasNextModelRoute ? false : deferred.explicitThink,
+        };
+      }
+      delete run.effectiveThinkLevel;
       if (params.nextThinking) {
         run.thinkingCatalog = params.nextThinking.catalog;
         const explicitLevel =

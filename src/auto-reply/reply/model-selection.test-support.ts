@@ -1,4 +1,7 @@
-import { createModelVisibilityPolicy } from "../../agents/model-visibility-policy.js";
+import {
+  RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
+  createModelVisibilityPolicy,
+} from "../../agents/model-visibility-policy.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ThinkLevel } from "../thinking.shared.js";
 import type { createModelSelectionState } from "./model-selection.js";
@@ -27,6 +30,17 @@ export function createModelSelectionStateFixture(params: {
     resetModelOverrideReason: undefined,
     modelPolicyConfigPath: undefined,
     modelPolicyRepairConfigPath: undefined,
+    prepareThinkingSelection: (selection) => ({
+      agentId: "main",
+      ...selection,
+      agentRuntime: selection.agentRuntime ?? "openclaw",
+      catalog: [],
+      allowedModelCatalog: [],
+      defaultProvider: params.provider,
+      defaultModel: params.model,
+      normalization: RUNTIME_MODEL_VISIBILITY_NORMALIZATION,
+      configuredThinkingDefault: params.agentCfg?.thinkingDefault,
+    }),
     resolveThinkingCatalog: async () => [],
     resolveDefaultThinkingLevel: async () => params.agentCfg?.thinkingDefault as ThinkLevel,
     hasConfiguredThinkingDefault: params.agentCfg?.thinkingDefault !== undefined,

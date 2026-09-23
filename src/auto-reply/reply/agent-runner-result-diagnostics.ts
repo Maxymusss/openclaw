@@ -84,7 +84,7 @@ export async function buildReplyDiagnosticsPayload(params: {
           : undefined),
       thinking:
         runResult.meta?.requestShaping?.thinking ??
-        normalizeOptionalString(followupRun.run.thinkLevel),
+        normalizeOptionalString(followupRun.run.effectiveThinkLevel ?? followupRun.run.thinkLevel),
       reasoning:
         runResult.meta?.requestShaping?.reasoning ??
         normalizeOptionalString(followupRun.run.reasoningLevel),

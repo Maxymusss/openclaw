@@ -28,6 +28,7 @@ export type AgentFallbackCandidateCommonParams = {
   messageActionTurnCapability?: string;
   turn: AgentTurnParams;
   candidateRun: FollowupRun["run"];
+  effectiveRun: FollowupRun["run"];
   runtimeConfig: OpenClawConfig;
   provider: string;
   model: string;

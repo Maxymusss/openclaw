@@ -40,6 +40,14 @@ import { isPreparedModelCatalogFull } from "./prepared-model-runtime.full-catalo
 import { resolveProviderIdForAuth } from "./provider-auth-aliases.js";
 import { resolveDefaultAgentWorkspaceDir } from "./workspace.js";
 
+export type ModelAuthOverlayObservation = {
+  before: ModelAuthAvailabilityEvaluation;
+  applied: boolean;
+  changed: boolean;
+  rejectionScope?: ProviderCatalogOutcome["rejectionScope"];
+  selectedProfileMatches?: boolean;
+};
+
 export type ModelRuntimeChoiceObservation = {
   stage: string;
   runtimeId?: string;
@@ -113,6 +121,10 @@ function createModelsListEntryEvaluator(params: {
   profileProvider?: string;
   runtimeOverride?: string;
   normalizeAuthProvider: (provider: string) => string;
+  observeOverlay?: (
+    result: ModelAuthAvailabilityEvaluation,
+    observation: ModelAuthOverlayObservation,
+  ) => void;
 }): (
   entry: Pick<ModelCatalogEntry, "provider" | "id" | "api" | "baseUrl">,
   routeVariants?: readonly ModelCatalogEntry[],
@@ -164,13 +176,20 @@ function createModelsListEntryEvaluator(params: {
       const provider = normalizeProviderId(entry.provider);
       // Stored credentials prove presence, not acceptance. Apply the live rejection only to the
       // profile discovery tested; widening it would hide routes backed by another valid profile.
-      return params.providerOutcomes?.some(
-        (outcome) =>
-          outcome.status === "auth-rejected" &&
-          outcome.rejectionScope !== "catalog" &&
-          normalizeProviderId(outcome.provider) === provider &&
-          (outcome.profileId === undefined || outcome.profileId === resolved.selectedProfileId),
-      )
+      let matched: ProviderCatalogOutcome | undefined;
+      const applied =
+        params.providerOutcomes?.some((outcome) => {
+          const matches =
+            outcome.status === "auth-rejected" &&
+            outcome.rejectionScope !== "catalog" &&
+            normalizeProviderId(outcome.provider) === provider &&
+            (outcome.profileId === undefined || outcome.profileId === resolved.selectedProfileId);
+          if (matches) {
+            matched = outcome;
+          }
+          return matches;
+        }) === true;
+      const result: ModelAuthAvailabilityEvaluation = applied
         ? {
             ...resolved,
             availability: false,
@@ -178,6 +197,27 @@ function createModelsListEntryEvaluator(params: {
             unavailableUntil: undefined,
           }
         : resolved;
+      if (params.observeOverlay) {
+        try {
+          // Attach the existing evaluation to its cached result; observing it never evaluates again.
+          params.observeOverlay(result, {
+            before: resolved,
+            applied,
+            changed:
+              result.availability !== resolved.availability ||
+              result.unavailableReason !== resolved.unavailableReason ||
+              result.unavailableUntil !== resolved.unavailableUntil,
+            rejectionScope: matched?.rejectionScope,
+            selectedProfileMatches:
+              matched?.profileId === undefined
+                ? undefined
+                : matched.profileId === resolved.selectedProfileId,
+          });
+        } catch {
+          // Temporary observation cannot replace the auth decision or its original failure.
+        }
+      }
+      return result;
     });
     pending.set(cacheKey, next);
     return next;
@@ -204,6 +244,7 @@ export type ModelCatalogDecisionParams = {
   runtimeOverride?: string;
   routeResolverFactory?: typeof createOpenAIModelRoutesResolver;
   isCurrent?: () => boolean;
+  captureAuthOverlay?: boolean;
 };
 
 /** Builds requester/session auth views without changing shared catalog or credential snapshots. */
@@ -325,9 +366,15 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
     workspaceDir,
     routeResolverFactory: params.routeResolverFactory,
   });
+  const authOverlayObservations = params.captureAuthOverlay
+    ? new WeakMap<ModelAuthAvailabilityEvaluation, ModelAuthOverlayObservation>()
+    : undefined;
   const evaluateStoredEntry = createModelsListEntryEvaluator({
     authResolver,
     providerOutcomes: params.snapshot.providerOutcomes,
+    observeOverlay: authOverlayObservations
+      ? (result, observation) => authOverlayObservations.set(result, observation)
+      : undefined,
     preferredProfilesByProvider,
     runtimeOverride: params.runtimeOverride,
     normalizeAuthProvider: (provider) =>
@@ -355,6 +402,8 @@ export function createModelCatalogDecisions(params: ModelCatalogDecisionParams) 
   const isCurrent = () =>
     Date.now() < authValidUntil && (params.isCurrent?.() ?? params.observationConfig === undefined);
   return {
+    getAuthOverlayObservation: (evaluation: ModelAuthAvailabilityEvaluation) =>
+      authOverlayObservations?.get(evaluation),
     evaluateEntry,
     evaluateNative,
     snapshot,

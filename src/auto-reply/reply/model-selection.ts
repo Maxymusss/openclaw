@@ -29,10 +29,7 @@ import {
   OPENAI_PROVIDER_ID,
   listOpenAIAuthProfileProvidersForAgentRuntime,
 } from "../../agents/openai-routing.js";
-import {
-  needsThinkHydration,
-  resolveEffectiveAgentRuntime,
-} from "../../agents/thinking-runtime.js";
+import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { SessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import { hasSessionAutoModelSelection } from "../../config/sessions/model-override-provenance.js";
 import {
@@ -57,6 +54,10 @@ import {
   normalizeRuntimeRef,
   resolveRuntimeNormalization,
 } from "./model-runtime-normalization.js";
+import {
+  resolveReplyThinkingCatalog,
+  type ReplyThinkingPreparation,
+} from "./reply-model-levels.js";
 import { isStaleHeartbeatAutoFallbackOverride } from "./stored-model-override.js";
 export {
   resolveModelDirectiveSelection,
@@ -85,6 +86,7 @@ type ModelSelectionState = {
   resetModelOverrideReason?: "disallowed" | "stale" | "temporarily-unavailable";
   modelPolicyConfigPath?: string;
   modelPolicyRepairConfigPath?: string;
+  prepareThinkingSelection: (selection: ThinkingDefaultSelection) => ReplyThinkingPreparation;
   resolveThinkingCatalog: (
     selection?: ThinkingDefaultSelection,
   ) => Promise<ModelCatalog | undefined>;
@@ -516,15 +518,6 @@ export async function createModelSelectionState(params: {
     }
   }
 
-  const buildThinkingCatalog = (catalog: ModelCatalog): ModelCatalog =>
-    createModelVisibilityPolicy({
-      cfg,
-      catalog,
-      defaultProvider,
-      defaultModel: { provider: defaultProvider, model: defaultModel },
-      agentId: params.agentId,
-      ...runtimeModelNormalization,
-    }).catalog;
   const resolveThinkingSelection = (selection: ThinkingDefaultSelection) => {
     const selected = findSelectedCatalogEntry({ ...selection, catalog: visibilityPolicy.catalog });
     return {
@@ -543,6 +536,22 @@ export async function createModelSelectionState(params: {
         }),
     };
   };
+  const prepareThinkingSelection = (
+    selection: ThinkingDefaultSelection,
+  ): ReplyThinkingPreparation => ({
+    agentId: params.agentId,
+    ...resolveThinkingSelection(selection),
+    catalog: visibilityPolicy.catalog,
+    allowedModelCatalog,
+    defaultProvider,
+    defaultModel,
+    normalization: runtimeModelNormalization,
+    configuredThinkingDefault: resolveConfiguredThinkingDefault({
+      cfg,
+      agentId: params.agentId,
+      ...selection,
+    }),
+  });
   const thinkingCatalogs = new Map<string, ModelCatalog>();
   const resolveThinkingCatalog = async (
     selection: ThinkingDefaultSelection = { provider, model },
@@ -554,23 +563,13 @@ export async function createModelSelectionState(params: {
     if (cached) {
       return cached.length > 0 ? cached : undefined;
     }
-    let catalog = visibilityPolicy.catalog;
-    if (needsThinkHydration(catalog, selection.provider, selection.model, agentRuntime)) {
-      const { loadProviderScopedThinkingCatalog } = await loadPreparedModelCatalogRuntime();
-      const preparedCatalog = await loadProviderScopedThinkingCatalog({
-        config: cfg,
-        agentId: params.agentId,
-        provider: selection.provider,
-        model: selection.model,
-        agentRuntime,
-      });
-      // An empty refresh cannot replace the admitted owner with a configuration-only row.
-      if (findSelectedCatalogEntry({ catalog: preparedCatalog, ...selection })) {
-        catalog = buildThinkingCatalog(preparedCatalog);
-      }
-    }
-    thinkingCatalogs.set(key, catalog);
-    return catalog.length > 0 ? catalog : undefined;
+    const catalog = await resolveReplyThinkingCatalog({
+      cfg,
+      agentId: params.agentId,
+      preparation: prepareThinkingSelection(thinkingSelection),
+    });
+    thinkingCatalogs.set(key, catalog ?? []);
+    return catalog;
   };
 
   const defaultThinkingLevels = new Map<string, ThinkLevel>();
@@ -632,6 +631,7 @@ export async function createModelSelectionState(params: {
     resetModelOverrideReason,
     modelPolicyConfigPath: visibilityPolicy.allowConfigPath ?? undefined,
     modelPolicyRepairConfigPath: visibilityPolicy.allowRepairConfigPath,
+    prepareThinkingSelection,
     resolveThinkingCatalog,
     resolveDefaultThinkingLevel,
     hasConfiguredThinkingDefault,

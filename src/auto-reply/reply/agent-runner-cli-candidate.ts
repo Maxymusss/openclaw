@@ -39,10 +39,12 @@ import {
 import { buildCommandOutputFromToolResultEvent } from "./agent-runner-command-output.js";
 import type { AgentFallbackCandidateCommonParams } from "./agent-runner-fallback-cycle.types.js";
 import { resolveRunModelHasVision } from "./agent-runner-run-params.js";
+import { resolveRunThinkingLevelForFallbackCandidate } from "./agent-runner-utils.js";
 import { prepareCliReplyPayload } from "./cli-reply-payload.js";
 import { shouldBridgeCliPreambleEvents } from "./get-reply.types.js";
 import { hasInboundAudio } from "./inbound-media.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
+import { resolveDeferredReplyModelLevels } from "./reply-model-levels.js";
 import { resolveReplyOperationTerminationFields } from "./reply-operation-abort.js";
 
 export async function runCliFallbackCandidate(
@@ -67,16 +69,6 @@ export async function runCliFallbackCandidate(
         }
       : undefined);
   const expectedLifecycleRevision = turn.getActiveSessionEntry()?.lifecycleRevision;
-  const selectedModelEntry = findModelInCatalog(
-    params.candidateRun.thinkingCatalog ?? [],
-    params.provider,
-    params.model,
-  );
-  const modelHasVision = await resolveRunModelHasVision({
-    run: params.candidateRun,
-    provider: params.provider,
-    model: params.model,
-  });
   const sessionKey = turn.sessionKey ?? turn.followupRun.run.sessionKey;
   const sessionTarget =
     sessionKey && turn.storePath
@@ -193,6 +185,72 @@ export async function runCliFallbackCandidate(
           : resolveRunAuthProfile(params.candidateRun, params.cliExecutionProvider, {
               config: params.runtimeConfig,
             }).authProfileId;
+        const deferred = params.candidateRun.deferredReplyModelLevels;
+        const levels = deferred
+          ? await resolveDeferredReplyModelLevels({
+              cfg: params.runtimeConfig,
+              agentId: params.candidateRun.agentId,
+              deferred,
+            })
+          : undefined;
+        assertSettlementCurrent();
+        if (levels?.kind === "reply") {
+          return {
+            payloads: [levels.reply],
+            meta: {
+              durationMs: Date.now() - cliLifecycleStartedAt,
+              finalAssistantVisibleText: levels.reply.text,
+              finalAssistantRawText: levels.reply.text,
+            },
+          };
+        }
+        if (levels?.kind === "ready") {
+          const facts = {
+            thinkLevel: levels.thinkLevel,
+            reasoningLevel: levels.reasoningLevel,
+            thinkingCatalog: levels.thinkingCatalog,
+          };
+          for (const run of new Set([
+            turn.followupRun.run,
+            params.effectiveRun,
+            params.candidateRun,
+          ])) {
+            Object.assign(run, facts);
+            delete run.deferredReplyModelLevels;
+          }
+        }
+        const candidateThinkLevel =
+          levels?.kind === "ready"
+            ? resolveRunThinkingLevelForFallbackCandidate({
+                cfg: params.runtimeConfig,
+                provider: params.provider,
+                modelId: params.model,
+                run: params.candidateRun,
+                catalog: params.candidateRun.thinkingCatalog,
+                agentId: params.candidateRun.agentId,
+                sessionKey: turn.runtimePolicySessionKey ?? turn.sessionKey,
+                sessionEntry,
+              })
+            : params.candidateThinkLevel;
+        turn.followupRun.run.effectiveThinkLevel = candidateThinkLevel;
+        if (deferred) {
+          turn.opts?.onModelSelected?.({
+            provider: params.provider,
+            model: params.model,
+            thinkLevel: candidateThinkLevel,
+          });
+        }
+        const selectedModelEntry = findModelInCatalog(
+          params.candidateRun.thinkingCatalog ?? [],
+          params.provider,
+          params.model,
+        );
+        const modelHasVision = await resolveRunModelHasVision({
+          run: params.candidateRun,
+          provider: params.provider,
+          model: params.model,
+        });
+        assertSettlementCurrent();
         const diagnosticOwner = params.deferredLifecycle.handoffToCli();
         const mediaTaskIdsBefore = getGeneratedMediaTaskIdsForSessionKey(turn.sessionKey);
         let droppedCliSessionReplacement = false;
@@ -406,7 +464,7 @@ export async function runCliFallbackCandidate(
             execOverrides: turn.followupRun.run.execOverrides,
             bashElevated: turn.followupRun.run.bashElevated,
             model: params.model,
-            thinkLevel: params.candidateThinkLevel,
+            thinkLevel: candidateThinkLevel,
             fastMode: params.candidateFastMode.fastMode,
             fastModeStartedAtMs: params.fastModeStartedAtMs,
             fastModeAutoOnSeconds: params.candidateFastMode.fastModeAutoOnSeconds,

@@ -95,7 +95,7 @@ import {
 import { getPreparedReplyDispatchRuntime } from "./prepared-reply-dispatch-context.js";
 import { attachProgressNarratorToReplyOptions } from "./progress-narrator.js";
 import { prepareReplyConversation } from "./prompt-session-context.js";
-import { createReplyModelLevelResolver } from "./reply-model-levels.js";
+import { retargetReplyModelLevelResolver } from "./reply-model-levels.js";
 import {
   recordReplyPreRunRejection,
   resolveReplyOperationRunState,
@@ -1144,23 +1144,19 @@ export async function getReplyFromConfig(
       rawSessionReasoningLevel != null ||
       agentEntry?.reasoningDefault != null ||
       agentCfg?.reasoningDefault != null;
-    resolveRunModelLevels = createReplyModelLevelResolver({
+    resolveRunModelLevels = retargetReplyModelLevelResolver({
+      resolver: resolveModelLevels,
       modelState: runModelState,
-      selection: {
-        provider: runModelState.provider,
-        model: runModelState.model,
-        thinkLevel: hasTurnOrSessionThinkLevel
-          ? (await resolveModelLevels()).resolvedThinkLevel
-          : undefined,
-        thinkingExplicit: hasExplicitThinkLevel,
-        reasoningLevel: hasExplicitReasoningLevel
-          ? (await resolveModelLevels()).resolvedReasoningLevel
-          : "off",
-        reasoningExplicit: hasExplicitReasoningLevel,
-      },
+      preserveThinkingLevel: hasTurnOrSessionThinkLevel,
+      thinkingExplicit: hasExplicitThinkLevel,
+      reasoningExplicit: hasExplicitReasoningLevel,
     });
   }
-  const { resolvedThinkLevel, resolvedReasoningLevel } = await resolveRunModelLevels();
+  // Commands have already returned. A model turn carries unresolved metadata until its
+  // single hook/native-owner selection admits credentials; undefined alone would enable hints.
+  const deferredReplyModelLevels = resolveRunModelLevels.defer();
+  const resolvedThinkLevel = deferredReplyModelLevels.selection.thinkLevel;
+  const resolvedReasoningLevel = deferredReplyModelLevels.selection.reasoningLevel;
 
   let stagedAttachmentPaths = hasStagedMediaFacts(finalized.media)
     ? collectStagedAttachmentPaths(finalized)
@@ -1233,6 +1229,7 @@ export async function getReplyFromConfig(
       directives,
       resolvedThinkLevel,
       resolvedReasoningLevel,
+      deferredReplyModelLevels,
       modelState: runModelState,
       provider: runProvider,
       model: runModel,

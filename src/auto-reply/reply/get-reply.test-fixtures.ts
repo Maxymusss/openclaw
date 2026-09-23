@@ -3,6 +3,8 @@ import { expect, vi, type Mock } from "vitest";
 import type { FinalizedRuntimeMsgContext, MsgContext } from "../templating.js";
 import type { ReasoningLevel, ThinkLevel } from "../thinking.js";
 import { finalizeInboundContext } from "./inbound-context.js";
+import { createModelSelectionStateFixture } from "./model-selection.test-support.js";
+import { createReplyModelLevelResolver } from "./reply-model-levels.js";
 
 export function buildGetReplyCtx(overrides: Partial<MsgContext> = {}): FinalizedRuntimeMsgContext {
   return finalizeInboundContext({
@@ -108,6 +110,24 @@ export function createGetReplyContinueDirectivesResult(params: {
   resolvedThinkLevel?: ThinkLevel;
   resolvedReasoningLevel?: ReasoningLevel;
 }) {
+  const provider = params.provider ?? "openai";
+  const model = params.model ?? "gpt-4o-mini";
+  const modelState = createModelSelectionStateFixture({
+    provider,
+    model,
+    agentCfg: { thinkingDefault: params.resolvedThinkLevel ?? "off" },
+  });
+  const resolveModelLevels = createReplyModelLevelResolver({
+    modelState,
+    selection: {
+      provider,
+      model,
+      thinkLevel: params.resolvedThinkLevel ?? "off",
+      thinkingExplicit: true,
+      reasoningLevel: params.resolvedReasoningLevel ?? "off",
+      reasoningExplicit: true,
+    },
+  });
   return {
     kind: "continue" as const,
     result: {
@@ -135,10 +155,7 @@ export function createGetReplyContinueDirectivesResult(params: {
       elevatedAllowed: false,
       elevatedFailures: [],
       defaultActivation: "always",
-      resolveModelLevels: async () => ({
-        resolvedThinkLevel: params.resolvedThinkLevel ?? "off",
-        resolvedReasoningLevel: params.resolvedReasoningLevel ?? "off",
-      }),
+      resolveModelLevels,
       resolvedVerboseLevel: "off",
       resolvedElevatedLevel: "off",
       execOverrides: undefined,
@@ -147,11 +164,7 @@ export function createGetReplyContinueDirectivesResult(params: {
       resolvedBlockStreamingBreak: undefined,
       provider: params.provider ?? "openai",
       model: params.model ?? "gpt-4o-mini",
-      modelState: {
-        resolveDefaultThinkingLevel: async () => "off",
-        resolveDefaultReasoningLevel: async () => "off",
-        resolveThinkingCatalog: async () => [],
-      },
+      modelState,
       contextTokens: 0,
       inlineStatusRequested: false,
       directiveAck: undefined,

@@ -12,6 +12,7 @@ import type { InlineDirectives } from "./directive-handling.js";
 import type { InternalGetReplyOptions as BaseInternalGetReplyOptions } from "./get-reply.types.js";
 import type { createModelSelectionState } from "./model-selection.js";
 import type { PreparedReplyConversation } from "./prompt-session-context.js";
+import type { DeferredReplyModelLevels } from "./reply-model-levels.js";
 import type { ReplyOperation } from "./reply-run-registry.js";
 import type { ReplySessionEntryHandle } from "./session-entry-handle.js";
 import type { TypingController } from "./typing.js";
@@ -58,6 +59,7 @@ export type RunPreparedReplyParams = {
   directives: InlineDirectives;
   defaultActivation: "always" | "mention";
   resolvedThinkLevel: ThinkLevel | undefined;
+  deferredReplyModelLevels?: DeferredReplyModelLevels;
   resolvedFastMode?: FastMode;
   resolvedFastModeAutoOnSeconds?: number;
   resolvedFastModeOverride?: boolean;

@@ -71,12 +71,13 @@ function resolveEnforceFinalTagWithResolver(
   );
 }
 
-/** Prepare the selected candidate's input before placement can bypass local model resolution. */
-export async function resolveRunModelHasVision(params: {
-  run: FollowupRun["run"];
+/** Read authoritative configured/prepared input without optional discovery. */
+function prepareRunModelInput(params: {
+  run: Pick<FollowupRun["run"], "config"> &
+    Partial<Pick<FollowupRun["run"], "agentId" | "agentDir" | "workspaceDir" | "thinkingCatalog">>;
   provider: string;
   model: string;
-}): Promise<boolean> {
+}) {
   const { run, provider, model } = params;
   const providerConfig = resolveMergedModelProviderConfig(run.config, provider);
   const configured = findConfiguredProviderModel(
@@ -85,17 +86,32 @@ export async function resolveRunModelHasVision(params: {
     model,
     normalizeLowercaseStringOrEmpty,
   );
-  if (configured?.input !== undefined) {
-    return modelSupportsInput(configured, "image");
-  }
   const route = {
     api: configured?.api ?? providerConfig?.api,
     baseUrl: configured?.baseUrl ?? providerConfig?.baseUrl,
   };
   const prepared = findModelInCatalog(run.thinkingCatalog ?? [], provider, model);
-  if (prepared?.input !== undefined && modelTransportRoutesMatch(prepared, route)) {
-    return modelSupportsInput(prepared, "image");
+  const inputOwner =
+    configured?.input !== undefined
+      ? configured
+      : prepared?.input !== undefined && modelTransportRoutesMatch(prepared, route)
+        ? prepared
+        : undefined;
+  return {
+    route,
+    modelHasVision: inputOwner ? modelSupportsInput(inputOwner, "image") : undefined,
+  };
+}
+
+/** Resolve missing input only after the selected execution owner admitted auth. */
+export async function resolveRunModelHasVision(
+  params: Parameters<typeof prepareRunModelInput>[0],
+): Promise<boolean> {
+  const prepared = prepareRunModelInput(params);
+  if (prepared.modelHasVision !== undefined) {
+    return prepared.modelHasVision;
   }
+  const { run, provider, model } = params;
   const { loadProviderScopedThinkingCatalog } =
     await import("../../agents/model-catalog.runtime.js");
   const catalog = await loadProviderScopedThinkingCatalog({
@@ -105,7 +121,7 @@ export async function resolveRunModelHasVision(params: {
     agentId: run.agentId,
     agentDir: run.agentDir,
     workspaceDir: run.workspaceDir,
-    requiredInputRoute: route,
+    requiredInputRoute: prepared.route,
   });
   return modelSupportsInput(findModelInCatalog(catalog, provider, model), "image");
 }
@@ -174,7 +190,10 @@ export async function buildEmbeddedRunBaseParams(params: {
     skillLibraryAuthoring: params.run.skillLibraryAuthoring,
     provider: params.provider,
     model: params.model,
-    modelHasVision: await resolveRunModelHasVision(params),
+    modelHasVision: prepareRunModelInput(params).modelHasVision,
+    deferModelInput: true,
+    modelInputCatalog: params.run.thinkingCatalog,
+    deferredReplyModelLevels: params.run.deferredReplyModelLevels,
     requestedRouteResolution: "resolved" as const,
     modelSelectionLocked: params.run.modelSelectionLocked,
     modelFallbackAvailability,

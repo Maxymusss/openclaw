@@ -17,7 +17,6 @@ import {
   type PreparedAgentRuntimeAuthAttempt,
 } from "../../runtime-plan/prepare-auth.js";
 import type { AgentRuntimeAuthPlan } from "../../runtime-plan/types.js";
-import { resolveCandidateThinkingLevel } from "../../thinking-runtime.js";
 import { log } from "../logger.js";
 import {
   createEmbeddedRunStageTracker,
@@ -206,6 +205,11 @@ export async function prepareEmbeddedRunRuntime(input: {
     selectHarnessForPreparedAttempts,
     markStage: (stage) => authStages?.mark(stage),
   });
+  // Metadata may await discovery after the early missing-profile admission. Keep
+  // its reply outcome behind the same current credential plan as an actual attempt.
+  if (modelSetup.modelLevelReply) {
+    return { kind: "reply" as const, reply: modelSetup.modelLevelReply };
+  }
   const {
     attemptAuthProfileStore,
     lockedProfileId,
@@ -223,35 +227,27 @@ export async function prepareEmbeddedRunRuntime(input: {
   const forwardedPluginHarnessProfileId = pluginHarnessOwnsTransport
     ? activePreparedAuthPlan.forwardedAuthProfileId
     : undefined;
-  const requestedThinkLevel = resolveInitialThinkLevel({
+  const initialThinkLevel = resolveInitialThinkLevel({
     requested: params.thinkLevel,
     config: params.config,
     agentId: params.agentId,
     provider,
     modelId,
     model: models.effective,
+    clampToModel: modelSelectionChangedByHook || Boolean(params.deferredReplyModelLevels),
+    agentRuntime: agentHarness.id,
+    sessionKey: params.sessionKey,
   });
-  const initialThinkLevel = modelSelectionChangedByHook
-    ? (resolveCandidateThinkingLevel({
-        cfg: params.config,
-        provider,
-        modelId,
-        level: requestedThinkLevel,
-        catalog: [
-          {
-            provider,
-            id: modelId,
-            api: models.effective.api,
-            reasoning: models.effective.reasoning,
-            params: models.effective.params,
-            compat: models.effective.compat,
-          },
-        ],
-        agentId: params.agentId,
-        sessionKey: params.sessionKey,
-        agentRuntime: agentHarness.id,
-      }) ?? requestedThinkLevel)
-    : requestedThinkLevel;
+  if (params.onReplyModelLevelsResolved) {
+    params.onReplyModelLevelsResolved({
+      provider,
+      model: modelId,
+      thinkLevel: initialThinkLevel,
+      originalThinkLevel: modelSetup.replyOriginalThinkLevel,
+      reasoningLevel: params.reasoningLevel,
+      thinkingCatalog: modelSetup.replyThinkingCatalog,
+    });
+  }
   const attemptedThinking = new Set<ThinkLevel>();
   const authState: EmbeddedRunAuthState = {
     models,
@@ -524,6 +520,7 @@ export async function prepareEmbeddedRunRuntime(input: {
     params.forceMessageTool = mode === "message_tool_only";
   }
   return {
+    kind: "ready" as const,
     admittedRunContext,
     provider,
     modelId,

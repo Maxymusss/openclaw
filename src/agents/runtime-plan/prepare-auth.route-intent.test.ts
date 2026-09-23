@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
+import { createApiKeyCredential } from "../auth-profiles/credential-fixtures.test-support.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { createModelAuthAvailabilityResolver } from "../model-auth-availability.js";
-import { prepareAgentRuntimeAuth } from "./prepare-auth.js";
+import { prepareAgentRuntimeAuth, prepareSelectedAgentRuntimeAuthProfile } from "./prepare-auth.js";
+import { prepareAgentRuntimeAuthPlan } from "./prepare-auth.test-support.js";
 
 describe("prepared primary route inheritance", () => {
   it.each([
@@ -168,5 +171,67 @@ describe("explicit authentication before inherited billing intent", () => {
         authRequirement: available.selectedRoute?.authRequirement,
       },
     }).toEqual({ preparation: expected, availability: expected });
+  });
+});
+
+describe("selected profile admission before route materialization", () => {
+  it("keeps a materialized model endpoint on its own credential provider", () => {
+    const config: OpenClawConfig = {
+      models: {
+        providers: {
+          arcee: { baseUrl: "https://openrouter.ai/api/v1", models: [] },
+        },
+      },
+    };
+    const metadataSnapshot = createPluginMetadataSnapshotFixture({
+      plugins: [
+        {
+          id: "arcee",
+          providers: ["arcee"],
+          providerAuthAliases: {
+            arcee: { provider: "openrouter", baseUrls: ["https://openrouter.ai/api/v1"] },
+          },
+        },
+      ],
+    });
+    // Before materialization, only absence is authoritative; the configured alias
+    // cannot reject a present credential for the eventual direct endpoint.
+    expect(() =>
+      prepareSelectedAgentRuntimeAuthProfile({
+        provider: "arcee",
+        modelId: "trinity-large-thinking",
+        config,
+        metadataSnapshot,
+        env: {},
+        sessionAuthProfileId: "arcee:direct",
+        sessionAuthProfileSource: "user",
+        authProfileStore: {
+          version: 1,
+          profiles: {
+            "arcee:direct": createApiKeyCredential("arcee", "direct-model-key"),
+          },
+        },
+      }),
+    ).not.toThrow();
+    const plan = prepareAgentRuntimeAuthPlan({
+      provider: "arcee",
+      modelId: "trinity-large-thinking",
+      modelApi: "openai-completions",
+      modelBaseUrl: "https://api.arcee.ai/api/v1",
+      config,
+      metadataSnapshot,
+      env: {},
+      authProfileStore: {
+        version: 1,
+        profiles: {
+          "arcee:direct": createApiKeyCredential("arcee", "direct-model-key"),
+          "openrouter:routed": createApiKeyCredential("openrouter", "router-model-key"),
+        },
+      },
+    });
+
+    expect(plan.providerForAuth).toBe("arcee");
+    expect(plan.forwardedAuthProfileId).toBe("arcee:direct");
+    expect(config.models?.providers?.arcee?.baseUrl).toBe("https://openrouter.ai/api/v1");
   });
 });

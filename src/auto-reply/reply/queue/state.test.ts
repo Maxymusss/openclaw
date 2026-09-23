@@ -1,5 +1,8 @@
 // Tests queue state storage, dedupe, and cleanup primitives.
 import { afterEach, describe, expect, it } from "vitest";
+import { createModelSelectionStateFixture } from "../model-selection.test-support.js";
+import { createReplyModelLevelResolver } from "../reply-model-levels.js";
+import { resolveFollowupDeliveryContextKey } from "./delivery-context.js";
 import { enqueueFollowupRun } from "./enqueue.js";
 import {
   clearFollowupQueue,
@@ -35,6 +38,58 @@ function makeRun(): FollowupRun["run"] {
 }
 
 describe("refreshQueuedFollowupSession", () => {
+  it("retargets deferred metadata and keeps original overrides distinct in collected turns", () => {
+    const run = makeRun();
+    const modelState = createModelSelectionStateFixture({
+      provider: run.provider,
+      model: run.model,
+      agentCfg: undefined,
+    });
+    run.deferredReplyModelLevels = createReplyModelLevelResolver({
+      modelState,
+      selection: {
+        provider: run.provider,
+        model: run.model,
+        thinkingExplicit: false,
+        reasoningLevel: "off",
+        reasoningExplicit: false,
+      },
+    }).defer();
+    const queued: FollowupRun = { prompt: "high keep this prompt", enqueuedAt: 1, run };
+    const key = resolveFollowupDeliveryContextKey(queued);
+    expect(
+      resolveFollowupDeliveryContextKey({
+        ...queued,
+        run: {
+          ...run,
+          deferredReplyModelLevels: {
+            ...run.deferredReplyModelLevels,
+            selection: { ...run.deferredReplyModelLevels.selection, thinkingExplicit: true },
+          },
+        },
+      }),
+    ).not.toBe(key);
+    getFollowupQueue(QUEUE_KEY, { mode: "followup" }).items.push(queued);
+    const catalog = [{ provider: "openai", id: "gpt-5.6-sol", name: "Sol", reasoning: true }];
+    refreshQueuedFollowupSession({
+      key: QUEUE_KEY,
+      nextProvider: "openai",
+      nextModel: "gpt-5.6-sol",
+      nextThinking: { level: "medium", catalog, agentRuntime: "openclaw" },
+    });
+    expect(run.deferredReplyModelLevels).toMatchObject({
+      selection: {
+        provider: "openai",
+        model: "gpt-5.6-sol",
+        thinkLevel: "medium",
+        agentRuntime: "openclaw",
+      },
+      thinking: { provider: "openai", model: "gpt-5.6-sol", catalog, allowedModelCatalog: catalog },
+      explicitThink: false,
+    });
+    expect(queued.prompt).toBe("high keep this prompt");
+  });
+
   it("retargets queued runs to the persisted selection", () => {
     const queue = getFollowupQueue(QUEUE_KEY, { mode: "followup" });
     const lastRun = makeRun();

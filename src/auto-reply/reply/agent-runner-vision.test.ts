@@ -8,9 +8,13 @@ import type { ModelCatalogEntry } from "../../agents/model-catalog.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { WorkerTunnelHandle } from "../../gateway/worker-environments/tunnel-contract.js";
 import { prepareWorkerTurnMedia } from "../../gateway/worker-environments/worker-turn-media.js";
+import { prepareWorkerTurnModelMetadata } from "../../gateway/worker-environments/worker-turn-payload.js";
 import type { Model } from "../../llm/types.js";
+import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { buildEmbeddedRunBaseParams } from "./agent-runner-run-params.js";
+import { createModelSelectionStateFixture } from "./model-selection.test-support.js";
 import type { FollowupRun } from "./queue.js";
+import { createReplyModelLevelResolver } from "./reply-model-levels.js";
 
 const { loadScopedCatalog } = vi.hoisted(() => ({
   loadScopedCatalog: vi.fn<() => Promise<ModelCatalogEntry[]>>(),
@@ -28,6 +32,96 @@ afterEach(async () => {
 });
 
 describe("ordinary reply model capability at cloud media admission", () => {
+  it.each([false, true])(
+    "admits the worker's selected profile before metadata (missing=%s)",
+    async (missing) => {
+      const state = await createOpenClawTestState({ label: "worker-model-admission" });
+      try {
+        await state.writeAuthProfiles({
+          version: 1,
+          profiles: {
+            "acme:A": { type: "api_key", provider: "acme", key: "fixture-A" },
+            ...(!missing
+              ? { "acme:B": { type: "api_key" as const, provider: "acme", key: "fixture-B" } }
+              : {}),
+          },
+        });
+        const deferred = createReplyModelLevelResolver({
+          modelState: createModelSelectionStateFixture({
+            provider: "acme",
+            model: "primary",
+            agentCfg: { thinkingDefault: "high" },
+          }),
+          selection: {
+            provider: "acme",
+            model: "primary",
+            thinkingExplicit: false,
+            reasoningLevel: "off",
+            reasoningExplicit: true,
+          },
+        }).defer();
+        const produced = await buildEmbeddedRunBaseParams({
+          run: {
+            agentId: "main",
+            agentDir: state.agentDir(),
+            workspaceDir: state.workspaceDir,
+            config: {},
+            provider: "acme",
+            model: "primary",
+            sessionId: "worker-model-admission",
+            sessionFile: "worker-model-admission",
+            timeoutMs: 5000,
+            blockReplyBreak: "text_end",
+            deferredReplyModelLevels: deferred,
+          },
+          provider: "acme",
+          model: "primary",
+          runId: "worker-model-admission",
+          authProfile: { authProfileId: "acme:B", authProfileIdSource: "user" },
+        });
+        const turn = {
+          ...produced,
+          agentId: "main",
+          sessionId: "worker-model-admission",
+          prompt: "unchanged",
+        };
+        loadScopedCatalog.mockResolvedValue([
+          {
+            provider: "acme",
+            id: "primary",
+            name: "Primary",
+            reasoning: true,
+            input: ["text", "image"],
+          },
+        ]);
+        const assertCurrent = vi.fn();
+        const preparing = prepareWorkerTurnModelMetadata({
+          turn,
+          modelRef: { provider: "acme", model: "primary" },
+          assertCurrent,
+        });
+        if (missing) {
+          await expect(preparing).rejects.toMatchObject({
+            code: "selected_auth_profile_unavailable",
+            profileId: "acme:B",
+          });
+          expect(loadScopedCatalog).not.toHaveBeenCalled();
+        } else {
+          await expect(preparing).resolves.toBeUndefined();
+          expect(turn).toMatchObject({
+            modelHasVision: true,
+            thinkLevel: "high",
+            prompt: "unchanged",
+          });
+          expect(loadScopedCatalog).toHaveBeenCalledOnce();
+          expect(assertCurrent).toHaveBeenCalled();
+        }
+      } finally {
+        await state.cleanup();
+      }
+    },
+  );
+
   it.each([
     { name: "prepared vision", input: vision, selected: "primary", expected: true },
     { name: "thinking off", input: vision, selected: "primary", expected: true, thinkOff: true },
@@ -110,6 +204,17 @@ describe("ordinary reply model capability at cloud media admission", () => {
         runId: "vision-run",
         authProfile: {},
       });
+      expect(loadScopedCatalog).not.toHaveBeenCalled();
+      const workerTurn = {
+        ...produced,
+        sessionId: run.sessionId,
+        prompt: "Read the codes in order without tools.",
+      };
+      await prepareWorkerTurnModelMetadata({
+        turn: workerTurn,
+        modelRef: { provider: "acme", model: testCase.selected },
+        assertCurrent: () => {},
+      });
       const images = [
         createSolidPngBuffer(2, 2, { r: 255, g: 0, b: 0 }),
         createSolidPngBuffer(2, 2, { r: 0, g: 0, b: 255 }),
@@ -143,9 +248,7 @@ describe("ordinary reply model capability at cloud media admission", () => {
       };
       const prepared = await prepareWorkerTurnMedia({
         turn: {
-          ...produced,
-          sessionId: run.sessionId,
-          prompt: "Read the codes in order without tools.",
+          ...workerTurn,
           images,
         },
         history: [],
