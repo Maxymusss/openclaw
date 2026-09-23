@@ -11,9 +11,12 @@ function input() {
     captureUiProof: "false",
     ciShape: "default",
     compatibilityTarget: "false",
+    diffBaseSha: "c".repeat(40),
+    diffHeadSha: "d".repeat(40),
     event: "workflow_dispatch",
     historicalTargetTag: "",
     includeAndroid: "false",
+    laneSelection: { preflight: true, "checks-ui": false },
     nodeRunnerBackend: "blacksmith",
     nodeVersion: "24.19.0",
     releaseCandidateRef: "",
@@ -41,6 +44,8 @@ describe("CI lane receipt", () => {
       runId: "123",
       schema: "openclaw.ci-lane-receipt/v1",
       contract: {
+        diffBaseSha: "c".repeat(40),
+        laneSelection: { preflight: true, "checks-ui": false },
         releaseScope: "full",
         targetSha: SHA,
         workflowSha: WORKFLOW_SHA,
@@ -71,8 +76,18 @@ describe("CI lane receipt", () => {
       { ciShape: "main" },
       { includeAndroid: "true" },
       { targetContextRef: "" },
+      { diffBaseSha: "e".repeat(40) },
+      { laneSelection: { preflight: true, "checks-ui": true } },
     ]) {
       expect(buildCiLaneReceipt({ ...input(), ...update }).contractSha256).not.toBe(baseline);
     }
+  });
+
+  it("preserves Unicode refs through an ASCII-safe reversible encoding", () => {
+    const receipt = buildCiLaneReceipt({ ...input(), workflowRef: "fix/café" });
+    const encoded = receipt.contract.workflowRef;
+    expect(encoded.encoding).toBe("utf8-base64url");
+    expect(Buffer.from(encoded.value, "base64url").toString("utf8")).toBe("fix/café");
+    expect(canonicalAsciiJson(receipt)).not.toContain("café");
   });
 });

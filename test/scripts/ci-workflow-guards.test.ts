@@ -1318,12 +1318,17 @@ AFTER_CD
     expect(gate.steps[sealIndex]).toMatchObject({
       if: "github.event_name == 'workflow_dispatch'",
       env: {
+        DIFF_BASE_SHA: "${{ needs.preflight.outputs.diff_base_revision }}",
+        DIFF_HEAD_SHA: "${{ needs.preflight.outputs.diff_head_revision }}",
+        LANE_SELECTION_PATH: "${{ runner.temp }}/ci-lane-selection.json",
         RELEASE_SCOPE: "${{ needs.preflight.outputs.release_scope }}",
         TARGET_SHA: "${{ needs.preflight.outputs.checkout_revision }}",
+        WORKFLOW_SHA: "${{ github.workflow_sha }}",
       },
       run: "node scripts/ci-lane-receipt.mjs",
     });
     expect(gate.steps[uploadIndex].with).toMatchObject({
+      name: expect.stringContaining("${{ github.run_attempt }}"),
       "if-no-files-found": "error",
       "retention-days": 30,
     });

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { canonicalAsciiJson } from "./lib/canonical-json.mjs";
 
@@ -41,6 +41,30 @@ function booleanString(value, label) {
   return normalized;
 }
 
+function exactUtf8String(value, label, { allowEmpty = false } = {}) {
+  const normalized = allowEmpty ? String(value ?? "") : required(value, label);
+  return {
+    encoding: "utf8-base64url",
+    value: Buffer.from(normalized, "utf8").toString("base64url"),
+  };
+}
+
+function laneSelection(value) {
+  const selection = typeof value === "string" ? JSON.parse(value) : value;
+  if (
+    !selection ||
+    typeof selection !== "object" ||
+    Array.isArray(selection) ||
+    Object.keys(selection).length === 0 ||
+    Object.entries(selection).some(
+      ([name, selected]) => !/^[a-z0-9-]+$/u.test(name) || typeof selected !== "boolean",
+    )
+  ) {
+    throw new Error("lane selection must be a nonempty boolean object");
+  }
+  return selection;
+}
+
 function digest(value) {
   return `sha256:${createHash("sha256").update(canonicalAsciiJson(value)).digest("hex")}`;
 }
@@ -54,18 +78,27 @@ export function buildCiLaneReceipt(input) {
     captureUiProof: booleanString(input.captureUiProof, "capture UI proof"),
     ciShape: required(input.ciShape, "CI shape"),
     compatibilityTarget: booleanString(input.compatibilityTarget, "compatibility target"),
-    historicalTargetTag: String(input.historicalTargetTag ?? ""),
+    diffBaseSha: sha(input.diffBaseSha, "diff base SHA"),
+    diffHeadSha: sha(input.diffHeadSha, "diff head SHA"),
+    historicalTargetTag: exactUtf8String(input.historicalTargetTag, "historical target tag", {
+      allowEmpty: true,
+    }),
     includeAndroid: booleanString(input.includeAndroid, "include Android"),
+    laneSelection: laneSelection(input.laneSelection),
     nodeRunnerBackend: required(input.nodeRunnerBackend, "Node runner backend"),
     nodeVersion: required(input.nodeVersion, "Node version"),
-    releaseCandidateRef: String(input.releaseCandidateRef ?? ""),
+    releaseCandidateRef: exactUtf8String(input.releaseCandidateRef, "release candidate ref", {
+      allowEmpty: true,
+    }),
     releaseGate: booleanString(input.releaseGate, "release gate"),
     releaseScope,
     requestedRunnerBackend: required(input.requestedRunnerBackend, "requested runner backend"),
     runnerProfile: required(input.runnerProfile, "runner profile"),
     targetSha: sha(input.targetSha, "target SHA"),
-    targetContextRef: String(input.targetContextRef ?? ""),
-    workflowRef: required(input.workflowRef, "workflow ref"),
+    targetContextRef: exactUtf8String(input.targetContextRef, "target context ref", {
+      allowEmpty: true,
+    }),
+    workflowRef: exactUtf8String(input.workflowRef, "workflow ref"),
     workflowSha: sha(input.workflowSha, "workflow SHA"),
   };
   return {
@@ -86,9 +119,12 @@ export function ciLaneReceiptFromEnvironment(env = process.env) {
     captureUiProof: env.CAPTURE_UI_PROOF,
     ciShape: env.CI_SHAPE,
     compatibilityTarget: env.COMPATIBILITY_TARGET,
+    diffBaseSha: env.DIFF_BASE_SHA,
+    diffHeadSha: env.DIFF_HEAD_SHA,
     event: env.GITHUB_EVENT_NAME,
     historicalTargetTag: env.HISTORICAL_TARGET_TAG,
     includeAndroid: env.INCLUDE_ANDROID,
+    laneSelection: readFileSync(required(env.LANE_SELECTION_PATH, "lane selection path"), "utf8"),
     nodeRunnerBackend: env.NODE_RUNNER_BACKEND,
     nodeVersion: env.NODE_VERSION,
     releaseCandidateRef: env.RELEASE_CANDIDATE_REF,
@@ -103,7 +139,7 @@ export function ciLaneReceiptFromEnvironment(env = process.env) {
     targetSha: env.TARGET_SHA,
     targetContextRef: env.TARGET_CONTEXT_REF,
     workflowRef: env.GITHUB_REF_NAME,
-    workflowSha: env.GITHUB_SHA,
+    workflowSha: env.WORKFLOW_SHA,
   });
 }
 

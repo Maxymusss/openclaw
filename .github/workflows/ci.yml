@@ -6664,6 +6664,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: Verify selected CI lanes
+        id: verify_selected_ci_lanes
         shell: bash
         env:
           JOB_RESULTS: |
@@ -6703,6 +6704,7 @@ jobs:
           # Preserve raw fields: IFS splitting can erase malformed trailing
           # delimiters and turn invalid results or selection into accepted values.
           failures=0
+          lane_selection='{}'
           while IFS= read -r entry; do
             [[ -n "$entry" ]] || continue
             name="${entry%%=*}"
@@ -6710,6 +6712,12 @@ jobs:
             selected="${result#*|}"
             result="${result%%|*}"
             echo "${name}: ${result} (selected=${selected:-missing})"
+            if [[ "$selected" == "true" || "$selected" == "false" ]]; then
+              lane_selection="$(
+                jq -c --arg name "$name" --argjson selected "$selected" \
+                  '. + {($name): $selected}' <<< "$lane_selection"
+              )"
+            fi
             case "$selected:$result" in
               true:success | false:success | false:skipped) ;;
               *)
@@ -6719,13 +6727,15 @@ jobs:
             esac
           done <<< "$JOB_RESULTS"
 
+          printf '%s\n' "$lane_selection" > "$RUNNER_TEMP/ci-lane-selection.json"
+
           exit "$failures"
 
       - name: Checkout CI lane receipt tooling
         if: github.event_name == 'workflow_dispatch'
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ github.workflow_sha }}
           sparse-checkout: |
             scripts/ci-lane-receipt.mjs
             scripts/lib/canonical-json.mjs
@@ -6741,8 +6751,11 @@ jobs:
           CAPTURE_UI_PROOF: ${{ inputs.capture_ui_proof && 'true' || 'false' }}
           CI_SHAPE: ${{ inputs.ci_shape || 'default' }}
           COMPATIBILITY_TARGET: ${{ needs.preflight.outputs.compatibility_target }}
+          DIFF_BASE_SHA: ${{ needs.preflight.outputs.diff_base_revision }}
+          DIFF_HEAD_SHA: ${{ needs.preflight.outputs.diff_head_revision }}
           HISTORICAL_TARGET_TAG: ${{ inputs.historical_target_tag || '' }}
           INCLUDE_ANDROID: ${{ inputs.include_android && 'true' || 'false' }}
+          LANE_SELECTION_PATH: ${{ runner.temp }}/ci-lane-selection.json
           NODE_RUNNER_BACKEND: ${{ needs.preflight.outputs.node_runner_backend }}
           RELEASE_CANDIDATE_REF: ${{ inputs.release_candidate_ref || '' }}
           RELEASE_GATE: ${{ inputs.release_gate && 'true' || 'false' }}
@@ -6751,13 +6764,14 @@ jobs:
           RUNNER_PROFILE: ${{ needs.preflight.outputs.runner_profile }}
           TARGET_SHA: ${{ needs.preflight.outputs.checkout_revision }}
           TARGET_CONTEXT_REF: ${{ inputs.target_context_ref || '' }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: node scripts/ci-lane-receipt.mjs
 
       - name: Upload exact-SHA CI lane receipt
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: normal-ci-lane-receipt-${{ needs.preflight.outputs.checkout_revision }}-${{ github.sha }}-${{ needs.preflight.outputs.release_scope }}-${{ github.run_id }}
+          name: normal-ci-lane-receipt-${{ needs.preflight.outputs.checkout_revision }}-${{ github.workflow_sha }}-${{ needs.preflight.outputs.release_scope }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/ci-lane-receipt/receipt.json
           if-no-files-found: error
           retention-days: 30
