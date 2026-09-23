@@ -85,10 +85,26 @@ on that same head took 420 seconds on Intel 8-vCPU Spot versus 324 on Blacksmith
 a 29.6% regression; the candidate switches that row to AMD while preserving its
 two-worker ceiling. The matching update-CLI row took 732 versus 524 seconds
 (39.7% slower), concentrated in `src/cli/update-cli.test.ts`, with nearly unchanged
-CPU work. Its existing Blacksmith allocation preserves the row's measured worker
-and memory policy; the advertised 8-class supplies only two CPUs and cannot
-preserve that admission. No storage or fixture timeout workaround is added.
-Both revised routes still require native verification at their new head.
+CPU work. Blacksmith used Node 24.19.0 while AWS used 24.21.0, so this observation
+does not isolate a hardware cause. Its existing Blacksmith allocation preserves
+the row's measured worker and memory policy; the advertised 8-class supplies
+only two CPUs and cannot preserve that admission. No storage or fixture timeout
+workaround is added. Both revised routes still require native verification at
+their new head.
+
+The subsequent [hybrid main control](https://github.com/openclaw/openclaw/actions/runs/35828387224)
+at `1b460535d579` failed in 22m14s, using 476 Blacksmith machine-minutes / $23.7893.
+Its preflight and final gate waited 220 and 232 seconds for assignment. The
+remaining 14m42s is arithmetic, not a passing or projected workflow result.
+Type errors and two fixture failures prevent using this run as final acceptance;
+comparisons after those repairs require a fresh shared head.
+
+All 63 decoded Node/UI group jobs in that control used Node 24.19.0. The updated
+packing placed the retained update test in a two-child row with two workers each,
+eight observed CPUs and 30.95 GiB, completing in 352 seconds. The existing
+24-GiB overlapping-child admission floor excludes the smaller Blacksmith class
+for that row. This newer execution contract supersedes the earlier serial-row
+description without establishing an AWS performance ratio for the new packing.
 
 All eight Control UI rows passed on Intel Spot, with identical per-shard file
 inventories and complete-job times 1–10% shorter than their earlier Blacksmith
