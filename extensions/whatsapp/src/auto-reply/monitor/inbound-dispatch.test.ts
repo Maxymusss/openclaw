@@ -4,6 +4,7 @@ import {
 } from "openclaw/plugin-sdk/channel-inbound";
 import {
   addTestHook,
+  createChannelTurnTestMocks,
   createEmptyPluginRegistry,
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
@@ -17,48 +18,16 @@ import { createTestWebInboundMessage } from "../../inbound/test-message.test-hel
 import { loadWebMedia } from "../../media.js";
 import { deliverWebReply } from "../deliver-reply.js";
 
+type ChannelTurnTestMocks = Awaited<ReturnType<typeof createChannelTurnTestMocks>>;
+type CapturedDispatchParams = Parameters<ChannelTurnTestMocks["dispatchAgentReplyMock"]>[0];
+type CapturedReplyPayload = Parameters<CapturedDispatchParams["dispatcherOptions"]["deliver"]>[0];
+
 let capturedDispatchParams: unknown;
+let channelTurnTestMocks: ChannelTurnTestMocks | undefined;
+let dispatchAgentReplyMock: ChannelTurnTestMocks["dispatchAgentReplyMock"];
+let deliverInboundReplyWithMessageSendContextMock: ChannelTurnTestMocks["deliverInboundReplyWithMessageSendContextMock"];
 
-type CapturedReplyPayload = {
-  text?: string;
-  isReasoning?: boolean;
-  isCompactionNotice?: boolean;
-  isError?: boolean;
-  mediaUrl?: string;
-  mediaUrls?: string[];
-  replyToId?: string | null;
-};
-
-type CapturedDispatchParams = {
-  ctx?: unknown;
-  dispatcherOptions?: {
-    deliver?: (
-      payload: CapturedReplyPayload,
-      info: { kind: "tool" | "block" | "final" },
-    ) => Promise<unknown>;
-    onError?: (err: unknown, info: { kind: "tool" | "block" | "final" }) => Promise<void> | void;
-    onSettled?: () => unknown;
-  };
-  replyOptions?: {
-    disableBlockStreaming?: boolean;
-    sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
-    suppressTyping?: boolean;
-  };
-};
-
-const {
-  dispatchAgentReplyMock,
-  deliverInboundReplyWithMessageSendContextMock,
-  readAgentRunTerminalOutcomeMock,
-  sourceReplyDeliveryModeContexts,
-} = vi.hoisted(() => ({
-  dispatchAgentReplyMock: vi.fn(async (params: CapturedDispatchParams) => {
-    capturedDispatchParams = params;
-    return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
-  }),
-  deliverInboundReplyWithMessageSendContextMock: vi.fn<(...args: unknown[]) => Promise<unknown>>(
-    async () => null,
-  ),
+const { readAgentRunTerminalOutcomeMock, sourceReplyDeliveryModeContexts } = vi.hoisted(() => ({
   readAgentRunTerminalOutcomeMock: vi.fn(),
   sourceReplyDeliveryModeContexts: [] as unknown[],
 }));
@@ -81,26 +50,6 @@ vi.mock("openclaw/plugin-sdk/channel-outbound", async (importOriginal) => {
       sourceReplyDeliveryModeContexts.push(params.ctx);
       return actual.resolveChannelMessageSourceReplyDeliveryMode(params);
     },
-  };
-});
-
-// Replace I/O and agent generation at their owners; keep core turn delivery and hooks real.
-vi.mock("../../../../../src/auto-reply/dispatch.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../../../src/auto-reply/dispatch.js")>();
-  return { ...actual, dispatchInboundMessageWithRoutedChannelDispatcher: dispatchAgentReplyMock };
-});
-
-vi.mock("../../../../../src/channels/session.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../../../../src/channels/session.js")>();
-  return { ...actual, recordInboundSession: vi.fn(async () => undefined) };
-});
-
-vi.mock("../../../../../src/channels/turn/durable-delivery.js", async (importOriginal) => {
-  const actual =
-    await importOriginal<typeof import("../../../../../src/channels/turn/durable-delivery.js")>();
-  return {
-    ...actual,
-    deliverInboundReplyWithMessageSendContextCore: deliverInboundReplyWithMessageSendContextMock,
   };
 });
 
@@ -624,16 +573,27 @@ async function dispatchDeferredMediaReplacement(
 }
 
 afterEach(() => {
-  resetGlobalHookRunner();
+  try {
+    channelTurnTestMocks?.restore();
+  } finally {
+    channelTurnTestMocks = undefined;
+    resetGlobalHookRunner();
+  }
 });
 
 describe("whatsapp inbound dispatch", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     capturedDispatchParams = undefined;
     sourceReplyDeliveryModeContexts.length = 0;
-    dispatchAgentReplyMock.mockClear();
+    channelTurnTestMocks = await createChannelTurnTestMocks();
+    ({ dispatchAgentReplyMock, deliverInboundReplyWithMessageSendContextMock } =
+      channelTurnTestMocks);
+    channelTurnTestMocks.recordInboundSessionMock.mockResolvedValue(undefined);
+    dispatchAgentReplyMock.mockImplementation(async (params: CapturedDispatchParams) => {
+      capturedDispatchParams = params;
+      return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+    });
     readAgentRunTerminalOutcomeMock.mockReset().mockReturnValue(undefined);
-    deliverInboundReplyWithMessageSendContextMock.mockReset();
     deliverInboundReplyWithMessageSendContextMock.mockResolvedValue({
       status: "unsupported",
       reason: "missing_outbound_handler",
@@ -1257,7 +1217,8 @@ describe("whatsapp inbound dispatch", () => {
     },
     {
       name: "preserves explicit null reply targets",
-      payload: { text: "final payload", replyToId: null },
+      // Exercise an untyped caller's explicit null reply target.
+      payload: { text: "final payload", replyToId: null as never },
       expectedReplyToId: null,
     },
   ] satisfies Array<{
@@ -1495,7 +1456,20 @@ describe("whatsapp inbound dispatch", () => {
           error: settlementError,
         }),
       );
-      await onSettled?.();
+      try {
+        await onSettled?.();
+      } catch (flushError) {
+        // The coalescer leaves rejected payloads unmarked. Core's later error
+        // observer separately records the earlier visible reply for the turn.
+        expect(error).not.toHaveProperty("sentBeforeError");
+        expect(error).not.toHaveProperty("visibleReplySent");
+        const third = await thirdSettlement;
+        if (third.status === "rejected") {
+          expect(third.error).not.toHaveProperty("sentBeforeError");
+          expect(third.error).not.toHaveProperty("visibleReplySent");
+        }
+        throw flushError;
+      }
       return {
         queuedFinal: false,
         counts: { tool: 3, block: 0, final: 0 },
@@ -1507,21 +1481,23 @@ describe("whatsapp inbound dispatch", () => {
       visibleReplySent: true,
       cause: error,
     });
-    expect(error).not.toHaveProperty("sentBeforeError");
-    expect(error).not.toHaveProperty("visibleReplySent");
+    expect(error).toMatchObject({ sentBeforeError: true, visibleReplySent: true });
     await expect(firstSettlement!).resolves.toMatchObject({
       status: "resolved",
       value: { visibleReplySent: true },
     });
-    await expect(secondSettlement!).resolves.toEqual({ status: "rejected", error });
+    const second = await secondSettlement!;
+    expect(second.status).toBe("rejected");
+    if (second.status === "rejected") {
+      expect(second.error).toBe(error);
+    }
     const third = await thirdSettlement!;
     expect(third).toMatchObject({
       status: "rejected",
-      error: { cause: error },
+      error: { message: "deferred WhatsApp media delivery was not attempted" },
     });
     if (third.status === "rejected") {
-      expect(third.error).not.toHaveProperty("sentBeforeError");
-      expect(third.error).not.toHaveProperty("visibleReplySent");
+      expect((third.error as Error).cause).toBe(error);
     }
     expect(deliverReply).toHaveBeenCalledTimes(2);
   });
