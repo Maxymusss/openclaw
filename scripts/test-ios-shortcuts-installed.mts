@@ -21,17 +21,24 @@ import {
   installedExplicitCases,
 } from "./lib/installed-shortcuts-matrix.mts";
 import { hasUnjoinedWork, runManagedCommand } from "./lib/managed-child-process.mts";
+import { nativeUIPhases, type NativeUIKind } from "./lib/installed-native-ui-contract.mts";
 
 const proofCondition = "OPENCLAW_INSTALLED_NATIVE_ACTION_PROOF";
 const selectedTest = "InstalledShortcutsUITests/testInstalledAutomaticRunOpeningPreservesOrigin";
 const hash = (value: string | Uint8Array) => createHash("sha256").update(value).digest("hex");
 
 const diagnosticTailBytes = 64 * 1024;
-type InstalledCommandState = { phases: string[]; joinedCommands: number; unjoinedWork: boolean };
+type InstalledCommandState = {
+  phases: string[];
+  nativePhases?: Record<NativeUIKind, string[]>;
+  joinedCommands: number;
+  unjoinedWork: boolean;
+};
 type InstalledCommandOptions = {
   timeoutMs?: number;
   capture?: boolean;
   ui?: boolean;
+  nativeUI?: NativeUIKind;
   env?: NodeJS.ProcessEnv;
 };
 export type InstalledCommandDiagnostic = {
@@ -68,8 +75,18 @@ export function createInstalledCommandRunner(
 ) {
   const phases = ["onboarded", ...installedAutomaticCases, ...installedExplicitCases, "complete"];
   let commands = 0;
+  const attemptedNative = new Set<NativeUIKind>();
   return async (bin: string, args: string[], options: InstalledCommandOptions = {}) => {
     assert(++commands <= 64, "Installed command inventory exceeded its bound");
+    assert(!(options.ui && options.nativeUI), "UI proof inventories must remain separate");
+    const nativeExpected = options.nativeUI ? nativeUIPhases(options.nativeUI) : undefined;
+    const nativeObserved = options.nativeUI
+      ? (state.nativePhases ??= { phone: [], tablet: [] })[options.nativeUI] : undefined;
+    if (options.nativeUI) {
+      assert(!attemptedNative.has(options.nativeUI), "Native UI selector was already invoked");
+      attemptedNative.add(options.nativeUI);
+      assert.equal(nativeObserved!.length, 0, "Native UI selector already has evidence");
+    }
     const abort = new AbortController();
     const stdout = createBoundedChildOutput(diagnosticTailBytes);
     const stderr = createBoundedChildOutput(diagnosticTailBytes);
@@ -100,14 +117,27 @@ export function createInstalledCommandRunner(
               child.stdout?.on("data", (bytes: Buffer) => {
                 stdoutBytes += bytes.length;
                 stdout.append(bytes);
-                if (!options.capture && !options.ui) {
+                if (!options.capture && !options.ui && !options.nativeUI) {
                   return;
                 }
                 output += bytes.toString();
-                if (options.ui) {
+                if (options.ui || options.nativeUI) {
                   const lines = output.split("\n");
                   output = lines.pop() ?? "";
                   for (const line of lines) {
+                    if (options.nativeUI) {
+                      const trimmed = line.trim();
+                      if (!trimmed.startsWith("[ios-native-ui]")) continue;
+                      const native = trimmed.match(/^\[ios-native-ui\] phase=([a-z:-]+)$/);
+                      if (!native || native[1] !== nativeExpected![nativeObserved!.length]) {
+                        invalidPhase = true;
+                        abort.abort();
+                      } else {
+                        nativeObserved!.push(native[1]!);
+                        process.stdout.write(trimmed + "\n");
+                      }
+                      continue;
+                    }
                     const match = line
                       .trim()
                       .match(/^\[ios-shortcuts-installed\] phase=([a-z-]+)$/);
@@ -134,6 +164,10 @@ export function createInstalledCommandRunner(
             !overflow && !invalidPhase && exitCode === 0,
             "Installed command failed during " + phase() + ": exit " + exitCode,
           );
+          if (options.nativeUI) {
+            assert(!output.includes("[ios-native-ui]"), "Unterminated native UI protocol row");
+            assert.deepEqual(nativeObserved, nativeExpected, "Native UI inventory incomplete");
+          }
           return output.trim();
         } catch (error) {
           failure = error;

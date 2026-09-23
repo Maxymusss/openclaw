@@ -5,6 +5,10 @@ import { PassThrough } from "node:stream";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { runManagedCommand } from "../../scripts/lib/managed-child-process.mts";
 import {
+  assertNativeUIForward, assertNativeUITestResult, nativeUIPhases, nativeUISelectors,
+  readNativeUIObservation, type NativeUIKind,
+} from "../../scripts/lib/installed-native-ui-contract.mts";
+import {
   createInstalledCommandRunner,
   type InstalledCommandDiagnostic,
 } from "../../scripts/test-ios-shortcuts-installed.mts";
@@ -521,5 +525,109 @@ describe("installed command failure custody", () => {
     expect(dependentCleanup).not.toHaveBeenCalled();
     expect(records[0]).toMatchObject({ exitCode: null, unjoinedWork: true });
     expect(records[0]!.error).toContain("descendant still alive");
+  });
+
+  it.each(["phone", "tablet"] as const)("keeps %s phase ownership separate from the original Shortcuts cases", async (kind) => {
+    vi.mocked(runManagedCommand).mockImplementationOnce(async (options) => {
+      const stdout = new PassThrough();
+      options.onReady?.({ stdout, stderr: new PassThrough() } as unknown as ChildProcess);
+      stdout.end(nativeUIPhases(kind).map((phase) => "[ios-native-ui] phase=" + phase + "\n").join(""));
+      return 0;
+    });
+    const { command, state } = runner();
+    await command("xcodebuild", ["test-without-building"], { nativeUI: kind });
+    expect(state.phases).toEqual([]);
+    expect(state).toMatchObject({ nativePhases: { [kind]: nativeUIPhases(kind) }, joinedCommands: 1 });
+    await expect(command("xcodebuild", [], { nativeUI: kind })).rejects.toThrow("already invoked");
+    expect(runManagedCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["missing", "truncated", "extra", "duplicate", "reordered", "malformed"])("refuses %s native phases after joining the command", async (mode) => {
+    const phases = nativeUIPhases("phone");
+    if (mode === "missing") phases.splice(2, 1);
+    if (mode === "truncated") phases.pop();
+    if (mode === "extra") phases.push("extra");
+    if (mode === "duplicate") phases.splice(2, 0, phases[1]!);
+    if (mode === "reordered") [phases[1], phases[2]] = [phases[2]!, phases[1]!];
+    if (mode === "malformed") phases[2] = "not/a/phase";
+    let aborted = false;
+    vi.mocked(runManagedCommand).mockImplementationOnce(async (options) => {
+      options.signal?.addEventListener("abort", () => { aborted = true; });
+      const stdout = new PassThrough();
+      options.onReady?.({ stdout, stderr: new PassThrough() } as unknown as ChildProcess);
+      stdout.end(phases.map((phase) => "[ios-native-ui] phase=" + phase + "\n").join(""));
+      return 0;
+    });
+    const { command, state } = runner();
+    await expect(command("xcodebuild", [], { nativeUI: "phone" })).rejects.toThrow();
+    expect(aborted).toBe(mode !== "truncated");
+    expect(state.joinedCommands).toBe(1);
+    expect(state.phases).toEqual([]);
+  });
+
+
+  it("latches a native selector attempt even when the child emits no phase", async () => {
+    vi.mocked(runManagedCommand).mockResolvedValueOnce(0);
+    const { command, state } = runner();
+    await expect(command("xcodebuild", [], { nativeUI: "phone" })).rejects.toThrow("inventory incomplete");
+    expect(state).toMatchObject({ nativePhases: { phone: [] }, joinedCommands: 1 });
+    await expect(command("xcodebuild", [], { nativeUI: "phone" })).rejects.toThrow("already invoked");
+    expect(runManagedCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["[ios-native-ui] phase=complete", "[ios-native-ui] malformed"])("rejects an unterminated protocol residue: %s", async (residue) => {
+    vi.mocked(runManagedCommand).mockImplementationOnce(async (options) => {
+      const stdout = new PassThrough();
+      options.onReady?.({ stdout, stderr: new PassThrough() } as unknown as ChildProcess);
+      stdout.end(nativeUIPhases("tablet").map((phase) => "[ios-native-ui] phase=" + phase + "\n").join("") + residue);
+      return 0;
+    });
+    const { command, state } = runner();
+    await expect(command("xcodebuild", [], { nativeUI: "tablet" })).rejects.toThrow("Unterminated");
+    expect(state.joinedCommands).toBe(1);
+  });
+
+  it("keeps one global command cap across proof kinds", async () => {
+    vi.mocked(runManagedCommand).mockResolvedValue(0);
+    const { command } = runner();
+    for (let i = 0; i < 64; i += 1) await command("fixture", []);
+    await expect(command("xcodebuild", [], { nativeUI: "tablet" })).rejects.toThrow("inventory exceeded");
+    expect(runManagedCommand).toHaveBeenCalledTimes(64);
+  });
+
+});
+
+
+describe("native UI result and passive observation admission", () => {
+  const before = {
+    forwardingEntries: 0, forwardingCompletions: 0, forwardingKind: "none",
+    forwardingOutcome: "none", forwardingOverflow: false, forwardingMisattributed: false,
+    idleUnprotectedComposer: true,
+  };
+  const after = { ...before, forwardingEntries: 1, forwardingCompletions: 1,
+    forwardingKind: "session", forwardingOutcome: "opened" };
+  it("requires the actual forwarding completion and retains only bounded scalar facts", () => {
+    expect(() => assertNativeUIForward(readNativeUIObservation(before), readNativeUIObservation(after), "session", "opened")).not.toThrow();
+    expect(readNativeUIObservation({ ...after, extra: "private value" })).not.toHaveProperty("extra");
+    for (const patch of [{ forwardingEntries: 2 }, { forwardingCompletions: 0 },
+      { forwardingKind: "compose" }, { forwardingOutcome: "cancelled" }]) {
+      expect(() => assertNativeUIForward(readNativeUIObservation(before), readNativeUIObservation({ ...after, ...patch }), "session", "opened")).toThrow();
+    }
+    for (const patch of [{ forwardingOverflow: true }, { forwardingMisattributed: true },
+      { forwardingEntries: 256 }, { forwardingEntries: -1 }, { forwardingCompletions: 1.5 },
+      { forwardingKind: "arbitrary" }, { forwardingKind: ["session"] },
+      { forwardingOutcome: "arbitrary" }, { forwardingOutcome: ["opened"] }, { idleUnprotectedComposer: "true" }]) {
+      expect(() => readNativeUIObservation({ ...after, ...patch })).toThrow();
+    }
+  });
+  it.each(["phone", "tablet"] as const)("requires exactly one passed result for the fixed %s selector", (kind: NativeUIKind) => {
+    const test = { nodeType: "Test Case", nodeIdentifier: "OpenClawUITests/" + nativeUISelectors[kind] + "()", result: "Passed" };
+    expect(() => assertNativeUITestResult({ testNodes: [{ nodeType: "Test Suite", children: [test] }] }, kind)).not.toThrow();
+    for (const nodes of [[], [test, test], [{ ...test, result: "Skipped" }],
+      [{ ...test, nodeIdentifier: nativeUISelectors[kind === "phone" ? "tablet" : "phone"] }],
+      [{ ...test, nodeIdentifier: [test.nodeIdentifier] }],
+      [{ ...test, nodeIdentifier: "OtherBundle/" + nativeUISelectors[kind] }]]) {
+      expect(() => assertNativeUITestResult({ testNodes: nodes }, kind)).toThrow();
+    }
   });
 });
