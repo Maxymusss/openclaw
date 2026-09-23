@@ -5,6 +5,8 @@ import { isPathInside } from "../../infra/path-guards.js";
 import { splitSandboxBindSpec } from "./bind-spec.js";
 import {
   execContainer,
+  readNativeSandboxEngineEnvironment,
+  readNativeSandboxEngineTarget,
   PODMAN_SANDBOX_ENGINE,
   type SandboxContainerEngine,
   type SandboxContainerEngineTarget,
@@ -75,11 +77,14 @@ function assertPodmanVersionAtLeast(
   );
 }
 
-async function isPodmanMachineConnection(params: {
-  selectedName: string;
-  uri: string;
-  identity: string;
-}): Promise<boolean> {
+async function isPodmanMachineConnection(
+  params: {
+    selectedName: string;
+    uri: string;
+    identity: string;
+  },
+  engine: SandboxContainerEngine,
+): Promise<boolean> {
   let uri: URL;
   try {
     uri = new URL(params.uri);
@@ -93,14 +98,10 @@ async function isPodmanMachineConnection(params: {
   if (uri.protocol !== "ssh:" || !loopback || !uri.port || !uri.username) {
     return false;
   }
-  const result = await execContainer(
-    PODMAN_SANDBOX_ENGINE,
-    ["machine", "list", "--format", "json"],
-    {
-      allowFailure: true,
-      signal: AbortSignal.timeout(SANDBOX_ENGINE_PROBE_TIMEOUT_MS),
-    },
-  );
+  const result = await execContainer(engine, ["machine", "list", "--format", "json"], {
+    allowFailure: true,
+    signal: AbortSignal.timeout(SANDBOX_ENGINE_PROBE_TIMEOUT_MS),
+  });
   if (result.code !== 0) {
     return false;
   }
@@ -145,8 +146,8 @@ async function isPodmanMachineConnection(params: {
   });
 }
 
-async function podmanClientPrefersConnectionEnv(): Promise<boolean> {
-  const result = await execContainer(PODMAN_SANDBOX_ENGINE, ["--version"], {
+async function podmanClientPrefersConnectionEnv(engine: SandboxContainerEngine): Promise<boolean> {
+  const result = await execContainer(engine, ["--version"], {
     allowFailure: true,
     signal: AbortSignal.timeout(SANDBOX_ENGINE_PROBE_TIMEOUT_MS),
   });
@@ -161,18 +162,17 @@ async function podmanClientPrefersConnectionEnv(): Promise<boolean> {
   return Number(match[1]) > 4 || (Number(match[1]) === 4 && Number(match[2]) >= 8);
 }
 
-async function assertSupportedPodmanConnection(remoteSocketPath: string): Promise<{
+async function assertSupportedPodmanConnection(
+  remoteSocketPath: string,
+  engine: SandboxContainerEngine,
+): Promise<{
   machine: boolean;
   target: SandboxContainerEngineTarget;
 }> {
-  const result = await execContainer(
-    PODMAN_SANDBOX_ENGINE,
-    ["system", "connection", "list", "--format", "json"],
-    {
-      allowFailure: true,
-      signal: AbortSignal.timeout(SANDBOX_ENGINE_PROBE_TIMEOUT_MS),
-    },
-  );
+  const result = await execContainer(engine, ["system", "connection", "list", "--format", "json"], {
+    allowFailure: true,
+    signal: AbortSignal.timeout(SANDBOX_ENGINE_PROBE_TIMEOUT_MS),
+  });
   if (result.code !== 0) {
     const detail = result.stderr.trim() || result.stdout.trim() || `exit ${result.code}`;
     throw new Error(`Failed to inspect the active Podman connection: ${detail}`);
@@ -188,13 +188,14 @@ async function assertSupportedPodmanConnection(remoteSocketPath: string): Promis
         (entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null,
       )
     : [];
-  const configuredUri = process.env.CONTAINER_HOST;
-  const configuredName = process.env.CONTAINER_CONNECTION ?? "";
+  const env = readNativeSandboxEngineEnvironment(engine) ?? process.env;
+  const configuredUri = env.CONTAINER_HOST;
+  const configuredName = env.CONTAINER_CONNECTION ?? "";
   let useHost = Boolean(configuredUri) && !configuredName;
   // Before 4.8, HOST presence wins even when empty. Newer clients prefer a
   // nonempty CONNECTION. Probe only differing cases; info reports the server version.
   if (configuredUri !== undefined && (configuredUri === "" || Boolean(configuredName))) {
-    useHost = (await podmanClientPrefersConnectionEnv()) ? useHost : true;
+    useHost = (await podmanClientPrefersConnectionEnv(engine)) ? useHost : true;
   }
   // An explicit HOST does not inherit a saved connection's name or credentials.
   const selected = useHost
@@ -224,14 +225,17 @@ async function assertSupportedPodmanConnection(remoteSocketPath: string): Promis
   if (selectedUri && !selectedUri.startsWith("unix://")) {
     const identity =
       (typeof selected?.Identity === "string" ? selected.Identity : "") ||
-      process.env.CONTAINER_SSHKEY ||
+      env.CONTAINER_SSHKEY ||
       "";
     if (
-      await isPodmanMachineConnection({
-        selectedName: typeof selected?.Name === "string" ? selected.Name : "",
-        uri: selectedUri,
-        identity,
-      })
+      await isPodmanMachineConnection(
+        {
+          selectedName: typeof selected?.Name === "string" ? selected.Name : "",
+          uri: selectedUri,
+          identity,
+        },
+        engine,
+      )
     ) {
       return {
         machine: true,
@@ -253,8 +257,15 @@ async function assertSupportedPodmanConnection(remoteSocketPath: string): Promis
 }
 
 export async function resolvePodmanSandboxRuntimeInfo(): Promise<PodmanSandboxRuntimeInfo> {
+  return await resolvePodmanSandboxRuntimeInfoInternal(PODMAN_SANDBOX_ENGINE);
+}
+
+/** Private native probes retain the captured executable, environment and endpoint. */
+export async function resolvePodmanSandboxRuntimeInfoInternal(
+  engine: SandboxContainerEngine,
+): Promise<PodmanSandboxRuntimeInfo> {
   const result = await execContainer(
-    PODMAN_SANDBOX_ENGINE,
+    engine,
     [
       "info",
       "--format",
@@ -273,9 +284,12 @@ export async function resolvePodmanSandboxRuntimeInfo(): Promise<PodmanSandboxRu
     .trim()
     .split("\t", 4);
   let machine = false;
-  let target: SandboxContainerEngineTarget = { key: "local", globalArgs: [] };
-  if (serviceIsRemote === "true") {
-    ({ machine, target } = await assertSupportedPodmanConnection(remoteSocketPath));
+  let target: SandboxContainerEngineTarget = readNativeSandboxEngineTarget(engine) ?? {
+    key: "local",
+    globalArgs: [],
+  };
+  if (serviceIsRemote === "true" && !readNativeSandboxEngineTarget(engine)) {
+    ({ machine, target } = await assertSupportedPodmanConnection(remoteSocketPath, engine));
   }
   return { machine, rootless: rootless === "true", target, version };
 }
@@ -287,7 +301,9 @@ export async function validateSandboxContainerEngineTarget(
   if (engine.id === "podman") {
     // Podman resolves its active connection for every invocation. Validate once
     // at the start of each lifecycle sequence so context changes cannot reuse stale approval.
-    const runtimeInfo = await resolvePodmanSandboxRuntimeInfo();
+    const runtimeInfo = readNativeSandboxEngineEnvironment(engine)
+      ? await resolvePodmanSandboxRuntimeInfoInternal(engine)
+      : await resolvePodmanSandboxRuntimeInfo();
     assertPodmanSandboxTarget(expectedTarget, runtimeInfo.target);
   }
 }

@@ -206,3 +206,29 @@ it("records uncertain cleanup and refuses permission replacement while staff ref
     staff.admission.close();
   }
 });
+
+it("initiates staff cleanup before synchronously constructing the next generation", async () => {
+  const released = createDeferred();
+  const order: string[] = [];
+  const factory = vi
+    .spyOn(codingTools, "createOpenClawCodingToolsInternal")
+    .mockImplementation((options) => {
+      order.push("construct");
+      options?.registerRunCleanup?.(() => {
+        order.push("cleanup");
+        return released.promise;
+      });
+      return [];
+    });
+  const owner = await prepare(false);
+  try {
+    order.length = 0;
+    expect(owner.tools.refreshPermissionMode("full", () => {})).toBeUndefined();
+    expect(order).toEqual(["cleanup", "construct"]);
+    expect(factory).toHaveBeenCalledTimes(2);
+  } finally {
+    released.resolve();
+    await Promise.all(owner.tools.runCleanups.map((run) => run("cancel")));
+    owner.admission.close();
+  }
+});

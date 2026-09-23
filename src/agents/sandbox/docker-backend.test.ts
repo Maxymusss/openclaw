@@ -233,6 +233,7 @@ describe("docker sandbox backend manager", () => {
 
     expect(dockerMocks.ensureSandboxContainer).toHaveBeenCalledWith(
       expect.objectContaining({ scopeKey, readOnlyResourceMounts }),
+      undefined,
     );
   });
 
@@ -492,6 +493,7 @@ describe("docker sandbox backend manager", () => {
 
     expect(dockerMocks.ensureSandboxContainer).toHaveBeenCalledWith(
       expect.objectContaining({ podmanTarget }),
+      undefined,
     );
     expect(dockerMocks.execContainer).toHaveBeenCalledWith(
       expect.objectContaining({ id: "podman", globalArgs: podmanTarget.globalArgs }),

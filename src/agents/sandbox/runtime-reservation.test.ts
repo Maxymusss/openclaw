@@ -5,6 +5,7 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getProcessSupervisor } from "../../process/supervisor/index.js";
+import { defaultRuntime } from "../../runtime.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
@@ -145,6 +146,77 @@ async function seedLegacyRuntime() {
 }
 
 describe("durable sandbox runtime generations", () => {
+  it.each(["recreate", "prune"] as const)(
+    "retains marked runtime before actual %s dispatch",
+    async (operation) => {
+      const remove = install(async (params) => handle(params));
+      await resolve();
+      const current = await readRegistryEntry("reserved-1");
+      if (!current) {
+        throw new Error("missing reserved runtime");
+      }
+      await updateRegistry({ ...current, retirementPolicy: "foreground-owner" });
+      const before = await readRegistryEntry("reserved-1");
+      const logged = vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
+      if (operation === "prune") {
+        advancePruneTime();
+        await maybePruneSandboxes(withImmediatePrune(config));
+        expect(logged).toHaveBeenCalledWith(expect.stringContaining("custody retained"));
+      } else {
+        await expect(removeSandboxContainer("reserved-1")).rejects.toThrow("custody retained");
+      }
+      expect(remove).not.toHaveBeenCalled();
+      await expect(readRegistryEntry("reserved-1")).resolves.toEqual(before);
+    },
+  );
+
+  it("refuses a marked persisted reservation before a generic factory can retire it", async () => {
+    await seedLegacyRuntime();
+    const marked = await readRegistryEntry("legacy-runtime");
+    if (!marked) {
+      throw new Error("missing legacy fixture");
+    }
+    await updateRegistry({ ...marked, retirementPolicy: "foreground-owner" });
+    const factory = vi.fn(async (params: CreateSandboxBackendParams) => {
+      throw new SandboxRuntimeRetiredError(params.runtimeId ?? "missing");
+    });
+    install(factory);
+    const before = await readRegistryEntry(marked.containerName);
+    await expect(resolve()).rejects.toThrow("custody retained");
+    expect(factory).not.toHaveBeenCalled();
+    await expect(readRegistryEntry(marked.containerName)).resolves.toEqual(before);
+  });
+
+  it("does not delete a generation registered after an absent management snapshot", async () => {
+    const observed = createDeferred();
+    const release = createDeferred();
+    const snapshot = await readRegistry();
+    const remove = install(async (params) => handle(params));
+    vi.spyOn(registry, "readRegistry").mockImplementationOnce(async () => {
+      observed.resolve();
+      await release.promise;
+      return snapshot;
+    });
+    const removing = removeSandboxContainer("reserved-1");
+    try {
+      await observed.promise;
+      const context = await resolve();
+      expect(context?.runtimeId).toBe("reserved-1");
+      const published = await readRegistryEntry("reserved-1");
+      release.resolve();
+      await removing;
+      expect(remove).not.toHaveBeenCalled();
+      await expect(readRegistryEntry("reserved-1")).resolves.toEqual(published);
+      // A later request observing this actual custom generation still retires it.
+      await removeSandboxContainer("reserved-1");
+      expect(remove).toHaveBeenCalledOnce();
+      await expect(readRegistryEntry("reserved-1")).resolves.toBeNull();
+    } finally {
+      release.resolve();
+      await removing;
+    }
+  });
+
   it("replays a shared reservation from its original provider workspace", async () => {
     config.agents = {
       ...config.agents,

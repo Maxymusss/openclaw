@@ -6,6 +6,7 @@ import type { SandboxConfig } from "./types.js";
 
 const containerMocks = vi.hoisted(() => ({ execContainer: vi.fn() }));
 const registryMocks = vi.hoisted(() => ({
+  assertSandboxRuntimeRetirementAllowed: vi.fn(),
   readRegistryEntry: vi.fn(),
   removeRegistryEntry: vi.fn(),
   updateRegistry: vi.fn(),

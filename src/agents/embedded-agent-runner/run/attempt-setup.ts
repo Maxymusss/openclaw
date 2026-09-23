@@ -32,6 +32,7 @@ import { isHeartbeatLifecycleRunKind } from "../../bootstrap-mode.js";
 import { DEFAULT_CONTEXT_TOKENS } from "../../defaults.js";
 import type { EmbeddedContextFile } from "../../embedded-agent-helpers.js";
 import { resolveImageSanitizationLimits } from "../../image-sanitization.js";
+import type { NativeSandboxCustody } from "../../sandbox/container-engine.js";
 import type { SandboxContext } from "../../sandbox/types.js";
 import type { guardSessionManager } from "../../session-tool-result-guard-wrapper.js";
 import { sanitizeToolUseResultPairingForModel } from "../../session-transcript-repair.js";
@@ -76,7 +77,10 @@ type PreparedProviderRuntimePluginHandle = ProviderRuntimePluginHandle & {
 
 export type EmbeddedAttemptSetup = Awaited<ReturnType<typeof prepareEmbeddedAttemptSetup>>;
 
-export async function prepareEmbeddedAttemptSetup(params: EmbeddedRunAttemptParams) {
+export async function prepareEmbeddedAttemptSetup(
+  params: EmbeddedRunAttemptParams,
+  custody?: NativeSandboxCustody,
+) {
   // Ultra is a logical orchestration mode, not a provider effort. Preserve it for
   // prompt/status surfaces, then lower only at agent-core and provider boundaries.
   const agentCoreThinkingLevel = mapThinkingLevel(params.thinkLevel);
@@ -120,7 +124,7 @@ export async function prepareEmbeddedAttemptSetup(params: EmbeddedRunAttemptPara
     }
   };
 
-  const workspace = await resolveAttemptWorkspaceSandbox(params);
+  const workspace = await resolveAttemptWorkspaceSandbox(params, custody);
   const { effectiveWorkspace } = workspace;
 
   const getCurrentAttemptPluginMetadataSnapshot = (): PluginMetadataSnapshot | undefined =>

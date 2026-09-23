@@ -15,7 +15,14 @@ import type {
   SandboxBackendWorkdirResolver,
 } from "./backend.types.js";
 import {
+  captureNativeSandboxEngine,
+  DOCKER_SANDBOX_ENGINE,
+  PODMAN_SANDBOX_ENGINE,
+  type NativeSandboxCustody,
+} from "./container-engine.js";
+import {
   createDockerSandboxBackend,
+  createNativeContainerSandboxBackend,
   createPodmanSandboxBackend,
   dockerSandboxBackendManager,
   podmanSandboxBackendManager,
@@ -179,6 +186,39 @@ export function requireSandboxBackendFactory(id: string): SandboxBackendFactory 
   );
 }
 
+/** Capture the actual builtin registration, never an ID supplied by an override. */
+export function captureNativeSandboxBackend(
+  id: string,
+  custody: NativeSandboxCustody,
+): SandboxBackendFactory {
+  custody.assertCurrent();
+  const registration = resolveSandboxBackendRegistration(id);
+  const builtin = builtinSandboxBackends.get(normalizeSandboxBackendId(id));
+  if (
+    !registration ||
+    registration !== builtin ||
+    (registration.factory !== createDockerSandboxBackend &&
+      registration.factory !== createPodmanSandboxBackend)
+  ) {
+    throw new Error("Foreground sandbox setup requires the selected native builtin registration.");
+  }
+  const engine = captureNativeSandboxEngine(
+    registration.factory === createDockerSandboxBackend
+      ? DOCKER_SANDBOX_ENGINE
+      : PODMAN_SANDBOX_ENGINE,
+    custody,
+  );
+  let acquired = false;
+  return async (params) => {
+    custody.assertCurrent();
+    if (acquired) {
+      throw new Error("Native sandbox generation was already acquired.");
+    }
+    acquired = true;
+    return await createNativeContainerSandboxBackend(engine, params, custody);
+  };
+}
+
 /** Create and publish a backend, reserving provider IDs only for opted-in factories. */
 export async function createSandboxBackend(
   params: CreateSandboxBackendParams,
@@ -226,14 +266,14 @@ export async function createSandboxBackend(
           ) {
             throw new Error("Sandbox backend returned a runtime outside its reserved generation.");
           }
-          completeSandboxRegistryReservation(toEntry(backend));
+          completeSandboxRegistryReservation(reservation, toEntry(backend));
           return backend;
         } catch (error) {
           if (
             error instanceof SandboxRuntimeRetiredError &&
             error.runtimeId === reservation.containerName
           ) {
-            completeSandboxRegistryReservation(reservation, true);
+            completeSandboxRegistryReservation(reservation);
           }
           throw error;
         }

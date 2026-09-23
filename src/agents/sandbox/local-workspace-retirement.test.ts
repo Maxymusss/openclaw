@@ -1,12 +1,16 @@
 import { createServer } from "node:http";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import * as bridgeApi from "../../plugin-sdk/browser-bridge.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
 import { BROWSER_BRIDGES, type CachedBrowserBridge } from "./browser-bridges.js";
 import * as engine from "./container-engine.js";
+import { dockerSandboxBackendManager } from "./docker-backend.js";
 import { quiesceLocalWorkspace } from "./local-workspace-quiescence.js";
+import { removeSandboxRuntimeGeneration } from "./manage.js";
+import * as podmanRuntime from "./podman-runtime.js";
 import * as registry from "./registry.js";
 
 const dirs = useAutoCleanupTempDirTracker(afterEach);
@@ -235,3 +239,109 @@ it.each(["container", "browser"] as const)(
     expect(await h.rows()).toEqual([]);
   },
 );
+
+it.each(["manager", "workspace"] as const)(
+  "refuses marked ownership before the %s makes any engine request",
+  async (route) => {
+    await registry.updateRegistry({ ...entry, retirementPolicy: "foreground-owner" });
+    const command = vi
+      .spyOn(engine, "execContainer")
+      .mockRejectedValue(new Error("unexpected engine effect"));
+    const captured = await registry.readRegistryEntry(entry.containerName);
+    if (!captured) {
+      throw new Error("missing protected owner");
+    }
+    if (route === "manager") {
+      await expect(
+        dockerSandboxBackendManager.removeRuntime({ entry: captured, config: {} }),
+      ).rejects.toThrow("custody retained");
+    } else {
+      await expect(
+        quiesceLocalWorkspace({
+          workspaceDir: entry.workspaceDir,
+          retained: [],
+          persist: vi.fn(),
+          assertCurrent: () => {},
+        }),
+      ).rejects.toThrow("custody retained");
+      await expect(
+        removeSandboxRuntimeGeneration({
+          runtime: { kind: "container", entry: captured },
+          engine: engine.DOCKER_SANDBOX_ENGINE,
+          id: oldId,
+          bridges: [],
+          assertCurrent: () => {},
+        }),
+      ).rejects.toThrow("custody retained");
+    }
+    expect(command).not.toHaveBeenCalled();
+    await expect(registry.readRegistryEntry(entry.containerName)).resolves.toEqual(captured);
+  },
+);
+
+it.each(["manager", "workspace", "direct retirement"] as const)(
+  "rechecks fresh policy after awaited target validation in %s",
+  async (route) => {
+    await registry.updateRegistry(entry);
+    const captured = await registry.readRegistryEntry(entry.containerName);
+    if (!captured) {
+      throw new Error("missing ordinary owner");
+    }
+    const entered = createDeferred();
+    const finish = createDeferred();
+    const command = vi
+      .spyOn(engine, "execContainer")
+      .mockRejectedValue(new Error("unexpected engine effect"));
+    vi.spyOn(podmanRuntime, "validateSandboxContainerEngineTarget").mockImplementationOnce(
+      async () => {
+        entered.resolve();
+        await finish.promise;
+      },
+    );
+    const pending =
+      route === "manager"
+        ? dockerSandboxBackendManager.removeRuntime({ entry: captured, config: {} })
+        : route === "workspace"
+          ? quiesceLocalWorkspace({
+              workspaceDir: entry.workspaceDir,
+              retained: [],
+              persist: vi.fn(),
+              assertCurrent: () => {},
+            })
+          : removeSandboxRuntimeGeneration({
+              runtime: { kind: "container", entry: captured },
+              engine: engine.DOCKER_SANDBOX_ENGINE,
+              id: oldId,
+              bridges: [],
+              assertCurrent: () => {},
+            });
+    const rejected = expect(pending).rejects.toThrow(/custody retained|generation changed/);
+    try {
+      await entered.promise;
+      await registry.updateRegistry({ ...captured, retirementPolicy: "foreground-owner" });
+      const protectedOwner = await registry.readRegistryEntry(entry.containerName);
+      finish.resolve();
+      await rejected;
+      expect(command).not.toHaveBeenCalled();
+      await expect(registry.readRegistryEntry(entry.containerName)).resolves.toEqual(
+        protectedOwner,
+      );
+    } finally {
+      finish.resolve();
+      await Promise.allSettled([pending, rejected]);
+    }
+  },
+);
+
+it("refuses retirement after workspace inspection acquires a new private owner", async () => {
+  const h = await setup("container", false);
+  const captured = await registry.readRegistryEntry(entry.containerName);
+  if (!captured) {
+    throw new Error("missing inspected runtime");
+  }
+  await registry.updateRegistry({ ...captured, retirementPolicy: "foreground-owner" });
+  h.command.mockClear();
+  await expect(h.custody.retire()).rejects.toThrow(/generation changed|custody retained/);
+  expect(h.command).not.toHaveBeenCalled();
+  expect(h.physical.has(oldId)).toBe(true);
+});

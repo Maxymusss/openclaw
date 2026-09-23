@@ -7,6 +7,7 @@ import {
   validateSandboxContainerEngineTarget,
 } from "./docker.js";
 import {
+  assertSandboxRuntimeRetirementAllowed,
   readRegistry,
   readBrowserRegistry,
   assertSandboxRegistryEntryCurrent,
@@ -82,6 +83,12 @@ export async function quiesceLocalWorkspace(params: {
   const retirements: Array<() => Promise<void>> = [];
   for (const { runtime, bridges } of selected) {
     const { entry } = runtime;
+    const assertRetirementAllowed = () => {
+      if (runtime.kind === "container") {
+        assertSandboxRuntimeRetirementAllowed(runtime.entry);
+      }
+    };
+    assertRetirementAllowed();
     const backendId = runtime.kind === "browser" ? "docker" : runtime.entry.backendId;
     const backendTarget = runtime.kind === "container" ? runtime.entry.backendTarget : undefined;
     if (backendId !== "docker" && backendId !== "podman") {
@@ -110,6 +117,7 @@ export async function quiesceLocalWorkspace(params: {
     await validateSandboxContainerEngineTarget(engine, backendTarget);
     params.assertCurrent();
     runtime.assertCurrent();
+    assertRetirementAllowed();
     const inspect = await execContainer(
       engine,
       ["inspect", "-f", "{{.Id}} {{.State.Running}} {{.State.Paused}}", entry.containerName],
@@ -161,8 +169,10 @@ export async function quiesceLocalWorkspace(params: {
       await execContainer(engine, ["pause", id]);
     }
     releases.push(async () => {
+      assertRetirementAllowed();
       await validateSandboxContainerEngineTarget(engine, backendTarget);
       params.assertCurrent();
+      assertRetirementAllowed();
       // Archive may have removed this exact generation while settlement held it.
       // A missing or already-running runtime needs receipt cleanup, not unpause.
       const observed = await execContainer(engine, ["inspect", "-f", "{{.State.Paused}}", id], {

@@ -24,9 +24,14 @@ import {
   resolveSubagentSessionAttachmentRootDir,
   SANDBOX_SUBAGENT_ATTACHMENTS_MOUNT,
 } from "../subagents/subagent-attachment-paths.js";
-import { createSandboxBackend, getSandboxBackendWorkdirResolver } from "./backend.js";
+import {
+  captureNativeSandboxBackend,
+  createSandboxBackend,
+  getSandboxBackendWorkdirResolver,
+} from "./backend.js";
 import { ensureSandboxBrowser } from "./browser.js";
 import { resolveSandboxConfigForAgent } from "./config.js";
+import type { NativeSandboxCustody } from "./container-engine.js";
 import { resolveSandboxDockerUser } from "./docker-user.js";
 import { createSandboxFsBridge } from "./fs-bridge.js";
 import { hashTextSha256 } from "./hash.js";
@@ -312,12 +317,13 @@ async function prepareSandboxWorkspaceSelection(
 async function resolveProvisionedSandboxContext(
   params: ResolveSandboxContextParams,
   resolved: ResolvedSandboxSession,
+  nativeBackend?: ReturnType<typeof captureNativeSandboxBackend>,
 ): Promise<SandboxContext> {
   const { rawSessionKey, runtime, cfg, localWorkspace } = await prepareSandboxWorkspaceSelection(
     params,
     resolved,
   );
-  if (cfg.prune.idleHours !== 0 || cfg.prune.maxAgeDays !== 0) {
+  if (!nativeBackend && (cfg.prune.idleHours !== 0 || cfg.prune.maxAgeDays !== 0)) {
     await (await import("./prune.js")).maybePruneSandboxes();
   }
 
@@ -377,7 +383,7 @@ async function resolveProvisionedSandboxContext(
     scopeKey,
   });
   const provisionBackend = () =>
-    createSandboxBackend({
+    (nativeBackend ?? createSandboxBackend)({
       sessionKey: rawSessionKey,
       scopeKey,
       ...(registeredRuntimeIds.length > 0 ? { registeredRuntimeIds } : {}),
@@ -495,6 +501,14 @@ export async function resolveSandboxContext(params: {
   skillsSnapshot?: SkillSnapshot;
   workspaceDir?: string;
 }): Promise<SandboxContext | null> {
+  return await resolveSandboxContextInternal(params);
+}
+
+/** Private attempt custody follows the same resolver without entering SDK params. */
+export async function resolveSandboxContextInternal(
+  params: ResolveSandboxContextParams,
+  custody?: NativeSandboxCustody,
+): Promise<SandboxContext | null> {
   const resolved = resolveSandboxSession(params);
   if (!resolved) {
     return null;
@@ -503,8 +517,17 @@ export async function resolveSandboxContext(params: {
   // provisioning. Preserve that owner boundary across backend, browser,
   // registry, and filesystem-bridge setup so model fallback never retries it.
   try {
+    custody?.assertCurrent();
+    if (custody && resolved.cfg.browser.enabled) {
+      throw new Error("Foreground sandbox browser setup requires separately qualified custody.");
+    }
+    const nativeBackend = custody
+      ? captureNativeSandboxBackend(resolved.cfg.backend, custody)
+      : undefined;
     assertSandboxSessionSecretOwnerAvailable(params.config, resolved);
-    return await resolveProvisionedSandboxContext(params, resolved);
+    const context = await resolveProvisionedSandboxContext(params, resolved, nativeBackend);
+    custody?.assertCurrent();
+    return context;
   } catch (error) {
     throw toSandboxProvisioningError(error, resolved.cfg.backend);
   }

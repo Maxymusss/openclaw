@@ -23,7 +23,10 @@ import type { Model } from "../../../llm/types.js";
 import { makeEmptyPluginMetadataOwners } from "../../../plugins/current-plugin-metadata.test-support.js";
 import type { PluginMetadataSnapshot } from "../../../plugins/plugin-metadata-snapshot.js";
 import { createLazyPromise } from "../../../shared/lazy-runtime.js";
-import { prepareSystemAgentRunAdmission } from "../../admitted-run-context.js";
+import {
+  prepareSystemAgentRunAdmission,
+  type AdmittedRunOperatorAuthority,
+} from "../../admitted-run-context.js";
 import type { EmbeddedContextFile } from "../../embedded-agent-helpers.js";
 import type { Agent, AgentMessage, StreamFn } from "../../runtime/index.js";
 import { agentSessionSetContextReplacementHook } from "../../sessions/agent-session-compaction.js";
@@ -371,6 +374,10 @@ vi.mock("../../subagents/spawn/subagent-spawn.js", () => ({
 
 vi.mock("../../sandbox.js", () => ({
   resolveSandboxContext: (...args: unknown[]) => hoisted.resolveSandboxContextMock(...args),
+}));
+
+vi.mock("../../sandbox/context.js", () => ({
+  resolveSandboxContextInternal: (...args: unknown[]) => hoisted.resolveSandboxContextMock(...args),
 }));
 
 vi.mock("../../session-tool-result-guard-wrapper.js", () => ({
@@ -904,21 +911,6 @@ type SessionPromptOverride = (
   options?: { images?: unknown[]; preflightResult?: (submitted: boolean) => void },
 ) => Promise<void>;
 
-type TestAgentStream = {
-  result: () => Promise<unknown>;
-  [Symbol.asyncIterator]: () => AsyncIterator<unknown>;
-};
-
-function createCompletedAssistantStream(): TestAgentStream {
-  return {
-    async result() {
-      return { role: "assistant", content: "done" };
-    },
-    [Symbol.asyncIterator]() {
-      return (async function* () {})();
-    },
-  };
-}
 const ATTEMPT_SPAWN_WORKSPACE_TEST_SPECIFIER = "./attempt.ts?spawn-workspace-test";
 
 const loadRunEmbeddedAttempt = createLazyPromise(
@@ -1061,11 +1053,7 @@ export async function cleanupTempPaths(tempPaths: string[]) {
 
 export function createDefaultEmbeddedSession(params?: {
   initialMessages?: unknown[];
-  prompt?: (
-    session: MutableSession,
-    prompt: string,
-    options?: { images?: unknown[]; preflightResult?: (submitted: boolean) => void },
-  ) => Promise<void>;
+  prompt?: SessionPromptOverride;
 }): MutableSession {
   let activeToolNames: string[] = [];
   let promptPreparation: (() => Promise<void>) | undefined;
@@ -1106,7 +1094,14 @@ export function createDefaultEmbeddedSession(params?: {
           currentPrompt.options?.preflightResult?.(true);
           await params.prompt(session, currentPrompt.prompt, currentPrompt.options);
         }
-        return createCompletedAssistantStream();
+        return {
+          async result() {
+            return { role: "assistant", content: "done" };
+          },
+          [Symbol.asyncIterator]() {
+            return (async function* () {})();
+          },
+        };
       },
       reset: () => {
         session.messages = [];
@@ -1266,6 +1261,7 @@ export async function createContextEngineAttemptRunner(params: {
     info?: Partial<ContextEngineInfo>;
   };
   attemptOverrides?: Partial<Parameters<Awaited<ReturnType<typeof loadRunEmbeddedAttempt>>>[0]>;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   createSession?: () => EmbeddedAttemptSession;
   sessionMessages?: AgentMessage[];
   sessionMessagesAfterRepair?: AgentMessage[];
@@ -1383,6 +1379,8 @@ export async function createContextEngineAttemptRunner(params: {
       attempt.runId,
       attempt.agentId ?? "main",
       "embedded-attempt-test",
+      undefined,
+      params.operatorAuthority,
     );
     try {
       return await (

@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   browserCurrent: vi.fn(),
 }));
 vi.mock("./registry.js", () => ({
+  assertSandboxRuntimeRetirementAllowed: vi.fn(),
   readRegistry: mocks.read,
   readBrowserRegistry: mocks.browsers,
   assertSandboxRegistryEntryCurrent: mocks.current,

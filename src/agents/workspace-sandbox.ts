@@ -4,6 +4,8 @@ import { resolveAdmittedRunActiveAssertion } from "./admitted-run-context.js";
 import { resolveSessionAgentIds } from "./agent-scope.js";
 import type { EmbeddedRunAttemptParams } from "./embedded-agent-runner/run/types.js";
 import { resolveSandboxContext } from "./sandbox.js";
+import type { NativeSandboxCustody } from "./sandbox/container-engine.js";
+import { resolveSandboxContextInternal } from "./sandbox/context.js";
 import { resolveEffectiveToolFsWorkspaceOnly } from "./tool-fs-policy.js";
 
 export type WorkspaceSandboxParams = Pick<
@@ -59,7 +61,10 @@ export function resolveHarnessWorkspace(
 }
 
 /** Resolves the shared workspace and sandbox policy used by native and plugin harnesses. */
-export async function resolveAttemptWorkspaceSandbox(params: WorkspaceSandboxParams) {
+export async function resolveAttemptWorkspaceSandbox(
+  params: WorkspaceSandboxParams,
+  custody?: NativeSandboxCustody,
+) {
   const assertCurrent = params.admittedRunContext
     ? resolveAdmittedRunActiveAssertion(params.admittedRunContext)
     : undefined;
@@ -76,9 +81,13 @@ export async function resolveAttemptWorkspaceSandbox(params: WorkspaceSandboxPar
   await fs.mkdir(resolvedWorkspace, { recursive: true });
   const sessionKey = params.sessionKey?.trim() || params.sessionId;
   const sandboxSessionKey = params.sandboxSessionKey?.trim() || sessionKey;
+  const resolveSandbox = custody
+    ? (options: Parameters<typeof resolveSandboxContext>[0]) =>
+        resolveSandboxContextInternal(options, custody)
+    : resolveSandboxContext;
   const sandbox = params.placementSandbox
     ? null
-    : await resolveSandboxContext({
+    : await resolveSandbox({
         config: params.config,
         // Independent policy sessions keep their own owner; unscoped execution retains its prepared one.
         agentId:

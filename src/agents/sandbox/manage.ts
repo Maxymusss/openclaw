@@ -18,10 +18,10 @@ import {
   type SandboxContainerEngine,
 } from "./docker.js";
 import {
+  assertSandboxRuntimeRetirementAllowed,
   readBrowserRegistry,
   readRegistry,
   removeBrowserRegistryEntry,
-  removeRegistryEntry,
   removeSandboxRegistryRuntime,
   removeSandboxRegistryGeneration,
   type SandboxBrowserRegistryEntry,
@@ -119,6 +119,9 @@ export async function removeSandboxRuntimeGeneration(params: {
   const { runtime, engine, id } = params;
   const assertCurrent = () => {
     params.assertCurrent();
+    if (runtime.kind === "container") {
+      assertSandboxRuntimeRetirementAllowed(runtime.entry);
+    }
     if (
       runtime.kind === "browser" &&
       [...BROWSER_BRIDGES].some(
@@ -201,9 +204,9 @@ export async function removeSandboxContainer(containerName: string): Promise<voi
         }),
       { reserveRuntime: usesSandboxRuntimeReservations(backendId) },
     );
-    return;
   }
-  await removeRegistryEntry(containerName);
+  // The snapshot granted no custody. A concurrently registered generation
+  // must survive this earlier request, which observed no runtime to remove.
 }
 
 /** Removes one browser sandbox container, registry entry, and any in-process bridge server. */

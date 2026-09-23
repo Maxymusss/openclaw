@@ -4,6 +4,7 @@
  * Creates/reuses Docker containers and exposes backend-neutral exec and shell-command handles.
  */
 import { createContainerEnvFile } from "../../infra/container-env-file.js";
+import { CommandProcessCleanupError } from "../../process/exec-result.js";
 import type { SandboxBackendCommandParams } from "./backend-handle.types.js";
 import type {
   CreateSandboxBackendParams,
@@ -11,6 +12,13 @@ import type {
   SandboxBackendManager,
 } from "./backend.types.js";
 import { resolveSandboxConfigForAgent } from "./config.js";
+import {
+  bindNativeSandboxEngineTarget,
+  readNativeSandboxEngineEnvironment,
+  readNativeSandboxExecution,
+  readNativeSandboxEngineTarget,
+  type NativeSandboxCustody,
+} from "./container-engine.js";
 import {
   containerState,
   bindPodmanSandboxEngine,
@@ -22,11 +30,19 @@ import {
   resolvePodmanSandboxRuntimeInfo,
   type SandboxContainerEngine,
   type SandboxContainerEngineTarget,
+  type NativeSandboxContainerCustody,
   validateSandboxContainerEngineTarget,
 } from "./docker.js";
 import { resolveSandboxContainerOnlyMounts } from "./mount-plan.js";
+import { resolvePodmanSandboxRuntimeInfoInternal } from "./podman-runtime.js";
 import { createSandboxProcessCleanup } from "./process-cleanup.js";
-import type { SandboxRegistryEntry } from "./registry.js";
+import {
+  assertSandboxRegistryEntryCurrent,
+  assertSandboxRuntimeRetirementAllowed,
+  completeSandboxRegistryReservation,
+  withSandboxRegistryEntryLock,
+  type SandboxRegistryEntry,
+} from "./registry.js";
 
 type ContainerExecFinalizeToken = () => Promise<void>;
 
@@ -78,41 +94,131 @@ function resolveConfiguredDockerRuntimeImage(params: {
   }
 }
 
+/** Private producer: its generation owns the complete allocation, including late results. */
+export async function createNativeContainerSandboxBackend(
+  capturedEngine: SandboxContainerEngine,
+  params: CreateSandboxBackendParams,
+  custody: NativeSandboxCustody,
+): Promise<SandboxBackendHandle> {
+  const native: NativeSandboxContainerCustody = {
+    custody,
+    createAttempted: false,
+    startAttempted: false,
+  };
+  custody.registerCleanup(async () => {
+    const reservation = native.reservation;
+    if (!reservation) {
+      return;
+    }
+    if (native.createAttempted) {
+      // Captured selection and CLI completion do not establish immutable daemon
+      // identity or extinction. Neither started nor never-started allocation is certified.
+      throw new CommandProcessCleanupError({
+        cause: new Error(
+          native.startAttempted
+            ? "Native sandbox start was attempted; qualified extinction is required."
+            : "Native sandbox allocation was attempted; exact removal remains unconfirmed.",
+        ),
+      });
+    }
+    // No create dispatch occurred. Only this exact reservation can be forgotten;
+    // cleanup is independent of the now-revoked work authority and takes no engine action.
+    await withSandboxRegistryEntryLock(reservation, async () => {
+      completeSandboxRegistryReservation(reservation);
+    });
+  });
+  return await custody.runProducer(async () => {
+    if (params.cfg.browser.enabled) {
+      throw new Error(
+        "Foreground native sandbox setup cannot allocate a separate browser runtime.",
+      );
+    }
+    let target: SandboxContainerEngineTarget;
+    if (capturedEngine.id === "podman") {
+      target = (await resolvePodmanSandboxRuntimeInfoInternal(capturedEngine)).target;
+    } else {
+      const env = readNativeSandboxEngineEnvironment(capturedEngine);
+      if (!env?.DOCKER_HOST?.startsWith("unix:///") || env.DOCKER_CONTEXT) {
+        throw new Error(
+          "Foreground Docker setup requires an explicit Unix endpoint without a named context.",
+        );
+      }
+      target = { key: env.DOCKER_HOST, globalArgs: ["--host", env.DOCKER_HOST] };
+    }
+    const engine = bindNativeSandboxEngineTarget(capturedEngine, target);
+    const assertCurrent = () => {
+      custody.assertCurrent();
+      params.assertRuntimeCurrent?.();
+      if (native.reservation) {
+        assertSandboxRegistryEntryCurrent(native.reservation);
+      }
+    };
+    assertCurrent();
+    return await createContainerSandboxBackend(
+      engine,
+      {
+        ...params,
+        assertRuntimeCurrent: assertCurrent,
+      },
+      native,
+    );
+  });
+}
+
 async function createContainerSandboxBackend(
   engine: SandboxContainerEngine,
   params: CreateSandboxBackendParams,
+  native?: NativeSandboxContainerCustody,
 ): Promise<SandboxBackendHandle> {
   if (engine.id === "podman" && params.cfg.browser.enabled) {
     throw new Error(
       "Podman sandboxing does not support browser sandboxes. Install Docker and select the docker backend, or disable sandbox.browser.enabled.",
     );
   }
-  const podmanTarget =
-    engine.id === "podman" ? (await resolvePodmanSandboxRuntimeInfo()).target : undefined;
-  const boundEngine = podmanTarget ? bindPodmanSandboxEngine(podmanTarget) : engine;
-  const containerName = await ensureSandboxContainer({
-    engine: boundEngine,
-    ...(podmanTarget ? { podmanTarget } : {}),
-    scopeKey: params.scopeKey,
-    workspaceDir: params.workspaceDir,
-    workspaceSource: params.workspaceSource,
-    assertCurrent: params.assertRuntimeCurrent,
-    agentWorkspaceDir: params.agentWorkspaceDir,
-    skillsWorkspaceDir: params.skillsWorkspaceDir,
-    readOnlyResourceMounts: params.readOnlyResourceMounts,
-    cfg: params.cfg,
-    ...(params.requireCurrentConfig !== undefined
-      ? { requireCurrentConfig: params.requireCurrentConfig }
-      : {}),
-  });
-  params.assertRuntimeCurrent?.();
-  // Display names are reusable; execution and cleanup retain one exact generation.
-  const identity = await execContainer(
-    boundEngine,
-    ["inspect", "--format", "{{.Id}}", containerName],
-    { signal: AbortSignal.timeout(5_000) },
+  const podmanTarget = native
+    ? readNativeSandboxEngineTarget(engine)
+    : engine.id === "podman"
+      ? (await resolvePodmanSandboxRuntimeInfo()).target
+      : undefined;
+  const boundEngine = podmanTarget && !native ? bindPodmanSandboxEngine(podmanTarget) : engine;
+  const containerName = await ensureSandboxContainer(
+    {
+      engine: boundEngine,
+      ...(podmanTarget ? { podmanTarget } : {}),
+      scopeKey: params.scopeKey,
+      workspaceDir: params.workspaceDir,
+      workspaceSource: params.workspaceSource,
+      assertCurrent: params.assertRuntimeCurrent,
+      agentWorkspaceDir: params.agentWorkspaceDir,
+      skillsWorkspaceDir: params.skillsWorkspaceDir,
+      readOnlyResourceMounts: params.readOnlyResourceMounts,
+      cfg: params.cfg,
+      ...(params.requireCurrentConfig !== undefined
+        ? { requireCurrentConfig: params.requireCurrentConfig }
+        : {}),
+    },
+    native,
   );
-  const containerId = identity.stdout.trim();
+  const assertCurrent = () => {
+    params.assertRuntimeCurrent?.();
+    if (!native) {
+      assertSandboxRuntimeRetirementAllowed({ containerName });
+    }
+  };
+  assertCurrent();
+  // Display names are reusable; private custody keeps the original create receipt.
+  let containerId = native?.containerId;
+  if (!containerId) {
+    if (native) {
+      throw new Error("Native sandbox handle has no original allocation receipt.");
+    }
+    const identity = await execContainer(
+      boundEngine,
+      ["inspect", "--format", "{{.Id}}", containerName],
+      { signal: AbortSignal.timeout(5_000) },
+    );
+    containerId = identity.stdout.trim();
+  }
   if (!/^[a-f0-9]{64}$/u.test(containerId)) {
     throw new Error("Container inspect did not return an immutable container ID.");
   }
@@ -120,11 +226,11 @@ async function createContainerSandboxBackend(
   const containerOnlyMounts = await resolveSandboxContainerOnlyMounts({
     engine: boundEngine,
     containerName: containerId,
-    assertCurrent: params.assertRuntimeCurrent,
+    assertCurrent,
   });
-  params.assertRuntimeCurrent?.();
+  assertCurrent();
   const { createSandboxFsBridge } = await import("./fs-bridge.js");
-  params.assertRuntimeCurrent?.();
+  assertCurrent();
   const handle = createContainerSandboxBackendHandle({
     engine: boundEngine,
     containerName,
@@ -133,7 +239,7 @@ async function createContainerSandboxBackend(
     env: params.cfg.docker.env,
     image: params.cfg.docker.image,
     podmanTarget,
-    assertCurrent: params.assertRuntimeCurrent,
+    assertCurrent,
   });
   handle.createFsBridge = ({ sandbox }) => createSandboxFsBridge({ sandbox, containerOnlyMounts });
   return handle;
@@ -174,11 +280,15 @@ function createContainerSandboxBackendHandle(params: {
       readOnlyResourceMounts: true,
     },
     async buildExecSpec({ command, workdir, env, usePty }) {
+      params.assertCurrent?.();
       await validateSandboxContainerEngineTarget(params.engine, params.podmanTarget);
+      params.assertCurrent?.();
       const envFile = await createContainerEnvFile(resolveContainerExecEnv(env));
       try {
+        params.assertCurrent?.();
+        const nativeExecution = readNativeSandboxExecution(params.engine);
         const argv = [
-          params.engine.command,
+          nativeExecution?.executable ?? params.engine.command,
           ...(params.engine.globalArgs ?? []),
           ...buildContainerExecArgs({
             containerName: params.containerId,
@@ -191,7 +301,9 @@ function createContainerSandboxBackendHandle(params: {
         ];
         return {
           argv,
-          env: process.env,
+          env: nativeExecution?.env ?? process.env,
+          ...(nativeExecution ? { cwd: nativeExecution.cwd } : {}),
+          assertCurrent: params.assertCurrent,
           stdinMode: usePty ? "pipe-open" : "pipe-closed",
           finalizeToken: envFile.cleanup satisfies ContainerExecFinalizeToken,
         };
@@ -211,6 +323,11 @@ function createContainerSandboxBackendHandle(params: {
     },
     prepareProcessCleanup(env) {
       params.assertCurrent?.();
+      if (readNativeSandboxEngineTarget(params.engine)) {
+        // Token discovery and a CLI result do not certify container descendant
+        // extinction. Keep this private generation outside the unqualified path.
+        throw new Error("Native foreground sandbox process cleanup is not qualified.");
+      }
       const run = (command: SandboxBackendCommandParams, assertCurrent?: () => void) =>
         runContainerSandboxShellCommand({
           engine: params.engine,
@@ -377,9 +494,11 @@ function createContainerSandboxBackendManager(
       };
     },
     async removeRuntime({ entry }) {
+      assertSandboxRuntimeRetirementAllowed(entry);
       const podmanTarget = resolvePodmanTarget(entry);
       await validateSandboxContainerEngineTarget(engine, podmanTarget);
       const runtimeEngine = podmanTarget ? bindPodmanSandboxEngine(podmanTarget) : engine;
+      assertSandboxRuntimeRetirementAllowed(entry);
       const result = await execContainer(runtimeEngine, ["rm", "-f", entry.containerName], {
         allowFailure: true,
       });

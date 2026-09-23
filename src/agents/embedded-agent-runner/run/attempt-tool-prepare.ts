@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { SessionPermissionMode } from "../../../../packages/gateway-protocol/src/schema/sessions-row.js";
 import { messageToolOwnsVisibleReply } from "../../../auto-reply/source-reply-delivery-mode.js";
 import type { DiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
@@ -12,13 +11,11 @@ import { extractModelCompat } from "../../../plugins/provider-model-compat.js";
 import { getPluginToolMeta } from "../../../plugins/tool-metadata.js";
 import { isSubagentSessionKey } from "../../../routing/session-key.js";
 import type { NestedToolActivity } from "../../../sessions/nested-tool-activity.js";
-import { readAdmittedRunOperatorAuthority } from "../../admitted-run-context.js";
 import {
   createOpenClawCodingToolsInternal,
   resolveToolLoopDetectionConfig,
 } from "../../agent-tools.js";
 import { createSkillInstructionDeliveryCache } from "../../agent-tools.read.js";
-import { acquireExecScopeCleanup } from "../../bash-tools.exec-cleanup.js";
 import { getChannelAgentToolMeta } from "../../channel-tools.js";
 import { createCodeModePermissionChangeReason } from "../../code-mode-permission-change.js";
 import type { CodeModeSkill } from "../../code-mode-skills.js";
@@ -32,7 +29,6 @@ import {
 } from "../../local-model-lean.js";
 import { resolveModelAuthMode } from "../../model-auth.js";
 import { supportsModelTools } from "../../model-tool-support.js";
-import { recordAgentCleanupFailure } from "../../run-cleanup-timeout.js";
 import { resolveSessionPlacementComputer } from "../../session-placement-computer.js";
 import {
   resolveSessionPermissionExecMode,
@@ -56,6 +52,10 @@ import {
   mergeForcedEmbeddedAttemptToolsAllow,
   resolveEmbeddedAttemptToolConstructionPlan,
 } from "./attempt-tool-construction-plan.js";
+import {
+  createEmbeddedAttemptToolGenerationOwner,
+  type EmbeddedAttemptToolGenerationOwner,
+} from "./attempt-tool-generation.js";
 import { buildEmbeddedAttemptToolRunContext } from "./attempt-tool-run-context.js";
 import type { EmbeddedRunAttemptParams } from "./types.js";
 
@@ -65,6 +65,7 @@ type OpenClawCodingToolsOptions = NonNullable<
 type SkillUsagePaths = OpenClawCodingToolsOptions["skillUsagePaths"];
 
 export async function prepareEmbeddedAttemptToolBase(params: {
+  generationOwner?: EmbeddedAttemptToolGenerationOwner;
   agentDir: string;
   attempt: EmbeddedRunAttemptParams;
   setup: EmbeddedAttemptSetup;
@@ -80,8 +81,10 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor;
 }) {
   const { attempt } = params;
-  const operatorAuthority = readAdmittedRunOperatorAuthority(attempt.admittedRunContext);
-  const foregroundOnly = operatorAuthority?.executionPolicy === "foreground-only";
+  const generations =
+    params.generationOwner ??
+    createEmbeddedAttemptToolGenerationOwner(attempt, params.runAbortController.signal);
+  const { operatorAuthority, foregroundOnly } = generations;
   const requireExplicitMessageTarget =
     attempt.requireExplicitMessageTarget ?? isSubagentSessionKey(attempt.sessionKey);
   const forceDirectMessageTool = messageToolOwnsVisibleReply(attempt);
@@ -165,27 +168,6 @@ export async function prepareEmbeddedAttemptToolBase(params: {
   const cronCreatorToolAllowlistCaptureRef: CronToolsAllowCaptureRef = {};
   const inheritedToolAllowlist: string[] = [];
   const runCleanups: Array<(reason: string) => Promise<void>> = [];
-  const generationCleanups: Array<(reason: string) => Promise<void>> = [];
-  const retiringGenerations = new Set<Promise<void>>();
-  let retiredCleanupFailed = false;
-  let retiredCleanupError: unknown;
-  const retireToolGeneration = (reason: string) => {
-    const cleanups = generationCleanups.splice(0);
-    const settled = Promise.allSettled(cleanups.map(async (cleanup) => await cleanup(reason))).then(
-      (results) => {
-        const failure = results.find((result) => result.status === "rejected");
-        if (failure) {
-          if (!retiredCleanupFailed) {
-            retiredCleanupError = failure.reason;
-          }
-          retiredCleanupFailed = true;
-        }
-      },
-    );
-    retiringGenerations.add(settled);
-    void settled.then(() => retiringGenerations.delete(settled));
-    return settled;
-  };
   const spawnWorkspaceDir =
     params.setup.effectiveCwd !== params.setup.effectiveWorkspace
       ? params.setup.resolvedWorkspace
@@ -284,15 +266,9 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     const constructedToolsRaw = !shouldConstructTools
       ? []
       : (() => {
-          operatorAuthority?.assertCurrent();
-          const scopeKey = foregroundOnly
-            ? `foreground:${attempt.runId}:${randomUUID()}`
-            : undefined;
-          if (scopeKey) {
-            // Acquire before tools can spawn. A generation must never cancel the
-            // session-wide scope, which can contain independently owned staff work.
-            generationCleanups.push(acquireExecScopeCleanup(scopeKey, "required-all"));
-          }
+          const generation = generations.current;
+          generation.assertCurrent();
+          const { scopeKey } = generation;
           const codingToolOptions: OpenClawCodingToolsOptions = {
             agentId: params.setup.sessionAgentId,
             ...buildConversationContext(),
@@ -346,7 +322,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
             toolConstructionPlan: toolConstructionPlan.codingToolConstructionPlan,
             computerContextEpoch,
             skillInstructionDeliveryCache,
-            registerRunCleanup: (cleanup) => generationCleanups.push(cleanup),
+            registerRunCleanup: generation.registerCleanup,
             inboundEventKind: attempt.currentInboundEventKind,
             disableMessageTool: attempt.disableMessageTool,
             forceMessageTool: attempt.forceMessageTool,
@@ -391,23 +367,11 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     }
     return toolsRaw;
   };
-  let toolAbortController = new AbortController();
-  let toolAbortSignal = AbortSignal.any([
-    params.runAbortController.signal,
-    toolAbortController.signal,
-  ]);
+  let toolAbortSignal = generations.current.signal;
   const baseExecOverrides = {
     ...(attempt.permissionChange?.baseExecOverrides ?? attempt.execOverrides),
   };
-  const releaseToolGeneration = async (reason: string) => {
-    toolAbortController.abort();
-    // Retirement synchronously registers this exact promise in the joined set.
-    void retireToolGeneration(reason);
-    await Promise.all(retiringGenerations);
-    if (retiredCleanupFailed) {
-      recordAgentCleanupFailure();
-    }
-  };
+  const releaseToolGeneration = (reason: string) => generations.release(reason);
   runCleanups.push(releaseToolGeneration);
   let toolsRaw: ReturnType<typeof constructTools>;
   try {
@@ -441,16 +405,13 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     refreshPermissionMode: (mode: SessionPermissionMode | null, revokeApprovals: () => void) => {
       // Revoke prepared calls before resolving approval waiters; their old
       // signal must already be closed when an allowed decision wakes them.
-      toolAbortController.abort(createCodeModePermissionChangeReason());
+      generations.current.abort(createCodeModePermissionChangeReason());
       revokeApprovals();
-      const retired = retireToolGeneration("cancel");
+      const retired = generations.retire("cancel");
       const replace = () => {
         params.runAbortController.signal.throwIfAborted();
-        toolAbortController = new AbortController();
-        toolAbortSignal = AbortSignal.any([
-          params.runAbortController.signal,
-          toolAbortController.signal,
-        ]);
+        generations.replace();
+        toolAbortSignal = generations.current.signal;
         attempt.permissionMode = mode ?? undefined;
         attempt.execOverrides = { ...baseExecOverrides };
         const policy = mode ? { root: params.setup.sessionPermissionRoot, mode } : undefined;
@@ -459,10 +420,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
       };
       if (foregroundOnly) {
         return retired.then(() => {
-          if (retiredCleanupFailed) {
-            recordAgentCleanupFailure();
-            throw retiredCleanupError;
-          }
+          generations.assertCleanupConfirmed();
           replace();
         });
       }

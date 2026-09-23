@@ -18,19 +18,28 @@ const { TEST_STATE_DIR, PREVIOUS_OPENCLAW_STATE_DIR, SANDBOX_REGISTRY_PATH } = v
   };
 });
 
+import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
+import type { DB } from "../../state/openclaw-state-db.generated.js";
 import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
+  runOpenClawStateWriteTransaction,
 } from "../../state/openclaw-state-db.js";
 import { deleteTestEnvValue, setTestEnvValue } from "../../test-utils/env.js";
 import {
   readBrowserRegistry,
+  assertSandboxRegistryEntryCurrent,
+  completeSandboxRegistryReservation,
+  insertSandboxRegistryEntryIfMissing,
+  reserveSandboxRegistryEntry,
   assertSandboxBrowserRegistryEntryCurrent,
   readRegisteredSandboxRuntimeIds,
   readRegistry,
   readRegistryEntry,
   removeBrowserRegistryEntry,
   removeRegistryEntry,
+  removeSandboxRegistryGeneration,
+  removeSandboxRegistryRuntime,
   updateBrowserRegistry,
   updateRegistry,
 } from "./registry.js";
@@ -92,6 +101,149 @@ async function expectPathMissing(targetPath: string): Promise<void> {
 }
 
 describe("registry race safety", () => {
+  it.each(["foreground-owner", "future-policy", null])(
+    "retains present policy %j across updates, publication, reopen and generic deletion",
+    async (retirementPolicy) => {
+      const initial = containerEntry({
+        backendId: "docker",
+        runtimeLabel: "container-a",
+        configLabelKind: "Image",
+        workspaceDir: "/owned/workspace",
+      });
+      const reserved = reserveSandboxRegistryEntry(initial);
+      // Unknown persisted values are input data, not a new policy exposed to callers.
+      runOpenClawStateWriteTransaction(({ db }) => {
+        executeSqliteQuerySync(
+          db,
+          getNodeSqliteKysely<DB>(db)
+            .updateTable("sandbox_registry_entries")
+            .set({ entry_json: JSON.stringify({ ...reserved, retirementPolicy }) })
+            .where("registry_kind", "=", "container")
+            .where("container_name", "=", reserved.containerName),
+        );
+      });
+      const expected = await readRegistryEntry(initial.containerName);
+      if (!expected) {
+        throw new Error("missing seeded registry row");
+      }
+      await updateRegistry({ ...initial, lastUsedAtMs: 2 });
+      completeSandboxRegistryReservation(expected, { ...initial, lastUsedAtMs: 3 });
+      await closeOpenClawStateDatabaseAsync();
+      closeOpenClawStateDatabaseForTest();
+      const current = await readRegistryEntry(initial.containerName);
+      expect(current).toEqual({ ...expected, runtimeState: "ready", lastUsedAtMs: 3 });
+      expect(current?.retirementPolicy).toBe(retirementPolicy);
+      if (!current) {
+        throw new Error("missing reopened registry row");
+      }
+      const cleanup = vi.fn(async () => {});
+      await expect(removeSandboxRegistryRuntime(current, cleanup)).rejects.toThrow(
+        "custody retained",
+      );
+      await expect(removeRegistryEntry(current.containerName)).rejects.toThrow("custody retained");
+      expect(() => removeSandboxRegistryGeneration("container", current, () => {})).toThrow(
+        "custody retained",
+      );
+      expect(() => reserveSandboxRegistryEntry(initial)).toThrow("custody retained");
+      expect(cleanup).not.toHaveBeenCalled();
+      await expect(readRegistryEntry(initial.containerName)).resolves.toEqual(current);
+    },
+  );
+
+  it("does not let a new private candidate adopt an existing unmarked reservation", async () => {
+    const candidate = containerEntry({ backendId: "docker", workspaceDir: "/owned/workspace" });
+    const existing = reserveSandboxRegistryEntry(candidate);
+    const snapshot = await readRegistryEntry(existing.containerName);
+    expect(() =>
+      reserveSandboxRegistryEntry({ ...candidate, retirementPolicy: "foreground-owner" }),
+    ).toThrow("cannot adopt");
+    await expect(readRegistryEntry(existing.containerName)).resolves.toEqual(snapshot);
+    completeSandboxRegistryReservation(existing);
+    const owned = reserveSandboxRegistryEntry({
+      ...candidate,
+      retirementPolicy: "foreground-owner",
+    });
+    // The captured, never-dispatched reservation has one exact owner release path.
+    completeSandboxRegistryReservation(owned);
+    await expect(readRegistryEntry(owned.containerName)).resolves.toBeNull();
+  });
+
+  it.each([
+    { runtimeState: "removing" as const },
+    { runtimeState: "removing-pending" as const },
+    { backendId: "other-backend" },
+    { sessionKey: "other-session" },
+    { createdAtMs: 2 },
+    { workspaceDir: "/other/workspace" },
+    { configHash: "other-config" },
+    { retirementPolicy: "foreground-owner" as const },
+    { backendTarget: { key: "other-target", globalArgs: ["--url", "unix:///other.sock"] } },
+  ])("rejects stale reservation publication and deletion after %j", async (changed) => {
+    const reservation = reserveSandboxRegistryEntry(
+      containerEntry({
+        backendId: "reserved-backend",
+        runtimeLabel: "container-a",
+        configLabelKind: "Image",
+        workspaceDir: "/owned/workspace",
+        configHash: "original-config",
+        backendTarget: { key: "original-target", globalArgs: ["--url", "unix:///owned.sock"] },
+      }),
+    );
+    // Replace the authoritative generation through the real SQLite owner.
+    // updateRegistry intentionally preserves several of these identity fields.
+    await removeRegistryEntry(reservation.containerName);
+    const successor = { ...reservation, ...changed };
+    insertSandboxRegistryEntryIfMissing(successor);
+    expect(() => assertSandboxRegistryEntryCurrent(reservation)).toThrow();
+    expect(() => completeSandboxRegistryReservation(reservation, reservation)).toThrow();
+    await expect(readRegistryEntry(reservation.containerName)).resolves.toEqual(successor);
+    expect(() => completeSandboxRegistryReservation(reservation)).toThrow();
+    await expect(readRegistryEntry(reservation.containerName)).resolves.toEqual(successor);
+  });
+
+  it("publishes allocation facts against the captured reservation and retires only that generation", async () => {
+    const reservation = reserveSandboxRegistryEntry(
+      containerEntry({
+        backendId: "reserved-backend",
+        runtimeLabel: "container-a",
+        configLabelKind: "Image",
+        workspaceDir: "/owned/workspace",
+      }),
+    );
+    const published = { ...reservation, image: "resolved-image", configHash: "resolved-config" };
+    completeSandboxRegistryReservation(reservation, published);
+    const current = { ...published, runtimeState: "ready" as const };
+    await expect(readRegistryEntry(reservation.containerName)).resolves.toEqual(current);
+    expect(() => assertSandboxRegistryEntryCurrent(current)).not.toThrow();
+    // Allocation facts may differ from the pending receipt; the old receipt
+    // must not subsequently authorize deletion of the published generation.
+    expect(() => completeSandboxRegistryReservation(reservation)).toThrow("generation changed");
+    await updateRegistry({ ...current, lastUsedAtMs: 99 });
+    expect(() => assertSandboxRegistryEntryCurrent(current)).not.toThrow();
+    completeSandboxRegistryReservation(current);
+    await expect(readRegistryEntry(reservation.containerName)).resolves.toBeNull();
+  });
+
+  it.each([
+    { containerName: "other-runtime" },
+    { backendId: "other-backend" },
+    { sessionKey: "other-session" },
+  ])("never publishes a different reservation identity: %j", async (changed) => {
+    const reservation = reserveSandboxRegistryEntry(
+      containerEntry({
+        backendId: "reserved-backend",
+        runtimeLabel: "container-a",
+        configLabelKind: "Image",
+        workspaceDir: "/owned/workspace",
+      }),
+    );
+    expect(() =>
+      completeSandboxRegistryReservation(reservation, { ...reservation, ...changed }),
+    ).toThrow("publication changed reservation identity");
+    await expect(readRegistryEntry(reservation.containerName)).resolves.toEqual(reservation);
+    expect((await readRegistry()).entries).toHaveLength(1);
+  });
+
   it("retains exact browser workspace custody and rejects a rebound owner", async () => {
     await updateBrowserRegistry(browserEntry({ workspaceDir: "/private/workspace" }));
     await updateBrowserRegistry(browserEntry({ lastUsedAtMs: 2 }));

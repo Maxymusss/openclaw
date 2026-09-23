@@ -50,6 +50,7 @@ import {
 import { createEmbeddedRunStageTracker } from "./attempt-stage-timing.js";
 import { prepareEmbeddedAttemptSystemPrompt } from "./attempt-system-prompt-prepare.js";
 import { prepareEmbeddedAttemptToolCatalog } from "./attempt-tool-catalog.js";
+import { createEmbeddedAttemptToolGenerationOwner } from "./attempt-tool-generation.js";
 import { prepareEmbeddedAttemptToolBase } from "./attempt-tool-prepare.js";
 import { prepareEmbeddedAttemptTranscriptLifecycle } from "./attempt-transcript-lifecycle-prepare.js";
 import { prepareEmbeddedPermissionPublication } from "./permission-change.js";
@@ -86,13 +87,45 @@ async function runEmbeddedAttemptOwned(
 ): Promise<EmbeddedRunAttemptResult> {
   let params = input;
   const runAbortController = new AbortController();
-  const setup = await measureEmbeddedAgentPreparation(
-    "attempt.setup",
-    () => prepareEmbeddedAttemptSetup(params),
-    {
-      config: params.config,
-    },
-  );
+  const foregroundOnly =
+    readAdmittedRunOperatorAuthority(params.admittedRunContext)?.executionPolicy ===
+    "foreground-only";
+  const generations = foregroundOnly
+    ? createEmbeddedAttemptToolGenerationOwner(
+        params,
+        resourceAbortSignal
+          ? AbortSignal.any([resourceAbortSignal, runAbortController.signal])
+          : runAbortController.signal,
+      )
+    : undefined;
+  let retainedCleanup: (() => Promise<void>) | undefined;
+  let releasePromise: Promise<void> | undefined;
+  const releaseResources = () =>
+    (releasePromise ??= (async () => {
+      try {
+        await retainedCleanup?.();
+      } finally {
+        await generations?.release("completion");
+      }
+    })());
+  if (generations) {
+    // The wrapper has one resource slot. Acquire it before setup can allocate;
+    // later tool cleanup attaches here rather than replacing native custody.
+    retainToolCleanup(releaseResources);
+  }
+  let setup: Awaited<ReturnType<typeof prepareEmbeddedAttemptSetup>>;
+  try {
+    setup = await measureEmbeddedAgentPreparation(
+      "attempt.setup",
+      () => prepareEmbeddedAttemptSetup(params, generations?.current.nativeCustody),
+      { config: params.config },
+    );
+  } catch (error) {
+    // The wrapper publishes rejection before its final drain. Join only our
+    // children here, never the enclosing scope which owns this attempt.
+    await generations?.release("error");
+    throw error;
+  }
   const {
     effectiveWorkspace,
     emitCorePluginToolStageSummary,
@@ -222,6 +255,7 @@ async function runEmbeddedAttemptOwned(
     let toolSearchCatalogExecutor: ToolSearchCatalogToolExecutor | undefined;
     const preparedToolBase = await prepare("attempt.tool-base", () =>
       prepareEmbeddedAttemptToolBase({
+        generationOwner: generations,
         agentDir,
         attempt: params,
         setup,
@@ -565,7 +599,12 @@ async function runEmbeddedAttemptOwned(
         externalAbortController.dispose();
       }
     };
-    if (resolveCleanupReason() === "completion") {
+    if (generations) {
+      retainedCleanup = releaseTools;
+      if (resolveCleanupReason() !== "completion") {
+        await releaseResources();
+      }
+    } else if (resolveCleanupReason() === "completion") {
       // Accepted tool work can still own a caller-authorized commit after the
       // native reply. Keep its generation and genuine abort listener live until
       // that work settles, without joining the independently owned payload.

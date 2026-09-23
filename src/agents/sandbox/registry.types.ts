@@ -13,6 +13,8 @@ export type SandboxRegistryEntry = {
   configHash?: string;
   /** Original provider workspace, retained so pending cleanup can replay the same request. */
   workspaceDir?: string;
+  /** Negative-only custody: generic retirement cannot certify this owner's cleanup. */
+  retirementPolicy?: "foreground-owner";
   /** Present only for backends that reserve their generation before provisioning. */
   runtimeState?: "pending" | "ready" | "removing" | "removing-pending";
 };

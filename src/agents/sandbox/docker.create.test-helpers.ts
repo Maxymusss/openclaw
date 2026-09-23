@@ -33,6 +33,7 @@ const spawnState = vi.hoisted(() => ({
 }));
 
 const registryMocks = vi.hoisted(() => ({
+  assertSandboxRuntimeRetirementAllowed: vi.fn(),
   readRegistryEntry: vi.fn(),
   removeRegistryEntry: vi.fn(),
   updateRegistry: vi.fn(),
@@ -65,6 +66,7 @@ function usePodmanMachine() {
 
 function createRegistryMock() {
   return {
+    assertSandboxRuntimeRetirementAllowed: registryMocks.assertSandboxRuntimeRetirementAllowed,
     readRegistryEntry: registryMocks.readRegistryEntry,
     removeRegistryEntry: registryMocks.removeRegistryEntry,
     updateRegistry: registryMocks.updateRegistry,

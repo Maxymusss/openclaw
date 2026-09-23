@@ -52,6 +52,10 @@ function containerEntryToRow(entry: SandboxRegistryEntry, existing?: SandboxRegi
     configLabelKind: entry.configLabelKind ?? existing?.configLabelKind,
     configHash: entry.configHash ?? existing?.configHash,
     runtimeState: entry.runtimeState ?? existing?.runtimeState,
+    retirementPolicy:
+      existing && Object.hasOwn(existing, "retirementPolicy")
+        ? existing.retirementPolicy
+        : entry.retirementPolicy,
     workspaceDir: existing?.workspaceDir ?? entry.workspaceDir,
   };
   return {
@@ -139,6 +143,12 @@ function insertRegistryRow(
 
 function removeRegistryRow(kind: SandboxRegistryKind, containerName: string): void {
   runOpenClawStateWriteTransaction(({ db }) => {
+    if (kind === "container") {
+      const current = readSandboxRegistryEntryInDatabase(db, containerName);
+      if (current) {
+        assertRetirementPolicyAllowsRemoval(current);
+      }
+    }
     const stateDb = getSandboxRegistryKysely(db);
     executeSqliteQuerySync(
       db,
@@ -233,6 +243,12 @@ export function reserveSandboxRegistryEntry(candidate: SandboxRegistryEntry): Sa
     ).rows;
     const existing = rows.map(rowToContainerEntry).find((entry) => entry !== null);
     if (existing) {
+      // A persisted private owner is never a reusable provider reservation.
+      // Fresh foreground generations also cannot adopt an older unmarked allocation.
+      assertRetirementPolicyAllowsRemoval(existing);
+      if (candidate.retirementPolicy !== undefined) {
+        throw new Error("Native sandbox generation cannot adopt a previously reserved runtime.");
+      }
       assertReservationCurrent(existing, candidate);
       if (!existing.runtimeState || !existing.workspaceDir) {
         existing.runtimeState ??= "pending";
@@ -273,11 +289,19 @@ export function assertSandboxRegistryEntryCurrent(entry: SandboxRegistryEntry): 
     withExistingOpenClawStateDatabaseReadOnly(({ db }) =>
       readSandboxRegistryEntryInDatabase(db, entry.containerName),
     ) ?? null;
+  assertReservationGenerationCurrent(current, entry);
+}
+
+function assertReservationGenerationCurrent(
+  current: SandboxRegistryEntry | null,
+  entry: SandboxRegistryEntry,
+): asserts current is SandboxRegistryEntry {
   assertReservationCurrent(current, entry);
   if (
     current.createdAtMs !== entry.createdAtMs ||
     current.workspaceDir !== entry.workspaceDir ||
     current.configHash !== entry.configHash ||
+    current.retirementPolicy !== entry.retirementPolicy ||
     !isDeepStrictEqual(current.backendTarget, entry.backendTarget)
   ) {
     throw new Error("Sandbox runtime generation changed");
@@ -286,23 +310,30 @@ export function assertSandboxRegistryEntryCurrent(entry: SandboxRegistryEntry): 
 
 /** Publish only a still-current reservation, or forget a provider-confirmed terminal generation. */
 export function completeSandboxRegistryReservation(
-  entry: SandboxRegistryEntry,
-  retired = false,
+  expected: SandboxRegistryEntry,
+  entry?: SandboxRegistryEntry,
 ): void {
   runOpenClawStateWriteTransaction(({ db }) => {
-    const row = readSandboxRegistryRowInDatabase(db, "container", entry.containerName);
+    const row = readSandboxRegistryRowInDatabase(db, "container", expected.containerName);
     const existing = row ? rowToContainerEntry(row) : null;
-    assertReservationCurrent(existing, entry);
-    if (retired) {
+    assertReservationGenerationCurrent(existing, expected);
+    if (!entry) {
       const stateDb = getSandboxRegistryKysely(db);
       executeSqliteQuerySync(
         db,
         stateDb
           .deleteFrom("sandbox_registry_entries")
           .where("registry_kind", "=", "container")
-          .where("container_name", "=", entry.containerName),
+          .where("container_name", "=", expected.containerName),
       );
     } else {
+      if (
+        entry.containerName !== expected.containerName ||
+        entry.backendId !== expected.backendId ||
+        entry.sessionKey !== expected.sessionKey
+      ) {
+        throw new Error("Sandbox runtime publication changed reservation identity");
+      }
       insertRegistryRow(
         db,
         containerEntryToRow(
@@ -335,6 +366,29 @@ export async function withSandboxRegistryEntryLock<T>(
   );
 }
 
+function assertRetirementPolicyAllowsRemoval(
+  entry: Pick<SandboxRegistryEntry, "containerName" | "retirementPolicy">,
+): void {
+  if (entry.retirementPolicy !== undefined) {
+    throw new Error(
+      "Sandbox runtime requires its foreground owner's qualified cleanup; automatic retirement refused and custody retained.",
+    );
+  }
+}
+
+/** A snapshot never grants retirement authority over a later private owner. */
+export function assertSandboxRuntimeRetirementAllowed(
+  entry: Pick<SandboxRegistryEntry, "containerName" | "retirementPolicy">,
+): void {
+  assertRetirementPolicyAllowsRemoval(entry);
+  const current = withExistingOpenClawStateDatabaseReadOnly(({ db }) =>
+    readSandboxRegistryEntryInDatabase(db, entry.containerName),
+  );
+  if (current) {
+    assertRetirementPolicyAllowsRemoval(current);
+  }
+}
+
 /** Persist removal intent before waiting for provisioning, and retain failed cleanup for retry. */
 export async function removeSandboxRegistryRuntime(
   entry: SandboxRegistryEntry,
@@ -355,6 +409,7 @@ export async function removeSandboxRegistryRuntime(
     ) {
       return null;
     }
+    assertRetirementPolicyAllowsRemoval(current);
     if (!current.runtimeState && !options.reserveRuntime) {
       return current;
     }
@@ -388,6 +443,7 @@ export async function removeSandboxRegistryRuntime(
     ) {
       return;
     }
+    assertRetirementPolicyAllowsRemoval(current);
     await removeRuntime(current);
     await removeRegistryEntry(current.containerName);
   });
@@ -463,6 +519,9 @@ export function removeSandboxRegistryGeneration(
     const current = row && (kind === "browser" ? rowToBrowserEntry(row) : rowToContainerEntry(row));
     if (!current || !sameSandboxRegistryGeneration(current, entry)) {
       throw new Error("Sandbox runtime generation changed during retirement");
+    }
+    if (kind === "container") {
+      assertRetirementPolicyAllowsRemoval(current);
     }
     const stateDb = getSandboxRegistryKysely(db);
     executeSqliteQuerySync(
