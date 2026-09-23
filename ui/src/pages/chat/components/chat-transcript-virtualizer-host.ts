@@ -19,7 +19,7 @@ import {
   TranscriptAnnouncementState,
   type TranscriptAnnouncement,
 } from "./chat-transcript-announcement.ts";
-import { releaseTranscriptDerivation } from "./chat-transcript-derived.ts";
+import { releaseTranscriptDerivation, TranscriptRowModel } from "./chat-transcript-derived.ts";
 import { TranscriptEndAnchor } from "./chat-transcript-end-anchor.ts";
 import {
   initialTranscriptRect,
@@ -188,7 +188,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
                 element.isConnected &&
                 this.threadInnerElement?.contains(element) &&
                 element.dataset.virtualRowKey === key &&
-                this.rowIndexesByKey.has(key)
+                this.rowModel.indexes.has(key)
               ) {
                 this.virtualizerController.getVirtualizer().measureElement(element);
               }
@@ -215,9 +215,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     }
     return callback;
   }
-  private rowKeys: readonly string[] = [];
-  private committedRows: readonly { key: string }[] = [];
-  private rowIndexesByKey = new Map<string, number>();
+  private readonly rowModel = new TranscriptRowModel();
   private messageRowKeysById: ReadonlyMap<string, string> = new Map();
   private readonly prependAnchor = new TranscriptPrependAnchor();
   private candidateMessageRowKeysById: ReadonlyMap<string, string> = new Map();
@@ -308,7 +306,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
         return size;
       },
       rangeExtractor: (range) =>
-        this.prependAnchor.extractRange(range, this.rowIndexesByKey, this.focusedRowKey),
+        this.prependAnchor.extractRange(range, this.rowModel.indexes, this.focusedRowKey),
       // Virtual distance omits real padding, pinning readers ~80px up past scroll.ts's follow-lock.
       // scheduleCommittedChatScroll owns end-follow on content changes and source: "resize".
       // Disable isAtEnd()'s default too; callers must supply an explicit threshold.
@@ -320,7 +318,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       virtualizer: this.virtualizerController.getVirtualizer(),
       getScrollElement: () => this.scrollElement,
       isContentReady: () => this.contentReady,
-      getRowCount: () => this.rowKeys.length,
+      getRowCount: () => this.rowModel.keys.length,
       isConnected: () => this.connected,
       getPendingScrollFrame: () => this.pendingScrollFrame,
       setPendingScrollFrame: (frame) => {
@@ -420,7 +418,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
 
   disconnect(): void {
     releaseTranscriptDerivation(this);
-    this.committedRows = [];
+    this.rowModel.disconnect();
     this.entryAnimations.disconnect();
     // Clear retires bodies and pending loads; replacement invalidates guarded
     // rows when this presentation reconnects with the same source messages.
@@ -462,8 +460,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
   dispose(): void {
     this.disconnect();
     this.measureRowRefs.clear();
-    this.rowKeys = [];
-    this.rowIndexesByKey.clear();
+    this.rowModel.clear();
     this.messageRowKeysById = new Map();
     this.prependAnchor.reset();
     this.focusedRowKey = null;
@@ -513,11 +510,8 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
   ): TemplateResult {
     const { rows, renderRow, announcement, announce, overlay, header, messageRows, renderKeyRows } =
       snapshot;
-    const rowModelChanged =
-      rows !== this.committedRows &&
-      (rows.length !== this.rowKeys.length ||
-        rows.some((row, index) => row.key !== this.rowKeys[index]));
-    const nextKeys = rowModelChanged ? rows.map((row) => row.key) : this.rowKeys;
+    const nextKeys = this.rowModel.project(rows);
+    const rowModelChanged = nextKeys !== this.rowModel.keys;
     const virtualizer = this.virtualizerController.getVirtualizer();
     const nextRowKeys = rowModelChanged
       ? nextKeys
@@ -532,7 +526,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
           announce && !this.offsetState.pendingScrollOffset,
         );
         this.messageRowKeysById = messageRows;
-        this.committedRows = rows;
+        this.rowModel.commit(rows);
         this.prependAnchor.committedMessageRows = renderKeyRows;
         this.renderPreviousRows = () => this.renderCommittedRows(snapshot, false);
         // Capture only after the unmount gate permits the projection to commit.
@@ -672,13 +666,13 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
       this.virtualizerController.getVirtualizer(),
       messageIds,
       this.messageRowKeysById,
-      this.rowIndexesByKey,
+      this.rowModel.indexes,
     );
   }
 
   revealMessage(messageId: string): boolean {
     const rowKey = this.messageRowKeysById.get(messageId);
-    const rowIndex = rowKey ? this.rowIndexesByKey.get(rowKey) : undefined;
+    const rowIndex = rowKey ? this.rowModel.indexes.get(rowKey) : undefined;
     if (rowIndex === undefined) {
       return false;
     }
@@ -706,7 +700,7 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
     }
     // Expanding folded work can move the target beyond the initially mounted rows.
     const rowKey = this.messageRowKeysById.get(command.messageId);
-    const rowIndex = rowKey ? this.rowIndexesByKey.get(rowKey) : undefined;
+    const rowIndex = rowKey ? this.rowModel.indexes.get(rowKey) : undefined;
     if (rowIndex !== undefined) {
       virtualizer.scrollToIndex(rowIndex, { align: "center" });
       this.host.requestUpdate();
@@ -754,16 +748,15 @@ export class ChatSessionVirtualizerHost implements ReactiveControllerHost, ChatT
   private syncRows(nextKeys: readonly string[]): void {
     const virtualizer = this.virtualizerController.getVirtualizer();
     const typingAdded =
-      !this.rowIndexesByKey.has("presence:typing") && nextKeys.includes("presence:typing");
+      !this.rowModel.indexes.has("presence:typing") && nextKeys.includes("presence:typing");
     // Remote typing is presence, not a local request to move the viewport.
     if (typingAdded) {
       this.endAnchor.clear();
     }
-    this.rowKeys = Object.freeze(nextKeys);
-    const rowIndexesByKey = new Map(this.rowKeys.map((key, index) => [key, index]));
-    this.rowIndexesByKey = rowIndexesByKey;
+    this.rowModel.sync(nextKeys);
+    const rowIndexesByKey = this.rowModel.indexes;
     for (const key of this.measureRowRefs.keys()) {
-      if (!this.rowIndexesByKey.has(key)) {
+      if (!rowIndexesByKey.has(key)) {
         this.measureRowRefs.delete(key);
       }
     }

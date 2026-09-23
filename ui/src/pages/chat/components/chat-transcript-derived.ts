@@ -33,6 +33,39 @@ function sameInputs(previous: readonly unknown[], next: readonly unknown[]) {
   return previous.length === next.length && previous.every((value, i) => Object.is(value, next[i]));
 }
 
+/** Keep candidate keys separate from the row model admitted by the unmount gate. */
+export class TranscriptRowModel {
+  private rows: readonly { key: string }[] = [];
+  keys: readonly string[] = [];
+  indexes = new Map<string, number>();
+
+  project(rows: readonly { key: string }[]) {
+    return rows === this.rows ||
+      (rows.length === this.keys.length && rows.every((row, index) => row.key === this.keys[index]))
+      ? this.keys
+      : rows.map((row) => row.key);
+  }
+
+  commit(rows: readonly { key: string }[]) {
+    this.rows = rows;
+  }
+
+  sync(keys: readonly string[]) {
+    this.keys = Object.freeze(keys);
+    this.indexes = new Map(keys.map((key, index) => [key, index]));
+  }
+
+  disconnect() {
+    this.rows = [];
+  }
+
+  clear() {
+    this.disconnect();
+    this.keys = [];
+    this.indexes.clear();
+  }
+}
+
 function projectItems(
   chatItems: ChatItems,
   props: ChatThreadProps,
@@ -205,8 +238,9 @@ class TranscriptDerivation {
     expanded: Map<string, boolean>,
   ) {
     const session = props.selectedSession;
+    const structure = chatItemsStructure(chatItems);
     const inputs = [
-      chatItemsStructure(chatItems),
+      structure,
       props.sessionKey,
       Boolean(props.runWorking),
       searchActive,
@@ -220,7 +254,9 @@ class TranscriptDerivation {
       props.userName,
       props.replyMessageAccess?.navigationId,
     ];
+    // Reuse requires the builder's recorded structure; absent facts never prove stability.
     if (
+      structure &&
       this.items &&
       this.expansionVersion === getExpansionStateVersion(expanded) &&
       sameInputs(this.inputs, inputs) &&
