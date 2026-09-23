@@ -97,13 +97,19 @@ unix.each([false, true])(
       return result;
     });
     expect(store.acquire(nextInstall, "next", { kind: "update" }).kind).toBe("acquired");
-    expect(logger.warn).toHaveBeenCalledTimes(2);
-    for (const step of ["begin", "commit"]) {
-      expect(logger.warn).toHaveBeenCalledWith(
+    expect(logger.warn).toHaveBeenCalledTimes(3);
+    for (const [index, step] of ["begin", "commit"].entries()) {
+      expect(logger.warn).toHaveBeenNthCalledWith(
+        index + 1,
         "slow SQLite transaction lock wait",
         expect.objectContaining({ step, elapsedMs: 1_000, async: false }),
       );
     }
+    expect(logger.warn).toHaveBeenNthCalledWith(
+      3,
+      "slow SQLite transaction hold",
+      expect.objectContaining({ elapsedMs: 1_000, thresholdMs: 1_000, async: false }),
+    );
     expect(store.read(originalInstall)).toMatchObject({
       kind: "current",
       lease: { owner: "original" },
