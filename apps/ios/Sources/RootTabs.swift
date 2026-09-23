@@ -136,14 +136,15 @@ struct RootTabs: View {
     private var uiTestReadinessMarker: some View {
         #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("--openclaw-ui-test-readiness") {
+            let readiness = self.scenePhase == .active ? "ready" : "inactive"
+            let destination = self.presentation.selectedSidebarDestination.rawValue
             Color.clear
                 .frame(width: 1, height: 1)
                 .allowsHitTesting(false)
                 .accessibilityElement(children: .ignore)
                 .accessibilityIdentifier("RootTabs.Ready")
                 .accessibilityLabel(Text(verbatim: "OpenClaw test readiness"))
-                .accessibilityValue(
-                    "\(self.scenePhase == .active ? "ready" : "inactive"):\(self.presentation.selectedSidebarDestination.rawValue)")
+                .accessibilityValue("\(readiness):\(destination)")
         }
         #endif
     }
