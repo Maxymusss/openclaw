@@ -1,7 +1,7 @@
 /** Resolves the canonical requested or utility model before runtime preparation. */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
-import { resolveAgentDir, resolveAgentEffectiveModelPrimary } from "./agent-scope.js";
+import { resolveAgentDir, resolveNativeModelPrimary } from "./agent-scope.js";
 import { DEFAULT_PROVIDER } from "./defaults.js";
 import { splitTrailingAuthProfile } from "./model-ref-profile.js";
 import {
@@ -55,7 +55,7 @@ export function resolveSimpleCompletionSelectionRequest(
             : {}),
         })
       : undefined) ||
-    resolveAgentEffectiveModelPrimary(params.cfg, params.agentId);
+    resolveNativeModelPrimary(params.cfg, params.agentId);
   const split = modelRef ? splitTrailingAuthProfile(modelRef) : null;
   const aliasIndex = buildModelAliasIndex({
     cfg: params.cfg,

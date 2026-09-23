@@ -9,6 +9,7 @@ import type { ContextEngine } from "../../context-engine/types.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import { onSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { captureTaskDeliveryWork } from "../../tasks/task-registry-delivery.test-support.js";
 import { listTasksForOwnerKey } from "../../tasks/task-registry.js";
 import {
   resetTaskFlowRegistryForTests,
@@ -47,6 +48,7 @@ async function withTranscriptOwners(
   run: (owners: Awaited<ReturnType<typeof createTranscriptOwners>>) => Promise<void>,
 ) {
   await withStateDirEnv("openclaw-maintenance-owners-", async ({ stateDir }) => {
+    using deliveries = captureTaskDeliveryWork();
     resetCommandQueueStateForTest();
     resetTaskRegistryForTests({ persist: false });
     resetTaskFlowRegistryForTests({ persist: false });
@@ -54,10 +56,17 @@ async function withTranscriptOwners(
     try {
       await run(owners);
     } finally {
-      await waitForDeferredTurnMaintenanceForSession(owners.target.sessionKey);
-      resetCommandQueueStateForTest();
-      resetTaskRegistryForTests({ persist: false });
-      resetTaskFlowRegistryForTests({ persist: false });
+      try {
+        await waitForDeferredTurnMaintenanceForSession(owners.target.sessionKey);
+      } finally {
+        try {
+          await deliveries.settle();
+        } finally {
+          resetCommandQueueStateForTest();
+          resetTaskRegistryForTests({ persist: false });
+          resetTaskFlowRegistryForTests({ persist: false });
+        }
+      }
     }
   });
 }

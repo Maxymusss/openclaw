@@ -316,7 +316,10 @@ async function runPdfPrompt(params: {
                     streamOptions,
                   )
                 ).result())()
-            : complete(model, context, streamOptions, assertModelCurrent),
+            : complete(model, context, streamOptions, () => {
+                params.assertResourcesOpen?.();
+                assertModelCurrent();
+              }),
         );
         const message = params.signal
           ? await abortable(params.signal, completion)

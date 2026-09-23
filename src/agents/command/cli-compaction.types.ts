@@ -70,6 +70,7 @@ export type CliTranscriptCompactionOutcome = {
   tokensAfter?: number;
 };
 export type CliCompactionContext = {
+  sessionAgentId: string;
   operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg: OpenClawConfig;
   sessionKey: string;

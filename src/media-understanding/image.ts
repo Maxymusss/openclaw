@@ -562,7 +562,10 @@ async function describeImagesWithModelInternal(
         };
         const task: Promise<AssistantMessage> = trackAsyncWork(() => {
           if (!providerStreamFn) {
-            return complete(requestModel, context, streamOptions, assertModelCurrent);
+            return complete(requestModel, context, streamOptions, () => {
+              assertResourcesOpen?.();
+              assertModelCurrent();
+            });
           }
           const stream = wrapOperatorModelStream(providerStreamFn, operatorAuthority)(
             requestModel,
