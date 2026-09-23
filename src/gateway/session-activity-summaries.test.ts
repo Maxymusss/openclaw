@@ -328,14 +328,13 @@ describe("Activity recap lifecycle with the canonical session store", () => {
         totalMessages: 1,
       });
 
-      const published = createDeferred();
-      changed.mockImplementation(() => {
-        if (view()?.state === "current" && view()?.text === "Completed the first turn.") {
-          published.resolve();
-        }
-      });
+      const published = createDeferred<ReturnType<typeof view>>();
+      changed.mockImplementationOnce(() => published.resolve(view()));
       completion.resolve(result("Completed the first turn."));
-      await published.promise;
+      expect(await published.promise).toMatchObject({
+        state: "current",
+        text: "Completed the first turn.",
+      });
       expect(await describeSession()).toMatchObject({
         session: {
           key: target.key,
