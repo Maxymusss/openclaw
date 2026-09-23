@@ -4,6 +4,9 @@ import { msTeamsExtensionTestRoots } from "./vitest.extension-msteams-paths.mjs"
 import { createScopedVitestConfig } from "./vitest.scoped-config.ts";
 import { sharedVitestConfig } from "./vitest.shared.config.ts";
 
+// Diagnostic branch only: Node reads this before the fork starts.
+process.env.NODE_DEBUG_NATIVE = "PLATFORM_VERBOSE";
+
 export function createExtensionMsTeamsVitestConfig(env?: Record<string, string | undefined>) {
   return createScopedVitestConfig(
     msTeamsExtensionTestRoots.map((root) => `${root}/**/*.test.ts`),
@@ -16,8 +19,7 @@ export function createExtensionMsTeamsVitestConfig(env?: Record<string, string |
       setupFiles: ["test/setup.extensions.ts", "test/f113-resources.ts"],
       execArgv: [
         ...sharedVitestConfig.test.execArgv,
-        "--import",
-        new URL("../../scripts/f113-resources.mjs", import.meta.url).href,
+        `--import=${new URL("../../scripts/f113-resources.mjs", import.meta.url).href}`,
       ],
     },
   );
