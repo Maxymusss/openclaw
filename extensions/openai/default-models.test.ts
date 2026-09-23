@@ -10,18 +10,19 @@ describe("openai default models", () => {
     expect(next.agents?.defaults?.models?.[OPENAI_DEFAULT_MODEL]).toEqual({ alias: "GPT" });
   });
 
-  it("preserves existing alias for the default model", () => {
-    const next = applyOpenAIProviderConfig({
-      agents: {
-        defaults: {
-          models: {
-            [OPENAI_DEFAULT_MODEL]: { alias: "My GPT" },
+  it.each([{ alias: "My GPT" }, { aliases: ["My GPT"] }])(
+    "preserves existing names for the default model: %j",
+    (entry) => {
+      const next = applyOpenAIProviderConfig({
+        agents: {
+          defaults: {
+            models: { [OPENAI_DEFAULT_MODEL]: entry },
           },
         },
-      },
-    });
-    expect(next.agents?.defaults?.models?.[OPENAI_DEFAULT_MODEL]?.alias).toBe("My GPT");
-  });
+      });
+      expect(next.agents?.defaults?.models?.[OPENAI_DEFAULT_MODEL]).toEqual(entry);
+    },
+  );
 
   it("does not move the GPT alias from an existing model", () => {
     const next = applyOpenAIProviderConfig({

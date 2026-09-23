@@ -27,11 +27,16 @@ export function applyOpenAIProviderConfig(cfg: OpenClawConfig): OpenClawConfig {
   const models = { ...withConfiguredRefs.agents?.defaults?.models };
   const gptAliasClaimed = Object.entries(models).some(
     ([modelRef, model]) =>
-      modelRef !== OPENAI_DEFAULT_MODEL && model?.alias?.trim().toLowerCase() === "gpt",
+      modelRef !== OPENAI_DEFAULT_MODEL &&
+      [model?.alias, ...(model?.aliases ?? [])].some(
+        (alias) => alias?.trim().toLowerCase() === "gpt",
+      ),
   );
   models[OPENAI_DEFAULT_MODEL] = {
     ...models[OPENAI_DEFAULT_MODEL],
-    ...(models[OPENAI_DEFAULT_MODEL]?.alias === undefined && !gptAliasClaimed
+    ...(models[OPENAI_DEFAULT_MODEL]?.alias === undefined &&
+    !models[OPENAI_DEFAULT_MODEL]?.aliases?.length &&
+    !gptAliasClaimed
       ? { alias: "GPT" }
       : {}),
   };

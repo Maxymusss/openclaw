@@ -3,6 +3,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveAgentHarnessPolicy } from "../../../agents/harness/policy.js";
+import { resolveConfiguredModelRef } from "../../../agents/model-selection-shared.js";
 import type { SessionEntry } from "../../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 
@@ -37,19 +38,19 @@ import {
   collectCodexRouteWarnings as collectCodexRouteWarningsUnderTest,
   maybeRepairCodexRoutes as maybeRepairCodexRoutesUnderTest,
 } from "./codex-route-warnings.js";
+import {
+  CODEX_COMPACTION_REPAIR_CHANGES,
+  codexCompactionWarning,
+  disabledCodexPluginWarning,
+  expectCodexPluginDisabled,
+  expectCodexPluginEnabled,
+  legacyRouteWarning,
+  losslessCompactionWarning,
+} from "./codex-route-warnings.test-helpers.js";
 import { collectBlockedLegacyOpenAICodexProviderPlan } from "./legacy-config-migrations.runtime.models.js";
 
 const REPAIRABLE_CODEX_PLUGIN_CONFIG = { allow: ["openai"] };
 const DISABLED_CODEX_PLUGIN_CONFIG = { entries: { codex: { enabled: false } } };
-const CODEX_PLUGIN_REPAIR_CHANGES = [
-  "Enabled plugins.entries.codex because configured agent routes use Codex runtime.",
-  "Added codex to plugins.allow because configured agent routes use Codex runtime.",
-];
-const CODEX_COMPACTION_REPAIR_CHANGES = [
-  "Removed agents.defaults.compaction.model; Codex runtime uses native server-side compaction.",
-  "Removed agents.defaults.compaction.provider; Codex runtime uses native server-side compaction.",
-];
-
 type CodexRouteWarningOptions = Omit<
   Parameters<typeof collectCodexRouteWarningsUnderTest>[0],
   "cfg"
@@ -74,7 +75,6 @@ function maybeRepairCodexRoutes(cfg: unknown, options: CodexRouteRepairOptions =
   });
 }
 
-type CodexRouteRepairResult = ReturnType<typeof maybeRepairCodexRoutes>;
 type AgentRuntime = ReturnType<typeof resolveAgentHarnessPolicy>["runtime"];
 
 function expectAgentRuntime(
@@ -90,18 +90,6 @@ function expectAgentRuntime(
       config,
     }).runtime,
   ).toBe(expected);
-}
-
-function expectCodexPluginEnabled(result: CodexRouteRepairResult) {
-  expect(result.warnings).toStrictEqual([]);
-  expect(result.changes).toStrictEqual(CODEX_PLUGIN_REPAIR_CHANGES);
-  expect(result.cfg.plugins?.entries?.codex?.enabled).toBe(true);
-}
-
-function expectCodexPluginDisabled(result: CodexRouteRepairResult) {
-  expect(result.warnings).toStrictEqual([]);
-  expect(result.changes).toStrictEqual([]);
-  expect(result.cfg.plugins?.entries?.codex?.enabled).toBe(false);
 }
 
 function itReenablesCodexPlugin(title: string, cfg: Record<string, unknown>) {
@@ -147,37 +135,6 @@ function itRepairsCodexCompaction(title: string, cfg: Record<string, unknown>) {
 
 function getSession(store: Record<string, SessionEntry>, key: string): SessionEntry {
   return expectDefined(store[key], `store.${key} test invariant`);
-}
-
-function legacyRouteWarning(...routes: string[]): string {
-  return [
-    "- Legacy `codex/*` and `openai-codex/*` model refs should be rewritten to `openai/*`.",
-    ...routes,
-    "- Run `openclaw doctor --fix`: it rewrites configured model refs and stale sessions to `openai/*`, moves Codex intent to provider/model runtime policy, and clears old whole-agent runtime pins.",
-  ].join("\n");
-}
-
-function disabledCodexPluginWarning(...routes: string[]): string {
-  return [
-    "- Codex runtime is selected, but the Codex plugin is disabled.",
-    ...routes,
-    "- Enable plugins.entries.codex and plugin loading, and remove `codex` from plugins.deny; or set the affected OpenAI models to an OpenClaw runtime policy.",
-  ].join("\n");
-}
-
-function codexCompactionWarning(...details: string[]): string {
-  return [
-    "- Codex runtime uses native server-side compaction and ignores OpenClaw compaction summarizer overrides.",
-    ...details,
-  ].join("\n");
-}
-
-function losslessCompactionWarning(...routes: string[]): string {
-  return [
-    "- Legacy Lossless compaction config should use the Lossless context-engine slot for Codex.",
-    ...routes,
-    "- Move the Lossless config manually; doctor will not overwrite an existing non-Lossless context-engine slot or collapse conflicting per-agent summary models.",
-  ].join("\n");
 }
 
 describe("collectCodexRouteWarnings", () => {
@@ -2022,19 +1979,44 @@ describe("collectCodexRouteWarnings", () => {
   );
 
   itReenablesCodexPlugin(
-    "re-enables the Codex plugin when a per-agent-only bare alias falls back to OpenAI",
+    "re-enables the Codex plugin when a per-agent bare ref has no matching alias",
     {
       agents: {
         list: [
           {
             id: "worker",
             model: "fast",
-            models: { "anthropic/claude-sonnet-4-6": { alias: "fast" } },
+            models: { "anthropic/claude-sonnet-4-6": { alias: "other" } },
           },
         ],
       },
     },
   );
+
+  it.each([
+    { roster: "legacy", entry: { alias: "fast" } },
+    { roster: "canonical", entry: { alias: "primary", aliases: ["fast"] } },
+  ])("keeps Doctor aligned with a $roster agent's selected alias route", ({ roster, entry }) => {
+    const models = { "anthropic/claude-sonnet-4-6": entry };
+    const cfg: OpenClawConfig = {
+      plugins: DISABLED_CODEX_PLUGIN_CONFIG,
+      agents:
+        roster === "legacy"
+          ? { list: [{ id: "worker", model: "fast", models }] }
+          : { entries: { worker: { model: "fast", models } } },
+    };
+    expect(
+      resolveConfiguredModelRef({
+        cfg,
+        agentId: "worker",
+        defaultProvider: "openai",
+        defaultModel: "gpt-5.5",
+        allowManifestNormalization: false,
+        allowPluginNormalization: false,
+      }),
+    ).toStrictEqual({ provider: "anthropic", model: "claude-sonnet-4-6" });
+    expectCodexPluginDisabled(maybeRepairCodexRoutes(cfg));
+  });
 
   itReenablesCodexPlugin(
     "re-enables the Codex plugin when a listed-agent bare primary ignores per-agent provider metadata",

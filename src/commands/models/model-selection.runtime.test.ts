@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveModelExtraParamSources } from "../../agents/model-extra-params.js";
+import { buildModelAliasIndex } from "../../agents/model-selection-shared.js";
 import {
   readConfigFileSnapshot,
   resetConfigRuntimeState,
@@ -29,6 +30,7 @@ import {
 import { addFallbackCommand, removeFallbackCommand } from "./fallbacks-shared.js";
 import { modelsSetImageCommand } from "./set-image.js";
 import { modelsSetCommand } from "./set.js";
+import { updateConfig } from "./shared.js";
 
 describe("model command provider preparation", () => {
   let root: string;
@@ -96,6 +98,84 @@ describe("model command provider preparation", () => {
   function readConfig(): OpenClawConfig {
     return JSON.parse(fs.readFileSync(configPath, "utf8"));
   }
+
+  it.each([
+    { kind: "single", entry: { alias: " GpT ", params: { temperature: 0.2 } } },
+    {
+      kind: "secondary",
+      entry: { alias: "chat", aliases: [" GpT "], params: { temperature: 0.2 } },
+    },
+  ])("preserves $kind alias ownership through OpenAI setup and reload", async ({ entry }) => {
+    config.agents!.defaults!.model = { primary: "fixture/current" };
+    config.agents!.defaults!.models = { "fixture/current": entry };
+    config.agents!.defaults!.modelPolicy = { allow: [] };
+    config.plugins!.allow!.push("openai");
+    config.plugins!.entries = { openai: { enabled: true } };
+    const toApiKeyCredential = vi.fn(() => null);
+    await isolated(() =>
+      withEnvAsync(
+        {
+          OPENCLAW_DISABLE_BUNDLED_PLUGINS: undefined,
+          OPENCLAW_BUNDLED_PLUGINS_DIR: path.resolve("extensions"),
+          OPENCLAW_TEST_TRUST_BUNDLED_PLUGINS_DIR: "1",
+        },
+        async () => {
+          const registry = loadOpenClawPlugins({
+            config,
+            workspaceDir: root,
+            env: process.env,
+            onlyPluginIds: ["alias-fixture", "openai"],
+            preferBuiltPluginArtifacts: false,
+          });
+          const apiKey = registry.providers
+            .find((registration) => registration.pluginId === "openai")
+            ?.provider.auth.find((method) => method.id === "api-key");
+          const setup = apiKey?.runNonInteractive;
+          const defaultModel = apiKey?.starterModel;
+          if (!setup || !defaultModel) {
+            throw new Error("Expected the registered OpenAI API-key setup method");
+          }
+          await updateConfig(async (source) => {
+            const next = await setup({
+              authChoice: "openai-api-key",
+              config: source,
+              baseConfig: source,
+              opts: {},
+              runtime,
+              resolveApiKey: async () => ({ key: "fixture-key-unused", source: "profile" }),
+              toApiKeyCredential,
+            });
+            if (!next) {
+              throw new Error("Expected OpenAI setup to preserve the configured profile");
+            }
+            return next;
+          });
+          resetConfigRuntimeState();
+          const reloaded = await readConfigFileSnapshot();
+          expect(reloaded.valid).toBe(true);
+          expect(reloaded.sourceConfig.agents?.defaults?.models?.["fixture/current"]).toEqual(
+            entry,
+          );
+          expect(reloaded.sourceConfig.agents?.defaults?.modelPolicy).toEqual({ allow: [] });
+          expect(
+            buildModelAliasIndex({
+              cfg: reloaded.config,
+              agentId: "probe",
+              defaultProvider: "openai",
+              allowManifestNormalization: false,
+              allowPluginNormalization: false,
+            }).byAlias.get("gpt")?.ref,
+          ).toEqual({ provider: "fixture", model: "current" });
+          expect(
+            reloaded.sourceConfig.agents?.defaults?.models?.[defaultModel]?.alias,
+          ).toBeUndefined();
+          await modelsSetCommand("GpT", runtime);
+          expect(readConfig().agents?.defaults?.model).toEqual({ primary: "fixture/current" });
+        },
+      ),
+    );
+    expect(toApiKeyCredential).not.toHaveBeenCalled();
+  });
 
   it("preserves a retained environment-backed alias after removing an earlier name", async () => {
     config.agents!.defaults!.models = {
