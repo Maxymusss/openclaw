@@ -13,6 +13,7 @@ import { createDeferred, withTestTimeout } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { SessionManager } from "../agents/sessions/session-manager.js";
 import { resolveRuntimeWorkerUrl, resolveRuntimeWorkerArgv } from "../infra/runtime-worker-url.js";
+import { createCompiledSdkHost } from "../plugins/compiled-sdk-host.test-support.js";
 import type { WorkerLaunchDescriptor } from "./launch-descriptor.js";
 import {
   WORKER_NATIVE_INFERENCE_STARTUP_ENV,
@@ -24,6 +25,7 @@ import {
   parseWorkerProcessResult,
   serializeWorkerProcessInput,
 } from "./worker-process-protocol.js";
+import { workerBackgroundExecEntrypoints } from "./worker-runtime-background-exec-entrypoints.test-support.js";
 
 const repoRoot = fileURLToPath(new URL("../../", import.meta.url));
 const fixtureEntry = resolveRuntimeWorkerUrl(nativeWorkerTestEntrypoint);
@@ -119,6 +121,14 @@ function startupFor(descriptor: WorkerLaunchDescriptor, baseUrl: string): Native
 }
 
 async function launch(descriptor: WorkerLaunchDescriptor, startup?: NativeInferenceStartup) {
+  const sdkHost = createCompiledSdkHost(
+    [
+      workerBackgroundExecEntrypoints.providerModelMetadata,
+      workerBackgroundExecEntrypoints.stringCoerceRuntime,
+    ],
+    (prefix) => tempDirs.make(prefix),
+    { mode: "link" },
+  );
   const home = tempDirs.make("oc-native-child-");
   const temp = path.join(home, "tmp");
   await mkdir(temp);
@@ -140,6 +150,12 @@ async function launch(descriptor: WorkerLaunchDescriptor, startup?: NativeInfere
         TEMP: temp,
         OPENCLAW_STATE_DIR: path.join(home, "state"),
         OPENCLAW_CONFIG_PATH: path.join(home, "config.json"),
+        ...(sdkHost
+          ? {
+              OPENCLAW_DEV_SOURCE_ROOT: sdkHost,
+              OPENCLAW_BUNDLED_PLUGINS_DIR: path.join(repoRoot, "extensions"),
+            }
+          : {}),
         ...(startup ? { [WORKER_NATIVE_INFERENCE_STARTUP_ENV]: JSON.stringify(startup) } : {}),
       },
       stdio: ["pipe", "pipe", "pipe"],

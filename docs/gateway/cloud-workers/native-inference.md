@@ -106,7 +106,7 @@ Configure an explicit device profile with the paired device ID:
   agents: {
     defaults: {
       model: { primary: "openai/worker-model" },
-      models: { "openai/worker-model": {} },
+      models: { "openai/worker-model": { agentRuntime: { id: "openclaw" } } },
     },
     entries: { assistant: {} },
   },
@@ -124,17 +124,92 @@ Configure an explicit device profile with the paired device ID:
 }
 ```
 
-Use **New Session → Cloud → dedicated-native**, the authorized agent, and **New
-workspace** or a selected repository. Existing sessions use normal dispatch/move
-controls. Select the configured profile, not the ordinary paired-device picker:
-ordinary device placement remains proxied. The Gateway still authorizes the
-model, tools, session, placement, and current run.
+### Create and dispatch with node-only credentials
+
+Use an authenticated operator CLI/API connection and the configured default
+model with the OpenClaw runtime. Profile dispatch requires `operator.admin`.
+Create the session without an initial message or explicit `model`/`agentRuntime`
+selection, dispatch it to the configured profile, then submit its first turn:
+
+```bash
+openclaw gateway call sessions.create --json \
+  --params '{"agentId":"assistant","label":"native-work","worktree":true,"worktreeSource":"empty"}'
+
+# Replace SESSION_KEY with the key returned by sessions.create.
+openclaw gateway call sessions.dispatch --json --timeout 240000 \
+  --params '{"key":"SESSION_KEY","agentId":"assistant","profileId":"dedicated-native"}'
+
+# Wait for placement.state to be active before sending.
+# Use a fresh idempotencyKey for each new turn.
+openclaw gateway call agent --json --timeout 180000 \
+  --params '{"agentId":"assistant","sessionKey":"SESSION_KEY","message":"Say hello from the worker.","deliver":false,"idempotencyKey":"native-work-turn-1","timeout":120}'
+
+# Replace RUN_ID with the runId returned by agent; acceptance is not completion.
+openclaw gateway call agent.wait --json --timeout 195000 \
+  --params '{"runId":"RUN_ID","timeoutMs":180000}'
+```
+
+The empty workspace is session-owned. For a repository-backed session, use the
+[repository create/dispatch flow](/gateway/cloud-workers/placement-and-machine-selection#codex-or-openclaw-on-a-cloud-profile)
+instead, still omitting an initial message and explicit model/runtime selection.
+Select `profileId`, not the ordinary paired-device target: ordinary device
+placement remains proxied.
+
+**Current limitation:** explicit model/runtime selection still uses Gateway
+model availability and auth checks; node-local credentials do not satisfy those
+checks. In particular, an explicit `agentRuntime` requires an explicit canonical
+`model` and an available Gateway runtime choice. The Control UI model picker and
+New Session submission also use Gateway readiness and can report `missing-auth`
+or block Start even when the node is configured correctly. Choosing
+**Cloud → dedicated-native** does not remove that limitation. The configured-default
+CLI/API flow above is the supported node-only-credential path; do not copy node
+credentials to the Gateway or disable auth checks to make the picker pass.
+Gateway authentication, agent/model authorization, tool permissions, session and
+placement access, and current-run authority still apply.
 
 The launch carries a feature-gated inference choice and the existing model
 reference, not model endpoints, headers, or provider credentials. Missing local
 configuration, denied grants, incompatible workers, and provider errors fail
 closed. The worker and Gateway both reject proxy fallback for local turns.
 Omitting `settings.inference`, or setting it to `gateway`, preserves the default.
+
+## Upgrade and downgrade
+
+Upgrade the Gateway and node service to compatible builds that support
+worker-local inference before enabling the profile. The Gateway installs its
+pinned worker bundle on the paired node and validates its build receipt; a new
+worker bundle alone does not upgrade the node supervisor or give an older node
+the native startup configuration. Local turns require the
+`worker-local-inference-v1` capability and never fall back to Gateway inference
+on an incompatible worker. Follow the normal
+[worker update and recovery lifecycle](/gateway/cloud-workers/session-lifecycle)
+and your platform's node-service replacement procedure.
+
+Before downgrading either service to a build without this feature:
+
+1. Stop new submissions, finish or stop active turns, and reclaim every native
+   placement while the compatible Gateway and node are still running. Use
+   **Stop cloud worker…** or the existing RPC:
+
+   ```bash
+   openclaw gateway call sessions.reclaim --json --timeout 600000 \
+     --params '{"key":"SESSION_KEY","agentId":"assistant"}'
+   ```
+
+   Wait for successful reconciliation and a `reclaimed` or `local` placement.
+   An offline device or pending teardown is not confirmed release; reconnect and
+   resolve cleanup before continuing. Do not force-destroy merely to downgrade.
+
+2. Remove the native profiles from `cloudWorkers.profiles` and any defaults that
+   reference them, then remove `nodeHost.workerRuns.nativeInferenceConfig` from
+   the node configuration. Removing a profile does not change an active
+   environment's recorded inference choice; reclaim it first. Retire the
+   node-local registry and credential environment through your platform lifecycle.
+3. Downgrade only after that cleanup. Older node schemas reject
+   `nativeInferenceConfig`, and older Gateways do not interpret
+   `settings.inference` as a local-inference requirement. Do not leave native
+   placements or profiles for an older Gateway to recover. Any later Gateway or
+   proxied turn needs its own configured provider credentials.
 
 ## Behavior and limits
 
