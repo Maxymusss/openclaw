@@ -772,9 +772,6 @@ describe("completed legacy index replay", () => {
         message: { role: "assistant", content: "second receipt tail" },
       }),
     ];
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 2);
-    });
     fs.writeFileSync(first.store.storePath, `${JSON.stringify(secondIndex, null, 2)}\n`, {
       mode: 0o600,
     });
