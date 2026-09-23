@@ -9,8 +9,8 @@ import {
   type ChannelMatchSource,
 } from "openclaw/plugin-sdk/channel-targets";
 import type {
+  DiscordGuildChannelConfig,
   DiscordGuildEntry,
-  DiscordRequireMention,
 } from "openclaw/plugin-sdk/config-contracts";
 import {
   normalizeLowercaseStringOrEmpty,
@@ -26,6 +26,7 @@ export type DiscordAllowList = {
 };
 
 type DiscordAllowListMatch = AllowlistMatch<"wildcard" | "id" | "name" | "tag">;
+type DiscordRequireMention = NonNullable<DiscordGuildChannelConfig["requireMention"]>;
 
 const DISCORD_OWNER_ALLOWLIST_PREFIXES = ["discord:", "user:", "pk:"];
 
