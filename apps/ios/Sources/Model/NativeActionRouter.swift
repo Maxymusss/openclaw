@@ -288,24 +288,24 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         case let .unavailable(reason, _):
             throw OpenClawNativeActionError(reason ?? "The selected Gateway is disconnected. Nothing was queued.")
         }
+        let binding = presented.binding
+        let authority = presented.accountAuthority
+        let rootID = presented.presentationID
+        let selectionID = presented.selectionID
         let send = try await presented.gateway.prepareSubmission(
             viewModel: presented.chat,
             session: session,
             message: message,
             lease: lease,
-            accountIsCurrent: { [binding = presented.binding] in await binding.isCurrent() },
-            presentationIsCurrent: { [
-                weak self,
-                weak chat = presented.chat,
-                binding = presented.binding,
-                authority = presented.accountAuthority,
-                rootID = presented.presentationID,
-                selectionID = presented.selectionID,
-            ] in
+            accountIsCurrent: { await binding.isCurrent() },
+            presentationIsCurrent: { [weak self, weak chat = presented.chat] in
                 guard let self, let chat else { return false }
                 return self.isCurrent(
-                    chat: chat, binding: binding, accountAuthority: authority,
-                    presentationID: rootID, selectionID: selectionID)
+                    chat: chat,
+                    binding: binding,
+                    accountAuthority: authority,
+                    presentationID: rootID,
+                    selectionID: selectionID)
             })
         return (send, continuationID)
     }
@@ -634,13 +634,19 @@ final class NativeActionRouter: OpenClawNativeActionHost {
 
     private func isCurrent(_ presented: PresentedChat) -> Bool {
         self.isCurrent(
-            chat: presented.chat, binding: presented.binding, accountAuthority: presented.accountAuthority,
-            presentationID: presented.presentationID, selectionID: presented.selectionID)
+            chat: presented.chat,
+            binding: presented.binding,
+            accountAuthority: presented.accountAuthority,
+            presentationID: presented.presentationID,
+            selectionID: presented.selectionID)
     }
 
     private func isCurrent(
-        chat: OpenClawChatViewModel, binding: IOSNativeActionBinding, accountAuthority: AccountAuthority,
-        presentationID: UUID, selectionID: UUID) -> Bool
+        chat: OpenClawChatViewModel,
+        binding: IOSNativeActionBinding,
+        accountAuthority: AccountAuthority,
+        presentationID: UUID,
+        selectionID: UUID) -> Bool
     {
         self.currentAccountAuthority == accountAuthority &&
             self.presentation?.id == presentationID &&

@@ -8,9 +8,12 @@ private let transportEventsLogger = Logger(subsystem: "ai.openclaw", category: "
 @MainActor
 private final class PendingRunOwnerReference {
     weak var value: OpenClawChatViewModel?
+    /// The arm retains its admitted route while the model remains weak.
+    let externalRoute: OpenClawChatExternalSubmissionRoute?
 
-    init(_ value: OpenClawChatViewModel) {
+    init(_ value: OpenClawChatViewModel, externalRoute: OpenClawChatExternalSubmissionRoute?) {
         self.value = value
+        self.externalRoute = externalRoute
     }
 }
 
@@ -936,15 +939,21 @@ extension OpenClawChatViewModel {
             return false
         }
         let admission = await self.admitPendingRunObservation(
-            runId: runId, sessionSnapshot: sessionSnapshot, armID: armID,
-            externalRoute: externalRoute, terminalState: terminalState)
+            runId: runId,
+            sessionSnapshot: sessionSnapshot,
+            armID: armID,
+            externalRoute: externalRoute,
+            terminalState: terminalState)
         guard admission == .presentation else { return admission == .bookkeeping }
         self.logDiagnostic(diagnostic)
         let historyContext = self.beginHistoryRequest(for: sessionSnapshot)
         let refresh = await refreshHistoryAfterRun(historyRequest: historyContext, externalRoute: externalRoute)
         let refreshedAdmission = await self.admitPendingRunObservation(
-            runId: runId, sessionSnapshot: sessionSnapshot, armID: armID,
-            externalRoute: externalRoute, terminalState: terminalState)
+            runId: runId,
+            sessionSnapshot: sessionSnapshot,
+            armID: armID,
+            externalRoute: externalRoute,
+            terminalState: terminalState)
         guard refreshedAdmission == .presentation else { return refreshedAdmission == .bookkeeping }
         // Live events advance ownership while history is in flight. A superseded snapshot
         // must not let message shape retire a run the gateway still reports in flight.
@@ -1005,7 +1014,9 @@ extension OpenClawChatViewModel {
     }
 
     private func admitPendingRunObservation(
-        runId: String, sessionSnapshot: SessionSnapshot, armID: UInt64?,
+        runId: String,
+        sessionSnapshot: SessionSnapshot,
+        armID: UInt64?,
         externalRoute: OpenClawChatExternalSubmissionRoute?,
         terminalState: OpenClawChatRunTerminalState?) async -> PendingRunAdmission
     {
@@ -1301,7 +1312,7 @@ extension OpenClawChatViewModel {
         self.pendingRunOwnerArmIDs[runId] = armID
         // One arm owns both completion waits and history polling. Rearms cancel
         // every child so stale route/session results cannot retire a successor run.
-        let owner = PendingRunOwnerReference(self)
+        let owner = PendingRunOwnerReference(self, externalRoute: externalRoute)
         let transport = self.transport
         self.pendingRunOwnerTasks[runId] = Task {
             await Self.runPendingRunOwner(
@@ -1310,8 +1321,7 @@ extension OpenClawChatViewModel {
                 sessionSnapshot: session,
                 userMessageTimestamp: timestamp,
                 armID: armID,
-                transport: transport,
-                externalRoute: externalRoute)
+                transport: transport)
         }
     }
 
@@ -1321,8 +1331,7 @@ extension OpenClawChatViewModel {
         sessionSnapshot: SessionSnapshot,
         userMessageTimestamp: Double?,
         armID: UInt64,
-        transport: any OpenClawChatTransport,
-        externalRoute: OpenClawChatExternalSubmissionRoute?) async
+        transport: any OpenClawChatTransport) async
     {
         await withTaskGroup(of: Void.self) { group in
             group.addTask {
@@ -1332,8 +1341,7 @@ extension OpenClawChatViewModel {
                     sessionSnapshot: sessionSnapshot,
                     userMessageTimestamp: userMessageTimestamp,
                     armID: armID,
-                    transport: transport,
-                    externalRoute: externalRoute)
+                    transport: transport)
             }
             group.addTask {
                 await Self.pollPendingRunHistory(
@@ -1341,8 +1349,7 @@ extension OpenClawChatViewModel {
                     runId: runId,
                     sessionSnapshot: sessionSnapshot,
                     userMessageTimestamp: userMessageTimestamp,
-                    armID: armID,
-                    externalRoute: externalRoute)
+                    armID: armID)
             }
             _ = await group.next()
             group.cancelAll()
@@ -1355,8 +1362,7 @@ extension OpenClawChatViewModel {
         sessionSnapshot: SessionSnapshot,
         userMessageTimestamp: Double?,
         armID: UInt64,
-        transport: any OpenClawChatTransport,
-        externalRoute: OpenClawChatExternalSubmissionRoute?) async
+        transport: any OpenClawChatTransport) async
     {
         var terminalState: OpenClawChatRunTerminalState?
         var completedObservedAtMs: Double?
@@ -1383,8 +1389,7 @@ extension OpenClawChatViewModel {
                 userMessageTimestamp: userMessageTimestamp,
                 armID: armID,
                 observation: effectiveObservation,
-                completedObservedAtMs: completedObservedAtMs,
-                externalRoute: externalRoute)
+                completedObservedAtMs: completedObservedAtMs)
             else { return }
             do {
                 try await Task.sleep(nanoseconds: retryDelayMs * 1_000_000)
@@ -1416,8 +1421,7 @@ extension OpenClawChatViewModel {
         userMessageTimestamp: Double?,
         armID: UInt64,
         observation: OpenClawChatRunObservation,
-        completedObservedAtMs: Double?,
-        externalRoute: OpenClawChatExternalSubmissionRoute?) async -> UInt64?
+        completedObservedAtMs: Double?) async -> UInt64?
     {
         guard let model = owner.value,
               model.isCurrentPendingRunOwner(
@@ -1425,6 +1429,7 @@ extension OpenClawChatViewModel {
                   sessionSnapshot: sessionSnapshot,
                   armID: armID)
         else { return nil }
+        let externalRoute = owner.externalRoute
         if let externalRoute, await !externalRoute.accountIsCurrent() { return nil }
         guard model.isCurrentPendingRunOwner(runId: runId, sessionSnapshot: sessionSnapshot, armID: armID) else {
             return nil
@@ -1468,8 +1473,7 @@ extension OpenClawChatViewModel {
         runId: String,
         sessionSnapshot: SessionSnapshot,
         userMessageTimestamp: Double?,
-        armID: UInt64,
-        externalRoute: OpenClawChatExternalSubmissionRoute?) async
+        armID: UInt64) async
     {
         var delayIndex = 0
         while let delayMs = await Self.pendingRunRefreshDelay(
@@ -1492,8 +1496,7 @@ extension OpenClawChatViewModel {
                 armID: armID,
                 after: userMessageTimestamp,
                 diagnostic: "chat.ui pending refresh sessionKey=\(sessionSnapshot.key) "
-                    + "runId=\(runId) delayMs=\(delayMs)",
-                externalRoute: externalRoute)
+                    + "runId=\(runId) delayMs=\(delayMs)")
             guard shouldContinue else { return }
         }
     }
@@ -1522,8 +1525,7 @@ extension OpenClawChatViewModel {
         sessionSnapshot: SessionSnapshot,
         armID: UInt64,
         after timestamp: Double?,
-        diagnostic: String,
-        externalRoute: OpenClawChatExternalSubmissionRoute?) async -> Bool
+        diagnostic: String) async -> Bool
     {
         guard let model = owner.value else { return false }
         return await model.refreshIfPending(
@@ -1532,7 +1534,7 @@ extension OpenClawChatViewModel {
             armID: armID,
             after: timestamp,
             diagnostic: diagnostic,
-            externalRoute: externalRoute)
+            externalRoute: owner.externalRoute)
     }
 
     func clearPendingRun(

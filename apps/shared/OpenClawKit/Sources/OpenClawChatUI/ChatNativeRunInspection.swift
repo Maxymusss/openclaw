@@ -197,7 +197,8 @@ public struct OpenClawChatNativeActionGateway: Sendable {
         }
         let invocation = OpenClawChatExternalSubmission(target: session, message: message)
         let route = OpenClawChatExternalSubmissionRoute(
-            target: session, lease: lease,
+            target: session,
+            lease: lease,
             accountIsCurrent: accountIsCurrent,
             presentationIsCurrent: presentationIsCurrent)
         return OpenClawNativePreparedSend(session: session, message: invocation.message) {
