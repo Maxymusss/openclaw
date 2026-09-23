@@ -2,6 +2,10 @@
 // Keep lane names, commands, image kind, timeout, resources, and release chunks
 // here. Planning and execution live in separate modules.
 import { fileURLToPath } from "node:url";
+import {
+  listRecordedFirstHopSourceVersions,
+  updateFirstHopCompatLaneName,
+} from "./update-first-hop-lanes.mjs";
 
 export type DockerE2eImageKind = "bare" | "functional";
 export type DockerE2eReleaseProfile = "beta" | "stable" | "full";
@@ -64,8 +68,20 @@ const updateMigrationCommand = upgradeSurvivorScriptCommand(
 );
 const updateRunPackageSelfUpgradeCommand =
   "OPENCLAW_QA_ALLOW_UPDATE_RUN_SELF=1 OPENCLAW_SKIP_DOCKER_BUILD=1 pnpm test:docker:update-run-package-self-upgrade";
-const updateFirstHopCompatCommand =
-  "OPENCLAW_QA_ALLOW_UPDATE_FIRST_HOP=1 OPENCLAW_SKIP_DOCKER_BUILD=1 pnpm test:docker:update-first-hop-compat";
+// One lane per recorded source release so the hops run concurrently; each hop
+// takes ~9-11 minutes on hosted runners as of 2026.9.6.
+const updateFirstHopCompatLanes = listRecordedFirstHopSourceVersions().map((version) =>
+  npmLane(
+    updateFirstHopCompatLaneName(version),
+    `OPENCLAW_QA_ALLOW_UPDATE_FIRST_HOP=1 OPENCLAW_UPDATE_FIRST_HOP_SOURCE_VERSIONS=${version} OPENCLAW_SKIP_DOCKER_BUILD=1 pnpm test:docker:update-first-hop-compat`,
+    {
+      resources: ["service"],
+      stateScenario: "upgrade-survivor",
+      timeoutMs: 25 * 60 * 1000,
+      weight: 1,
+    },
+  ),
+);
 const CODEX_HARNESS_API_KEY_ENV = "OPENCLAW_LIVE_CODEX_HARNESS_AUTH=api-key";
 const npmOnboardLaneOptions = {
   prepublishPluginPackages: ["@openclaw/codex"],
@@ -246,15 +262,7 @@ function createPackageUpdateMaintenanceLanes() {
       upgradeSurvivorScenario: "base",
       weight: 3,
     }),
-    npmLane("update-first-hop-compat", updateFirstHopCompatCommand, {
-      resources: ["service"],
-      stateScenario: "upgrade-survivor",
-      // Five serial packaged-updater hops (2026.9.1 through 2026.9.5) take
-      // ~9-11 minutes each on hosted runners as of 2026.9.6; 45 minutes cut the
-      // fifth hop off. Every stable release adds a hop, so re-check this budget.
-      timeoutMs: 75 * 60 * 1000,
-      weight: 3,
-    }),
+    ...updateFirstHopCompatLanes,
     npmLane("update-run-package-self-upgrade", updateRunPackageSelfUpgradeCommand, {
       resources: ["service"],
       stateScenario: "upgrade-survivor",
@@ -927,7 +935,7 @@ const releasePathPackageMigrationLanes = scheduledLaneList(
 );
 const releasePathPackageSelfUpgradeLanes = scheduledLaneList(
   "upgrade-survivor",
-  "update-first-hop-compat",
+  ...updateFirstHopCompatLanes.map((entry) => entry.name),
   "update-run-package-self-upgrade",
 );
 const releasePathPackageUpdateCoreLanes = [
