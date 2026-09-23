@@ -3,19 +3,24 @@
  *
  * Keeps tool factories, renderers, and callers aligned on typed payload and metadata shapes.
  */
-import { Type, type Static } from "typebox";
-import type { bashSchema } from "./bash.js";
-import type { editSchema, EditToolOutputSchema } from "./edit.js";
-import type { findSchema } from "./find.js";
-import type { grepSchema } from "./grep.js";
-import type { lsSchema } from "./ls.js";
+import type { Static } from "typebox";
 import type {
+  bashSchema,
+  editSchema,
+  EditToolOutputSchema,
+  findSchema,
+  grepSchema,
+  lsSchema,
+  ReadToolContinuationSchema,
   readToolInputSchema,
   readToolOutputSchema,
   readTruncationOutputSchema,
-} from "./read-tool-contract.js";
+  writeSchema,
+  WriteToolOutputSchema,
+} from "./tool-schemas.js";
 import type { TruncationResult } from "./truncate.js";
-import type { writeSchema, WriteToolOutputSchema } from "./write.js";
+
+export { ReadToolContinuationSchema } from "./tool-schemas.js";
 
 export type BashToolInput = Static<typeof bashSchema>;
 
@@ -57,26 +62,6 @@ export interface LsToolDetails {
 
 export type ReadToolInput = Static<typeof readToolInputSchema>;
 export type ReadToolTruncationDetails = Static<typeof readTruncationOutputSchema>;
-
-const readContinuationFields = {
-  offset: Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER }),
-  limit: Type.Optional(Type.Integer({ minimum: 1, maximum: Number.MAX_SAFE_INTEGER })),
-};
-
-export const ReadToolContinuationSchema = Type.Union([
-  Type.Object(
-    { kind: Type.Literal("line"), ...readContinuationFields },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      kind: Type.Literal("cursor"),
-      ...readContinuationFields,
-      cursor: Type.Integer({ minimum: 0, maximum: Number.MAX_SAFE_INTEGER }),
-    },
-    { additionalProperties: false },
-  ),
-]);
 
 export type ReadToolContinuation = Static<typeof ReadToolContinuationSchema>;
 
