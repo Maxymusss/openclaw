@@ -7,31 +7,9 @@ import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
 import { prepareSystemAgentRunAdmission } from "./admitted-run-context.js";
 import { resolveCliBackendConfig } from "./cli-backends.js";
 import { normalizeCliModel } from "./cli-runner/helpers.js";
-import { IsolatedCompletionError } from "./isolated-completion-output.js";
+import { hasCliSideEffectEvidence, IsolatedCompletionError } from "./isolated-completion-output.js";
 import type { RunIsolatedCompletionParams } from "./isolated-completion.types.js";
 import type { UsageLike } from "./usage.js";
-
-function hasCliSideEffectEvidence(result: {
-  didSendViaMessagingTool?: boolean;
-  didDeliverSourceReplyViaMessageTool?: boolean;
-  messagingToolSentTexts?: unknown[];
-  messagingToolSentMediaUrls?: unknown[];
-  messagingToolSentTargets?: unknown[];
-  messagingToolSourceReplyPayloads?: unknown[];
-  acceptedSessionSpawns?: unknown[];
-  successfulCronAdds?: number;
-}): boolean {
-  return Boolean(
-    result.didSendViaMessagingTool ||
-    result.didDeliverSourceReplyViaMessageTool ||
-    result.messagingToolSentTexts?.length ||
-    result.messagingToolSentMediaUrls?.length ||
-    result.messagingToolSentTargets?.length ||
-    result.messagingToolSourceReplyPayloads?.length ||
-    result.acceptedSessionSpawns?.length ||
-    result.successfulCronAdds,
-  );
-}
 
 export async function runCliIsolatedCompletion(params: {
   request: RunIsolatedCompletionParams & { config: OpenClawConfig };
@@ -53,6 +31,8 @@ export async function runCliIsolatedCompletion(params: {
         sessionId,
         params.agentId,
         "isolated-completion",
+        params.request.assertCurrent,
+        params.request.operatorAuthority,
       );
       try {
         params.request.assertCurrent?.();
@@ -71,6 +51,7 @@ export async function runCliIsolatedCompletion(params: {
           runId: sessionId,
           provider: params.provider,
           modelProvider: params.modelProvider,
+          requesterModel: { provider: params.modelProvider, model: params.request.model },
           model: params.request.model,
           // The CLI runner treats a supplied profile as exact; it auto-selects only
           // when this field is absent. This path has no embedded-run fallback loop.

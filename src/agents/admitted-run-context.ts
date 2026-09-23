@@ -1,5 +1,6 @@
 /** Canonical operational instance and optional enabled execution-identity evidence. */
 import { randomUUID } from "node:crypto";
+import type { ProviderModelRef as ModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { isExecutionIdentityCollectionEnabled } from "../audit/audit-config.js";
 import {
   createExecutionIdentityAdmissionToken,
@@ -40,6 +41,85 @@ export type AdmittedRunContext = Readonly<{
   admissionSource?: "operator-schedule" | "requester-schedule";
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
 }>;
+
+/** Selection never grants authority; callers must pass the original host-issued source. */
+export function assertOperatorModelAllowed(
+  authority: AdmittedRunOperatorAuthority | undefined,
+  model: ModelRef | undefined,
+): void {
+  if (!authority) {
+    return;
+  }
+  assertAdmittedRunOperatorAuthority(authority);
+  authority.assertCurrent();
+  const policy = authority.modelPolicy;
+  if (policy && (!model || !policy.allows(model))) {
+    throw new Error(
+      "Your operator role cannot use this model. Choose an allowed model or ask a gateway administrator to update your role's model policy.",
+    );
+  }
+}
+
+/** Keeps one selected model current without revoking other work from the same source. */
+export function bindOperatorModelExecution(
+  authority: AdmittedRunOperatorAuthority | undefined,
+  model: ModelRef | undefined,
+): Readonly<{ signal: AbortSignal; assertCurrent: () => void; release: () => void }> | undefined {
+  if (!authority) {
+    return undefined;
+  }
+  const selected = model ? { ...model } : undefined;
+  assertOperatorModelAllowed(authority, selected);
+  const releaseAuthority = authority.retain?.();
+  const revoked = new AbortController();
+  let released = false;
+  const assertCurrent = () => {
+    if (released) {
+      throw new Error("operator model execution authority is no longer active");
+    }
+    revoked.signal.throwIfAborted();
+    try {
+      assertOperatorModelAllowed(authority, selected);
+    } catch (error) {
+      revoked.abort(error);
+      throw error;
+    }
+  };
+  const recheck = () => {
+    try {
+      assertCurrent();
+    } catch {
+      // The latched signal owns cancellation; notification must reach other executions.
+    }
+  };
+  const onSourceAbort = () => revoked.abort(authority.signal?.reason);
+  authority.signal?.addEventListener("abort", onSourceAbort, { once: true });
+  const unsubscribe = authority.onModelPolicyChanged?.(recheck);
+  recheck();
+  return {
+    signal: revoked.signal,
+    assertCurrent,
+    release: () => {
+      if (!released) {
+        released = true;
+        unsubscribe?.();
+        authority.signal?.removeEventListener("abort", onSourceAbort);
+        releaseAuthority?.();
+      }
+    },
+  };
+}
+
+/** Prepared and admitted paths share the same source throughout retries and detached work. */
+export function readRunOperatorAuthority(params: {
+  preparedRunAdmission?: PreparedAgentRunAdmission;
+  admittedRunContext?: AdmittedRunContext;
+}): AdmittedRunOperatorAuthority | undefined {
+  return (
+    readAdmittedRunOperatorAuthority(params.admittedRunContext) ??
+    readPreparedRunOperatorAuthority(params.preparedRunAdmission)
+  );
+}
 
 export type PreparedAgentRunAdmission = Readonly<{
   operationalRunInstance: OperationalRunInstanceRef;

@@ -71,6 +71,14 @@ function catalogPublicationContent(catalog: ModelCatalogSnapshot) {
     routeVariants: byProvider(catalog.routeVariants),
     staticEntries: byProvider(catalog.staticEntries),
     providerOutcomes: byProvider(catalog.providerOutcomes),
+    nativeProviderOutcomes:
+      catalog.nativeProviderOutcomes &&
+      Object.fromEntries(
+        Object.entries(catalog.nativeProviderOutcomes).map(([runtime, outcomes]) => [
+          runtime,
+          byProvider(outcomes),
+        ]),
+      ),
     authoritative: catalog.authoritative !== false,
     full: isPreparedModelCatalogFull(catalog),
     // Workers can observe auth changes before the parent gets a store publication.
@@ -192,6 +200,7 @@ export function mergePreparedNativeCatalog(
   // Harness-only host rows are a current projection, not provider discovery facts.
   return {
     ...providers,
+    nativeProviderOutcomes: native.nativeProviderOutcomes,
     entries: dedupeByKey(
       [
         ...native.entries.filter((entry) => entry.nativeRuntime),
@@ -227,6 +236,14 @@ export function filterPreparedProviderCatalog(
     providerOutcomes: catalog.providerOutcomes?.filter((outcome) =>
       includesProvider(outcome.provider),
     ),
+    nativeProviderOutcomes:
+      catalog.nativeProviderOutcomes &&
+      Object.fromEntries(
+        Object.entries(catalog.nativeProviderOutcomes).map(([runtime, outcomes]) => [
+          runtime,
+          outcomes.filter((outcome) => includesProvider(outcome.provider)),
+        ]),
+      ),
   };
 }
 

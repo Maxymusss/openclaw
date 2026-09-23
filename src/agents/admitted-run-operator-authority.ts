@@ -7,6 +7,7 @@ import {
   freezeOperatorPermissionCeiling,
   type OperatorPermissionCeiling,
 } from "../shared/operator-permissions.js";
+import type { PreparedOperatorModelPolicy } from "./operator-model-policy.types.js";
 
 export type AdmittedRunOperatorAuthority = Readonly<{
   profileId: string;
@@ -24,6 +25,9 @@ export type AdmittedRunOperatorAuthority = Readonly<{
   source?: object;
   /** Retains the original source independently of a foreground run or request. */
   retain?: () => () => void;
+  modelPolicy?: PreparedOperatorModelPolicy;
+  /** Committed policy changes invalidate only executions using a removed model. */
+  onModelPolicyChanged?: (listener: () => void) => () => void;
 }>;
 
 const operatorAuthorityIssuers = new WeakSet<object>();
@@ -62,6 +66,10 @@ export function createAdmittedRunOperatorAuthority(
     source: source.source ?? Object.freeze({}),
     signal,
     retain: source.retain,
+    onModelPolicyChanged: source.onModelPolicyChanged,
+    get modelPolicy() {
+      return source.modelPolicy;
+    },
     assertCurrent: () => {
       if (revoked) {
         throw new Error("operator execution authority is no longer active");

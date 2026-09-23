@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import * as sqliteQueries from "../../infra/kysely-sync.js";
 
 const { TEST_STATE_DIR, PREVIOUS_OPENCLAW_STATE_DIR, SANDBOX_REGISTRY_PATH } = vi.hoisted(() => {
   const nodePath = require("node:path");
@@ -126,7 +127,7 @@ describe("registry race safety", () => {
         throw new Error("missing seeded registry row");
       }
       await updateRegistry({ ...initial, lastUsedAtMs: 2 });
-      completeSandboxRegistryReservation(expected, { ...initial, lastUsedAtMs: 3 });
+      await completeSandboxRegistryReservation(expected, { ...initial, lastUsedAtMs: 3 });
       await closeOpenClawStateDatabaseAsync();
       closeOpenClawStateDatabaseForTest();
       const current = await readRegistryEntry(initial.containerName);
@@ -157,13 +158,13 @@ describe("registry race safety", () => {
       reserveSandboxRegistryEntry({ ...candidate, retirementPolicy: "foreground-owner" }),
     ).toThrow("cannot adopt");
     await expect(readRegistryEntry(existing.containerName)).resolves.toEqual(snapshot);
-    completeSandboxRegistryReservation(existing);
+    await completeSandboxRegistryReservation(existing);
     const owned = reserveSandboxRegistryEntry({
       ...candidate,
       retirementPolicy: "foreground-owner",
     });
     // The captured, never-dispatched reservation has one exact owner release path.
-    completeSandboxRegistryReservation(owned);
+    await completeSandboxRegistryReservation(owned);
     await expect(readRegistryEntry(owned.containerName)).resolves.toBeNull();
   });
 
@@ -194,9 +195,9 @@ describe("registry race safety", () => {
     const successor = { ...reservation, ...changed };
     await updateRegistry(successor);
     expect(() => assertSandboxRegistryEntryCurrent(reservation)).toThrow();
-    expect(() => completeSandboxRegistryReservation(reservation, reservation)).toThrow();
+    await expect(completeSandboxRegistryReservation(reservation, reservation)).rejects.toThrow();
     await expect(readRegistryEntry(reservation.containerName)).resolves.toEqual(successor);
-    expect(() => completeSandboxRegistryReservation(reservation)).toThrow();
+    await expect(completeSandboxRegistryReservation(reservation)).rejects.toThrow();
     await expect(readRegistryEntry(reservation.containerName)).resolves.toEqual(successor);
   });
 
@@ -210,16 +211,18 @@ describe("registry race safety", () => {
       }),
     );
     const published = { ...reservation, image: "resolved-image", configHash: "resolved-config" };
-    completeSandboxRegistryReservation(reservation, published);
+    await completeSandboxRegistryReservation(reservation, published);
     const current = { ...published, runtimeState: "ready" as const };
     await expect(readRegistryEntry(reservation.containerName)).resolves.toEqual(current);
     expect(() => assertSandboxRegistryEntryCurrent(current)).not.toThrow();
     // Allocation facts may differ from the pending receipt; the old receipt
     // must not subsequently authorize deletion of the published generation.
-    expect(() => completeSandboxRegistryReservation(reservation)).toThrow("generation changed");
+    await expect(completeSandboxRegistryReservation(reservation)).rejects.toThrow(
+      "generation changed",
+    );
     await updateRegistry({ ...current, lastUsedAtMs: 99 });
     expect(() => assertSandboxRegistryEntryCurrent(current)).not.toThrow();
-    completeSandboxRegistryReservation(current);
+    await completeSandboxRegistryReservation(current);
     await expect(readRegistryEntry(reservation.containerName)).resolves.toBeNull();
   });
 
@@ -236,9 +239,9 @@ describe("registry race safety", () => {
         workspaceDir: "/owned/workspace",
       }),
     );
-    expect(() =>
+    await expect(
       completeSandboxRegistryReservation(reservation, { ...reservation, ...changed }),
-    ).toThrow("publication changed reservation identity");
+    ).rejects.toThrow("publication changed reservation identity");
     await expect(readRegistryEntry(reservation.containerName)).resolves.toEqual(reservation);
     expect((await readRegistry()).entries).toHaveLength(1);
   });
@@ -279,20 +282,28 @@ describe("registry race safety", () => {
     await expect(readRegistryEntry("missing-container")).resolves.toBeNull();
   });
 
-  it("preserves a Podman target across registry usage updates", async () => {
-    await updateRegistry(
-      containerEntry({
-        backendId: "podman",
-        backendTarget: {
-          key: "machine:target-a",
-          globalArgs: ["--url", "ssh://core@127.0.0.1:60001/run/podman/podman.sock"],
-        },
-      }),
-    );
+  it("captures a Podman target and preserves immutable fields across usage updates", async () => {
+    const target = {
+      key: "machine:target-a",
+      globalArgs: ["--url", "ssh://core@127.0.0.1:60001/run/podman/podman.sock"],
+    };
+    const entry = containerEntry({
+      backendId: "podman",
+      backendTarget: target,
+      createdAtMs: 11,
+      workspaceDir: "/original/workspace",
+    });
+    const initialWrite = updateRegistry(entry);
+    target.globalArgs[1] = "ssh://changed-after-dispatch/run/podman/podman.sock";
+    entry.createdAtMs = 99;
+    entry.image = "changed-after-dispatch";
+    entry.workspaceDir = "/changed-after-dispatch";
+    await initialWrite;
     await updateRegistry(
       containerEntry({
         backendId: "podman",
         lastUsedAtMs: 2,
+        workspaceDir: "/later/workspace",
       }),
     );
 
@@ -303,7 +314,74 @@ describe("registry race safety", () => {
         globalArgs: ["--url", "ssh://core@127.0.0.1:60001/run/podman/podman.sock"],
       },
       lastUsedAtMs: 2,
+      createdAtMs: 11,
+      image: "openclaw-sandbox:test",
+      workspaceDir: "/original/workspace",
     });
+  });
+
+  it("settles runtime registry writes in the worker and retains pending completion rules", async () => {
+    const entry = containerEntry({
+      backendId: "docker",
+      runtimeState: "pending",
+      workspaceDir: "/original/workspace",
+    });
+    await updateRegistry(entry);
+    const hostSql = vi.spyOn(sqliteQueries, "executeSqliteQuerySync").mockImplementation(() => {
+      throw new Error("Sandbox registry writes must not execute SQL on the host");
+    });
+    try {
+      await updateRegistry({ ...entry, lastUsedAtMs: 2, createdAtMs: 99, image: "ignored-update" });
+      await completeSandboxRegistryReservation(entry, {
+        ...entry,
+        lastUsedAtMs: 3,
+        image: "initialized-image",
+      });
+      await completeSandboxRegistryReservation(entry, {
+        ...entry,
+        lastUsedAtMs: 4,
+        image: "ignored-ready",
+      });
+      await expect(readRegistryEntry(entry.containerName)).resolves.toMatchObject({
+        runtimeState: "ready",
+        createdAtMs: 1,
+        lastUsedAtMs: 4,
+        image: "initialized-image",
+        workspaceDir: "/original/workspace",
+      });
+      await completeSandboxRegistryReservation(entry);
+      await expect(readRegistryEntry(entry.containerName)).resolves.toBeNull();
+      await updateRegistry({ ...entry, containerName: "direct-remove" });
+      await removeRegistryEntry("direct-remove", { preserveRemovalIntent: true });
+      await expect(readRegistryEntry("direct-remove")).resolves.toBeNull();
+    } finally {
+      hostSql.mockRestore();
+    }
+  });
+
+  it("refuses pending publication, completion or retirement after removal intent", async () => {
+    for (const state of ["missing", "removing", "removing-pending"] as const) {
+      const entry = containerEntry({ containerName: state, backendId: "docker" });
+      if (state !== "missing") {
+        await updateRegistry({ ...entry, runtimeState: state });
+      }
+      const before = await readRegistryEntry(entry.containerName);
+      if (state !== "missing") {
+        await expect(updateRegistry({ ...entry, runtimeState: "pending" })).rejects.toThrow(
+          "Sandbox runtime was removed or is being removed",
+        );
+      }
+      for (const retired of [false, true]) {
+        await expect(
+          completeSandboxRegistryReservation(entry, retired ? undefined : entry),
+        ).rejects.toThrow("Sandbox runtime was removed or is being removed");
+      }
+      await expect(readRegistryEntry(entry.containerName)).resolves.toEqual(before);
+      await removeRegistryEntry(entry.containerName, { preserveRemovalIntent: true });
+      await expect(readRegistryEntry(entry.containerName)).resolves.toEqual(before);
+      await removeRegistryEntry(entry.containerName);
+      await expect(readRegistryEntry(entry.containerName)).resolves.toBeNull();
+    }
   });
 
   it("reads registered runtime IDs for one backend and scope newest first", async () => {

@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isValidBase64 } from "@openclaw/media-core/base64";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
-import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-operator-authority.js";
+import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import { resolveNativeModelPrimary } from "../agents/agent-scope.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import {
@@ -101,7 +101,6 @@ export function buildDashboardSessionTitleSource(params: {
 }
 
 type SessionTitleParams = {
-  operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg: OpenClawConfig;
   agentId: string;
   entry: SessionEntry | undefined;
@@ -113,6 +112,7 @@ type SessionTitleParams = {
   commitGuard?: () => void;
   withSource?: WorktreeSourceStage;
   retryFailedJoin?: boolean;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
 };
 
 function isAutoTitleSessionKey(sessionKey: string): boolean {
@@ -167,7 +167,6 @@ function normalizeDashboardSessionTitle(raw: string): string | null {
 }
 
 async function generateDashboardSessionTitle(params: {
-  operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg: OpenClawConfig;
   agentId: string;
   entry?: DashboardSessionTitleModelEntry;
@@ -175,6 +174,7 @@ async function generateDashboardSessionTitle(params: {
   utilityOnly?: boolean;
   abortSignal?: AbortSignal;
   assertCurrent?: () => void;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
 }): Promise<string | null> {
   const sourceText = buildDashboardSessionTitleSource({
     message: params.userMessage,
@@ -245,13 +245,13 @@ async function generateDashboardSessionTitle(params: {
 
 /** Prepares a creation draft's title without creating or updating a session. */
 export async function prepareDashboardSessionTitle(params: {
-  operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg: OpenClawConfig;
   agentId: string;
   entry?: DashboardSessionTitleModelEntry;
   userMessage: string;
   abortSignal?: AbortSignal;
   assertCurrent?: () => void;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
 }): Promise<string | null> {
   try {
     return await generateDashboardSessionTitle({ ...params, utilityOnly: true });
@@ -312,8 +312,8 @@ export async function maybeGenerateDashboardSessionTitle(
 
 /** Joins existing work; only the caller that persists a title returns true. */
 export async function maybeGenerateSessionTitle(params: SessionTitleParams): Promise<boolean> {
-  return runWithOperatorModelAuthority(params.operatorAuthority, () =>
-    maybeGenerateOwnedSessionTitle(params),
+  return runWithOperatorModelAuthority(params.operatorAuthority, (operatorAuthority) =>
+    maybeGenerateOwnedSessionTitle({ ...params, operatorAuthority }),
   );
 }
 

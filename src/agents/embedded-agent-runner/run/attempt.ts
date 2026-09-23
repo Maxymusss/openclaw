@@ -7,6 +7,8 @@ import { runWithAsyncWorkResources } from "../../../shared/async-work-resources.
 import { getAsyncWorkSignal } from "../../../shared/async-work-scope.js";
 import {
   readAdmittedRunOperatorAuthority,
+  bindOperatorModelExecution,
+  readRunOperatorAuthority,
   resolveAdmittedRunActiveAssertion,
 } from "../../admitted-run-context.js";
 import { createBundleLspToolRuntime } from "../../agent-bundle-lsp-runtime.js";
@@ -65,19 +67,37 @@ import type {
 export async function runEmbeddedAttempt(
   input: EmbeddedRunAttemptParams,
 ): Promise<EmbeddedRunAttemptResult> {
-  const parentSignal = getAsyncWorkSignal();
-  const resourceAbortSignal = parentSignal
-    ? input.abortSignal
-      ? AbortSignal.any([input.abortSignal, parentSignal])
-      : parentSignal
-    : input.abortSignal;
-  return await runWithAsyncWorkResources((onAcquired) =>
-    runEmbeddedAttemptOwned(
-      input,
-      (release) => onAcquired({ release, releaseBeforeResultWhenIdle: true }),
-      resourceAbortSignal,
-    ),
-  );
+  const modelExecution = bindOperatorModelExecution(readRunOperatorAuthority(input), {
+    provider: input.provider,
+    model: input.modelId,
+  });
+  try {
+    const attempt = modelExecution
+      ? {
+          ...input,
+          abortSignal: input.abortSignal
+            ? AbortSignal.any([input.abortSignal, modelExecution.signal])
+            : modelExecution.signal,
+        }
+      : input;
+    const parentSignal = getAsyncWorkSignal();
+    const resourceAbortSignal = parentSignal
+      ? attempt.abortSignal
+        ? AbortSignal.any([attempt.abortSignal, parentSignal])
+        : parentSignal
+      : attempt.abortSignal;
+    const result = await runWithAsyncWorkResources((onAcquired) =>
+      runEmbeddedAttemptOwned(
+        attempt,
+        (release) => onAcquired({ release, releaseBeforeResultWhenIdle: true }),
+        resourceAbortSignal,
+      ),
+    );
+    modelExecution?.assertCurrent();
+    return result;
+  } finally {
+    modelExecution?.release();
+  }
 }
 
 async function runEmbeddedAttemptOwned(

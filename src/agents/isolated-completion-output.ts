@@ -22,6 +22,28 @@ export class IsolatedCompletionError extends Error {
   }
 }
 
+export function hasCliSideEffectEvidence(result: {
+  didSendViaMessagingTool?: boolean;
+  didDeliverSourceReplyViaMessageTool?: boolean;
+  messagingToolSentTexts?: unknown[];
+  messagingToolSentMediaUrls?: unknown[];
+  messagingToolSentTargets?: unknown[];
+  messagingToolSourceReplyPayloads?: unknown[];
+  acceptedSessionSpawns?: unknown[];
+  successfulCronAdds?: number;
+}): boolean {
+  return Boolean(
+    result.didSendViaMessagingTool ||
+    result.didDeliverSourceReplyViaMessageTool ||
+    result.messagingToolSentTexts?.length ||
+    result.messagingToolSentMediaUrls?.length ||
+    result.messagingToolSentTargets?.length ||
+    result.messagingToolSourceReplyPayloads?.length ||
+    result.acceptedSessionSpawns?.length ||
+    result.successfulCronAdds,
+  );
+}
+
 export function requireIsolatedAssistantText(assistant: AssistantMessage): string {
   assertOperatorModelResponse(assistant);
   if (assistant.stopReason !== "stop" && assistant.stopReason !== "length") {

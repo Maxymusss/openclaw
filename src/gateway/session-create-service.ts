@@ -70,10 +70,7 @@ import {
   runExclusiveSessionLifecycleMutation,
 } from "../sessions/session-lifecycle-admission.js";
 import { createLazyRuntimeModule } from "../shared/lazy-runtime.js";
-import { isUserModelAuthProfileId } from "../state/user-model-account-id.js";
-import { isUserModelAuthProfileOwner } from "../state/user-model-accounts.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
-import { ModelAccountConnectAuthorityError } from "./model-account-connect.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "./operator-role-policy.js";
 import { ADMIN_SCOPE } from "./operator-scopes.js";
 import {
@@ -89,8 +86,9 @@ import { buildForkedGatewaySessionEntry } from "./session-create-fork-entry.js";
 import { resolveSessionCreateInheritance } from "./session-create-inheritance.js";
 import {
   resolveSessionCreateModelInputError,
-  resolveSessionCreateModelSelection,
-  resolveSessionCreatePersonalModelDefault,
+  createSessionCreateCommitGuard,
+  prepareSessionCreateDefaultAccount,
+  prepareSessionCreateModelSelection,
   resolveSessionForkMaxTokens,
 } from "./session-create-model-selection.js";
 import type {
@@ -141,35 +139,25 @@ export async function createGatewaySession(
   let validateRuntimeSelection: (() => ErrorShape | undefined) | undefined;
   const commitGuard =
     personalModelSelection ||
+    params.operatorAuthority ||
     personalAccountDefaults ||
     params.activeParentFork ||
     params.preparedModelSelection ||
-    params.operatorAuthority?.permissions?.models ||
     typeof params.model === "string" ||
     params.agentRuntime !== undefined
-      ? () => {
-          params.commitGuard?.();
-          params.operatorAuthority?.assertCurrent();
-          const runtimeError = validateRuntimeSelection?.();
-          if (runtimeError) {
-            throw new Error(runtimeError.message);
-          }
-          params.activeParentFork?.assertCurrent();
-          params.preparedModelSelection?.assertCurrent();
-          personalModelSelection?.assertCurrent();
-          personalAccountDefaults?.assertCurrent();
-          if (
-            personalAccountDefaults &&
-            selectedDefaultProfile &&
-            isUserModelAuthProfileId(selectedDefaultProfile) &&
-            !isUserModelAuthProfileOwner({
-              profileId: personalAccountDefaults.owner,
-              authProfileId: selectedDefaultProfile,
-            })
-          ) {
-            throw new ModelAccountConnectAuthorityError();
-          }
-        }
+      ? createSessionCreateCommitGuard({
+          assertCallerCurrent: params.commitGuard,
+          operatorAuthority: params.operatorAuthority,
+          selections: [
+            params.activeParentFork,
+            params.preparedModelSelection,
+            personalModelSelection,
+            personalAccountDefaults,
+          ],
+          personalAccountDefaults,
+          readDefaultProfile: () => selectedDefaultProfile,
+          validateSelection: () => validateRuntimeSelection?.(),
+        })
       : params.commitGuard;
   commitGuard?.();
   // Presentation titles do not claim labels. Bound the snapshot at the shared
@@ -792,14 +780,20 @@ export async function createGatewaySession(
         return { ok: false, error: root.error };
       }
     }
-    const titleModelSelection = resolveSessionCreateModelSelection(
-      params.cfg,
-      target.agentId,
-      params.catalogTarget ??
+    const modelSelection = prepareSessionCreateModelSelection({
+      cfg: params.cfg,
+      agentId: target.agentId,
+      input:
+        params.catalogTarget ??
         (params.model ? { model: params.model, agentRuntime: params.agentRuntime } : undefined),
-      currentParentSessionEntry,
-      params.preparedModelSelection?.ref,
-    );
+      parentEntry: currentParentSessionEntry,
+      preparedModelSelection: params.preparedModelSelection?.ref,
+      operatorAuthority: params.operatorAuthority,
+    });
+    if (!modelSelection.ok) {
+      return modelSelection;
+    }
+    validateRuntimeSelection = modelSelection.validate;
     commitGuard?.();
     const preparationResult = params.prepareLifecycle
       ? await params.prepareLifecycle({
@@ -807,7 +801,7 @@ export async function createGatewaySession(
           entry: currentTargetEntry,
           key: target.canonicalKey,
           storePath: target.storePath,
-          titleModelSelection,
+          titleModelSelection: modelSelection.selection,
           projectId,
           sandboxRequired,
         })
@@ -1011,6 +1005,7 @@ export async function createGatewaySession(
             : undefined,
           authorizedAgentHarnessId: params.authorizedAgentHarnessId,
           personalModelSelection: params.personalModelSelection,
+          operatorAuthority: params.operatorAuthority,
           preparedModelSelection: params.preparedModelSelection?.ref,
         });
         if (!patched.ok) {
@@ -1217,19 +1212,28 @@ export async function createGatewaySession(
         if (modelAuthorityError) {
           return { ok: false, error: modelAuthorityError };
         }
+        let validateAccountModel: (() => ErrorShape | undefined) | undefined;
         if (params.fork !== true) {
           if (createdNewEntry && !entry.authProfileOverride && personalAccountDefaults) {
-            selectedDefaultProfile = await resolveSessionCreatePersonalModelDefault({
+            const account = await prepareSessionCreateDefaultAccount({
               cfg: params.cfg,
               agentId: target.agentId,
               entry,
               defaults: personalAccountDefaults,
-              commitGuard,
+              operatorAuthority: params.operatorAuthority,
+              resetToDefault: params.model === undefined && !params.catalogTarget,
+              assertCurrent: commitGuard,
             });
+            if (!account.ok) {
+              return account;
+            }
+            validateAccountModel = account.validate;
+            validateRuntimeSelection = account.validate;
+            selectedDefaultProfile = account.profileId;
             commitGuard?.();
-            if (selectedDefaultProfile) {
+            if (account.profileId) {
               // Pin before the first turn; later default changes must not claim this session.
-              entry.authProfileOverride = selectedDefaultProfile;
+              entry.authProfileOverride = account.profileId;
               entry.authProfileOverrideSource = "user-link";
               delete entry.authProfileOverrideCompactionCount;
             }
@@ -1247,6 +1251,8 @@ export async function createGatewaySession(
           },
           entry,
           catalog: preparedModelCatalog?.entries,
+          validateModelSelection:
+            validateAccountModel ?? patched.validateModelSelection ?? modelSelection.validate,
           ...(params.agentRuntime !== undefined || params.model !== undefined
             ? {
                 placement: {

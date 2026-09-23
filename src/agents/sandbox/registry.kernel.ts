@@ -1,15 +1,143 @@
 import type { DatabaseSync } from "node:sqlite";
+import { isDeepStrictEqual } from "node:util";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import type { Insertable, Selectable } from "kysely";
+import type { Insertable, Selectable, Updateable } from "kysely";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import type { DB } from "../../state/openclaw-state-db.generated.js";
 import type { SandboxBrowserRegistryEntry, SandboxRegistryEntry } from "./registry.types.js";
 
 export type SandboxRegistryInsert = Insertable<DB["sandbox_registry_entries"]>;
+export type SandboxRegistryWrite =
+  | { operation: "update"; entry: SandboxRegistryEntry }
+  | { operation: "complete"; expected: SandboxRegistryEntry; entry?: SandboxRegistryEntry }
+  | { operation: "remove"; containerName: string; preserveRemovalIntent?: boolean };
 
 type SandboxRegistryRow = Selectable<DB["sandbox_registry_entries"]>;
 type SandboxRegistryDatabase = Pick<DB, "sandbox_registry_entries">;
+
+function rowToUpdate(row: SandboxRegistryInsert): Updateable<DB["sandbox_registry_entries"]> {
+  const { registry_kind: _registryKind, container_name: _containerName, ...update } = row;
+  return update;
+}
+
+export function insertSandboxRegistryRowInDatabase(
+  db: DatabaseSync,
+  row: SandboxRegistryInsert,
+): void {
+  executeSqliteQuerySync(
+    db,
+    getNodeSqliteKysely<SandboxRegistryDatabase>(db)
+      .insertInto("sandbox_registry_entries")
+      .values(row)
+      .onConflict((conflict) =>
+        conflict.columns(["registry_kind", "container_name"]).doUpdateSet(rowToUpdate(row)),
+      ),
+  );
+}
+
+export function assertSandboxRegistryReservationCurrent(
+  current: SandboxRegistryEntry | null,
+  expected: Pick<SandboxRegistryEntry, "backendId" | "sessionKey">,
+): asserts current is SandboxRegistryEntry {
+  if (
+    !current ||
+    current.runtimeState === "removing" ||
+    current.runtimeState === "removing-pending" ||
+    current.backendId !== expected.backendId ||
+    current.sessionKey !== expected.sessionKey
+  ) {
+    throw new Error(
+      "Sandbox runtime was removed or is being removed; retry after sandbox recreate completes.",
+    );
+  }
+}
+
+export function assertRetirementPolicyAllowsRemoval(
+  entry: Pick<SandboxRegistryEntry, "containerName" | "retirementPolicy">,
+): void {
+  if (entry.retirementPolicy !== undefined) {
+    throw new Error(
+      "Sandbox runtime requires its foreground owner's qualified cleanup; automatic retirement refused and custody retained.",
+    );
+  }
+}
+
+export function assertSandboxRegistryReservationGenerationCurrent(
+  current: SandboxRegistryEntry | null,
+  expected: SandboxRegistryEntry,
+): asserts current is SandboxRegistryEntry {
+  assertSandboxRegistryReservationCurrent(current, expected);
+  if (
+    current.createdAtMs !== expected.createdAtMs ||
+    current.workspaceDir !== expected.workspaceDir ||
+    current.configHash !== expected.configHash ||
+    current.retirementPolicy !== expected.retirementPolicy ||
+    !isDeepStrictEqual(current.backendTarget, expected.backendTarget)
+  ) {
+    throw new Error("Sandbox runtime generation changed");
+  }
+}
+
+function removeContainerRegistryRowInDatabase(db: DatabaseSync, containerName: string): void {
+  executeSqliteQuerySync(
+    db,
+    getNodeSqliteKysely<SandboxRegistryDatabase>(db)
+      .deleteFrom("sandbox_registry_entries")
+      .where("registry_kind", "=", "container")
+      .where("container_name", "=", containerName),
+  );
+}
+
+export function writeSandboxRegistryInDatabase(
+  db: DatabaseSync,
+  write: SandboxRegistryWrite,
+): void {
+  if (write.operation === "remove") {
+    const current = readSandboxRegistryEntryInDatabase(db, write.containerName);
+    if (current) {
+      assertRetirementPolicyAllowsRemoval(current);
+    }
+    if (
+      write.preserveRemovalIntent &&
+      (current?.runtimeState === "removing" || current?.runtimeState === "removing-pending")
+    ) {
+      return;
+    }
+    removeContainerRegistryRowInDatabase(db, write.containerName);
+    return;
+  }
+  if (write.operation === "update") {
+    const { entry } = write;
+    const existing = readSandboxRegistryEntryInDatabase(db, entry.containerName);
+    if (entry.runtimeState === "pending" && existing?.runtimeState !== undefined) {
+      assertSandboxRegistryReservationCurrent(existing, entry);
+    }
+    insertSandboxRegistryRowInDatabase(db, containerEntryToRow(entry, existing));
+    return;
+  }
+  const { expected, entry } = write;
+  const existing = readSandboxRegistryEntryInDatabase(db, expected.containerName);
+  assertSandboxRegistryReservationGenerationCurrent(existing, expected);
+  if (!entry) {
+    removeContainerRegistryRowInDatabase(db, expected.containerName);
+  } else {
+    if (
+      entry.containerName !== expected.containerName ||
+      entry.backendId !== expected.backendId ||
+      entry.sessionKey !== expected.sessionKey
+    ) {
+      throw new Error("Sandbox runtime publication changed reservation identity");
+    }
+    insertSandboxRegistryRowInDatabase(
+      db,
+      containerEntryToRow(
+        { ...entry, runtimeState: "ready" },
+        { ...existing, image: existing.runtimeState === "pending" ? entry.image : existing.image },
+      ),
+    );
+  }
+}
 
 export function containerEntryToRow(
   entry: SandboxRegistryEntry,

@@ -1,12 +1,15 @@
 // Generates short labels for sessions from conversation context.
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { createReasoningTagTextPartitioner } from "../../../packages/markdown-core/src/reasoning-tags.js";
-import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
+import {
+  assertOperatorModelAllowed,
+  type AdmittedRunOperatorAuthority,
+} from "../../agents/admitted-run-context.js";
 import { resolveDefaultAgentId } from "../../agents/agent-scope.js";
 import { runIsolatedCompletion } from "../../agents/isolated-completion.js";
 import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
 import {
-  assertOperatorModelAllowed,
+  assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
   assertOperatorModelAuthorityCurrent,
   isOperatorModelPolicyError,
   runWithOperatorModelAuthority,
@@ -30,7 +33,6 @@ type ConversationLabelAttempt = {
 
 /** Inputs for generating a short conversation label from the configured utility model. */
 export type ConversationLabelParams = {
-  operatorAuthority?: AdmittedRunOperatorAuthority;
   userMessage: string;
   prompt: string;
   cfg: OpenClawConfig;
@@ -42,6 +44,7 @@ export type ConversationLabelParams = {
   maxLength?: number;
   abortSignal?: AbortSignal;
   assertCurrent?: () => void;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
 };
 
 type ConversationLabelFallbackParams = ConversationLabelParams & {
@@ -110,8 +113,8 @@ async function runLabelAttempts(
     normalizeLabel?: (label: string) => string | null;
   },
 ): Promise<string | null> {
-  return runWithOperatorModelAuthority(params.operatorAuthority, () =>
-    runOwnedLabelAttempts(params),
+  return runWithOperatorModelAuthority(params.operatorAuthority, (operatorAuthority) =>
+    runOwnedLabelAttempts({ ...params, operatorAuthority }),
   );
 }
 
@@ -121,6 +124,7 @@ async function runOwnedLabelAttempts(
   const assertCurrent = () => {
     assertOperatorModelAuthorityCurrent(params.operatorAuthority);
     params.assertCurrent?.();
+    params.operatorAuthority?.assertCurrent();
     params.abortSignal?.throwIfAborted();
   };
   const seen = new Set(params.skipAttempts?.map((attempt) => resolveAttemptKey(params, attempt)));
@@ -137,7 +141,16 @@ async function runOwnedLabelAttempts(
       if (!selection) {
         throw new Error("conversation label model selection unavailable");
       }
-      assertOperatorModelAllowed(params.operatorAuthority, selection.provider, selection.modelId);
+      const model = { provider: selection.provider, model: selection.modelId };
+      if (params.operatorAuthority?.modelPolicy?.allows(model) === false) {
+        continue;
+      }
+      assertOperatorModelAllowed(params.operatorAuthority, model);
+      assertOperatorModelTupleAllowed(
+        params.operatorAuthority,
+        selection.provider,
+        selection.modelId,
+      );
       // The session's runtime override was resolved for its primary provider; a
       // utility model on another provider cannot run through that harness.
       const agentHarnessRuntimeOverride = resolveCompatibleAgentRuntimeForProvider({

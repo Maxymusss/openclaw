@@ -54,7 +54,16 @@ import { assertValidParams } from "./validation.js";
 
 export const sessionMutationHandlers: GatewayRequestHandlers = {
   "sessions.patchMany": async (options) => {
-    const { params, respond, context, client, sessionMutationAuthorization } = options;
+    const {
+      params,
+      respond,
+      context,
+      client,
+      sessionMutationAuthorization,
+      sessionMutationCommitGuard,
+      hasCurrentClientAuthority,
+      signal,
+    } = options;
     const diagnostics = startSessionPatchDiagnostics("sessions.patchMany");
     let modelSource: ReturnType<typeof captureGatewayOperatorRunAuthority>;
     try {
@@ -78,8 +87,15 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      modelSource = captureGatewayOperatorRunAuthority(options);
       const targets = params.targets;
+      {
+        modelSource = captureGatewayOperatorRunAuthority({
+          client,
+          context,
+          hasCurrentClientAuthority,
+          invocationAuthority: { assertCurrent: () => sessionMutationCommitGuard?.(), signal },
+        });
+      }
       const executed = await executeSessionPatchMutations({
         client,
         context,
@@ -119,7 +135,16 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
     }
   },
   "sessions.patch": async (options) => {
-    const { params, respond, context, client, sessionMutationAuthorization } = options;
+    const {
+      params,
+      respond,
+      context,
+      client,
+      sessionMutationAuthorization,
+      sessionMutationCommitGuard,
+      hasCurrentClientAuthority,
+      signal,
+    } = options;
     const diagnostics = startSessionPatchDiagnostics("sessions.patch");
     let modelSource: ReturnType<typeof captureGatewayOperatorRunAuthority>;
     try {
@@ -146,8 +171,21 @@ export const sessionMutationHandlers: GatewayRequestHandlers = {
         return;
       }
       const patch = { ...params, key };
-      modelSource = captureGatewayOperatorRunAuthority(options);
       const target = sessionPatchTargetIdentity(patch);
+      {
+        modelSource = captureGatewayOperatorRunAuthority({
+          client,
+          context,
+          hasCurrentClientAuthority,
+          invocationAuthority: {
+            assertCurrent: () => {
+              sessionMutationCommitGuard?.();
+              sessionMutationAuthorization?.assertCurrent();
+            },
+            signal,
+          },
+        });
+      }
       const executed = await executeSessionPatchMutations({
         client,
         context,

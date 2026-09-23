@@ -1,7 +1,10 @@
 /** Tests generated conversation labels for reply sessions. */
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-operator-authority.js";
-import { OperatorModelPolicyError } from "../../agents/operator-model-policy.js";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
+import {
+  prepareOperatorModelPolicy,
+  OperatorModelPolicyError,
+} from "../../agents/operator-model-policy.js";
 
 const runIsolatedCompletion = vi.hoisted(() => vi.fn());
 const resolveSimpleCompletionSelectionForAgent = vi.hoisted(() => vi.fn());
@@ -254,6 +257,32 @@ describe("generateConversationLabelWithFallback", () => {
       }
     },
   );
+  it("skips a denied utility model and carries the requester into the permitted regular fallback", async () => {
+    const cfg = { agents: { entries: { main: {} }, defaults: { model: "label-test/regular" } } };
+    const operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "label-reader",
+      scopes: ["operator.write"],
+      assertCurrent: () => {},
+      modelPolicy: prepareOperatorModelPolicy({
+        cfg,
+        policy: { sourceAgent: "main" },
+        manifestPlugins: [],
+      }),
+    });
+    await expect(
+      generateConversationLabelWithFallback({
+        ...params,
+        cfg,
+        agentId: "main",
+        utilityModelRef: "label-test/utility",
+        regularModelRef: "label-test/regular",
+        operatorAuthority,
+      }),
+    ).resolves.toBe("Topic label");
+    expect(runIsolatedCompletion).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ provider: "label-test", model: "regular", operatorAuthority }),
+    );
+  });
 
   it("locks an inherited profile onto a same-provider utility ref", async () => {
     await generateConversationLabelWithFallback({ ...params, utilityModelRef: "openai/gpt-mini" });

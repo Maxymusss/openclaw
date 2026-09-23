@@ -3,6 +3,10 @@ import { emitFailoverEvent } from "../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
+import {
+  assertAdmittedRunOperatorAuthority,
+  assertOperatorModelAllowed,
+} from "./admitted-run-context.js";
 import { externalCliDiscoveryScoped } from "./auth-profiles/external-cli-discovery.js";
 import { resolveSubscriptionAuthModeForProfiles } from "./auth-profiles/profile-list.js";
 import { hasAnyAuthProfileStoreSource } from "./auth-profiles/source-check.js";
@@ -72,7 +76,7 @@ import {
   type ModelFallbackCandidate,
 } from "./model-fallback.types.js";
 import {
-  assertOperatorModelAllowed,
+  assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
   assertOperatorModelAuthorityCurrent,
   restrictOperatorModelCandidates,
 } from "./operator-model-policy.js";
@@ -122,8 +126,13 @@ async function runWithModelFallbackInternal<T>(
   params: RunWithModelFallbackParams<T>,
   deferredSuspension: DeferredSessionSuspensionState,
 ): Promise<ModelFallbackRunResult<T>> {
-  const candidates = restrictOperatorModelCandidates(
-    params.operatorAuthority,
+  const operatorAuthority = params.operatorAuthority;
+  if (operatorAuthority) {
+    assertAdmittedRunOperatorAuthority(operatorAuthority);
+    operatorAuthority.assertCurrent();
+  }
+  const plannedCandidates = restrictOperatorModelCandidates(
+    operatorAuthority,
     resolveModelCandidateChain({
       cfg: params.cfg,
       agentId: params.agentId,
@@ -134,6 +143,13 @@ async function runWithModelFallbackInternal<T>(
       manifestPlugins: params.manifestPlugins,
     }),
   );
+  const operatorModelPolicy = operatorAuthority?.modelPolicy;
+  const candidates = operatorModelPolicy
+    ? plannedCandidates.filter(operatorModelPolicy.allows)
+    : plannedCandidates;
+  if (operatorModelPolicy && candidates.length === 0) {
+    assertOperatorModelAllowed(operatorAuthority, undefined);
+  }
   await params.prepareCandidateChain?.(candidates);
   assertOperatorModelAuthorityCurrent(params.operatorAuthority);
   const userLockedAuthProfileId = params.userLockedAuthProfileId?.trim() || undefined;
@@ -228,8 +244,12 @@ async function runWithModelFallbackInternal<T>(
     if (tlsFailedProviders.has(candidate.provider)) {
       continue;
     }
-    assertOperatorModelAllowed(params.operatorAuthority, candidate.provider, candidate.model);
+    assertOperatorModelTupleAllowed(params.operatorAuthority, candidate.provider, candidate.model);
     const candidateRef = { provider: candidate.provider, model: candidate.model };
+    operatorAuthority?.assertCurrent();
+    if (operatorAuthority?.modelPolicy?.allows(candidateRef) === false) {
+      continue;
+    }
     const nextCandidateIndex = resolveNextFallbackCandidateIndex({
       candidates,
       currentIndex: i,
@@ -453,9 +473,13 @@ async function runWithModelFallbackInternal<T>(
       }
     }
 
+    operatorAuthority?.assertCurrent();
+    if (operatorAuthority?.modelPolicy?.allows(candidateRef) === false) {
+      continue;
+    }
     const attemptRun = await runFallbackAttempt({
       run: (provider, model, options) => {
-        assertOperatorModelAllowed(params.operatorAuthority, provider, model);
+        assertOperatorModelTupleAllowed(params.operatorAuthority, provider, model);
         return params.run(provider, model, options);
       },
       ...candidate,
@@ -671,6 +695,9 @@ async function runWithModelFallbackInternal<T>(
     };
   }
 
+  if (operatorAuthority?.modelPolicy && attempts.length === 0) {
+    assertOperatorModelAllowed(operatorAuthority, undefined);
+  }
   return throwFallbackFailureSummary({
     attempts,
     candidates,

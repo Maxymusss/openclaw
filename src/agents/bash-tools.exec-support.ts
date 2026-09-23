@@ -15,6 +15,7 @@ import {
   finalizeBackgroundExecTask,
 } from "./bash-tools.exec-task-tracking.js";
 import type {
+  ExecProcessOutcome,
   ExecToolApprovalReview,
   ExecToolDefaults,
   ExecToolDetails,

@@ -13,7 +13,7 @@ import { prepareDashboardSessionTitle } from "../dashboard-session-title.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import { authorizeGatewaySessionCreation } from "../operator-role-policy.js";
 import { captureGatewayOperatorRunAuthority } from "../operator-run-authority.js";
-import { resolveSessionCreateModelSelection } from "../session-create-model-selection.js";
+import { prepareSessionCreateModelSelection } from "../session-create-model-selection.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import { resolveRegisteredCatalogCreateTarget } from "./session-catalog.js";
@@ -77,18 +77,13 @@ export const sessionTitleHandlers: GatewayRequestHandlers = {
       respond(true, { title: null });
       return;
     }
-    const captured = captureGatewayOperatorRunAuthority({
-      client,
-      context,
-      hasCurrentClientAuthority,
-    });
+    let capturedOperator: ReturnType<typeof captureGatewayOperatorRunAuthority>;
     try {
       const personalSelection = preparePersonalModelSelection(
         { client, context, signal },
         params.model,
       );
-      const assertCurrent = () => {
-        assertOperatorModelAuthorityCurrent(captured?.authority);
+      const assertCallerCurrent = () => {
         personalSelection?.assertCurrent();
         const currentCreationError = authorizeGatewaySessionCreation({
           cfg: context.getRuntimeConfig(),
@@ -99,23 +94,43 @@ export const sessionTitleHandlers: GatewayRequestHandlers = {
           throw new SessionMutationAuthorizationChangedError(currentCreationError);
         }
       };
-      const entry = resolveSessionCreateModelSelection(
+      capturedOperator = captureGatewayOperatorRunAuthority({
+        client,
+        context,
+        hasCurrentClientAuthority,
+        invocationAuthority: { assertCurrent: assertCallerCurrent, signal },
+      });
+      const selection = prepareSessionCreateModelSelection({
         cfg,
-        agent.agentId,
-        catalog?.target ?? params.model,
-      );
+        agentId: agent.agentId,
+        input: catalog?.target ?? params.model,
+        operatorAuthority: capturedOperator?.authority,
+      });
+      if (!selection.ok) {
+        respond(false, undefined, selection.error);
+        return;
+      }
+      const entry = selection.selection;
       if (!entry) {
         respond(true, { title: null });
         return;
       }
+      const assertCurrent = () => {
+        assertCallerCurrent();
+        const error = selection.validate?.();
+        if (error) {
+          throw new SessionMutationAuthorizationChangedError(error);
+        }
+        assertOperatorModelAuthorityCurrent(capturedOperator?.authority);
+      };
       const title = await prepareDashboardSessionTitle({
-        operatorAuthority: captured?.authority,
         cfg,
         agentId: agent.agentId,
         entry,
         userMessage: params.message,
         abortSignal: signal,
         assertCurrent,
+        operatorAuthority: capturedOperator?.authority,
       });
       assertCurrent();
       respond(true, { title });
@@ -131,7 +146,7 @@ export const sessionTitleHandlers: GatewayRequestHandlers = {
       }
       respond(false, undefined, failure);
     } finally {
-      captured?.release();
+      capturedOperator?.release();
     }
   },
 };

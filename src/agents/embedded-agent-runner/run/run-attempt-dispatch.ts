@@ -170,7 +170,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     workspaceDir,
     agentDir,
     agentId: workspaceResolution.agentId,
-    thinkingLevel: mapThinkingLevelForProvider(runtime.thinkLevel),
+    thinkingLevel: mapThinkingLevelForProvider(runtime.thinkLevel, effectiveModel),
     extraParamsOverride: { ...params.streamParams, fastMode: attemptFastMode },
   });
   const trajectoryAttribution = resolveAttemptTrajectoryAttribution({

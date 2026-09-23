@@ -15,7 +15,7 @@ export type SandboxRegistryEntry = {
   workspaceDir?: string;
   /** Negative-only custody: generic retirement cannot certify this owner's cleanup. */
   retirementPolicy?: "foreground-owner";
-  /** Present only for backends that reserve their generation before provisioning. */
+  /** Provisioning and removal state for backends that retain unfinished allocations. */
   runtimeState?: "pending" | "ready" | "removing" | "removing-pending";
 };
 

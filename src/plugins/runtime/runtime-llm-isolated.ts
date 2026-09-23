@@ -1,5 +1,6 @@
 // Isolated plugin LLM completion policy validates and dispatches the zero-tool runtime mode.
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
+import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { IsolatedCompletionResult } from "../../agents/isolated-completion.js";
 import { buildConfiguredModelCatalog } from "../../agents/model-selection-shared.js";
 import { isOperatorModelPolicyError } from "../../agents/operator-model-policy.js";
@@ -111,14 +112,16 @@ function assertIsolatedReasoningSupported(params: {
 }
 
 export async function runIsolatedAgentRuntimeCompletion(params: {
-  operatorAuthority?: import("../../agents/admitted-run-context.js").AdmittedRunOperatorAuthority;
   request: LlmIsolatedAgentRuntimeCompleteParams;
   cfg: OpenClawConfig;
   agentId: string;
   provider: string;
   model: string;
   authProfileId?: string;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
+  assertCurrent?: () => void;
 }): Promise<IsolatedCompletionResult> {
+  params.assertCurrent?.();
   const prompt = requireIsolatedUserPrompt(params.request);
   const timeoutMs = resolveIsolatedTimeoutMs(params.request.execution.timeoutMs);
   assertIsolatedReasoningSupported({
@@ -152,11 +155,12 @@ export async function runIsolatedAgentRuntimeCompletion(params: {
     const operation = (async () => {
       const { runIsolatedCompletion } = await import("../../agents/isolated-completion.js");
       return await runIsolatedCompletion({
-        operatorAuthority: params.operatorAuthority,
         config: params.cfg,
         provider: params.provider,
         model: params.model,
         authProfileId: params.authProfileId,
+        operatorAuthority: params.operatorAuthority,
+        assertCurrent: params.assertCurrent,
         agentId: params.agentId,
         systemPrompt: params.request.systemPrompt ?? "",
         prompt,

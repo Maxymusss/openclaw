@@ -8,6 +8,7 @@ import { normalizeMimeType } from "@openclaw/media-core/mime";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Type } from "typebox";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { captureAmbientGatewayOperatorAuthority } from "../../gateway/operator-invocation-authority.js";
 import { bindModelLlmRuntime } from "../../llm/model-runtime-binding.js";
 import { complete } from "../../llm/stream.js";
 import type { Context } from "../../llm/types.js";
@@ -18,19 +19,25 @@ import {
 import { extractPdfContent, type PdfExtractedContent } from "../../media/pdf-extract.js";
 import { loadWebMediaRaw } from "../../media/web-media.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
+import { runWithAsyncWorkResources } from "../../shared/async-work-resources.js";
 import {
   AsyncWorkScope,
   getAsyncWorkSignal,
   trackAsyncWork,
 } from "../../shared/async-work-scope.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import type { AdmittedRunOperatorAuthority } from "../admitted-run-operator-authority.js";
+import {
+  assertOperatorModelAllowed,
+  bindOperatorModelExecution,
+  type AdmittedRunOperatorAuthority,
+} from "../admitted-run-context.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import { resolveModelAsync } from "../embedded-agent-runner/model.js";
 import { abortable } from "../embedded-agent-runner/run/abortable.js";
 import { applySecretRefHeaderSentinels } from "../model-auth.js";
+import { resolveAllowedImageFallbackCandidates } from "../model-fallback-image.js";
 import {
-  assertOperatorModelAllowed,
+  assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
   runWithOperatorModelAuthority,
   assertOperatorModelResponse,
   wrapOperatorModelStream,
@@ -45,7 +52,6 @@ import { registerProviderStreamForModel } from "../provider-stream.js";
 import { optionalFiniteNumberSchema } from "../schema/typebox.js";
 import { getModelRegistryRuntime } from "../sessions/model-registry-runtime.js";
 import { readFiniteNumberParam, ToolInputError } from "./common.js";
-import { captureGatewayToolOperatorAuthority } from "./gateway-caller-context.js";
 import { coerceImageModelConfig, type ImageModelConfig } from "./image-tool.helpers.js";
 import {
   applyImageModelConfigDefaults,
@@ -117,7 +123,6 @@ function hasExplicitPdfToolModelConfig(config?: OpenClawConfig): boolean {
 type PdfSandboxConfig = MediaToolSandbox;
 
 async function runPdfPrompt(params: {
-  operatorAuthority?: AdmittedRunOperatorAuthority;
   cfg?: OpenClawConfig;
   agentId?: string;
   agentDir: string;
@@ -134,6 +139,7 @@ async function runPdfPrompt(params: {
   work: AsyncWorkScope;
   onAcquired: (resource: AsyncDisposable) => void;
   assertResourcesOpen?: () => void;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
 }): Promise<{
   text: string;
   provider: string;
@@ -190,15 +196,16 @@ async function runPdfPrompt(params: {
   };
 
   const result = await runWithImageModelFallback({
-    operatorAuthority: params.operatorAuthority,
     cfg: effectiveCfg,
     manifestPlugins: preparedRuntime.metadataSnapshot,
     modelOverride: params.modelOverride,
+    operatorAuthority: params.operatorAuthority,
     abortSignal: params.signal,
     run: async (provider, modelId) => {
       // Static snapshots serve configured models through prepared facts; a fresh registry can be empty.
       const resolved = await resolveModelAsync(provider, modelId, runtimeAgentDir, effectiveCfg, {
         abortSignal: params.signal,
+        assertCurrent: params.assertResourcesOpen,
         modelIdSource: "selected",
         allowBundledStaticCatalogFallback: true,
         ...preparedStores,
@@ -209,20 +216,46 @@ async function runPdfPrompt(params: {
       if (resolved.error || !resolved.model) {
         throw new Error(resolved.error ?? `Unknown model: ${provider}/${modelId}`);
       }
+      const modelExecution = bindOperatorModelExecution(
+        params.operatorAuthority,
+        resolved.logicalRef,
+      );
+      if (modelExecution) {
+        params.onAcquired({
+          async [Symbol.asyncDispose]() {
+            modelExecution.release();
+          },
+        });
+      }
+      const modelSignal = modelExecution
+        ? params.signal
+          ? AbortSignal.any([params.signal, modelExecution.signal])
+          : modelExecution.signal
+        : params.signal;
+      const assertModelCurrent = () => {
+        modelSignal?.throwIfAborted();
+        params.assertResourcesOpen?.();
+        modelExecution?.assertCurrent();
+        assertOperatorModelAllowed(params.operatorAuthority, resolved.logicalRef);
+        assertOperatorModelTupleAllowed(
+          params.operatorAuthority,
+          resolved.model.provider,
+          resolved.model.id,
+        );
+      };
+      assertModelCurrent();
       const modelRuntime = getModelRegistryRuntime(resolved.modelRegistry);
       const model = bindModelLlmRuntime(
         applySecretRefHeaderSentinels(resolved.model, effectiveCfg),
         modelRuntime.llmRuntime,
       );
-      assertOperatorModelAllowed(params.operatorAuthority, model.provider, model.id);
-      const assertModelCurrent = () =>
-        assertOperatorModelAllowed(params.operatorAuthority, model.provider, model.id);
       const apiKey = await resolveModelRuntimeApiKey({
         model,
         cfg: effectiveCfg,
         agentDir: runtimeAgentDir,
         authStorage: resolved.authStorage,
       });
+      assertModelCurrent();
 
       if (providerSupportsNativePdf(provider)) {
         if (params.password) {
@@ -237,15 +270,13 @@ async function runPdfPrompt(params: {
         }
 
         // Encode only native requests, once across retries, after checking cancellation.
-        params.signal?.throwIfAborted();
-        params.assertResourcesOpen?.();
+        assertModelCurrent();
         const pdfs = (nativePdfs ??= params.pdfBuffers.map(({ buffer, filename }) => ({
           base64: buffer.toString("base64"),
           filename,
         })));
 
         if (provider === "anthropic") {
-          assertModelCurrent();
           const text = await anthropicAnalyzePdf({
             assertCurrent: assertModelCurrent,
             apiKey,
@@ -258,13 +289,13 @@ async function runPdfPrompt(params: {
               headers: model.headers,
               request: getModelProviderRequestTransport(model),
             },
-            signal: params.signal,
+            signal: modelSignal,
           });
+          assertModelCurrent();
           return { text, provider, model: modelId, native: true };
         }
 
         if (provider === "google") {
-          assertModelCurrent();
           const text = await geminiAnalyzePdf({
             assertCurrent: assertModelCurrent,
             apiKey,
@@ -276,8 +307,9 @@ async function runPdfPrompt(params: {
               headers: model.headers,
               request: getModelProviderRequestTransport(model),
             },
-            signal: params.signal,
+            signal: modelSignal,
           });
+          assertModelCurrent();
           return { text, provider, model: modelId, native: true };
         }
       }
@@ -298,13 +330,11 @@ async function runPdfPrompt(params: {
       const extractions = await getExtractions();
       const completeExtraction = async (context: Context) => {
         // A run cancelled mid-dispatch must not buy another provider call.
-        params.signal?.throwIfAborted();
-        params.assertResourcesOpen?.();
         assertModelCurrent();
         const streamOptions = {
           apiKey,
           maxTokens: resolvePdfToolMaxTokens(model.maxTokens),
-          signal: params.signal,
+          signal: modelSignal,
         };
         const completion = params.work.track(() =>
           providerStreamFn
@@ -316,14 +346,10 @@ async function runPdfPrompt(params: {
                     streamOptions,
                   )
                 ).result())()
-            : complete(model, context, streamOptions, () => {
-                params.assertResourcesOpen?.();
-                assertModelCurrent();
-              }),
+            : complete(model, context, streamOptions, assertModelCurrent),
         );
-        const message = params.signal
-          ? await abortable(params.signal, completion)
-          : await completion;
+        const message = modelSignal ? await abortable(modelSignal, completion) : await completion;
+        assertModelCurrent();
         assertOperatorModelResponse(message);
         return message;
       };
@@ -427,12 +453,12 @@ export function createPdfTool(options?: {
   const remoteMediaSsrfPolicy = resolveRemoteMediaSsrfPolicy(options?.config);
 
   const executePdf = async (
-    operatorAuthority: AdmittedRunOperatorAuthority | undefined,
     args: unknown,
     signal: AbortSignal | undefined,
     work: AsyncWorkScope,
     onAcquired: (resource: AsyncDisposable) => void,
     assertResourcesOpen: (() => void) | undefined,
+    operatorAuthority: AdmittedRunOperatorAuthority | undefined,
   ): Promise<Awaited<ReturnType<AnyAgentTool["execute"]>>> => {
     const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
 
@@ -484,6 +510,12 @@ export function createPdfTool(options?: {
     if (!pdfModelConfig) {
       throw new ToolInputError("No PDF model configured.");
     }
+    resolveAllowedImageFallbackCandidates({
+      cfg: applyImageModelConfigDefaults(options?.config, pdfModelConfig),
+      modelOverride,
+      manifestPlugins: options?.preparedModelRuntime?.metadataSnapshot,
+      operatorAuthority,
+    });
 
     const sandboxConfig = resolveMediaToolSandboxConfig(
       options?.sandbox,
@@ -593,10 +625,10 @@ export function createPdfTool(options?: {
     // Do not issue a paid PDF-model call for an already-aborted run.
     signal?.throwIfAborted();
     const result = await runPdfPrompt({
-      operatorAuthority,
       work,
       onAcquired,
       assertResourcesOpen,
+      operatorAuthority,
       signal,
       cfg: options?.config,
       agentId: options?.agentId,
@@ -637,52 +669,75 @@ export function createPdfTool(options?: {
     name: "pdf",
     description,
     parameters: PdfToolSchema,
-    execute: async (_toolCallId, args, signal) => {
-      const operatorAuthority = captureGatewayToolOperatorAuthority();
-      return runWithOperatorModelAuthority(operatorAuthority, async () => {
-        const reported = createDeferredCore<Awaited<ReturnType<AnyAgentTool["execute"]>>>();
-        const parentSignal = getAsyncWorkSignal();
-        void trackAsyncWork(async () => {
-          const work = new AsyncWorkScope();
-          const runInScope = work.run(() => AsyncLocalStorage.snapshot());
-          const closeWork = () => runInScope(() => work.beginClose(parentSignal?.reason));
-          parentSignal?.addEventListener("abort", closeWork, { once: true });
-          if (parentSignal?.aborted) {
-            closeWork();
-          }
-          let runtimeResources: AsyncDisposable | undefined;
-          try {
-            const suppliedClaim = options?.preparedModelRuntime
-              ? retainPreparedModelRuntimeSnapshotResources(options.preparedModelRuntime)
-              : undefined;
-            runtimeResources = suppliedClaim
-              ? { [Symbol.asyncDispose]: () => suppliedClaim.release() }
-              : undefined;
-            reported.resolve(
-              await work.track(() =>
-                executePdf(
-                  operatorAuthority,
-                  args,
-                  signal,
-                  work,
-                  (resource) => {
-                    runtimeResources = resource;
-                  },
-                  suppliedClaim?.assertOpen,
-                ),
-              ),
-            );
-          } catch (error) {
-            reported.reject(error);
-          } finally {
-            await work.runWhenIdle(() => undefined);
-            await runInScope(() => work.drain());
-            parentSignal?.removeEventListener("abort", closeWork);
-            await runtimeResources?.[Symbol.asyncDispose]();
-          }
-        }).catch((error: unknown) => reported.reject(error));
-        return await reported.promise;
-      });
-    },
+    execute: async (_toolCallId, args, signal) =>
+      runWithAsyncWorkResources(async (onAcquired) => {
+        const capturedOperator = captureAmbientGatewayOperatorAuthority({
+          missingBindingError: () =>
+            new Error("PDF analysis requires its current Gateway binding."),
+          retainInherited: true,
+        });
+        if (capturedOperator.release) {
+          onAcquired({ release: capturedOperator.release });
+        }
+        return runWithOperatorModelAuthority(
+          capturedOperator.authority,
+          async (operatorAuthority) => {
+            const reported = createDeferredCore<Awaited<ReturnType<AnyAgentTool["execute"]>>>();
+            const parentSignal = getAsyncWorkSignal();
+            void trackAsyncWork(async () => {
+              const work = new AsyncWorkScope();
+              const runInScope = work.run(() => AsyncLocalStorage.snapshot());
+              const closeWork = () => runInScope(() => work.beginClose(parentSignal?.reason));
+              parentSignal?.addEventListener("abort", closeWork, { once: true });
+              if (parentSignal?.aborted) {
+                closeWork();
+              }
+              const runtimeResources = new AsyncDisposableStack();
+              try {
+                const executionSignal = operatorAuthority?.signal
+                  ? signal
+                    ? AbortSignal.any([signal, operatorAuthority.signal])
+                    : operatorAuthority.signal
+                  : signal;
+                capturedOperator.assertInvocationCurrent?.();
+                operatorAuthority?.assertCurrent();
+                const suppliedClaim = options?.preparedModelRuntime
+                  ? retainPreparedModelRuntimeSnapshotResources(options.preparedModelRuntime)
+                  : undefined;
+                if (suppliedClaim) {
+                  runtimeResources.defer(() => suppliedClaim.release());
+                }
+                reported.resolve(
+                  await work.track(() =>
+                    executePdf(
+                      args,
+                      executionSignal,
+                      work,
+                      (resource) => {
+                        runtimeResources.use(resource);
+                      },
+                      () => {
+                        capturedOperator.assertInvocationCurrent?.();
+                        operatorAuthority?.assertCurrent();
+                        suppliedClaim?.assertOpen();
+                        executionSignal?.throwIfAborted();
+                      },
+                      operatorAuthority,
+                    ),
+                  ),
+                );
+              } catch (error) {
+                reported.reject(error);
+              } finally {
+                await work.runWhenIdle(() => undefined);
+                await runInScope(() => work.drain());
+                parentSignal?.removeEventListener("abort", closeWork);
+                await runtimeResources.disposeAsync();
+              }
+            }).catch((error: unknown) => reported.reject(error));
+            return await reported.promise;
+          },
+        );
+      }),
   };
 }

@@ -73,6 +73,7 @@ export async function executeSessionPatchMutations(params: {
   operatorAuthority?: AdmittedRunOperatorAuthority;
   context: GatewayRequestContext;
   diagnostics?: SessionPatchDiagnostics;
+  operatorAuthority?: AdmittedRunOperatorAuthority;
   patch: Omit<SessionsPatchParams, keyof PatchTargetIdentity>;
   targets: readonly MutationTarget[];
 }): Promise<MutationCoreResult> {
@@ -412,6 +413,7 @@ export async function executeSessionPatchMutations(params: {
                             patch: target.fullPatch,
                             archivedBy: archiveActor,
                             personalModelSelection,
+                            operatorAuthority: params.operatorAuthority,
                           },
                         });
                         if (projection.kind === "model-catalog") {
@@ -453,6 +455,7 @@ export async function executeSessionPatchMutations(params: {
                             expectedEntry: existingEntry,
                             callerCanConsent: callerIsAdmin,
                             catalog: (await catalogs.available(target.targetAgentId))?.entries,
+                            validateModelSelection: projected.validateModelSelection,
                             placement: { context: params.context, sessionKey: primaryKey },
                           });
                         if (!runtimeSelection.ok) {

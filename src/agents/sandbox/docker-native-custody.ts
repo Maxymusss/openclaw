@@ -186,7 +186,7 @@ export async function retireNativeSandboxContainer(native: NativeSandboxContaine
       assertSandboxRegistryEntryCurrent(reservation);
       if (!native.createAttempted) {
         native.custody.assertCleanupConfirmed();
-        completeSandboxRegistryReservation(reservation);
+        await completeSandboxRegistryReservation(reservation);
         return;
       }
       const { engine, engineIdentity, containerId } = native;
@@ -243,7 +243,7 @@ export async function retireNativeSandboxContainer(native: NativeSandboxContaine
       });
       // Scope settlement and earlier generation cleanup must both succeed before CAS.
       native.custody.assertCleanupConfirmed();
-      completeSandboxRegistryReservation(reservation);
+      await completeSandboxRegistryReservation(reservation);
     });
   } catch (cause) {
     throw new CommandProcessCleanupError({ cause });

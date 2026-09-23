@@ -6,8 +6,14 @@ import {
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { requireActivePluginRegistry } from "../../plugins/runtime.js";
 import { mergeAcceptedSessionSpawnsForRun } from "../accepted-session-spawn.js";
-import { readPreparedRunOperatorAuthority } from "../admitted-run-context.js";
-import { createAssistantErrorTranscript } from "../assistant-error-transcript.js";
+import {
+  readPreparedRunOperatorAuthority,
+  type PreparedAgentRunAdmission,
+} from "../admitted-run-context.js";
+import {
+  createAssistantErrorTranscript,
+  type AssistantErrorTranscript,
+} from "../assistant-error-transcript.js";
 import { resolveModelFallbackError } from "../failover-error.js";
 import { createContextEngineLogicalTurnLease } from "../harness/context-engine-logical-turn.js";
 import {
@@ -78,6 +84,7 @@ export async function runEmbeddedAgentEntry<T extends EmbeddedAgentRunResult>(
 async function runEmbeddedAgentEntryInternal<T extends EmbeddedAgentRunResult>(
   params: EmbeddedAgentRunEntryParams<T>,
 ): Promise<EmbeddedAgentRunEntryResult<T>> {
+  const operatorAuthority = readPreparedRunOperatorAuthority(params.preparedRunAdmission);
   const lifecycleGeneration = captureAgentRunLifecycleGeneration(params.identity.runId);
   const runContext = getAgentRunContext(params.identity.runId);
   const placementRuntime = resolveSessionPlacementRuntimeOverride(params.identity);
@@ -183,7 +190,7 @@ async function runEmbeddedAgentEntryInternal<T extends EmbeddedAgentRunResult>(
       runWithModelFallback<RunEntryCandidate<T>>({
         ...selection,
         ...params.identity,
-        operatorAuthority: readPreparedRunOperatorAuthority(params.preparedRunAdmission),
+        operatorAuthority,
         abortSignal: params.abortSignal,
         resolveAgentHarnessRuntimeOverride: resolveRuntimeOverride,
         prepareCandidateChain: async (candidates) => {
@@ -382,6 +389,7 @@ async function runEmbeddedAgentEntryInternal<T extends EmbeddedAgentRunResult>(
     if (
       capturedCyberRefusal &&
       target &&
+      (!operatorAuthority?.modelPolicy || operatorAuthority.modelPolicy.allows(target)) &&
       !isEmbeddedModelSelectionStrict(params.selection) &&
       !isSameEmbeddedCyberFailoverTarget(capturedCyberRefusal, target) &&
       !isEmbeddedCyberFailoverTargetSkipped({

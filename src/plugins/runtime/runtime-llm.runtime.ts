@@ -2,13 +2,13 @@
 import { asFiniteNumber, asFiniteNumberInRange } from "@openclaw/normalization-core";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import type { AdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
-import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
-import { normalizeModelRef } from "../../agents/model-ref-shared.js";
 import {
   assertOperatorModelAllowed,
-  assertOperatorModelAuthorityCurrent,
-} from "../../agents/operator-model-policy.js";
+  type AdmittedRunOperatorAuthority,
+} from "../../agents/admitted-run-context.js";
+import { splitTrailingAuthProfile } from "../../agents/model-ref-profile.js";
+import { normalizeModelRef, type ModelRef } from "../../agents/model-ref-shared.js";
+import { assertOperatorModelAllowed as assertOperatorModelTupleAllowed } from "../../agents/operator-model-policy.js";
 import type { UsageLike } from "../../agents/usage.js";
 import { hasRecordedUsageCost, normalizeUsage } from "../../agents/usage.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -34,6 +34,7 @@ import {
   runIsolatedAgentRuntimeCompletion,
 } from "./runtime-llm-isolated.js";
 import { buildMessages, buildSystemPrompt } from "./runtime-llm-messages.js";
+import { bindLlmOperatorAuthority } from "./runtime-llm-operator-authority.js";
 import { writeRuntimeLog } from "./runtime-logging.js";
 import type {
   LlmCompleteCaller,
@@ -422,238 +423,287 @@ export function createRuntimeLlm(
 ): Pick<PluginRuntimeCore["llm"], "complete"> {
   const logger = options.logger ?? toRuntimeLogger(defaultLogger);
   return {
-    complete: async (params: LlmCompleteParams): Promise<LlmCompleteResult> => {
-      const operatorAuthority = options.authority?.operatorAuthority;
-      assertOperatorModelAuthorityCurrent(operatorAuthority);
-      const caller = resolveTrustedCaller(options.authority);
-      if (options.authority?.allowComplete === false) {
-        const reason = options.authority.denyReason ?? "capability denied";
-        logger.warn("plugin llm completion denied", {
+    complete: bindLlmOperatorAuthority(
+      options.authority?.caller,
+      async (params, source) => {
+        const caller = resolveTrustedCaller(options.authority);
+        if (options.authority?.allowComplete === false) {
+          const reason = options.authority.denyReason ?? "capability denied";
+          logger.warn("plugin llm completion denied", {
+            caller,
+            purpose: params.purpose,
+            reason,
+          });
+          throw completionError(
+            "LLM_COMPLETION_NOT_AUTHORIZED",
+            `Plugin LLM completion denied: ${reason}`,
+          );
+        }
+        assertSupportedExecutionMode(params);
+        const { operatorAuthority, signal: requestSignal, assertCurrent } = source;
+        assertCurrent();
+
+        const [
+          {
+            acquireSimpleCompletionModelForAgent,
+            completeWithPreparedSimpleCompletionModel,
+            resolveSimpleCompletionSelectionForAgent,
+          },
+          cfg,
+        ] = await Promise.all([
+          import("../../agents/simple-completion-runtime.js"),
+          Promise.resolve(resolveRuntimeConfig(options)),
+        ]);
+        const pluginPolicyId = resolvePluginPolicyId(options.authority, caller);
+        const pluginPolicy = resolvePluginLlmPolicy(cfg, pluginPolicyId);
+        const authorityPolicy = resolveAuthorityModelPolicy(options.authority);
+        const preferredProfile = normalizeOptionalString(options.authority?.preferredProfile);
+        const audit = {
           caller,
-          purpose: params.purpose,
-          reason,
-        });
-        throw completionError(
-          "LLM_COMPLETION_NOT_AUTHORIZED",
-          `Plugin LLM completion denied: ${reason}`,
-        );
-      }
-      assertSupportedExecutionMode(params);
-
-      const [
-        {
-          acquireSimpleCompletionModelForAgent,
-          completeWithPreparedSimpleCompletionModel,
-          resolveSimpleCompletionSelectionForAgent,
-        },
-        cfg,
-      ] = await Promise.all([
-        import("../../agents/simple-completion-runtime.js"),
-        Promise.resolve(resolveRuntimeConfig(options)),
-      ]);
-      const pluginPolicyId = resolvePluginPolicyId(options.authority, caller);
-      const pluginPolicy = resolvePluginLlmPolicy(cfg, pluginPolicyId);
-      const authorityPolicy = resolveAuthorityModelPolicy(options.authority);
-      const preferredProfile = normalizeOptionalString(options.authority?.preferredProfile);
-      const audit = {
-        caller,
-        ...(params.purpose ? { purpose: params.purpose } : {}),
-        ...(options.authority?.sessionKey ? { sessionKey: options.authority.sessionKey } : {}),
-      };
-      const agentId = await resolveAgentId({
-        request: params,
-        cfg,
-        authority: options.authority,
-        allowAgentIdOverride:
-          options.authority?.allowAgentIdOverride === false
-            ? false
-            : authorityPolicy?.allowAgentIdOverride === true ||
-              pluginPolicy?.allowAgentIdOverride === true,
-      });
-      const requestedModel = normalizeOptionalString(params.model);
-      const requestedModelProfile = requestedModel
-        ? normalizeOptionalString(splitTrailingAuthProfile(requestedModel).profile)
-        : undefined;
-      const selection = resolveSimpleCompletionSelectionForAgent({
-        cfg,
-        agentId,
-        modelRef: requestedModel,
-      });
-      if (!selection) {
-        throw completionError("LLM_COMPLETION_FAILED", `No model configured for agent ${agentId}.`);
-      }
-      const normalizedSelection = normalizeModelRef(selection.provider, selection.modelId);
-      assertOperatorModelAllowed(
-        operatorAuthority,
-        normalizedSelection.provider,
-        normalizedSelection.model,
-      );
-      const resolvedModelRef = modelKey(normalizedSelection.provider, normalizedSelection.model);
-      assertModelAllowed({ kind: "completion", resolvedModelRef, policy: authorityPolicy });
-      assertModelAllowed({
-        kind: "completion",
-        resolvedModelRef,
-        policy: pluginPolicy,
-        policyOwnerPluginId: pluginPolicyId,
-      });
-      if (requestedModel) {
-        assertAllowedModelOverride({
-          resolvedModelRef,
-          pluginPolicyId,
-          authorityPolicy,
-          pluginPolicy,
-        });
-      }
-
-      const isolatedRequest = isIsolatedAgentRuntimeRequest(params);
-      const executionProfile = isolatedRequest
-        ? normalizeOptionalString(params.execution.authProfileId)
-        : undefined;
-      const modelProfile = normalizeOptionalString(selection.profileId);
-      if (executionProfile && requestedModelProfile && executionProfile !== requestedModelProfile) {
-        throw completionError(
-          "LLM_ISOLATED_INPUT_REJECTED",
-          "Isolated completion received conflicting auth profiles in model and execution.authProfileId.",
-        );
-      }
-
-      if (isolatedRequest) {
-        // Direct completions preserve the shipped model@profile contract under model
-        // override authority. Isolated credential routing requires separate authority.
-        assertAllowedAuthProfileOverride({
-          authProfileId: executionProfile ?? requestedModelProfile,
-          authorityPolicy,
-          pluginPolicy,
-        });
-        const result = await runIsolatedAgentRuntimeCompletion({
-          operatorAuthority,
+          ...(params.purpose ? { purpose: params.purpose } : {}),
+          ...(options.authority?.sessionKey ? { sessionKey: options.authority.sessionKey } : {}),
+        };
+        const agentId = await resolveAgentId({
           request: params,
           cfg,
-          agentId,
-          provider: selection.provider,
-          model: selection.modelId,
-          // Request-authorized profiles win, then the host/session binding. Only
-          // an unbound call may fall back to the agent's configured selection.
-          authProfileId:
-            executionProfile ?? requestedModelProfile ?? preferredProfile ?? modelProfile,
+          authority: options.authority,
+          allowAgentIdOverride:
+            options.authority?.allowAgentIdOverride === false
+              ? false
+              : authorityPolicy?.allowAgentIdOverride === true ||
+                pluginPolicy?.allowAgentIdOverride === true,
         });
-        return finalizePluginLlmCompletion({
-          cfg,
-          hostPluginId: pluginPolicyId,
-          rawUsage: result.usage,
-          logger,
-          result: {
-            text: result.text,
-            provider: result.provider,
-            model: result.model,
-            agentId,
-            execution: { mode: params.execution.mode, owner: result.owner },
-            audit,
-          },
-        });
-      }
-
-      const callerResult = createDeferredCore<LlmCompleteResult>();
-      const trackOwner = captureAsyncWorkTracker();
-      // Admit drainage with the parent before acquisition; the caller only waits for its result.
-      void trackOwner(async () => {
-        const preparation = await acquireSimpleCompletionModelForAgent({
+        const requestedModel = normalizeOptionalString(params.model);
+        const requestedModelProfile = requestedModel
+          ? normalizeOptionalString(splitTrailingAuthProfile(requestedModel).profile)
+          : undefined;
+        const selection = resolveSimpleCompletionSelectionForAgent({
           cfg,
           agentId,
-          modelRef: params.model,
-          operatorAuthority,
-          preferredProfile,
-          ...(requestedModelProfile ? { bindAuthOwner: true } : {}),
-          allowBundledStaticCatalogFallback: true,
-          allowMissingApiKeyModes: ["aws-sdk"],
-          skipAgentDiscovery: true,
-          signal: params.signal,
+          modelRef: requestedModel,
         });
-
-        if ("error" in preparation) {
-          throw new Error(`Plugin LLM completion failed: ${preparation.error}`);
-        }
-        await using prepared = preparation;
-
-        const work = new AsyncWorkScope();
-        try {
-          callerResult.resolve(
-            await work.track(async () => {
-              if (params.requiredAuthMode && prepared.auth.mode !== params.requiredAuthMode) {
-                throw completionError(
-                  "LLM_COMPLETION_NOT_AUTHORIZED",
-                  "Plugin LLM completion selected a credential with the wrong authentication mode.",
-                );
-              }
-              if (requestedModelProfile && prepared.auth.profileId !== requestedModelProfile) {
-                throw completionError(
-                  "LLM_COMPLETION_NOT_AUTHORIZED",
-                  "Plugin LLM completion selected a different authentication profile.",
-                );
-              }
-
-              const context = {
-                systemPrompt: buildSystemPrompt(params),
-                messages: buildMessages({
-                  request: params,
-                  provider: prepared.model.provider,
-                  model: prepared.model.id,
-                  api: prepared.model.api,
-                }),
-              };
-
-              const result = await completeWithPreparedSimpleCompletionModel({
-                operatorAuthority,
-                model: prepared.model,
-                auth: prepared.auth,
-                cfg,
-                context,
-                options: {
-                  maxTokens: asFiniteNumber(params.maxTokens),
-                  temperature: asFiniteNumber(params.temperature),
-                  ...(params.responseFormat !== undefined
-                    ? { responseFormat: params.responseFormat }
-                    : {}),
-                  ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
-                  signal: params.signal,
-                },
-              });
-
-              const text = result.content
-                .filter((c): c is { type: "text"; text: string } => c.type === "text")
-                .map((c) => c.text)
-                .join("");
-              return finalizePluginLlmCompletion({
-                cfg,
-                hostPluginId: pluginPolicyId,
-                // Provider failures resolve as messages; only visible successful output owns usage.
-                suppressUsage:
-                  !text.trim() || !["stop", "length", "toolUse"].includes(result.stopReason),
-                rawUsage: result.usage,
-                logger,
-                result: {
-                  text,
-                  provider: prepared.selection.provider,
-                  model: prepared.selection.modelId,
-                  responseModel: result.responseModel,
-                  stopReason: result.stopReason,
-                  agentId,
-                  execution: {
-                    mode: "direct-provider",
-                    owner: { kind: "provider", id: prepared.selection.provider },
-                  },
-                  audit,
-                },
-              });
-            }),
+        if (!selection) {
+          throw completionError(
+            "LLM_COMPLETION_FAILED",
+            `No model configured for agent ${agentId}.`,
           );
-        } catch (error) {
-          callerResult.reject(error);
-        } finally {
-          await work.drain();
         }
-      }).catch((error: unknown) => callerResult.reject(error));
-      return await callerResult.promise;
-    },
+        const normalizedSelection = normalizeModelRef(selection.provider, selection.modelId);
+        assertCurrent();
+        assertOperatorModelAllowed(operatorAuthority, normalizedSelection);
+        assertOperatorModelTupleAllowed(
+          operatorAuthority,
+          normalizedSelection.provider,
+          normalizedSelection.model,
+        );
+        const resolvedModelRef = modelKey(normalizedSelection.provider, normalizedSelection.model);
+        assertModelAllowed({ kind: "completion", resolvedModelRef, policy: authorityPolicy });
+        assertModelAllowed({
+          kind: "completion",
+          resolvedModelRef,
+          policy: pluginPolicy,
+          policyOwnerPluginId: pluginPolicyId,
+        });
+        if (requestedModel) {
+          assertAllowedModelOverride({
+            resolvedModelRef,
+            pluginPolicyId,
+            authorityPolicy,
+            pluginPolicy,
+          });
+        }
+
+        const isolatedRequest = isIsolatedAgentRuntimeRequest(params);
+        const executionProfile = isolatedRequest
+          ? normalizeOptionalString(params.execution.authProfileId)
+          : undefined;
+        const modelProfile = normalizeOptionalString(selection.profileId);
+        if (
+          executionProfile &&
+          requestedModelProfile &&
+          executionProfile !== requestedModelProfile
+        ) {
+          throw completionError(
+            "LLM_ISOLATED_INPUT_REJECTED",
+            "Isolated completion received conflicting auth profiles in model and execution.authProfileId.",
+          );
+        }
+
+        if (isolatedRequest) {
+          // Direct completions preserve the shipped model@profile contract under model
+          // override authority. Isolated credential routing requires separate authority.
+          assertAllowedAuthProfileOverride({
+            authProfileId: executionProfile ?? requestedModelProfile,
+            authorityPolicy,
+            pluginPolicy,
+          });
+          const result = await runIsolatedAgentRuntimeCompletion({
+            request:
+              requestSignal === params.signal ? params : { ...params, signal: requestSignal },
+            cfg,
+            agentId,
+            provider: selection.provider,
+            model: selection.modelId,
+            // Request-authorized profiles win, then the host/session binding. Only
+            // an unbound call may fall back to the agent's configured selection.
+            authProfileId:
+              executionProfile ?? requestedModelProfile ?? preferredProfile ?? modelProfile,
+            operatorAuthority,
+            assertCurrent,
+          });
+          assertCurrent();
+          return finalizePluginLlmCompletion({
+            cfg,
+            hostPluginId: pluginPolicyId,
+            rawUsage: result.usage,
+            logger,
+            result: {
+              text: result.text,
+              provider: result.provider,
+              model: result.model,
+              agentId,
+              execution: { mode: params.execution.mode, owner: result.owner },
+              audit,
+            },
+          });
+        }
+
+        const callerResult = createDeferredCore<LlmCompleteResult>();
+        const trackOwner = captureAsyncWorkTracker();
+        // Admit drainage with the parent before acquisition; the caller only waits for its result.
+        void trackOwner(async () => {
+          assertCurrent();
+          let preparedLogicalModel: ModelRef | undefined;
+          const preparation = await acquireSimpleCompletionModelForAgent({
+            cfg,
+            agentId,
+            modelRef: params.model,
+            operatorAuthority,
+            preferredProfile,
+            ...(requestedModelProfile ? { bindAuthOwner: true } : {}),
+            allowBundledStaticCatalogFallback: true,
+            allowMissingApiKeyModes: ["aws-sdk"],
+            skipAgentDiscovery: true,
+            signal: requestSignal,
+            modelResolver: operatorAuthority
+              ? async (...args) => {
+                  const { resolveModelAsync } =
+                    await import("../../agents/embedded-agent-runner/model.js");
+                  assertCurrent();
+                  const resolved = await resolveModelAsync(...args);
+                  if (resolved.model) {
+                    preparedLogicalModel = resolved.logicalRef;
+                    assertOperatorModelAllowed(operatorAuthority, preparedLogicalModel);
+                  }
+                  return resolved;
+                }
+              : undefined,
+          });
+
+          if ("error" in preparation) {
+            throw new Error(`Plugin LLM completion failed: ${preparation.error}`);
+          }
+          await using prepared = preparation;
+          const modelExecution = source.bindModelExecution(
+            preparedLogicalModel ?? {
+              provider: prepared.selection.provider,
+              model: prepared.selection.modelId,
+            },
+          );
+          const modelSignal = modelExecution
+            ? requestSignal
+              ? AbortSignal.any([requestSignal, modelExecution.signal])
+              : modelExecution.signal
+            : requestSignal;
+          const assertPreparedCurrent = () => {
+            assertCurrent();
+            modelExecution?.assertCurrent();
+          };
+          assertPreparedCurrent();
+
+          const work = new AsyncWorkScope();
+          try {
+            callerResult.resolve(
+              await work.track(async () => {
+                if (params.requiredAuthMode && prepared.auth.mode !== params.requiredAuthMode) {
+                  throw completionError(
+                    "LLM_COMPLETION_NOT_AUTHORIZED",
+                    "Plugin LLM completion selected a credential with the wrong authentication mode.",
+                  );
+                }
+                if (requestedModelProfile && prepared.auth.profileId !== requestedModelProfile) {
+                  throw completionError(
+                    "LLM_COMPLETION_NOT_AUTHORIZED",
+                    "Plugin LLM completion selected a different authentication profile.",
+                  );
+                }
+
+                const context = {
+                  systemPrompt: buildSystemPrompt(params),
+                  messages: buildMessages({
+                    request: params,
+                    provider: prepared.model.provider,
+                    model: prepared.model.id,
+                    api: prepared.model.api,
+                  }),
+                };
+
+                const result = await completeWithPreparedSimpleCompletionModel({
+                  operatorAuthority,
+                  assertCurrent: assertPreparedCurrent,
+                  model: prepared.model,
+                  auth: prepared.auth,
+                  cfg,
+                  context,
+                  options: {
+                    maxTokens: asFiniteNumber(params.maxTokens),
+                    temperature: asFiniteNumber(params.temperature),
+                    ...(params.responseFormat !== undefined
+                      ? { responseFormat: params.responseFormat }
+                      : {}),
+                    ...(params.reasoning !== undefined ? { reasoning: params.reasoning } : {}),
+                    signal: modelSignal,
+                  },
+                });
+                assertPreparedCurrent();
+
+                const text = result.content
+                  .filter((c): c is { type: "text"; text: string } => c.type === "text")
+                  .map((c) => c.text)
+                  .join("");
+                return finalizePluginLlmCompletion({
+                  cfg,
+                  hostPluginId: pluginPolicyId,
+                  // Provider failures resolve as messages; only visible successful output owns usage.
+                  suppressUsage:
+                    !text.trim() || !["stop", "length", "toolUse"].includes(result.stopReason),
+                  rawUsage: result.usage,
+                  logger,
+                  result: {
+                    text,
+                    provider: prepared.selection.provider,
+                    model: prepared.selection.modelId,
+                    responseModel: result.responseModel,
+                    stopReason: result.stopReason,
+                    agentId,
+                    execution: {
+                      mode: "direct-provider",
+                      owner: { kind: "provider", id: prepared.selection.provider },
+                    },
+                    audit,
+                  },
+                });
+              }),
+            );
+          } catch (error) {
+            callerResult.reject(error);
+          } finally {
+            await work.drain();
+          }
+        }).catch((error: unknown) => callerResult.reject(error));
+        return await callerResult.promise;
+      },
+      options.authority?.operatorAuthority,
+    ),
   };
 }

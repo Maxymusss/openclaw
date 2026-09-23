@@ -8,6 +8,7 @@
 import type { Model } from "../llm/types.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import { runWithAsyncWorkResources } from "../shared/async-work-resources.js";
+import { assertOperatorModelAllowed } from "./admitted-run-context.js";
 import { resolveAgentDir, resolveAgentWorkspaceDir, resolveDefaultAgentId } from "./agent-scope.js";
 import { reconcileAuthProfileQuotaBlocks } from "./auth-profiles/usage.js";
 import { resolveCliRuntimeCanonicalProvider } from "./cli-backends.js";
@@ -21,6 +22,7 @@ import type {
   AgentHarnessIsolatedCompletionResult,
 } from "./harness/types.js";
 import { runCliIsolatedCompletion } from "./isolated-completion-cli.js";
+import { createIsolatedCompletionModelAuthority } from "./isolated-completion-model-authority.js";
 import {
   IsolatedCompletionError,
   isRetryableIsolatedQuotaFailure,
@@ -31,12 +33,13 @@ import type {
   IsolatedCompletionResult,
 } from "./isolated-completion.types.js";
 import { ensureAuthProfileStore } from "./model-auth.js";
+import type { ModelRef } from "./model-ref-shared.js";
 import {
   isCliRuntimeAliasForProvider,
   resolveCliRuntimeExecutionProvider,
 } from "./model-runtime-aliases.js";
 import {
-  assertOperatorModelAllowed,
+  assertOperatorModelAllowed as assertOperatorModelTupleAllowed,
   assertOperatorModelAuthorityCurrent,
   assertOperatorModelHarnessSupported,
   isOperatorModelPolicyError,
@@ -190,16 +193,9 @@ async function runIsolatedCompletionOwned(
     ...params,
     streamParams: params.streamParams && { ...params.streamParams },
   };
-  let closed = false;
-  const assertCurrent = () => {
-    if (closed) {
-      throw new IsolatedCompletionError("runtime-unavailable", "Isolated completion has ended.");
-    }
-    input.assertCurrent?.();
-    assertOperatorModelAuthorityCurrent(input.operatorAuthority);
-    input.abortSignal?.throwIfAborted();
-  };
-  assertCurrent();
+  input.assertCurrent?.();
+  assertOperatorModelAuthorityCurrent(input.operatorAuthority);
+  input.abortSignal?.throwIfAborted();
   const requestConfig = input.config ?? {};
   const agentId = input.agentId ?? resolveDefaultAgentId(requestConfig);
   const requestAgentDir = input.agentDir ?? resolveAgentDir(requestConfig, agentId);
@@ -211,7 +207,27 @@ async function runIsolatedCompletionOwned(
     includeSetupRegistry: true,
   });
   const provider = canonicalProvider ?? input.provider;
-  assertOperatorModelAllowed(input.operatorAuthority, provider, input.model);
+  let closed = false;
+  let modelForAuthorization: ModelRef | undefined = { provider, model: input.model };
+  const assertCurrent = () => {
+    if (closed) {
+      throw new IsolatedCompletionError("runtime-unavailable", "Isolated completion has ended.");
+    }
+    input.assertCurrent?.();
+    assertOperatorModelAuthorityCurrent(input.operatorAuthority);
+    assertOperatorModelAllowed(input.operatorAuthority, modelForAuthorization);
+    input.abortSignal?.throwIfAborted();
+  };
+  const resolveAuthorizedModel: typeof resolveModelAsync = async (...args) => {
+    const resolved = await resolveModelAsync(...args);
+    if (resolved.model) {
+      modelForAuthorization = resolved.logicalRef;
+      assertCurrent();
+    }
+    return resolved;
+  };
+  assertCurrent();
+  assertOperatorModelTupleAllowed(input.operatorAuthority, provider, input.model);
   // Canonicalizing a CLI model ref must not discard its explicit execution owner.
   const runtimeOverride =
     input.agentHarnessRuntimeOverride ?? (canonicalProvider ? input.provider : undefined);
@@ -236,7 +252,13 @@ async function runIsolatedCompletionOwned(
       ],
     },
   );
-  onAcquired({ release: () => lease[Symbol.asyncDispose]() });
+  const modelAuthority = createIsolatedCompletionModelAuthority({
+    operatorAuthority: input.operatorAuthority,
+    abortSignal: input.abortSignal,
+    assertCurrent,
+    runtime: lease,
+  });
+  onAcquired({ release: () => modelAuthority.release() });
   try {
     assertCurrent();
     const run = async (): Promise<IsolatedCompletionResult> => {
@@ -333,6 +355,7 @@ async function runIsolatedCompletionOwned(
             workspaceDir,
             preparedModelRuntime: lease.snapshot,
             signal: request.abortSignal,
+            modelResolver: resolveAuthorizedModel,
           },
           assertCurrent,
         );
@@ -340,7 +363,7 @@ async function runIsolatedCompletionOwned(
         if ("error" in prepared) {
           throw new Error(`Isolated completion preparation failed: ${prepared.error}`);
         }
-        assertOperatorModelAllowed(
+        assertOperatorModelTupleAllowed(
           input.operatorAuthority,
           prepared.model.provider,
           prepared.model.id,
@@ -358,25 +381,31 @@ async function runIsolatedCompletionOwned(
             }
           | undefined;
         if (harness.authBootstrap === "harness") {
-          const resolution = await resolveModelAsync(provider, request.model, agentDir, config, {
-            abortSignal: request.abortSignal,
-            assertCurrent,
-            ...lease.snapshot.createStores(),
-            preparedModelRuntime: lease.snapshot,
-            workspaceDir,
-            authProfileId: request.authProfileId,
-            skipAgentDiscovery: true,
-            allowBundledStaticCatalogFallback: true,
-            preferBundledStaticCatalogTransport: true,
-          });
-          const runtimeModel = resolution.model;
-          if (!runtimeModel) {
+          const resolution = await resolveAuthorizedModel(
+            provider,
+            request.model,
+            agentDir,
+            config,
+            {
+              abortSignal: request.abortSignal,
+              assertCurrent,
+              ...lease.snapshot.createStores(),
+              preparedModelRuntime: lease.snapshot,
+              workspaceDir,
+              authProfileId: request.authProfileId,
+              skipAgentDiscovery: true,
+              allowBundledStaticCatalogFallback: true,
+              preferBundledStaticCatalogTransport: true,
+            },
+          );
+          if (!resolution.model) {
             throw new IsolatedCompletionError(
               "runtime-unavailable",
               resolution.error ?? `Unknown isolated completion model ${provider}/${request.model}.`,
             );
           }
-          assertOperatorModelAllowed(
+          const runtimeModel = resolution.model;
+          assertOperatorModelTupleAllowed(
             input.operatorAuthority,
             runtimeModel.provider,
             runtimeModel.id,
@@ -470,21 +499,27 @@ async function runIsolatedCompletionOwned(
                 workspaceDir,
                 metadataSnapshot: lease.snapshot.metadataSnapshot,
                 resolveModel: ({ config: modelConfig, authProfileId, authProfileMode }) =>
-                  resolveModelAsync(runtimeModel.provider, runtimeModel.id, agentDir, modelConfig, {
-                    abortSignal: request.abortSignal,
-                    assertCurrent,
-                    modelIdSource: "selected",
-                    preparedModelRuntime: lease.snapshot,
-                    workspaceDir,
-                    authProfileId,
-                    authProfileMode,
-                    skipAgentDiscovery: true,
-                    allowBundledStaticCatalogFallback: true,
-                  }),
+                  resolveAuthorizedModel(
+                    runtimeModel.provider,
+                    runtimeModel.id,
+                    agentDir,
+                    modelConfig,
+                    {
+                      abortSignal: request.abortSignal,
+                      assertCurrent,
+                      modelIdSource: "selected",
+                      preparedModelRuntime: lease.snapshot,
+                      workspaceDir,
+                      authProfileId,
+                      authProfileMode,
+                      skipAgentDiscovery: true,
+                      allowBundledStaticCatalogFallback: true,
+                    },
+                  ),
               });
               assertCurrent();
               if (model) {
-                assertOperatorModelAllowed(input.operatorAuthority, model.provider, model.id);
+                assertOperatorModelTupleAllowed(input.operatorAuthority, model.provider, model.id);
               }
               modelMaxTokens = model?.maxTokens;
               authorization = {
@@ -511,8 +546,10 @@ async function runIsolatedCompletionOwned(
             }
             assertCurrent();
             deadline ??= Date.now() + request.timeoutMs;
+            const execution = modelAuthority.bind(modelForAuthorization);
             const pending = harness.runIsolatedCompletionV2({
               ...commonParams,
+              ...execution,
               timeoutMs: remainingTimeoutMs(),
               authorization:
                 authorization.owner === "host"
@@ -522,6 +559,7 @@ async function runIsolatedCompletionOwned(
             });
             priorProfileAttempted ||= attempt?.kind === "profile";
             const candidate = await pending;
+            execution.assertCurrent?.();
             assertCurrent();
             if (isRetryableIsolatedQuotaFailure(candidate.assistant)) {
               // Returned quota failures must enter the same core-owned profile loop as throws.
@@ -560,9 +598,11 @@ async function runIsolatedCompletionOwned(
             : {}),
         };
         assertCurrent();
+        const execution = modelAuthority.bind(modelForAuthorization);
         result = await harness.runIsolatedCompletion!(
-          prepareIsolatedHostAuthorization(harness, harnessParams),
+          prepareIsolatedHostAuthorization(harness, { ...harnessParams, ...execution }),
         );
+        execution.assertCurrent?.();
       }
       if (!result) {
         throw new IsolatedCompletionError("runtime-unavailable", "Isolated completion failed.");
