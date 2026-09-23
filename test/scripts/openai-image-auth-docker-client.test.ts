@@ -1,4 +1,5 @@
 // Openai Image Auth Docker Client tests cover openai image auth docker client script behavior.
+import http from "node:http";
 import { describe, expect, it } from "vitest";
 import {
   startMockServer,
@@ -12,12 +13,24 @@ describe("OpenAI image auth Docker client mock server", () => {
     const records: RequestRecord[] = [];
     const server = await startMockServer(records);
     try {
-      const response = await fetch(`${server.baseUrl}/v1/images/generations`, {
-        method: "POST",
-        body: "too large",
-      });
+      const response = await new Promise<{ body: string; status: number | undefined }>(
+        (resolve, reject) => {
+          const request = http.request(
+            `${server.baseUrl}/v1/images/generations`,
+            { method: "POST" },
+            (incoming) => {
+              let body = "";
+              incoming.setEncoding("utf8");
+              incoming.on("data", (chunk) => (body += chunk));
+              incoming.on("end", () => resolve({ body, status: incoming.statusCode }));
+            },
+          );
+          request.on("error", reject);
+          request.end("too large");
+        },
+      );
 
-      await expect(response.json()).resolves.toEqual({
+      expect(JSON.parse(response.body)).toEqual({
         error: { message: "mock OpenAI request body exceeded 4 bytes" },
       });
       expect(response.status).toBe(413);

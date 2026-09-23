@@ -7,10 +7,6 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { cleanupBrowserSessionsForLifecycleEnd } from "../../../browser-lifecycle-cleanup.js";
-import {
-  runWithOwnedSessionTranscriptWrite,
-  withOwnedSessionTranscriptWrites,
-} from "../../../config/sessions/transcript-write-context.js";
 import type { GatewayRecoveryRuntime } from "../../../gateway/server-instance-runtime.types.js";
 import type { AgentEventPayload } from "../../../infra/agent-events.js";
 import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
@@ -76,6 +72,7 @@ import {
 } from "./subagent-registry.run-fixtures.test-support.js";
 import { saveSubagentRegistryChangesToSqlite } from "./subagent-registry.store.sqlite.js";
 import { registerRestoredTaskSettlementTest } from "./subagent-registry.task-settlement.test-support.js";
+import { registerRequesterTranscriptOwnershipTest } from "./subagent-registry.transcript-ownership.test-support.js";
 import type {
   ContextEngineSubagentEndedParams,
   SubagentRunRecord,
@@ -2025,86 +2022,7 @@ describe("subagent registry seam flow", () => {
     expect(run?.execution.outcome).toBeUndefined();
   });
 
-  it("detaches subagent completion from a disposed requester transcript owner", async () => {
-    const sessionKey = "agent:main:main";
-    const activeGatewayContext = { recoveryRuntime } as never;
-    mod.activateSubagentRegistry(
-      () =>
-        ({
-          recoveryRuntime,
-          resolveGatewayContext: () => activeGatewayContext,
-        }) as never,
-    );
-    let disposed = false;
-    let resolveWait: (value: Record<string, unknown>) => void = () => {};
-    const pendingWait = new Promise<Record<string, unknown>>((resolve) => {
-      resolveWait = resolve;
-    });
-    const requesterTranscriptWrite = vi.fn();
-    const withRequesterTranscriptWrite = async <T>(operation: () => Promise<T> | T): Promise<T> => {
-      requesterTranscriptWrite();
-      if (disposed) {
-        throw new Error("attempt disposed before transcript write");
-      }
-      return await operation();
-    };
-    const freshTranscriptWrite = vi.fn(async () => {});
-    const freshCompletionWrite = vi.fn(async () => {});
-    const announceEntered = createDeferred();
-
-    mocks.callGateway.mockImplementation(async (request: { method?: string }) => {
-      if (request.method !== "agent.wait") {
-        return {};
-      }
-      const result = await pendingWait;
-      await runWithOwnedSessionTranscriptWrite({ sessionKey }, freshCompletionWrite);
-      return result;
-    });
-    mocks.runSubagentAnnounceFlow.mockImplementation(async () => {
-      announceEntered.resolve();
-      await runWithOwnedSessionTranscriptWrite({ sessionKey }, freshTranscriptWrite);
-      return "delivered";
-    });
-
-    const settleRootWork = observeRootWork();
-    try {
-      await withOwnedSessionTranscriptWrites(
-        { sessionKey, withTranscriptWrite: withRequesterTranscriptWrite },
-        async () => {
-          mod.registerSubagentRun({
-            runId: "run-detached-requester-owner",
-            requesterSessionKey: sessionKey,
-            task: "finish after the requester attempt exits",
-            expectsCompletionMessage: true,
-          });
-          await waitForFast(() =>
-            expect(mocks.callGateway).toHaveBeenCalledWith(
-              expect.objectContaining({ method: "agent.wait" }),
-            ),
-          );
-        },
-      );
-
-      disposed = true;
-      resolveWait({ status: "ok", startedAt: 111, endedAt: 222 });
-      await announceEntered.promise;
-    } finally {
-      disposed = true;
-      resolveWait({ status: "ok", startedAt: 111, endedAt: 222 });
-      await settleRootWork();
-    }
-
-    expect(freshTranscriptWrite).toHaveBeenCalledOnce();
-    expect(freshCompletionWrite).toHaveBeenCalledOnce();
-    expect(mocks.runSubagentAnnounceFlow).toHaveBeenCalledOnce();
-    const announceParams = (
-      mocks.runSubagentAnnounceFlow.mock.calls as unknown as Array<
-        [{ resolveGatewayContext?: () => unknown }]
-      >
-    )[0]?.[0];
-    expect(announceParams?.resolveGatewayContext?.()).toBe(activeGatewayContext);
-    expect(requesterTranscriptWrite).not.toHaveBeenCalled();
-  });
+  registerRequesterTranscriptOwnershipTest({ getRegistry: () => mod, mocks, recoveryRuntime });
 
   it("does not fall back to network recovery without an instance-bound runtime", async () => {
     mod.activateSubagentRegistry(() => undefined);

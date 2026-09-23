@@ -48,6 +48,7 @@ import type { PluginRuntime } from "../src/plugins/runtime/types.js";
 import { createPluginRecord } from "../src/plugins/status.test-fixtures.js";
 import { trackAsyncWork } from "../src/shared/async-work-scope.js";
 import type { Deferred } from "../src/shared/deferred.js";
+import { closeOpenClawAgentDatabasesAsync } from "../src/state/openclaw-agent-db-lifecycle.js";
 import { closeOpenClawStateDatabaseForTest } from "../src/state/openclaw-state-db.js";
 import { createDeferred, withTestTimeout } from "./helpers/promise.js";
 
@@ -433,6 +434,7 @@ describe("CLI message authority integration", () => {
         provider.close((error) => (error ? reject(error) : resolve()));
       });
     }
+    await closeOpenClawAgentDatabasesAsync();
     closeOpenClawStateDatabaseForTest();
     resetPluginRuntimeStateForTest();
     clearRuntimeConfigSnapshot();
