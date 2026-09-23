@@ -1,9 +1,10 @@
 import { html, nothing, render } from "lit";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { page } from "vitest/browser";
 import "@awesome.me/webawesome/dist/styles/themes/default.css";
 import type { SessionGoal } from "../../api/types.ts";
 import { renderComposerMenu } from "../../components/composer-menu.ts";
+import { installTitleTooltips } from "../../components/tooltip-title.ts";
 import { createComposerProps } from "./chat-composer.test-support.ts";
 import { renderAttachmentPreview } from "./components/chat-attachments.ts";
 import { renderChatGoal } from "./components/chat-composer-goal.ts";
@@ -54,11 +55,16 @@ describe("composer overflow presentation", () => {
   });
 
   it.each([390, 2048])(
-    "keeps skill labels and dependency notes inside scrollable menu rows at %ipx",
+    "ellipsizes long skill names and reveals their full name and disabled reason on hover at %ipx",
     async (width) => {
+      onTestFinished(installTitleTooltips(document));
       await page.viewport(width, 1000);
       container.className = "";
       container.style.cssText = `position: fixed; bottom: 24px; left: 16px; width: ${Math.min(width - 32, 760)}px`;
+      const availableSkillName =
+        "An available skill with a long descriptive name that is truncated";
+      const unavailableSkillName =
+        "An unavailable skill with a long descriptive name that is truncated";
       const props = createComposerProps({
         onRequestUpdate: () => render(renderChatComposer(props), container),
         capabilityMenu: {
@@ -67,14 +73,15 @@ describe("composer overflow presentation", () => {
             "apple-notes",
             "apple-reminders",
             "writing-for-agents",
-            "A skill with a long descriptive name that must remain on one line",
-            ...Array.from({ length: 12 }, (_, index) => `fixture-skill-${index}`),
+            availableSkillName,
+            unavailableSkillName,
+            ...Array.from({ length: 11 }, (_, index) => `fixture-skill-${index}`),
           ].map((name) => ({
             key: name,
             name,
-            enabled: false,
-            baseEnabled: false,
-            missingDeps: true,
+            enabled: name === availableSkillName,
+            baseEnabled: name === availableSkillName,
+            missingDeps: name !== availableSkillName,
           })),
           skillsLoading: false,
           skillsError: false,
@@ -132,12 +139,28 @@ describe("composer overflow presentation", () => {
       expect(name.getBoundingClientRect().height).toBeLessThan(
         2 * Number.parseFloat(getComputedStyle(name).lineHeight),
       );
-      const longName = rows[3]!.querySelector<HTMLElement>(
-        ".agent-chat__capability-menu-label > span",
-      )!;
-      expect(longName.title).toBe(`${longName.textContent}: deps missing`);
-      expect(longName.scrollWidth).toBeGreaterThan(longName.clientWidth);
-      expect(getComputedStyle(longName).textOverflow).toBe("ellipsis");
+      for (const [row, expectedHint] of [
+        [rows[3]!, availableSkillName],
+        [rows[4]!, `${unavailableSkillName}: deps missing`],
+      ] as const) {
+        const longName = row.querySelector<HTMLElement>(
+          ".agent-chat__capability-menu-label > span",
+        )!;
+        expect(longName.scrollWidth).toBeGreaterThan(longName.clientWidth);
+        expect(getComputedStyle(longName).textOverflow).toBe("ellipsis");
+        await page.elementLocator(longName).hover();
+        const tooltip =
+          document.querySelector<HTMLElementTagNameMap["openclaw-tooltip"]>(
+            "body > openclaw-tooltip",
+          );
+        expect(tooltip).not.toBeNull();
+        await tooltip!.updateComplete;
+        const content = tooltip!.shadowRoot!.querySelector<HTMLElement>(".tooltip-content")!;
+        await expect.element(content).toBeVisible();
+        expect(content.textContent).toBe(expectedHint);
+        await page.elementLocator(longName).unhover();
+        await expect.element(content).not.toBeVisible();
+      }
       expect(menu.scrollWidth).toBeLessThanOrEqual(menu.clientWidth);
       expect(menu.getBoundingClientRect().right).toBeLessThanOrEqual(width);
     },
