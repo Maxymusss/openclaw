@@ -16,7 +16,7 @@ vi.mock("./telegram-media.runtime.js", async (importOriginal) => ({
 export const harness = await import("./bot.create-telegram-bot.test-harness.js");
 vi.doUnmock("./bot.runtime.js");
 const { createTelegramBot } = await import("./bot.js");
-const bots: ReturnType<typeof createTelegramBot>[] = [];
+const bots: Awaited<ReturnType<typeof createTelegramBot>>[] = [];
 export const chat = { id: 42001, type: "private", first_name: "Alice" } as const;
 export const from = { id: 42001, is_bot: false, first_name: "Alice" } as const;
 export const groupChat = {
@@ -30,7 +30,7 @@ export const photo = [
 ];
 export const apiCalls = vi.fn<(method: string, payload: unknown) => void>();
 
-export function createBot(
+export async function createBot(
   native = true,
   text = true,
   override?: OpenClawConfig,
@@ -64,7 +64,7 @@ export function createBot(
       headers: { "content-type": "application/json" },
     });
   };
-  const bot = createTelegramBot({
+  const bot = await createTelegramBot({
     token: "123:test-token",
     botInfo: { ...telegramBotInfoForTest, has_topics_enabled: dmTopicsEnabled },
     config: cfg,

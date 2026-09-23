@@ -22,7 +22,7 @@ describe("registered native command routing through the message pipeline", () =>
   ])(
     "classifies /status with native=$native and text=$text",
     async ({ native, text, source, kind }) => {
-      const bot = createBot(native, text);
+      const bot = await createBot(native, text);
       await bot.handleUpdate({ update_id: 1001, message: commandMessage("/status") });
       expect(harness.replySpy).toHaveBeenCalledTimes(1);
       expect(harness.replySpy.mock.calls[0]?.[0]).toMatchObject({
@@ -36,7 +36,7 @@ describe("registered native command routing through the message pipeline", () =>
 
   it("authorizes paired DMs without marking the sender as an owner", async () => {
     harness.getReadChannelAllowFromStoreMock().mockResolvedValue([String(from.id)]);
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: { native: true },
       channels: { telegram: { dmPolicy: "pairing", allowFrom: [], streaming: { mode: "off" } } },
     });
@@ -58,7 +58,7 @@ describe("registered native command routing through the message pipeline", () =>
   ])(
     "passes nested block streaming enabled=$enabled to native command dispatch",
     async ({ enabled, disableBlockStreaming }) => {
-      const bot = createBot(true, true, {
+      const bot = await createBot(true, true, {
         commands: { native: true },
         channels: {
           telegram: {
@@ -79,7 +79,7 @@ describe("registered native command routing through the message pipeline", () =>
   it.each(["/queue Can you diagnose this?", "/think high\nsummarize the thread so far"])(
     "preserves every argument in %s",
     async (text) => {
-      const bot = createBot();
+      const bot = await createBot();
       await bot.handleUpdate({ update_id: 1001, message: commandMessage(text) });
       expect(harness.replySpy.mock.calls[0]?.[0]).toMatchObject({
         CommandBody: text,
@@ -104,7 +104,7 @@ describe("registered native command routing through the message pipeline", () =>
           },
         },
       };
-      const bot = createBot(true, true, cfg);
+      const bot = await createBot(true, true, cfg);
       await bot.handleUpdate({
         update_id: 1001,
         message: {
@@ -133,7 +133,7 @@ describe("registered native command routing through the message pipeline", () =>
   ])(
     "routes native commands through a bound $name session",
     async ({ threadId, conversationId }) => {
-      const bot = createBot(true, true, {
+      const bot = await createBot(true, true, {
         commands: { native: true },
         agents: { list: [{ id: "main", default: true }, { id: "bound-agent" }] },
         channels: {
@@ -202,7 +202,7 @@ describe("registered native command routing through the message pipeline", () =>
   );
 
   it("treats an authorized native command as a mention even with unsupported arguments", async () => {
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: { native: true },
       channels: {
         telegram: {
@@ -224,7 +224,7 @@ describe("registered native command routing through the message pipeline", () =>
   });
 
   it("silently blocks unauthorized /new in an unbound forum topic", async () => {
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: { native: true },
       channels: {
         telegram: {
@@ -250,7 +250,7 @@ describe("registered native command routing through the message pipeline", () =>
   });
 
   it("uses the current config snapshot after startup", async () => {
-    const bot = createBot();
+    const bot = await createBot();
     const runtimeCfg: OpenClawConfig = {
       commands: { native: true },
       agents: { list: [{ id: "changed-agent", default: true }] },
@@ -265,7 +265,7 @@ describe("registered native command routing through the message pipeline", () =>
   });
 
   it("does not dispatch the same update twice", async () => {
-    const bot = createBot();
+    const bot = await createBot();
     const update = { update_id: 1001, message: commandMessage("/status") };
     await bot.handleUpdate(update);
     await bot.handleUpdate(update);

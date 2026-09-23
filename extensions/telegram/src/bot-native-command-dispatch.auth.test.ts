@@ -28,13 +28,13 @@ function groupCommand(text = "/status") {
   };
 }
 
-function setup(
+async function setup(
   params: {
     telegram?: TelegramAccountConfig;
     commands?: OpenClawConfig["commands"];
   } = {},
 ) {
-  const bot = createBot(true, true, {
+  const bot = await createBot(true, true, {
     commands: { native: true, text: true, ...params.commands },
     channels: {
       telegram: {
@@ -53,7 +53,7 @@ function setup(
 
 describe("native command auth in groups", () => {
   it("authorizes native commands in groups when sender is in groupAllowFrom", async () => {
-    const { bot } = setup({ telegram: { groupAllowFrom: [String(from.id)] } });
+    const { bot } = await setup({ telegram: { groupAllowFrom: [String(from.id)] } });
 
     await bot.handleUpdate({ update_id: 1001, message: groupCommand() });
 
@@ -67,7 +67,7 @@ describe("native command auth in groups", () => {
 
   it("does not authorize group native commands from the DM allowlist store", async () => {
     harness.getReadChannelAllowFromStoreMock().mockResolvedValue([String(from.id)]);
-    const { bot, sendMessage } = setup();
+    const { bot, sendMessage } = await setup();
 
     await bot.handleUpdate({ update_id: 1001, message: groupCommand() });
 
@@ -76,7 +76,7 @@ describe("native command auth in groups", () => {
   });
 
   it("authorizes native commands in admitted groups from commands.allowFrom.telegram", async () => {
-    const { bot } = setup({
+    const { bot } = await setup({
       commands: { allowFrom: { telegram: [String(from.id)] } },
       telegram: { allowFrom: ["99999"], groupAllowFrom: ["99999"] },
     });
@@ -88,7 +88,7 @@ describe("native command auth in groups", () => {
   });
 
   it("uses commands.allowFrom.telegram as the sole command auth source when configured", async () => {
-    const { bot, sendMessage } = setup({
+    const { bot, sendMessage } = await setup({
       commands: { allowFrom: { telegram: ["99999"] } },
       telegram: { groupAllowFrom: [String(from.id)] },
     });
@@ -100,7 +100,7 @@ describe("native command auth in groups", () => {
   });
 
   it("silently drops account-disabled native commands", async () => {
-    const { bot, sendMessage } = setup({
+    const { bot, sendMessage } = await setup({
       commands: { allowFrom: { telegram: [String(from.id)] } },
       telegram: { groupPolicy: "disabled" },
     });
@@ -112,7 +112,7 @@ describe("native command auth in groups", () => {
   });
 
   it("silently drops topic-disabled native commands before dispatch", async () => {
-    const { bot, sendMessage } = setup({
+    const { bot, sendMessage } = await setup({
       commands: { allowFrom: { telegram: [String(from.id)] } },
       telegram: {
         groups: {
@@ -131,7 +131,7 @@ describe("native command auth in groups", () => {
   });
 
   it("silently drops native commands that inherit disabled group policy", async () => {
-    const { bot, sendMessage } = setup({
+    const { bot, sendMessage } = await setup({
       commands: { allowFrom: { telegram: [String(from.id)] } },
       telegram: { groups: { [String(groupChat.id)]: { groupPolicy: "disabled" } } },
     });
@@ -143,7 +143,7 @@ describe("native command auth in groups", () => {
   });
 
   it("silently drops native commands from groups outside the chat allowlist", async () => {
-    const { bot, sendMessage } = setup({
+    const { bot, sendMessage } = await setup({
       commands: { allowFrom: { telegram: [String(from.id)] } },
       telegram: { groups: { "-100888": { requireMention: false } } },
     });
@@ -155,7 +155,7 @@ describe("native command auth in groups", () => {
   });
 
   it("silently drops native commands in groups when sender is in neither allowlist", async () => {
-    const { bot, sendMessage } = setup({
+    const { bot, sendMessage } = await setup({
       telegram: { allowFrom: ["99999"], groupAllowFrom: ["99999"] },
     });
 
@@ -169,7 +169,7 @@ describe("native command auth in groups", () => {
     const readStore = harness
       .getReadChannelAllowFromStoreMock()
       .mockRejectedValue(new Error("store temporarily unavailable"));
-    const { bot, sendMessage } = setup({
+    const { bot, sendMessage } = await setup({
       commands: { allowFrom: { telegram: [String(from.id)] } },
       telegram: { dmPolicy: "pairing" },
     });
@@ -188,7 +188,7 @@ describe("native command auth in groups", () => {
   });
 
   it("replies in the originating forum topic when command menu auth is rejected", async () => {
-    const { bot, sendMessage } = setup({
+    const { bot, sendMessage } = await setup({
       telegram: { allowFrom: ["99999"], groupAllowFrom: ["99999"] },
     });
 

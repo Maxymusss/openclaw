@@ -20,7 +20,7 @@ vi.mock("openclaw/plugin-sdk/agent-runtime", async (importOriginal) => ({
 
 describe("createTelegramBot typed command pipeline", () => {
   it("keeps the replied-to photo and quote on a native command turn", async () => {
-    const bot = createBot();
+    const bot = await createBot();
     await bot.handleUpdate({
       update_id: 1001,
       message: {
@@ -47,7 +47,7 @@ describe("createTelegramBot typed command pipeline", () => {
   });
 
   it("keeps caption commands in the message pipeline", async () => {
-    const bot = createBot();
+    const bot = await createBot();
     const { text, entities, ...message } = commandMessage("/status");
     await bot.handleUpdate({
       update_id: 1002,
@@ -61,7 +61,7 @@ describe("createTelegramBot typed command pipeline", () => {
   });
 
   it("renders the argument menu without dispatching a turn", async () => {
-    const bot = createBot();
+    const bot = await createBot();
     await bot.handleUpdate({ update_id: 1003, message: commandMessage("/think") });
     expect(harness.replySpy).not.toHaveBeenCalled();
     expect(apiCalls).toHaveBeenCalledWith(
@@ -73,7 +73,7 @@ describe("createTelegramBot typed command pipeline", () => {
   });
 
   it("dispatches completed thinking arguments through the message pipeline", async () => {
-    const bot = createBot();
+    const bot = await createBot();
     await bot.handleUpdate({ update_id: 1005, message: commandMessage("/think high") });
     expect(harness.replySpy).toHaveBeenCalledTimes(1);
     expect(harness.replySpy.mock.calls[0]?.[0]).toMatchObject({
@@ -88,14 +88,14 @@ describe("createTelegramBot typed command pipeline", () => {
   });
 
   it("runs the login executor without dispatching a turn", async () => {
-    const bot = createBot();
+    const bot = await createBot();
     await bot.handleUpdate({ update_id: 1004, message: commandMessage("/login") });
     expect(loginExecutor).toHaveBeenCalledWith(expect.objectContaining({ commandText: "/login" }));
     expect(harness.replySpy).not.toHaveBeenCalled();
   });
 
   it("translates native command names while preserving arguments and raw text", async () => {
-    const bot = createBot();
+    const bot = await createBot();
     await bot.handleUpdate({
       update_id: 1006,
       message: commandMessage("/export_session session-notes.html"),
@@ -111,7 +111,7 @@ describe("createTelegramBot typed command pipeline", () => {
 
   it("threads native command replies inside topics", async () => {
     harness.replySpy.mockResolvedValue({ text: "response" });
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: { native: true },
       channels: {
         telegram: {
@@ -142,7 +142,7 @@ describe("createTelegramBot typed command pipeline", () => {
       });
       return { text: "final reply" };
     });
-    const bot = createBot();
+    const bot = await createBot();
     await bot.handleUpdate({ update_id: 1008, message: commandMessage("/verbose on") });
     const replies = apiCalls.mock.calls.filter(([method]) => method === "sendMessage");
     expect(replies).toHaveLength(2);
@@ -172,7 +172,7 @@ describe("createTelegramBot typed command pipeline", () => {
   ])("$name", async ({ messageThreadId, dmTopicsEnabled, expectedSessionKey }) => {
     harness.replySpy.mockResolvedValue({ text: "response" });
     harness.getReadChannelAllowFromStoreMock().mockResolvedValue([String(from.id)]);
-    const bot = createBot(
+    const bot = await createBot(
       true,
       true,
       {
@@ -202,7 +202,7 @@ describe("createTelegramBot typed command pipeline", () => {
   it.each(["command allowlist", "owner"] as const)(
     "admits an unpaired sender authorized by the %s",
     async (grant) => {
-      const bot = createBot(true, true, {
+      const bot = await createBot(true, true, {
         commands: {
           native: true,
           ...(grant === "owner"
@@ -226,7 +226,7 @@ describe("createTelegramBot typed command pipeline", () => {
   it.each(["command allowlist", "owner"] as const)(
     "admits a sender outside the group allowlist authorized by the %s",
     async (grant) => {
-      const bot = createBot(true, true, {
+      const bot = await createBot(true, true, {
         commands: {
           native: true,
           ...(grant === "owner"
@@ -252,7 +252,7 @@ describe("createTelegramBot typed command pipeline", () => {
   it.each([true, false])(
     "keeps pairing challenges for unlisted senders with command allowlist configured=%s",
     async (configured) => {
-      const bot = createBot(true, true, {
+      const bot = await createBot(true, true, {
         commands: { native: true, ...(configured ? { allowFrom: { telegram: ["99999"] } } : {}) },
         channels: { telegram: { dmPolicy: "pairing" } },
       });
@@ -268,7 +268,7 @@ describe("createTelegramBot typed command pipeline", () => {
   it.each([true, false])(
     "silently drops unlisted group senders with command allowlist configured=%s",
     async (configured) => {
-      const bot = createBot(true, true, {
+      const bot = await createBot(true, true, {
         commands: { native: true, ...(configured ? { allowFrom: { telegram: ["99999"] } } : {}) },
         channels: {
           telegram: {
@@ -285,7 +285,7 @@ describe("createTelegramBot typed command pipeline", () => {
   );
 
   it("keeps disabled topics closed to command-authorized senders", async () => {
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: { native: true, allowFrom: { telegram: [String(from.id)] } },
       channels: {
         telegram: {
@@ -318,7 +318,7 @@ describe("createTelegramBot typed command pipeline", () => {
     async ({ scope, grant, included, command }) => {
       const allowFrom = [included ? String(from.id) : "99999"];
       const scopedConfig = scope === "topic" ? { topics: { "99": { allowFrom } } } : { allowFrom };
-      const bot = createBot(true, true, {
+      const bot = await createBot(true, true, {
         commands: {
           native: true,
           ...(grant === "owner"
@@ -366,7 +366,7 @@ describe("createTelegramBot typed command pipeline", () => {
   );
 
   it("keeps an explicit command allowlist authoritative for an owner", async () => {
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: {
         native: true,
         ownerAllowFrom: [`telegram:${from.id}`],

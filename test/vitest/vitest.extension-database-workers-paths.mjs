@@ -282,6 +282,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/telegram/src/telegram-ingress-spool.test.ts",
   "extensions/telegram/src/telegram-media-alias-recovery.integration.test.ts",
   "extensions/telegram/src/telegram-reply-target-recovery.integration.test.ts",
+  "extensions/telegram/src/thread-bindings.test.ts",
   "extensions/telegram/src/transport-payload.test.ts",
   "extensions/telegram/src/update-offset-store.test.ts",
   "extensions/visitor-access/index.test.ts",

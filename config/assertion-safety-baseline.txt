@@ -1213,7 +1213,6 @@ extensions/telegram/src/telegram-ingress-supersede.ts	7
 extensions/telegram/src/telegram-ingress-worker.runtime.ts	4
 extensions/telegram/src/telegram-ingress-worker.ts	2
 extensions/telegram/src/thread-bindings-store.ts	3
-extensions/telegram/src/thread-bindings.ts	2
 extensions/telegram/src/topic-name-cache.ts	3
 extensions/telegram/src/update-offset-store.ts	1
 extensions/telegram/src/webhook.ts	1

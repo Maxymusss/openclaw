@@ -89,8 +89,8 @@ function setOpenChannelPostConfig() {
   });
 }
 
-function getChannelPostHandler() {
-  createTelegramBot({ token: "tok", testTimings: TELEGRAM_TEST_TIMINGS });
+async function getChannelPostHandler() {
+  await createTelegramBot({ token: "tok", testTimings: TELEGRAM_TEST_TIMINGS });
   return getOnHandler("channel_post") as (ctx: Record<string, unknown>) => Promise<void>;
 }
 
@@ -241,7 +241,7 @@ describe("createTelegramBot media-group skip warning (#55216)", () => {
 
     const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
     try {
-      const handler = getChannelPostHandler();
+      const handler = await getChannelPostHandler();
       const baseMessageId = await queueChannelPostAlbum(handler, {
         baseMessageId: 600,
         caption: "album caption",
@@ -282,7 +282,7 @@ describe("createTelegramBot media-group skip warning (#55216)", () => {
 
     const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
     try {
-      const handler = getChannelPostHandler();
+      const handler = await getChannelPostHandler();
       await queueChannelPostAlbum(handler, {
         baseMessageId: 700,
         caption: "all-fail album",
@@ -322,7 +322,7 @@ describe("createTelegramBot media-group skip warning (#55216)", () => {
 
     const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
     try {
-      const handler = getChannelPostHandler();
+      const handler = await getChannelPostHandler();
       await queueChannelPostAlbum(handler, {
         baseMessageId: 800,
         caption: "plural album",

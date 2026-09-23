@@ -59,7 +59,7 @@ describe("createTelegramBot group history", () => {
         },
       });
       setTelegramPluginStateRuntimeForTests();
-      createTelegramBotCore({
+      await createTelegramBotCore({
         token: "tok",
         botInfo: telegramBotInfoForTest,
         telegramDeps: { ...telegramBotDepsForTest },
@@ -110,7 +110,7 @@ describe("createTelegramBot group history", () => {
     });
     setTelegramPluginStateRuntimeForTests();
     const chatId = -10042;
-    createTelegramBotCore({
+    await createTelegramBotCore({
       token: "tok",
       botInfo: telegramBotInfoForTest,
       telegramDeps: { ...telegramBotDepsForTest },

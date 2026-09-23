@@ -117,7 +117,7 @@ describe("createTelegramBot command menu", () => {
     loadConfig.mockReturnValue(config);
     const commandsSynced = waitForNextSetMyCommands();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
 
     await commandsSynced;
 
@@ -168,7 +168,7 @@ describe("createTelegramBot command menu", () => {
     loadConfig.mockReturnValue(config);
     const commandsSynced = waitForNextSetMyCommands();
 
-    createTelegramBot({
+    await createTelegramBot({
       token: "tok",
       runtime: {
         log: vi.fn(),
@@ -236,7 +236,7 @@ describe("createTelegramBot command menu", () => {
     loadConfig.mockReturnValue(config);
     const commandsSynced = waitForNextSetMyCommands();
 
-    createTelegramBot({
+    await createTelegramBot({
       token: "tok",
       runtime: {
         log: vi.fn(),

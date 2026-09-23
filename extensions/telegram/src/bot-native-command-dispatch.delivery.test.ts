@@ -20,7 +20,7 @@ import {
 describe("Telegram typed command delivery", () => {
   it("replies to the selected photo quote for a native command", async () => {
     harness.replySpy.mockResolvedValue({ text: "Checked the photo.", replyToId: "30101" });
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: { native: true },
       channels: {
         telegram: {
@@ -60,7 +60,7 @@ describe("Telegram typed command delivery", () => {
 
   it("sends native command errors without a notification", async () => {
     harness.replySpy.mockResolvedValue({ text: "Request failed.", isError: true });
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: { native: true },
       channels: {
         telegram: {
@@ -92,7 +92,7 @@ describe("Telegram typed command delivery", () => {
         },
       },
     });
-    const bot = createBot(true, true, {
+    const bot = await createBot(true, true, {
       commands: { native: true },
       channels: {
         telegram: {
@@ -127,7 +127,7 @@ describe("Telegram typed command delivery", () => {
         command: { name: "fast", pluginId: "fast-controls" },
         args: "on",
       });
-      const bot = createBot();
+      const bot = await createBot();
       await bot.handleUpdate({ update_id: 3004, message: commandMessage("/fast on") });
       expect(harness.replySpy).toHaveBeenCalledOnce();
       expect(harness.replySpy.mock.calls[0]?.[0]).toMatchObject({

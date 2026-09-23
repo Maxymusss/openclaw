@@ -105,10 +105,10 @@ function setOpenChannelPostConfig() {
   });
 }
 
-function getChannelPostHandler(
+async function getChannelPostHandler(
   testTimings: { mediaGroupFlushMs: number; textFragmentGapMs: number } = TELEGRAM_TEST_TIMINGS,
 ) {
-  createTelegramBot({ token: "tok", testTimings });
+  await createTelegramBot({ token: "tok", testTimings });
   return getOnHandler("channel_post") as (ctx: Record<string, unknown>) => Promise<void>;
 }
 
@@ -336,7 +336,7 @@ describe("createTelegramBot channel_post media", () => {
     const enqueueSpy = vi.spyOn(KeyedAsyncQueue.prototype, "enqueue");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
     try {
-      const handler = getChannelPostHandler();
+      const handler = await getChannelPostHandler();
       // State writes may outlast the debounce; admit the complete fixture before advancing it.
       await queueChannelPostAlbum(handler, {
         caption: "album caption",
@@ -374,7 +374,7 @@ describe("createTelegramBot channel_post media", () => {
 
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
     try {
-      const handler = getChannelPostHandler({
+      const handler = await getChannelPostHandler({
         ...TELEGRAM_TEST_TIMINGS,
         textFragmentGapMs: FRAGMENT_TEST_GAP_MS,
       });
@@ -424,7 +424,7 @@ describe("createTelegramBot channel_post media", () => {
       contentType: "image/jpeg",
     });
 
-    createTelegramBot({ token: "tok", mediaMaxMb: 0 });
+    await createTelegramBot({ token: "tok", mediaMaxMb: 0 });
     const handler = getOnHandler("channel_post") as (ctx: Record<string, unknown>) => Promise<void>;
 
     await handler(
@@ -448,7 +448,7 @@ describe("createTelegramBot channel_post media", () => {
     );
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("fetch failed"));
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
       await handler(createTelegramPrivateMediaContext({ messageId: 411, fileId: "p1" }));
       await waitForTelegramMockCalls(sendMessageSpy, 1);
@@ -462,7 +462,7 @@ describe("createTelegramBot channel_post media", () => {
 
   it("warns and dispatches a type-only fact when Telegram getFile fails (#100000)", async () => {
     setOpenTelegramDirectConfig();
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
     await handler(
       createTelegramPrivateMediaContext({
@@ -488,7 +488,7 @@ describe("createTelegramBot channel_post media", () => {
     "reports the effective $expectedLimitMb MB limit for Telegram Bot API failures (#100000)",
     async ({ mediaMaxMb, expectedLimitMb }) => {
       setOpenTelegramDirectConfig(mediaMaxMb);
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
       const messageId = 100001 + expectedLimitMb;
       await handler(
@@ -544,7 +544,7 @@ describe("createTelegramBot channel_post media", () => {
   ])("preserves durable replay handling for $name (#98076)", async (testCase) => {
     setOpenTelegramDirectConfig();
     saveRemoteMedia.mockRejectedValue(testCase.error);
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
     const update = { update_id: testCase.messageId };
     const ctx = createTelegramPrivateMediaContext({
@@ -613,7 +613,7 @@ describe("createTelegramBot channel_post media", () => {
       }));
       const fetchSpy = createImageFetchSpy();
       try {
-        createTelegramBot({ token: "tok" });
+        await createTelegramBot({ token: "tok" });
         await dispatchTelegramGroupPhoto({
           messageId: 92067,
           topicId: topicIngest === undefined ? undefined : 42,
@@ -648,7 +648,7 @@ describe("createTelegramBot channel_post media", () => {
     { failure: "an oversized file", error: "Bad Request: file is too big" },
   ])("silently ingests unmentioned group media after $failure (#92067)", async ({ error }) => {
     setTelegramIngestGroupConfig();
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await dispatchTelegramGroupPhoto({
       messageId: 92070,
       getFile: async () => {
@@ -690,7 +690,7 @@ describe("createTelegramBot channel_post media", () => {
       file_path: "photos/ingested-album.jpg",
     }));
     try {
-      createTelegramBot({ token: "tok", testTimings: TELEGRAM_TEST_TIMINGS });
+      await createTelegramBot({ token: "tok", testTimings: TELEGRAM_TEST_TIMINGS });
       // Admit both messages inside one window, including their awaited state writes.
       for (const messageId of testCase.messageIds) {
         const commandCaption = unauthorizedCommand && messageId === testCase.messageIds[1];
@@ -763,7 +763,7 @@ describe("createTelegramBot channel_post media", () => {
         providerPolicy,
         accountPolicy,
       });
-      createTelegramBot({ token: "tok", ...(accountPolicy ? { accountId: "work" } : {}) });
+      await createTelegramBot({ token: "tok", ...(accountPolicy ? { accountId: "work" } : {}) });
       await dispatchTelegramGroupPhoto({
         messageId,
         topicId,
@@ -834,7 +834,7 @@ describe("createTelegramBot channel_post media", () => {
     saveRemoteMedia.mockRejectedValueOnce(new MediaFetchError("fetch_failed", "ECONNRESET"));
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNRESET"));
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       await dispatchTelegramGroupPhoto({
         messageId: testCase.messageId,
         ...("caption" in testCase ? { caption: testCase.caption } : {}),
@@ -875,7 +875,7 @@ describe("createTelegramBot channel_post media", () => {
 
     const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
     try {
-      createTelegramBot({
+      await createTelegramBot({
         token: "tok",
         testTimings: TELEGRAM_TEST_TIMINGS,
         fetchAbortSignal: shutdown.signal,
@@ -929,7 +929,7 @@ describe("createTelegramBot channel_post media", () => {
       .mockImplementationOnce(() => rejectTelegramAlbumDownload(shutdown, false));
     const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
     try {
-      createTelegramBot({
+      await createTelegramBot({
         token: "tok",
         testTimings: TELEGRAM_TEST_TIMINGS,
         fetchAbortSignal: shutdown.signal,
@@ -971,7 +971,7 @@ describe("createTelegramBot channel_post media", () => {
     const runtimeError = vi.fn();
     const setTimeoutSpy = holdTelegramMediaTimeouts(TELEGRAM_TEST_TIMINGS.mediaGroupFlushMs);
     try {
-      createTelegramBot({
+      await createTelegramBot({
         token: "tok",
         testTimings: TELEGRAM_TEST_TIMINGS,
         runtime: { error: runtimeError } as unknown as RuntimeEnv,

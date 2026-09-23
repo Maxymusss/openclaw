@@ -290,7 +290,7 @@ async function dispatchSpooledNativeStop(
   );
 }
 
-function setupUpdateOffsetTracker(params: {
+async function setupUpdateOffsetTracker(params: {
   lastUpdateId: number;
   onUpdateId?: ReturnType<typeof vi.fn<(updateId: number) => void | Promise<void>>>;
   runtime?: TelegramBotOptions["runtime"];
@@ -301,7 +301,7 @@ function setupUpdateOffsetTracker(params: {
     },
   );
   const onUpdateId = params.onUpdateId ?? vi.fn<(updateId: number) => void | Promise<void>>();
-  createTelegramBot({
+  await createTelegramBot({
     token: "tok",
     runtime: params.runtime,
     updateOffset: { lastUpdateId: params.lastUpdateId, onUpdateId },
@@ -452,26 +452,26 @@ describe("createTelegramBot", () => {
 
   // groupPolicy tests
 
-  it("installs grammY throttler", () => {
-    createTelegramBot({ token: "tok" });
+  it("installs grammY throttler", async () => {
+    await createTelegramBot({ token: "tok" });
     expect(throttlerSpy).toHaveBeenCalledTimes(1);
     expect(useSpy).toHaveBeenCalledWith(expect.any(Function));
   });
 
-  it("reuses the grammY throttler for the same token", () => {
-    createTelegramBot({ token: "tok" });
-    createTelegramBot({ token: "tok" });
-    createTelegramBot({ token: "other" });
+  it("reuses the grammY throttler for the same token", async () => {
+    await createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "other" });
 
     expect(throttlerSpy).toHaveBeenCalledTimes(2);
     expect(useSpy).toHaveBeenCalledTimes(3);
   });
 
-  it("logs middleware errors through grammY catch without rethrowing", () => {
+  it("logs middleware errors through grammY catch without rethrowing", async () => {
     const runtime = {
       error: vi.fn(),
     } as unknown as NonNullable<TelegramBotOptions["runtime"]>;
-    const bot = createTelegramBot({ token: "tok", runtime });
+    const bot = await createTelegramBot({ token: "tok", runtime });
     const catchMock = bot["catch"] as unknown as {
       mock: { calls: Array<[(err: unknown) => void]> };
     };
@@ -485,12 +485,12 @@ describe("createTelegramBot", () => {
     expect(errorMessage.startsWith("telegram bot error: Error: handler boom")).toBe(true);
   });
 
-  it("uses wrapped fetch when global fetch is available", () => {
+  it("uses wrapped fetch when global fetch is available", async () => {
     const originalFetch = globalThis.fetch;
     const fetchSpy = vi.fn() as unknown as typeof fetch;
     globalThis.fetch = fetchSpy;
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const fetchImpl = resolveTelegramFetch();
       expect(fetchImpl).toBeTypeOf("function");
       expect(fetchImpl).not.toBe(fetchSpy);
@@ -502,13 +502,13 @@ describe("createTelegramBot", () => {
       globalThis.fetch = originalFetch;
     }
   });
-  it("ignores removed global and per-account timeoutSeconds", () => {
+  it("ignores removed global and per-account timeoutSeconds", async () => {
     loadConfig.mockReturnValue({
       channels: {
         telegram: { dmPolicy: "open", allowFrom: ["*"], timeoutSeconds: 60 },
       },
     });
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     expectBotClientFields({ timeoutSeconds: undefined });
     botCtorSpy.mockClear();
 
@@ -524,31 +524,31 @@ describe("createTelegramBot", () => {
         },
       },
     });
-    createTelegramBot({ token: "tok", accountId: "foo" });
+    await createTelegramBot({ token: "tok", accountId: "foo" });
     expectBotClientFields({ timeoutSeconds: undefined });
   });
 
-  it("keeps low timeoutSeconds above the outbound request guard", () => {
+  it("keeps low timeoutSeconds above the outbound request guard", async () => {
     loadConfig.mockReturnValue({
       channels: {
         telegram: { dmPolicy: "open", allowFrom: ["*"], timeoutSeconds: 10 },
       },
     });
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     expectBotClientFields({ timeoutSeconds: undefined });
   });
 
-  it("keeps polling client timeout above the outbound request guard", () => {
+  it("keeps polling client timeout above the outbound request guard", async () => {
     loadConfig.mockReturnValue({
       channels: {
         telegram: { dmPolicy: "open", allowFrom: ["*"], timeoutSeconds: 10 },
       },
     });
-    createTelegramBot({ token: "tok", minimumClientTimeoutSeconds: 45 });
+    await createTelegramBot({ token: "tok", minimumClientTimeoutSeconds: 45 });
     expectBotClientFields({ timeoutSeconds: undefined });
   });
 
-  it("passes startup probe botInfo to grammY", () => {
+  it("passes startup probe botInfo to grammY", async () => {
     const botInfo = {
       id: 123456,
       is_bot: true,
@@ -565,12 +565,12 @@ describe("createTelegramBot", () => {
       allows_users_to_create_topics: false,
     } as const;
 
-    createTelegramBot({ token: "tok", botInfo });
+    await createTelegramBot({ token: "tok", botInfo });
 
     expect(getBotCtorOptions().botInfo).toBe(botInfo);
   });
 
-  it("normalizes full Telegram bot endpoint apiRoot before passing it to grammY", () => {
+  it("normalizes full Telegram bot endpoint apiRoot before passing it to grammY", async () => {
     loadConfig.mockReturnValue({
       channels: {
         telegram: {
@@ -581,13 +581,13 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
 
     expectBotClientFields({ apiRoot: "https://api.telegram.org" });
   });
 
-  it("sequentializes updates by chat and thread", () => {
-    createTelegramBot({ token: "tok" });
+  it("sequentializes updates by chat and thread", async () => {
+    await createTelegramBot({ token: "tok" });
     expect(sequentializeSpy).toHaveBeenCalledTimes(1);
     expect(middlewareUseSpy).toHaveBeenCalledWith(sequentializeSpy.mock.results[0]?.value);
     expect(harness.sequentializeKey).toBe(getTelegramSequentialConstraints);
@@ -624,7 +624,7 @@ describe("createTelegramBot", () => {
         await next();
       },
     );
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const update = {
       update_id: 40,
       poll_answer: {
@@ -672,7 +672,7 @@ describe("createTelegramBot", () => {
       state: { openKeyedStore, openSyncKeyedStore },
       channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
     } as TelegramRuntime);
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const update = {
       update_id: 41,
       poll_answer: {
@@ -731,7 +731,7 @@ describe("createTelegramBot", () => {
       state: { openKeyedStore },
       channel: { inbound: { ingress: createPluginRuntimeMock().channel.inbound.ingress } },
     } as TelegramRuntime);
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const update = { update_id: 42, poll_answer: pollAnswer };
     const reachedHandlers = vi.fn();
 
@@ -746,7 +746,7 @@ describe("createTelegramBot", () => {
 
   it("answers callback queries before same-chat sequentialize delays handlers", async () => {
     installPerKeySequentializer();
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = requireValue(
       getOnHandler("callback_query") as
         | ((ctx: Record<string, unknown>) => Promise<void>)
@@ -820,7 +820,7 @@ describe("createTelegramBot", () => {
   });
 
   it("reuses the callback answer started at durable admission", async () => {
-    const bot = createTelegramBot({ token: "tok" });
+    const bot = await createTelegramBot({ token: "tok" });
     const callbackId = "cbq-durable-admission-1";
     await startTelegramCallbackQueryAnswer(bot, callbackId, true);
 
@@ -835,10 +835,10 @@ describe("createTelegramBot", () => {
 
   it("re-answers a durable callback after bot restart loses admission state", async () => {
     const callbackId = "cbq-restart-replay-1";
-    const stoppedBot = createTelegramBot({ token: "tok" });
+    const stoppedBot = await createTelegramBot({ token: "tok" });
     await startTelegramCallbackQueryAnswer(stoppedBot, callbackId, true);
     middlewareUseSpy.mockClear();
-    const restartedBot = createTelegramBot({ token: "tok" });
+    const restartedBot = await createTelegramBot({ token: "tok" });
     const pendingAnswer = createDeferred<true>();
     answerCallbackQuerySpy.mockImplementationOnce(() => pendingAnswer.promise);
     const ctx = makeGenericCallbackContext({ id: callbackId, updateId: 404 });
@@ -865,7 +865,7 @@ describe("createTelegramBot", () => {
   it("acknowledges question callbacks before their handler completes", async () => {
     installPerKeySequentializer();
     loadConfig.mockReturnValue({ channels: { telegram: { dmPolicy: "disabled" } } });
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = requireValue(
       getOnHandler("callback_query") as
         | ((ctx: Record<string, unknown>) => Promise<void>)
@@ -927,7 +927,7 @@ describe("createTelegramBot", () => {
       releaseTopicTurn = resolve;
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const sequentializer = requireValue(
       sequentializeSpy.mock.results[0]?.value as TelegramMiddleware | undefined,
       "telegram sequentializer",
@@ -987,7 +987,7 @@ describe("createTelegramBot", () => {
       releaseFirstTopic = resolve;
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const sequentializer = sequentializeSpy.mock.results[0]?.value as
       | TelegramMiddleware
       | undefined;
@@ -1041,7 +1041,7 @@ describe("createTelegramBot", () => {
       releaseFirstTurn = resolve;
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const sequentializer = sequentializeSpy.mock.results[0]?.value as
       | TelegramMiddleware
       | undefined;
@@ -1094,7 +1094,7 @@ describe("createTelegramBot", () => {
     });
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
 
       const first = await dispatchSpooledPrivateText(messageHandler, {
@@ -1157,7 +1157,7 @@ describe("createTelegramBot", () => {
       const sourceWork: Promise<unknown>[] = [];
 
       try {
-        createTelegramBot({ token: "tok" });
+        await createTelegramBot({ token: "tok" });
         const messageHandler = getMessageHandler();
         const first = await dispatchSpooledPrivateText(messageHandler, {
           updateId: 501,
@@ -1220,7 +1220,7 @@ describe("createTelegramBot", () => {
     const sourceWork: Promise<unknown>[] = [];
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const first = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 511,
@@ -1297,7 +1297,7 @@ describe("createTelegramBot", () => {
     replySpy.mockResolvedValue(undefined);
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const short = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 301,
@@ -1378,7 +1378,7 @@ describe("createTelegramBot", () => {
     });
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const earlier = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 311,
@@ -1441,7 +1441,7 @@ describe("createTelegramBot", () => {
       });
 
       try {
-        createTelegramBot({ token: "tok" });
+        await createTelegramBot({ token: "tok" });
         const messageHandler = getMessageHandler();
         await dispatchPrivateText(messageHandler, { updateId: 101, messageId: 101, text: "first" });
         const flushFirst = takeLatestTimerCallback(INBOUND_DEBOUNCE_MS);
@@ -1487,7 +1487,7 @@ describe("createTelegramBot", () => {
     const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const replay = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 201,
@@ -1521,7 +1521,7 @@ describe("createTelegramBot", () => {
     replySpy.mockResolvedValue(undefined);
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const replay = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 211,
@@ -1577,7 +1577,7 @@ describe("createTelegramBot", () => {
     const sourceWork: Promise<unknown>[] = [];
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const pending = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 401,
@@ -1648,7 +1648,7 @@ describe("createTelegramBot", () => {
     let sourceWork: Promise<unknown> | undefined;
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const pending = await dispatchSpooledPrivateText(getMessageHandler(), {
         updateId: 411,
         messageId: 411,
@@ -1705,7 +1705,7 @@ describe("createTelegramBot", () => {
     const sourceWork: Promise<unknown>[] = [];
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const target = await dispatchSpooledPrivateText(getMessageHandler(), {
         updateId: 419,
         messageId: 419,
@@ -1772,7 +1772,7 @@ describe("createTelegramBot", () => {
     let sourceWork: Promise<unknown> | undefined;
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const pending = await dispatchSpooledPrivateText(getMessageHandler(), {
         updateId: 431,
         messageId: 431,
@@ -1831,7 +1831,7 @@ describe("createTelegramBot", () => {
     const sourceWork: Promise<unknown>[] = [];
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const earlier = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 440,
@@ -1934,7 +1934,7 @@ describe("createTelegramBot", () => {
     const bindingReady = vi.spyOn(conversationRuntime, "ensureConfiguredBindingRouteReady");
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const pending = await dispatchSpooledPrivateText(getMessageHandler(), {
         updateId: 451,
         messageId: 451,
@@ -1986,7 +1986,7 @@ describe("createTelegramBot", () => {
     const secondDispatchError = new Error("next batch failed before adoption");
     replySpy.mockResolvedValueOnce(undefined).mockRejectedValueOnce(secondDispatchError);
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const first = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 213,
@@ -2033,7 +2033,7 @@ describe("createTelegramBot", () => {
     });
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
 
       const firstReplay = await dispatchSpooledPrivateText(messageHandler, {
@@ -2128,7 +2128,7 @@ describe("createTelegramBot", () => {
     });
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
 
       const firstReplay = await dispatchSpooledPrivateText(messageHandler, {
@@ -2204,7 +2204,7 @@ describe("createTelegramBot", () => {
     });
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
 
       const firstReplay = await dispatchSpooledPrivateText(messageHandler, {
@@ -2254,7 +2254,7 @@ describe("createTelegramBot", () => {
   it("dispatches native poll messages through the ordinary inbound handler", async () => {
     loadConfig.mockReturnValue({ channels: { telegram: { dmPolicy: "open", allowFrom: ["*"] } } });
     replySpy.mockClear();
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
 
     await getMessageHandler()(
       makePrivateTextContext({
@@ -2295,7 +2295,7 @@ describe("createTelegramBot", () => {
     let flushForward: (() => void) | undefined;
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       for (const [messageId, text, entities, origin] of [
         [561, "😀 bold", [{ type: "bold", offset: 3, length: 4 }], "Original A"],
@@ -2352,7 +2352,7 @@ describe("createTelegramBot", () => {
     let flushForward: (() => void) | undefined;
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const replay = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 121,
@@ -2392,7 +2392,7 @@ describe("createTelegramBot", () => {
     let flushForward: (() => void) | undefined;
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
 
       for (const [messageId, text, origin] of [
@@ -2457,7 +2457,7 @@ describe("createTelegramBot", () => {
     });
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
       const replay = await dispatchSpooledPrivateText(messageHandler, {
         updateId: 121,
@@ -2527,7 +2527,7 @@ describe("createTelegramBot", () => {
     let pendingWork: Promise<unknown> | undefined;
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageHandler = getMessageHandler();
 
       const pending = await dispatchSpooledPrivateText(messageHandler, {
@@ -2570,7 +2570,7 @@ describe("createTelegramBot", () => {
   });
 
   it("routes generic callback_query payloads as callback_data messages and answers callbacks", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getCallbackHandler();
     await callbackHandler(
       makeCallbackRetryContext({ id: "cbq-1", data: "cmd:option_a", messageId: 10 }),
@@ -2606,7 +2606,7 @@ describe("createTelegramBot", () => {
         }),
       ).toEqual({ ok: true });
 
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const callbackHandler = getCallbackHandler();
       await callbackHandler(
         makeCallbackRetryContext({
@@ -2645,7 +2645,7 @@ describe("createTelegramBot", () => {
       }),
     ).toEqual({ ok: true });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await getCallbackHandler()(
       makeCallbackRetryContext({
         id: "cbq-legacy-tgcb1",
@@ -2664,7 +2664,7 @@ describe("createTelegramBot", () => {
   });
 
   it("preserves raw slash callback_query payloads as command text", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getCallbackHandler();
     await callbackHandler(
       makeCallbackRetryContext({ id: "cbq-slash-1", data: "/fast status", messageId: 10 }),
@@ -2685,7 +2685,7 @@ describe("createTelegramBot", () => {
       editError: new Error("400: Bad Request: message can't be edited"),
     },
   ])("routes generic callback_query payloads and $name", async ({ id, editError }) => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query");
     if (editError) {
       editMessageReplyMarkupSpy.mockRejectedValueOnce(editError);
@@ -2703,7 +2703,7 @@ describe("createTelegramBot", () => {
   });
 
   it("retries generic callback_query button cleanup after transient edit failures", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query");
     const ctx = makeGenericCallbackContext({ id: "cbq-generic-clear-retry-1", updateId: 779 });
 
@@ -2729,7 +2729,7 @@ describe("createTelegramBot", () => {
   });
 
   it("does not route opaque callback_query payloads as synthetic commands", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getCallbackHandler();
     await callbackHandler(
       makeCallbackRetryContext({
@@ -2750,7 +2750,7 @@ describe("createTelegramBot", () => {
     "toggles $name OC_MULTI buttons without routing through generic messages",
     async ({ value }) => {
       const data = `OC_MULTI|toggle|${value}`;
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const callbackHandler = getCallbackHandler();
       await callbackHandler(
         makeCallbackRetryContext({
@@ -2778,7 +2778,7 @@ describe("createTelegramBot", () => {
   );
 
   it("submits OC_MULTI selections as a synthetic inbound message", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getCallbackHandler();
     await callbackHandler(
       makeCallbackRetryContext({
@@ -2803,7 +2803,7 @@ describe("createTelegramBot", () => {
   });
 
   it("submits OC_SELECT values as a synthetic inbound message and clears buttons", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getCallbackHandler();
     await callbackHandler(
       makeCallbackRetryContext({
@@ -2839,7 +2839,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getCallbackHandler();
     await callbackHandler(
       makeCallbackRetryContext({ id: "cbq-native-1", data: "tgcmd:/fast status", messageId: 10 }),
@@ -2862,7 +2862,7 @@ describe("createTelegramBot", () => {
       }),
     ).toEqual({ ok: true });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await getCallbackHandler()(
       makeCallbackRetryContext({
         id: "cbq-native-collision",
@@ -2900,7 +2900,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await getCallbackHandler()(
       makeCallbackRetryContext({
         id: "cbq-disabled-native",
@@ -2938,7 +2938,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await getCallbackHandler()(
       makeCallbackRetryContext({
         id: "cbq-login-nonowner",
@@ -2985,7 +2985,7 @@ describe("createTelegramBot", () => {
     });
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       await getCallbackHandler()(
         makeCallbackRetryContext({
           id: "cbq-login-owner",
@@ -3030,7 +3030,7 @@ describe("createTelegramBot", () => {
         },
       },
     });
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await getCallbackHandler()(
       makeCallbackRetryContext({
         id: `cbq-opaque-${_name}`,
@@ -3076,7 +3076,7 @@ describe("createTelegramBot", () => {
       ],
     }));
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getCallbackHandler();
 
     const sendModelCallback = async (id: number) => {
@@ -3096,7 +3096,7 @@ describe("createTelegramBot", () => {
   });
   it("wraps inbound message with Telegram envelope", async () => {
     await withEnvAsync({ TZ: "Europe/Vienna" }, async () => {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const messageRegistration = onSpy.mock.calls.find(([event]) => event === "message");
       expect(messageRegistration?.[1]).toBeTypeOf("function");
       const handler = getMessageHandler();
@@ -3165,7 +3165,7 @@ describe("createTelegramBot", () => {
         return expectDefined(result, `pairing upsert result ${pairingUpsertCall}`);
       });
 
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const handler = getMessageHandler();
       const senderId = Number(`${Date.now()}${index}`.slice(-9));
       for (const text of testCase.messages) {
@@ -3204,7 +3204,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getMessageHandler();
     await handler(
       makePrivateTextContext({
@@ -3237,7 +3237,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     const onUpdateId = vi.fn();
 
-    createTelegramBot({
+    await createTelegramBot({
       token: "tok",
       updateOffset: {
         lastUpdateId: 700,
@@ -3292,7 +3292,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getMessageHandler();
     const sender = { id: 123456789, username: "testuser" };
     await handler(
@@ -3333,7 +3333,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     await handler({
@@ -3360,7 +3360,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     await handler({
@@ -3390,7 +3390,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     await handler({
@@ -3437,7 +3437,7 @@ describe("createTelegramBot", () => {
     const getFileSpy = vi.fn(async () => ({ file_path: "photos/p1.jpg" }));
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
       await handler({
@@ -3483,7 +3483,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     await handler({
@@ -3530,7 +3530,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const editedHandler = getOnHandler("edited_message") as (
       ctx: Record<string, unknown>,
     ) => Promise<void>;
@@ -3584,7 +3584,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const editedHandler = getOnHandler("edited_message") as (
       ctx: Record<string, unknown>,
     ) => Promise<void>;
@@ -3640,7 +3640,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     await handler({
@@ -3671,7 +3671,7 @@ describe("createTelegramBot", () => {
     sendMessageSpy.mockClear();
     replySpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     await handler({
@@ -3709,7 +3709,7 @@ describe("createTelegramBot", () => {
     const getFileSpy = vi.fn(async () => ({ file_path: "photos/p1.jpg" }));
 
     try {
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
       await handler({
@@ -3753,7 +3753,7 @@ describe("createTelegramBot", () => {
     const getFileSpy = vi.fn(async () => ({ file_path: "photos/p1.jpg" }));
 
     try {
-      createTelegramBot({ token: "tok", testTimings: TELEGRAM_TEST_TIMINGS });
+      await createTelegramBot({ token: "tok", testTimings: TELEGRAM_TEST_TIMINGS });
       const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
       await handler({
@@ -3792,7 +3792,7 @@ describe("createTelegramBot", () => {
         return { queuedFinal: false, counts: { block: 0, final: 0, tool: 0 } };
       },
     );
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
     await handler({
       message: {
@@ -3824,7 +3824,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query") as (
       ctx: Record<string, unknown>,
     ) => Promise<void>;
@@ -3934,14 +3934,14 @@ describe("createTelegramBot", () => {
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await (getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>)(
       replayedCtx(),
     );
     expect(replySpy).toHaveBeenCalledTimes(1);
 
     onSpy.mockClear();
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await (getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>)(
       replayedCtx(),
     );
@@ -3974,7 +3974,7 @@ describe("createTelegramBot", () => {
       getFile: async () => ({ download: async () => new Uint8Array() }),
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const firstRun = (getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>)(
       replayedCtx(),
     );
@@ -3982,7 +3982,7 @@ describe("createTelegramBot", () => {
     expect(replySpy).toHaveBeenCalledTimes(1);
 
     onSpy.mockClear();
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await (getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>)(
       replayedCtx(),
     );
@@ -3998,7 +3998,7 @@ describe("createTelegramBot", () => {
     const dispatchError = new Error("failed before turn adoption");
     replySpy.mockRejectedValueOnce(dispatchError).mockResolvedValueOnce({ text: "recovered" });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const messageHandler = getOnHandler("message") as (
       ctx: Record<string, unknown>,
     ) => Promise<void>;
@@ -4050,7 +4050,7 @@ describe("createTelegramBot", () => {
 
   it("persists update offsets after successful dispatch completion", async () => {
     configureOpenDm();
-    const { onUpdateId, run: runMiddlewareChain } = setupUpdateOffsetTracker({
+    const { onUpdateId, run: runMiddlewareChain } = await setupUpdateOffsetTracker({
       lastUpdateId: 100,
     });
 
@@ -4078,7 +4078,7 @@ describe("createTelegramBot", () => {
   });
 
   it("records synchronous update completion on the shared ingress frame", async () => {
-    const { run: runMiddlewareChain } = setupUpdateOffsetTracker({ lastUpdateId: 150 });
+    const { run: runMiddlewareChain } = await setupUpdateOffsetTracker({ lastUpdateId: 150 });
 
     const { result } = await runWithTelegramUpdateProcessingFrame(async () => {
       await runMiddlewareChain({ update: { update_id: 151 } }, async () => {});
@@ -4088,7 +4088,7 @@ describe("createTelegramBot", () => {
   });
 
   it("preserves an intentionally skipped update through middleware completion", async () => {
-    const { run: runMiddlewareChain } = setupUpdateOffsetTracker({ lastUpdateId: 160 });
+    const { run: runMiddlewareChain } = await setupUpdateOffsetTracker({ lastUpdateId: 160 });
 
     const { result } = await runWithTelegramUpdateProcessingFrame(async () => {
       await runMiddlewareChain({ update: { update_id: 161 } }, async () => {
@@ -4108,7 +4108,7 @@ describe("createTelegramBot", () => {
       exit: vi.fn(),
     };
 
-    const { run: runMiddlewareChain } = setupUpdateOffsetTracker({
+    const { run: runMiddlewareChain } = await setupUpdateOffsetTracker({
       lastUpdateId: 13_099,
       onUpdateId,
       runtime,
@@ -4131,7 +4131,7 @@ describe("createTelegramBot", () => {
   });
 
   it("keeps failed updates unpersisted while preserving same-process retries", async () => {
-    const { onUpdateId, run: runMiddlewareChain } = setupUpdateOffsetTracker({
+    const { onUpdateId, run: runMiddlewareChain } = await setupUpdateOffsetTracker({
       lastUpdateId: 200,
     });
 
@@ -4159,7 +4159,7 @@ describe("createTelegramBot", () => {
   });
 
   it("persists recorded dispatch failures during normal polling", async () => {
-    const { onUpdateId, run: runMiddlewareChain } = setupUpdateOffsetTracker({
+    const { onUpdateId, run: runMiddlewareChain } = await setupUpdateOffsetTracker({
       lastUpdateId: 500,
     });
 
@@ -4179,7 +4179,7 @@ describe("createTelegramBot", () => {
   });
 
   it("rejects recorded dispatch failures during isolated spool replay", async () => {
-    const { onUpdateId, run: runMiddlewareChain } = setupUpdateOffsetTracker({
+    const { onUpdateId, run: runMiddlewareChain } = await setupUpdateOffsetTracker({
       lastUpdateId: 600,
     });
 
@@ -4203,7 +4203,7 @@ describe("createTelegramBot", () => {
   });
 
   it("keeps deferred spooled failures retryable in the same bot tracker", async () => {
-    const { onUpdateId, run: runMiddlewareChain } = setupUpdateOffsetTracker({
+    const { onUpdateId, run: runMiddlewareChain } = await setupUpdateOffsetTracker({
       lastUpdateId: 700,
     });
 
@@ -4244,18 +4244,18 @@ describe("createTelegramBot", () => {
 
   it("retries a deferred spooled update after its queued turn is abandoned", async () => {
     configureOpenDm();
-    let queuedLifecycle: GetReplyOptions["turnAdoptionLifecycle"];
+    const queued = createDeferred<GetReplyOptions["turnAdoptionLifecycle"]>();
     replySpy
       .mockImplementationOnce(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
-        queuedLifecycle = opts?.turnAdoptionLifecycle;
-        queuedLifecycle?.onDeferred?.();
+        opts?.turnAdoptionLifecycle?.onDeferred?.();
+        queued.resolve(opts?.turnAdoptionLifecycle);
         return undefined;
       })
       .mockImplementationOnce(async (_ctx: MsgContext, opts?: GetReplyOptions) => {
         await opts?.turnAdoptionLifecycle?.onAdopted?.();
         return { text: "recovered" };
       });
-    const { onUpdateId } = setupUpdateOffsetTracker({
+    const { onUpdateId } = await setupUpdateOffsetTracker({
       lastUpdateId: 701,
     });
     const messageHandler = getMessageHandler();
@@ -4265,9 +4265,8 @@ describe("createTelegramBot", () => {
       messageId: 702,
       text: "retry after queued turn abandonment",
     });
-    await vi.waitFor(() => {
-      expect(queuedLifecycle?.onAbandoned).toEqual(expect.any(Function));
-    });
+    const queuedLifecycle = await queued.promise;
+    expect(queuedLifecycle?.onAbandoned).toEqual(expect.any(Function));
     queuedLifecycle?.onAbandoned?.();
     const firstReplay = await firstReplayPromise;
     const firstDeferredWork = requireValue(firstReplay.deferredWork, "first deferred spooled work");
@@ -4299,7 +4298,7 @@ describe("createTelegramBot", () => {
   });
 
   it("skips replayed update ids even when the semantic update key differs", async () => {
-    const { onUpdateId, run: runMiddlewareChain } = setupUpdateOffsetTracker({
+    const { onUpdateId, run: runMiddlewareChain } = await setupUpdateOffsetTracker({
       lastUpdateId: 300,
     });
 
@@ -4337,7 +4336,7 @@ describe("createTelegramBot", () => {
   it("allows distinct callback_query ids without update_id", async () => {
     configureOpenDm();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getCallbackHandler();
     for (const id of ["cb-1", "cb-2"]) {
       await handler(
@@ -4522,7 +4521,7 @@ describe("createTelegramBot", () => {
     };
     loadConfig.mockReturnValue(config);
 
-    createTelegramBot({ token: "tok", accountId: "opie" });
+    await createTelegramBot({ token: "tok", accountId: "opie" });
     const handler = getMessageHandler();
     await handler(
       makePrivateTextContext({
@@ -4573,7 +4572,7 @@ describe("createTelegramBot", () => {
     });
     loadConfig.mockImplementation(() => configForAgent(boundAgentId));
 
-    createTelegramBot({ token: "tok", accountId: "opie" });
+    await createTelegramBot({ token: "tok", accountId: "opie" });
     const handler = getMessageHandler();
 
     const sendDm = async (messageId: number, text: string) => {
@@ -4642,7 +4641,7 @@ describe("createTelegramBot", () => {
     });
     loadConfig.mockImplementation(configForTopicAgent);
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
     replySpy.mockImplementation(async () => undefined);
 
@@ -4764,7 +4763,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     await getCallbackHandler()({
       callbackQuery: {
         id: `channel-topic-${testCase.expectedCalls}`,
@@ -4813,7 +4812,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok", accountId: "opie" });
+    await createTelegramBot({ token: "tok", accountId: "opie" });
     const handler = getMessageHandler();
     await handler(
       makePrivateTextContext({
@@ -5066,7 +5065,7 @@ describe("createTelegramBot", () => {
       contentType: "image/gif",
       fileName: "fun.gif",
     });
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     await handler({
@@ -5102,8 +5101,8 @@ describe("createTelegramBot", () => {
     setMessageReactionSpy.mockClear();
     setMyCommandsSpy.mockClear();
   }
-  function createMessageHandler(botRequireMention?: boolean) {
-    createTelegramBot({
+  async function createMessageHandler(botRequireMention?: boolean) {
+    await createTelegramBot({
       token: "tok",
       ...(typeof botRequireMention === "boolean" ? { requireMention: botRequireMention } : {}),
     });
@@ -5114,7 +5113,7 @@ describe("createTelegramBot", () => {
     me?: Record<string, unknown>;
     botRequireMention?: boolean;
   }) {
-    const handler = createMessageHandler(params.botRequireMention);
+    const handler = await createMessageHandler(params.botRequireMention);
     await handler({
       message: params.message,
       me: params.me ?? { username: "openclaw_bot" },
@@ -5293,14 +5292,14 @@ describe("createTelegramBot", () => {
       { type: "emoji", emoji: EYES_EMOJI },
     ]);
   });
-  it("syncs one empty native command menu when disabled", () => {
+  it("syncs one empty native command menu when disabled", async () => {
     resetHarnessSpies();
     loadConfig.mockReturnValue({
       messages: { inbound: { debounceMs: 0 } },
       commands: { native: false },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
 
     expect(syncTelegramMenuCommands).toHaveBeenCalledOnce();
     expect(syncTelegramMenuCommands).toHaveBeenCalledWith(
@@ -5638,7 +5637,7 @@ describe("createTelegramBot", () => {
   it("sends replies without native reply threading", async () => {
     replySpy.mockResolvedValue({ text: "a".repeat(TELEGRAM_RICH_TEXT_LIMIT + 1024) });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getMessageHandler();
     await handler(
       makePrivateTextContext({
@@ -5666,7 +5665,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getMessageHandler();
     await handler(
       makePrivateTextContext({
@@ -5689,7 +5688,7 @@ describe("createTelegramBot", () => {
     replySpy.mockResolvedValue({ text: codexRateLimitText });
     configureOpenDm();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getMessageHandler();
     await handler(
       makePrivateTextContext({
@@ -5728,7 +5727,7 @@ describe("createTelegramBot", () => {
         },
       });
 
-      createTelegramBot({ token: "tok", replyToMode: mode });
+      await createTelegramBot({ token: "tok", replyToMode: mode });
       const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
       await handler({
         message: {
@@ -5848,7 +5847,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const compactHandler = commandSpy.mock.calls.find((call) => call[0] === "compact")?.[1] as
       | ((ctx: Record<string, unknown>) => Promise<void>)
       | undefined;
@@ -5898,7 +5897,7 @@ describe("createTelegramBot", () => {
       ],
     }));
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const statusHandler = commandSpy.mock.calls.find((call) => call[0] === "status")?.[1] as
       | ((ctx: Record<string, unknown>) => Promise<void>)
       | undefined;
@@ -5934,7 +5933,7 @@ describe("createTelegramBot", () => {
 
     configureOpenDm();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const handler = getOnHandler("message") as (ctx: Record<string, unknown>) => Promise<void>;
 
     const ctx = {
@@ -5968,7 +5967,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const verboseHandler = commandSpy.mock.calls.find((call) => call[0] === "verbose")?.[1] as
       | ((ctx: Record<string, unknown>) => Promise<void>)
       | undefined;
@@ -6022,7 +6021,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const migrationHandler = getOnHandler("message:migrate_to_chat_id");
     const runMiddlewareChain = (ctx: Record<string, unknown>) =>
       runTelegramTestMiddlewareChain(middlewareUseSpy, ctx, migrationHandler);
@@ -6060,7 +6059,7 @@ describe("createTelegramBot", () => {
       },
     });
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const reactionHandler = getOnHandler("message_reaction");
     const runMiddlewareChain = (ctx: Record<string, unknown>) =>
       runTelegramTestMiddlewareChain(middlewareUseSpy, ctx, reactionHandler);
@@ -6108,7 +6107,7 @@ describe("createTelegramBot", () => {
     buildModelsProviderDataMock.mockClear();
     editMessageTextSpy.mockClear();
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query");
     const runMiddlewareChain = (ctx: Record<string, unknown>) =>
       runTelegramTestMiddlewareChain(middlewareUseSpy, ctx, callbackHandler);
@@ -6142,7 +6141,7 @@ describe("createTelegramBot", () => {
   });
 
   it("retries command pagination callbacks after a bubbled edit failure", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query");
     const runMiddlewareChain = (ctx: Record<string, unknown>) =>
       runTelegramTestMiddlewareChain(middlewareUseSpy, ctx, callbackHandler);
@@ -6172,7 +6171,7 @@ describe("createTelegramBot", () => {
     );
 
     const onUpdateId = vi.fn();
-    createTelegramBot({
+    await createTelegramBot({
       token: "tok",
       updateOffset: {
         lastUpdateId: 776,
@@ -6211,7 +6210,7 @@ describe("createTelegramBot", () => {
   });
 
   it("does not swallow unprefixed command pagination edit failures", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query");
 
     const ctx = makeCallbackRetryContext({
@@ -6241,7 +6240,7 @@ describe("createTelegramBot", () => {
   it("retries command pagination callbacks after a bubbled preflight failure", async () => {
     const listSkillCommandsMock = listSkillCommandsForAgents as unknown as ReturnType<typeof vi.fn>;
 
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     listSkillCommandsMock.mockClear();
     const callbackHandler = getOnHandler("callback_query");
     const runMiddlewareChain = (ctx: Record<string, unknown>) =>
@@ -6266,7 +6265,7 @@ describe("createTelegramBot", () => {
   });
 
   it("retries plugin binding approval callbacks after a bubbled resolution failure", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query");
     const runMiddlewareChain = (ctx: Record<string, unknown>) =>
       runTelegramTestMiddlewareChain(middlewareUseSpy, ctx, callbackHandler);
@@ -6309,7 +6308,7 @@ describe("createTelegramBot", () => {
         },
       },
     });
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query");
     const runMiddlewareChain = (ctx: Record<string, unknown>) =>
       runTelegramTestMiddlewareChain(middlewareUseSpy, ctx, callbackHandler);
@@ -6339,7 +6338,7 @@ describe("createTelegramBot", () => {
   });
 
   it("retries model provider callbacks after a bubbled edit failure", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query");
     const runMiddlewareChain = (ctx: Record<string, unknown>) =>
       runTelegramTestMiddlewareChain(middlewareUseSpy, ctx, callbackHandler);
@@ -6413,7 +6412,7 @@ describe("createTelegramBot", () => {
           };
         },
       );
-      createTelegramBot({ token: "tok" });
+      await createTelegramBot({ token: "tok" });
       await getCallbackHandler()(
         makeCallbackRetryContext({ id: `missing-access-${data}`, data, messageId: 24 }),
       );
@@ -6434,7 +6433,7 @@ describe("createTelegramBot", () => {
   );
 
   it("retries model selection callbacks after a bubbled session-store failure", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const runMiddlewareChain = (ctx: Record<string, unknown>) =>
       runTelegramTestMiddlewareChain(middlewareUseSpy, ctx, getOnHandler("callback_query"));
 
@@ -6472,7 +6471,7 @@ describe("createTelegramBot", () => {
   });
 
   it("shows a permanent rejection when model selection is locked", async () => {
-    createTelegramBot({ token: "tok" });
+    await createTelegramBot({ token: "tok" });
     const callbackHandler = getOnHandler("callback_query");
     const getSessionEntrySpy = vi
       .spyOn(telegramBotDepsForTest, "getSessionEntry")

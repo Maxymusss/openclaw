@@ -12,10 +12,10 @@ const createTelegramBot = (opts: import("./bot.types.js").TelegramBotOptions) =>
     telegramDeps: telegramBotDepsForTest,
   });
 
-function createWrappedTelegramClientFetch(proxyFetch: typeof fetch) {
+async function createWrappedTelegramClientFetch(proxyFetch: typeof fetch) {
   const shutdown = new AbortController();
   botCtorSpy.mockClear();
-  createTelegramBot({
+  await createTelegramBot({
     token: "tok",
     fetchAbortSignal: shutdown.signal,
     proxyFetch,
@@ -26,13 +26,13 @@ function createWrappedTelegramClientFetch(proxyFetch: typeof fetch) {
   return { clientFetch, shutdown };
 }
 
-function createWrappedTelegramClientFetchWithTransport(params: {
+async function createWrappedTelegramClientFetchWithTransport(params: {
   fetch: typeof fetch;
   forceFallback?: (reason: string) => boolean;
 }) {
   const shutdown = new AbortController();
   botCtorSpy.mockClear();
-  createTelegramBot({
+  await createTelegramBot({
     token: "tok",
     fetchAbortSignal: shutdown.signal,
     telegramTransport: {
@@ -57,7 +57,7 @@ describe("createTelegramBot fetch abort", () => {
           signal.addEventListener("abort", () => resolve(signal), { once: true });
         }),
     );
-    const { clientFetch, shutdown } = createWrappedTelegramClientFetch(
+    const { clientFetch, shutdown } = await createWrappedTelegramClientFetch(
       fetchSpy as unknown as typeof fetch,
     );
 
@@ -89,7 +89,7 @@ describe("createTelegramBot fetch abort", () => {
         { headers: { "content-type": "application/json" }, status: 200 },
       );
     });
-    const { clientFetch } = createWrappedTelegramClientFetch(fetchSpy as typeof fetch);
+    const { clientFetch } = await createWrappedTelegramClientFetch(fetchSpy as typeof fetch);
 
     const response = (await clientFetch(
       "https://api.telegram.org/bot123456:ABC/getChat",
@@ -129,7 +129,9 @@ describe("createTelegramBot fetch abort", () => {
           }),
         );
       });
-      const { clientFetch, shutdown } = createWrappedTelegramClientFetch(fetchSpy as typeof fetch);
+      const { clientFetch, shutdown } = await createWrappedTelegramClientFetch(
+        fetchSpy as typeof fetch,
+      );
       const request = new AbortController();
       const response = (await clientFetch("https://api.telegram.org/bot123456:ABC/getChat", {
         signal: request.signal,
@@ -154,7 +156,9 @@ describe("createTelegramBot fetch abort", () => {
           signal.addEventListener("abort", () => resolve(signal), { once: true });
         }),
     );
-    const { clientFetch } = createWrappedTelegramClientFetch(fetchSpy as unknown as typeof fetch);
+    const { clientFetch } = await createWrappedTelegramClientFetch(
+      fetchSpy as unknown as typeof fetch,
+    );
 
     const observedSignalPromise = clientFetch("https://api.telegram.org/bot123456:ABC/getUpdates");
     await vi.advanceTimersByTimeAsync(45_000);
@@ -176,7 +180,9 @@ describe("createTelegramBot fetch abort", () => {
             signal.addEventListener("abort", () => resolve(signal), { once: true });
           }),
       );
-      const { clientFetch } = createWrappedTelegramClientFetch(fetchSpy as unknown as typeof fetch);
+      const { clientFetch } = await createWrappedTelegramClientFetch(
+        fetchSpy as unknown as typeof fetch,
+      );
 
       const observedSignalPromise = clientFetch(`https://api.telegram.org/bot123456:ABC/${method}`);
       await vi.advanceTimersByTimeAsync(60_000);
@@ -205,7 +211,7 @@ describe("createTelegramBot fetch abort", () => {
           }),
       )
       .mockResolvedValueOnce({ ok: true } as Response);
-    const { clientFetch } = createWrappedTelegramClientFetchWithTransport({
+    const { clientFetch } = await createWrappedTelegramClientFetchWithTransport({
       fetch: fetchSpy as unknown as typeof fetch,
       forceFallback,
     });
@@ -238,7 +244,7 @@ describe("createTelegramBot fetch abort", () => {
             }),
         )
         .mockResolvedValueOnce({ ok: true } as Response);
-      const { clientFetch } = createWrappedTelegramClientFetchWithTransport({
+      const { clientFetch } = await createWrappedTelegramClientFetchWithTransport({
         fetch: fetchSpy as unknown as typeof fetch,
         forceFallback,
       });
@@ -270,7 +276,7 @@ describe("createTelegramBot fetch abort", () => {
           }),
       )
       .mockResolvedValueOnce({ ok: true } as Response);
-    const { clientFetch } = createWrappedTelegramClientFetchWithTransport({
+    const { clientFetch } = await createWrappedTelegramClientFetchWithTransport({
       fetch: fetchSpy as unknown as typeof fetch,
       forceFallback,
     });
@@ -295,7 +301,7 @@ describe("createTelegramBot fetch abort", () => {
         }),
       )
       .mockResolvedValueOnce(new Response("{}", { status: 200 }));
-    const { clientFetch } = createWrappedTelegramClientFetchWithTransport({
+    const { clientFetch } = await createWrappedTelegramClientFetchWithTransport({
       fetch: fetchSpy as typeof fetch,
       forceFallback,
     });
@@ -323,7 +329,7 @@ describe("createTelegramBot fetch abort", () => {
         );
       }
       const forceFallback = fallback ? vi.fn(() => true) : undefined;
-      const { clientFetch } = createWrappedTelegramClientFetchWithTransport({
+      const { clientFetch } = await createWrappedTelegramClientFetchWithTransport({
         fetch: fetchSpy as typeof fetch,
         ...(forceFallback ? { forceFallback } : {}),
       });
@@ -345,7 +351,7 @@ describe("createTelegramBot fetch abort", () => {
       .fn()
       .mockRejectedValueOnce(Object.assign(new Error("421 Misdirected Request"), { status: 421 }))
       .mockResolvedValueOnce(new Response("{}", { status: 200 }));
-    const { clientFetch } = createWrappedTelegramClientFetchWithTransport({
+    const { clientFetch } = await createWrappedTelegramClientFetchWithTransport({
       fetch: fetchSpy as typeof fetch,
       forceFallback,
     });
@@ -362,7 +368,7 @@ describe("createTelegramBot fetch abort", () => {
     const edgeError = Object.assign(new Error("421 Misdirected Request"), { status: 421 });
     const forceFallback = vi.fn(() => false);
     const fetchSpy = vi.fn().mockRejectedValue(edgeError);
-    const { clientFetch } = createWrappedTelegramClientFetchWithTransport({
+    const { clientFetch } = await createWrappedTelegramClientFetchWithTransport({
       fetch: fetchSpy as typeof fetch,
       forceFallback,
     });
