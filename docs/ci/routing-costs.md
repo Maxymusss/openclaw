@@ -63,10 +63,11 @@ retain Blacksmith. The slow retained CLI process cohort is split using the
 existing runtime admission owner and complete file costs; its former seven-file
 child took 720 seconds inside a 1,142-second job.
 
-A known planner prediction plus a 150-second launch/setup reserve must fit
+A known planner prediction plus a 320-second native timing reserve must fit
 480 seconds to use prioritized Spot. Longer or unknown rows use on-demand;
 UI has no complete per-row forecast. This market-only reserve covers the
-125-second observed overhead maximum and never changes a deadline. The
+307-second maximum observed gap between prediction and Spot allocation wall,
+including startup and underestimated test work. It never changes a deadline. The
 GitHub-projects UI spec stays on Blacksmith in a disjoint inventory partition
 until its previous AWS RPC timeout has an established cause. No coverage or
 hosted lint/type routing changes accompany these placements.
@@ -83,6 +84,22 @@ establish its runtime; the larger memory floor alone is not a speed claim.
 The ordinary run also had a 137-second hosted gate wait and a Gateway fixture
 type error. Its raw wall was 17m24s; removing queue time arithmetically does not
 qualify the route.
+
+The first diversified run, `35887809735` at `40cd43b1c572`, finished in 14m19s
+with all 57 AWS jobs passing and no interruptions. Blacksmith used 223.700
+machine-minutes / $8.1072; verified AWS allocations add $2.399377, totaling
+$10.506577. Four retained-host failure rows and the aggregate gate prevent this
+run from counting as green qualification. Actual Spot allocations used
+`c7a.4xlarge` in `us-east-1b`; on-demand M8a allocations used both configured AZs.
+
+Four Spot jobs took 524–594 seconds despite predictions of 308–315 seconds.
+The former 150-second reserve covered startup but not this forecast error.
+The revised 320-second reserve would move those four and one additional row to
+on-demand, retaining 17 of the observed 22 Spot rows. At the same actual instance
+types and allocation durations, that adds $0.389317, for $10.895894 total.
+This is a market-budget scenario, not a measured replacement run or a fitted
+interruption model; direct on-demand prefers M8a and must be priced from its
+next actual allocation receipts.
 
 The final single-pool controls at `791e06f63af6` all failed and exceeded 15 minutes:
 

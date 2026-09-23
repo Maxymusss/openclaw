@@ -4132,8 +4132,8 @@ describe("ci workflow guards", () => {
     expect(pr!.filter((row) => row.retained)).toHaveLength(1);
   });
 
-  it("admits Spot only when the forecast leaves launch and setup inside eight minutes", () => {
-    const forecasts = [undefined, 0, -1, 330, 331, 900];
+  it("admits Spot only when the native timing reserve fits inside eight minutes", () => {
+    const forecasts = [undefined, 0, -1, 160, 161, 308, 310, 314, 315, 900];
     const manifest = runCiManifestFixture({
       bundledPlanner: true,
       eventName: "push",
@@ -4163,6 +4163,10 @@ describe("ci workflow guards", () => {
       ["market-3", true],
       ["market-4", false],
       ["market-5", false],
+      ["market-6", false],
+      ["market-7", false],
+      ["market-8", false],
+      ["market-9", false],
     ]);
   });
 

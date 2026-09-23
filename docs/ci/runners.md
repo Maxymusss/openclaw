@@ -235,12 +235,13 @@ Resource ranges keep that alternative eligible. Direct on-demand requests put
 use `ubuntu24-full-x64`, an 80 GB gp3 root and the pinned workflow Node version.
 Blacksmith dependency archives remain disabled on AWS; portable caches remain.
 
-Spot admission requires a known positive planner prediction plus 150 seconds
-for launch, setup and cleanup to fit within 480 seconds. Saved successful
-allocations measured at most 125 seconds outside the test envelope. The reserve
-is only a conservative market decision: it does not change execution deadlines,
-packing estimates or worker limits. Some existing predictions already include
-setup; their conservative double counting is retained. Longer and unknown rows
+Spot admission requires a known positive planner prediction plus a 320-second
+native timing reserve to fit within 480 seconds. In the first diversified run,
+Spot allocation wall exceeded the planner prediction by up to 307 seconds, including
+launch, setup and underestimated test work. The reserve only selects the market:
+it does not change execution deadlines, packing estimates or worker limits.
+Some existing predictions already include setup; their conservative double
+counting is retained. Longer and unknown rows
 use on-demand. UI lacks a complete per-row forecast and therefore uses
 on-demand. Cron retains its two-worker ceiling; Control UI retains existing
 project and job worker policies.

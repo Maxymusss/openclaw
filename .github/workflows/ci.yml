@@ -2023,10 +2023,11 @@ jobs:
                 timeout_minutes: shard.timeoutMinutes,
                 plan_concurrency: shard.planConcurrency,
                 predicted_seconds: shard.predictedSeconds,
-                // Include launch/setup exposure without discounting existing owner estimates.
+                // Observed Spot allocation exceeded its forecast by up to 307s, including startup.
+                // This reserve selects the market without changing any execution budget.
                 runson_spot: shard.runner?.startsWith("runson-")
                   ? Number.isFinite(shard.predictedSeconds) && shard.predictedSeconds > 0 &&
-                    shard.predictedSeconds + 150 <= 480
+                    shard.predictedSeconds + 320 <= 480
                   : undefined,
                 targets: shard.targets,
                 requires_go: (shard.groups ?? [shard]).some((plan) => {
