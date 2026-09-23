@@ -161,6 +161,7 @@ describe("canonical agent creating admission", () => {
   it("publishes witnessed registration after caller revocation without replaying its operation", async () => {
     const options = fixture();
     const execution = captureOpenClawAgentDatabaseExecution(options);
+    const refused = new Error("Synthetic creating caller revoked after registration COMMIT");
     let revoked = false;
     let witnessed = 0;
     let publications = 0;
@@ -182,7 +183,7 @@ describe("canonical agent creating admission", () => {
       },
       () => {
         if (revoked) {
-          throw new Error("Synthetic creating caller revoked after registration COMMIT");
+          throw refused;
         }
       },
     );
@@ -195,11 +196,7 @@ describe("canonical agent creating admission", () => {
           (error: unknown) => ({ value: undefined, error }),
         );
       // Registration committed, but the creating factory did not obtain its remaining grant.
-      expect(result.error).toMatchObject({
-        name: "SqliteWorkerError",
-        code: "closed",
-        message: "SQLite transaction admission was refused",
-      });
+      expect(result.error).toBe(refused);
       expect(witnessed).toBe(1);
       expect(publications).toBe(1);
       expect(operation).not.toHaveBeenCalled();
