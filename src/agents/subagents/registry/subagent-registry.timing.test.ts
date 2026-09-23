@@ -20,6 +20,7 @@ import {
   resetTaskRegistryForTests,
 } from "../../../tasks/task-runtime.test-helpers.js";
 import { captureEnv, setTestEnvValue } from "../../../test-utils/env.js";
+import * as registryHelpers from "./subagent-registry-helpers.js";
 import {
   cleanupSubagentRegistryPersistenceTest,
   readSubagentSessionStore,
@@ -153,6 +154,18 @@ describe("subagent timing completion", () => {
     if (mode === "overlap") {
       const entered = createDeferred();
       const released = createDeferred();
+      const firstTimingWriteEntered = createDeferred();
+      const secondTimingWriteEntered = createDeferred();
+      const persistSubagentSessionTiming = registryHelpers.persistSubagentSessionTiming;
+      let timingWriteCount = 0;
+      const timingSpy = vi
+        .spyOn(registryHelpers, "persistSubagentSessionTiming")
+        .mockImplementation((...args) => {
+          const work = persistSubagentSessionTiming(...args);
+          timingWriteCount += 1;
+          (timingWriteCount === 1 ? firstTimingWriteEntered : secondTimingWriteEntered).resolve();
+          return work;
+        });
       // Hold the real FIFO with a no-op patch. There is no open SQLite
       // transaction during this await and no production function is replaced.
       const blocker = patchSessionEntryCore(
@@ -171,13 +184,16 @@ describe("subagent timing completion", () => {
             ?.pending.length ?? 0;
         expect(queueDepth()).toBe(0);
         emitTerminal();
-        await vi.waitFor(() => expect(queueDepth()).toBe(1));
+        await firstTimingWriteEntered.promise;
+        expect(queueDepth()).toBe(1);
         waiting.resolve(terminal);
-        await vi.waitFor(() => expect(queueDepth()).toBe(2));
+        await secondTimingWriteEntered.promise;
+        expect(queueDepth()).toBe(2);
       } finally {
         waiting.resolve(terminal);
         released.resolve();
         await blocker;
+        timingSpy.mockRestore();
       }
       await waitForCleanup();
     } else {
