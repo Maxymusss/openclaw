@@ -127,7 +127,7 @@ final class NativeActionRouter: OpenClawNativeActionHost {
         self.retireChatSelection()
     }
 
-    struct PresentationAuthority {
+    struct PresentationAuthority: Equatable {
         fileprivate let rootID: UUID
         fileprivate let selectionID: UUID
     }

@@ -117,7 +117,11 @@ struct RootTabs: View {
                 appModel: self.appModel,
                 nativeBinding: self.presentation.nativeChatBinding,
                 presentationID: self.presentation.nativePresentationID,
-                chatRegistrationID: self.nativeActions?.chatRegistrationID))
+                chatRegistrationID: self.nativeActions?.chatRegistrationID,
+                // Same-root navigation retires suspended work without changing its target.
+                // Wake the current selection instead of leaving only the rejected task.
+                presentationAuthority: self.nativeActions?
+                    .capturePresentationAuthority(self.presentation.nativePresentationID)))
             {
                 await self.appModel.chatPresentation.synchronizePresentation(
                     appModel: self.appModel,

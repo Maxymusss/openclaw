@@ -55,13 +55,15 @@ final class IOSChatViewModelOwner {
         let nativeBinding: ObjectIdentifier?
         let presentationID: UUID?
         let chatRegistrationID: UUID?
+        let presentationAuthority: NativeActionRouter.PresentationAuthority?
     }
 
     func taskIdentity(
         appModel: NodeAppModel,
         nativeBinding: IOSNativeActionBinding?,
         presentationID: UUID?,
-        chatRegistrationID: UUID? = nil) -> TaskIdentity
+        chatRegistrationID: UUID? = nil,
+        presentationAuthority: NativeActionRouter.PresentationAuthority? = nil) -> TaskIdentity
     {
         TaskIdentity(
             route: appModel.chatViewModelIdentityID,
@@ -75,7 +77,8 @@ final class IOSChatViewModelOwner {
             authority: appModel.activeGatewayConnectConfig?.controlUIInputs,
             nativeBinding: nativeBinding.map(ObjectIdentifier.init),
             presentationID: presentationID,
-            chatRegistrationID: chatRegistrationID)
+            chatRegistrationID: chatRegistrationID,
+            presentationAuthority: presentationAuthority)
     }
 
     struct Presentation {

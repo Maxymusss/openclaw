@@ -338,10 +338,18 @@ final class NativeActionVisualProofTests: XCTestCase {
             var lifetimePhase = "setup"
             var lifetimeReported = false
             var lifetimeRootID: UUID?
+            var coverRootRegistration: UUID?
+            var coverLifetimeBaseline: Int?
+            var coverDisappearanceOrdinal: Int?
             weak var lifetimeModel = model
             weak var lifetimeRouter = router
             @MainActor func observeLifetime(_ tag: String) {
                 lifetimeTotal += 1
+                if tag == "root-on-disappear", let coverLifetimeBaseline,
+                   lifetimeTotal > coverLifetimeBaseline, coverDisappearanceOrdinal == nil
+                {
+                    coverDisappearanceOrdinal = lifetimeTotal
+                }
                 guard lifetimeRows.count < 32 else { return }
                 if lifetimeRootID == nil { lifetimeRootID = lifetimeRouter?.presentationRegistrationID }
                 let published = lifetimeModel?.chatPresentation.viewModel
@@ -501,7 +509,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                                 "activeRunIds": !scenario
                                     .testsNativeAdoption && !scenario.testsChatModal && !scenario.testsPagesEditor &&
                                     !scenario.testsSidebarNewChat && !scenario.testsPromptAdmission &&
-                                    scenario != .nativePreparedSendAccountABA &&
+                                    scenario != .nativePreparedSendAccountABA && scenario != .nativeAfterUserChat &&
                                     agent == session.agentID && key == session
                                     .sessionKey ? [run.runID] : [],
                             ],
@@ -877,12 +885,26 @@ final class NativeActionVisualProofTests: XCTestCase {
                 if scenario == .chatModalNewOptionsCover || scenario == .pagesAdmissionCover ||
                     scenario == .pagesRemoval
                 {
+                    ownedWindow.traitOverrides.verticalSizeClass = .compact
                     hosting.traitOverrides.verticalSizeClass = .compact
                 }
                 window = ownedWindow
                 ownedWindow.rootViewController = hosting
                 ownedWindow.makeKeyAndVisible()
                 hosting.view.layoutIfNeeded()
+                @MainActor func requireCoverOwner(_ sheet: UIViewController) throws {
+                    guard let coverRootRegistration,
+                          ownedWindow.rootViewController === hosting,
+                          hosting.presentedViewController === sheet,
+                          sheet.presentingViewController === hosting,
+                          sheet.viewIfLoaded?.window === ownedWindow,
+                          ownedWindow.isKeyWindow, !ownedWindow.isHidden,
+                          scene.activationState == .foregroundActive,
+                          UIApplication.shared.applicationState == .active,
+                          router.presentationRegistrationID == coverRootRegistration,
+                          rootState.nativePresentationID == coverRootRegistration
+                    else { throw OpenClawNativeActionError("Cover fixture lost its presentation owner") }
+                }
                 // Open waits for RootTabs' real onAppear registration, after its initial
                 // session adoption. No test presentation handler or demo mode is used.
                 XCTAssertEqual(UIApplication.shared.applicationState, .active)
@@ -954,15 +976,38 @@ final class NativeActionVisualProofTests: XCTestCase {
                         XCTAssertEqual(held.runIDs, heldInspect ? [run.runID] : nil)
                     }
                     let pages = rootActions.userModalBinding(rootActions.binding(\.pagesEditor))
+                    if scenario == .pagesAdmissionCover || scenario == .pagesRemoval {
+                        coverRootRegistration = try XCTUnwrap(router.presentationRegistrationID)
+                        coverLifetimeBaseline = lifetimeTotal
+                    }
                     pages.wrappedValue = .init()
                     try await self.waitForNavigationTitle("Pages", in: ownedWindow)
                     let sheet = try XCTUnwrap(hosting.presentedViewController)
                     if scenario == .pagesAdmissionCover || scenario == .pagesRemoval {
+                        try requireCoverOwner(sheet)
+                        let receipt = try XCTUnwrap(rootState.pagesEditor)
+                        let originalSheet = try XCTUnwrap(sheet.sheetPresentationController)
+                        let delegateID = originalSheet.delegate.map { ObjectIdentifier($0) }
+                        // Configure the real sheet; only actual presenter removal and Root
+                        // disappearance qualify this fixture as a covering presentation.
+                        originalSheet.animateChanges {
+                            originalSheet.prefersPageSizing = true
+                            originalSheet.prefersEdgeAttachedInCompactHeight = false
+                        }
                         try await self.waitUntil(failureFacts: { [weak hosting, weak ownedWindow, weak sheet] in
                             let presented = hosting?.presentedViewController
                             return self.modalFailureFacts(
                                 hosting: hosting, presented: presented, original: sheet, window: ownedWindow)
-                        }) { hosting.view.window == nil }
+                        }) {
+                            try requireCoverOwner(sheet)
+                            guard sheet.sheetPresentationController === originalSheet,
+                                  originalSheet.delegate.map({ ObjectIdentifier($0) }) == delegateID,
+                                  rootState.pagesEditor == receipt
+                            else { throw OpenClawNativeActionError("Cover fixture replaced its Pages sheet") }
+                            return hosting.view.window == nil &&
+                                sheet.activePresentationController?.shouldRemovePresentersView == true &&
+                                coverDisappearanceOrdinal != nil
+                        }
                     }
                     // Pages uses ordinary departure. A cover can postpone idle VM
                     // replacement; assert the live editor, not a required transport kind.
@@ -1238,6 +1283,10 @@ final class NativeActionVisualProofTests: XCTestCase {
                         XCTAssertNotNil(rootState.chatModals.present(message, at: \.selectText, capture: capture))
                     } else {
                         let publication = try XCTUnwrap(rootActions.prepareChatModal(chat))
+                        if scenario == .chatModalNewOptionsCover {
+                            coverRootRegistration = try XCTUnwrap(router.presentationRegistrationID)
+                            coverLifetimeBaseline = lifetimeTotal
+                        }
                         publication.present(scenario == .chatModalNewOptionsCover
                             ? .newSessionOptions(chat) : .backgroundTasks(agentID: session.agentID))
                     }
@@ -1251,13 +1300,33 @@ final class NativeActionVisualProofTests: XCTestCase {
                             1)
                     }
                     if scenario == .chatModalNewOptionsCover {
-                        // Compact height uses the actual full-screen adaptation. The UI
-                        // transition owner survives cover; native permits do not.
+                        try requireCoverOwner(sheet)
+                        let receipt = try XCTUnwrap(rootState.presentedSheet)
+                        guard case let .newSessionOptions(presentedChat, _) = receipt, presentedChat === chat else {
+                            throw OpenClawNativeActionError("Cover fixture did not present its New Session content")
+                        }
+                        let originalSheet = try XCTUnwrap(sheet.sheetPresentationController)
+                        let delegateID = originalSheet.delegate.map { ObjectIdentifier($0) }
+                        // The original sheet owns configuration even when UIKit has already
+                        // adapted its active presentation controller for compact height.
+                        originalSheet.animateChanges {
+                            originalSheet.prefersPageSizing = true
+                            originalSheet.prefersEdgeAttachedInCompactHeight = false
+                        }
                         try await self.waitUntil(failureFacts: { [weak hosting, weak ownedWindow, weak sheet] in
                             let presented = hosting?.presentedViewController
                             return self.modalFailureFacts(
                                 hosting: hosting, presented: presented, original: sheet, window: ownedWindow)
-                        }) { hosting.view.window == nil }
+                        }) {
+                            try requireCoverOwner(sheet)
+                            guard sheet.sheetPresentationController === originalSheet,
+                                  originalSheet.delegate.map({ ObjectIdentifier($0) }) == delegateID,
+                                  rootState.presentedSheet == receipt
+                            else { throw OpenClawNativeActionError("Cover fixture replaced its chat sheet") }
+                            return hosting.view.window == nil &&
+                                sheet.activePresentationController?.shouldRemovePresentersView == true &&
+                                coverDisappearanceOrdinal != nil
+                        }
                     }
                     XCTAssertTrue(model.chatPresentation.viewModel === chat)
                     XCTAssertEqual(router.chatRegistrationID, registration)
@@ -2046,9 +2115,29 @@ final class NativeActionVisualProofTests: XCTestCase {
                             await requireRefusal()
                             XCTAssertEqual(model.pendingAgentDeepLinkPrompt, prompt)
                             XCTAssertTrue(hosting.presentedViewController === alert)
+                            guard model.pendingAgentDeepLinkPrompt == prompt,
+                                  ownedWindow.rootViewController === hosting,
+                                  hosting.presentedViewController === alert,
+                                  alert.presentingViewController === hosting,
+                                  alert.presentedViewController == nil,
+                                  alert.viewIfLoaded?.window === ownedWindow
+                            else { throw OpenClawNativeActionError("Deep-link fixture lost its original prompt") }
                             let declinedPromptID = prompt.id
                             deepLinkDeclineStarted = true
                             model.declinePendingAgentDeepLinkPrompt()
+                            // Exercise owner decline plus the fixture's platform dismissal.
+                            // The installed UITest separately activates the real Cancel button.
+                            if hosting.presentedViewController != nil {
+                                guard model.pendingAgentDeepLinkPrompt == nil,
+                                      ownedWindow.rootViewController === hosting,
+                                      hosting.presentedViewController === alert,
+                                      alert.presentingViewController === hosting,
+                                      alert.presentedViewController == nil,
+                                      alert.viewIfLoaded?.window === ownedWindow
+                                else { throw OpenClawNativeActionError("Deep-link fixture replaced its original alert")
+                                }
+                                alert.dismiss(animated: true)
+                            }
                             try await self.waitUntil(failureFacts: { [
                                 weak model,
                                 weak hosting,
@@ -2149,6 +2238,7 @@ final class NativeActionVisualProofTests: XCTestCase {
                     }
                     if scenario == .nativeFromSettingsPath || scenario == .nativeAfterUserChat {
                         if scenario == .nativeAfterUserChat {
+                            XCTAssertTrue(try XCTUnwrap(model.chatPresentation.viewModel).canPreserveIdleTextDraft)
                             try await self.showSidebar(using: rootActions)
                             rootActions.openChatAction()(.init(
                                 sessionKey: session.sessionKey, agentID: session.agentID))

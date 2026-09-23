@@ -460,7 +460,8 @@ struct SwiftUIRenderSmokeTests {
             .task(id: self.appModel.chatPresentation.taskIdentity(
                 appModel: self.appModel, nativeBinding: self.presentation.binding,
                 presentationID: self.presentationID,
-                chatRegistrationID: self.nativeActions?.chatRegistrationID))
+                chatRegistrationID: self.nativeActions?.chatRegistrationID,
+                presentationAuthority: self.nativeActions?.capturePresentationAuthority(self.presentationID)))
             {
                 let binding = self.presentation.binding
                 let requestID = self.appModel.newChatRequestID
@@ -762,6 +763,7 @@ struct SwiftUIRenderSmokeTests {
 
     @Test(arguments: [
         "ordinary-cold-routing",
+        "ordinary-selection-readiness",
         "ordinary-cold-connection",
         "ordinary-pending-user-aba",
         "ordinary-pending-account-aba",
@@ -1304,6 +1306,37 @@ struct SwiftUIRenderSmokeTests {
                         }
                         owner.requestNewChat(appModel: appModel, presentation: current())
                         return appModel.newChatRequestID
+                    }
+                    if action == "ordinary-selection-readiness" {
+                        let initialDeadline = ContinuousClock.now + .seconds(2)
+                        while !restoreWaiters.contains(where: { $0.requestID == 0 }),
+                              ContinuousClock.now < initialDeadline
+                        {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        try #require(restoreWaiters.contains { $0.requestID == 0 })
+                        let initialRestores = restoreWaiters.filter { $0.requestID == 0 }.count
+                        let initialSynchronizations = Set(presentation.startedSynchronizations.keys)
+                        let initialScope = owner.taskIdentity(
+                            appModel: appModel, nativeBinding: presentation.binding, presentationID: presentationID)
+                        let authority = try #require(router.capturePresentationAuthority(presentationID))
+                        try #require(router.userNavigationDidChange(presentationID: presentationID))
+                        #expect(!router.isCurrentPresentation(authority))
+                        #expect(owner.taskIdentity(
+                            appModel: appModel, nativeBinding: presentation.binding,
+                            presentationID: presentationID) == initialScope)
+                        // No restore or New Chat counter changes before the real .task wakes.
+                        let successorDeadline = ContinuousClock.now + .seconds(2)
+                        while restoreWaiters.filter({ $0.requestID == 0 }).count == initialRestores,
+                              ContinuousClock.now < successorDeadline
+                        {
+                            try await Task.sleep(for: .milliseconds(10))
+                        }
+                        try #require(restoreWaiters.filter { $0.requestID == 0 }.count > initialRestores)
+                        #expect(!Set(presentation.startedSynchronizations.keys)
+                            .subtracting(initialSynchronizations).isEmpty)
+                        #expect(appModel.newChatRequestID == 0)
+                        #expect(owner.viewModel == nil)
                     }
                     let first = try queueNewChat()
                     let waitingDeadline = ContinuousClock.now + .seconds(2)
