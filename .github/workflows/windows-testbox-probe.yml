@@ -1015,10 +1015,10 @@ jobs:
       - name: Setup Node
         run: |
           source .github/actions/setup-pnpm-store-cache/ensure-node.sh
-          openclaw_ensure_node 24.19.0
+          openclaw_ensure_node 24.20.0
       - uses: ./.github/actions/setup-pnpm-store-cache
         with:
-          node-version: 24.19.0
+          node-version: 24.20.0
           cache-mode: off
       - name: Install frozen dependencies
         run: |
