@@ -173,7 +173,7 @@ export async function readSessionEntryInWorker(
     storePath = resolveOpenClawAgentSqlitePath({ agentId, env });
   }
   const candidates = captureSessionStoreReadCandidates(storePath);
-  const loadedEntry = await withSessionStoreTarget(
+  const loadedRead = await withSessionStoreTarget(
     { agentId, defaultAgentId: scope.defaultAgentId, storePath, env, candidates },
     async (target, owner) => {
       const sessionKey = resolveSqliteSessionKey(scope.sessionKey, target.logicalAgentId);
@@ -212,12 +212,12 @@ export async function readSessionEntryInWorker(
         await execution.release();
       }
       owner.assertCurrent();
-      return entry;
+      return { entry, assertCurrent: owner.assertCurrent };
     },
     assertCallerCurrent,
   );
-  assertCallerCurrent();
-  return loadedEntry;
+  loadedRead.assertCurrent();
+  return loadedRead.entry;
 }
 
 type SessionStoreWorkerReadScope = {

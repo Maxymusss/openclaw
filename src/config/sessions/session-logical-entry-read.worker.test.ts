@@ -33,6 +33,7 @@ import {
   readSessionEntryInWorker,
   withSessionEntriesFromStoresInWorker,
 } from "./session-entry-read-runtime.js";
+import { historyPages } from "./session-transcript-worker-resources.js";
 
 let state: OpenClawTestState;
 beforeAll(async () => {
@@ -253,7 +254,7 @@ it("refuses malformed folded candidate state while retaining the healthy request
   });
 });
 
-it.each(["before-open", "after-row", "after-release"] as const)(
+it.each(["before-open", "after-row", "after-release", "after-discovery-cleanup"] as const)(
   "refuses registry reassociation %s instead of returning the previously selected row",
   async (stage) => {
     const scope = {
@@ -266,6 +267,25 @@ it.each(["before-open", "after-row", "after-release"] as const)(
     const target = toDatabaseOptions(resolveSqliteScope(scope));
     const entered = createDeferredCore();
     const release = createDeferredCore();
+    let executionReleased = false;
+    const holdDiscoveryCleanup = async () => {
+      if (stage === "after-discovery-cleanup" && executionReleased) {
+        entered.resolve();
+        await release.promise;
+      }
+    };
+    const closeResources = historyPages.closeResources.bind(historyPages);
+    const rotate = historyPages.rotate.bind(historyPages);
+    const closeIntercept = vi
+      .spyOn(historyPages, "closeResources")
+      .mockImplementation(async (key) => {
+        await closeResources(key);
+        await holdDiscoveryCleanup();
+      });
+    const rotateIntercept = vi.spyOn(historyPages, "rotate").mockImplementation(async () => {
+      await rotate();
+      await holdDiscoveryCleanup();
+    });
     const capture = executionOwner.captureOpenClawAgentDatabaseExecution;
     const intercept = vi
       .spyOn(executionOwner, "captureOpenClawAgentDatabaseExecution")
@@ -297,6 +317,7 @@ it.each(["before-open", "after-row", "after-release"] as const)(
           },
           async release() {
             await execution.release();
+            executionReleased = true;
             if (stage === "after-release") {
               entered.resolve();
               await release.promise;
@@ -324,6 +345,8 @@ it.each(["before-open", "after-row", "after-release"] as const)(
       release.resolve();
       await reading;
       intercept.mockRestore();
+      closeIntercept.mockRestore();
+      rotateIntercept.mockRestore();
     }
   },
 );
