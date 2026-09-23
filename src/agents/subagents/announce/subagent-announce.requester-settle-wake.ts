@@ -94,6 +94,7 @@ function readSharedBatchState(batch: readonly SubagentRunRecord[]): RequesterSet
     ...(states.some((state) => state.afterRequesterYield === true)
       ? { afterRequesterYield: true }
       : {}),
+    ...(source?.yieldedFinalDeliverable === true ? { yieldedFinalDeliverable: true } : {}),
     ...(source?.rearmGeneration !== undefined ? { rearmGeneration: source.rearmGeneration } : {}),
     ...(source?.lastError !== undefined ? { lastError: source.lastError } : {}),
     deferralCount: Math.max(0, ...states.map((state) => state.deferralCount ?? 0)),
@@ -342,6 +343,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       batchRunIds: [...batchRunIds],
       ...(state.requesterYieldBatch === true ? { requesterYieldBatch: true } : {}),
       ...(state.afterRequesterYield === true ? { afterRequesterYield: true } : {}),
+      ...(state.yieldedFinalDeliverable === true ? { yieldedFinalDeliverable: true } : {}),
       ...(state.rearmGeneration !== undefined ? { rearmGeneration: state.rearmGeneration } : {}),
       ...(state.lastError !== undefined ? { lastError: state.lastError } : {}),
       deferralCount,
@@ -401,10 +403,20 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   );
   // Delivered children remain in yield cohorts. One private result makes the
   // aggregate private; public siblings keep their individual completion route.
-  // A requester that yielded still owes its own answer: child output stays
-  // internal as wake input, but the continuation must be able to deliver.
+  // A yield hands continuation back to the requester, so its own final must be
+  // deliverable. Private findings stay wake input and remain session-bound; the
+  // requester may still reply NO_REPLY when nothing is owed.
   const privateRows = completionRows.filter((entry) => entry.completionTarget === "parent");
-  const parentOnly = privateRows.length > 0 && !requesterYieldedAfterDelivery;
+  const hasPrivateRows = privateRows.length > 0;
+  // Policy is chosen once, at first admission, and persisted. A batch already
+  // attempted without the marker was admitted as a private turn (possibly by an
+  // earlier build); retrying it under a different policy could republish that input.
+  const yieldedFinalDeliverable =
+    hasPrivateRows &&
+    requesterYieldedAfterDelivery &&
+    (selectedState.yieldedFinalDeliverable === true ||
+      (selectedState.status === "pending" && selectedState.attemptCount === 0));
+  const parentOnly = hasPrivateRows && !yieldedFinalDeliverable;
   if (
     privateRows.some((entry) => entry.completionRequesterSessionId !== requesterEntry.sessionId)
   ) {
@@ -427,8 +439,9 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   const completionChannel = normalizeMessageChannel(directOrigin?.channel);
   const wakeMessage = buildRequesterSettleWakeMessage({
     findings: preparedFindings.text,
-    requireVisibleReply: requesterYieldedAfterDelivery,
+    requireVisibleReply: requesterYieldedAfterDelivery && !hasPrivateRows,
     parentOnly,
+    yieldedFinalDeliverable,
     children: completionRows,
     preserveModelRouteNotice: !completionChannel || !isDeliverableMessageChannel(completionChannel),
   });
@@ -494,6 +507,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
         ...(state.requesterYieldBatch === true ? { requesterYieldBatch: true } : {}),
         ...(state.afterRequesterYield === true ? { afterRequesterYield: true } : {}),
         ...(state.rearmGeneration !== undefined ? { rearmGeneration: state.rearmGeneration } : {}),
+        ...(yieldedFinalDeliverable ? { yieldedFinalDeliverable: true } : {}),
       };
       params.transitionBatch(settledBatch, state);
     }
@@ -504,7 +518,8 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       batchRunIds,
       rearmGeneration: selectedState.rearmGeneration,
       attemptIndex,
-      parentOnly,
+      // Keyed on the batch contents, not delivery policy, so replay keeps its identity.
+      parentOnly: hasPrivateRows,
     });
     const requesterSessionId = requesterEntry.sessionId;
     const requesterLifecycleRevision = requesterEntry.lifecycleRevision;
@@ -618,13 +633,13 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
                   requesterIsSubagent: requesterDepth >= 1,
                   expectsCompletionMessage: false,
                   requireDirectDelivery: true,
-                  ...(parentOnly
-                    ? {
-                        completionTarget: "parent",
-                        completionRequesterSessionId: requesterEntry.sessionId,
-                      }
+                  ...(parentOnly ? { completionTarget: "parent" } : {}),
+                  ...(hasPrivateRows
+                    ? { completionRequesterSessionId: requesterEntry.sessionId }
                     : {}),
-                  ...(requesterYieldedAfterDelivery ? { requireVisibleReply: true } : {}),
+                  ...(requesterYieldedAfterDelivery && !hasPrivateRows
+                    ? { requireVisibleReply: true }
+                    : {}),
                   directIdempotencyKey,
                   signal: params.signal,
                   resolveGatewayContext,
@@ -662,6 +677,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
         batchRunIds,
         ...(state.requesterYieldBatch === true ? { requesterYieldBatch: true } : {}),
         ...(state.afterRequesterYield === true ? { afterRequesterYield: true } : {}),
+        ...(state.yieldedFinalDeliverable === true ? { yieldedFinalDeliverable: true } : {}),
         ...(state.rearmGeneration !== undefined ? { rearmGeneration: state.rearmGeneration } : {}),
         lastError,
       };
@@ -714,6 +730,7 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       batchRunIds,
       ...(state.requesterYieldBatch === true ? { requesterYieldBatch: true } : {}),
       ...(state.afterRequesterYield === true ? { afterRequesterYield: true } : {}),
+      ...(state.yieldedFinalDeliverable === true ? { yieldedFinalDeliverable: true } : {}),
       ...(state.rearmGeneration !== undefined ? { rearmGeneration: state.rearmGeneration } : {}),
       lastError,
     });

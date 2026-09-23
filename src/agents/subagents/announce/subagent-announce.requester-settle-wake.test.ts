@@ -88,8 +88,8 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     );
   });
 
-  // The requester yielded on a user request and still owes its answer. A private
-  // continuation cannot deliver, so its final would be discarded silently.
+  // A yield hands continuation back to the requester. A private continuation
+  // cannot deliver, so its final answer would be discarded silently.
   it.each([
     { name: "yielded private child", mixed: false, single: true },
     { name: "yielded mixed pair", mixed: true, single: false },
@@ -101,13 +101,57 @@ describe("maybeWakeRequesterAfterAllChildrenSettled", () => {
     expect(deliverSpy).toHaveBeenCalledOnce();
     expect(deliveredCallArg()).toMatchObject({
       requireDirectDelivery: true,
-      requireVisibleReply: true,
+      completionRequesterSessionId: "sess-main",
     });
     expect(deliveredCallArg().completionTarget).toBeUndefined();
-    expect(String(deliveredCallArg().triggerMessage)).toContain("private marker");
-    expect(String(deliveredCallArg().triggerMessage)).toContain(
-      "still requires your visible final answer",
-    );
+    // Deliverable, not forced: NO_REPLY stays silent when nothing is owed.
+    expect(deliveredCallArg().requireVisibleReply).toBeUndefined();
+    const trigger = String(deliveredCallArg().triggerMessage);
+    expect(trigger).toContain("private marker");
+    expect(trigger).not.toContain("Your final reply stays internal");
+    expect(trigger).toContain("Your final reply is delivered to the original conversation");
+    expect(trigger).toContain("when no user-facing update is owed");
+    expect(transitionBatchSpy.mock.calls.at(0)?.[1]).toMatchObject({
+      status: "dispatching",
+      yieldedFinalDeliverable: true,
+    });
+  });
+
+  it.each(["dispatching", "pending"] as const)(
+    "keeps the private policy for a %s batch already attempted without the marker",
+    async (status) => {
+      const children = settledPrivateChildren({ mixed: false, yielded: true, single: true });
+      Object.assign(children[0]!.requesterSettleWake!, {
+        status,
+        attemptCount: 1,
+        batchRunIds: ["run-b"],
+      });
+      registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(children);
+      expect(await maybeWakeRequesterAfterAllChildrenSettled(wakeParams())).toBe(true);
+      expect(deliveredCallArg()).toMatchObject({
+        completionTarget: "parent",
+        completionRequesterSessionId: "sess-main",
+      });
+      // Private inputs keep the unsuffixed identity across attempts.
+      expect(deliveredCallArg().directIdempotencyKey).toBe(requesterSettleKey("run-b:yield-1"));
+    },
+  );
+
+  it("keeps the deliverable policy for a marked batch after a failed attempt", async () => {
+    const children = settledPrivateChildren({ mixed: false, yielded: true, single: true });
+    Object.assign(children[0]!.requesterSettleWake!, {
+      status: "pending",
+      attemptCount: 1,
+      batchRunIds: ["run-b"],
+      yieldedFinalDeliverable: true,
+    });
+    registryRuntimeMock.listSubagentRunsForRequester.mockReturnValue(children);
+    expect(await maybeWakeRequesterAfterAllChildrenSettled(wakeParams())).toBe(true);
+    expect(deliveredCallArg().completionTarget).toBeUndefined();
+    expect(transitionBatchSpy.mock.calls.at(0)?.[1]).toMatchObject({
+      status: "dispatching",
+      yieldedFinalDeliverable: true,
+    });
   });
 
   it("does not pass private findings to a replacement requester incarnation", async () => {

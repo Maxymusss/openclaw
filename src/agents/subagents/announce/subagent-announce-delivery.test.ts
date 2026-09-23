@@ -1817,6 +1817,59 @@ describe("deliverSubagentAnnouncement completion delivery", () => {
     },
   );
 
+  it.each([
+    { name: "current parent", current: "requester-session-dm", admitted: true },
+    { name: "replaced parent", current: "replacement-parent", admitted: false },
+  ])(
+    "delivers a yielded settle final bound to its private findings' parent: $name",
+    async ({ current, admitted }) => {
+      const callGateway = createGatewayMock({
+        status: "ok",
+        result: { payloads: [{ text: "parent answer" }] },
+      });
+      const sendMessage = createSendMessageMock();
+      const origin = { channel: "discord", to: "dm:U123", accountId: "acct-1" };
+      const requesterSessionKey = "agent:main:discord:dm:U123";
+      testing.setDepsForTest({
+        callGateway,
+        getRequesterSessionActivity: () => ({ sessionId: current, isActive: false }),
+        getRuntimeConfig: () => ({}) as never,
+        sendMessage,
+      });
+      const result = await deliverSubagentAnnouncement({
+        requesterSessionKey,
+        targetRequesterSessionKey: requesterSessionKey,
+        triggerMessage: "settled findings",
+        steerMessage: "settled findings",
+        requesterSessionOrigin: origin,
+        directOrigin: origin,
+        sourceTool: "subagent_settle",
+        expectsCompletionMessage: false,
+        requireDirectDelivery: true,
+        completionRequesterSessionId: "requester-session-dm",
+        directIdempotencyKey: "announce:requester-settle:test",
+      });
+      if (!admitted) {
+        expect(result).toMatchObject({
+          delivered: false,
+          reason: "completion_handoff_unavailable",
+          terminal: true,
+        });
+        expect(callGateway).not.toHaveBeenCalled();
+        return;
+      }
+      expectGatewayAgentParams(callGateway, {
+        deliver: true,
+        channel: "discord",
+        to: "dm:U123",
+        sourceReplyDeliveryMode: "automatic",
+        expectedExistingSessionId: "requester-session-dm",
+      });
+      // The requester's own final is delivered by the agent turn; no raw child fallback.
+      expect(sendMessage).not.toHaveBeenCalled();
+    },
+  );
+
   it.each(["error", "timeout"])(
     "records %s operator cancellation as an intentional private non-delivery",
     async (status) => {
