@@ -1,5 +1,7 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/infra/outbound/bound-delivery-router.test.ts",
+  "src/infra/outbound/current-conversation-bindings.worker.test.ts",
   "src/cli/daemon-cli/restart-health-client.test.ts",
   "src/acp/control-plane/manager.test.ts",
   "src/config/sessions/disk-budget.physical-usage.test.ts",
@@ -648,6 +650,7 @@ const databaseWorkerCoreTestFileSet = new Set(databaseWorkerCoreTestFiles);
 
 // Preserve watch admission for consumers previously inferred into fast lanes.
 export const databaseWorkerCoreFormerFastKinds = new Map([
+  ["src/infra/outbound/bound-delivery-router.test.ts", "unitFast"],
   ["src/agents/subagents/registry/subagent-registry.session-failure.test.ts", "unitFast"],
   ["src/agents/mcp-oauth-store.test.ts", "unitFast"],
   ["src/node-host/invoke-system-run.test.ts", "unitFastIsolated"],
