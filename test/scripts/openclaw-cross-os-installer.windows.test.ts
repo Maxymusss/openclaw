@@ -20,25 +20,31 @@ async function runPowerShell(params: {
   env: NodeJS.ProcessEnv;
   logPath: string;
 }) {
-  return runCommand(
-    "powershell.exe",
-    [
-      "-NoLogo",
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-Command",
-      params.script,
-    ],
-    {
-      check: false,
-      cwd: params.cwd,
-      env: params.env,
-      logPath: params.logPath,
-      timeoutMs: 10_000,
-    },
-  );
+  console.error("MV1_POWERSHELL_START", Date.now());
+  try {
+    return await runCommand(
+      "powershell.exe",
+      [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        `[Console]::Error.WriteLine("MV1_POWERSHELL_READY")\n${params.script}`,
+      ],
+      {
+        check: false,
+        cwd: params.cwd,
+        env: params.env,
+        logPath: params.logPath,
+        timeoutMs: 10_000,
+      },
+    );
+  } catch (error) {
+    console.error("MV1_INSTALLER_LOG", readFileSync(params.logPath, "utf8"));
+    throw error;
+  }
 }
 
 async function runPosixShell(params: {
@@ -146,6 +152,10 @@ describe("cross-OS installer fetch", () => {
       const healthyMarker = join(dir, "healthy.txt");
       const stalledMarker = join(dir, "stalled.txt");
       const server = createServer((request, response) => {
+        console.error("MV1_INSTALLER_REQUEST", request.url, Date.now());
+        response.on("finish", () =>
+          console.error("MV1_INSTALLER_RESPONSE_FINISHED", request.url, Date.now()),
+        );
         response.writeHead(200, { "content-type": "text/plain; charset=utf-8" });
         if (request.url === "/healthy") {
           response.end(
