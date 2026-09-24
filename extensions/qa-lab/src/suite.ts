@@ -199,9 +199,10 @@ export async function waitForQaLabReadyOrStopOwned(params: {
   try {
     await waitForQaLabReady(params.lab.listenUrl, params.timeoutMs);
   } catch (error) {
-    if (params.ownsLab) {
-      await params.lab.stop();
-    }
+    const cleanupFailures = await runQaSuiteCleanupSteps(
+      params.ownsLab ? [{ phase: "lab stop", run: () => params.lab.stop() }] : [],
+    );
+    throwQaSuiteCleanupErrors({ cleanupFailures, runFailed: true, runError: error });
     throw error;
   }
 }

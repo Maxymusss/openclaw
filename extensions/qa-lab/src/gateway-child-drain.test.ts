@@ -2,8 +2,10 @@ import { ChildProcess } from "node:child_process";
 import type { WriteStream } from "node:fs";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { QaSuiteInfraError } from "./errors.js";
+import { QaSuiteCleanupError, QaSuiteInfraError } from "./errors.js";
 import { QaGatewayChildLifecycle } from "./gateway-child-lifecycle.js";
+import { isQaSuiteInfraRetryableError } from "./suite-infra-retry.js";
+import { runQaFlowSuiteCleanupPlan, throwQaSuiteCleanupErrors } from "./suite.js";
 
 const teardown = vi.hoisted(() => ({
   stopTree: vi.fn<() => Promise<void>>(),
@@ -173,9 +175,11 @@ describe("QA Gateway owned child drain", () => {
 
   it.each([
     { sequence: "concurrent", failurePhase: "none" },
+    { sequence: "concurrent", failurePhase: "capture" },
     { sequence: "concurrent", failurePhase: "preserve" },
     { sequence: "concurrent", failurePhase: "remove" },
     { sequence: "sequential", failurePhase: "none" },
+    { sequence: "sequential", failurePhase: "capture" },
     { sequence: "sequential", failurePhase: "preserve" },
     { sequence: "sequential", failurePhase: "remove" },
   ] as const)(
@@ -203,7 +207,13 @@ describe("QA Gateway owned child drain", () => {
         }
       });
       const retained = f.lifetime.stop({ keepTemp: true });
-      const options = { keepTemp: false, preserveToDir: "/fixture/proof" };
+      const beforeTempCleanup = vi.fn(async () => {
+        expect(f.log.writableEnded).toBe(true);
+        if (failurePhase === "capture") {
+          throw cleanupFailure;
+        }
+      });
+      const options = { keepTemp: false, preserveToDir: "/fixture/proof", beforeTempCleanup };
       // Call before close to exercise the cached stopping promise, not a fresh
       // finish() after the retained run diagnostic clears that promise.
       const finalizing = sequence === "concurrent" ? f.lifetime.stop(options) : undefined;
@@ -218,8 +228,11 @@ describe("QA Gateway owned child drain", () => {
         expect(f.log.writableEnded).toBe(true);
         expect(checkFailure).toHaveBeenCalledTimes(sequence === "concurrent" ? 1 : 2);
         expect(teardown.stopTree).toHaveBeenCalledOnce();
+        expect(beforeTempCleanup).toHaveBeenCalledOnce();
         expect(teardown.preserve).toHaveBeenCalledOnce();
-        expect(teardown.remove).toHaveBeenCalledTimes(failurePhase === "preserve" ? 0 : 1);
+        expect(teardown.remove).toHaveBeenCalledTimes(
+          failurePhase === "capture" || failurePhase === "preserve" ? 0 : 1,
+        );
         if (failurePhase === "none") {
           expect(result.errors).toEqual([primary]);
           expect(result.settledRunError).toBe(primary);
@@ -229,7 +242,7 @@ describe("QA Gateway owned child drain", () => {
           const primaryIndex = sequence === "concurrent" ? 0 : 1;
           expect(result.errors[primaryIndex]).toBe(primary);
           const cleanupError = result.errors[1 - primaryIndex];
-          if (failurePhase === "preserve") {
+          if (failurePhase === "capture" || failurePhase === "preserve") {
             expect(cleanupError).toBeInstanceOf(Error);
             if (cleanupError instanceof Error) {
               expect(cleanupError.cause).toBe(cleanupFailure);
@@ -237,6 +250,26 @@ describe("QA Gateway owned child drain", () => {
           } else {
             expect(cleanupError).toBe(cleanupFailure);
           }
+        }
+        const cleanupFailures = await runQaFlowSuiteCleanupPlan({
+          cleanupTransportBeforeGatewayStop: async () => {},
+          cleanupTransportAfterGatewayStop: async () => {},
+          stopGateway: async () => result,
+          disposeAgentHarnesses: async () => {},
+          finishLab: async () => {},
+        });
+        let suiteError: unknown;
+        try {
+          throwQaSuiteCleanupErrors({ cleanupFailures, runFailed: false, runError: undefined });
+        } catch (error) {
+          suiteError = error;
+        }
+        if (failurePhase === "none") {
+          expect(suiteError).toBe(primary);
+          expect(isQaSuiteInfraRetryableError(suiteError)).toBe(true);
+        } else {
+          expect(suiteError).toBeInstanceOf(QaSuiteCleanupError);
+          expect(isQaSuiteInfraRetryableError(suiteError)).toBe(false);
         }
         expect(vi.getTimerCount()).toBe(0);
       } finally {
