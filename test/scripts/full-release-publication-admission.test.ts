@@ -69,9 +69,13 @@ const toolingPaths = [
   "scripts/lib/docker-e2e-plan.mts",
   "scripts/lib/docker-e2e-scenarios.mts",
   "scripts/lib/official-external-channel-catalog.json",
+  "scripts/lib/update-compat-inventory.json",
+  "scripts/lib/update-first-hop-lanes.mjs",
   "scripts/lib/upgrade-survivor-policy.mjs",
   "scripts/lib/upgrade-survivor-scenarios.json",
   "scripts/lib/frozen-target-compat.sh",
+  "scripts/lib/trusted-native-typescript.mjs",
+  "scripts/lib/native-typescript.mts",
   "scripts/resolve-frozen-codex-live-suite.mjs",
   "scripts/resolve-fs-safe-native-contract.mjs",
   "scripts/e2e/lib/upgrade-survivor/config-recipe.mts",
@@ -809,7 +813,7 @@ globalThis.fetch = async (input, init = {}) => {
     write(
       tooling,
       "package.json",
-      JSON.stringify({ ...manifest, version, dependencies: { yaml: "2.9.0" } }),
+      JSON.stringify({ ...manifest, version, dependencies: { yaml: "2.9.1" } }),
     );
     writePlugins(tooling);
     write(tooling, "apps/android/version.json", androidVersion);
@@ -2594,7 +2598,7 @@ describe("publication source intent and durable binding", () => {
       expect(() =>
         publicationSourceContract('env:\n  FULL_RELEASE_SOURCE_ADMISSION_CONTRACT: "2"\n'),
       ).toThrow();
-      const request = publicationSourceRequest({
+      const environment = {
         PUBLICATION_INPUTS_JSON: JSON.stringify({
           trusted_workflow_json: JSON.stringify({
             trustedWorkflow: null,
@@ -2614,7 +2618,22 @@ describe("publication source intent and durable binding", () => {
         GITHUB_SHA: "a".repeat(40),
         GITHUB_RUN_ID: "123",
         GITHUB_RUN_ATTEMPT: "1",
-      });
+      };
+      const request = publicationSourceRequest(environment);
+      expect(() =>
+        publicationSourceRequest({
+          ...environment,
+          PUBLICATION_INPUTS_JSON: JSON.stringify({
+            ...JSON.parse(environment.PUBLICATION_INPUTS_JSON),
+            trusted_workflow_json: JSON.stringify({
+              trustedWorkflow: null,
+              validationPurpose: "diagnostic",
+              publicationSelection: null,
+              laneInputs: { known_flaky_jobs_json: '["normalCi:test"]' },
+            }),
+          }),
+        }),
+      ).toThrow("invalid source-admission lane inputs");
       const source = createPublicationSourceFact(request, null, null);
       expect(
         validatePublicationSourceBinding({ sourceAdmissionContract: "1", sourceAdmission: source }),
@@ -2631,6 +2650,29 @@ describe("publication source intent and durable binding", () => {
         }),
       ).toBe(historical);
       expect(publicationSourceJson(historical)).toBe(historicalBytes);
+      const retained = structuredClone(historical);
+      retained.coverage.known_flaky_jobs_json = "[]";
+      const { digest: _retiredDigest, ...retainedContent } = retained;
+      retained.digest = createHash("sha256")
+        .update(publicationSourceJson(retainedContent))
+        .digest("hex");
+      const retainedBytes = publicationSourceJson(retained);
+      expect(
+        validatePublicationSourceBinding({
+          sourceAdmissionContract: "1",
+          sourceAdmission: retained,
+        }),
+      ).toBe(retained);
+      expect(publicationSourceJson(retained)).toBe(retainedBytes);
+      expect(() =>
+        validatePublicationSourceBinding({
+          sourceAdmissionContract: "1",
+          sourceAdmission: {
+            ...retained,
+            coverage: { ...retained.coverage, known_flaky_jobs_json: '["normalCi:test"]' },
+          },
+        }),
+      ).toThrow("known_flaky_jobs_json must be empty");
       expect(() =>
         validatePublicationSourceBinding({
           sourceAdmissionContract: "1",
