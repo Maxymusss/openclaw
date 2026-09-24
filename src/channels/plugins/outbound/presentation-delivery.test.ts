@@ -18,7 +18,14 @@ const tablePresentation: MessagePresentation = {
 describe("renderPresentationForDelivery button adaptation", () => {
   it.each([
     { name: "one button", count: 1, maxActions: 25, perRow: 5, maxRows: 5, styles: true },
-    { name: "Discord-sized controls", count: 25, maxActions: 25, perRow: 5, maxRows: 5, styles: true },
+    {
+      name: "Discord-sized controls",
+      count: 25,
+      maxActions: 25,
+      perRow: 5,
+      maxRows: 5,
+      styles: true,
+    },
     {
       name: "Telegram-sized controls",
       count: 100,
