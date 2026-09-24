@@ -20,7 +20,7 @@ import {
   clearUpdateCommandExecutorAdmission,
   preflightReleases,
   retainedOwners,
-  type ManagedUpdateLeaseAuthority,
+  type UpdateCommandExecutorOptions,
 } from "./update-command-executor-admission.js";
 import {
   createChildOwner,
@@ -272,32 +272,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
 export async function withUpdateCommandExecutor<T>(
   runId: string,
   operation: (executor: UpdateCommandExecutor) => Promise<T>,
-  options?: (
-    | {
-        existingAuthority?: never;
-        legacyManagedParent?: never;
-        legacyPackageParent?: never;
-        legacyPackageHandoff?: never;
-      }
-    | {
-        existingAuthority: Omit<ManagedUpdateLeaseAuthority, "owner">;
-        legacyManagedParent?: never;
-        legacyPackageParent?: never;
-        legacyPackageHandoff?: never;
-      }
-    | {
-        existingAuthority?: never;
-        legacyManagedParent: { runId: string; handoffId: string; root: string };
-        legacyPackageParent?: never;
-        legacyPackageHandoff?: never;
-      }
-    | {
-        existingAuthority?: never;
-        legacyManagedParent?: never;
-        legacyPackageParent: Extract<LegacyUpdateExecutorParent, { kind: "package" }>["identity"];
-        legacyPackageHandoff?: { handoffId: string; root: string };
-      }
-  ) & { onAuthorityFailure?: (cause: unknown) => void },
+  options?: UpdateCommandExecutorOptions,
 ): Promise<T> {
   const activation = createUpdateOperationDeadline();
   const execution = activation.run(() =>
@@ -690,11 +665,10 @@ export async function withUpdateCommandExecutor<T>(
       childOwners.delete(fence);
       clearUpdateCommandExecutorAdmission(fence);
       if ("error" in outcome && hasCommandProcessCleanupError(outcome.error)) {
-        const failure = new UpdateCommandRecoveryPendingError(
+        throw new UpdateCommandRecoveryPendingError(
           "Command cleanup is unconfirmed; update ownership remains retained.",
           { cause: outcome.error },
         );
-        throw failure;
       }
       try {
         if (serviceLease && store && (serviceLease.version === 3 || !store.release(serviceLease))) {

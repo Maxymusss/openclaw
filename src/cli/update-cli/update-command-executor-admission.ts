@@ -2,10 +2,37 @@ import { resolveUpdateInstallRoot } from "../../infra/update-install-root.js";
 import type { ManagedUpdateLeaseDatabaseIdentity } from "../../infra/update-managed-service-handoff-database.js";
 import type { UpdateRecoveryFence } from "../../infra/update-run-recovery.js";
 import type { ChildOperation, ChildPurpose } from "./update-command-executor-children.js";
+import type { LegacyUpdateExecutorParent } from "./update-command-executor-legacy.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 
 export type ManagedUpdateLeaseAuthority = ManagedUpdateLeaseDatabaseIdentity &
   Readonly<{ installKey: string; owner: string }>;
+export type UpdateCommandExecutorOptions = (
+  | {
+      existingAuthority?: never;
+      legacyManagedParent?: never;
+      legacyPackageParent?: never;
+      legacyPackageHandoff?: never;
+    }
+  | {
+      existingAuthority: Omit<ManagedUpdateLeaseAuthority, "owner">;
+      legacyManagedParent?: never;
+      legacyPackageParent?: never;
+      legacyPackageHandoff?: never;
+    }
+  | {
+      existingAuthority?: never;
+      legacyManagedParent: { runId: string; handoffId: string; root: string };
+      legacyPackageParent?: never;
+      legacyPackageHandoff?: never;
+    }
+  | {
+      existingAuthority?: never;
+      legacyManagedParent?: never;
+      legacyPackageParent: Extract<LegacyUpdateExecutorParent, { kind: "package" }>["identity"];
+      legacyPackageHandoff?: { handoffId: string; root: string };
+    }
+) & { onAuthorityFailure?: (cause: unknown) => void };
 export const admittedAuthorities = new WeakMap<
   UpdateRecoveryFence,
   {
