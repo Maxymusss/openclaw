@@ -246,6 +246,29 @@ describe("remote model catalog overlay", () => {
     expect(getRemoteModelCatalogPricing({})).toEqual(pricing);
   });
 
+  it("serves a released default install's v1 download until its v2 download is active", () => {
+    const v1Default = "https://catalog.openclaw.ai/models/v1/catalog.json";
+    const v2Default = "https://catalog.openclaw.ai/models/v2/catalog.json";
+    mocks.read.mockReturnValue({ bundle_json: JSON.stringify(bundle), source_url: v1Default });
+    // Offline after upgrading: the default config keeps the downloaded rows and prices.
+    expect(getRemoteModelCatalogProviderOverlay({}, "anthropic")).toHaveProperty("models");
+    expect(getRemoteModelCatalogPricing({})?.["openai/gpt-external"]).toEqual({
+      cost: { input: 2.5, output: 10 },
+      explicit: false,
+    });
+    // A configured mirror never inherits the retired default's download.
+    expect(
+      getRemoteModelCatalogPricing({
+        models: { catalogRefresh: { url: "https://mirror.example.test/catalog.json" } },
+      }),
+    ).toBeUndefined();
+    // The first v2 download of the same generation still needs a restart to take over.
+    mocks.read.mockReturnValue({ bundle_json: JSON.stringify(bundle), source_url: v2Default });
+    expect(
+      checkRemoteModelCatalogUpdate({}, { sourceUrl: v2Default, generatedAt: bundle.generatedAt }),
+    ).toBe("restart-required");
+  });
+
   it("keeps invalid startup metadata absent after a successful download", async () => {
     const env = { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-optional-catalog-") };
     const valid = mocks.read();

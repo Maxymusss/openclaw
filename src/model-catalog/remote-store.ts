@@ -1,7 +1,16 @@
-import { updateConfigMachineState } from "../state/config-machine-state-write.js";
-import { readConfigMachineState } from "../state/config-machine-state.js";
+import {
+  updateConfigMachineState,
+  updateConfigMachineStateInDatabase,
+} from "../state/config-machine-state-write.js";
+import {
+  readConfigMachineState,
+  readConfigMachineStateRowInDatabase,
+} from "../state/config-machine-state.js";
 import { isArtifactPreservingStateRead } from "../state/openclaw-state-db-readonly.js";
-import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
+import {
+  runOpenClawStateWriteTransaction,
+  type OpenClawStateDatabaseOptions,
+} from "../state/openclaw-state-db.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
 
 type RemoteModelCatalogStoreRow = {
@@ -100,35 +109,49 @@ export function markRemoteModelCatalogChecked(
   options: OpenClawStateDatabaseOptions = {},
 ): boolean {
   let matched = false;
-  // A revalidated legacy row is adopted into this client's slot; the legacy slot is untouched.
-  const legacy = readConfigMachineState<RemoteModelCatalogSnapshot>(
-    LEGACY_REMOTE_MODEL_CATALOG_STATE_KEY,
-    options,
-  );
-  updateConfigMachineState<RemoteModelCatalogSnapshot>(
-    REMOTE_MODEL_CATALOG_STATE_KEY,
-    (stored) => {
-      const current = stored ?? legacy;
-      if (!current) {
-        return undefined;
+  runOpenClawStateWriteTransaction(
+    ({ db }) => {
+      // Read the legacy slot in this transaction so an older client's concurrent refresh
+      // is seen. Only a matching legacy row is adopted into this client's slot; the legacy
+      // slot itself is never written.
+      const legacyJson = readConfigMachineStateRowInDatabase(
+        db,
+        LEGACY_REMOTE_MODEL_CATALOG_STATE_KEY,
+      )?.value_json;
+      let legacy: RemoteModelCatalogSnapshot | undefined;
+      if (legacyJson !== undefined) {
+        // SAFETY: Only OpenClaw catalog stores write this key, always as a catalog snapshot.
+        legacy = JSON.parse(legacyJson) as RemoteModelCatalogSnapshot;
       }
-      if (
-        current.source_url !== metadata.expected.source_url ||
-        current.generated_at !== metadata.expected.generated_at ||
-        current.etag !== metadata.expected.etag ||
-        current.last_modified !== metadata.expected.last_modified
-      ) {
-        return current;
-      }
-      matched = true;
-      return {
-        ...current,
-        checked_at: checkedAt,
-        ...(metadata.etag !== undefined ? { etag: metadata.etag } : {}),
-        ...(metadata.lastModified !== undefined ? { last_modified: metadata.lastModified } : {}),
-      };
+      updateConfigMachineStateInDatabase<RemoteModelCatalogSnapshot>(
+        db,
+        REMOTE_MODEL_CATALOG_STATE_KEY,
+        (stored) => {
+          const current = stored ?? legacy;
+          if (
+            !current ||
+            current.source_url !== metadata.expected.source_url ||
+            current.generated_at !== metadata.expected.generated_at ||
+            current.etag !== metadata.expected.etag ||
+            current.last_modified !== metadata.expected.last_modified
+          ) {
+            return stored;
+          }
+          matched = true;
+          return {
+            ...current,
+            checked_at: checkedAt,
+            ...(metadata.etag !== undefined ? { etag: metadata.etag } : {}),
+            ...(metadata.lastModified !== undefined
+              ? { last_modified: metadata.lastModified }
+              : {}),
+          };
+        },
+        Date.now(),
+      );
     },
     options,
+    { operationLabel: "model-catalog.remote.mark-checked" },
   );
   return matched;
 }

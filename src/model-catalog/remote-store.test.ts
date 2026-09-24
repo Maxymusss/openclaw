@@ -173,4 +173,30 @@ describe("remote model catalog store", () => {
     writeConfigMachineState("modelCatalog.remote", { ...legacy, generated_at: 200 }, options);
     expect(readRemoteModelCatalog(options)?.generated_at).toBe(100);
   });
+
+  it("leaves this client's slot empty when the older client's row no longer matches", () => {
+    const options = { path: path.join(tempDirs.make("openclaw-catalog-"), "state.sqlite") };
+    const legacy = {
+      bundle_json: '{"schemaVersion":1,"legacy":true}',
+      generated_at: 100,
+      min_version: null,
+      source_url: "https://mirror.test/v1/catalog.json",
+      etag: '"legacy"',
+      last_modified: null,
+      checked_at: 10,
+    };
+    // The older client refreshed between this client's read and its 304 check.
+    const newer = { ...legacy, generated_at: 200, etag: '"newer"' };
+    writeConfigMachineState("modelCatalog.remote", newer, options);
+    expect(
+      markRemoteModelCatalogChecked(
+        20,
+        { expected: legacy, etag: '"legacy"', lastModified: null },
+        options,
+      ),
+    ).toBe(false);
+    expect(readConfigMachineState("modelCatalog.remote.v2", options)).toBeUndefined();
+    // Until this client stores its own row, it keeps following the older client's slot.
+    expect(readRemoteModelCatalog(options)).toEqual({ id: 1, ...newer });
+  });
 });

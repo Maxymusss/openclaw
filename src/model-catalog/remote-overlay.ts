@@ -13,7 +13,11 @@ import {
   type RemoteModelCatalogUpstreamPrice,
   type RemoteModelCatalogWireBundle,
 } from "./remote-bundle.js";
-import { isRemoteModelCatalogRefreshEnabled, resolveRemoteCatalogUrl } from "./remote-config.js";
+import {
+  isRemoteCatalogSourceActive,
+  isRemoteModelCatalogRefreshEnabled,
+  resolveRemoteCatalogUrl,
+} from "./remote-config.js";
 import { readRemoteModelCatalog, readRemoteModelCatalogAsync } from "./remote-store.js";
 
 type RemoteModelCatalogOverlay = Readonly<Record<string, ModelCatalogProvider>>;
@@ -154,7 +158,7 @@ function getActiveRemoteModelCatalog(config: OpenClawConfig): ActiveRemoteModelC
     return undefined;
   }
   const snapshot = captureRemoteModelCatalogStartupSnapshot();
-  return snapshot?.sourceUrl === resolveRemoteCatalogUrl(config) ? snapshot : undefined;
+  return snapshot && isRemoteCatalogSourceActive(config, snapshot.sourceUrl) ? snapshot : undefined;
 }
 
 /** Inspects a completed check without activating its download or replacing the startup pair. */
@@ -168,7 +172,8 @@ export function checkRemoteModelCatalogUpdate(
   ) {
     return "superseded";
   }
-  if (getActiveRemoteModelCatalog(config)?.generatedAt === expected.generatedAt) {
+  const active = getActiveRemoteModelCatalog(config);
+  if (active?.sourceUrl === expected.sourceUrl && active.generatedAt === expected.generatedAt) {
     return "unchanged";
   }
   const stored = readCompatibleRemoteModelCatalogMetadata();
