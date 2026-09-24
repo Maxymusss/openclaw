@@ -657,7 +657,9 @@ async function parsePricingCatalog(
     }
   } else if (source.id === "modelsDev") {
     // Each OpenClaw provider reads the models.dev entry that bills it, keyed in its own
-    // namespace so gateways passing through `vendor/model` find the vendor's own price.
+    // namespace for its catalog rows. Vendors are also keyed under their models.dev slug
+    // (`moonshotai/…`), the `vendor/model` ID that gateways pass through.
+    const gateways = readPassthroughProviders(policies);
     for (const [providerId, upstreamId] of modelsDevProviders) {
       if (!sourcePolicy(policies, providerId, source)) {
         continue;
@@ -680,6 +682,9 @@ async function parsePricingCatalog(
       }
       for (const [id, pricing] of prices) {
         catalog.set(`${providerId}/${id}`, pricing);
+        if (upstreamId !== providerId && !gateways.has(providerId)) {
+          catalog.set(`${upstreamId}/${id}`, pricing);
+        }
       }
     }
   } else if (source.id === "openRouter") {

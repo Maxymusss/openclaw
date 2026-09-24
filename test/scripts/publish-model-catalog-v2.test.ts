@@ -32,7 +32,15 @@ function fixtureRoot() {
   fs.writeFileSync(
     path.join(dir, "openclaw.plugin.json"),
     JSON.stringify({
-      providers: ["anthropic", "openai", "fixture-native", "gateway", "mygate", "openrouter"],
+      providers: [
+        "anthropic",
+        "openai",
+        "fixture-native",
+        "gateway",
+        "mygate",
+        "openrouter",
+        "moonshot",
+      ],
       modelCatalog: {
         modelsDev: { "fixture-native": "upstream" },
         providers: {
@@ -59,6 +67,8 @@ function fixtureRoot() {
           // Publishes its own price list (like Vercel or Kilo).
           mygate: { modelsDev: { provider: "mygate-md", passthroughProviderModel: true } },
           openrouter: { openRouter: { provider: "openrouter" }, modelsDev: false, liteLLM: false },
+          // models.dev names this vendor differently from its OpenClaw provider.
+          moonshot: { modelsDev: { provider: "moonshotai" } },
         },
       },
     }),
@@ -85,6 +95,10 @@ function fixtureFetch() {
         "mygate-md": {
           id: "mygate-md",
           models: { "openai/seed-1": { id: "openai/seed-1", cost: { input: 3, output: 9 } } },
+        },
+        moonshotai: {
+          id: "moonshotai",
+          models: { "kimi-k3": { id: "kimi-k3", cost: { input: 3, output: 15 } } },
         },
       });
     }
@@ -249,6 +263,17 @@ describe("publish model catalog v2", () => {
       source: "openCode",
     });
     expect(v2.upstreamPricing).not.toHaveProperty("vendorx/model-a");
+    // Gateways pass through the vendor's models.dev slug, not its OpenClaw provider ID.
+    expect(v2.upstreamPricing?.["moonshotai/kimi-k3"]).toEqual({
+      input: 3,
+      output: 15,
+      source: "modelsDev",
+    });
+    expect(
+      Object.keys({ ...v2.upstreamPricing, ...v2.providerPricing }).some((key) =>
+        key.startsWith("mygate-md/"),
+      ),
+    ).toBe(false);
     expect(
       Object.keys({ ...v2.upstreamPricing, ...v2.providerPricing }).some((key) =>
         key.startsWith("gateway/"),
