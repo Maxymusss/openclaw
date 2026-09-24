@@ -51,7 +51,7 @@ module.exports = {
           finish();
           return;
         }
-        return new Promise((resolve) => setTimeout(resolve, 50)).then(finish);
+        return require("node:fs/promises").readFile(${JSON.stringify(lifecycleFile)}).then(finish);
       },
       capabilities: () => ({
         contractVersion: 2,
