@@ -8,9 +8,11 @@ import {
   parseComputerActResult,
   parseComputerUseCapabilityDescriptor,
   parseScreenSnapshotResult,
+} from "./computer-use-contract.js";
+import {
   registerComputerUseProvider,
   type ComputerUseProvider,
-} from "./computer-use-contract.js";
+} from "./computer-use-registration.js";
 import type { OpenClawPluginNodeHostCommand } from "./types.js";
 
 describe("Computer Use wire contract", () => {

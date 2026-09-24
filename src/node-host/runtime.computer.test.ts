@@ -1,9 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NODE_WORKER_DESKTOP_COMPUTER_COMMAND } from "../infra/node-commands.js";
-import {
-  registerComputerUseProvider,
-  type ComputerUseCapabilityDescriptor,
-} from "../plugins/computer-use-contract.js";
+import type { ComputerUseCapabilityDescriptor } from "../plugins/computer-use-contract.js";
+import { registerComputerUseProvider } from "../plugins/computer-use-registration.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
   getActivePluginRegistry,

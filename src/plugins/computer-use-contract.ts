@@ -1,10 +1,9 @@
 import { type Static, type TSchema, Type } from "typebox";
 import { Compile } from "typebox/compile";
 import { lazyCompile } from "../../packages/gateway-protocol/src/protocol-validator.js";
-import { COMPUTER_EXECUTION_ID_PATTERN } from "./computer-use-registration.js";
 
-export { registerComputerUseProvider } from "./computer-use-registration.js";
-export type { ComputerUseProvider } from "./computer-use-registration.js";
+export const COMPUTER_EXECUTION_ID_PATTERN =
+  "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 
 export const COMPUTER_USE_V2_ACTION_NAMES = [
   "screenshot",

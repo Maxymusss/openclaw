@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import type { ComputerUseCapabilityDescriptor } from "./computer-use-contract.js";
+import {
+  COMPUTER_EXECUTION_ID_PATTERN,
+  type ComputerUseCapabilityDescriptor,
+} from "./computer-use-contract.js";
 import type {
   OpenClawPluginNodeHostCommand,
   OpenClawPluginNodeHostCommandAvailabilityContext,
   OpenClawPluginNodeHostCommandContext,
 } from "./types.node-host.js";
-
-export const COMPUTER_EXECUTION_ID_PATTERN =
-  "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 
 type ComputerUseExecution = {
   snapshot(paramsJSON: string | null | undefined, signal?: AbortSignal): Promise<string>;
