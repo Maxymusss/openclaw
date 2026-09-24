@@ -28,7 +28,11 @@ import {
 import "../../plugins/control-ui-contributions.ts";
 import { renderPluginSurface } from "../../plugins/control-ui-view.ts";
 import { getChatHistoryLoadState } from "./chat-history-state.ts";
-import { getChatPendingInputs, loadChatPendingInputs } from "./chat-pending-inputs.ts";
+import {
+  buildPendingInputQueueItems,
+  getChatPendingInputs,
+  loadChatPendingInputs,
+} from "./chat-pending-inputs.ts";
 import { chatStartupStatusLabel, type ChatRunStartupStatus } from "./chat-run-startup.ts";
 import { forwardChatWheelToTranscript } from "./chat-scroll-input.ts";
 import type { ChatState } from "./chat-state-contract.ts";
@@ -376,14 +380,18 @@ export function renderChat(props: ChatProps) {
   // Transcript invalidation replaces its render context; bind submission afterward.
   questionState.transcriptRenderContext.onAsyncQuestionSubmit = props.onAsyncQuestionSubmit;
   questionState.transcriptRenderContext.onAsyncQuestionDiscard = asyncQuestions.discard;
+  const inputDisplay = selectChatInputDisplay(
+    props.messages,
+    props.queue,
+    pendingInputs?.page.items ?? [],
+  );
   const defaultComposer = renderChatComposer({
     ...props,
     asyncQuestions,
-    displayQueue: selectChatInputDisplay(
-      props.messages,
-      props.queue,
-      pendingInputs?.page.items ?? [],
-    ).queue,
+    displayQueue: [
+      ...buildPendingInputQueueItems(inputDisplay.queuedInputs),
+      ...inputDisplay.queue,
+    ],
     footerContent,
     notices,
     onRequestUpdate: requestUpdate,

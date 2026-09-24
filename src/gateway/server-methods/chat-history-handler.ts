@@ -209,7 +209,12 @@ export async function handleChatHistoryRequest({
               sessionId,
               storePath,
             },
-            { before: pendingBefore, limit: max, maxChars: effectiveMaxChars },
+            {
+              before: pendingBefore,
+              limit: max,
+              maxChars: effectiveMaxChars,
+              queuedTurns: context.chatQueuedTurns,
+            },
           )
         : { items: [], total: 0 };
     // Receipts belong to the currently selected physical session, never archived history.

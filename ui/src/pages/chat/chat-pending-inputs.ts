@@ -7,13 +7,17 @@ import type {
   ChatPendingInputsPage,
 } from "../../../../packages/gateway-protocol/src/schema/logs-chat.js";
 import { t } from "../../i18n/index.ts";
-import type { ChatItem, ChatQueueItem } from "../../lib/chat/chat-types.ts";
+import type { ChatItem, ChatQueueItem, ChatQueueDisplayItem } from "../../lib/chat/chat-types.ts";
 import { findChatSubmissionMessage } from "../../lib/chat/history-message-identity.ts";
+import { extractText } from "../../lib/chat/message-extract.ts";
+import { normalizeMessage } from "../../lib/chat/message-normalizer.ts";
 import { formatUiError } from "../../lib/format-error.ts";
 import { resolveUiSelectedSessionAgentId } from "../../lib/sessions/session-key.ts";
+import { requestChatAbort } from "./chat-abort-request.ts";
+import { loadChatHistory } from "./chat-history.ts";
 import type { ChatMessageRecovery } from "./chat-message-recovery.ts";
 import { confirmQueuedMessageCustody, removeQueuedMessage } from "./chat-queue.ts";
-import type { ChatState } from "./chat-state-contract.ts";
+import type { ChatState, ChatHistoryHost } from "./chat-state-contract.ts";
 import { projectChatSystemNotice } from "./chat-system-notice.ts";
 import { buildMessageItems, messageMatchesSearchQuery } from "./chat-thread-items.ts";
 import {
@@ -41,6 +45,66 @@ type PendingInputView = {
   request?: PendingInputRequest;
 };
 const pendingInputViews = new WeakMap<ChatState, PendingInputView>();
+
+export function buildPendingInputQueueItems(
+  inputs: ChatPendingInputsPage["items"],
+): ChatQueueDisplayItem[] {
+  return inputs.flatMap<ChatQueueDisplayItem>((input) => {
+    if (!input.queued || input.state !== "queued" || !input.runId) {
+      return [];
+    }
+    const message = normalizeMessage(input.message);
+    const imageCount = message.content.filter((part) => part.type === "image").length;
+    return [
+      {
+        id: `pending-input:${input.id}`,
+        text:
+          extractText(input.message) ||
+          (imageCount ? t("chat.queue.imageCount", { count: String(imageCount) }) : ""),
+        createdAt: input.acceptedAt,
+        pendingRunId: input.runId,
+        serverQueued: true,
+        sender: message.sender ?? undefined,
+      },
+    ];
+  });
+}
+
+export function cancelPendingQueuedChatInput(state: ChatHistoryHost, id: string): boolean {
+  const view = getChatPendingInputs(state);
+  const input = view?.page.items.find(
+    (item) => `pending-input:${item.id}` === id && item.queued && item.state === "queued",
+  );
+  const client = state.client;
+  if (!view || !input?.runId) {
+    return false;
+  }
+  if (!client || !state.connected) {
+    return true;
+  }
+  const epoch = state.connectionEpoch;
+  const current = () =>
+    getChatPendingInputs(state) === view &&
+    state.client === client &&
+    state.connected &&
+    state.connectionEpoch === epoch;
+  void requestChatAbort(client, {
+    sessionKey: view.sessionKey,
+    agentId: view.agentId,
+    runId: input.runId,
+  }).then(async (result) => {
+    if (!current()) {
+      return;
+    }
+    if (!result.ok) {
+      state.chatError = formatUiError(result.error);
+      state.requestUpdate?.();
+      return;
+    }
+    await loadChatHistory(state, { supersedeInFlight: true });
+  });
+  return true;
+}
 
 export function buildPendingInputItems(
   inputs: ChatPendingInputsPage["items"],

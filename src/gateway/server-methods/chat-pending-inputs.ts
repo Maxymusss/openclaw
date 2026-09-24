@@ -9,6 +9,7 @@ import {
   createCurrentUserProfileMessageProjector,
   projectChatDisplayMessage,
 } from "../chat-display-projection.js";
+import type { QueuedChatTurnMap } from "../chat-queued-turns.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
 import { replaceOversizedChatHistoryMessages } from "./chat-history-budget.js";
 
@@ -40,7 +41,7 @@ export function projectPendingInputMessage(
 
 export function readChatPendingInputs(
   scope: Parameters<typeof listSessionPendingInputs>[0],
-  options: { before?: number; limit: number; maxChars: number },
+  options: { before?: number; limit: number; maxChars: number; queuedTurns?: QueuedChatTurnMap },
 ): ChatPendingInputsPage {
   const page = listSessionPendingInputs(scope, {
     before: options.before,
@@ -68,6 +69,17 @@ export function readChatPendingInputs(
       };
       if (item.runId.length <= PENDING_INPUT_CORRELATION_MAX_CHARS) {
         display.runId = item.runId;
+        const queued = options.queuedTurns?.get(item.runId);
+        if (
+          item.state === "queued" &&
+          queued?.sessionId === scope.sessionId &&
+          queued.sessionKey === scope.sessionKey &&
+          queued.agentId === scope.agentId &&
+          queued.abortable !== false &&
+          !queued.controller.signal.aborted
+        ) {
+          display.queued = true;
+        }
       }
       return display;
     }),

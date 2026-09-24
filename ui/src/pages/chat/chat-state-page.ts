@@ -19,6 +19,7 @@ import {
 } from "../../lib/sessions/session-key.ts";
 import { resolveAgentIdForSession } from "./chat-avatar.ts";
 import { CHAT_TRANSCRIPT_LOADING_CHANGED_EVENT } from "./chat-history-events.ts";
+import { cancelPendingQueuedChatInput } from "./chat-pending-inputs.ts";
 import { chatProviderReviewRow } from "./chat-provider-review.ts";
 import { removeQueuedMessage } from "./chat-queue.ts";
 import { attachChatRealtimeActions, createInitialChatRealtimeState } from "./chat-realtime.ts";
@@ -344,6 +345,9 @@ export function createPageState(
     renderLifecycle.invalidate();
   };
   state.removeQueuedMessage = (id) => {
+    if (cancelPendingQueuedChatInput(state, id)) {
+      return;
+    }
     if (isQueuedMessageBeingEdited(state, id)) {
       setChatError(state, QUEUED_MESSAGE_REMOVAL_CONFLICT_ERROR);
       renderLifecycle.invalidate();

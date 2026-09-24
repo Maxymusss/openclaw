@@ -9,6 +9,7 @@ import {
 import * as userProfileList from "../../state/user-profile-list.js";
 import { ensureProfileForEmail, setAvatar } from "../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { registerQueuedChatTurn, retireQueuedChatTurnCancellation } from "../chat-queued-turns.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
 import { createHistoryReadContext } from "./chat-history.test-helpers.js";
 import { chatMessageGetHandlers } from "./chat-message-get-handler.js";
@@ -52,6 +53,27 @@ describe("pending input read boundary", () => {
           );
         }
         const context = await createHistoryReadContext();
+        for (const [index, overrides] of [
+          {},
+          { sessionId: "another-session" },
+          { agentId: "another-agent" },
+          {},
+        ].entries()) {
+          const controller = new AbortController();
+          const runId = `pending-display-run-${index}`;
+          expect(
+            registerQueuedChatTurn({
+              chatQueuedTurns: context.chatQueuedTurns,
+              ...scope,
+              ...overrides,
+              runId,
+              controller,
+            }),
+          ).toBe(true);
+          if (index === 3) {
+            retireQueuedChatTurnCancellation(context.chatQueuedTurns, runId, controller);
+          }
+        }
         const readPage = async () => {
           readDisplay.mockClear();
           let result: unknown;
@@ -77,6 +99,9 @@ describe("pending input read boundary", () => {
           return pending.items as Array<Record<string, unknown>>;
         };
         const initial = await readPage();
+        expect(initial.filter((item) => item.queued).map((item) => item.runId)).toEqual([
+          "pending-display-run-0",
+        ]);
         expect(initial).toEqual(
           receipts.map((receipt, index) =>
             expect.objectContaining({
