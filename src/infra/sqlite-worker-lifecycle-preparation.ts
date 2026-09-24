@@ -1,8 +1,8 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import { MessageChannel, MessagePort, receiveMessageOnPort } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { createDeferredCore } from "../shared/deferred.js";
 import { acquireWithWait } from "./acquire-with-wait.js";
-import { sleepWithAbort } from "./backoff.js";
 import {
   SqliteCoordinatorError,
   createSqliteLifecycleAggregateError,
@@ -149,7 +149,7 @@ export async function acquireSqliteWorkerLifecycle(params: {
         performance.now() + Number(params.deadlineNs - process.hrtime.bigint()) / 1_000_000,
       pollIntervalMs: 25,
       maxPollIntervalMs: 250,
-      sleep: (ms) => sleepWithAbort(ms, controller.signal),
+      sleep: (ms) => sleep(ms, undefined, { signal: controller.signal }),
       shouldRetry: (error) =>
         error instanceof StateDatabaseCoordinatorContentionError &&
         error.family === "state-lifecycle",

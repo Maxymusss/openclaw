@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { sleepWithAbort } from "./backoff.js";
 import { StateDatabaseCoordinatorContentionError } from "./state-database-coordinator-errors.js";
 
 const { acquire } = vi.hoisted(() => ({ acquire: vi.fn() }));
@@ -7,6 +8,12 @@ vi.mock("./state-database-coordinator.js", async () => ({
   ...(await import("./state-database-coordinator-errors.js")),
   acquireStateDatabaseCoordinator: acquire,
   withStateDatabaseCoordinatorRuntimeDirectory: (_runtime: unknown, run: () => unknown) => run(),
+}));
+// Simulate the native sleeper alongside the monotonic clock in this owner test.
+vi.mock("node:timers/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:timers/promises")>()),
+  setTimeout: (ms: number, _value: unknown, options: { signal?: AbortSignal } = {}) =>
+    sleepWithAbort(ms, options.signal),
 }));
 import { acquireStateDatabaseCoordinatorWithWait } from "./state-database-coordinator-acquisition.js";
 

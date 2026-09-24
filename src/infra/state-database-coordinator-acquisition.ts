@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
+import { setTimeout as sleep } from "node:timers/promises";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { acquireWithWait } from "./acquire-with-wait.js";
-import { sleepWithAbort } from "./backoff.js";
 import {
   acquireStateDatabaseCoordinator,
   StateDatabaseCoordinatorContentionError,
@@ -44,7 +44,8 @@ export async function acquireStateDatabaseCoordinatorWithWait(params: {
           notified = true;
           params.onWait?.();
         }
-        await sleepWithAbort(ms, params.signal);
+        // The wakeup and acquisition deadline use the same native clock.
+        await sleep(ms, undefined, { signal: params.signal });
       },
       acquire: async () => {
         acquisitionFailed = false;
