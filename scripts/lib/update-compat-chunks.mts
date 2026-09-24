@@ -462,11 +462,13 @@ export function writeUpdateCompatibilityChunks(params: {
   const candidates = new Map<string, Map<string, { file: string; exported: string }>>();
   for (const file of moduleFiles(distDir)) {
     const relative = portable(path.relative(distDir, file));
-    // Retained config repairs are built separately from the updater's runtime graph.
+    // Retained config repairs and one-shot relays own isolated build graphs.
+    // Their copies are not bindings in the updater's runtime graph.
     if (
       relative.startsWith("extensions/") ||
       relative.startsWith("plugin-sdk/") ||
-      relative.startsWith("config-doctor/")
+      relative.startsWith("config-doctor/") ||
+      relative.startsWith("native-hook-relay/")
     ) {
       continue;
     }

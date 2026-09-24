@@ -1941,14 +1941,18 @@ describe("previous release update compatibility", () => {
     expect(loaded.runner).toBe(current.x);
   });
 
-  it.each(["present", "missing"])(
-    "excludes the isolated config-doctor graph when the runtime binding is %s",
-    async (runtime) => {
+  it.each(
+    ["config-doctor", "native-hook-relay"].flatMap((graph) =>
+      ["present", "missing"].map((runtime) => ({ graph, runtime })),
+    ),
+  )(
+    "excludes the isolated $graph graph when the runtime binding is $runtime",
+    async ({ graph, runtime }) => {
       const inventory = recordFixture();
       const root = createTempDir("update-compat-isolated-graph-");
       candidate(root);
       const current = path.join(root, "dist/current.mjs");
-      write(root, "dist/config-doctor/inspect.mjs", fsSync.readFileSync(current, "utf8"));
+      write(root, `dist/${graph}/inspect.mjs`, fsSync.readFileSync(current, "utf8"));
       const options = { distDir: path.join(root, "dist"), sourceDir: root, inventory };
       if (runtime === "missing") {
         fsSync.unlinkSync(current);
