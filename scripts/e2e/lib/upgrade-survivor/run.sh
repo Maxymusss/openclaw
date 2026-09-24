@@ -1136,7 +1136,16 @@ const text = fs.readFileSync(process.argv[2], "utf8");
 const result = JSON.parse(text.slice(text.indexOf("{")));
 assert.equal(result.status, "skipped", "second update was not a clean no-op");
 assert.equal(result.reason, "already-current", "second update was not already current");
-assert.deepEqual(result.steps, [], "second update executed package mutations");
+// Isolated state/config paths intentionally decline host service management.
+// The updater records that decision as an advisory, not an executed install.
+assert(Array.isArray(result.steps), "second update did not report its steps");
+assert(result.steps.length <= 1 && result.steps.every((step) =>
+  step?.name === "managed-service-reconciliation" &&
+  step.durationMs === 0 && step.exitCode === 0 &&
+  step.advisory?.kind === "recoverable-maintenance" &&
+  typeof step.advisory.message === "string" &&
+  step.advisory.message.startsWith("service management skipped: non-default state dir or config path.")
+), "second update executed package mutations or unexpected maintenance");
 assert(!result.nextAction, "second update requested repair");
 console.log("Second update: already-current, no package mutations or repair required.");
 NODE
