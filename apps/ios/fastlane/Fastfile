@@ -55,6 +55,7 @@ REQUIRED_IOS_SCREENSHOT_NAMES = RELEASE_IOS_SCREENSHOT_TESTS.map { |entry| entry
 IOS_SCREENSHOT_TEST_TIMEOUT_SECONDS = 180
 IOS_SCREENSHOT_XCARGS = [
   "-allowProvisioningUpdates",
+  "-parallel-testing-enabled NO",
   "-test-timeouts-enabled YES",
   "-default-test-execution-time-allowance #{IOS_SCREENSHOT_TEST_TIMEOUT_SECONDS}",
   "-maximum-test-execution-time-allowance #{IOS_SCREENSHOT_TEST_TIMEOUT_SECONDS}"
@@ -207,7 +208,9 @@ def available_simulator_devices
     UI.user_error!("Failed to list simulator devices: #{detail}")
   end
 
-  JSON.parse(stdout).fetch("devices").values.flatten
+  JSON.parse(stdout).fetch("devices").flat_map do |runtime, devices|
+    devices.map { |device| device.merge("runtime" => runtime) }
+  end
 rescue JSON::ParserError => e
   UI.user_error!("Invalid JSON from simctl device list: #{e.message}")
 end
@@ -1867,7 +1870,8 @@ end
 
 def run_screenshot_xcodebuild!(arguments, log_path:)
   started = Process.clock_gettime(Process::CLOCK_MONOTONIC)
-  command = "set -o pipefail; #{shell_join(["xcodebuild", *arguments])} 2>&1 | tee #{Shellwords.escape(log_path)} | xcbeautify"
+  command = "source #{Shellwords.escape(File.join(repo_root, "scripts", "lib", "swift-toolchain.sh"))}; " \
+    "#{shell_join(["run_apple_command_logged", log_path, "xcodebuild", *arguments])}"
   sh("/bin/bash", "-c", command)
 ensure
   elapsed = Process.clock_gettime(Process::CLOCK_MONOTONIC) - started
@@ -1899,6 +1903,14 @@ def capture_release_ios_screenshot!(
   FileUtils.rm_rf(result_bundle_path)
   FileUtils.mkdir_p(File.dirname(result_bundle_path))
   begin
+    installed_apps = sh(
+      "/bin/bash", "-o", "pipefail", "-c",
+      "#{shell_join(["xcrun", "simctl", "listapps", device_udid])} | /usr/bin/plutil -convert json -o - -",
+      log: false
+    )
+    if JSON.parse(installed_apps).key?(APP_STORE_APP_IDENTIFIER)
+      sh("xcrun", "simctl", "uninstall", device_udid, APP_STORE_APP_IDENTIFIER)
+    end
     # Keep independent XCTest sessions without Snapshot rebooting the simulator or
     # querying build settings again just to choose its log filename.
     run_screenshot_xcodebuild!(
@@ -2487,8 +2499,9 @@ platform :ios do
     project = File.join(ios_root, "OpenClaw.xcodeproj")
     simulator_devices = available_simulator_devices
     selected_devices = devices.map do |name|
-      simulator_devices.find { |device| device.fetch("name") == name } ||
-        UI.user_error!("Screenshot simulator '#{name}' is unavailable.")
+      simulator_devices.select { |device| device.fetch("name") == name }.max_by do |device|
+        Gem::Version.new(device.fetch("runtime").delete_prefix("com.apple.CoreSimulator.SimRuntime.iOS-").tr("-", "."))
+      end || UI.user_error!("Screenshot simulator '#{name}' is unavailable.")
     end
     run_screenshot_xcodebuild!(
       [
@@ -2504,7 +2517,7 @@ platform :ios do
     snapshot_cache_directory = File.expand_path("~/Library/Caches/tools.fastlane")
     FileUtils.mkdir_p(File.join(snapshot_cache_directory, "screenshots"))
     File.write(File.join(snapshot_cache_directory, "language.txt"), "en-US")
-    File.write(File.join(snapshot_cache_directory, "locale.txt"), "en_US")
+    File.write(File.join(snapshot_cache_directory, "locale.txt"), "")
     File.write(File.join(snapshot_cache_directory, "snapshot-launch_arguments.txt"), "--openclaw-screenshot-mode")
     FileUtils.mkdir_p(File.join(output_directory, "en-US"))
     FileUtils.rm_f(Dir[File.join(output_directory, "*", "*.png")])
