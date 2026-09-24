@@ -19,42 +19,52 @@ import { createPreparedConfiguredRuntimeModelLookup } from "./model.static-id.js
 
 const provider = "route-compat-fixture";
 const catalogRoute = { api: "openai-responses", baseUrl: "https://catalog.example/v1" } as const;
+const anthropicRoute = { api: "anthropic-messages", baseUrl: "https://catalog.example" } as const;
 const customRoute = { ...catalogRoute, baseUrl: "https://custom.example/v1" };
 const catalogCompat: ModelCompatConfig = { codeMode: "preferred", supportsTemperature: false };
-const catalogModel = {
-  ...makeProviderModelFixture({
-    provider,
-    id: "model",
-    ...catalogRoute,
-    compat: catalogCompat,
-  }),
-  contextWindow: 16_000,
-};
-const { api: _api, baseUrl: _baseUrl, provider: _provider, ...catalogDefinition } = catalogModel;
 const configuredModel: ModelDefinitionConfig = {
-  id: catalogModel.id,
+  id: "model",
   name: "Configured model",
   reasoning: false,
   input: ["text"],
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
   maxTokens: 4096,
 };
-const metadataSnapshot = createPluginMetadataSnapshotFixture({
-  plugins: [
-    {
-      id: provider,
-      providers: [provider],
-      modelCatalog: {
-        discovery: { [provider]: "static" },
-        providers: { [provider]: { ...catalogRoute, models: [catalogDefinition] } },
-      },
-    },
-  ],
-});
 
-function createResolutionOptions(config: OpenClawConfig) {
+function createCatalogFixture(
+  route: { api: NonNullable<ModelProviderConfig["api"]>; baseUrl: string } = catalogRoute,
+) {
+  const catalogModel = {
+    ...makeProviderModelFixture({
+      provider,
+      id: configuredModel.id,
+      ...route,
+      compat: catalogCompat,
+    }),
+    contextWindow: 16_000,
+  };
+  const { api: _api, baseUrl: _baseUrl, provider: _provider, ...catalogDefinition } = catalogModel;
+  const metadataSnapshot = createPluginMetadataSnapshotFixture({
+    plugins: [
+      {
+        id: provider,
+        providers: [provider],
+        modelCatalog: {
+          discovery: { [provider]: "static" },
+          providers: { [provider]: { ...route, models: [catalogDefinition] } },
+        },
+      },
+    ],
+  });
+  return { route, catalogModel, metadataSnapshot };
+}
+
+function createResolutionOptions(
+  config: OpenClawConfig,
+  { route, catalogModel, metadataSnapshot }: ReturnType<typeof createCatalogFixture>,
+) {
   const stores = createEmptyAgentDiscoveryStores();
-  stores.modelRegistry.registerProvider(provider, { ...catalogRoute, models: [catalogModel] });
+  stores.modelRegistry.registerProvider(provider, { ...route, models: [catalogModel] });
   const configuredRuntimeModels = [{ provider, modelId: catalogModel.id, model: catalogModel }];
   const preparedModelRuntime: PreparedModelRuntimeSnapshot = {
     catalogOwner: undefined,
@@ -81,12 +91,38 @@ function createResolutionOptions(config: OpenClawConfig) {
 describe("model route compatibility", () => {
   const cases: Array<{
     name: string;
+    catalog?: Parameters<typeof createCatalogFixture>[0];
     route: Pick<ModelProviderConfig, "api" | "baseUrl">;
     modelRoute?: Pick<ModelDefinitionConfig, "api" | "baseUrl">;
     authored: ModelCompatConfig | undefined;
     expected: ModelCompatConfig | undefined;
+    expectedBaseUrl?: string;
   }> = [
     { name: "catalog", route: catalogRoute, authored: undefined, expected: catalogCompat },
+    {
+      name: "Anthropic versioned catalog endpoint",
+      catalog: anthropicRoute,
+      route: { ...anthropicRoute, baseUrl: `${anthropicRoute.baseUrl}/v1` },
+      authored: undefined,
+      expected: catalogCompat,
+      expectedBaseUrl: anthropicRoute.baseUrl,
+    },
+    {
+      name: "Anthropic versioned catalog endpoint with trailing slash",
+      catalog: anthropicRoute,
+      route: { ...anthropicRoute, baseUrl: `${anthropicRoute.baseUrl}/v1/` },
+      authored: undefined,
+      expected: catalogCompat,
+      expectedBaseUrl: anthropicRoute.baseUrl,
+    },
+    {
+      name: "Anthropic custom endpoint",
+      catalog: anthropicRoute,
+      route: { ...anthropicRoute, baseUrl: "https://custom.example/v1" },
+      authored: undefined,
+      expected: undefined,
+      expectedBaseUrl: "https://custom.example",
+    },
     {
       name: "normalized catalog endpoint",
       route: { ...catalogRoute, baseUrl: `${catalogRoute.baseUrl}/` },
@@ -128,7 +164,9 @@ describe("model route compatibility", () => {
   ];
   it.each(cases)(
     "keeps $name capabilities bound to their route",
-    async ({ route, modelRoute, authored, expected }) => {
+    async ({ catalog, route, modelRoute, authored, expected, expectedBaseUrl }) => {
+      const fixture = createCatalogFixture(catalog);
+      const { catalogModel, metadataSnapshot } = fixture;
       await withPluginRuntimeGenerationScope({ metadataSnapshot }, async () => {
         const source: OpenClawConfig = {
           models: {
@@ -152,11 +190,14 @@ describe("model route compatibility", () => {
         // Both config-file loads and callers with already normalized inline rows use this resolver.
         for (const config of [source, materialized]) {
           const resolved = await resolveModelAsync(provider, catalogModel.id, undefined, config, {
-            ...createResolutionOptions(config),
+            ...createResolutionOptions(config, fixture),
             skipProviderRuntimeHooks: true,
           });
           expect(resolved.error).toBeUndefined();
           const configSource = config === source ? "source" : "materialized";
+          if (expectedBaseUrl !== undefined) {
+            expect.soft(resolved.model?.baseUrl, configSource).toBe(expectedBaseUrl);
+          }
           const compat = extractModelCompat(resolved.model);
           expect.soft(compat?.codeMode, configSource).toBe(expected?.codeMode);
           expect
@@ -182,32 +223,72 @@ describe("model route compatibility", () => {
     },
   );
 
-  it("keeps a discovered route's capabilities instead of borrowing the static route's flags", async () => {
-    await withPluginRuntimeGenerationScope({ metadataSnapshot }, async () => {
-      const config: OpenClawConfig = {
-        models: {
-          providers: {
-            [provider]: { ...customRoute, models: [configuredModel] },
+  const discoveredCompat: ModelCompatConfig = { codeMode: "capable" };
+  it.each([
+    {
+      name: "retained discovered route",
+      providerOnly: false,
+      route: customRoute,
+      discoveredRoute: customRoute,
+      expected: discoveredCompat,
+    },
+    {
+      name: "configured catalog route",
+      providerOnly: false,
+      route: catalogRoute,
+      discoveredRoute: customRoute,
+      expected: catalogCompat,
+    },
+    {
+      name: "provider-only catalog route",
+      providerOnly: true,
+      route: catalogRoute,
+      discoveredRoute: customRoute,
+      expected: catalogCompat,
+    },
+    {
+      name: "same-route discovery refresh",
+      providerOnly: false,
+      route: catalogRoute,
+      discoveredRoute: catalogRoute,
+      expected: { ...catalogCompat, ...discoveredCompat },
+    },
+  ])(
+    "keeps capabilities from the $name when discovery is preferred",
+    async ({ route, discoveredRoute, expected, providerOnly }) => {
+      const fixture = createCatalogFixture();
+      const { catalogModel, metadataSnapshot } = fixture;
+      await withPluginRuntimeGenerationScope({ metadataSnapshot }, async () => {
+        const source: OpenClawConfig = {
+          models: {
+            providers: {
+              [provider]: { ...route, models: providerOnly ? [] : [configuredModel] },
+            },
           },
-        },
-      };
-      const discoveredCompat: ModelCompatConfig = { codeMode: "capable" };
-      const resolved = await resolveModelAsync(provider, catalogModel.id, undefined, config, {
-        ...createResolutionOptions(config),
-        authProfileMode: "api_key",
-        runtimeHooks: {
-          ...resolveRuntimeHooks({ skipProviderRuntimeHooks: true }),
-          shouldPreferProviderRuntimeResolvedModel: () => true,
-          runProviderDynamicModel: () => ({
-            ...catalogModel,
-            ...customRoute,
-            compat: discoveredCompat,
-          }),
-        },
+        };
+        const materialized = materializeRuntimeConfig(source, {
+          manifestRegistry: metadataSnapshot.manifestRegistry,
+        });
+        for (const config of [source, materialized]) {
+          const resolved = await resolveModelAsync(provider, catalogModel.id, undefined, config, {
+            ...createResolutionOptions(config, fixture),
+            authProfileMode: "api_key",
+            runtimeHooks: {
+              ...resolveRuntimeHooks({ skipProviderRuntimeHooks: true }),
+              shouldPreferProviderRuntimeResolvedModel: () => true,
+              runProviderDynamicModel: () => ({
+                ...catalogModel,
+                ...discoveredRoute,
+                compat: discoveredCompat,
+              }),
+            },
+          });
+          const configSource = config === source ? "source" : "materialized";
+          expect(resolved.error).toBeUndefined();
+          expect.soft(resolved.model?.baseUrl, configSource).toBe(route.baseUrl);
+          expect.soft(resolved.model?.compat, configSource).toEqual(expected);
+        }
       });
-      expect(resolved.error).toBeUndefined();
-      expect(resolved.model?.baseUrl).toBe(customRoute.baseUrl);
-      expect(resolved.model?.compat).toEqual(discoveredCompat);
-    });
-  });
+    },
+  );
 });

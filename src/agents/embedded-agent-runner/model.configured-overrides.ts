@@ -598,7 +598,19 @@ export function applyConfiguredProviderOverrides(params: {
     resolvedMaxTokens,
     contextWindow,
   );
-  const catalogModel = params.staticCatalogModel ?? discoveredModel;
+  let catalogModel = params.staticCatalogModel ?? discoveredModel;
+  let hasCatalogOwnedModel =
+    configuredStaticCatalogModel !== undefined || discoveredModel.maxTokensSource !== "configured";
+  if (
+    !params.staticCatalogModel &&
+    !modelTransportRoutesMatch(discoveredModel, resolvedTransport)
+  ) {
+    const staticCatalogModel = configuredStaticCatalogModel ?? params.getStaticCatalogModel?.();
+    if (staticCatalogModel && modelTransportRoutesMatch(staticCatalogModel, resolvedTransport)) {
+      catalogModel = staticCatalogModel;
+      hasCatalogOwnedModel = true;
+    }
+  }
   const catalogRoute = {
     api: catalogModel.api ?? configuredStaticCatalogModel?.api,
     baseUrl: catalogModel.baseUrl ?? configuredStaticCatalogModel?.baseUrl,
@@ -610,8 +622,6 @@ export function applyConfiguredProviderOverrides(params: {
       : undefined,
     catalogModel.compat,
   );
-  const hasCatalogOwnedModel =
-    configuredStaticCatalogModel !== undefined || discoveredModel.maxTokensSource !== "configured";
   const resolvedCompat = resolveCatalogOwnedModelCompat({
     ...(hasCatalogOwnedModel
       ? {
