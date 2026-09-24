@@ -6,6 +6,8 @@ proof_repo="$(cd "$2" && pwd)"
 output="$3"
 baseline="$4"
 candidate="$5"
+device_family="${7:-iPhone}"
+[[ "$device_family" == iPhone || "$device_family" == iPad ]]
 stages=(before after)
 if [[ "${6:-both}" != both ]]; then
   [[ "$6" == before || "$6" == after ]]
@@ -42,12 +44,13 @@ xcrun simctl help io > "$output/simctl-io-contract.txt"
 node -e '
 const fs=require("node:fs");
 const runtimes=Object.entries(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).devices);
+const family=process.argv[2];
 for(const [runtime,devices] of runtimes){
- const phone=devices.find(d=>d.isAvailable&&d.name==="iPhone 17 Pro")??devices.find(d=>d.isAvailable&&d.name.startsWith("iPhone"));
- if(phone){console.log(phone.name);console.log(runtime);process.exit(0);}
+ const device=devices.find(d=>d.isAvailable&&d.name.startsWith(family));
+ if(device){console.log(device.name);console.log(runtime);process.exit(0);}
 }
-throw new Error("No available iPhone simulator");
-' "$scratch/devices.json" > "$scratch/device.txt"
+throw new Error(`No available ${family} simulator`);
+' "$scratch/devices.json" "$device_family" > "$scratch/device.txt"
 device="$(sed -n '1p' "$scratch/device.txt")"
 runtime="$(sed -n '2p' "$scratch/device.txt")"
 printf 'Baseline: %s\nCandidate: %s\nDevice: %s\nRuntime: %s\n' \
@@ -76,7 +79,7 @@ for stage in "${stages[@]}"; do
     xcodegen generate --spec apps/ios/project.yml --project apps/ios
   ) > "$output/$stage-setup.log" 2>&1
   git -C "$checkout" diff --exit-code -- apps/ios/Sources apps/shared/OpenClawKit/Sources
-  simulator="$(xcrun simctl create "OpenClaw narration $stage $$" "$device" "$runtime")"
+  simulator="$(xcrun simctl create "OpenClaw narration $device_family $stage $$" "$device" "$runtime")"
   xcrun simctl boot "$simulator"
   xcrun simctl bootstatus "$simulator" -b
   xcrun simctl status_bar "$simulator" override --time 09:41 --batteryState charged --batteryLevel 100
