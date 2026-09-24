@@ -3,8 +3,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
-  QA_CODEX_OAUTH_PROFILE_ID,
-  QA_OPENAI_API_KEY_PROFILE_ID,
   resolveCodexAuthProfile,
   seedAuthProfiles,
   snapshotAuthProfiles,
@@ -45,8 +43,7 @@ describe("codex plugin lifecycle: cold install", () => {
 
     expect(missing.status).toBe("repair-required");
     expect(missing.remediation).toBe(CODEX_PLUGIN_LIFECYCLE_MESSAGES.missingPlugin);
-    expect(missing.selectedAuthProfileId).toBe(QA_CODEX_OAUTH_PROFILE_ID);
-    expect(missing.selectedAuthProfileId).not.toBe(QA_OPENAI_API_KEY_PROFILE_ID);
+    expect(missing.selectedAuthProfileId).toBe("openai:qa-oauth");
 
     await installCodexPluginFixture(agentDir);
     const repaired = evaluateCodexPluginLifecycle({
@@ -71,8 +68,7 @@ describe("codex plugin lifecycle: OAuth-only with mixed profiles", () => {
     if (selection.status !== "ready") {
       throw new Error(selection.remediation);
     }
-    expect(selection.profileId).toBe(QA_CODEX_OAUTH_PROFILE_ID);
-    expect(selection.profileId).not.toBe(QA_OPENAI_API_KEY_PROFILE_ID);
+    expect(selection.profileId).toBe("openai:qa-oauth");
     expect(selection.provider).toBe("openai");
     expect(selection.mode).toBe("oauth");
   });
@@ -117,7 +113,7 @@ describe("codex plugin lifecycle: doctor migration safety matrix", () => {
       });
 
       expect(result.status).toBe("ready");
-      expect(result.selectedAuthProfileId).toBe(QA_CODEX_OAUTH_PROFILE_ID);
+      expect(result.selectedAuthProfileId).toBe("openai:qa-oauth");
       expect(result.tokenRoute).toBe("codex-oauth");
       expect(result.removedRuntimePins).toEqual(expectedRemovedRuntimePins);
     },
