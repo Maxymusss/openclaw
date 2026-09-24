@@ -15,7 +15,11 @@ import {
   publishTrackedCacheUpdate,
   sessionEntryCaches,
 } from "./session-accessor.sqlite-entry-cache-state.js";
-import type { SessionSharingEntry } from "./session-accessor.sqlite-entry-cache.types.js";
+import {
+  createSessionEntryCreationOperation,
+  type SessionEntryCreationOperation,
+  type SessionSharingEntry,
+} from "./session-accessor.sqlite-entry-cache.types.js";
 import { readExactSessionEntryRow } from "./session-accessor.sqlite-entry-read.js";
 import { listSessionMembersInDatabase } from "./session-sharing-store.kernel.js";
 import type { SessionEntry } from "./types.js";
@@ -26,8 +30,6 @@ type CommittedSessionSharingFacts = {
   placeholder?: SessionEntryPlaceholder;
   membership: ReadonlySet<string>;
 };
-const creationBrand = Symbol("sessionEntryCreation");
-export type SessionEntryCreationOperation = Readonly<{ [creationBrand]: true }>;
 type CreationDatabase =
   | {
       kind: "native";
@@ -176,7 +178,7 @@ export async function withSessionEntryCreationPublication<T>(
   ),
   run: (operation: SessionEntryCreationOperation) => Promise<T>,
 ): Promise<T> {
-  const operation: SessionEntryCreationOperation = Object.freeze({ [creationBrand]: true });
+  const operation = createSessionEntryCreationOperation();
   const creation: CreationRecord = {
     agentId: params.agentId,
     operation,

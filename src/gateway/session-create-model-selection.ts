@@ -30,8 +30,10 @@ import {
   prepareSessionPatchModelSelection,
   resolveSessionPatchModelSelection,
 } from "./server-methods/sessions-patch-model-selection.js";
-import type { CreateGatewaySessionParams } from "./session-create-service.types.js";
-import type { GatewaySessionTitleModelSelection } from "./session-lifecycle-preparation.js";
+import type {
+  CreateGatewaySessionParams,
+  GatewaySessionTitleModelSelection,
+} from "./session-create-service.types.js";
 
 const loadSessionAuthRuntime = createLazyRuntimeModule(
   () => import("../agents/auth-profiles/session-override.js"),

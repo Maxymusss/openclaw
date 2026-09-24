@@ -54,7 +54,6 @@ export {
   retainSessionEntryWorkerPublication,
   withSessionEntryCreationPublication,
   runWithSessionEntryCreationPublication,
-  type SessionEntryCreationOperation,
   type SessionEntryPlaceholder,
   type SessionEntryReplacementPublication,
   type SessionTranscriptInitializationPublication,

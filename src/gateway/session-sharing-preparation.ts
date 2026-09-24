@@ -6,12 +6,12 @@ import {
   assertSessionEntryCreationPublication,
   isPreparedSessionSharingChange,
   readSessionEntryCreationTransition,
-  type SessionEntryCreationOperation,
   type SessionEntryPlaceholder,
   projectSessionSharingEntry,
   readCommittedIncognitoSessionSharing,
   retainPreparedSessionSharingFacts,
 } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
+import type { SessionEntryCreationOperation } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { readSessionEntriesFromStoreInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import { captureSessionStoreReadCandidate } from "../config/sessions/session-store-read-candidates.js";
 import { prepareSessionStoreTargetInventory } from "../config/sessions/session-store-target-inventory.js";
@@ -92,6 +92,7 @@ export async function prepareSessionMutationFacts(
 ): Promise<SessionFactsRead<PreparedSessionMutationFacts>> {
   const assertRoutingCurrent = captureSessionMutationRouting(params.cfg);
   const { canonicalKey, agentId } = resolveSessionStoreIdentity(params);
+  const incognito = isIncognitoSessionKey(canonicalKey);
   const releases: Array<() => void> = [];
   let active = true;
   let beforeDiscovery = params.storageReady !== undefined;
@@ -119,8 +120,8 @@ export async function prepareSessionMutationFacts(
   };
   const changed = (change: SessionRowChange) => {
     if ("all" in change) {
-      // Writer promotion settles registry publications before the first discovery snapshot.
-      if (beforeDiscovery && change.scope === "stores") {
+      // RAM has its original handle/resource fence; durable discovery waits for writer promotion.
+      if (change.scope === "stores" && (beforeDiscovery || incognito)) {
         return;
       }
       if (
@@ -205,15 +206,20 @@ export async function prepareSessionMutationFacts(
       }
     }),
   );
-  try {
-    if (params.storageReady) {
+  if (params.storageReady) {
+    try {
       await params.storageReady;
-      beforeDiscovery = false;
-      assertActive();
+    } catch (error) {
+      release();
+      throw error;
     }
+    beforeDiscovery = false;
+  }
+  try {
+    assertActive();
     let storageTarget: SessionFactsRead<PreparedSessionMutationFacts>["storageTarget"];
     let readFacts = () => facts!;
-    if (isIncognitoSessionKey(canonicalKey)) {
+    if (incognito) {
       const storePath = resolveIncognitoOpenClawAgentSqlitePath({ agentId });
       storageTarget = Object.freeze({ agentId, canonicalKey, storePath });
       let database = getOpenIncognitoAgentDatabase(agentId, storePath);

@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
 import {
   createSessionEntryWithTranscript,
-  prepareSessionEntryCreationDatabase,
+  prepareSessionEntryMutationDatabases,
 } from "../config/sessions/session-accessor.entry-mutation.js";
 import { readExactSessionEntryRow } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import { readTranscriptStorageRows } from "../config/sessions/session-accessor.sqlite-read.js";
@@ -39,11 +39,11 @@ it.each([
       const sessionKey = "agent:main:unknown-header";
       const sessionId = "committed-unknown-header";
       const scope = { agentId: "main", storePath: database.path, sessionKey };
-      await using storage = await prepareSessionEntryCreationDatabase(
-        scope,
+      await using storagePreparation = prepareSessionEntryMutationDatabases(
+        [{ scope, assertCurrent: () => {} }],
         Promise.resolve(),
-        () => {},
       );
+      const storage = await storagePreparation.preparations[0]!;
       const prepared = await prepareSessionMutationFacts({
         cfg,
         sessionKey,

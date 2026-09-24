@@ -75,25 +75,24 @@ export async function forkSessionFromParentTranscript(
   return await forkSessionTranscriptFromParent(params);
 }
 
-/** Settle writer promotion before access snapshots, retaining its owner without its FIFO permit. */
-export async function prepareSessionEntryCreationDatabase(
+/** Capture source custody before authority or physical-owner discovery yields. */
+function captureSessionEntryDatabasePreparation(
   scope: SessionAccessScope,
-  ready: Promise<void>,
   assertCurrent: () => void,
   relatedScopes: readonly SessionAccessScope[] = [],
-): Promise<AsyncDisposable & { assertCurrent(): void }> {
-  void ready.catch(() => {});
-  const captured = {
-    ...scope,
-    env: captureSessionTranscriptStorageEnvironment(scope.env ?? process.env),
-  };
+) {
+  const captureScope = (source: SessionAccessScope) => ({
+    ...source,
+    env: Object.freeze(captureSessionTranscriptStorageEnvironment(source.env ?? process.env)),
+  });
+  const captured = captureScope(scope);
   const target = {
     ...captured,
     agentId: captured.agentId ?? resolveAgentIdFromSessionKey(captured.sessionKey),
     storePath: resolveAccessStorePath(captured),
   };
   const shared = captureOpenClawStateWorkerContext({ env: target.env });
-  const candidates = [target, ...relatedScopes].flatMap((related) =>
+  const candidates = [target, ...relatedScopes.map(captureScope)].flatMap((related) =>
     captureSessionStoreReadCandidates(resolveAccessStorePath(related)).map((candidate) => ({
       path: candidate.path,
       physicalPath: candidate.physicalPath,
@@ -139,14 +138,17 @@ export async function prepareSessionEntryCreationDatabase(
     assertCurrent();
     assertSourceCurrent();
   };
+  const unregister = () => {
+    for (const release of releases.splice(0).toReversed()) {
+      release();
+    }
+  };
   const release = async () => {
     active = false;
     try {
       await execution?.release();
     } finally {
-      for (const unregister of releases.splice(0).toReversed()) {
-        unregister();
-      }
+      unregister();
     }
   };
   try {
@@ -164,67 +166,216 @@ export async function prepareSessionEntryCreationDatabase(
         );
       }
     }
-    await ready;
-    assertHeld();
-    const resolved = captureLifecycleDatabaseScope(
-      isMainThread ? await prepareSqliteScope(target) : resolveSqliteScope(target),
-    );
-    assertHeld();
-    const databaseOptions = { ...toDatabaseOptions(resolved), path: resolved.path };
-    if (
-      isMainThread &&
-      supportsOpenClawAgentDatabaseExecution(databaseOptions) &&
-      !hasPreparedNativeSessionDeletion()
-    ) {
+  } catch (error) {
+    active = false;
+    unregister();
+    throw error;
+  }
+  return {
+    assertCurrent: assertSourceCurrent,
+    env: target.env,
+    get execution() {
+      return execution;
+    },
+    assertHeld,
+    release,
+    async resolve() {
+      assertHeld();
+      const resolved = captureLifecycleDatabaseScope(
+        isMainThread ? await prepareSqliteScope(target) : resolveSqliteScope(target),
+      );
+      assertHeld();
+      const options = { ...toDatabaseOptions(resolved), path: resolved.path };
+      if (
+        !isMainThread ||
+        !supportsOpenClawAgentDatabaseExecution(options) ||
+        hasPreparedNativeSessionDeletion()
+      ) {
+        return undefined;
+      }
       const original = candidates.find(
         (candidate) => candidate.path === resolved.path || candidate.physicalPath === resolved.path,
       );
       if (!original) {
         throw new Error("Session creation lost its originally captured database target");
       }
-      const identity = original.identity;
-      execution = captureOpenClawAgentDatabaseExecution(
-        databaseOptions,
-        identity.key.startsWith("file:")
-          ? {
-              expectedIdentity: {
-                kind: "file",
-                physicalIdentity: identity.key.slice("file:".length),
-                nativeLocation: identity.canonicalPath,
-                birthtime: identity.birthtime,
-              },
-            }
-          : { expectedCreationIdentity: identity },
-      );
-      assertHeld();
-      creatingPath = resolved.path;
-      await prepareSessionEntryReplacementDatabase(databaseOptions, assertHeld, execution);
-      const accepted = execution.fileIdentity;
+      return {
+        options,
+        identity: original.identity,
+        key: JSON.stringify([
+          shared.admission.databasePath,
+          shared.admission.identity.key,
+          options.agentId,
+          original.identity.key,
+          original.identity.birthtime,
+        ]),
+      };
+    },
+    begin(path: string, retained: OpenClawAgentDatabaseExecution) {
+      execution = retained;
+      creatingPath = path;
+    },
+    finish(path: string, original: ReturnType<typeof readDatabasePathIdentitySync>) {
+      const accepted = execution?.fileIdentity;
       if (!accepted || typeof accepted.birthtime !== "string") {
         throw new Error("Session creation has no accepted native file identity");
       }
-      preparedPath = resolved.path;
+      preparedPath = path;
       preparedIdentity = {
         key: `file:${accepted.physicalIdentity}`,
-        canonicalPath: identity.canonicalPath,
+        canonicalPath: original.canonicalPath,
         birthtime: accepted.birthtime,
       };
       creatingPath = undefined;
-    }
-    assertHeld();
-    return { assertCurrent: assertSourceCurrent, [Symbol.asyncDispose]: release };
-  } catch (error) {
+    },
+  };
+}
+
+/** Settle every selected writer before any facts snapshot, retaining borrowers without FIFO permits. */
+export function prepareSessionEntryMutationDatabases(
+  targets: readonly {
+    scope: SessionAccessScope;
+    assertCurrent: () => void;
+    relatedScopes?: readonly SessionAccessScope[];
+  }[],
+  ready: Promise<void>,
+) {
+  void ready.catch(() => {});
+  type Capture = ReturnType<typeof captureSessionEntryDatabasePreparation>;
+  type Resolved = NonNullable<Awaited<ReturnType<Capture["resolve"]>>>;
+  type Prepared = Pick<Capture, "assertCurrent" | "execution" | "env">;
+  type Group = {
+    target: Resolved;
+    members: Array<{ index: number; capture: Capture; target: Resolved }>;
+  };
+  const captured = targets.map((target): PromiseSettledResult<Capture> => {
     try {
-      await release();
-    } catch (cleanupError) {
-      throw createSqliteLifecycleAggregateError(
-        [error, cleanupError],
-        "Session preparation and cleanup failed",
-        error,
-      );
+      return {
+        status: "fulfilled",
+        value: captureSessionEntryDatabasePreparation(
+          target.scope,
+          target.assertCurrent,
+          target.relatedScopes,
+        ),
+      };
+    } catch (reason) {
+      return { status: "rejected", reason };
     }
-    throw error;
+  });
+  const promotion = (async () => {
+    await ready;
+    // Registry discovery must finish everywhere before any writer changes its generation.
+    const resolved = await Promise.allSettled(
+      captured.map(async (capture) => {
+        if (capture.status === "rejected") {
+          throw capture.reason;
+        }
+        return await capture.value.resolve();
+      }),
+    );
+    const outcomes: PromiseSettledResult<Prepared>[] = [];
+    const groups = new Map<string, Group>();
+    for (const [index, result] of resolved.entries()) {
+      if (result.status === "rejected") {
+        outcomes[index] = result;
+        continue;
+      }
+      const capture = captured[index]!;
+      if (capture.status !== "fulfilled") {
+        throw new Error("Session database resolution lost its captured source");
+      }
+      const source = capture.value;
+      outcomes[index] = {
+        status: "fulfilled",
+        value: {
+          assertCurrent: source.assertCurrent,
+          env: source.env,
+          get execution() {
+            return source.execution;
+          },
+        },
+      };
+      if (result.value) {
+        const group: Group = groups.get(result.value.key) ?? { target: result.value, members: [] };
+        group.members.push({ index, capture: source, target: result.value });
+        groups.set(result.value.key, group);
+      }
+    }
+    await Promise.all(
+      [...groups.values()].map(async ({ target, members }) => {
+        try {
+          const assertCurrent = () => {
+            for (const { capture } of members) {
+              capture.assertHeld();
+            }
+          };
+          assertCurrent();
+          const identity = target.identity;
+          const execution = captureOpenClawAgentDatabaseExecution(
+            target.options,
+            identity.key.startsWith("file:")
+              ? {
+                  expectedIdentity: {
+                    kind: "file",
+                    physicalIdentity: identity.key.slice("file:".length),
+                    nativeLocation: identity.canonicalPath,
+                    birthtime: identity.birthtime,
+                  },
+                }
+              : { expectedCreationIdentity: identity },
+          );
+          // The physical cohort keeps one native lease; each caller retains its original alias.
+          for (const member of members) {
+            member.capture.begin(member.target.options.path, execution);
+          }
+          await prepareSessionEntryReplacementDatabase(target.options, assertCurrent, execution);
+          for (const member of members) {
+            member.capture.finish(member.target.options.path, member.target.identity);
+          }
+          assertCurrent();
+        } catch (reason) {
+          for (const { index } of members) {
+            outcomes[index] = { status: "rejected", reason };
+          }
+        }
+      }),
+    );
+    return outcomes;
+  })();
+  const preparations = targets.map((_, index) =>
+    promotion.then((outcomes) => {
+      const result = outcomes[index]!;
+      if (result.status === "rejected") {
+        throw result.reason;
+      }
+      result.value.assertCurrent();
+      return result.value;
+    }),
+  );
+  for (const preparation of preparations) {
+    void preparation.catch(() => {});
   }
+  return {
+    preparations,
+    async [Symbol.asyncDispose]() {
+      await promotion.catch(() => {});
+      const released = await Promise.allSettled(
+        captured.flatMap((capture) =>
+          capture.status === "fulfilled" ? [capture.value.release()] : [],
+        ),
+      );
+      const errors = released.flatMap((result) =>
+        result.status === "rejected" ? [result.reason] : [],
+      );
+      if (errors.length) {
+        throw createSqliteLifecycleAggregateError(
+          errors,
+          "Session database preparation cleanup failed",
+          errors[0],
+        );
+      }
+    },
+  };
 }
 
 /**

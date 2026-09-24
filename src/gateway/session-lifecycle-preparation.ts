@@ -1,13 +1,19 @@
+import { expectDefined } from "@openclaw/normalization-core/expect";
 import type { Result } from "@openclaw/normalization-core/result";
 import {
   ErrorCodes,
   errorShape,
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
-import { prepareSessionEntryCreationDatabase } from "../config/sessions/session-accessor.entry-mutation.js";
+import { prepareSessionEntryMutationDatabases } from "../config/sessions/session-accessor.entry-mutation.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { CreateGatewaySessionParams } from "./session-create-service.types.js";
+import { createDeferredCore } from "../shared/deferred.js";
+import { ADMIN_SCOPE } from "./operator-scopes.js";
+import type {
+  CreateGatewaySessionParams,
+  PreparedGatewaySessionLifecycle,
+} from "./session-create-service.types.js";
 import {
   captureSessionMutationRouting,
   prepareSessionMutationFacts,
@@ -18,15 +24,23 @@ import type { GatewaySessionStoreTarget } from "./session-utils-store.types.js";
 export function prepareGatewaySessionLifecycleTargets(params: {
   cfg: OpenClawConfig;
   getCurrentConfig?: () => OpenClawConfig;
-  creation?: { ready: Promise<void>; assertCurrent: () => void };
+  creation?: {
+    ready: Promise<void>;
+    assertCurrent: () => void;
+    selectTargetInLifecycle?: boolean;
+  };
   targets: readonly {
     target: Pick<GatewaySessionStoreTarget, "agentId" | "canonicalKey" | "storePath">;
     entry?: Pick<SessionEntry, "sessionId" | "lifecycleRevision">;
+    storageReady?: Promise<{ assertCurrent(): void }>;
   }[];
 }) {
   const cfg = params.cfg;
+  const creationSelection = params.creation?.selectTargetInLifecycle
+    ? createDeferredCore()
+    : undefined;
   const assertRoutingCurrent = captureSessionMutationRouting(cfg);
-  let preparedDatabase: Awaited<ReturnType<typeof prepareSessionEntryCreationDatabase>> | undefined;
+  let preparedDatabase: { assertCurrent(): void } | undefined;
   const scopes = params.targets.map(({ target }) => ({
     agentId: target.agentId,
     sessionKey: target.canonicalKey,
@@ -36,30 +50,60 @@ export function prepareGatewaySessionLifecycleTargets(params: {
   if (params.creation && !creationScope) {
     throw new Error("Session creation preparation requires its original target");
   }
-  const databasePreparation =
+  const databaseCustody =
     params.creation && creationScope
-      ? prepareSessionEntryCreationDatabase(
-          creationScope,
+      ? prepareSessionEntryMutationDatabases(
+          [
+            {
+              scope: creationScope,
+              assertCurrent: params.creation.assertCurrent,
+              relatedScopes: scopes.slice(1),
+            },
+          ],
           params.creation.ready,
-          params.creation.assertCurrent,
-          scopes.slice(1),
-        ).then((prepared) => {
-          preparedDatabase = prepared;
-        })
+        )
       : undefined;
-  const preparations = params.targets.map(async ({ target, entry }) => {
+  const databasePreparation = databaseCustody?.preparations[0]!.then((prepared) => {
+    preparedDatabase = prepared;
+  });
+  const preparations = params.targets.map(async ({ target, entry, storageReady }, index) => {
+    let preparedStorage: { assertCurrent(): void } | undefined;
+    const targetStorageReady = storageReady?.then((prepared) => {
+      preparedStorage = prepared;
+    });
     const selected = { ...target };
-    const sessionId = entry?.sessionId;
-    const lifecycleRevision = entry?.lifecycleRevision;
+    const originalIdentity = {
+      sessionId: entry?.sessionId,
+      lifecycleRevision: entry?.lifecycleRevision,
+    };
+    const selectOnEntry = index === 0 ? creationSelection : undefined;
+    if (selectOnEntry) {
+      await selectOnEntry.promise;
+      preparedDatabase?.assertCurrent();
+    }
     const facts = await prepareSessionMutationFacts({
       cfg,
       sessionKey: selected.canonicalKey,
       agentId: selected.agentId,
       allowMissing: true,
-      storageReady: databasePreparation,
+      storageReady: targetStorageReady ?? databasePreparation,
     });
+    let sessionId = originalIdentity.sessionId;
+    let lifecycleRevision = originalIdentity.lifecycleRevision;
+    if (selectOnEntry) {
+      try {
+        preparedDatabase?.assertCurrent();
+        const selectedEntry = facts.readCurrent(cfg).target?.entry;
+        sessionId = selectedEntry?.sessionId;
+        lifecycleRevision = selectedEntry?.lifecycleRevision;
+      } catch (error) {
+        facts.release();
+        throw error;
+      }
+    }
     return {
       matchesCurrent(currentConfig: OpenClawConfig) {
+        preparedStorage?.assertCurrent();
         const current = facts.readCurrent(currentConfig).target;
         return (
           facts.storageTarget.agentId === selected.agentId &&
@@ -80,22 +124,92 @@ export function prepareGatewaySessionLifecycleTargets(params: {
   for (const preparation of preparations) {
     void preparation.catch(() => {});
   }
+  const assertCurrent = () => {
+    assertRoutingCurrent(params.getCurrentConfig?.() ?? cfg);
+    preparedDatabase?.assertCurrent();
+  };
   return {
     preparations,
-    assertCurrent: () => {
-      assertRoutingCurrent(params.getCurrentConfig?.() ?? cfg);
-      preparedDatabase?.assertCurrent();
+    assertCurrent,
+    async prepareCreationTargets(isCommitted: () => boolean) {
+      type PreparedTarget = Awaited<(typeof preparations)[number]>;
+      let child: PreparedTarget | undefined;
+      if (creationSelection) {
+        await databasePreparation;
+      } else {
+        child = await expectDefined(preparations[0], "creation target preparation");
+      }
+      const parents = await Promise.all(preparations.slice(1));
+      const assertTargetsCurrent = () => {
+        assertCurrent();
+        const currentConfig = params.getCurrentConfig?.() ?? cfg;
+        if (!isCommitted() && child && !child.matchesCurrent(currentConfig)) {
+          throw new Error("Session changed before creation; retry.");
+        }
+        for (const parent of parents) {
+          if (!parent.matchesCurrent(currentConfig)) {
+            throw new Error("Session changed before creation; retry.");
+          }
+        }
+      };
+      const bindCreation: PreparedTarget["bindCreation"] = (operation) => {
+        expectDefined(child, "selected creation target").bindCreation(operation);
+      };
+      return {
+        assertCurrent: assertTargetsCurrent,
+        bindCreation,
+        async enterCreationLifecycle() {
+          params.creation?.assertCurrent();
+          assertTargetsCurrent();
+          if (creationSelection) {
+            if (!preparedDatabase) {
+              throw new Error("Session creation database preparation has not completed");
+            }
+            preparedDatabase.assertCurrent();
+            creationSelection.resolve();
+            child = await expectDefined(preparations[0], "creation target preparation");
+          }
+          assertTargetsCurrent();
+        },
+      };
     },
     async [Symbol.asyncDispose]() {
+      creationSelection?.reject(new Error("Session creation ended before target selection"));
       for (const result of await Promise.allSettled(preparations)) {
         if (result.status === "fulfilled") {
           result.value.release();
         }
       }
       await databasePreparation?.catch(() => {});
-      await preparedDatabase?.[Symbol.asyncDispose]();
+      await databaseCustody?.[Symbol.asyncDispose]();
     },
   };
+}
+
+export function resolveSessionCreateIncognitoIntentError(params: {
+  incognito: boolean;
+  parentIncognito: boolean;
+  parentSessionKey: string | undefined;
+  targetKey: string | undefined;
+  requestingOperatorScopes: readonly string[] | undefined;
+}): ErrorShape | undefined {
+  if (
+    params.incognito &&
+    params.requestingOperatorScopes !== undefined &&
+    !params.requestingOperatorScopes.includes(ADMIN_SCOPE)
+  ) {
+    return errorShape(
+      ErrorCodes.INVALID_REQUEST,
+      `incognito sessions require gateway scope: ${ADMIN_SCOPE}`,
+    );
+  }
+  if (params.incognito && params.parentSessionKey && !params.parentIncognito) {
+    return errorShape(ErrorCodes.INVALID_REQUEST, "incognito sessions cannot have durable parents");
+  }
+  if (params.parentIncognito && params.targetKey) {
+    return errorShape(ErrorCodes.INVALID_REQUEST, "incognito sessions are web-only");
+  }
+  return undefined;
 }
 
 export function resolveSessionCreateLifecycleIntentError(
@@ -156,33 +270,6 @@ export function resolveSessionCreateChildIntentError(
   }
   return undefined;
 }
-
-export type GatewaySessionTitleModelSelection = Pick<
-  SessionEntry,
-  "agentRuntimeOverride" | "authProfileOverride" | "modelOverride" | "providerOverride"
->;
-
-export type PreparedGatewaySessionLifecycle = {
-  spawnedCwd?: string;
-  sessionRoot?: string;
-  worktree?: NonNullable<SessionEntry["worktree"]>;
-  repositoryWorkspaceId?: string;
-  pendingWorktree?: SessionEntry["pendingWorktree"];
-  /** Reacquire source custody only around the final persistence operation. */
-  withCommit?: <T>(run: (assertSourceCurrent: () => void) => Promise<T>) => Promise<T>;
-  rollback?: () => Promise<void>;
-};
-
-export type PrepareGatewaySessionLifecycle = (target: {
-  agentId: string;
-  entry?: SessionEntry;
-  key: string;
-  storePath: string;
-  titleModelSelection?: GatewaySessionTitleModelSelection | null;
-  projectId?: string;
-  /** Inherited or existing policy, resolved while the creation owner holds lifecycle custody. */
-  sandboxRequired?: boolean;
-}) => Promise<Result<PreparedGatewaySessionLifecycle, ErrorShape>>;
 
 /** Bind prepared workspace facts and consume setup intent only after successful preparation. */
 export function projectPreparedSessionWorkspace(

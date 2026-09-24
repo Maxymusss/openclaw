@@ -10,7 +10,7 @@ import type {
   SessionTranscriptTurnMutationResult,
 } from "./goals-operations.types.js";
 import type { SessionLifecycleStoreTarget } from "./session-accessor.lifecycle-types.js";
-import type { SessionEntryCreationOperation } from "./session-accessor.sqlite-entry-cache.js";
+import type { SessionEntryCreationOperation } from "./session-accessor.sqlite-entry-cache.types.js";
 import type { SessionOwnerAssignment } from "./session-entry-provenance.js";
 import type {
   SessionLifecycleRevisionExpectation,

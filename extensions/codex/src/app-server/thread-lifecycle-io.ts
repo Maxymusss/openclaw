@@ -727,6 +727,7 @@ export async function startFreshCodexThread(
       : {}),
     lifecycle: {
       action: "started",
+      ...(preserveExistingBinding ? { preserveExistingBinding: true as const } : {}),
       ...(rotatedContextEngineBinding ? { rotatedContextEngineBinding: true } : {}),
     },
   };

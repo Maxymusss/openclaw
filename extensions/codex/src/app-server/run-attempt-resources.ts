@@ -285,49 +285,57 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       ...(parentSession?.sessionId === params.sessionId
         ? { lifecycleRevision: parentSession.lifecycleRevision }
         : {}),
-      binding: state.thread,
+      binding: thread,
     });
     const { bindingStore, bindingIdentity } = connection;
-    const submissionStore: CodexNativeSubagentSubmissionStore | undefined = historyOwner
-      ? {
-          assertCurrent: () => {
-            const current = bindingStore.read(bindingIdentity);
-            if (!current || !matchesCodexNativeSubagentSubmissionBinding(current, historyOwner)) {
-              throw new Error("Native submission binding is no longer current.");
-            }
-            if (historyOwner.lifecycleRevision && sessionKey && storePath) {
-              const currentSession = getSessionEntry({
-                agentId: sessionAgentId,
-                sessionKey,
-                storePath,
-                readConsistency: "latest",
-                hydrateSkillPromptRefs: false,
-              });
-              if (currentSession?.lifecycleRevision !== historyOwner.lifecycleRevision) {
-                throw new Error("Native submission session lifecycle is no longer current.");
-              }
-            }
-          },
-          read: () => bindingStore.readNativeSubagentSubmissions(bindingIdentity, historyOwner),
-          record: (receipt, assertCurrent) =>
-            bindingStore.mutate(
-              bindingIdentity,
-              { kind: "record-native-subagent-submission", owner: historyOwner, receipt },
-              assertCurrent,
-            ),
-          consume: (receipt, assertCurrent) =>
-            bindingStore.mutate(
-              bindingIdentity,
-              { kind: "consume-native-subagent-submission", owner: historyOwner, receipt },
-              assertCurrent,
-            ),
+    const assertParentSessionCurrent = () => {
+      if (historyOwner?.lifecycleRevision && sessionKey && storePath) {
+        const currentSession = getSessionEntry({
+          agentId: sessionAgentId,
+          sessionKey,
+          storePath,
+          readConsistency: "latest",
+          hydrateSkillPromptRefs: false,
+        });
+        if (currentSession?.lifecycleRevision !== historyOwner.lifecycleRevision) {
+          throw new Error("Native submission session lifecycle is no longer current.");
         }
-      : undefined;
+      }
+    };
+    const submissionStore: CodexNativeSubagentSubmissionStore | undefined =
+      historyOwner && thread.lifecycle.preserveExistingBinding !== true
+        ? {
+            assertCurrent: () => {
+              const current = bindingStore.read(bindingIdentity);
+              if (!current || !matchesCodexNativeSubagentSubmissionBinding(current, historyOwner)) {
+                throw new Error("Native submission binding is no longer current.");
+              }
+              assertParentSessionCurrent();
+            },
+            read: () => bindingStore.readNativeSubagentSubmissions(bindingIdentity, historyOwner),
+            record: (receipt, assertCurrent) =>
+              bindingStore.mutate(
+                bindingIdentity,
+                { kind: "record-native-subagent-submission", owner: historyOwner, receipt },
+                assertCurrent,
+              ),
+            consume: (receipt, assertCurrent) =>
+              bindingStore.mutate(
+                bindingIdentity,
+                { kind: "consume-native-subagent-submission", owner: historyOwner, receipt },
+                assertCurrent,
+              ),
+          }
+        : undefined;
     const assertRegistrationCurrent = () => {
       runAbortController.signal.throwIfAborted();
       params.hostCapabilities.assertActive();
       connection.assertCurrent();
-      submissionStore?.assertCurrent();
+      if (submissionStore) {
+        submissionStore.assertCurrent();
+      } else {
+        assertParentSessionCurrent();
+      }
       thread.liveThreadOwnership?.assertCurrent();
       if (
         generation !== nativeSubagentMonitorGeneration ||

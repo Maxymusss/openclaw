@@ -15,3 +15,11 @@ export type SessionSharingEntry = Pick<
   | "createdActor"
   | "sandbox"
 >;
+
+const creationBrand = Symbol("sessionEntryCreation");
+export type SessionEntryCreationOperation = Readonly<{ [creationBrand]: true }>;
+
+/** Allocate an opaque token; the publication owner's WeakMap alone grants live custody. */
+export function createSessionEntryCreationOperation(): SessionEntryCreationOperation {
+  return Object.freeze({ [creationBrand]: true });
+}

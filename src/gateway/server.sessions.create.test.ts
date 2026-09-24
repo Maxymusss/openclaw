@@ -5774,7 +5774,7 @@ test("sessions.create reset-in-place preserves the node creation stamp", async (
       client: {
         connect: { scopes: ["operator.write"] },
         authenticatedUserProfile: {
-          profileId: "profile-resetter",
+          profileId: ensureProfileForEmail("session-resetter@example.test").id,
           displayName: null,
           hasAvatar: false,
           updatedAt: 1,
@@ -5823,7 +5823,7 @@ test("sessions.create adopting an existing key does not restamp node provenance"
         client: {
           connect: { scopes: ["operator.write"] },
           authenticatedUserProfile: {
-            profileId: "profile-adopter",
+            profileId: ensureProfileForEmail("session-adopter@example.test").id,
             displayName: null,
             hasAvatar: false,
             updatedAt: 1,
@@ -5872,7 +5872,7 @@ test("sessions.create replays an identical creation once and rejects conflicting
       scopes: ["operator.write", "operator.admin"],
       device: { id: "control-ui-device" },
     },
-    authenticatedUserProfile: { profileId: "profile-owner" },
+    authenticatedUserProfile: { profileId: ensureProfileForEmail("replay@owner.test").id },
   };
   const params = {
     agentId: "main",
@@ -5954,7 +5954,7 @@ test("sessions.create replays an identical creation once and rejects conflicting
 
     const differentOwner = await request(params, {
       ...client,
-      authenticatedUserProfile: { profileId: "profile-other" },
+      authenticatedUserProfile: { profileId: ensureProfileForEmail("other@owner.test").id },
     });
     expect(differentOwner.ok).toBe(true);
     expect(differentOwner.payload?.key).not.toBe(first.payload?.key);

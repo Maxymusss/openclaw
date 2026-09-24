@@ -41,10 +41,8 @@ import {
   patchSessionEntryCore,
   resolveSessionEntryAccessTarget,
 } from "../config/sessions/session-accessor.js";
-import {
-  runWithSessionEntryCreationPublication,
-  type SessionEntryCreationOperation,
-} from "../config/sessions/session-accessor.sqlite-entry-cache.js";
+import { runWithSessionEntryCreationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache.js";
+import type { SessionEntryCreationOperation } from "../config/sessions/session-accessor.sqlite-entry-cache.types.js";
 import { createSessionDiffBaselineCaptureClaim } from "../config/sessions/session-diff-baseline-capture.js";
 import { projectPublicSessionEntry } from "../config/sessions/session-entry-projection.js";
 import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
@@ -101,12 +99,13 @@ import type {
   CreateGatewaySessionParams,
   CreateGatewaySessionResult,
   GatewaySessionCommitResult,
+  PreparedGatewaySessionLifecycle,
 } from "./session-create-service.types.js";
 import {
-  type PreparedGatewaySessionLifecycle,
   prepareGatewaySessionLifecycleTargets,
   projectPreparedSessionWorkspace,
   resolveSessionCreateLifecycleIntentError,
+  resolveSessionCreateIncognitoIntentError,
   resolveSessionCreateChildIntentError,
   rollbackGatewaySessionPreparation,
 } from "./session-lifecycle-preparation.js";
@@ -386,33 +385,15 @@ export async function createGatewaySession(
   const parentIncognito =
     parentSessionEntry?.incognito === true || isIncognitoSessionKey(canonicalParentSessionKey);
   const incognito = params.incognito === true || parentIncognito;
-  if (
-    incognito &&
-    params.requestingOperatorScopes !== undefined &&
-    !params.requestingOperatorScopes.includes(ADMIN_SCOPE)
-  ) {
-    return {
-      ok: false,
-      error: errorShape(
-        ErrorCodes.INVALID_REQUEST,
-        `incognito sessions require gateway scope: ${ADMIN_SCOPE}`,
-      ),
-    };
-  }
-  if (incognito && canonicalParentSessionKey && !parentIncognito) {
-    return {
-      ok: false,
-      error: errorShape(
-        ErrorCodes.INVALID_REQUEST,
-        "incognito sessions cannot have durable parents",
-      ),
-    };
-  }
-  if (parentIncognito && explicitTargetKey) {
-    return {
-      ok: false,
-      error: errorShape(ErrorCodes.INVALID_REQUEST, "incognito sessions are web-only"),
-    };
+  const incognitoIntentError = resolveSessionCreateIncognitoIntentError({
+    incognito,
+    parentIncognito,
+    parentSessionKey: canonicalParentSessionKey,
+    targetKey: explicitTargetKey,
+    requestingOperatorScopes: params.requestingOperatorScopes,
+  });
+  if (incognitoIntentError) {
+    return { ok: false, error: incognitoIntentError };
   }
 
   if (
@@ -486,9 +467,20 @@ export async function createGatewaySession(
     targets: authorityTargets,
     getCurrentConfig: params.getCurrentConfig,
     ...(operatorReady && !incognito
-      ? { creation: { ready: operatorReady, assertCurrent: () => commitGuard?.() } }
+      ? {
+          creation: {
+            ready: operatorReady,
+            assertCurrent: () => commitGuard?.(),
+            selectTargetInLifecycle: Boolean(
+              explicitTargetKey && !capturedTargetEntry && !params.initialEntry,
+            ),
+          },
+        }
       : {}),
   });
+  let preparedCreation:
+    | Awaited<ReturnType<typeof targetCustody.prepareCreationTargets>>
+    | undefined;
   if (operatorReady) {
     assertPreparedTargetCurrent = targetCustody.assertCurrent;
     try {
@@ -496,19 +488,9 @@ export async function createGatewaySession(
     } catch (error) {
       return { ok: false, error: errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error)) };
     }
-    const preparedTargets = await Promise.all(targetCustody.preparations);
-    bindPreparedCreation = preparedTargets[0]?.bindCreation;
-    assertPreparedTargetCurrent = () => {
-      targetCustody.assertCurrent();
-      for (const [index, prepared] of preparedTargets.entries()) {
-        if (index === 0 && createdTargetCommitted) {
-          continue;
-        }
-        if (!prepared.matchesCurrent(params.getCurrentConfig?.() ?? params.cfg)) {
-          throw new Error("Session changed before creation; retry.");
-        }
-      }
-    };
+    preparedCreation = await targetCustody.prepareCreationTargets(() => createdTargetCommitted);
+    bindPreparedCreation = preparedCreation.bindCreation;
+    assertPreparedTargetCurrent = preparedCreation.assertCurrent;
     commitGuard?.();
   }
 
@@ -617,6 +599,10 @@ export async function createGatewaySession(
       : undefined;
   const createChildSession = async (): Promise<GatewaySessionCommitResult> => {
     commitGuard?.();
+    if (preparedCreation) {
+      await preparedCreation.enterCreationLifecycle();
+      commitGuard?.();
+    }
     let currentParentSessionEntry = parentSessionEntry;
     if (canonicalParentSessionKey && parentSessionTarget && holdParentLifecycle) {
       const currentParent = loadGatewaySessionEntryReadOnly(

@@ -39,7 +39,7 @@ export type NativeModelSource = NonNullable<
 export type NativeModelBinding = NonNullable<
   ReturnType<NonNullable<NativeModelSource["bindModelExecution"]>>
 >;
-export type NativeModelMapping = Readonly<{
+type NativeModelMapping = Readonly<{
   nativeModel: Readonly<{ provider: string; model: string }>;
   authorizedModel: Readonly<{ provider: string; model: string }>;
 }>;

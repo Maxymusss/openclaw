@@ -3,11 +3,13 @@ import {
   hasSqliteWorkerOutcomeUnknown,
   SqliteWorkerError,
 } from "../../infra/sqlite-worker-contract.js";
+import { assertExistingDatabaseIdentity } from "../../infra/sqlite-worker-identity.js";
 import {
   createSqliteWorkerOperationAdmission,
   type SqliteWorkerOperationAdmission,
 } from "../../infra/sqlite-worker-operation-admission.js";
 import type { RetainedWorkerTransactionAdmission } from "../../infra/sqlite-worker-operation-settlement.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import type { OpenClawAgentDatabaseOptions } from "../../state/openclaw-agent-db-contract.js";
 import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-contract.js";
 import {
@@ -69,17 +71,42 @@ export async function withSessionEntryWorker<T>(
           }
         : {},
     );
+  const assertRetainedIdentity = () => {
+    if (!retainedExecution) {
+      return;
+    }
+    if (!options.env || execution.agentId !== normalizeAgentId(options.agentId)) {
+      throw new Error("Session writer differs from its captured database scope");
+    }
+    const accepted = execution.fileIdentity;
+    if (!accepted) {
+      if (databaseIdentity !== undefined || execution.path !== options.path) {
+        throw new Error("Session writer has no accepted identity for this target");
+      }
+      return;
+    }
+    if (databaseIdentity !== undefined && accepted.physicalIdentity !== databaseIdentity) {
+      throw new Error("Session writer differs from its original read snapshot");
+    }
+    assertExistingDatabaseIdentity(
+      options.path,
+      `file:${accepted.physicalIdentity}`,
+      accepted.birthtime,
+    );
+  };
   let assertNativeCurrent: (() => void) | undefined;
   const context: SessionEntryCommitContext = {
     env: Object.freeze({ ...(options.env ?? process.env) }),
     assertCurrent() {
       execution.assertCurrent();
+      assertRetainedIdentity();
       assertNativeCurrent?.();
     },
   };
   const assertHeld = () => {
     execution.assertCurrent();
     assertCurrent();
+    assertRetainedIdentity();
   };
   const source: AgentDatabaseRequestExecutionSource = {
     assertCurrent: assertHeld,
@@ -220,6 +247,7 @@ export async function commitSessionEntryReplacementsInWorker(
     afterCommitted?: (context: SessionEntryCommitContext) => Promise<void>;
     onLifecycleCommitted?: () => void;
   },
+  retainedExecution?: OpenClawAgentDatabaseExecution,
 ) {
   const publication = retainSessionEntryWorkerPublication({
     agentId: options.agentId,
@@ -308,5 +336,6 @@ export async function commitSessionEntryReplacementsInWorker(
       admitted = { admission, retained };
       publication.begin(facts.publication.changedKeys, facts.publication.membershipInvalidatedKeys);
     },
+    retainedExecution,
   );
 }
