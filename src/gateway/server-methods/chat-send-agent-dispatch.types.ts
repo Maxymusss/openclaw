@@ -20,6 +20,8 @@ type PreparedChatSendAttachments = Extract<
 
 export type StartChatDispatchParams = {
   admissionStartedAt: number;
+  revalidateRouting?: () => void;
+  takeInputRoutingCustody?: () => void;
   admission: AdmittedChatSend;
   attachments: PreparedChatSendAttachments;
   client: GatewayRequestHandlerOptions["client"];

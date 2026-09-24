@@ -5,7 +5,6 @@ import {
   captureChatWorkContext,
   formatChatWorkContext,
 } from "../../../../src/chat/work-context.js";
-import { normalizeChatFollowUpModeOverride } from "../../app/settings.ts";
 import { t } from "../../i18n/index.ts";
 import { registerChatGoalsEnglish } from "../../i18n/locales/en-chat-goals.ts";
 import type { ChatAttachment, HumanMention } from "../../lib/chat/chat-types.ts";
@@ -45,6 +44,7 @@ import {
 import type { ChatHost } from "./chat-send-contract.ts";
 import { chatOutboxDrainDependencies, deliverChatQueueItem } from "./chat-send-delivery.ts";
 import { sendDetachedCommandMessage } from "./chat-send-detached-command.ts";
+import { resolveChatSendPolicy } from "./chat-send-policy.ts";
 import {
   canSendVolatileQueueItem,
   createPendingSendMessage,
@@ -557,16 +557,17 @@ export async function handleSendChat(
     // store write, so a rejected write leaves the original queued and editable.
     const resumedEdit =
       requestedEditId && resumedEditCandidate?.id === requestedEditId ? resumedEditCandidate : null;
-    // Editing preserves the row's delivery choice; current composer defaults must
-    // not turn an explicitly queued message into a steer or interrupt.
-    const followUpMode = resumedEdit
-      ? (resumedEdit.source.queueMode ?? "queue")
-      : (opts?.followUpMode ??
-        host.chatFollowUpMode ??
-        normalizeChatFollowUpModeOverride(host.settings?.chatFollowUpMode));
-    const activeRunQueueMode =
-      !intent && applyRunPolicy && followUpMode !== "queue" ? followUpMode : undefined;
-    const allowActiveRunSend = Boolean(intent || (applyRunPolicy && followUpMode !== "queue"));
+    const { deliveryPolicy, activeRunQueueMode, allowActiveRunSend } = resolveChatSendPolicy(host, {
+      source: resumedEdit?.source,
+      followUpMode: opts?.followUpMode,
+      intent,
+      applyRunPolicy,
+      userMessage,
+      hasCommand: Boolean(rawParsedCommand),
+      hasReply: Boolean(replyTarget),
+      hasWorkContext: Boolean(workContext),
+      hasAttachments,
+    });
     const submission = createPendingSendMessage(
       host,
       effectiveMessage,
@@ -586,6 +587,7 @@ export async function handleSendChat(
       return;
     }
     let queued = submission.item;
+    queued.deliveryPolicy = deliveryPolicy;
     queued.asyncQuestionItemId =
       resumedEdit?.source.asyncQuestionItemId ?? opts?.asyncQuestionItemId;
     if (queued.attachments?.length) {

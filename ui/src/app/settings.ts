@@ -20,9 +20,23 @@ import { normalizeChatSplitLayout } from "../pages/chat/split-layout-persistence
 import type { ChatSplitLayout } from "../pages/chat/split-layout-types.ts";
 import { resolveControlUiPaths } from "./browser.ts";
 import { parseImportedCustomTheme, type ImportedCustomTheme } from "./custom-theme.ts";
+import {
+  loadChatSendPreferences,
+  serializeChatSendPreferences,
+  type ChatFollowUpMode,
+  type ChatSendShortcut,
+} from "./settings-chat-send.ts";
 import { parseThemeSelection, type ThemeMode, type ThemeName } from "./theme.ts";
 import { normalizeTypefaceOverride, type TypefaceId } from "./typography.ts";
 import { normalizeLocalUserIdentity, type LocalUserIdentity } from "./user-identity.ts";
+
+export {
+  normalizeChatFollowUpMode,
+  normalizeChatFollowUpModeOverride,
+  normalizeChatSendShortcut,
+  type ChatFollowUpMode,
+  type ChatSendShortcut,
+} from "./settings-chat-send.ts";
 
 // Control UI module implements storage behavior.
 const SETTINGS_KEY_PREFIX = "openclaw.control.settings.v1:";
@@ -109,27 +123,11 @@ export function normalizeChatMessageMaxWidth(value: unknown): string | undefined
   return /^(?:calc|clamp|fit-content|max|min)\(.+\)$/i.test(normalized) ? normalized : undefined;
 }
 
-const CHAT_SEND_SHORTCUTS = ["enter", "modifier-enter"] as const;
-export type ChatSendShortcut = (typeof CHAT_SEND_SHORTCUTS)[number];
-
 function normalizeChoice<T extends string>(
   values: readonly T[],
   fallback: T,
 ): (value: unknown) => T {
   return (value) => (values.includes(value as T) ? (value as T) : fallback);
-}
-
-export const normalizeChatSendShortcut = normalizeChoice(CHAT_SEND_SHORTCUTS, "enter");
-
-const CHAT_FOLLOW_UP_MODES = ["queue", "steer"] as const;
-export type ChatFollowUpMode = (typeof CHAT_FOLLOW_UP_MODES)[number];
-
-export const normalizeChatFollowUpMode = normalizeChoice(CHAT_FOLLOW_UP_MODES, "steer");
-
-export function normalizeChatFollowUpModeOverride(value: unknown): ChatFollowUpMode | undefined {
-  return CHAT_FOLLOW_UP_MODES.includes(value as ChatFollowUpMode)
-    ? (value as ChatFollowUpMode)
-    : undefined;
 }
 
 const CATALOG_OPEN_TARGETS = ["viewer", "terminal"] as const;
@@ -199,6 +197,8 @@ export type UiSettings = {
   // Browser-local presentation preference; false preserves active-card auto-expand.
   chatCollapseTaskProgress?: boolean;
   chatSendShortcut?: ChatSendShortcut;
+  /** Browser-local opt-in; never replaces the manual/server follow-up baseline. */
+  chatAutoSteer?: boolean;
   chatFollowUpMode?: ChatFollowUpMode; // Default handling for messages sent while a run is active
   catalogOpenTarget?: CatalogOpenTarget;
   realtimeTalkInputDeviceId?: string;
@@ -549,8 +549,7 @@ export function loadUiPreferences(
         typeof parsed.chatCollapseTaskProgress === "boolean"
           ? parsed.chatCollapseTaskProgress
           : defaults.chatCollapseTaskProgress,
-      chatSendShortcut: normalizeChatSendShortcut(parsed.chatSendShortcut),
-      chatFollowUpMode: normalizeChatFollowUpModeOverride(parsed.chatFollowUpMode),
+      ...loadChatSendPreferences(parsed),
       catalogOpenTarget: normalizeCatalogOpenTarget(parsed.catalogOpenTarget),
       realtimeTalkInputDeviceId: normalizeOptionalString(parsed.realtimeTalkInputDeviceId),
       realtimeTalkVideoDeviceId: normalizeOptionalString(parsed.realtimeTalkVideoDeviceId),
@@ -664,7 +663,6 @@ function persistSettings(next: UiSettings, options: { selectGateway?: boolean } 
   const accent = normalizeAccentColor(next.accent);
   const fontUi = normalizeTypefaceOverride(next.fontUi);
   const fontChat = normalizeTypefaceOverride(next.fontChat);
-  const chatFollowUpMode = normalizeChatFollowUpModeOverride(next.chatFollowUpMode);
   let existingSessionsByGateway: Record<string, ScopedSessionSelection> = {};
   try {
     const source = readSettingsForGateway(storage, next.gatewayUrl);
@@ -704,10 +702,7 @@ function persistSettings(next: UiSettings, options: { selectGateway?: boolean } 
     chatPersistCommentary: next.chatPersistCommentary ?? true,
     ...(next.chatShowTaskProgress === false ? { chatShowTaskProgress: false } : {}),
     ...(next.chatCollapseTaskProgress === true ? { chatCollapseTaskProgress: true } : {}),
-    ...(normalizeChatSendShortcut(next.chatSendShortcut) === "modifier-enter"
-      ? { chatSendShortcut: "modifier-enter" as const }
-      : {}),
-    ...(chatFollowUpMode ? { chatFollowUpMode } : {}),
+    ...serializeChatSendPreferences(next),
     ...(normalizeCatalogOpenTarget(next.catalogOpenTarget) === "terminal"
       ? { catalogOpenTarget: "terminal" as const }
       : {}),

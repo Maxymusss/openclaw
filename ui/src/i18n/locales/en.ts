@@ -10,6 +10,7 @@ export const en: TranslationMap & {
   browser: TranslationMap & { errors: TranslationMap };
   shortcutsOverlay: TranslationMap & { title: string };
   chat: TranslationMap & {
+    autoSteer: TranslationMap;
     codeBlock: TranslationMap;
     commands: TranslationMap;
     detailPanel: TranslationMap;
@@ -2574,7 +2575,7 @@ export const en: TranslationMap & {
     decisionAssistance: {
       title: "Decision assistance",
       description:
-        "Enable experimental features powered by Decision models. Requires a Decision model, set globally or per agent. No features use this setting yet.",
+        "Enable experimental features powered by Decision models. Requires a Decision model, set globally or per agent. Auto in the chat effort picker separately opts in to routing refinements and new requests. Bounded visible conversation text may be sent to that model’s provider.",
       optedIn: "Preference saved.",
       loading: "Loading setting…",
       unavailable: "Couldn’t load this setting. Reconnect or refresh to try again.",
@@ -3660,6 +3661,7 @@ export const en: TranslationMap & {
     sendShortcutEnter: "Enter",
     sendShortcutModifierEnter: "⌘/Ctrl+Enter",
     followUpMode: "Follow-ups while the agent is working",
+    autoSteer: {},
     followUpModeQueue: "Queue until the run ends",
     followUpModeServer: "Server default ({mode})",
     followUpModeLoading: "loading…",

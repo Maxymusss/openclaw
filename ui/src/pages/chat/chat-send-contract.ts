@@ -84,6 +84,8 @@ export type ChatHost = ChatInputHistoryState &
     applySettings: (patch: Partial<UiSettings>) => void;
     /** Prepared from the browser override and current Gateway effective queue mode. */
     chatFollowUpMode?: ControlUiFollowUpMode;
+    /** Reads current prepared config; never probes or selects a model. */
+    isAutoSteerAvailable?: () => boolean;
     /** Selected message to reply to (right-click / keyboard shortcut). */
     chatReplyTarget?: {
       messageId: string;

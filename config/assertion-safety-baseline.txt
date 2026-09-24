@@ -3120,7 +3120,7 @@ src/plugins/hook-decision-types.ts	1
 src/plugins/hook-isolation.ts	3
 src/plugins/hook-runner-global-state.ts	1
 src/plugins/hook-types.ts	2
-src/plugins/hooks.ts	12
+src/plugins/hooks.ts	11
 src/plugins/host-hook-attachments.ts	1
 src/plugins/host-hook-json.ts	1
 src/plugins/host-hook-runtime.ts	1
@@ -3463,7 +3463,7 @@ ui/src/app/native-web-chrome.ts	2
 ui/src/app/overlays.ts	1
 ui/src/app/server-prefs-state.ts	10
 ui/src/app/server-prefs.ts	7
-ui/src/app/settings.ts	9
+ui/src/app/settings.ts	7
 ui/src/app/stale-chunk-reload.ts	1
 ui/src/app/startup-settings.ts	1
 ui/src/app/user-profile.ts	2

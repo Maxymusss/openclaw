@@ -42,11 +42,14 @@ export function sameQueuedDeliveryVersion(left: ChatQueueItem, right: ChatQueueI
     left.id === right.id &&
     left.asyncQuestionItemId === right.asyncQuestionItemId &&
     left.text === right.text &&
+    left.queueMode === right.queueMode &&
+    left.deliveryPolicy === right.deliveryPolicy &&
     left.workContextUnavailable === right.workContextUnavailable &&
     JSON.stringify(left.workContext) === JSON.stringify(right.workContext) &&
     JSON.stringify(left.mentions ?? []) === JSON.stringify(right.mentions ?? []) &&
     left.sendRunId === right.sendRunId &&
     left.sendAttempts === right.sendAttempts &&
+    left.sendRejectedBeforeCustody === right.sendRejectedBeforeCustody &&
     left.sendState === right.sendState &&
     left.agentId === right.agentId &&
     left.sessionKey === right.sessionKey &&
@@ -202,6 +205,9 @@ export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
   if (queueMode) {
     item.queueMode = queueMode;
   }
+  if (entry.deliveryPolicy === "auto" && !legacySteer && !item.intent) {
+    item.deliveryPolicy = "auto";
+  }
   if (attachments.length) {
     item.attachments = attachments;
   }
@@ -234,6 +240,9 @@ export function normalizeStoredQueueItem(value: unknown): ChatQueueItem | null {
   const sendError = normalizeOptionalString(entry.sendError);
   if (sendError) {
     item.sendError = sendError;
+  }
+  if (entry.sendRejectedBeforeCustody === true && item.sendState === "failed") {
+    item.sendRejectedBeforeCustody = true;
   }
   const sendRunId = normalizeOptionalString(entry.sendRunId);
   if (sendRunId) {

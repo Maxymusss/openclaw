@@ -1,5 +1,6 @@
 import { nothing, render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { userEvent } from "vitest/browser";
 import { resolveChatThinkingSelectState } from "../../../lib/chat/thinking.ts";
 import "../../../styles/base.css";
 import "../../../styles/chat/composer.css";
@@ -20,12 +21,14 @@ async function fixture(
   levels: Array<string | { id: string; label: string }>,
   value: string,
   inherited = false,
+  autoSteer?: Parameters<typeof renderChatEffortPicker>[0]["autoSteer"],
 ) {
   host ??= document.body.appendChild(document.createElement("div"));
   const onThinkingSelect = vi.fn(async () => undefined);
   render(
     renderChatEffortPicker({
       disabled: false,
+      autoSteer,
       thinkingDisabled: false,
       sessionKey: "effort-preview",
       thinking: resolveChatThinkingSelectState({
@@ -53,7 +56,14 @@ async function fixture(
     }),
     host,
   );
-  host.querySelector("details")!.open = true;
+  const details = host.querySelector("details")!;
+  if (!details.open) {
+    const toggled = new Promise<void>((resolve) => {
+      details.addEventListener("toggle", () => resolve(), { once: true });
+    });
+    details.open = true;
+    await toggled;
+  }
   await host.querySelector("wa-popup")!.updateComplete;
   return {
     input: host.querySelector<HTMLInputElement>("input[type=range]")!,
@@ -69,6 +79,26 @@ function appearance(input: HTMLInputElement) {
 }
 
 describe("effort bar colour and flow", () => {
+  it("places Auto below Fast even without reasoning or Fast support", async () => {
+    const onSelect = vi.fn();
+    await fixture([], "off", false, { active: false, onSelect });
+    const toggle = host!.querySelector<HTMLButtonElement>("[data-chat-auto-steer-toggle]")!;
+    expect(toggle.getAttribute("role")).toBe("switch");
+    expect(toggle.getAttribute("aria-checked")).toBe("false");
+    expect(toggle.disabled).toBe(false);
+    expect(
+      toggle
+        .closest("[data-chat-auto-steer-row]")
+        ?.previousElementSibling?.querySelector("[data-chat-speed-toggle]"),
+    ).not.toBeNull();
+    toggle.focus();
+    expect(document.activeElement).toBe(toggle);
+    await userEvent.keyboard("{Enter}");
+    expect(onSelect).toHaveBeenCalledExactlyOnceWith(true);
+    await fixture(["low", "high"], "low");
+    expect(host!.querySelector("[data-chat-auto-steer-toggle]")).toBeNull();
+  });
+
   it.each(["dark", "light"])("highlights the highest discrete effort in %s mode", async (theme) => {
     document.documentElement.dataset.themeMode = theme;
     for (const maximum of ["high", "xhigh", "max"]) {

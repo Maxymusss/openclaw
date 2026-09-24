@@ -43,6 +43,9 @@ export function controlUiStableChunkName(id: string): string | undefined {
   const normalized = normalizeModuleId(id);
 
   switch (controlUiBootManifestKey(id)) {
+    case "ui/src/styles/settings.css":
+    case "ui/src/styles/plugins.css":
+      return "settings-styles";
     case "ui/src/components/login-gate.ts":
     case "ui/src/components/login-gate-feedback.ts":
     case "ui/src/i18n/locales/en-login.ts":
