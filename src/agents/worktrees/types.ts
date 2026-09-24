@@ -115,17 +115,19 @@ export type ManagedWorktreeBranchesResult = {
 export type ManagedWorktreeGcResult = {
   removed: string[];
   orphansDeleted: number;
+  orphansRetired: number;
   snapshotsPruned: number;
   outcome: "completed" | "deferred" | "partial";
   /** Bounded per-worktree cleanup disposition; issueCount includes omitted entries. */
   issues: {
     id?: string;
     stage: "idle" | "templates" | "limits" | "size" | "orphans" | "snapshots";
-    outcome: "failed" | "deferred";
+    outcome: "failed" | "deferred" | "retired";
     reason: string;
   }[];
   issueCount: number;
   protectedCount: number;
+  protectionReasons: Record<string, number>;
   /** Null when incomplete inventory or size measurements prevent a conclusion. */
   limitsSatisfied: boolean | null;
 };

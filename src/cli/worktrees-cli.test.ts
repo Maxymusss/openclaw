@@ -261,6 +261,8 @@ describe("worktrees cli", () => {
       issues: [],
       issueCount: 0,
       protectedCount: 0,
+      protectionReasons: {},
+      orphansRetired: 0,
       limitsSatisfied: true,
     });
     vi.spyOn(defaultRuntime, "log").mockImplementation(() => undefined);
@@ -293,6 +295,8 @@ describe("worktrees cli", () => {
       ],
       issueCount: 1,
       protectedCount: 0,
+      protectionReasons: {},
+      orphansRetired: 0,
       limitsSatisfied: false,
     };
     vi.spyOn(managedWorktrees, "gc").mockResolvedValue(result);

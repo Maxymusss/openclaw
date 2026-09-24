@@ -77,6 +77,8 @@ describe("worktrees gateway methods", () => {
         issues: [],
         issueCount: 0,
         protectedCount: 0,
+        protectionReasons: {},
+        orphansRetired: 0,
         limitsSatisfied: true,
       })),
     };
@@ -267,6 +269,8 @@ describe("worktrees gateway methods", () => {
         issues: [],
         issueCount: 0,
         protectedCount: 0,
+        protectionReasons: {},
+        orphansRetired: 0,
         limitsSatisfied: true,
       })),
     };
@@ -298,6 +302,8 @@ describe("worktrees gateway methods", () => {
         ],
         issueCount: 1,
         protectedCount: 0,
+        protectionReasons: {},
+        orphansRetired: 0,
         limitsSatisfied: false,
       })),
     };

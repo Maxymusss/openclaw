@@ -37,6 +37,8 @@ describe("ManagedWorktreeService missing-path observations", () => {
     issues: [],
     issueCount: 0,
     protectedCount: 0,
+    protectionReasons: {},
+    orphansRetired: 0,
     limitsSatisfied: true,
   };
 
@@ -100,7 +102,7 @@ describe("ManagedWorktreeService missing-path observations", () => {
       if (operation === "list") {
         expect(result).toEqual([]);
       } else {
-        expect(result).toEqual(completedGcResult);
+        expect(result).toEqual({ ...completedGcResult, orphansRetired: 1 });
       }
     },
   );

@@ -358,6 +358,8 @@ describe("startGatewayMaintenanceTimers", () => {
       ],
       issueCount: 1,
       protectedCount: 0,
+      protectionReasons: {},
+      orphansRetired: 0,
       limitsSatisfied: false,
     });
     const timers = startGatewayMaintenanceTimers(deps);
@@ -410,6 +412,8 @@ describe("startGatewayMaintenanceTimers", () => {
       issues: [],
       issueCount: 0,
       protectedCount: 0,
+      protectionReasons: {},
+      orphansRetired: 0,
       limitsSatisfied: true,
     });
     const { startGatewayMaintenanceTimers } = await import("./server-maintenance.js");
