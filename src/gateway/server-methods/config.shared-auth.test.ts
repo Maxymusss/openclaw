@@ -141,11 +141,11 @@ function trustedProxyConfig(params: {
   };
 }
 
-function hotReloadConfig(): OpenClawConfig {
+function hybridReloadConfig(): OpenClawConfig {
   return {
     gateway: {
       reload: {
-        mode: "hot",
+        mode: "hybrid",
       },
     },
   };
@@ -608,55 +608,105 @@ describe("config shared auth disconnects", () => {
     expect(disconnectClientsUsingSharedGatewayAuth).not.toHaveBeenCalled();
   });
 
-  it("defers restart-required changes to the watcher after legacy hot mode normalizes", async () => {
-    mockPreviousConfig(hotReloadConfig());
+  it("defers hybrid restart-required changes to the watcher", async () => {
+    mockPreviousConfig(hybridReloadConfig());
 
-    await runConfigPatch({ gateway: { port: 19001 } });
+    const { respond } = await runConfigPatch({ gateway: { port: 19001 } });
 
+    expect(writeConfigFileMock).toHaveBeenCalledExactlyOnceWith(
+      { gateway: { reload: { mode: "hybrid" }, port: 19001 } },
+      GATEWAY_CONFIG_WRITE_OPTIONS,
+    );
+    expect(respond).toHaveBeenCalledExactlyOnceWith(
+      true,
+      expect.objectContaining({ ok: true }),
+      undefined,
+    );
     expectNoDirectRestart();
-    expect(restartSentinelMocks.writeRestartSentinel).not.toHaveBeenCalled();
+    expect(restartSentinelMocks.writeRestartSentinel).toHaveBeenCalledOnce();
+    const payload = expectDefined(
+      restartSentinelMocks.writeRestartSentinel.mock.calls[0]?.[0],
+      "restart sentinel",
+    );
+    expect(payload).toMatchObject({
+      kind: "config-patch",
+      stats: { mode: "config.patch", requiresRestart: true },
+    });
   });
 
-  it("does not schedule a direct restart for hot-mode browser profile config.patch writes", async () => {
+  it("hot-applies registered browser profiles without a direct restart", async () => {
     installBrowserReloadRegistry();
     mockPreviousConfig({
-      ...hotReloadConfig(),
+      ...hybridReloadConfig(),
       browser: {
         profiles: {
           sandbox: {
             cdpUrl: "http://127.0.0.1:9222",
-            color: "#0066CC",
           },
         },
       },
     });
 
-    await runConfigPatch({
+    const { respond } = await runConfigPatch({
       browser: {
         profiles: {
           sandbox: {
             cdpUrl: "http://127.0.0.1:9223",
-            color: "#0066CC",
           },
         },
       },
     });
 
+    expect(writeConfigFileMock).toHaveBeenCalledExactlyOnceWith(
+      {
+        gateway: { reload: { mode: "hybrid" } },
+        browser: { profiles: { sandbox: { cdpUrl: "http://127.0.0.1:9223" } } },
+      },
+      GATEWAY_CONFIG_WRITE_OPTIONS,
+    );
+    expect(respond).toHaveBeenCalledExactlyOnceWith(
+      true,
+      expect.objectContaining({ ok: true }),
+      undefined,
+    );
     expectNoDirectRestart();
+    expect(restartSentinelMocks.writeRestartSentinel).toHaveBeenCalledOnce();
+    const payload = expectDefined(
+      restartSentinelMocks.writeRestartSentinel.mock.calls[0]?.[0],
+      "restart sentinel",
+    );
+    expect(payload).toMatchObject({
+      kind: "config-patch",
+      stats: { mode: "config.patch", requiresRestart: false },
+    });
   });
 
   it("does not add an agent continuation from generic control-plane sessionKey params", async () => {
-    mockPreviousConfig(hotReloadConfig());
+    mockPreviousConfig(hybridReloadConfig());
 
-    await runConfigPatch(
+    const { respond } = await runConfigPatch(
       { gateway: { port: 19001 } },
       {
         sessionKey: "agent:main:main",
       },
     );
 
-    const payload = restartSentinelMocks.writeRestartSentinel.mock.calls.at(-1)?.[0];
-    expect(payload?.sessionKey).toBeUndefined();
-    expect(payload?.continuation).toBeUndefined();
+    expect(writeConfigFileMock).toHaveBeenCalledExactlyOnceWith(
+      { gateway: { reload: { mode: "hybrid" }, port: 19001 } },
+      GATEWAY_CONFIG_WRITE_OPTIONS,
+    );
+    expect(respond).toHaveBeenCalledExactlyOnceWith(
+      true,
+      expect.objectContaining({ ok: true }),
+      undefined,
+    );
+    expectNoDirectRestart();
+    expect(restartSentinelMocks.writeRestartSentinel).toHaveBeenCalledOnce();
+    const payload = expectDefined(
+      restartSentinelMocks.writeRestartSentinel.mock.calls[0]?.[0],
+      "restart sentinel",
+    );
+    expect(payload.sessionKey).toBe("agent:main:main");
+    expect(payload.continuation).toBeUndefined();
   });
 });
