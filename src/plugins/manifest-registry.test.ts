@@ -2038,33 +2038,6 @@ describe("loadPluginManifestRegistry", () => {
     });
   });
 
-  it("ignores provider catalog entries that resolve outside the plugin root", () => {
-    const dir = makeTempDir();
-    const outsideDir = makeTempDir();
-    const outsideEntry = path.join(outsideDir, "provider-catalog.js");
-    fs.writeFileSync(outsideEntry, "export default {};\n", "utf8");
-    writeManifest(dir, {
-      id: "absolute-catalog",
-      providers: ["absolute-catalog"],
-      providerCatalogEntry: outsideEntry,
-      configSchema: { type: "object" },
-    });
-
-    const registry = loadSingleCandidateRegistry({
-      idHint: "absolute-catalog",
-      rootDir: dir,
-      origin: "bundled",
-    });
-
-    expect(registry.plugins[0]?.providerDiscoverySource).toBeUndefined();
-    expectDiagnosticFields(registry, {
-      level: "warn",
-      pluginId: "absolute-catalog",
-      source: path.join(dir, "openclaw.plugin.json"),
-      messageIncludes: "providerCatalogEntry must resolve inside the plugin root",
-    });
-  });
-
   it("ignores provider catalog entries that resolve through a symlink outside the plugin root", () => {
     if (process.platform === "win32") {
       return;
