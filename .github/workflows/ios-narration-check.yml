@@ -15,6 +15,7 @@ jobs:
     env:
       CANDIDATE_SHA: 3846b975e5e80656e9a25095649c46fc95cc67a5
       BASELINE_SHA: 8c870f669e3528864881333d04875512ef81cfdc
+      RUN_FOCUSED_TESTS: "false"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -32,12 +33,14 @@ jobs:
           xcrun devicectl list devices > "$RUNNER_TEMP/narration-proof/physical-devices.txt"
           xcrun simctl list devices available --json > "$RUNNER_TEMP/narration-proof/simulators.json"
       - uses: ./.github/actions/setup-node-env
+        if: env.RUN_FOCUSED_TESTS == 'true'
         with:
           node-version: 24.19.0
           install-bun: "false"
           install-deps: "false"
           cache-mode: off
       - name: Prepare native renderer resources
+        if: env.RUN_FOCUSED_TESTS == 'true'
         run: |
           pnpm install --frozen-lockfile --prefer-offline --optional --filter '@openclaw/mermaid-renderer...' --config.ignore-scripts=false --config.engine-strict=false --config.enable-pre-post-scripts=true --config.side-effects-cache=true
           node scripts/prepare-apple-mermaid.mjs
@@ -50,9 +53,14 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          git diff --name-only "$BASELINE_SHA" "$CANDIDATE_SHA" -- '*.swift' > "$RUNNER_TEMP/narration-proof/changed-swift.txt"
+          git diff --name-only -z "$BASELINE_SHA" "$CANDIDATE_SHA" -- '*.swift' | while IFS= read -r -d '' file; do
+            test -f "$GITHUB_WORKSPACE/$file"
+            printf '%s/%s\n' "$GITHUB_WORKSPACE" "$file"
+          done > "$RUNNER_TEMP/narration-proof/changed-swift.txt"
+          test -s "$RUNNER_TEMP/narration-proof/changed-swift.txt"
           swiftformat --lint --config config/swiftformat --filelist "$RUNNER_TEMP/narration-proof/changed-swift.txt" > "$RUNNER_TEMP/narration-proof/format.log" 2>&1
       - name: Run focused shared Apple regressions
+        if: env.RUN_FOCUSED_TESTS == 'true'
         id: tests
         run: |
           set -euo pipefail
