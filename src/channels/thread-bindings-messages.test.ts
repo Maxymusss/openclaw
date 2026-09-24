@@ -8,9 +8,9 @@ import {
 
 describe("thread-binding names", () => {
   it.each([
-    { durationMs: -Infinity, label: "disabled" },
-    { durationMs: Infinity, label: "disabled" },
-    { durationMs: NaN, label: "disabled" },
+    { durationMs: Number.NEGATIVE_INFINITY, label: "disabled" },
+    { durationMs: Number.POSITIVE_INFINITY, label: "disabled" },
+    { durationMs: Number.NaN, label: "disabled" },
     { durationMs: -0.1, label: "disabled" },
     { durationMs: -0, label: "disabled" },
     { durationMs: 0.9, label: "disabled" },
