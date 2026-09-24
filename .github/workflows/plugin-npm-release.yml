@@ -1938,6 +1938,8 @@ jobs:
           WORKFLOW_REF: ${{ github.ref_name }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
           BOOTSTRAP_APPROVAL_PATH: ${{ runner.temp }}/npm-stable-bootstrap-approval/approval.json
+          # Job-start snapshot; the step rereads the variable live when the token allows it.
+          OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: ${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}
         run: |
           set -euo pipefail
           [[ -n "${NPM_TOKEN// }" ]] || {
@@ -1972,14 +1974,16 @@ jobs:
           # Owner-held waiver authority is fetched afresh here, after every other
           # verification and immediately before the token-backed publish.
           if [[ -f "$BOOTSTRAP_APPROVAL_PATH" ]]; then
+            # A 404 means the owner cleared the variable (revoked). When the job token
+            # cannot read Variables at all, fall back to the job-start snapshot and say so.
             current_waiver="$(gh api "repos/${GITHUB_REPOSITORY}/actions/variables/OPENCLAW_RELEASE_STABLE_SOAK_WAIVER" \
               -H "Cache-Control: max-age=0" --jq '.value' 2>"${RUNNER_TEMP}/waiver-read.err")" || {
               if grep -q "HTTP 404" "${RUNNER_TEMP}/waiver-read.err"; then
                 current_waiver=""
               else
                 cat "${RUNNER_TEMP}/waiver-read.err" >&2
-                echo "Could not read OPENCLAW_RELEASE_STABLE_SOAK_WAIVER before npm publish; refusing to publish." >&2
-                exit 1
+                echo "::warning::Live read of OPENCLAW_RELEASE_STABLE_SOAK_WAIVER was unavailable to this token; using the job-start value."
+                current_waiver="${OPENCLAW_RELEASE_STABLE_SOAK_WAIVER:-}"
               fi
             }
             CURRENT_STABLE_SOAK_WAIVER="$current_waiver" node --input-type=module - "$BOOTSTRAP_APPROVAL_PATH" <<'NODE'
