@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it, vi, type Mock } from "vitest";
 import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
+import type { applyAgentConfig } from "../../commands/agents.config.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { FsSafeError } from "../../infra/fs-safe.js";
 
 type IdentityUpdateHarness = {
   mocks: {
-    loadConfigReturn: Record<string, unknown>;
-    applyAgentConfig: Mock<(cfg: unknown, opts: unknown) => unknown>;
+    loadConfigReturn: OpenClawConfig;
+    applyAgentConfig: Mock<typeof applyAgentConfig>;
     ensureAgentWorkspace: Mock<
       (params?: { dir?: string }) => Promise<{ dir: string; identityPathCreated: boolean }>
     >;
@@ -18,7 +20,7 @@ type IdentityUpdateHarness = {
       }>
     >;
     rootWrite: Mock<(params?: unknown) => Promise<void>>;
-    writeConfigFile: Mock<(nextConfig?: unknown, writeOptions?: unknown) => Promise<void>>;
+    writeConfigFile: Mock<(nextConfig?: OpenClawConfig, writeOptions?: unknown) => Promise<void>>;
     fsMkdir: unknown;
   };
   makeCall: (
@@ -58,7 +60,7 @@ export function registerAgentIdentityUpdateTests(harness: IdentityUpdateHarness)
       async (state) => {
         const workspace = `/remote-identity-${randomUUID()}`;
         mocks.loadConfigReturn = {
-          agents: { list: [{ id: "test-agent", workspace, identity: { name: "Current Agent" } }] },
+          agents: { entries: { "test-agent": { workspace, identity: { name: "Current Agent" } } } },
         };
         let release = () => {};
         const readFile = vi.fn(async () => {
