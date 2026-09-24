@@ -508,6 +508,8 @@ describe("runtime tool fixture", () => {
     ]);
     expect(details).toContain("RUNTIME_PARITY_SESSION_KEY=agent:qa:runtime-tool:read:happy");
     expect(details).toContain("RUNTIME_PARITY_SESSION_KEY=agent:qa:runtime-tool:read:failure");
+    expect(details).toContain("read live provider happy planned args");
+    expect(details).toContain("read live provider failure planned args");
   });
 
   it("retains both fixture session keys when the failure prompt throws", async () => {
@@ -539,16 +541,6 @@ describe("runtime tool fixture", () => {
     await expect(runLiveRuntimeToolFixture(env)).rejects.toThrow(
       "expected live happy-path tool call for read",
     );
-  });
-
-  it("accepts live runtime tool fixtures only after transcript tool output", async () => {
-    const env = await makeEnv();
-    await writeLiveRuntimeToolEvidence(env);
-
-    const details = await runLiveRuntimeToolFixture(env);
-
-    expect(details).toContain("read live provider happy planned args");
-    expect(details).toContain("read live provider failure planned args");
   });
 
   it("skips async live runtime tool fixtures when the happy path has no result", async () => {
@@ -1291,13 +1283,6 @@ describe("runtime tool fixture", () => {
     ).rejects.toThrow("planned call without a linked successful result");
   });
 
-  it("accepts mock runtime tool fixtures only after planned calls return output", async () => {
-    const details = await runMockRuntimeToolFixture({ requests: mockToolRequests({}) });
-
-    expect(details).toContain("read mock provider happy planned args");
-    expect(details).toContain("read mock provider failure planned args");
-  });
-
   it("skips non-required mock fixtures when both paths are only planned", async () => {
     await expect(
       runMockRuntimeToolFixture({
@@ -1461,6 +1446,7 @@ describe("runtime tool fixture", () => {
     });
 
     expect(details).toContain("read mock provider happy planned args");
+    expect(details).toContain("read mock provider failure planned args");
   });
 
   it("rejects unrelated tool output after a planned mock runtime tool call", async () => {

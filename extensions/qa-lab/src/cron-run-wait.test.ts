@@ -36,23 +36,32 @@ describe("waitForCronRunCompletion", () => {
   });
 
   it("surfaces recent run history on timeout", async () => {
-    const callGateway = vi
-      .fn<
-        (method: string, rpcParams?: unknown, opts?: { timeoutMs?: number }) => Promise<unknown>
-      >()
-      .mockResolvedValue({
-        entries: [{ ts: 100, status: "ok", summary: "older run" }],
-      });
+    let now = 1_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      const callGateway = vi
+        .fn<
+          (method: string, rpcParams?: unknown, opts?: { timeoutMs?: number }) => Promise<unknown>
+        >()
+        .mockImplementation(async () => {
+          now = 1_005;
+          return { entries: [{ ts: 100, status: "ok", summary: "older run" }] };
+        });
 
-    await expect(
-      waitForCronRunCompletion({
-        callGateway,
-        jobId: "dreaming-job",
-        afterTs: 150,
-        timeoutMs: 5,
-        intervalMs: 0,
-      }),
-    ).rejects.toThrow(/timed out waiting for cron run completion/);
+      await expect(
+        waitForCronRunCompletion({
+          callGateway,
+          jobId: "dreaming-job",
+          afterTs: 150,
+          timeoutMs: 5,
+          intervalMs: 0,
+        }),
+      ).rejects.toThrow(
+        'timed out waiting for cron run completion for dreaming-job: [{"ts":100,"status":"ok","summary":"older run"}]',
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it("allows live CLI scenarios to extend the gateway call deadline", async () => {
