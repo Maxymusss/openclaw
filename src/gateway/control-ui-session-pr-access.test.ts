@@ -1,7 +1,7 @@
 import { copyFileSync, renameSync } from "node:fs";
 import { DatabaseSync, StatementSync } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { afterAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
@@ -12,6 +12,7 @@ import {
 } from "../config/sessions/session-accessor.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import {
   captureStateDatabaseCoordinatorRuntime,
   withStateDatabaseCoordinatorRuntimeDirectory,
@@ -33,6 +34,7 @@ import type {
 import { prepareControlUiSessionPrRead } from "./control-ui-session-pr-read.js";
 import { createControlUiSessionPullRequestSubscriptions } from "./control-ui-session-pr-subscriptions.js";
 import { githubJson, pullListItem, requestUrl } from "./control-ui-session-prs.test-support.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 import type { OperatorScope } from "./operator-scopes.js";
 import { createGatewayConnectionState } from "./server-connection-state.js";
 import { handleGatewayRequest } from "./server-methods.js";
@@ -303,7 +305,86 @@ function expectedFrame(key: string, value: ControlUiSessionPullRequests = snapsh
   });
 }
 
+type HeldOwner = Parameters<
+  Parameters<ReturnType<typeof createGatewayHeldFixtureRunner>["run"]>[1]
+>[0];
+type AccessRelease = { release: () => void; stop: () => void };
+async function withHeldAccess(
+  runner: ReturnType<typeof createGatewayHeldFixtureRunner>,
+  open: (
+    owner: HeldOwner,
+    control: AccessRelease,
+    capture: (
+      f: Awaited<ReturnType<typeof createFixture>>,
+      body: (track: HeldOwner["track"]) => Promise<void>,
+    ) => Promise<void>,
+  ) => Promise<void>,
+) {
+  const control: AccessRelease = { release: () => {}, stop: () => {} };
+  await runner.run(
+    () => {
+      control.release();
+      control.stop();
+    },
+    async (owner) => {
+      const failures: unknown[] = [];
+      let entered = false;
+      await owner
+        .track(
+          open(owner, control, async (f, body) => {
+            entered = true;
+            const pending: Promise<unknown>[] = [];
+            const track: HeldOwner["track"] = (promise, cleanup) => {
+              pending.push(promise);
+              return owner.track(promise, cleanup);
+            };
+            let stopped: Promise<void> | undefined;
+            let stopFailure: { error: unknown } | undefined;
+            let stopping = false;
+            control.stop = () => {
+              if (stopping) return;
+              stopping = true;
+              try {
+                stopped = track(f.subscriptions.stop());
+              } catch (error) {
+                stopFailure = { error };
+              }
+            };
+            try {
+              owner.signal.throwIfAborted();
+              await body(track);
+            } catch (error) {
+              failures.push(error);
+            }
+            // Cancel queued refreshes before joining; fixture.close removes the reader and state next.
+            control.release();
+            control.stop();
+            while (pending.length) await Promise.allSettled(pending.splice(0));
+            if (stopFailure) failures.push(stopFailure.error);
+            else {
+              try {
+                await stopped;
+              } catch (error) {
+                failures.push(error);
+              }
+            }
+          }),
+        )
+        .catch((error: unknown) => {
+          failures.push(error);
+        });
+      if (!entered && failures.length === 0)
+        failures.push(new Error("access fixture did not enter"));
+      if (failures.length === 1) throw failures[0];
+      if (failures.length > 1)
+        throw new AggregateError(failures, "access fixture failed", { cause: failures[0] });
+    },
+  );
+}
+
 describe("registered session PR subscriptions", () => {
+  const runner = createGatewayHeldFixtureRunner(onTestFinished);
+  afterEach(runner.finishAfterEach);
   it.each(["operator.read", "operator.write", "operator.admin"] as const)(
     "delivers the owned branch through the real broadcaster with %s",
     async (scope) => {
@@ -359,25 +440,28 @@ describe("registered session PR subscriptions", () => {
   it.each(readerChanges)(
     "rechecks the original reader after a pending snapshot (%s)",
     async (change) => {
-      await withFixture("operator.read", async (f) => {
-        const key = "agent:main:shared-read";
-        await f.seed(key, f.other.id);
-        const entered = createDeferredCore();
-        const held = createDeferredCore<ControlUiSessionPullRequests>();
-        f.load.mockImplementationOnce(async () => {
-          entered.resolve();
-          return await held.promise;
+      await withHeldAccess(runner, async (owner, control, capture) => {
+        await withFixture("operator.read", async (f) => {
+          await capture(f, async (track) => {
+            const key = "agent:main:shared-read";
+            await f.seed(key, f.other.id);
+            const entered = createDeferredCore();
+            const held = createDeferredCore<ControlUiSessionPullRequests>();
+            control.release = () => held.resolve(snapshot);
+            owner.signal.throwIfAborted();
+            f.load.mockImplementationOnce(async () => {
+              entered.resolve();
+              return await held.promise;
+            });
+
+            await track((owner.signal.throwIfAborted(), f.subscribe([key])));
+            await racePromiseWithAbortSignal(entered.promise, owner.signal);
+            await f.changeReader(change, key);
+            held.resolve(snapshot);
+            await track((owner.signal.throwIfAborted(), f.subscriptions.pollNow()));
+            expect(frames(f.socket)).toEqual(change === "unchanged" ? [expectedFrame(key)] : []);
+          });
         });
-        try {
-          await f.subscribe([key]);
-          await entered.promise;
-          await f.changeReader(change, key);
-          held.resolve(snapshot);
-          await f.subscriptions.pollNow();
-          expect(frames(f.socket)).toEqual(change === "unchanged" ? [expectedFrame(key)] : []);
-        } finally {
-          held.resolve(snapshot);
-        }
       });
     },
   );
@@ -390,60 +474,76 @@ describe("registered session PR subscriptions", () => {
   ] as const)(
     "keeps a shared load for an unchanged viewer when the other $retired retires (delayed=$delayed)",
     async ({ retired, delayed }) => {
-      if (delayed) {
-        vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-      }
-      try {
-        await withFixture("operator.read", async (f) => {
-          const entered = createDeferredCore();
-          const held = createDeferredCore<ControlUiSessionPullRequests>();
-          const peer = f.addReader("unchanged-reader");
-          if (delayed) {
-            await f.subscriptions.replace(f.client.connId!, [sessionKey], new Set([sessionKey]));
-            await f.subscribe([sessionKey], peer.client);
-            f.load.mockClear();
-            f.socket.send.mockClear();
-            peer.socket.send.mockClear();
-          }
-          f.load.mockImplementationOnce(async () => {
-            entered.resolve();
-            return await held.promise;
-          });
-          const refreshes: Promise<void>[] = [];
-          try {
-            if (delayed) {
-              for (const client of [f.client, peer.client]) {
-                refreshes.push(
-                  f.subscriptions.replace(client.connId!, [sessionKey], new Set([sessionKey])),
+      await withHeldAccess(runner, async (owner, control, capture) => {
+        if (delayed) {
+          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+        }
+        try {
+          await withFixture("operator.read", async (f) => {
+            await capture(f, async (track) => {
+              const entered = createDeferredCore();
+              const held = createDeferredCore<ControlUiSessionPullRequests>();
+              control.release = () => held.resolve(snapshot);
+              owner.signal.throwIfAborted();
+              const peer = f.addReader("unchanged-reader");
+              if (delayed) {
+                await track(
+                  (owner.signal.throwIfAborted(),
+                  f.subscriptions.replace(f.client.connId!, [sessionKey], new Set([sessionKey]))),
+                );
+                await track(
+                  (owner.signal.throwIfAborted(), f.subscribe([sessionKey], peer.client)),
+                );
+                f.load.mockClear();
+                f.socket.send.mockClear();
+                peer.socket.send.mockClear();
+              }
+              f.load.mockImplementationOnce(async () => {
+                entered.resolve();
+                return await held.promise;
+              });
+              const refreshes: Promise<void>[] = [];
+
+              if (delayed) {
+                for (const client of [f.client, peer.client]) {
+                  refreshes.push(
+                    track(
+                      (owner.signal.throwIfAborted(),
+                      f.subscriptions.replace(client.connId!, [sessionKey], new Set([sessionKey]))),
+                    ),
+                  );
+                }
+              } else {
+                await track((owner.signal.throwIfAborted(), f.subscribe()));
+                await racePromiseWithAbortSignal(entered.promise, owner.signal);
+                await track(
+                  (owner.signal.throwIfAborted(), f.subscribe([sessionKey], peer.client)),
                 );
               }
-            } else {
-              await f.subscribe();
-              await entered.promise;
-              await f.subscribe([sessionKey], peer.client);
-            }
-            if (retired === "connection") {
-              f.client.invalidated = true;
-            } else {
-              f.access.abort(new Error("Original access retired"));
-            }
-            if (delayed) {
-              await vi.advanceTimersByTimeAsync(10_000);
-              await entered.promise;
-            }
-            held.resolve(snapshot);
-            await Promise.all([f.subscriptions.pollNow(), ...refreshes]);
-            expect(f.load).toHaveBeenCalledTimes(1);
-            expect(frames(f.socket)).toEqual([]);
-            expect(frames(peer.socket)).toEqual([expectedFrame(sessionKey)]);
-            expect(f.load.mock.calls[0]?.[1]?.aborted).toBe(false);
-          } finally {
-            held.resolve(snapshot);
-          }
-        });
-      } finally {
-        vi.useRealTimers();
-      }
+              if (retired === "connection") {
+                f.client.invalidated = true;
+              } else {
+                f.access.abort(new Error("Original access retired"));
+              }
+              if (delayed) {
+                await vi.advanceTimersByTimeAsync(10_000);
+                await racePromiseWithAbortSignal(entered.promise, owner.signal);
+              }
+              held.resolve(snapshot);
+              await Promise.all([
+                track((owner.signal.throwIfAborted(), f.subscriptions.pollNow())),
+                ...refreshes,
+              ]);
+              expect(f.load).toHaveBeenCalledTimes(1);
+              expect(frames(f.socket)).toEqual([]);
+              expect(frames(peer.socket)).toEqual([expectedFrame(sessionKey)]);
+              expect(f.load.mock.calls[0]?.[1]?.aborted).toBe(false);
+            });
+          });
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     },
   );
 
@@ -490,92 +590,105 @@ describe("registered session PR subscriptions", () => {
 });
 
 describe("registered session PR check details", () => {
+  const runner = createGatewayHeldFixtureRunner(onTestFinished);
+  afterEach(runner.finishAfterEach);
   it.each([
     ...readerChanges,
     "literal-global",
     "literal-global-visibility",
     "store closure",
   ] as const)("keeps pending details bound to the original reader (%s)", async (change) => {
-    await withFixture(
-      "operator.read",
-      async (f) => {
-        const key = change.startsWith("literal-global")
-          ? "agent:main:global"
-          : "agent:main:shared-checks";
-        if (change === "literal-global-visibility") {
-          await f.seed("global", f.profile.id, { sessionId: "separate-global-row" });
-        }
-        const mutation =
-          change === "literal-global"
-            ? "unchanged"
-            : change === "literal-global-visibility"
-              ? "visibility"
-              : change;
-        await f.seed(key, f.other.id);
-        const params = {
-          sessionKey: key,
-          owner: "synthetic",
-          repo: "publication",
-          number: 1,
-          headSha: "a".repeat(40),
-        };
-        const result: ControlUiSessionPullRequestCheckDetails = {
-          owner: params.owner,
-          repo: params.repo,
-          number: params.number,
-          headSha: params.headSha,
-          status: "ready",
-          rateLimited: false,
-          checks: [],
-        };
-        const entered = createDeferredCore();
-        const held = createDeferredCore<ControlUiSessionPullRequestCheckDetails>();
-        const load = vi.fn(async () => {
-          entered.resolve();
-          return await held.promise;
-        });
-        const respond = vi.fn();
-        const request = handleGatewayRequest({
-          req: {
-            type: "req",
-            id: "pending-checks",
-            method: "controlUi.sessionPullRequests.checks",
-            params,
-          },
-          client: f.client,
-          context: f.context,
-          extraHandlers: createControlUiHandlers(undefined, undefined, load),
-          isWebchatConnect: () => false,
-          respond,
-        });
-        try {
-          await Promise.race([
-            entered.promise,
-            request.then(() => {
-              throw new Error("The registered check-details loader was not entered");
-            }),
-          ]);
-          if (mutation === "store closure") {
-            const source = loadGatewaySessionEntryReadOnly(key, { agentId: "main" }).readSource;
-            expect(source).toBeDefined();
-            await closeOpenClawAgentDatabaseByPathAsync(source!.path);
-          } else {
-            await f.changeReader(mutation, key);
-          }
-          held.resolve(result);
-          await request;
-          expect(respond).toHaveBeenCalledExactlyOnceWith(
-            mutation === "unchanged",
-            mutation === "unchanged" ? result : undefined,
-            mutation === "unchanged" ? undefined : expect.objectContaining({ code: "UNAVAILABLE" }),
-          );
-        } finally {
-          held.resolve(result);
-          await request;
-        }
-      },
-      change === "store closure",
-    );
+    await withHeldAccess(runner, async (owner, control, capture) => {
+      await withFixture(
+        "operator.read",
+        async (f) => {
+          await capture(f, async (track) => {
+            const key = change.startsWith("literal-global")
+              ? "agent:main:global"
+              : "agent:main:shared-checks";
+            if (change === "literal-global-visibility") {
+              await f.seed("global", f.profile.id, { sessionId: "separate-global-row" });
+            }
+            const mutation =
+              change === "literal-global"
+                ? "unchanged"
+                : change === "literal-global-visibility"
+                  ? "visibility"
+                  : change;
+            await f.seed(key, f.other.id);
+            const params = {
+              sessionKey: key,
+              owner: "synthetic",
+              repo: "publication",
+              number: 1,
+              headSha: "a".repeat(40),
+            };
+            const result: ControlUiSessionPullRequestCheckDetails = {
+              owner: params.owner,
+              repo: params.repo,
+              number: params.number,
+              headSha: params.headSha,
+              status: "ready",
+              rateLimited: false,
+              checks: [],
+            };
+            const entered = createDeferredCore();
+            const held = createDeferredCore<ControlUiSessionPullRequestCheckDetails>();
+            control.release = () => held.resolve(result);
+            owner.signal.throwIfAborted();
+            const load = vi.fn(async () => {
+              entered.resolve();
+              return await held.promise;
+            });
+            const respond = vi.fn();
+            const request = track(
+              handleGatewayRequest({
+                req: {
+                  type: "req",
+                  id: "pending-checks",
+                  method: "controlUi.sessionPullRequests.checks",
+                  params,
+                },
+                client: f.client,
+                context: f.context,
+                extraHandlers: createControlUiHandlers(undefined, undefined, load),
+                isWebchatConnect: () => false,
+                respond,
+              }),
+            );
+
+            await racePromiseWithAbortSignal(
+              Promise.race([
+                entered.promise,
+                request.then(() => {
+                  throw new Error("The registered check-details loader was not entered");
+                }),
+              ]),
+              owner.signal,
+            );
+            if (mutation === "store closure") {
+              const source = loadGatewaySessionEntryReadOnly(key, {
+                agentId: "main",
+              }).readSource;
+              expect(source).toBeDefined();
+              await closeOpenClawAgentDatabaseByPathAsync(source!.path);
+            } else {
+              await f.changeReader(mutation, key);
+            }
+            held.resolve(result);
+            await request;
+            expect(respond).toHaveBeenCalledExactlyOnceWith(
+              mutation === "unchanged",
+              mutation === "unchanged" ? result : undefined,
+              mutation === "unchanged"
+                ? undefined
+                : expect.objectContaining({ code: "UNAVAILABLE" }),
+            );
+          });
+        },
+        change === "store closure",
+      );
+    });
   });
 });
 
@@ -783,100 +896,129 @@ it("drops cached subscription hydration after physical database replacement", as
   }
 });
 
-it.each(["concurrency limit", "earlier refresh", "refresh timer", "publication"] as const)(
-  "retires default PR loads queued behind %s",
-  async (waitingOn) => {
-    try {
-      await withOpenClawTestState({ scenario: "minimal" }, async () => {
-        vi.stubEnv("GH_TOKEN", "");
-        vi.stubEnv("GITHUB_TOKEN", "");
-        const entered = createDeferredCore();
-        const release = createDeferredCore();
-        const lookedUp: string[] = [];
-        const activeLoads = waitingOn === "concurrency limit" ? 4 : 1;
-        if (waitingOn === "refresh timer") {
-          vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-          release.resolve();
-        }
-        vi.stubGlobal(
-          "fetch",
-          vi.fn<typeof fetch>(async (input) => {
-            const url = new URL(
-              typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
-            );
-            if (url.pathname.endsWith("/pulls")) {
-              lookedUp.push(url.pathname);
-              if (lookedUp.length === activeLoads) {
-                entered.resolve();
-              }
-              await release.promise;
-              return githubJson([pullListItem({ state: "closed", head: {} })]);
-            }
-            return githubJson({ additions: 1, deletions: 0 });
-          }),
-        );
-        const f = await createFixture("operator.read", true);
+describe("", () => {
+  const runner = createGatewayHeldFixtureRunner(onTestFinished);
+  afterEach(runner.finishAfterEach);
+  it.each(["concurrency limit", "earlier refresh", "refresh timer", "publication"] as const)(
+    "retires default PR loads queued behind %s",
+    async (waitingOn) => {
+      await withHeldAccess(runner, async (owner, control, capture) => {
         try {
-          const keys = [];
-          for (let index = 0; index < (waitingOn === "concurrency limit" ? 5 : 1); index++) {
-            const key = `agent:main:queued-pr-${index}`;
-            keys.push(key);
-            const repository = getSessionRepositoryWorkspaceStore().create({
-              agentId: "main",
-              sessionKey: key,
-              url: `https://github.com/synthetic/queued-${index}`,
-              branch: "guest-change",
-              assertCurrent: () => {},
-            });
-            await f.seed(key, f.profile.id, { repositoryWorkspaceId: repository.workspaceId });
-          }
-          if (waitingOn === "refresh timer") {
-            await f.subscriptions.replace(f.client.connId!, keys, new Set(keys));
-            f.socket.send.mockClear();
-          } else {
-            await f.subscribe(keys);
-            await entered.promise;
-          }
-          const queuedRefresh =
-            waitingOn === "earlier refresh" || waitingOn === "refresh timer"
-              ? f.subscriptions.replace(f.client.connId!, keys, new Set(keys))
-              : Promise.resolve();
-          const source = loadGatewaySessionEntryReadOnly(keys[0]!, { agentId: "main" }).readSource;
-          expect(source).toBeDefined();
-          let retirement: ReturnType<typeof closeOpenClawAgentDatabaseByPathAsync> | undefined;
-          const peer = waitingOn === "publication" ? f.addReader("publication-peer") : undefined;
-          if (peer) {
-            await f.subscribe(keys, peer.client);
-            f.socket.send.mockImplementationOnce(() => {
-              retirement = closeOpenClawAgentDatabaseByPathAsync(source!.path);
-            });
-          } else {
-            await closeOpenClawAgentDatabaseByPathAsync(source!.path);
-          }
-          release.resolve();
-          const settled = Promise.all([f.subscriptions.pollNow(), queuedRefresh]);
-          if (waitingOn === "refresh timer") {
-            await vi.advanceTimersByTimeAsync(10_000);
-          }
-          await settled;
-          await retirement;
-          expect(lookedUp).toHaveLength(activeLoads);
-          expect(lookedUp.some((url) => url.includes("queued-4"))).toBe(false);
-          if (peer) {
-            expect(JSON.stringify(frames(f.socket))).toContain('"number":103469');
-            expect(JSON.stringify(frames(peer.socket))).not.toContain('"number":103469');
-          } else {
-            expect(JSON.stringify(frames(f.socket))).not.toContain('"number":103469');
-          }
+          await withOpenClawTestState({ scenario: "minimal" }, async () => {
+            vi.stubEnv("GH_TOKEN", "");
+            vi.stubEnv("GITHUB_TOKEN", "");
+            const entered = createDeferredCore();
+            const release = createDeferredCore();
+            control.release = release.resolve;
+            owner.signal.throwIfAborted();
+            const lookedUp: string[] = [];
+            const activeLoads = waitingOn === "concurrency limit" ? 4 : 1;
+            if (waitingOn === "refresh timer") {
+              vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+              release.resolve();
+            }
+            vi.stubGlobal(
+              "fetch",
+              vi.fn<typeof fetch>(async (input) => {
+                const url = new URL(
+                  typeof input === "string" ? input : input instanceof URL ? input.href : input.url,
+                );
+                if (url.pathname.endsWith("/pulls")) {
+                  lookedUp.push(url.pathname);
+                  if (lookedUp.length === activeLoads) {
+                    entered.resolve();
+                  }
+                  await release.promise;
+                  return githubJson([pullListItem({ state: "closed", head: {} })]);
+                }
+                return githubJson({ additions: 1, deletions: 0 });
+              }),
+            );
+            const f = await createFixture("operator.read", true);
+            try {
+              await capture(f, async (track) => {
+                const keys = [];
+                for (let index = 0; index < (waitingOn === "concurrency limit" ? 5 : 1); index++) {
+                  owner.signal.throwIfAborted();
+                  const key = `agent:main:queued-pr-${index}`;
+                  keys.push(key);
+                  const repository = getSessionRepositoryWorkspaceStore().create({
+                    agentId: "main",
+                    sessionKey: key,
+                    url: `https://github.com/synthetic/queued-${index}`,
+                    branch: "guest-change",
+                    assertCurrent: () => {},
+                  });
+                  await f.seed(key, f.profile.id, {
+                    repositoryWorkspaceId: repository.workspaceId,
+                  });
+                }
+                if (waitingOn === "refresh timer") {
+                  await track(
+                    (owner.signal.throwIfAborted(),
+                    f.subscriptions.replace(f.client.connId!, keys, new Set(keys))),
+                  );
+                  f.socket.send.mockClear();
+                } else {
+                  await track((owner.signal.throwIfAborted(), f.subscribe(keys)));
+                  await racePromiseWithAbortSignal(entered.promise, owner.signal);
+                }
+                const queuedRefresh =
+                  waitingOn === "earlier refresh" || waitingOn === "refresh timer"
+                    ? track(
+                        (owner.signal.throwIfAborted(),
+                        f.subscriptions.replace(f.client.connId!, keys, new Set(keys))),
+                      )
+                    : Promise.resolve();
+                const source = loadGatewaySessionEntryReadOnly(keys[0]!, {
+                  agentId: "main",
+                }).readSource;
+                expect(source).toBeDefined();
+                let retirement:
+                  | ReturnType<typeof closeOpenClawAgentDatabaseByPathAsync>
+                  | undefined;
+                const peer =
+                  waitingOn === "publication" ? f.addReader("publication-peer") : undefined;
+                if (peer) {
+                  await track((owner.signal.throwIfAborted(), f.subscribe(keys, peer.client)));
+                  f.socket.send.mockImplementationOnce(() => {
+                    retirement = track(closeOpenClawAgentDatabaseByPathAsync(source!.path));
+                  });
+                } else {
+                  await closeOpenClawAgentDatabaseByPathAsync(source!.path);
+                }
+                release.resolve();
+                const settled = track(
+                  Promise.all([
+                    track((owner.signal.throwIfAborted(), f.subscriptions.pollNow())),
+                    queuedRefresh,
+                  ]),
+                );
+                if (waitingOn === "refresh timer") {
+                  await vi.advanceTimersByTimeAsync(10_000);
+                }
+                await settled;
+                await retirement;
+                expect(lookedUp).toHaveLength(activeLoads);
+                expect(lookedUp.some((url) => url.includes("queued-4"))).toBe(false);
+                if (peer) {
+                  expect(JSON.stringify(frames(f.socket))).toContain('"number":103469');
+                  expect(JSON.stringify(frames(peer.socket))).not.toContain('"number":103469');
+                } else {
+                  expect(JSON.stringify(frames(f.socket))).not.toContain('"number":103469');
+                }
+              });
+            } finally {
+              release.resolve();
+              await f.close();
+            }
+          });
         } finally {
-          release.resolve();
-          await f.close();
+          vi.useRealTimers();
+          vi.unstubAllGlobals();
+          vi.unstubAllEnvs();
         }
       });
-    } finally {
-      vi.useRealTimers();
-      vi.unstubAllGlobals();
-      vi.unstubAllEnvs();
-    }
-  },
-);
+    },
+  );
+});

@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test, vi } from "vitest";
-import { WebSocket } from "ws";
 import {
   GATEWAY_CLIENT_IDS,
   GATEWAY_CLIENT_MODES,
@@ -28,14 +27,17 @@ import { loggingState } from "../logging/state.js";
 import { resolveGatewayClientPlatformIdentity } from "../shared/gateway-client-platform.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { buildDeviceAuthPayloadV3 } from "./device-auth.js";
-import { CONTROL_UI_CLIENT, NODE_CLIENT } from "./server.auth.test-helpers.js";
+import {
+  CONTROL_UI_CLIENT,
+  NODE_CLIENT,
+  openWs as openBrowserWs,
+} from "./server.auth.test-helpers.js";
 import {
   connectReq,
   installGatewayTestHooks,
   onceMessage,
   readConnectChallengeNonce,
   testState,
-  trackConnectChallengeNonce,
   withGatewayServer,
 } from "./test-helpers.js";
 
@@ -64,15 +66,6 @@ function trustedProxyHeaders(declaredScopes?: string): Record<string, string> {
 
 function deviceIdentityPath(label: string): string {
   return path.join(os.tmpdir(), `openclaw-${label}-${randomUUID()}.sqlite`);
-}
-
-async function openBrowserWs(port: number, headers: Record<string, string>): Promise<WebSocket> {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`, { headers });
-  trackConnectChallengeNonce(ws);
-  await new Promise<void>((resolve) => {
-    ws.once("open", () => resolve());
-  });
-  return ws;
 }
 
 async function writeGatewayAuthConfig(params: {

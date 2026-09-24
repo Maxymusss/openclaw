@@ -4,9 +4,10 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createOperationalRunInstanceRef } from "../agents/admitted-run-context.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import type { ChannelApprovalKind } from "../infra/approval-types.js";
 import { resolveCanonicalPluginApprovalRequestAllowedDecisions } from "../infra/plugin-approval-canonical-decisions.js";
 import {
@@ -22,6 +23,7 @@ import {
   createTestApprovalFixture,
   createTestApprovalManager,
 } from "./exec-approval-manager.test-support.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 import { registerNodePolicyApprovalDeliveryTests } from "./node-invoke-plugin-policy.approval-delivery.test-support.js";
 import { applyPluginNodeInvokePolicy } from "./node-invoke-plugin-policy.js";
 import {
@@ -57,12 +59,14 @@ vi.mock("../infra/approval-turn-source.js", () => ({
 }));
 
 describe("applyPluginNodeInvokePolicy", () => {
+  const held = createGatewayHeldFixtureRunner(onTestFinished);
   beforeEach(() => {
     resetPluginRuntimeStateForTest();
     hasApprovalTurnSourceRouteMock.mockClear();
   });
 
   afterEach(async () => {
+    await held.finishAfterEach();
     resetPluginRuntimeStateForTest();
     for (const dir of tempDirs.splice(0)) {
       await closeOpenClawStateDatabaseByPathAsync(path.join(dir, "state.sqlite"));
@@ -511,48 +515,68 @@ describe("applyPluginNodeInvokePolicy", () => {
     ]);
     let authorityActive = true;
     const { promise: pairingCheck, resolve: releasePairingCheck } = createDeferred();
+    const pairingStarted = createDeferred();
     const { context, invoke } = createContext({
       validateAgentRuntimeApprovalAuthority: () => authorityActive,
     });
     const operationalRunInstance = createOperationalRunInstanceRef("run-node-policy-race");
-    const resultPromise = applyPluginNodeInvokePolicy({
-      context,
-      client: {
-        ...createOperatorClient(),
-        internal: {
-          agentRuntimeIdentity: {
-            kind: "agentRuntime",
-            agentId: "main",
-            sessionKey: "agent:main:test",
-            operationalRunInstance,
-            delegatedAuthority: {
-              kind: "local",
-              operationalRunInstance,
-              lifecycleGeneration: "generation",
-              claimId: "claim",
+    await held.run(
+      () => {
+        authorityActive = false;
+        releasePairingCheck();
+      },
+      async ({ signal, track }) => {
+        const resultPromise = track(
+          applyPluginNodeInvokePolicy({
+            context,
+            client: {
+              ...createOperatorClient(),
+              internal: {
+                agentRuntimeIdentity: {
+                  kind: "agentRuntime",
+                  agentId: "main",
+                  sessionKey: "agent:main:test",
+                  operationalRunInstance,
+                  delegatedAuthority: {
+                    kind: "local",
+                    operationalRunInstance,
+                    lifecycleGeneration: "generation",
+                    claimId: "claim",
+                  },
+                },
+              },
             },
-          },
-        },
-      },
-      nodeSession: createNodeSession(),
-      command: DEMO_COMMAND,
-      params: DEMO_PARAMS,
-      isInvocationCurrent: async () => {
-        await pairingCheck;
-        return true;
-      },
-    });
+            nodeSession: createNodeSession(),
+            command: DEMO_COMMAND,
+            params: DEMO_PARAMS,
+            isInvocationCurrent: async () => {
+              pairingStarted.resolve();
+              await pairingCheck;
+              return true;
+            },
+          }),
+        );
 
-    await vi.waitFor(() => expect(releasePairingCheck).toBeTypeOf("function"));
-    authorityActive = false;
-    releasePairingCheck?.();
+        await racePromiseWithAbortSignal(
+          Promise.race([
+            pairingStarted.promise,
+            resultPromise.then(() => {
+              throw new Error("invocation settled before pairing recheck");
+            }),
+          ]),
+          signal,
+        );
+        authorityActive = false;
+        releasePairingCheck?.();
 
-    await expect(resultPromise).resolves.toMatchObject({
-      ok: false,
-      code: "APPROVAL_AUTHORITY_CLOSED",
-      details: { nodeCommandDispatched: false },
-    });
-    expect(invoke).not.toHaveBeenCalled();
+        await expect(resultPromise).resolves.toMatchObject({
+          ok: false,
+          code: "APPROVAL_AUTHORITY_CLOSED",
+          details: { nodeCommandDispatched: false },
+        });
+        expect(invoke).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it("rejects bridged approval dispatch when its record closes during pairing recheck", async () => {
@@ -561,30 +585,50 @@ describe("applyPluginNodeInvokePolicy", () => {
     ]);
     let approvalActive = true;
     const { promise: pairingCheck, resolve: releasePairingCheck } = createDeferred();
+    const pairingStarted = createDeferred();
     const { context, invoke } = createContext();
-    const resultPromise = applyPluginNodeInvokePolicy({
-      context,
-      client: createOperatorClient(),
-      nodeSession: createNodeSession(),
-      command: DEMO_COMMAND,
-      params: DEMO_PARAMS,
-      isInvocationCurrent: async () => {
-        await pairingCheck;
-        return true;
+    await held.run(
+      () => {
+        approvalActive = false;
+        releasePairingCheck();
       },
-      isApprovalAuthorityActive: () => approvalActive,
-    });
+      async ({ signal, track }) => {
+        const resultPromise = track(
+          applyPluginNodeInvokePolicy({
+            context,
+            client: createOperatorClient(),
+            nodeSession: createNodeSession(),
+            command: DEMO_COMMAND,
+            params: DEMO_PARAMS,
+            isInvocationCurrent: async () => {
+              pairingStarted.resolve();
+              await pairingCheck;
+              return true;
+            },
+            isApprovalAuthorityActive: () => approvalActive,
+          }),
+        );
 
-    await vi.waitFor(() => expect(releasePairingCheck).toBeTypeOf("function"));
-    approvalActive = false;
-    releasePairingCheck?.();
+        await racePromiseWithAbortSignal(
+          Promise.race([
+            pairingStarted.promise,
+            resultPromise.then(() => {
+              throw new Error("invocation settled before pairing recheck");
+            }),
+          ]),
+          signal,
+        );
+        approvalActive = false;
+        releasePairingCheck?.();
 
-    await expect(resultPromise).resolves.toMatchObject({
-      ok: false,
-      code: "APPROVAL_AUTHORITY_CLOSED",
-      details: { nodeCommandDispatched: false },
-    });
-    expect(invoke).not.toHaveBeenCalled();
+        await expect(resultPromise).resolves.toMatchObject({
+          ok: false,
+          code: "APPROVAL_AUTHORITY_CLOSED",
+          details: { nodeCommandDispatched: false },
+        });
+        expect(invoke).not.toHaveBeenCalled();
+      },
+    );
   });
 
   it("rejects plugin transport dispatch through an invalidated node session", async () => {

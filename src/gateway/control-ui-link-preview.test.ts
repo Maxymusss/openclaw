@@ -1,5 +1,7 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 
 const encode = vi.hoisted(() => vi.fn());
 vi.mock("../media/image-ops.js", async (original) => ({
@@ -32,6 +34,8 @@ afterEach(() => {
 });
 
 describe("public link previews", () => {
+  const runner = createGatewayHeldFixtureRunner(onTestFinished);
+  afterEach(runner.finishAfterEach);
   it.each([
     "javascript:alert(1)",
     "file:///etc/passwd",
@@ -199,14 +203,23 @@ describe("public link previews", () => {
           : gate.promise,
       );
     vi.stubGlobal("fetch", fetch);
-    const first = load("/shared");
-    const second = load("/shared");
-    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
-    gate.resolve(new Response(null, { status: 404 }));
-    expect(await first).toEqual({});
-    expect(await second).toEqual({});
-    expect(await load("/shared")).toEqual({});
-    expect(fetch).toHaveBeenCalledTimes(2);
+    await runner.run(
+      () => gate.resolve(new Response(null, { status: 404 })),
+      async ({ signal, track }) => {
+        const first = track(load("/shared"));
+        const second = track(load("/shared"));
+        await racePromiseWithAbortSignal(
+          track(vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1))),
+          signal,
+        );
+        gate.resolve(new Response(null, { status: 404 }));
+        expect(await first).toEqual({});
+        expect(await second).toEqual({});
+        signal.throwIfAborted();
+        expect(await track(load("/shared"))).toEqual({});
+        expect(fetch).toHaveBeenCalledTimes(2);
+      },
+    );
   });
 
   it("does no work while disabled, including cached previews; disabling during HTML stops images", async () => {

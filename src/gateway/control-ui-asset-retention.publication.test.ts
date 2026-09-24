@@ -1,17 +1,68 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createControlUiAssetRetention } from "./control-ui-asset-retention.js";
 import {
   withRetentionFixture,
   writeRetentionBuild,
 } from "./control-ui-asset-retention.test-support.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 
 const pruneLogs = vi.hoisted(() => ({ debug: vi.fn(), warn: vi.fn() }));
 vi.mock("../logging/subsystem.js", () => ({ createSubsystemLogger: () => pruneLogs }));
 
+type HeldOwner = Parameters<
+  Parameters<ReturnType<typeof createGatewayHeldFixtureRunner>["run"]>[1]
+>[0];
+
+async function withHeldRetention(
+  owner: HeldOwner,
+  release: () => void,
+  body: (
+    fixture: Parameters<Parameters<typeof withRetentionFixture>[0]>[0],
+    track: HeldOwner["track"],
+  ) => Promise<void>,
+) {
+  const failures: unknown[] = [];
+  let entered = false;
+  await owner
+    .track(
+      withRetentionFixture(async (fixture) => {
+        entered = true;
+        const pending: Promise<unknown>[] = [];
+        const track: HeldOwner["track"] = (promise, cleanup) => {
+          pending.push(promise);
+          return owner.track(promise, cleanup);
+        };
+        try {
+          owner.signal.throwIfAborted();
+          await body(fixture, track);
+        } catch (error) {
+          failures.push(error);
+        }
+        // The fixture restores fs spies and removes its tree as soon as this callback returns.
+        try {
+          release();
+          while (pending.length) await Promise.allSettled(pending.splice(0));
+        } catch (error) {
+          failures.push(error);
+        }
+      }),
+    )
+    .catch((error: unknown) => {
+      failures.push(error);
+    });
+  if (!entered && failures.length === 0)
+    failures.push(new Error("retention fixture did not enter"));
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "retention fixture failed", { cause: failures[0] });
+}
+
 describe("Control UI retained publication", () => {
+  const runner = createGatewayHeldFixtureRunner(onTestFinished);
+  afterEach(runner.finishAfterEach);
   it.each(["removed", "replaced-valid", "symlink"] as const)(
     "rechecks a %s current target before refreshing it",
     async (mutation) => {
@@ -141,166 +192,200 @@ describe("Control UI retained publication", () => {
   it.each(["native", "EPERM", "ENOTEMPTY"] as const)(
     "records concurrent different-target pruning with %s deletion",
     async (fault) => {
-      for (let iteration = 0; iteration < (fault === "native" ? 3 : 1); iteration++) {
-        await withRetentionFixture(async ({ root, cache, seed }) => {
-          pruneLogs.debug.mockClear();
-          pruneLogs.warn.mockClear();
-          const old = [await seed("old-a"), await seed("old-b")].toSorted((a, b) =>
-            a.manifest.generation.localeCompare(b.manifest.generation),
-          );
-          const victim = old[1]!.target;
-          const builds = [
-            await writeRetentionBuild(path.join(root, "a"), "a"),
-            await writeRetentionBuild(path.join(root, "b"), "b"),
-          ];
-          const owners = builds.map((build) => createControlUiAssetRetention(build.root));
-          const publications = createDeferred();
-          const pruners = createDeferred();
-          const firstPruner = createDeferred();
-          const loser = createDeferred();
-          let published = 0;
-          let pruning = 0;
-          const missing: unknown[] = [];
-          const rename = fs.rename;
-          const rm = fs.rm;
-          const collision = Object.assign(new Error("concurrent deletion"), { code: fault });
-          const prune = async (operation: () => Promise<void>, claim: boolean) => {
-            const arrival = ++pruning;
-            if (arrival === 2) {
-              pruners.resolve();
-            }
-            await pruners.promise;
-            if (arrival === 1) {
-              try {
-                if (claim || fault === "native") {
-                  await operation();
-                } else {
-                  // Before the fix, both publishers remove the same live tree.
-                  await fs.unlink(path.join(victim, "asset-manifest.json"));
-                }
-                firstPruner.resolve();
-                await loser.promise;
-                if (!claim && fault !== "native") {
-                  await operation();
-                }
-              } finally {
-                firstPruner.resolve();
-              }
-            } else {
-              await firstPruner.promise;
-              try {
-                if (fault !== "native") {
-                  throw collision;
-                }
-                await fs.lstat(victim).catch((error: unknown) => {
-                  missing.push(error);
+      let releaseHeld = () => {};
+      await runner.run(
+        () => releaseHeld(),
+        async (owner) => {
+          for (let iteration = 0; iteration < (fault === "native" ? 3 : 1); iteration++) {
+            owner.signal.throwIfAborted();
+            await withHeldRetention(
+              owner,
+              () => releaseHeld(),
+              async ({ root, cache, seed }, track) => {
+                pruneLogs.debug.mockClear();
+                pruneLogs.warn.mockClear();
+                const old = [await seed("old-a"), await seed("old-b")].toSorted((a, b) =>
+                  a.manifest.generation.localeCompare(b.manifest.generation),
+                );
+                const victim = old[1]!.target;
+                const builds = [
+                  await writeRetentionBuild(path.join(root, "a"), "a"),
+                  await writeRetentionBuild(path.join(root, "b"), "b"),
+                ];
+                owner.signal.throwIfAborted();
+                const owners = builds.map((build) => createControlUiAssetRetention(build.root));
+                const publications = createDeferred();
+                const pruners = createDeferred();
+                const firstPruner = createDeferred();
+                const loser = createDeferred();
+                releaseHeld = () => {
+                  publications.resolve();
+                  pruners.resolve();
+                  firstPruner.resolve();
+                  loser.resolve();
+                };
+                let published = 0;
+                let pruning = 0;
+                const missing: unknown[] = [];
+                const rename = fs.rename;
+                const rm = fs.rm;
+                const collision = Object.assign(new Error("concurrent deletion"), { code: fault });
+                const prune = async (operation: () => Promise<void>, claim: boolean) => {
+                  const arrival = ++pruning;
+                  if (arrival === 2) {
+                    pruners.resolve();
+                  }
+                  await pruners.promise;
+                  if (arrival === 1) {
+                    try {
+                      if (claim || fault === "native") {
+                        await operation();
+                      } else {
+                        // Before the fix, both publishers remove the same live tree.
+                        await fs.unlink(path.join(victim, "asset-manifest.json"));
+                      }
+                      firstPruner.resolve();
+                      await loser.promise;
+                      if (!claim && fault !== "native") {
+                        await operation();
+                      }
+                    } finally {
+                      firstPruner.resolve();
+                    }
+                  } else {
+                    await firstPruner.promise;
+                    try {
+                      if (fault !== "native") {
+                        throw collision;
+                      }
+                      await fs.lstat(victim).catch((error: unknown) => {
+                        missing.push(error);
+                      });
+                      await operation();
+                    } finally {
+                      loser.resolve();
+                    }
+                  }
+                };
+                vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+                  if (args[0] === victim) {
+                    return prune(() => rename(...args), true);
+                  }
+                  await rename(...args);
+                  if (++published === 2) {
+                    publications.resolve();
+                  }
+                  await publications.promise;
                 });
-                await operation();
-              } finally {
-                loser.resolve();
-              }
-            }
-          };
-          vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
-            if (args[0] === victim) {
-              return prune(() => rename(...args), true);
-            }
-            await rename(...args);
-            if (++published === 2) {
-              publications.resolve();
-            }
-            await publications.promise;
-          });
-          vi.spyOn(fs, "rm").mockImplementation(async (...args) =>
-            args[0] === victim ? prune(() => rm(...args), false) : rm(...args),
-          );
-          const results = await Promise.allSettled(owners.map((owner) => owner.prepare()));
-          expect(results).toEqual([
-            { status: "fulfilled", value: undefined },
-            { status: "fulfilled", value: undefined },
-          ]);
-          expect(pruning).toBe(2);
-          expect(missing).toMatchObject(fault === "native" ? [{ code: "ENOENT" }] : []);
-          expect(pruneLogs.debug).toHaveBeenCalledWith(
-            expect.any(String),
-            expect.objectContaining({ directory: victim, outcome: "already-pruned" }),
-          );
-          expect(pruneLogs.warn).not.toHaveBeenCalled();
-          for (const [index, build] of builds.entries()) {
-            expect(
-              await fs.readFile(owners[index]!.resolveAsset(build.assetPath)!.filePath),
-            ).toEqual(await fs.readFile(path.join(build.root, build.assetPath)));
+                vi.spyOn(fs, "rm").mockImplementation(async (...args) =>
+                  args[0] === victim ? prune(() => rm(...args), false) : rm(...args),
+                );
+                const results = await Promise.allSettled(
+                  owners.map((publisher) => track(publisher.prepare())),
+                );
+                expect(results).toEqual([
+                  { status: "fulfilled", value: undefined },
+                  { status: "fulfilled", value: undefined },
+                ]);
+                expect(pruning).toBe(2);
+                expect(missing).toMatchObject(fault === "native" ? [{ code: "ENOENT" }] : []);
+                expect(pruneLogs.debug).toHaveBeenCalledWith(
+                  expect.any(String),
+                  expect.objectContaining({ directory: victim, outcome: "already-pruned" }),
+                );
+                expect(pruneLogs.warn).not.toHaveBeenCalled();
+                for (const [index, build] of builds.entries()) {
+                  expect(
+                    await fs.readFile(owners[index]!.resolveAsset(build.assetPath)!.filePath),
+                  ).toEqual(await fs.readFile(path.join(build.root, build.assetPath)));
+                }
+                expect(await fs.readdir(cache)).toHaveLength(3);
+              },
+            );
           }
-          expect(await fs.readdir(cache)).toHaveLength(3);
-        });
-      }
+        },
+      );
     },
   );
 
   it.each(["same", "different"] as const)(
     "coordinates native concurrent %s-target publication without losing the winner",
     async (kind) => {
-      await withRetentionFixture(async ({ root, cache, seed }) => {
-        const old = [await seed("old-a"), await seed("old-b")];
-        const a = await writeRetentionBuild(path.join(root, "a"), "a");
-        const b = kind === "same" ? a : await writeRetentionBuild(path.join(root, "b"), "b");
-        const owners = [
-          createControlUiAssetRetention(a.root),
-          createControlUiAssetRetention(b.root),
-        ];
-        const barrier = createDeferred();
-        let arrivals = 0;
-        const rename = fs.rename;
-        const errors: string[] = [];
-        vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
-          if (!path.basename(String(args[0])).startsWith(".staging-")) {
-            return rename(...args);
-          }
-          // Both preparers reach real rename from their own completed staging tree.
-          if (++arrivals === 2) {
-            barrier.resolve();
-          }
-          await barrier.promise;
-          try {
-            await rename(...args);
-          } catch (error) {
-            errors.push((error as NodeJS.ErrnoException).code!);
-            throw error;
-          }
-        });
-        const results = await Promise.allSettled(owners.map((owner) => owner.prepare()));
-        expect(results).toEqual([
-          { status: "fulfilled", value: undefined },
-          { status: "fulfilled", value: undefined },
-        ]);
-        expect(arrivals).toBe(2);
-        if (kind === "same") {
-          expect(errors).toHaveLength(1);
-          expect(
-            process.platform === "win32"
-              ? ["EEXIST", "ENOTEMPTY", "EPERM"]
-              : ["EEXIST", "ENOTEMPTY"],
-          ).toContain(errors[0]);
-        } else {
-          expect(errors).toEqual([]);
-        }
-        for (const [index, owner] of owners.entries()) {
-          const build = index === 0 ? a : b;
-          expect(
-            await fs.readFile(owner.resolveAsset(build.assetPath)!.filePath, "utf8"),
-          ).toContain(index === 0 || kind === "same" ? '"a"' : '"b"');
-        }
-        const entries = await fs.readdir(cache);
-        expect(entries).toHaveLength(3);
-        expect(entries.some((entry) => entry.startsWith(".staging-"))).toBe(false);
-        if (kind === "different") {
-          expect(entries).toContain(a.manifest.generation);
-          expect(entries).toContain(b.manifest.generation);
-          expect(old.filter((build) => entries.includes(build.manifest.generation))).toHaveLength(
-            1,
+      let releaseHeld = () => {};
+      await runner.run(
+        () => releaseHeld(),
+        async (owner) => {
+          await withHeldRetention(
+            owner,
+            () => releaseHeld(),
+            async ({ root, cache, seed }, track) => {
+              const old = [await seed("old-a"), await seed("old-b")];
+              const a = await writeRetentionBuild(path.join(root, "a"), "a");
+              const b = kind === "same" ? a : await writeRetentionBuild(path.join(root, "b"), "b");
+              owner.signal.throwIfAborted();
+              const owners = [
+                createControlUiAssetRetention(a.root),
+                createControlUiAssetRetention(b.root),
+              ];
+              const barrier = createDeferred();
+              releaseHeld = barrier.resolve;
+              let arrivals = 0;
+              const rename = fs.rename;
+              const errors: string[] = [];
+              vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
+                if (!path.basename(String(args[0])).startsWith(".staging-")) {
+                  return rename(...args);
+                }
+                // Both preparers reach real rename from their own completed staging tree.
+                if (++arrivals === 2) {
+                  barrier.resolve();
+                }
+                await barrier.promise;
+                try {
+                  await rename(...args);
+                } catch (error) {
+                  errors.push((error as NodeJS.ErrnoException).code!);
+                  throw error;
+                }
+              });
+              const results = await Promise.allSettled(
+                owners.map((publisher) => track(publisher.prepare())),
+              );
+              expect(results).toEqual([
+                { status: "fulfilled", value: undefined },
+                { status: "fulfilled", value: undefined },
+              ]);
+              expect(arrivals).toBe(2);
+              if (kind === "same") {
+                expect(errors).toHaveLength(1);
+                expect(
+                  process.platform === "win32"
+                    ? ["EEXIST", "ENOTEMPTY", "EPERM"]
+                    : ["EEXIST", "ENOTEMPTY"],
+                ).toContain(errors[0]);
+              } else {
+                expect(errors).toEqual([]);
+              }
+              for (const [index, owner] of owners.entries()) {
+                const build = index === 0 ? a : b;
+                expect(
+                  await fs.readFile(owner.resolveAsset(build.assetPath)!.filePath, "utf8"),
+                ).toContain(index === 0 || kind === "same" ? '"a"' : '"b"');
+              }
+              const entries = await fs.readdir(cache);
+              expect(entries).toHaveLength(3);
+              expect(entries.some((entry) => entry.startsWith(".staging-"))).toBe(false);
+              if (kind === "different") {
+                expect(entries).toContain(a.manifest.generation);
+                expect(entries).toContain(b.manifest.generation);
+                expect(
+                  old.filter((build) => entries.includes(build.manifest.generation)),
+                ).toHaveLength(1);
+              }
+            },
           );
-        }
-      });
+        },
+      );
     },
   );
 

@@ -4,7 +4,7 @@ import { randomUUID } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, test } from "vitest";
-import { WebSocket } from "ws";
+import type { WebSocket } from "ws";
 import { ConnectErrorDetailCodes } from "../../packages/gateway-protocol/src/connect-error-details.js";
 import { REDACTED_SENTINEL } from "../config/redact-sentinel.js";
 import {
@@ -14,7 +14,7 @@ import {
 } from "../infra/device-identity.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { buildDeviceAuthPayload } from "./device-auth.js";
-import { CONTROL_UI_CLIENT, TEST_OPERATOR_CLIENT } from "./server.auth.test-helpers.js";
+import { CONTROL_UI_CLIENT, openWs, TEST_OPERATOR_CLIENT } from "./server.auth.test-helpers.js";
 import {
   connectReq,
   connectOk,
@@ -22,7 +22,6 @@ import {
   readConnectChallengeNonce,
   rpcReq,
   testState,
-  trackConnectChallengeNonce,
   withGatewayServer,
 } from "./test-helpers.js";
 
@@ -45,15 +44,6 @@ type GatewayTestClient = {
   mode: string;
 };
 type SignedBrowserDevice = Awaited<ReturnType<typeof createSignedDevice>>;
-
-const openWs = async (port: number, headers?: Record<string, string>) => {
-  const ws = new WebSocket(`ws://127.0.0.1:${port}`, headers ? { headers } : undefined);
-  trackConnectChallengeNonce(ws);
-  await new Promise<void>((resolve) => {
-    ws.once("open", resolve);
-  });
-  return ws;
-};
 
 async function createSignedDevice(params: {
   token: string;

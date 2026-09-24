@@ -8,6 +8,7 @@ import {
   MIN_PROBE_PROTOCOL_VERSION,
   PROTOCOL_VERSION,
 } from "../../packages/gateway-protocol/src/index.js";
+import { acquireGatewayTestWebSocket } from "../../test/helpers/gateway-websocket.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import { buildDeviceAuthPayload } from "./device-auth.js";
@@ -59,10 +60,7 @@ async function waitForWsClose(ws: WebSocket, timeoutMs: number): Promise<boolean
 const openWs = async (port: number, headers?: Record<string, string>) => {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`, headers ? { headers } : undefined);
   trackConnectChallengeNonce(ws);
-  await new Promise<void>((resolve) => {
-    ws.once("open", resolve);
-  });
-  return ws;
+  return acquireGatewayTestWebSocket(ws, 10_000);
 };
 
 const readConnectChallengeNonce = async (ws: WebSocket) => {
@@ -95,10 +93,7 @@ const openTailscaleWs = async (
     },
   });
   trackConnectChallengeNonce(ws);
-  await new Promise<void>((resolve) => {
-    ws.once("open", resolve);
-  });
-  return ws;
+  return acquireGatewayTestWebSocket(ws, 10_000);
 };
 
 const originForPort = (port: number) => `http://127.0.0.1:${port}`;

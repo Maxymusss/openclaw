@@ -1,14 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { DecisionReceiptV1 } from "../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { createOperationalRunInstanceRef } from "../agents/admitted-run-context.js";
 import { createExecutionIdentityAdmissionToken } from "../audit/execution-identity-admission.js";
 import { configureRuntimeActionDecisionSink } from "../audit/runtime-action-decision.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../plugins/runtime.js";
 import type { OpenClawPluginNodeInvokePolicyContext } from "../plugins/types.js";
 import { ApprovalObserverClosedError } from "./exec-approval-lifecycle.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 import { applyPluginNodeInvokePolicy } from "./node-invoke-plugin-policy.js";
 import type { NodeInvokeResult, NodeSession } from "./node-registry.js";
 import type { GatewayClient, GatewayRequestContext } from "./server-methods/types.js";
@@ -110,8 +112,12 @@ async function runPolicy(node = createNode(), receipts: DecisionReceiptV1[] = []
 }
 
 describe("plugin node action receipts", () => {
+  const held = createGatewayHeldFixtureRunner(onTestFinished);
   beforeEach(resetPluginRuntimeStateForTest);
-  afterEach(resetPluginRuntimeStateForTest);
+  afterEach(async () => {
+    await held.finishAfterEach();
+    resetPluginRuntimeStateForTest();
+  });
 
   it("records gate enforcement and successful action as attribution only", async () => {
     registerPolicy((ctx: OpenClawPluginNodeInvokePolicyContext) => ctx.invokeNode());
@@ -172,11 +178,8 @@ describe("plugin node action receipts", () => {
   it.each(["allowed", "denied", "throws"] as const)(
     "does not attribute a late %s policy result after runtime authority closes",
     async (outcome) => {
-      let releasePolicy: (() => void) | undefined;
       const { promise: policyStarted, resolve: markPolicyStarted } = createDeferred();
-      const policyWait = new Promise<void>((resolve) => {
-        releasePolicy = resolve;
-      });
+      const { promise: policyWait, resolve: releasePolicy } = createDeferred();
       registerPolicy(async () => {
         markPolicyStarted?.();
         await policyWait;
@@ -192,32 +195,50 @@ describe("plugin node action receipts", () => {
       const { context, invoke } = createContext(node);
       context.validateAgentRuntimeApprovalAuthority = () => authorityActive;
       const receipts: DecisionReceiptV1[] = [];
-      const clear = configureRuntimeActionDecisionSink((receipt) => {
-        receipts.push(receipt);
-        return true;
-      });
-      try {
-        const resultPromise = applyPluginNodeInvokePolicy({
-          context,
-          client: createClient(`run-node-policy-${outcome}`),
-          nodeSession: node,
-          command: COMMAND,
-          params: { private: "arguments" },
-        });
-        await policyStarted;
-        authorityActive = false;
-        releasePolicy?.();
+      let clear: (() => void) | undefined;
+      await held.run(
+        () => {
+          authorityActive = false;
+          releasePolicy();
+        },
+        async ({ signal, track }) => {
+          clear = configureRuntimeActionDecisionSink((receipt) => {
+            receipts.push(receipt);
+            return true;
+          });
+          const resultPromise = track(
+            applyPluginNodeInvokePolicy({
+              context,
+              client: createClient(`run-node-policy-${outcome}`),
+              nodeSession: node,
+              command: COMMAND,
+              params: { private: "arguments" },
+            }),
+          );
+          await racePromiseWithAbortSignal(
+            Promise.race([
+              policyStarted,
+              resultPromise.then(() => {
+                throw new Error("policy settled before entry");
+              }),
+            ]),
+            signal,
+          );
+          authorityActive = false;
+          releasePolicy?.();
 
-        if (outcome === "throws") {
-          await expect(resultPromise).rejects.toThrow("late policy failure");
-        } else {
-          await expect(resultPromise).resolves.toMatchObject({ ok: outcome === "allowed" });
-        }
-        expect(invoke).not.toHaveBeenCalled();
-        expect(receipts).toEqual([]);
-      } finally {
-        clear();
-      }
+          if (outcome === "throws") {
+            await expect(resultPromise).rejects.toThrow("late policy failure");
+          } else {
+            await expect(resultPromise).resolves.toMatchObject({ ok: outcome === "allowed" });
+          }
+          expect(invoke).not.toHaveBeenCalled();
+          expect(receipts).toEqual([]);
+        },
+        async () => {
+          clear?.();
+        },
+      );
     },
   );
 });

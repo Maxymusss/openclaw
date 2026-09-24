@@ -1,12 +1,14 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import {
   resetAgentEventsForTest,
   rotateAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { AsyncWorkScope, trackAsyncWork } from "../../shared/async-work-scope.js";
 import { registerChatAbortController } from "../chat-abort.js";
+import { createGatewayHeldFixtureRunner } from "../held-fixture.test-support.js";
 import { createChatRunState } from "../server-chat-state.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
 import { createSyntheticPluginRuntimeClient } from "../server-plugin-runtime-client.js";
@@ -41,6 +43,8 @@ vi.mock("./agent-turn-service.js", () => {
   return { createAgentTurnService: () => ({ startTurn, waitForTurn }) };
 });
 
+const { run: runHeldFixture, finishAfterEach } = createGatewayHeldFixtureRunner(onTestFinished);
+
 function createContext() {
   return Object.assign({} as GatewayRequestContext, {
     trackExecution: trackAsyncWork,
@@ -64,6 +68,9 @@ function createFacade(context = createContext()) {
 }
 
 describe("createInternalAgentTurnFacade", () => {
+  afterEach(async () => {
+    await finishAfterEach();
+  });
   beforeEach(() => {
     resetAgentEventsForTest();
     startTurn.mockReset();
@@ -72,147 +79,157 @@ describe("createInternalAgentTurnFacade", () => {
     envelope.mockReset().mockImplementation(async (run) => await run());
   });
 
-  it("joins cold execution preparation and rechecks closed or canceled callers", async ({
-    signal,
-  }) => {
-    expect(runtimeLoad.loaded).toBe(false);
-    const scenarios = [
-      ["dispatch", "close"],
-      ["wait", "close"],
-      ["dispatch", "abort"],
-      ["wait", "abort"],
-      ["dispatch", "admission"],
-      ["dispatch", "context"],
-      ["dispatch", "deadline"],
-      ["wait", "deadline"],
-    ] as const;
-    try {
-      for (const [method, boundary] of scenarios) {
-        // Vitest's manual factory callstack cannot represent overlapping cold imports.
-        // Join each real execution owner before replacing the next module instance.
-        vi.resetModules();
-        startTurn.mockReset().mockImplementation(async ({ io }) => {
-          io.emitAcceptance([true, { runId: "cold-run" }, undefined]);
-        });
-        waitForTurn.mockReset().mockResolvedValue({ result: { status: "timeout" } });
-        const held = createDeferred();
-        const reached = createDeferred();
-        vi.doMock("./agent-turn-service.js", async () => {
-          reached.resolve();
-          await held.promise;
-          return { createAgentTurnService: () => ({ startTurn, waitForTurn }) };
-        });
-        const unblock = () => held.resolve();
-        signal.addEventListener("abort", unblock, { once: true });
-        const scope = new AsyncWorkScope();
-        const entries = new GatewayRequestEntryLifetime();
-        const executions: Promise<unknown>[] = [];
-        const trackExecution: GatewayRequestContext["trackExecution"] = (run) => {
-          const execution = scope.track(run);
-          executions.push(execution);
-          return execution;
-        };
-        const context = Object.assign(createContext(), {
-          trackExecution,
-          requestEntryLifetime: entries,
-        });
-        let current = true;
-        const assertCurrent = () => {
-          if (!current) {
-            throw new Error("caller retired");
-          }
-        };
-        const facade = createInternalAgentTurnFacade({
-          client: createSyntheticPluginRuntimeClient(),
-          getContext: () => context,
-          ...(boundary === "context" ? { assertContextCurrent: assertCurrent } : {}),
-        });
-        const controller = new AbortController();
-        const request = (
-          method === "dispatch"
-            ? facade.dispatchRaw(
-                { message: "test", idempotencyKey: "cold-run" },
-                {
-                  signal: controller.signal,
-                  ...(boundary === "deadline" ? { timeoutMs: 0, cancelOnDeadline: false } : {}),
-                  ...(boundary === "admission" ? { assertAdmissionCurrent: assertCurrent } : {}),
-                },
-              )
-            : facade.wait(
-                { runId: "cold-run", timeoutMs: 0 },
-                boundary === "deadline" ? 0 : undefined,
-                controller.signal,
-              )
-        ).then(
-          (value) => ({ value }),
-          (error: unknown) => ({ error }),
-        );
-        let entriesSettled = false;
-        let scopeSettled = false;
-        let joinedEntries: Promise<void> | undefined;
-        let joinedScope: Promise<void> | undefined;
+  it("joins cold execution preparation and rechecks closed or canceled callers", async () => {
+    await runHeldFixture(
+      () => {},
+      async ({ signal }) => {
+        expect(runtimeLoad.loaded).toBe(false);
+        const scenarios = [
+          ["dispatch", "close"],
+          ["wait", "close"],
+          ["dispatch", "abort"],
+          ["wait", "abort"],
+          ["dispatch", "admission"],
+          ["dispatch", "context"],
+          ["dispatch", "deadline"],
+          ["wait", "deadline"],
+        ] as const;
         try {
-          await reached.promise;
-          if (boundary === "deadline") {
-            await request;
-          } else if (boundary === "close") {
-            entries.beginClose();
-          } else if (boundary === "abort") {
-            controller.abort(new Error("caller canceled"));
-          } else {
-            current = false;
+          for (const [method, boundary] of scenarios) {
+            signal.throwIfAborted();
+            // Vitest's manual factory callstack cannot represent overlapping cold imports.
+            // Join each real execution owner before replacing the next module instance.
+            vi.resetModules();
+            startTurn.mockReset().mockImplementation(async ({ io }) => {
+              io.emitAcceptance([true, { runId: "cold-run" }, undefined]);
+            });
+            waitForTurn.mockReset().mockResolvedValue({ result: { status: "timeout" } });
+            const held = createDeferred();
+            const reached = createDeferred();
+            vi.doMock("./agent-turn-service.js", async () => {
+              reached.resolve();
+              await held.promise;
+              return { createAgentTurnService: () => ({ startTurn, waitForTurn }) };
+            });
+            const unblock = () => held.resolve();
+            signal.addEventListener("abort", unblock, { once: true });
+            const scope = new AsyncWorkScope();
+            const entries = new GatewayRequestEntryLifetime();
+            const executions: Promise<unknown>[] = [];
+            const trackExecution: GatewayRequestContext["trackExecution"] = (run) => {
+              const execution = scope.track(run);
+              executions.push(execution);
+              return execution;
+            };
+            const context = Object.assign(createContext(), {
+              trackExecution,
+              requestEntryLifetime: entries,
+            });
+            let current = true;
+            const assertCurrent = () => {
+              if (!current) {
+                throw new Error("caller retired");
+              }
+            };
+            const facade = createInternalAgentTurnFacade({
+              client: createSyntheticPluginRuntimeClient(),
+              getContext: () => context,
+              ...(boundary === "context" ? { assertContextCurrent: assertCurrent } : {}),
+            });
+            const controller = new AbortController();
+            const request = (
+              method === "dispatch"
+                ? facade.dispatchRaw(
+                    { message: "test", idempotencyKey: "cold-run" },
+                    {
+                      signal: controller.signal,
+                      ...(boundary === "deadline" ? { timeoutMs: 0, cancelOnDeadline: false } : {}),
+                      ...(boundary === "admission"
+                        ? { assertAdmissionCurrent: assertCurrent }
+                        : {}),
+                    },
+                  )
+                : facade.wait(
+                    { runId: "cold-run", timeoutMs: 0 },
+                    boundary === "deadline" ? 0 : undefined,
+                    controller.signal,
+                  )
+            ).then(
+              (value) => ({ value }),
+              (error: unknown) => ({ error }),
+            );
+            let entriesSettled = false;
+            let scopeSettled = false;
+            let joinedEntries: Promise<void> | undefined;
+            let joinedScope: Promise<void> | undefined;
+            try {
+              await racePromiseWithAbortSignal(Promise.race([reached.promise, request]), signal);
+              signal.throwIfAborted();
+              if (boundary === "deadline") {
+                await request;
+              } else if (boundary === "close") {
+                entries.beginClose();
+              } else if (boundary === "abort") {
+                controller.abort(new Error("caller canceled"));
+              } else {
+                current = false;
+              }
+              joinedEntries = entries.waitForPendingEntries().then(() => {
+                entriesSettled = true;
+              });
+              joinedScope = scope.drain().then(() => {
+                scopeSettled = true;
+              });
+              await nextTurn();
+              expect.soft(entriesSettled, `${method}/${boundary} preparation`).toBe(false);
+              expect.soft(scopeSettled, `${method}/${boundary} execution`).toBe(false);
+              unblock();
+              const outcome = await request;
+              await Promise.all([joinedEntries, joinedScope]);
+              const message =
+                boundary === "deadline"
+                  ? `gateway request timeout for ${method === "dispatch" ? "agent" : "agent.wait"}`
+                  : boundary === "close"
+                    ? "Gateway request entry is closed"
+                    : boundary === "abort"
+                      ? "caller canceled"
+                      : "caller retired";
+              expect(outcome, `${method}/${boundary} caller`).toEqual({
+                error: expect.objectContaining({ message }),
+              });
+              expect(
+                await Promise.allSettled(executions),
+                `${method}/${boundary} execution`,
+              ).toEqual([
+                boundary === "deadline"
+                  ? {
+                      status: "fulfilled",
+                      value: method === "dispatch" ? undefined : { status: "timeout" },
+                    }
+                  : { status: "rejected", reason: expect.objectContaining({ message }) },
+              ]);
+              expect(startTurn).toHaveBeenCalledTimes(
+                boundary === "deadline" && method === "dispatch" ? 1 : 0,
+              );
+              expect(waitForTurn).toHaveBeenCalledTimes(
+                boundary === "deadline" && method === "wait" ? 1 : 0,
+              );
+              expect(scope.hasPendingWork).toBe(false);
+            } finally {
+              unblock();
+              await Promise.allSettled([request, joinedEntries, joinedScope]);
+              await scope.drain();
+              signal.removeEventListener("abort", unblock);
+            }
           }
-          joinedEntries = entries.waitForPendingEntries().then(() => {
-            entriesSettled = true;
-          });
-          joinedScope = scope.drain().then(() => {
-            scopeSettled = true;
-          });
-          await nextTurn();
-          expect.soft(entriesSettled, `${method}/${boundary} preparation`).toBe(false);
-          expect.soft(scopeSettled, `${method}/${boundary} execution`).toBe(false);
-          unblock();
-          const outcome = await request;
-          await Promise.all([joinedEntries, joinedScope]);
-          const message =
-            boundary === "deadline"
-              ? `gateway request timeout for ${method === "dispatch" ? "agent" : "agent.wait"}`
-              : boundary === "close"
-                ? "Gateway request entry is closed"
-                : boundary === "abort"
-                  ? "caller canceled"
-                  : "caller retired";
-          expect(outcome, `${method}/${boundary} caller`).toEqual({
-            error: expect.objectContaining({ message }),
-          });
-          expect(await Promise.allSettled(executions), `${method}/${boundary} execution`).toEqual([
-            boundary === "deadline"
-              ? {
-                  status: "fulfilled",
-                  value: method === "dispatch" ? undefined : { status: "timeout" },
-                }
-              : { status: "rejected", reason: expect.objectContaining({ message }) },
-          ]);
-          expect(startTurn).toHaveBeenCalledTimes(
-            boundary === "deadline" && method === "dispatch" ? 1 : 0,
-          );
-          expect(waitForTurn).toHaveBeenCalledTimes(
-            boundary === "deadline" && method === "wait" ? 1 : 0,
-          );
-          expect(scope.hasPendingWork).toBe(false);
         } finally {
-          unblock();
-          await Promise.allSettled([request, joinedEntries, joinedScope]);
-          await scope.drain();
-          signal.removeEventListener("abort", unblock);
+          vi.doMock("./agent-turn-service.js", () => ({
+            createAgentTurnService: () => ({ startTurn, waitForTurn }),
+          }));
+          vi.resetModules();
         }
-      }
-    } finally {
-      vi.doMock("./agent-turn-service.js", () => ({
-        createAgentTurnService: () => ({ startTurn, waitForTurn }),
-      }));
-      vi.resetModules();
-    }
+      },
+    );
   });
 
   it.each(["dispatch", "wait"] as const)(
@@ -220,41 +237,54 @@ describe("createInternalAgentTurnFacade", () => {
     async (method) => {
       const reached = createDeferred();
       const release = createDeferred();
-      authorize.mockImplementationOnce(async () => {
-        reached.resolve();
-        await release.promise;
-        return { error: null };
-      });
-      const context = createContext();
-      const trackExecution = vi.spyOn(context, "trackExecution");
-      const entries = new GatewayRequestEntryLifetime();
-      const facade = createFacade({ ...context, requestEntryLifetime: entries });
-      const controller = new AbortController();
-      const reason = new Error("caller canceled during authorization");
-      const request =
-        method === "dispatch"
-          ? facade.dispatchRaw(
-              { message: "test", idempotencyKey: "authorization-abort" },
-              { signal: controller.signal },
-            )
-          : facade.wait(
-              { runId: "authorization-abort", timeoutMs: 0 },
-              undefined,
-              controller.signal,
-            );
-      const rejected = expect(request).rejects.toBe(reason);
-      try {
-        await reached.promise;
-        controller.abort(reason);
-      } finally {
-        release.resolve();
-      }
-      await rejected;
-      await entries.waitForPendingEntries();
-      expect(trackExecution).not.toHaveBeenCalled();
-      expect(envelope).not.toHaveBeenCalled();
-      expect(startTurn).not.toHaveBeenCalled();
-      expect(waitForTurn).not.toHaveBeenCalled();
+      await runHeldFixture(
+        () => release.resolve(),
+        async ({ signal, track }) => {
+          authorize.mockImplementationOnce(async () => {
+            reached.resolve();
+            await release.promise;
+            return { error: null };
+          });
+          const context = createContext();
+          const trackExecution = vi.spyOn(context, "trackExecution");
+          const entries = new GatewayRequestEntryLifetime();
+          const facade = createFacade({ ...context, requestEntryLifetime: entries });
+          const controller = new AbortController();
+          const reason = new Error("caller canceled during authorization");
+          const request = track(
+            method === "dispatch"
+              ? facade.dispatchRaw(
+                  { message: "test", idempotencyKey: "authorization-abort" },
+                  { signal: controller.signal },
+                )
+              : facade.wait(
+                  { runId: "authorization-abort", timeoutMs: 0 },
+                  undefined,
+                  controller.signal,
+                ),
+          );
+          const rejected = track(expect(request).rejects.toBe(reason));
+          track(
+            request.then(
+              () => entries.waitForPendingEntries(),
+              () => entries.waitForPendingEntries(),
+            ),
+          );
+          try {
+            await racePromiseWithAbortSignal(Promise.race([reached.promise, request]), signal);
+            signal.throwIfAborted();
+            controller.abort(reason);
+          } finally {
+            release.resolve();
+          }
+          await rejected;
+          await entries.waitForPendingEntries();
+          expect(trackExecution).not.toHaveBeenCalled();
+          expect(envelope).not.toHaveBeenCalled();
+          expect(startTurn).not.toHaveBeenCalled();
+          expect(waitForTurn).not.toHaveBeenCalled();
+        },
+      );
     },
   );
 
@@ -317,62 +347,77 @@ describe("createInternalAgentTurnFacade", () => {
       }
     });
     const { promise: finalGate, resolve: emitFinal } = createDeferred();
-    startTurn.mockImplementation(async ({ io, assertAdmissionCurrent: admissionGuard }) => {
-      expect(admissionGuard).toBe(assertAdmissionCurrent);
-      admissionGuard();
-      io.emitAcceptance([true, { runId: "run-1", status: "accepted" }, undefined], {
-        runId: "run-1",
+    await runHeldFixture(emitFinal, async ({ signal, track }) => {
+      const accepted = createDeferred();
+      startTurn.mockImplementation(async ({ io, assertAdmissionCurrent: admissionGuard }) => {
+        expect(admissionGuard).toBe(assertAdmissionCurrent);
+        admissionGuard();
+        io.emitAcceptance([true, { runId: "run-1", status: "accepted" }, undefined], {
+          runId: "run-1",
+        });
+        await finalGate;
+        io.emitFinal([true, { runId: "run-1", status: "ok", summary: "done" }, undefined], {
+          runId: "run-1",
+          terminal: true,
+        });
       });
-      await finalGate;
-      io.emitFinal([true, { runId: "run-1", status: "ok", summary: "done" }, undefined], {
-        runId: "run-1",
-        terminal: true,
+      const onAccepted = vi.fn(() => accepted.resolve());
+      const context = Object.assign(createContext(), {
+        trackExecution: <T>(run: () => T | Promise<T>) => track(trackAsyncWork(run)),
       });
-    });
-    const onAccepted = vi.fn();
 
-    const result = createFacade().dispatchRaw(
-      { message: "test", idempotencyKey: "run-1" },
-      { expectFinal: true, onAccepted, assertAdmissionCurrent },
-    );
-    await vi.waitFor(() =>
-      expect(onAccepted).toHaveBeenCalledWith({
-        runId: "run-1",
-        status: "accepted",
-      }),
-    );
-    sourceCurrent = false;
-    const checksAtAcceptance = assertAdmissionCurrent.mock.calls.length;
-    emitFinal();
+      const result = track(
+        createFacade(context).dispatchRaw(
+          { message: "test", idempotencyKey: "run-1" },
+          { expectFinal: true, onAccepted, assertAdmissionCurrent },
+        ),
+      );
+      await racePromiseWithAbortSignal(Promise.race([accepted.promise, result]), signal);
+      signal.throwIfAborted();
+      expect(onAccepted).toHaveBeenCalledWith({ runId: "run-1", status: "accepted" });
+      sourceCurrent = false;
+      const checksAtAcceptance = assertAdmissionCurrent.mock.calls.length;
+      emitFinal();
 
-    await expect(result).resolves.toEqual({
-      ok: true,
-      payload: { runId: "run-1", status: "ok", summary: "done" },
-      error: undefined,
-      meta: { runId: "run-1", terminal: true },
+      await expect(result).resolves.toEqual({
+        ok: true,
+        payload: { runId: "run-1", status: "ok", summary: "done" },
+        error: undefined,
+        meta: { runId: "run-1", terminal: true },
+      });
+      expect(assertAdmissionCurrent).toHaveBeenCalledTimes(checksAtAcceptance);
     });
-    expect(assertAdmissionCurrent).toHaveBeenCalledTimes(checksAtAcceptance);
   });
 
   it("preserves post-acceptance Error identity", async () => {
-    let rejectTurn!: (error: Error) => void;
-    startTurn.mockImplementation(
-      ({ io }) =>
-        new Promise<void>((_resolve, reject) => {
-          io.emitAcceptance([true, { runId: "run-error", status: "accepted" }, undefined]);
-          rejectTurn = reject;
-        }),
-    );
+    const turn = createDeferred();
+    const accepted = createDeferred();
     const dispatchError = Object.assign(new Error("turn failed"), { code: "ETURN" });
-    const result = createFacade().dispatchRaw(
-      { message: "test", idempotencyKey: "run-error" },
-      { expectFinal: true },
+    // Observe the original rejection even when readiness fails before dispatch.
+    void turn.promise.catch(() => {});
+    await runHeldFixture(
+      () => turn.reject(dispatchError),
+      async ({ signal, track }) => {
+        startTurn.mockImplementation(async ({ io }) => {
+          io.emitAcceptance([true, { runId: "run-error", status: "accepted" }, undefined]);
+          accepted.resolve();
+          await turn.promise;
+        });
+        const context = Object.assign(createContext(), {
+          trackExecution: <T>(run: () => T | Promise<T>) => track(trackAsyncWork(run)),
+        });
+        const result = track(
+          createFacade(context).dispatchRaw(
+            { message: "test", idempotencyKey: "run-error" },
+            { expectFinal: true },
+          ),
+        );
+        await racePromiseWithAbortSignal(Promise.race([accepted.promise, result]), signal);
+        signal.throwIfAborted();
+        turn.reject(dispatchError);
+        await expect(result).rejects.toBe(dispatchError);
+      },
     );
-    await vi.waitFor(() => expect(rejectTurn).toBeTypeOf("function"));
-
-    rejectTurn(dispatchError);
-
-    await expect(result).rejects.toBe(dispatchError);
   });
 
   it("returns a single acceptance with its metadata when no final is requested", async () => {
@@ -523,46 +568,68 @@ describe("createInternalAgentTurnFacade", () => {
       kind: "agent",
     });
     let accepted: ReturnType<typeof registerChatAbortController> | undefined;
-    startTurn.mockImplementation(async ({ io }) => {
-      const registration = registerChatAbortController({
-        chatAbortControllers: context.chatAbortControllers,
-        runId: "deadline-run",
-        sessionId: "deadline-session",
-        sessionKey: "agent:main:deadline",
-        timeoutMs: 60_000,
-        kind: "agent",
-      });
-      accepted = registration;
-      io.emitAcceptance([true, { runId: "deadline-run", status: "accepted" }, undefined], {
-        runId: "deadline-run",
-      });
-      await new Promise<void>((_resolve, reject) => {
-        registration.controller.signal.addEventListener(
-          "abort",
-          () => reject(new Error("deadline run aborted")),
-          { once: true },
+    const requestController = new AbortController();
+    await runHeldFixture(
+      () => {
+        requestController.abort(new Error("fixture is finishing"));
+        accepted?.controller.abort();
+      },
+      async ({ signal, track }) => {
+        const registered = createDeferred();
+        context.trackExecution = (run) => track(trackAsyncWork(run));
+        startTurn.mockImplementation(async ({ io }) => {
+          const registration = registerChatAbortController({
+            chatAbortControllers: context.chatAbortControllers,
+            runId: "deadline-run",
+            sessionId: "deadline-session",
+            sessionKey: "agent:main:deadline",
+            timeoutMs: 60_000,
+            kind: "agent",
+          });
+          accepted = registration;
+          const aborted = new Promise<void>((_resolve, reject) => {
+            const onAbort = () => reject(new Error("deadline run aborted"));
+            registration.controller.signal.addEventListener("abort", onAbort, { once: true });
+            if (registration.controller.signal.aborted) onAbort();
+          });
+          void aborted.catch(() => {});
+          // Late acceptance can synchronously abort; the observer must already own it.
+          io.emitAcceptance([true, { runId: "deadline-run", status: "accepted" }, undefined], {
+            runId: "deadline-run",
+          });
+          registered.resolve();
+          if (signal.aborted) registration.controller.abort();
+          await aborted;
+        });
+        const result = track(
+          createFacade(context).dispatchRaw(
+            {
+              message: "settle requester",
+              sessionKey: "agent:main:deadline",
+              idempotencyKey: "deadline-run",
+            },
+            {
+              cancelOnDeadline: true,
+              expectFinal: true,
+              timeoutMs: 20,
+              signal: requestController.signal,
+            },
+          ),
         );
-      });
-    });
-
-    try {
-      const result = createFacade(context).dispatchRaw(
-        {
-          message: "settle requester",
-          sessionKey: "agent:main:deadline",
-          idempotencyKey: "deadline-run",
-        },
-        { cancelOnDeadline: true, expectFinal: true, timeoutMs: 20 },
-      );
-      const outcome = expect(result).rejects.toThrow("gateway request timeout for agent");
-      await vi.advanceTimersByTimeAsync(20);
-
-      await outcome;
-      expect(accepted?.controller.signal.aborted).toBe(true);
-      expect(unrelated.controller.signal.aborted).toBe(false);
-    } finally {
-      vi.useRealTimers();
-    }
+        const outcome = track(expect(result).rejects.toThrow("gateway request timeout for agent"));
+        await racePromiseWithAbortSignal(Promise.race([registered.promise, result]), signal);
+        signal.throwIfAborted();
+        await vi.advanceTimersByTimeAsync(20);
+        await outcome;
+        expect(accepted?.controller.signal.aborted).toBe(true);
+        expect(unrelated.controller.signal.aborted).toBe(false);
+      },
+      async () => {
+        accepted?.cleanup();
+        unrelated.cleanup();
+        vi.useRealTimers();
+      },
+    );
   });
 
   it("cancels a run accepted after its opted-in dispatch deadline", async () => {
@@ -570,40 +637,76 @@ describe("createInternalAgentTurnFacade", () => {
     const context = createContext();
     const { promise: acceptanceGate, resolve: accept } = createDeferred();
     let accepted: ReturnType<typeof registerChatAbortController> | undefined;
-    startTurn.mockImplementation(async ({ io }) => {
-      await acceptanceGate;
-      accepted = registerChatAbortController({
-        chatAbortControllers: context.chatAbortControllers,
-        runId: "late-run",
-        sessionId: "late-session",
-        sessionKey: "agent:main:late",
-        timeoutMs: 60_000,
-        kind: "agent",
-      });
-      io.emitAcceptance([true, { runId: "late-run", status: "accepted" }, undefined], {
-        runId: "late-run",
-      });
-    });
+    const requestController = new AbortController();
+    await runHeldFixture(
+      () => {
+        accept();
+        requestController.abort(new Error("fixture is finishing"));
+        accepted?.controller.abort();
+      },
+      async ({ signal, track }) => {
+        const registered = createDeferred();
+        let execution: Promise<unknown> | undefined;
+        context.trackExecution = (run) => {
+          const pending = track(trackAsyncWork(run));
+          execution = pending;
+          return pending;
+        };
+        startTurn.mockImplementation(async ({ io }) => {
+          await acceptanceGate;
+          const registration = registerChatAbortController({
+            chatAbortControllers: context.chatAbortControllers,
+            runId: "late-run",
+            sessionId: "late-session",
+            sessionKey: "agent:main:late",
+            timeoutMs: 60_000,
+            kind: "agent",
+          });
+          accepted = registration;
+          const aborted = new Promise<void>((resolve) => {
+            registration.controller.signal.addEventListener("abort", () => resolve(), {
+              once: true,
+            });
+            if (registration.controller.signal.aborted) resolve();
+          });
+          io.emitAcceptance([true, { runId: "late-run", status: "accepted" }, undefined], {
+            runId: "late-run",
+          });
+          registered.resolve();
+          if (signal.aborted) registration.controller.abort();
+          await aborted;
+        });
+        const result = track(
+          createFacade(context).dispatchRaw(
+            {
+              message: "settle requester",
+              sessionKey: "agent:main:late",
+              idempotencyKey: "late-run",
+            },
+            {
+              cancelOnDeadline: true,
+              expectFinal: true,
+              timeoutMs: 20,
+              signal: requestController.signal,
+            },
+          ),
+        );
+        const outcome = track(expect(result).rejects.toThrow("gateway request timeout for agent"));
+        await vi.advanceTimersByTimeAsync(20);
+        await outcome;
 
-    try {
-      const result = createFacade(context).dispatchRaw(
-        {
-          message: "settle requester",
-          sessionKey: "agent:main:late",
-          idempotencyKey: "late-run",
-        },
-        { cancelOnDeadline: true, expectFinal: true, timeoutMs: 20 },
-      );
-      const outcome = expect(result).rejects.toThrow("gateway request timeout for agent");
-      await vi.advanceTimersByTimeAsync(20);
-      await outcome;
-
-      accept();
-      await vi.advanceTimersByTimeAsync(0);
-      expect(accepted?.controller.signal.aborted).toBe(true);
-    } finally {
-      accept();
-      vi.useRealTimers();
-    }
+        accept();
+        await vi.advanceTimersByTimeAsync(0);
+        await racePromiseWithAbortSignal(
+          Promise.race([registered.promise, execution ?? result]),
+          signal,
+        );
+        expect(accepted?.controller.signal.aborted).toBe(true);
+      },
+      async () => {
+        accepted?.cleanup();
+        vi.useRealTimers();
+      },
+    );
   });
 });

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { resolveAgentRunContext } from "../../agents/command/run-context.js";
 import {
@@ -6,6 +6,7 @@ import {
   getPreparedModelRuntimePluginGeneration,
 } from "../../agents/prepared-model-runtime-generation-scope.js";
 import type { SessionEntry } from "../../config/sessions.js";
+import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import * as taskRuntime from "../../tasks/runtime-internal.js";
 import { readTaskRegistryRevision } from "../../tasks/task-registry-state.js";
 import {
@@ -14,6 +15,7 @@ import {
 } from "../../tasks/task-registry.test-support.js";
 import { isWebchatClient } from "../../utils/message-channel.js";
 import { readGatewayAccessRevision } from "../gateway-access-revision.js";
+import { createGatewayHeldFixtureRunner } from "../held-fixture.test-support.js";
 import * as sessionChange from "../server-methods/session-change-event.js";
 import { identifiedClient, runTaskHandler } from "../server-methods/tasks.test-helpers.js";
 import { resolveAgentDeliveryPhase } from "./agent-delivery-phase.js";
@@ -26,6 +28,8 @@ vi.mock("./agent-run-dispatch.js", () => ({
   dispatchAgentRunFromGateway,
   resolveAbortedAgentStopReason: () => "rpc",
 }));
+
+const { run: runHeldFixture, finishAfterEach } = createGatewayHeldFixtureRunner(onTestFinished);
 
 function createExecution(options: { aborted?: boolean; assertContextCurrent?: () => void } = {}) {
   const abortCleanup = vi.fn();
@@ -128,6 +132,9 @@ function createVisibleExecution() {
 }
 
 describe("startAgentRunExecution Gateway ownership", () => {
+  afterEach(async () => {
+    await finishAfterEach();
+  });
   beforeEach(() => {
     dispatchAgentRunFromGateway.mockReset();
   });
@@ -347,41 +354,46 @@ describe("startAgentRunExecution Gateway ownership", () => {
     let borrowedAfterCleanup: Promise<unknown> | undefined;
     let dispatchedGeneration: unknown;
     let dispatchedSnapshot: unknown;
-    dispatchAgentRunFromGateway.mockImplementationOnce(() => {
-      const generation = execution.params.prepared.replyDispatchRuntime.pluginGeneration;
-      dispatchedGeneration = getPreparedModelRuntimePluginGeneration();
-      dispatchedSnapshot = getPreparedModelRuntimeBorrowedSnapshot(generation);
-      borrowedAfterCleanup = (async () => {
-        await cleanupObserved;
-        return getPreparedModelRuntimeBorrowedSnapshot(generation);
-      })();
-      resolveDispatched();
-      return cleanupObserved;
+    await runHeldFixture(resolveCleanupObserved, async ({ signal, track }) => {
+      dispatchAgentRunFromGateway.mockImplementationOnce(() => {
+        const generation = execution.params.prepared.replyDispatchRuntime.pluginGeneration;
+        dispatchedGeneration = getPreparedModelRuntimePluginGeneration();
+        dispatchedSnapshot = getPreparedModelRuntimeBorrowedSnapshot(generation);
+        borrowedAfterCleanup = track(
+          (async () => {
+            await cleanupObserved;
+            return getPreparedModelRuntimeBorrowedSnapshot(generation);
+          })(),
+        );
+        resolveDispatched();
+        return cleanupObserved;
+      });
+
+      const completion = track(startAgentRunExecution(execution.params));
+
+      await racePromiseWithAbortSignal(Promise.race([dispatched, completion]), signal);
+      signal.throwIfAborted();
+      expect(dispatchedGeneration).toBe(
+        execution.params.prepared.replyDispatchRuntime.pluginGeneration,
+      );
+      expect(dispatchedSnapshot).toBe(execution.params.prepared.preparedModelRuntimeLease.snapshot);
+      const dispatch = dispatchAgentRunFromGateway.mock.calls[0]?.[0];
+      expect(dispatch?.commandRuntimeContext).toEqual({
+        config: { runtime: "A" },
+        pluginGeneration: "generation-A",
+      });
+      expect(dispatch?.ingressOpts.workspaceDir).toBe("/workspace/A");
+      expect(execution.runtimeRelease).not.toHaveBeenCalled();
+
+      dispatch?.cleanupAbortController();
+      dispatch?.cleanupAbortController();
+      expect(execution.callerRelease).not.toHaveBeenCalled();
+      resolveCleanupObserved();
+      await expect(borrowedAfterCleanup).resolves.toBeUndefined();
+      await completion;
+      expect(execution.runtimeRelease).toHaveBeenCalledOnce();
+      expect(execution.callerRelease).toHaveBeenCalledOnce();
     });
-
-    const completion = startAgentRunExecution(execution.params);
-
-    await dispatched;
-    expect(dispatchedGeneration).toBe(
-      execution.params.prepared.replyDispatchRuntime.pluginGeneration,
-    );
-    expect(dispatchedSnapshot).toBe(execution.params.prepared.preparedModelRuntimeLease.snapshot);
-    const dispatch = dispatchAgentRunFromGateway.mock.calls[0]?.[0];
-    expect(dispatch?.commandRuntimeContext).toEqual({
-      config: { runtime: "A" },
-      pluginGeneration: "generation-A",
-    });
-    expect(dispatch?.ingressOpts.workspaceDir).toBe("/workspace/A");
-    expect(execution.runtimeRelease).not.toHaveBeenCalled();
-
-    dispatch?.cleanupAbortController();
-    dispatch?.cleanupAbortController();
-    expect(execution.callerRelease).not.toHaveBeenCalled();
-    resolveCleanupObserved();
-    await expect(borrowedAfterCleanup).resolves.toBeUndefined();
-    await completion;
-    expect(execution.runtimeRelease).toHaveBeenCalledOnce();
-    expect(execution.callerRelease).toHaveBeenCalledOnce();
   });
 
   it("releases the admitted runtime once when aborted before dispatch", async () => {
@@ -398,16 +410,24 @@ describe("startAgentRunExecution Gateway ownership", () => {
   it("joins asynchronous runtime disposal before execution finishes", async () => {
     const execution = createExecution({ aborted: true });
     const { promise: disposal, resolve: finishDisposal } = createDeferred();
-    execution.runtimeRelease.mockImplementation(() => disposal);
-    const finished = vi.fn();
-    const completion = startAgentRunExecution(execution.params).then(finished);
-    await vi.waitFor(() => expect(execution.runtimeRelease).toHaveBeenCalledOnce());
-    expect(execution.callerRelease).not.toHaveBeenCalled();
-    expect(finished).not.toHaveBeenCalled();
-    finishDisposal();
-    await completion;
-    expect(finished).toHaveBeenCalledOnce();
-    expect(execution.callerRelease).toHaveBeenCalledOnce();
+    await runHeldFixture(finishDisposal, async ({ signal, track }) => {
+      const entered = createDeferred();
+      execution.runtimeRelease.mockImplementation(() => {
+        entered.resolve();
+        return disposal;
+      });
+      const finished = vi.fn();
+      const completion = track(startAgentRunExecution(execution.params).then(finished));
+      await racePromiseWithAbortSignal(Promise.race([entered.promise, completion]), signal);
+      signal.throwIfAborted();
+      expect(execution.runtimeRelease).toHaveBeenCalledOnce();
+      expect(execution.callerRelease).not.toHaveBeenCalled();
+      expect(finished).not.toHaveBeenCalled();
+      finishDisposal();
+      await completion;
+      expect(finished).toHaveBeenCalledOnce();
+      expect(execution.callerRelease).toHaveBeenCalledOnce();
+    });
   });
 
   it("releases the admitted runtime once when its owner retires before dispatch", async () => {

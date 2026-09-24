@@ -148,12 +148,12 @@ describe("gateway/node-command-policy", () => {
       approvedCommands: [...NODE_WORKER_PRIVATE_COMMANDS],
     };
 
-    expect([...resolveNodeCommandAllowlist(cfg, node)]).not.toEqual(
-      expect.arrayContaining([...NODE_WORKER_PRIVATE_COMMANDS]),
-    );
-    expect([...resolveNodePairingCommandAllowlist(cfg, node)]).not.toEqual(
-      expect.arrayContaining([...NODE_WORKER_PRIVATE_COMMANDS]),
-    );
+    const runtime = resolveNodeCommandAllowlist(cfg, node);
+    const pairing = resolveNodePairingCommandAllowlist(cfg, node);
+    for (const command of NODE_WORKER_PRIVATE_COMMANDS) {
+      expect(runtime.has(command)).toBe(false);
+      expect(pairing.has(command)).toBe(false);
+    }
   });
 
   it("allows declared push-to-talk commands on trusted talk-capable nodes", () => {

@@ -1,12 +1,14 @@
 import type { Server } from "node:http";
 import { buildControlUiPublicSessionSharePath } from "@openclaw/session-url-contract/public-share";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import {
   getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 import {
   AUTH_TOKEN,
   createRequest,
@@ -119,6 +121,8 @@ afterEach(() => {
 });
 
 describe("anonymous public session HTTP boundary", () => {
+  const runner = createGatewayHeldFixtureRunner(onTestFinished);
+  afterEach(runner.finishAfterEach);
   it.each(["", "/control"])(
     "serves only published text and keeps private APIs authenticated (%s)",
     async (basePath) => {
@@ -356,101 +360,151 @@ describe("anonymous public session HTTP boundary", () => {
   it("coalesces identical reads and caps unique concurrent reads per publication", async () => {
     const server = createPublicGateway();
     const resolvers: Array<(value: typeof PUBLIC_SESSION) => void> = [];
-    reader.mockImplementation(
-      () =>
-        new Promise<typeof PUBLIC_SESSION>((resolve) => {
-          resolvers.push(resolve);
-        }),
-    );
+    let closing = false;
+    await runner.run(
+      () => {
+        closing = true;
+        for (const resolve of resolvers.splice(0)) resolve(PUBLIC_SESSION);
+      },
+      async ({ signal, track }) => {
+        const dispatch = (...args: Parameters<typeof dispatchRequest>) =>
+          track(dispatchRequest(...args));
+        const sendOwned = (...args: Parameters<typeof send>) => track(send(...args));
+        reader.mockImplementation(() =>
+          closing
+            ? Promise.resolve(PUBLIC_SESSION)
+            : new Promise<typeof PUBLIC_SESSION>((resolve) => {
+                resolvers.push(resolve);
+              }),
+        );
 
-    const firstResponse = createResponse();
-    const first = dispatchRequest(
-      server,
-      createRequest({
-        path: requestPath(),
-        host: "127.0.0.1:18789",
-        remoteAddress: "127.0.0.1",
-      }),
-      firstResponse.res,
-    );
-    await vi.waitFor(() => expect(reader).toHaveBeenCalledTimes(1));
-    const secondResponse = createResponse();
-    const second = dispatchRequest(
-      server,
-      createRequest({
-        path: requestPath(),
-        host: "127.0.0.1:18789",
-        remoteAddress: "127.0.0.1",
-      }),
-      secondResponse.res,
-    );
-    await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(2));
-    expect(reader).toHaveBeenCalledTimes(1);
-    resolvers.shift()?.(PUBLIC_SESSION);
-    await Promise.all([first, second]);
-    expect(firstResponse.res.statusCode).toBe(200);
-    expect(secondResponse.res.statusCode).toBe(200);
-
-    const held: Array<Promise<void>> = [];
-    for (const [index, offset] of [1, 2].entries()) {
-      const response = createResponse();
-      held.push(
-        dispatchRequest(
+        const firstResponse = createResponse();
+        const first = dispatch(
           server,
           createRequest({
-            path: requestPath({ offset }),
+            path: requestPath(),
             host: "127.0.0.1:18789",
             remoteAddress: "127.0.0.1",
           }),
-          response.res,
-        ),
-      );
-      await vi.waitFor(() => expect(reader).toHaveBeenCalledTimes(index + 2));
-    }
-    const excess = await send(server, { path: requestPath({ offset: 3 }) });
-    expect(excess.res.statusCode).toBe(503);
-    expect(responseHeader(excess, "Retry-After")).toBe("1");
-    expect(reader).toHaveBeenCalledTimes(3);
-    for (const resolve of resolvers.splice(0)) {
-      resolve(PUBLIC_SESSION);
-    }
-    await Promise.all(held);
+          firstResponse.res,
+        );
+        await racePromiseWithAbortSignal(
+          track(vi.waitFor(() => expect(reader).toHaveBeenCalledTimes(1))),
+          signal,
+        );
+        signal.throwIfAborted();
+        const secondResponse = createResponse();
+        const second = dispatch(
+          server,
+          createRequest({
+            path: requestPath(),
+            host: "127.0.0.1:18789",
+            remoteAddress: "127.0.0.1",
+          }),
+          secondResponse.res,
+        );
+        await racePromiseWithAbortSignal(
+          track(vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(2))),
+          signal,
+        );
+        signal.throwIfAborted();
+        expect(reader).toHaveBeenCalledTimes(1);
+        resolvers.shift()?.(PUBLIC_SESSION);
+        await Promise.all([first, second]);
+        expect(firstResponse.res.statusCode).toBe(200);
+        expect(secondResponse.res.statusCode).toBe(200);
+
+        const held: Array<Promise<void>> = [];
+        for (const [index, offset] of [1, 2].entries()) {
+          signal.throwIfAborted();
+          const response = createResponse();
+          held.push(
+            dispatch(
+              server,
+              createRequest({
+                path: requestPath({ offset }),
+                host: "127.0.0.1:18789",
+                remoteAddress: "127.0.0.1",
+              }),
+              response.res,
+            ),
+          );
+          await racePromiseWithAbortSignal(
+            track(vi.waitFor(() => expect(reader).toHaveBeenCalledTimes(index + 2))),
+            signal,
+          );
+          signal.throwIfAborted();
+        }
+        const excess = await sendOwned(server, { path: requestPath({ offset: 3 }) });
+        expect(excess.res.statusCode).toBe(503);
+        expect(responseHeader(excess, "Retry-After")).toBe("1");
+        expect(reader).toHaveBeenCalledTimes(3);
+        for (const resolve of resolvers.splice(0)) {
+          resolve(PUBLIC_SESSION);
+        }
+        await Promise.all(held);
+      },
+      async () => {
+        await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+      },
+    );
   });
 
   it("caps unique concurrent reads across publications", async () => {
     const server = createPublicGateway();
     const resolvers: Array<(value: typeof PUBLIC_SESSION) => void> = [];
-    reader.mockImplementation(
-      () =>
-        new Promise<typeof PUBLIC_SESSION>((resolve) => {
-          resolvers.push(resolve);
-        }),
+    let closing = false;
+    await runner.run(
+      () => {
+        closing = true;
+        for (const resolve of resolvers.splice(0)) resolve(PUBLIC_SESSION);
+      },
+      async ({ signal, track }) => {
+        const dispatch = (...args: Parameters<typeof dispatchRequest>) =>
+          track(dispatchRequest(...args));
+        const sendOwned = (...args: Parameters<typeof send>) => track(send(...args));
+        reader.mockImplementation(() =>
+          closing
+            ? Promise.resolve(PUBLIC_SESSION)
+            : new Promise<typeof PUBLIC_SESSION>((resolve) => {
+                resolvers.push(resolve);
+              }),
+        );
+        const held: Array<Promise<void>> = [];
+        for (let request = 0; request < 8; request += 1) {
+          signal.throwIfAborted();
+          const shareId = request.toString(16).padStart(48, "0");
+          const response = createResponse();
+          held.push(
+            dispatch(
+              server,
+              createRequest({
+                path: requestPath({ locator: { ...LOCATOR, shareId } }),
+                host: "127.0.0.1:18789",
+                remoteAddress: "127.0.0.1",
+              }),
+              response.res,
+            ),
+          );
+          await racePromiseWithAbortSignal(
+            track(vi.waitFor(() => expect(reader).toHaveBeenCalledTimes(request + 1))),
+            signal,
+          );
+          signal.throwIfAborted();
+        }
+        const excess = await sendOwned(server, {
+          path: requestPath({ locator: { ...LOCATOR, shareId: "f".repeat(48) } }),
+        });
+        expect(excess.res.statusCode).toBe(503);
+        expect(reader).toHaveBeenCalledTimes(8);
+        for (const resolve of resolvers) {
+          resolve(PUBLIC_SESSION);
+        }
+        await Promise.all(held);
+      },
+      async () => {
+        await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+      },
     );
-    const held: Array<Promise<void>> = [];
-    for (let request = 0; request < 8; request += 1) {
-      const shareId = request.toString(16).padStart(48, "0");
-      const response = createResponse();
-      held.push(
-        dispatchRequest(
-          server,
-          createRequest({
-            path: requestPath({ locator: { ...LOCATOR, shareId } }),
-            host: "127.0.0.1:18789",
-            remoteAddress: "127.0.0.1",
-          }),
-          response.res,
-        ),
-      );
-      await vi.waitFor(() => expect(reader).toHaveBeenCalledTimes(request + 1));
-    }
-    const excess = await send(server, {
-      path: requestPath({ locator: { ...LOCATOR, shareId: "f".repeat(48) } }),
-    });
-    expect(excess.res.statusCode).toBe(503);
-    expect(reader).toHaveBeenCalledTimes(8);
-    for (const resolve of resolvers) {
-      resolve(PUBLIC_SESSION);
-    }
-    await Promise.all(held);
   });
 });

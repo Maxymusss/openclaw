@@ -1,15 +1,15 @@
 import { once } from "node:events";
-import { createServer } from "node:http";
+import { createServer, type IncomingHttpHeaders } from "node:http";
 import { createRequire } from "node:module";
 import type { Socket } from "node:net";
 import path from "node:path";
 import { setImmediate } from "node:timers/promises";
-import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type WebSocketClient from "ws";
 import { closeGatewayTestWebSocket } from "../../test/helpers/gateway-websocket.js";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
 import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 import {
   buildMinimalGatewayHelloOkPayload,
   closeMinimalGatewayServer,
@@ -17,6 +17,12 @@ import {
   sendMinimalGatewayConnectChallenge,
 } from "./minimal-gateway.test-helpers.js";
 import { createGatewayFixtureFork } from "./server.fixture-lifetime.test-support.js";
+import {
+  type AcquisitionOwner,
+  type AcquisitionPeer,
+  type PeerBehavior,
+  registerGatewayAcquisitionAdapterTests,
+} from "./test-helpers.acquisition-adapters.suite.js";
 
 const require = createRequire(import.meta.url);
 const { WebSocket, WebSocketServer }: typeof import("ws") = require(
@@ -55,45 +61,95 @@ vi.mock("../test-utils/ports.js", async (importOriginal) => ({
   getDeterministicFreePortBlock: async () => acquisitionFixture.port,
 }));
 
-afterEach(() => {
+const { run: runHeldFixture, finishAfterEach } = createGatewayHeldFixtureRunner(onTestFinished);
+
+afterEach(async () => {
+  await finishAfterEach();
   acquisitionFixture.start.mockReset();
   acquisitionFixture.observeClient = undefined;
   vi.restoreAllMocks();
 });
 
-type PeerBehavior =
-  | "hold upgrade"
-  | "reject upgrade"
-  | "no challenge"
-  | "no response"
-  | "reject auth"
-  | "reject auth without close"
-  | "transport error"
-  | "upgrade then transport error"
-  | "hello then transport error"
-  | "reply";
+type FixtureFailure = { error: unknown };
 
-type AcquisitionPeer = {
-  port: number;
-  clients: WebSocket[];
-  closed: Set<WebSocket>;
-  errors: Error[];
-  unownedErrors: Error[];
-  requests: ReturnType<typeof parseMinimalGatewayRequestFrame>[];
-  receivedUpgrade: () => boolean;
-  waitForUpgrade: (signal: AbortSignal) => Promise<unknown>;
-  waitForOpen: (signal: AbortSignal) => Promise<void>;
-  waitForConnect: (signal: AbortSignal) => Promise<void>;
-  isListening: () => boolean;
-  failTransport: () => Promise<Error>;
-  close: () => Promise<void>;
-};
+function throwFixtureFailures(primary?: FixtureFailure, cleanup?: FixtureFailure): void {
+  if (primary && cleanup) {
+    throw new AggregateError([primary.error, cleanup.error], "fixture and disposal failed", {
+      cause: primary.error,
+    });
+  }
+  if (primary) throw primary.error;
+  if (cleanup) throw cleanup.error;
+}
+
+// Keep assertion identity (including undefined) when a native disposal also fails.
+async function withAcquisitionCleanup(
+  body: () => Promise<void>,
+  dispose: () => Promise<void>,
+): Promise<void> {
+  let primary: FixtureFailure | undefined;
+  let cleanup: FixtureFailure | undefined;
+  try {
+    await body();
+  } catch (error) {
+    primary = { error };
+  }
+  try {
+    await dispose();
+  } catch (error) {
+    cleanup = { error };
+  }
+  throwFixtureFailures(primary, cleanup);
+}
+
+async function runAcquisitionCase(
+  options: Parameters<
+    typeof import("../test-utils/openclaw-test-state.js").withOpenClawTestState
+  >[0],
+  body: (
+    state: Parameters<
+      Parameters<typeof import("../test-utils/openclaw-test-state.js").withOpenClawTestState>[1]
+    >[0],
+    owner: AcquisitionOwner,
+  ) => Promise<void>,
+): Promise<void> {
+  const releases = new Set<() => void>();
+  await runHeldFixture(
+    () => {
+      for (const release of releases) release();
+    },
+    async ({ signal, track }) => {
+      const { withOpenClawTestState } = await import("../test-utils/openclaw-test-state.js");
+      signal.throwIfAborted();
+      let primary: FixtureFailure | undefined;
+      let disposal: FixtureFailure | undefined;
+      try {
+        await withOpenClawTestState(options, async (state) => {
+          try {
+            signal.throwIfAborted();
+            await body(state, { signal, track, releases });
+          } catch (error) {
+            // Preserve even rejected undefined across the outer owner's finally.
+            primary = { error };
+          }
+        });
+      } catch (error) {
+        disposal = { error };
+      }
+      throwFixtureFailures(primary, disposal);
+    },
+  );
+}
 
 async function withAcquisitionPeer(
   behavior: PeerBehavior,
   body: (peer: AcquisitionPeer) => Promise<void>,
+  owner?: AcquisitionOwner,
 ) {
   const clients: WebSocket[] = [];
+  let retiring = false;
+  const clientClosures: Promise<void>[] = [];
+  const socketClosures: Promise<void>[] = [];
   const closed = new Set<WebSocket>();
   const errors: Error[] = [];
   const unownedErrors: Error[] = [];
@@ -103,7 +159,14 @@ async function withAcquisitionPeer(
   // Counting the remaining listeners makes a removed owner handler observable.
   acquisitionFixture.observeClient = (client) => {
     clients.push(client);
-    client.once("close", () => closed.add(client));
+    clientClosures.push(
+      new Promise<void>((resolve) => {
+        client.once("close", () => {
+          closed.add(client);
+          resolve();
+        });
+      }),
+    );
     client.on("error", (error) => {
       errors.push(error);
       transportFailure.resolve(error);
@@ -111,19 +174,34 @@ async function withAcquisitionPeer(
         unownedErrors.push(error);
       }
     });
+    if (retiring) client.terminate();
   };
   const sockets = new Set<Socket>();
   const requests: ReturnType<typeof parseMinimalGatewayRequestFrame>[] = [];
+  const upgradeHeaders: IncomingHttpHeaders[] = [];
   const connectReceived = createDeferred();
   let receivedUpgrade = false;
   const server = createServer();
   const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
   server.on("connection", (socket) => {
     sockets.add(socket);
-    socket.once("close", () => sockets.delete(socket));
+    socketClosures.push(
+      new Promise<void>((resolve) => {
+        socket.once("close", () => {
+          sockets.delete(socket);
+          resolve();
+        });
+      }),
+    );
+    if (retiring) socket.destroy();
   });
   server.on("upgrade", (request, socket, head) => {
     receivedUpgrade = true;
+    upgradeHeaders.push({ ...request.headers });
+    if (retiring) {
+      socket.destroy();
+      return;
+    }
     if (behavior === "hold upgrade") {
       return;
     }
@@ -190,20 +268,35 @@ async function withAcquisitionPeer(
       });
     });
   });
-  const close = async () => {
-    // Release a withheld close handshake only after acquisition has entered server cleanup.
-    for (const peer of wss.clients) {
-      peer.resume();
+  let serverClosure: Promise<void> | undefined;
+  const close = () =>
+    (serverClosure ??= (async () => {
+      // Release a withheld close handshake only after acquisition has entered server cleanup.
+      for (const peer of wss.clients) {
+        peer.resume();
+      }
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => (error ? reject(error) : resolve()));
+        });
+      }
+    })());
+  const releasePeer = () => {
+    retiring = true;
+    for (const client of clients) {
+      if (client.readyState !== WebSocket.CLOSED) client.terminate();
     }
-    if (server.listening) {
-      await new Promise<void>((resolve, reject) => {
-        server.close((error) => (error ? reject(error) : resolve()));
-      });
-    }
+    for (const socket of sockets) socket.destroy();
   };
+  owner?.releases.add(releasePeer);
+  const listening = once(server, "listening");
+  void listening.catch(() => {});
+  let primary: FixtureFailure | undefined;
+  let disposal: FixtureFailure | undefined;
   try {
     server.listen(0, "127.0.0.1");
-    await once(server, "listening");
+    await (owner ? racePromiseWithAbortSignal(listening, owner.signal) : listening);
+    owner?.signal.throwIfAborted();
     const address = server.address();
     if (!address || typeof address === "string") {
       throw new Error("acquisition peer did not bind");
@@ -215,6 +308,7 @@ async function withAcquisitionPeer(
       errors,
       unownedErrors,
       requests,
+      upgradeHeaders,
       receivedUpgrade: () => receivedUpgrade,
       waitForUpgrade: (signal) => once(server, "upgrade", { signal }),
       waitForOpen: async (signal) => {
@@ -237,25 +331,22 @@ async function withAcquisitionPeer(
       },
       close,
     });
+  } catch (error) {
+    primary = { error };
   } finally {
-    // Assertions run before this safety net: the broken helper must not leak into
-    // another case, including when it rejects with a still-CONNECTING socket.
-    const clientClosures = clients.map(async (client) => {
-      if (client.readyState !== WebSocket.CLOSED) {
-        const closure = new Promise<void>((resolve) => {
-          client.once("close", () => resolve());
-        });
-        client.terminate();
-        await closure;
-      }
-    });
-    for (const socket of sockets) {
-      socket.destroy();
+    try {
+      // The rescue closes handles, not a previously rejected native Gateway owner.
+      releasePeer();
+      await Promise.allSettled([listening]);
+      await Promise.all([...clientClosures, ...socketClosures]);
+      await closeMinimalGatewayServer(wss);
+      await close();
+    } catch (error) {
+      disposal = { error };
     }
-    await Promise.all(clientClosures);
-    await closeMinimalGatewayServer(wss);
-    await close();
+    owner?.releases.delete(releasePeer);
   }
+  throwFixtureFailures(primary, disposal);
 }
 
 function mockPeerGateway(peer: AcquisitionPeer, close = peer.close) {
@@ -311,13 +402,17 @@ async function verifyAcquisitionTimeout(
     await racePromiseWithAbortSignal(checked, signal);
   } catch (error) {
     vi.useRealTimers();
-    return await runQaGatewayFixture(
-      async () => {
-        throw error;
-      },
-      () => Promise.all(peer.clients.map(closeGatewayTestWebSocket)),
-      () => Promise.allSettled([failure, checked]),
+    const closed = await Promise.allSettled(peer.clients.map(closeGatewayTestWebSocket));
+    await Promise.allSettled([failure, checked]);
+    const failures = closed.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
     );
+    if (failures.length) {
+      throw new AggregateError([error, ...failures], "acquisition and cleanup failed", {
+        cause: error,
+      });
+    }
+    throw error;
   } finally {
     readinessAbort.abort();
     vi.useRealTimers();
@@ -337,13 +432,12 @@ export async function verifyCompositeAcquisition({
   failure,
   shutdown,
 }: CompositeAcquisitionCase): Promise<void> {
-  const { withOpenClawTestState } = await import("../test-utils/openclaw-test-state.js");
-  await withOpenClawTestState(
+  await runAcquisitionCase(
     {
       label: "composite-acquisition",
       env: { OPENCLAW_GATEWAY_TOKEN: "synthetic-prior-token" },
     },
-    async (state) => {
+    async (state, owner) => {
       const behavior =
         failure === "authentication without close"
           ? "reject auth without close"
@@ -352,90 +446,100 @@ export async function verifyCompositeAcquisition({
             : failure === "authentication"
               ? "reject auth"
               : "reply";
-      await withAcquisitionPeer(behavior, async (peer) => {
-        const closing = createDeferred();
-        const release = createDeferred();
-        const closeError = new Error("synthetic server close failure");
-        mockPeerGateway(peer, async () => {
-          closing.resolve();
-          await release.promise;
-          if (shutdown === "rejected") {
-            throw closeError;
-          }
-          await peer.close();
-        });
-        const { startServerWithClient, startConnectedServerWithClient } =
-          await import("./test-helpers.server.js");
-        const { startGatewayWithClient } = await import("./test-helpers.e2e.js");
-        const { GatewayClient } = await import("./client.js");
-        // oxlint-disable-next-line typescript/unbound-method -- The observer calls the original on its acquired client.
-        const stopAndWait = GatewayClient.prototype.stopAndWait;
-        let clientStopSettled = false;
-        const stopSpy = vi
-          .spyOn(GatewayClient.prototype, "stopAndWait")
-          .mockImplementation(async function (this: InstanceType<typeof GatewayClient>, options) {
-            await stopAndWait.call(this, options);
-            clientStopSettled = true;
+      await withAcquisitionPeer(
+        behavior,
+        async (peer) => {
+          const closing = createDeferred();
+          const release = createDeferred();
+          owner.releases.add(() => release.resolve());
+          const closeError = new Error("synthetic server close failure");
+          mockPeerGateway(peer, async () => {
+            closing.resolve();
+            await release.promise;
+            if (shutdown === "rejected") {
+              throw closeError;
+            }
+            await peer.close();
           });
-        const selector = helper === "raw" ? "OPENCLAW_GATEWAY_TOKEN" : "OPENCLAW_GATEWAY_PORT";
-        const ownedSelector = helper === "raw" ? "synthetic-owned-token" : String(peer.port);
-        const previousSelector = process.env[selector];
-        const wsHeaders = failure === "construction" ? { "invalid header": "value" } : undefined;
-        const started =
-          helper === "GatewayClient"
-            ? startGatewayWithClient({
-                port: peer.port,
-                cfg: {},
-                configPath: state.statePath("client-config.json"),
-                token: "synthetic-token",
-              })
-            : failure === "authentication"
-              ? startConnectedServerWithClient("synthetic-owned-token")
-              : startServerWithClient("synthetic-owned-token", { wsHeaders });
-        const acquisition = started.catch((error: unknown) => error);
-        try {
-          const first = await Promise.race([
-            closing.promise.then(() => "closing"),
-            acquisition.then(() => "settled"),
-          ]);
-          expect(first).toBe("closing");
-          expect(process.env[selector]).toBe(ownedSelector);
-          expect(peer.isListening()).toBe(true);
-          // GatewayClient owns a bounded stop; raw helpers promise the transport close event.
-          if (helper === "GatewayClient") {
-            expect(peer.clients).toHaveLength(1);
-            expect(clientStopSettled).toBe(true);
-          } else {
-            expect(peer.clients.every((client) => peer.closed.has(client))).toBe(true);
-          }
-          release.resolve();
-          const result = await acquisition;
-          const originalError = result instanceof AggregateError ? result.errors[0] : result;
-          if (failure === "construction") {
-            expect(originalError).toMatchObject({ code: "ERR_INVALID_HTTP_TOKEN" });
-          } else if (failure === "open") {
-            expect(originalError).toBe(peer.errors[0]);
-          } else {
-            expect(originalError).toMatchObject({
-              message: expect.stringContaining("synthetic auth rejection"),
+          const { startServerWithClient, startConnectedServerWithClient } =
+            await import("./test-helpers.server.js");
+          const { startGatewayWithClient } = await import("./test-helpers.e2e.js");
+          const { GatewayClient } = await import("./client.js");
+          // oxlint-disable-next-line typescript/unbound-method -- The observer calls the original on its acquired client.
+          const stopAndWait = GatewayClient.prototype.stopAndWait;
+          let clientStopSettled = false;
+          const stopSpy = vi
+            .spyOn(GatewayClient.prototype, "stopAndWait")
+            .mockImplementation(async function (this: InstanceType<typeof GatewayClient>, options) {
+              await stopAndWait.call(this, options);
+              clientStopSettled = true;
             });
-          }
-          if (shutdown === "rejected") {
-            expect(result).toBeInstanceOf(AggregateError);
-            expect(result).toHaveProperty("errors", [originalError, closeError]);
+          owner.signal.throwIfAborted();
+          const selector = helper === "raw" ? "OPENCLAW_GATEWAY_TOKEN" : "OPENCLAW_GATEWAY_PORT";
+          const ownedSelector = helper === "raw" ? "synthetic-owned-token" : String(peer.port);
+          const previousSelector = process.env[selector];
+          const wsHeaders = failure === "construction" ? { "invalid header": "value" } : undefined;
+          const started =
+            helper === "GatewayClient"
+              ? startGatewayWithClient({
+                  port: peer.port,
+                  cfg: {},
+                  configPath: state.statePath("client-config.json"),
+                  token: "synthetic-token",
+                })
+              : failure === "authentication"
+                ? startConnectedServerWithClient("synthetic-owned-token")
+                : startServerWithClient("synthetic-owned-token", { wsHeaders });
+          const acquisition = owner.track(started).catch((error: unknown) => error);
+          try {
+            const first = await racePromiseWithAbortSignal(
+              Promise.race([
+                closing.promise.then(() => "closing"),
+                acquisition.then(() => "settled"),
+              ]),
+              owner.signal,
+            );
+            owner.signal.throwIfAborted();
+            expect(first).toBe("closing");
             expect(process.env[selector]).toBe(ownedSelector);
             expect(peer.isListening()).toBe(true);
-          } else {
-            expect(result).toBe(originalError);
-            expect(process.env[selector]).toBe(previousSelector);
-            expect(peer.isListening()).toBe(false);
+            // GatewayClient owns a bounded stop; raw helpers promise the transport close event.
+            if (helper === "GatewayClient") {
+              expect(peer.clients).toHaveLength(1);
+              expect(clientStopSettled).toBe(true);
+            } else {
+              expect(peer.clients.every((client) => peer.closed.has(client))).toBe(true);
+            }
+            release.resolve();
+            const result = await acquisition;
+            const originalError = result instanceof AggregateError ? result.errors[0] : result;
+            if (failure === "construction") {
+              expect(originalError).toMatchObject({ code: "ERR_INVALID_HTTP_TOKEN" });
+            } else if (failure === "open") {
+              expect(originalError).toBe(peer.errors[0]);
+            } else {
+              expect(originalError).toMatchObject({
+                message: expect.stringContaining("synthetic auth rejection"),
+              });
+            }
+            if (shutdown === "rejected") {
+              expect(result).toBeInstanceOf(AggregateError);
+              expect(result).toHaveProperty("errors", [originalError, closeError]);
+              expect(process.env[selector]).toBe(ownedSelector);
+              expect(peer.isListening()).toBe(true);
+            } else {
+              expect(result).toBe(originalError);
+              expect(process.env[selector]).toBe(previousSelector);
+              expect(peer.isListening()).toBe(false);
+            }
+          } finally {
+            release.resolve();
+            await acquisition;
+            stopSpy.mockRestore();
           }
-        } finally {
-          release.resolve();
-          await acquisition;
-          stopSpy.mockRestore();
-        }
-      });
+        },
+        owner,
+      );
     },
   );
 }
@@ -563,45 +667,67 @@ describe("raw Gateway helper acquisition ownership", () => {
     },
   );
 
+  registerGatewayAcquisitionAdapterTests({
+    WebSocket,
+    runAcquisitionCase,
+    withAcquisitionPeer,
+    withAcquisitionCleanup,
+    mockPeerGateway,
+    verifyAcquisitionTimeout,
+  });
+
   it("retains the native error until awaited webchat preparation finishes", async () => {
-    const { withOpenClawTestState } = await import("../test-utils/openclaw-test-state.js");
-    await withOpenClawTestState({ label: "webchat-preparation" }, async () => {
-      await withAcquisitionPeer("reply", async (peer) => {
-        const preparing = createDeferred();
-        const release = createDeferred();
-        const preparationError = new Error("synthetic preparation failure");
-        let preparationFinished = false;
-        const devicePairing = await import("../infra/device-pairing.js");
-        vi.spyOn(devicePairing, "getPairedDevice").mockImplementation(async () => {
-          preparing.resolve();
-          await release.promise;
-          preparationFinished = true;
-          throw preparationError;
-        });
-        const { connectWebchatClient } = await import("./test-helpers.server.js");
-        let settled = false;
-        const acquisition = connectWebchatClient({ port: peer.port })
-          .finally(() => {
-            settled = true;
-          })
-          .catch((error: unknown) => error);
-        try {
-          await preparing.promise;
-          const transportError = await peer.failTransport();
-          await setImmediate();
-          const settledDuringPreparation = settled;
-          release.resolve();
-          expect(await acquisition).toBe(transportError);
-          expect(settledDuringPreparation).toBe(false);
-          expect(preparationFinished).toBe(true);
-          expect(peer.unownedErrors).toEqual([]);
-          expect(peer.closed.has(peer.clients[0]!)).toBe(true);
-          expect(peer.isListening()).toBe(true);
-        } finally {
-          release.resolve();
-          await acquisition;
-        }
-      });
+    await runAcquisitionCase({ label: "webchat-preparation" }, async (_state, owner) => {
+      await withAcquisitionPeer(
+        "reply",
+        async (peer) => {
+          const preparing = createDeferred();
+          const release = createDeferred();
+          owner.releases.add(() => release.resolve());
+          const preparationError = new Error("synthetic preparation failure");
+          let preparationFinished = false;
+          const devicePairing = await import("../infra/device-pairing.js");
+          vi.spyOn(devicePairing, "getPairedDevice").mockImplementation(async () => {
+            preparing.resolve();
+            await release.promise;
+            preparationFinished = true;
+            throw preparationError;
+          });
+          const { connectWebchatClient } = await import("./test-helpers.server.js");
+          owner.signal.throwIfAborted();
+          let settled = false;
+          const acquisition = owner
+            .track(connectWebchatClient({ port: peer.port }))
+            .finally(() => {
+              settled = true;
+            })
+            .catch((error: unknown) => error);
+          try {
+            await racePromiseWithAbortSignal(
+              Promise.race([preparing.promise, acquisition]),
+              owner.signal,
+            );
+            owner.signal.throwIfAborted();
+            const transportError = await racePromiseWithAbortSignal(
+              peer.failTransport(),
+              owner.signal,
+            );
+            await setImmediate();
+            const settledDuringPreparation = settled;
+            release.resolve();
+            expect(await acquisition).toBe(transportError);
+            expect(settledDuringPreparation).toBe(false);
+            expect(preparationFinished).toBe(true);
+            expect(peer.unownedErrors).toEqual([]);
+            expect(peer.closed.has(peer.clients[0]!)).toBe(true);
+            expect(peer.isListening()).toBe(true);
+          } finally {
+            release.resolve();
+            await acquisition;
+          }
+        },
+        owner,
+      );
     });
   });
 

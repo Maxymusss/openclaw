@@ -6,7 +6,10 @@ import type { AgentTurnContext } from "./types.js";
 
 const mocks = vi.hoisted(() => ({
   loadSessionEntry: vi.fn(),
-  persistSessionTranscriptTurn: vi.fn(),
+  persistSessionTranscriptTurn:
+    vi.fn<
+      typeof import("../../config/sessions/session-accessor.js").persistSessionTranscriptTurn
+    >(),
 }));
 
 vi.mock("../session-utils.js", async () => {
@@ -24,30 +27,8 @@ vi.mock("../../config/sessions/session-accessor.js", async () => {
 describe("prepareAgentRunUserTurn", () => {
   beforeEach(() => {
     mocks.loadSessionEntry.mockReset();
-    mocks.persistSessionTranscriptTurn.mockReset().mockImplementation(async (scope, options) => {
-      const message = options.messages[0]?.message;
-      return {
-        appendedCount: 1,
-        messages: [
-          {
-            appended: true,
-            messageId: "stale-user-turn",
-            message,
-            anchor: {
-              agentId: scope.agentId ?? "main",
-              sessionId: scope.sessionId,
-              sessionKey: scope.sessionKey,
-              storePath: scope.storePath,
-              generation: "test-generation",
-              entryId: "stale-user-turn",
-              rawSeq: 1,
-              effectiveParentId: null,
-              activeMessagePosition: 0,
-            },
-          },
-        ],
-        sessionEntry: scope.sessionEntry,
-      };
+    mocks.persistSessionTranscriptTurn.mockReset().mockImplementation(async () => {
+      throw new Error("unexpected transcript persistence");
     });
   });
 

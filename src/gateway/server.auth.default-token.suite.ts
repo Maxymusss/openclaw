@@ -7,6 +7,7 @@ import {
   type HelloOk,
   MIN_NODE_PROTOCOL_VERSION,
 } from "../../packages/gateway-protocol/src/index.js";
+import { closeGatewayTestWebSocket } from "../../test/helpers/gateway-websocket.js";
 import { acquireTestPortBlock } from "../test-utils/port-claims.js";
 import {
   connectReq,
@@ -487,23 +488,32 @@ export function registerDefaultAuthTokenSuite(): void {
 
     test("rejects protocol mismatch", async () => {
       const ws = await openWs(port);
+      const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+        ws.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+      });
       try {
         const res = await connectReq(ws, {
-          minProtocol: PROTOCOL_VERSION + 1,
-          maxProtocol: PROTOCOL_VERSION + 2,
+          minProtocol: 5,
+          maxProtocol: 6,
         });
         expect(res.ok).toBe(false);
-        expect(res.error?.details).toMatchObject({
-          code: "PROTOCOL_MISMATCH",
-          clientMinProtocol: PROTOCOL_VERSION + 1,
-          clientMaxProtocol: PROTOCOL_VERSION + 2,
-          expectedProtocol: PROTOCOL_VERSION,
-          minimumProbeProtocol: MIN_PROBE_PROTOCOL_VERSION,
+        expect(res.error).toStrictEqual({
+          code: "INVALID_REQUEST",
+          message: "protocol mismatch",
+          details: {
+            code: "PROTOCOL_MISMATCH",
+            clientMinProtocol: 5,
+            clientMaxProtocol: 6,
+            expectedProtocol: 4,
+            minimumProbeProtocol: 3,
+          },
         });
-      } catch {
-        // If the server closed before we saw the frame, that's acceptable.
+        expect(await waitForWsClose(ws, 1_000)).toBe(true);
+        expect(await closed).toEqual({ code: 1002, reason: "protocol mismatch" });
+      } finally {
+        await closeGatewayTestWebSocket(ws);
+        await closed;
       }
-      ws.close();
     });
 
     test("allows previous protocol for restart health probes", async () => {
@@ -605,18 +615,34 @@ export function registerDefaultAuthTokenSuite(): void {
       }
     });
 
-    test("keeps previous protocol rejected for non-probe clients", async () => {
+    test("keeps previous protocol rejected for ordinary operator clients", async () => {
       const ws = await openWs(port);
+      const closed = new Promise<{ code: number; reason: string }>((resolve) => {
+        ws.once("close", (code, reason) => resolve({ code, reason: reason.toString() }));
+      });
       try {
         const res = await connectReq(ws, {
-          minProtocol: MIN_NODE_PROTOCOL_VERSION,
-          maxProtocol: MIN_NODE_PROTOCOL_VERSION,
+          minProtocol: 3,
+          maxProtocol: 3,
         });
         expect(res.ok).toBe(false);
-      } catch {
-        // If the server closed before we saw the frame, that's acceptable.
+        expect(res.error).toStrictEqual({
+          code: "INVALID_REQUEST",
+          message: "protocol mismatch",
+          details: {
+            code: "PROTOCOL_MISMATCH",
+            clientMinProtocol: 3,
+            clientMaxProtocol: 3,
+            expectedProtocol: 4,
+            minimumProbeProtocol: 3,
+          },
+        });
+        expect(await waitForWsClose(ws, 1_000)).toBe(true);
+        expect(await closed).toEqual({ code: 1002, reason: "protocol mismatch" });
+      } finally {
+        await closeGatewayTestWebSocket(ws);
+        await closed;
       }
-      ws.close();
     });
 
     test("rejects non-connect first request", async () => {

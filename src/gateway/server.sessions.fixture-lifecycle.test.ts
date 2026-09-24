@@ -2,6 +2,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { vi } from "vitest";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawAgentDatabaseByPath,
@@ -9,6 +10,7 @@ import {
   resolveIncognitoOpenClawAgentSqlitePath,
 } from "../state/openclaw-agent-db.js";
 import { captureEnv } from "../test-utils/env.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 import { createGatewayFixtureFork } from "./server.fixture-lifetime.test-support.js";
 
 // Run the actual fixture hooks with controlled setup/teardown overlap instead
@@ -57,9 +59,10 @@ vi.mock("./server.js", async (importOriginal) => ({
   },
 }));
 
-const { afterAll, afterEach, beforeEach, expect, test } =
+const { afterAll, afterEach, beforeEach, expect, onTestFinished, test } =
   await vi.importActual<typeof import("vitest")>("vitest");
 const runGatewayFixtureFork = createGatewayFixtureFork(afterAll);
+const { run: runHeldFixture, finishAfterEach } = createGatewayHeldFixtureRunner(onTestFinished);
 await import("./server.sessions.create.test.js");
 const consumerHooks = { setup: hooks.setup.splice(0), cleanup: hooks.cleanup.splice(0) };
 const sessions = await import("./test/server-sessions.test-helpers.js");
@@ -87,6 +90,7 @@ beforeEach(() => {
   ]);
 });
 afterEach(async () => {
+  await finishAfterEach();
   // Preserve cleanup even on the unfixed side of these regressions.
   for (const listener of listeners) {
     if (listener.listening) {
@@ -219,29 +223,31 @@ test("teardown joins delayed server acquisition before cleaning session director
       await release.promise;
       return server;
     });
-  const pendingSetup = setup(fixture);
-  let pendingCleanup: Promise<void> | undefined;
-  try {
-    await Promise.race([acquired.promise, pendingSetup]);
-    pendingCleanup = cleanup(fixture);
-    release.resolve();
-    await Promise.all([pendingSetup, pendingCleanup]);
-    expect(closeCalls).toBe(1);
-    expect([...listeners].every((listener) => !listener.listening)).toBe(true);
-    expect(roots.size).toBe(1);
-    expect([...roots].every((root) => !fsSync.existsSync(root))).toBe(true);
-  } finally {
-    release.resolve();
-    await Promise.allSettled([pendingSetup, pendingCleanup]);
-    await server?.close();
-    await emergencyCleanup(fixture);
-    for (const root of roots) {
-      await fs.rm(root, { recursive: true, force: true });
-    }
-    start.mockRestore();
-    asyncTemp.mockRestore();
-    syncTemp.mockRestore();
-  }
+  await runHeldFixture(
+    () => release.resolve(),
+    async ({ signal, track }) => {
+      const pendingSetup = track(setup(fixture));
+      await racePromiseWithAbortSignal(Promise.race([acquired.promise, pendingSetup]), signal);
+      signal.throwIfAborted();
+      const pendingCleanup = track(cleanup(fixture));
+      release.resolve();
+      await Promise.all([pendingSetup, pendingCleanup]);
+      expect(closeCalls).toBe(1);
+      expect([...listeners].every((listener) => !listener.listening)).toBe(true);
+      expect(roots.size).toBe(1);
+      expect([...roots].every((root) => !fsSync.existsSync(root))).toBe(true);
+    },
+    async () => {
+      await server?.close();
+      await emergencyCleanup(fixture);
+      for (const root of roots) {
+        await fs.rm(root, { recursive: true, force: true });
+      }
+      start.mockRestore();
+      asyncTemp.mockRestore();
+      syncTemp.mockRestore();
+    },
+  );
 });
 
 test("teardown leaves delayed template initialization alive until its writes settle", async () => {
@@ -276,31 +282,35 @@ test("teardown leaves delayed template initialization alive until its writes set
     }
     rmSync(dir, options);
   });
-  const pendingSetup = setup(consumerHooks).finally(() => {
-    initializing = false;
-  });
-  let pendingCleanup: Promise<void> | undefined;
-  try {
-    await Promise.race([entered.promise, pendingSetup]);
-    pendingCleanup = cleanup(consumerHooks);
-    release.resolve();
-    await Promise.allSettled([pendingSetup, pendingCleanup]);
-    expect(removedDuringInitialization).toBe(false);
-    await expect(pendingSetup).resolves.toBeUndefined();
-    await expect(pendingCleanup).resolves.toBeUndefined();
-    expect(templateRoot).toBeDefined();
-    expect(fsSync.existsSync(templateRoot!)).toBe(false);
-  } finally {
-    release.resolve();
-    await Promise.allSettled([pendingSetup, pendingCleanup]);
-    mkdirSpy.mockRestore();
-    rmSpy.mockRestore();
-    rmSyncSpy.mockRestore();
-    await emergencyCleanup(consumerHooks);
-    if (templateRoot) {
-      await fs.rm(templateRoot, { recursive: true, force: true });
-    }
-  }
+  await runHeldFixture(
+    () => release.resolve(),
+    async ({ signal, track }) => {
+      const pendingSetup = track(
+        setup(consumerHooks).finally(() => {
+          initializing = false;
+        }),
+      );
+      await racePromiseWithAbortSignal(Promise.race([entered.promise, pendingSetup]), signal);
+      signal.throwIfAborted();
+      const pendingCleanup = track(cleanup(consumerHooks));
+      release.resolve();
+      await Promise.allSettled([pendingSetup, pendingCleanup]);
+      expect(removedDuringInitialization).toBe(false);
+      await expect(pendingSetup).resolves.toBeUndefined();
+      await expect(pendingCleanup).resolves.toBeUndefined();
+      expect(templateRoot).toBeDefined();
+      expect(fsSync.existsSync(templateRoot!)).toBe(false);
+    },
+    async () => {
+      mkdirSpy.mockRestore();
+      rmSpy.mockRestore();
+      rmSyncSpy.mockRestore();
+      await emergencyCleanup(consumerHooks);
+      if (templateRoot) {
+        await fs.rm(templateRoot, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 test("teardown joins pending home acquisition before restoring the environment", async () => {
@@ -320,24 +330,26 @@ test("teardown joins pending home acquisition before restoring the environment",
     }
     return dir;
   });
-  const pendingSetup = setup(fixture);
-  let pendingCleanup: Promise<void> | undefined;
-  try {
-    await Promise.race([acquired.promise, pendingSetup]);
-    pendingCleanup = cleanup(fixture);
-    release.resolve();
-    await Promise.all([pendingSetup, pendingCleanup]);
-    expect(process.env.HOME).toBe(homeBefore);
-    expect(fsSync.existsSync(home!)).toBe(false);
-  } finally {
-    release.resolve();
-    await Promise.allSettled([pendingSetup, pendingCleanup]);
-    temp.mockRestore();
-    await emergencyCleanup(fixture);
-    if (home) {
-      await fs.rm(home, { recursive: true, force: true });
-    }
-  }
+  await runHeldFixture(
+    () => release.resolve(),
+    async ({ signal, track }) => {
+      const pendingSetup = track(setup(fixture));
+      await racePromiseWithAbortSignal(Promise.race([acquired.promise, pendingSetup]), signal);
+      signal.throwIfAborted();
+      const pendingCleanup = track(cleanup(fixture));
+      release.resolve();
+      await Promise.all([pendingSetup, pendingCleanup]);
+      expect(process.env.HOME).toBe(homeBefore);
+      expect(fsSync.existsSync(home!)).toBe(false);
+    },
+    async () => {
+      temp.mockRestore();
+      await emergencyCleanup(fixture);
+      if (home) {
+        await fs.rm(home, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 test("a server cleanup error does not skip session directory or environment cleanup", async () => {

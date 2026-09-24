@@ -1,13 +1,19 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { SecretSurfaceUnavailableError } from "../secrets/runtime-degraded-state.js";
 import {
   CONTROL_UI_GITHUB_CREDENTIAL_UNAVAILABLE_MESSAGE,
   gitHubPublicApi,
 } from "./github-public-api.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 
 describe("Control UI GitHub failures", () => {
-  afterEach(() => vi.restoreAllMocks());
+  const runner = createGatewayHeldFixtureRunner(onTestFinished);
+  afterEach(async () => {
+    await runner.finishAfterEach();
+    vi.restoreAllMocks();
+  });
 
   it.each(["before admission", "during credential revalidation"])(
     "does not dispatch a caller cancelled %s",
@@ -46,30 +52,46 @@ describe("Control UI GitHub failures", () => {
       if (!signal) {
         throw new Error("HTTP request has no signal");
       }
-      started.resolve(signal);
       return await new Promise<Response>((_resolve, reject) => {
-        signal.addEventListener(
-          "abort",
-          () => reject(new DOMException("Request aborted", "AbortError")),
-          { once: true },
-        );
+        const aborted = () => {
+          signal.removeEventListener("abort", aborted);
+          reject(new DOMException("Request aborted", "AbortError"));
+        };
+        signal.addEventListener("abort", aborted, { once: true });
+        started.resolve(signal);
+        if (signal.aborted) aborted();
       });
     });
-    const request = gitHubPublicApi.fetchGitHubApi(
-      "https://api.github.com/repos/owner/repo",
-      fetchImpl,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      controller.signal,
+    await runner.run(
+      () => controller.abort(),
+      async ({ signal, track }) => {
+        const request = track(
+          gitHubPublicApi.fetchGitHubApi(
+            "https://api.github.com/repos/owner/repo",
+            fetchImpl,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            controller.signal,
+          ),
+        );
+        const requestSignal = await racePromiseWithAbortSignal(
+          Promise.race([
+            started.promise,
+            request.then(() => {
+              throw new Error("request settled before transport entry");
+            }),
+          ]),
+          signal,
+        );
+        expect(requestSignal).not.toBe(controller.signal);
+        controller.abort();
+        await expect(request).rejects.toMatchObject({ statusCode: 502 });
+        expect(requestSignal.aborted).toBe(true);
+        expect(fetchImpl).toHaveBeenCalledOnce();
+      },
     );
-    const signal = await started.promise;
-    expect(signal).not.toBe(controller.signal);
-    controller.abort();
-    await expect(request).rejects.toMatchObject({ statusCode: 502 });
-    expect(signal.aborted).toBe(true);
-    expect(fetchImpl).toHaveBeenCalledOnce();
   });
 
   it("keeps the default JSON byte cap when a caller supplies a larger metadata budget", async () => {
@@ -290,30 +312,47 @@ describe("Control UI GitHub failures", () => {
       gitHubPublicApi
         .fetchGitHubJson("https://api.github.com/user/1", fetchMock)
         .catch((error: unknown) => error);
-    const first = request();
-    const second = request();
-    firstResponse.resolve(new Response(null, { status: 429, headers: { "retry-after": "90" } }));
-    await expect(first).resolves.toMatchObject({ retryAfterMs: 90_000 });
-    secondResponse.resolve(new Response(null, { status: 429, headers: { "retry-after": "30" } }));
-    await expect(second).resolves.toMatchObject({ retryAfterMs: 90_000 });
-    const retired = new Error("identity retired");
-    const identity = {
-      revalidate: vi.fn(async () => {
-        throw retired;
-      }),
-      assertSelected: vi.fn(),
-    };
-    await expect(
-      gitHubPublicApi.fetchGitHubApi(
-        "https://api.github.com/user/1",
-        fetchMock,
-        undefined,
-        undefined,
-        identity,
-      ),
-    ).rejects.toBe(retired);
-    expect(identity.revalidate).toHaveBeenCalledOnce();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    await runner.run(
+      () => {
+        firstResponse.resolve(
+          new Response(null, { status: 429, headers: { "retry-after": "90" } }),
+        );
+        secondResponse.resolve(
+          new Response(null, { status: 429, headers: { "retry-after": "30" } }),
+        );
+      },
+      async ({ signal, track }) => {
+        const first = track(request());
+        const second = track(request());
+        firstResponse.resolve(
+          new Response(null, { status: 429, headers: { "retry-after": "90" } }),
+        );
+        await expect(first).resolves.toMatchObject({ retryAfterMs: 90_000 });
+        secondResponse.resolve(
+          new Response(null, { status: 429, headers: { "retry-after": "30" } }),
+        );
+        await expect(second).resolves.toMatchObject({ retryAfterMs: 90_000 });
+        signal.throwIfAborted();
+        const retired = new Error("identity retired");
+        const identity = {
+          revalidate: vi.fn(async () => {
+            throw retired;
+          }),
+          assertSelected: vi.fn(),
+        };
+        await expect(
+          gitHubPublicApi.fetchGitHubApi(
+            "https://api.github.com/user/1",
+            fetchMock,
+            undefined,
+            undefined,
+            identity,
+          ),
+        ).rejects.toBe(retired);
+        expect(identity.revalidate).toHaveBeenCalledOnce();
+        expect(fetchMock).toHaveBeenCalledTimes(2);
+      },
+    );
   });
 
   it.each<{ status: number; headers: Record<string, string>; delay: number }>([

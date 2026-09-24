@@ -202,9 +202,6 @@ export function registerTaskEventSubscriptionTests(
       status: "lost",
     });
 
-    if (!completed || !lost) {
-      throw new Error("expected task records to be created");
-    }
     const taskUpsertsById = new Map(readTaskUpserts(broadcast).map(({ task }) => [task.id, task]));
     expect(broadcast).toHaveBeenCalledWith("task", expect.anything(), {
       dropIfSlow: true,
@@ -252,9 +249,6 @@ export function registerTaskEventSubscriptionTests(
       task: "Review live progress",
       status: "running",
     });
-    if (!primary || !secondary) {
-      throw new Error("expected task records");
-    }
     broadcast.mockClear();
 
     for (const text of ["first", "second", "third"]) {
@@ -392,9 +386,6 @@ export function registerTaskEventSubscriptionTests(
       startedAt: 100,
       lastEventAt: 100,
     });
-    if (!task) {
-      throw new Error("expected task record");
-    }
     broadcast.mockClear();
 
     for (let index = 0; index < 2; index += 1) {
@@ -441,9 +432,6 @@ export function registerTaskEventSubscriptionTests(
         deliveryStatus: "not_applicable",
         notifyPolicy: "silent",
       });
-      if (!task) {
-        throw new Error("expected task record");
-      }
       const terminalize = () => {
         if (status === "lost") {
           markTaskLostById({ taskId: task.taskId, endedAt: 2_000 });
@@ -472,49 +460,53 @@ export function registerTaskEventSubscriptionTests(
       emit: vi.fn(),
       spawn: async () => ptys.shift() ?? makeFakePty(),
     });
-    unsubs = start({
-      terminalSessions: manager,
-    });
-    await waitForFast(() => expect(getTaskRegistryObservers()).not.toBeNull());
+    try {
+      unsubs = start({
+        terminalSessions: manager,
+      });
+      await waitForFast(() => expect(getTaskRegistryObservers()).not.toBeNull());
 
-    const runId = "cron:job-1:run-1";
-    const runSessionKey = "agent:main:cron:job-1:run:run-1";
-    const task = createTaskFixture("cron", {
-      requesterSessionKey: "",
-      ownerKey: "",
-      scopeKind: "system",
-      childSessionKey: runSessionKey,
-      runId,
-      task: "Cron task",
-      status: "running",
-      deliveryStatus: "not_applicable",
-      notifyPolicy: "silent",
-    });
-    if (!task) {
-      throw new Error("expected task record");
+      const runId = "cron:job-1:run-1";
+      const runSessionKey = "agent:main:cron:job-1:run:run-1";
+      const task = createTaskFixture("cron", {
+        requesterSessionKey: "",
+        ownerKey: "",
+        scopeKind: "system",
+        childSessionKey: runSessionKey,
+        runId,
+        task: "Cron task",
+        status: "running",
+        deliveryStatus: "not_applicable",
+        notifyPolicy: "silent",
+      });
+      const taskOpen = await manager.open(
+        baseOpenRequest({
+          owner: taskAgentOwner(runSessionKey, task.taskId),
+        }),
+      );
+      const persistentOwner = agentTerminalOwner("agent:main:main");
+      const persistentOpen = await manager.open(baseOpenRequest({ owner: persistentOwner }));
+      if (!taskOpen.ok || !persistentOpen.ok) {
+        throw new Error("expected terminal sessions");
+      }
+
+      tryFinishCronTaskRunWithoutHistory(
+        { deps: { log: mockLog } } as unknown as CronServiceState,
+        {
+          taskRunId: runId,
+          status: "ok",
+          endedAt: 2_000,
+          childSessionKey: runSessionKey,
+        },
+      );
+
+      expect(taskPty.killed).toBe(true);
+      expect(persistentPty.killed).toBe(false);
+      expect(manager.size).toBe(1);
+      expect(manager.listAgent(persistentOwner)).toHaveLength(1);
+    } finally {
+      manager.disposeAll();
     }
-    const taskOpen = await manager.open(
-      baseOpenRequest({
-        owner: taskAgentOwner(runSessionKey, task.taskId),
-      }),
-    );
-    const persistentOwner = agentTerminalOwner("agent:main:main");
-    const persistentOpen = await manager.open(baseOpenRequest({ owner: persistentOwner }));
-    if (!taskOpen.ok || !persistentOpen.ok) {
-      throw new Error("expected terminal sessions");
-    }
-
-    tryFinishCronTaskRunWithoutHistory({ deps: { log: mockLog } } as unknown as CronServiceState, {
-      taskRunId: runId,
-      status: "ok",
-      endedAt: 2_000,
-      childSessionKey: runSessionKey,
-    });
-
-    expect(taskPty.killed).toBe(true);
-    expect(persistentPty.killed).toBe(false);
-    expect(manager.size).toBe(1);
-    expect(manager.listAgent(persistentOwner)).toHaveLength(1);
   });
 
   it("closes task-run terminals only after the authoritative task becomes terminal", async () => {
@@ -546,9 +538,6 @@ export function registerTaskEventSubscriptionTests(
       deliveryStatus: "not_applicable",
       notifyPolicy: "silent",
     });
-    if (!task) {
-      throw new Error("expected task record");
-    }
     expect(closeTaskSessions).not.toHaveBeenCalled();
     expect(events).toEqual(["task:running"]);
 

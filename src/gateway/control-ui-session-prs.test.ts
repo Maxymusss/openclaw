@@ -1,4 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import { runGitWorkerOperation } from "../infra/git-worker.js";
 import {
   createSessionPullRequestsFixture,
@@ -9,6 +11,7 @@ import {
   testGitContext as context,
 } from "./control-ui-session-prs.test-support.js";
 import { parseGitHubRemoteUrl } from "./github-remote.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 
 const { load: loadControlUiSessionPullRequests } = createSessionPullRequestsFixture();
 
@@ -64,6 +67,7 @@ describe("parseGitHubRemoteUrl", () => {
 });
 
 describe("loadControlUiSessionPullRequests", () => {
+  const runner = createGatewayHeldFixtureRunner(onTestFinished);
   beforeEach(() => {
     vi.mocked(runGitWorkerOperation).mockReset();
     vi.useFakeTimers();
@@ -73,7 +77,8 @@ describe("loadControlUiSessionPullRequests", () => {
     vi.setSystemTime(cacheEpochMs);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
+    await runner.finishAfterEach();
     vi.unstubAllEnvs();
     vi.useRealTimers();
   });
@@ -729,14 +734,8 @@ describe("loadControlUiSessionPullRequests", () => {
   });
 
   it("queues one forced refresh behind an ordinary in-flight lookup", async () => {
-    let resolveInitialPulls!: (response: Response) => void;
-    let signalInitialPullStarted!: () => void;
-    const initialPulls = new Promise<Response>((resolve) => {
-      resolveInitialPulls = resolve;
-    });
-    const initialPullStarted = new Promise<void>((resolve) => {
-      signalInitialPullStarted = resolve;
-    });
+    const { promise: initialPulls, resolve: resolveInitialPulls } = createDeferred<Response>();
+    const { promise: initialPullStarted, resolve: signalInitialPullStarted } = createDeferred();
     let pullListCalls = 0;
     const fetchImpl = routedFetch([
       {
@@ -753,33 +752,56 @@ describe("loadControlUiSessionPullRequests", () => {
       { match: "/repos/openclaw/openclaw", response: () => githubJson({ fork: false }) },
     ]);
 
-    const initial = loadControlUiSessionPullRequests(
-      { sessionKey: "agent:main:main" },
-      { fetchImpl, resolveGitContext },
-    );
-    await initialPullStarted;
-    const forcedRefresh = loadControlUiSessionPullRequests(
-      { sessionKey: "agent:main:main", refresh: true },
-      { fetchImpl, resolveGitContext },
-    );
-    await Promise.resolve();
-    const ordinaryFollower = loadControlUiSessionPullRequests(
-      { sessionKey: "agent:main:main" },
-      { fetchImpl, resolveGitContext },
-    );
-    const duplicateForcedRefresh = loadControlUiSessionPullRequests(
-      { sessionKey: "agent:main:main", refresh: true },
-      { fetchImpl, resolveGitContext },
-    );
+    await runner.run(
+      () => resolveInitialPulls(githubJson([])),
+      async ({ signal, track }) => {
+        const initial = track(
+          loadControlUiSessionPullRequests(
+            { sessionKey: "agent:main:main" },
+            { fetchImpl, resolveGitContext },
+          ),
+        );
+        await racePromiseWithAbortSignal(
+          Promise.race([
+            initialPullStarted,
+            initial.then(() => {
+              throw new Error("lookup settled before initial fetch");
+            }),
+          ]),
+          signal,
+        );
+        signal.throwIfAborted();
+        const forcedRefresh = track(
+          loadControlUiSessionPullRequests(
+            { sessionKey: "agent:main:main", refresh: true },
+            { fetchImpl, resolveGitContext },
+          ),
+        );
+        await Promise.resolve();
+        signal.throwIfAborted();
+        const ordinaryFollower = track(
+          loadControlUiSessionPullRequests(
+            { sessionKey: "agent:main:main" },
+            { fetchImpl, resolveGitContext },
+          ),
+        );
+        const duplicateForcedRefresh = track(
+          loadControlUiSessionPullRequests(
+            { sessionKey: "agent:main:main", refresh: true },
+            { fetchImpl, resolveGitContext },
+          ),
+        );
 
-    resolveInitialPulls(githubJson([]));
-    expect((await initial).pullRequests).toEqual([]);
-    expect(
-      (await Promise.all([forcedRefresh, ordinaryFollower, duplicateForcedRefresh])).map((result) =>
-        result.pullRequests.map((item) => item.number),
-      ),
-    ).toEqual([[103469], [103469], [103469]]);
-    expect(pullListCalls).toBe(2);
+        resolveInitialPulls(githubJson([]));
+        expect((await initial).pullRequests).toEqual([]);
+        expect(
+          (await Promise.all([forcedRefresh, ordinaryFollower, duplicateForcedRefresh])).map(
+            (result) => result.pullRequests.map((item) => item.number),
+          ),
+        ).toEqual([[103469], [103469], [103469]]);
+        expect(pullListCalls).toBe(2);
+      },
+    );
   });
 
   it("keeps branch metadata when the very first GitHub fetch is rate limited", async () => {

@@ -1,12 +1,14 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { racePromiseWithAbortSignal } from "../infra/abort-signal.js";
 import type {
   ControlUiSessionPullRequest,
   ControlUiSessionPullRequests,
 } from "./control-ui-contract.js";
 import { loadControlUiSessionPullRequestChecks } from "./control-ui-session-pr-check-details.js";
 import { githubJson, pullListItem, requestUrl } from "./control-ui-session-prs.test-support.js";
+import { createGatewayHeldFixtureRunner } from "./held-fixture.test-support.js";
 
 const headSha = "a".repeat(40);
 const target = {
@@ -128,6 +130,8 @@ afterEach(() => {
 });
 
 describe("session PR CI details", () => {
+  const runner = createGatewayHeldFixtureRunner(onTestFinished);
+  afterEach(runner.finishAfterEach);
   it("paginates checks and Actions jobs, joins check_run_url instead of IDs, and orders steps", async () => {
     const h = harness();
     h.state.checks = Array.from({ length: 101 }, (_, i) =>
@@ -344,17 +348,33 @@ describe("session PR CI details", () => {
       }
       return fetch(input, init);
     });
-    const pending = Array.from({ length: 4 }, (_, i) =>
-      loadControlUiSessionPullRequestChecks(target, {
-        ...h.deps,
-        sessionScope: h.deps.sessionScope + "-" + i,
-      }),
+    await runner.run(
+      () => gate.resolve(githubJson({ total_count: 1, jobs: h.state.jobs })),
+      async ({ signal, track }) => {
+        const pending = Array.from({ length: 4 }, (_, i) =>
+          track(
+            loadControlUiSessionPullRequestChecks(target, {
+              ...h.deps,
+              sessionScope: h.deps.sessionScope + "-" + i,
+            }),
+          ),
+        );
+        await racePromiseWithAbortSignal(
+          Promise.race([
+            started.promise,
+            Promise.all(pending).then(() => {
+              throw new Error("loads settled before four transports entered");
+            }),
+          ]),
+          signal,
+        );
+        signal.throwIfAborted();
+        const busy = await track(h.load());
+        expect(busy).toMatchObject({ status: "unavailable", retryAfterMs: 5_000, checks: [] });
+        gate.resolve(githubJson({ total_count: 1, jobs: h.state.jobs }));
+        expect((await Promise.all(pending)).every((value) => value.status === "ready")).toBe(true);
+      },
     );
-    await started.promise;
-    const busy = await h.load();
-    expect(busy).toMatchObject({ status: "unavailable", retryAfterMs: 5_000, checks: [] });
-    gate.resolve(githubJson({ total_count: 1, jobs: h.state.jobs }));
-    expect((await Promise.all(pending)).every((value) => value.status === "ready")).toBe(true);
   });
 
   it("clears stale private details after access is revoked", async () => {
@@ -399,17 +419,32 @@ describe("session PR CI details", () => {
       }
       return fetch(input, init);
     });
-    const first = h.load();
-    const second = loadControlUiSessionPullRequestChecks(target, {
-      ...h.deps,
-      assertCurrent: () => {},
-    });
-    await started.promise;
-    h.deps.assertCurrent.mockImplementation(() => {
-      throw new Error("session generation changed");
-    });
-    gate.resolve(githubJson({ total_count: 1, jobs: h.state.jobs }));
-    await expect(first).rejects.toThrow("session generation changed");
-    expect((await second).status).toBe("ready");
+    await runner.run(
+      () => gate.resolve(githubJson({ total_count: 1, jobs: h.state.jobs })),
+      async ({ signal, track }) => {
+        const first = track(h.load());
+        const second = track(
+          loadControlUiSessionPullRequestChecks(target, {
+            ...h.deps,
+            assertCurrent: () => {},
+          }),
+        );
+        await racePromiseWithAbortSignal(
+          Promise.race([
+            started.promise,
+            Promise.all([first, second]).then(() => {
+              throw new Error("loads settled before transport entry");
+            }),
+          ]),
+          signal,
+        );
+        h.deps.assertCurrent.mockImplementation(() => {
+          throw new Error("session generation changed");
+        });
+        gate.resolve(githubJson({ total_count: 1, jobs: h.state.jobs }));
+        await expect(first).rejects.toThrow("session generation changed");
+        expect((await second).status).toBe("ready");
+      },
+    );
   });
 });
