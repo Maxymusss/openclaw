@@ -26,6 +26,8 @@ const RECEIPT_ARTIFACT_DIGEST = `sha256:${"d".repeat(64)}`;
 const INTENT_ARTIFACT_DIGEST = `sha256:${"e".repeat(64)}`;
 const BUILD_TIMESTAMP = "2026-09-02T06:00:00.000Z";
 const testNodeExecPath = resolveTestNodeExecPath();
+// Pin the runner-selected Git before fixture PATH shims can shadow it.
+const realGit = command("/bin/bash", ["--noprofile", "--norc", "-c", "command -v git"]);
 const RELEASE_PATHS = [
   "apps/mobile/version.json",
   "apps/android/version.json",
@@ -99,7 +101,7 @@ function command(
 }
 
 function git(cwd: string, ...args: string[]): string {
-  return command("/usr/bin/git", args, { cwd });
+  return command(realGit, args, { cwd });
 }
 
 function writeFile(root: string, file: string, source: string): void {
@@ -236,7 +238,7 @@ if (gitArgs.includes("archive") && process.env.GIT_ARCHIVE_MODE) {
     process.exit(75);
   }
   if (process.env.GIT_ARCHIVE_MODE === "corrupt-success") {
-    const result = spawnSync("/usr/bin/git", args, { stdio: "inherit" });
+    const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
     if (result.status !== 0) process.exit(result.status ?? 1);
     fs.writeFileSync(outputPath, "not a tar archive");
     process.exit(0);
@@ -244,7 +246,7 @@ if (gitArgs.includes("archive") && process.env.GIT_ARCHIVE_MODE) {
   console.error("unknown archive test mode");
   process.exit(76);
 }
-const result = spawnSync("/usr/bin/git", args, { stdio: "inherit" });
+const result = spawnSync(${JSON.stringify(realGit)}, args, { stdio: "inherit" });
 if (result.status === 0 && gitArgs.includes("archive") && process.env.GIT_ARCHIVE_CAPTURE) {
   const outputArgument = gitArgs.find((value) => value.startsWith("--output="));
   fs.copyFileSync(outputArgument.slice("--output=".length), process.env.GIT_ARCHIVE_CAPTURE);
@@ -395,9 +397,9 @@ if (endpoint.includes("/collaborators/")) {
   const head = match[2];
   const repository = path.resolve(process.env.MOBILE_ACTION_PATH, "../../..");
   const isAncestor = (from, to) =>
-    spawnSync("/usr/bin/git", ["-C", repository, "merge-base", "--is-ancestor", from, to]).status === 0;
+    spawnSync(${JSON.stringify(realGit)}, ["-C", repository, "merge-base", "--is-ancestor", from, to]).status === 0;
   const count = (range) => {
-    const result = spawnSync("/usr/bin/git", ["-C", repository, "rev-list", "--count", range], {
+    const result = spawnSync(${JSON.stringify(realGit)}, ["-C", repository, "rev-list", "--count", range], {
       encoding: "utf8"
     });
     if (result.status !== 0) process.exit(result.status || 74);
@@ -426,7 +428,7 @@ if (endpoint.includes("/collaborators/")) {
     status = "diverged";
     aheadBy = count(base + ".." + head);
     behindBy = count(head + ".." + base);
-    const result = spawnSync("/usr/bin/git", ["-C", repository, "merge-base", base, head], {
+    const result = spawnSync(${JSON.stringify(realGit)}, ["-C", repository, "merge-base", base, head], {
       encoding: "utf8"
     });
     if (result.status !== 0) process.exit(result.status || 75);
@@ -788,7 +790,7 @@ function useColdPartialClone(fixture: Fixture, missingPath?: string): void {
 function hasLocalBlob(fixture: Fixture, file: string): boolean {
   const oid = git(fixture.source, "rev-parse", `${fixture.baseSha}:${file}`);
   const result = spawnSync(
-    "/usr/bin/git",
+    realGit,
     ["-C", fixture.trusted, "--no-lazy-fetch", "cat-file", "-e", oid],
     {
       encoding: "utf8",
@@ -1309,7 +1311,7 @@ describe("mobile release authority", () => {
         0o111,
       );
       expect(fs.readlinkSync(path.join(extracted, "scripts/fixtures/keep-link"))).toBe("keep.txt");
-      const commitId = spawnSync("/usr/bin/git", ["get-tar-commit-id"], {
+      const commitId = spawnSync(realGit, ["get-tar-commit-id"], {
         encoding: "utf8",
         input: fs.readFileSync(captured),
       });
