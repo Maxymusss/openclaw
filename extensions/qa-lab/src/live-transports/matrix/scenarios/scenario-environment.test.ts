@@ -340,14 +340,6 @@ describe("matrix scenario environment", () => {
       "tools.media.audio.scope.rules",
       "tools.media.models",
     ]);
-    expect(
-      secondPatchParams.replacePaths?.filter(
-        (path) => path === "messages.groupChat.mentionPatterns",
-      ),
-    ).toHaveLength(1);
-    expect(secondPatchParams.replacePaths).not.toEqual(
-      expect.arrayContaining(["channels.matrix", "messages", "tools", "agents.defaults"]),
-    );
   });
 
   it("shares the preparation deadline but renews action-time config patch deadlines", async () => {

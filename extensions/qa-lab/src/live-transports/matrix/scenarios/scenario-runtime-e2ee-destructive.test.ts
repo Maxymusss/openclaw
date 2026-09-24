@@ -11,8 +11,6 @@ import { mutateMatrixQaCliStateLoss } from "./scenario-runtime-e2ee-state.js";
 import { createMatrixQaE2eeTestContext } from "./scenario-runtime-e2ee.test-helpers.js";
 import type { MatrixQaScenarioContext } from "./scenario-runtime-shared.js";
 
-const testing = { assertMatrixQaCliBackupRestoreFailed };
-
 const destructiveScenarioMocks = vi.hoisted(() => ({
   createMatrixQaClient: vi.fn(),
   createMatrixQaE2eeScenarioClient: vi.fn(),
@@ -392,7 +390,7 @@ describe("Matrix wrong-account recovery-key isolation", () => {
 describe("Matrix destructive E2EE backup failure assertions", () => {
   it("requires a nonzero CLI exit", () => {
     expect(() =>
-      testing.assertMatrixQaCliBackupRestoreFailed(
+      assertMatrixQaCliBackupRestoreFailed(
         {
           payload: {
             backup: { decryptionKeyCached: false },
@@ -413,7 +411,7 @@ describe("Matrix destructive E2EE backup failure assertions", () => {
 
   it("rejects unrelated CLI failures without backup-key evidence", () => {
     expect(() =>
-      testing.assertMatrixQaCliBackupRestoreFailed(
+      assertMatrixQaCliBackupRestoreFailed(
         {
           payload: {
             backup: { decryptionKeyCached: false },
@@ -434,7 +432,7 @@ describe("Matrix destructive E2EE backup failure assertions", () => {
 
   it("accepts a failed restore with structured backup-key evidence", () => {
     expect(() =>
-      testing.assertMatrixQaCliBackupRestoreFailed(
+      assertMatrixQaCliBackupRestoreFailed(
         {
           payload: {
             backup: {
@@ -458,7 +456,7 @@ describe("Matrix destructive E2EE backup failure assertions", () => {
 
   it("accepts the SDK bad-MAC diagnostic from the restore error", () => {
     expect(() =>
-      testing.assertMatrixQaCliBackupRestoreFailed(
+      assertMatrixQaCliBackupRestoreFailed(
         {
           payload: {
             backup: {
@@ -484,7 +482,7 @@ describe("Matrix destructive E2EE backup failure assertions", () => {
 
   it("rejects a wrapper-only key-mismatch diagnostic", () => {
     expect(() =>
-      testing.assertMatrixQaCliBackupRestoreFailed(
+      assertMatrixQaCliBackupRestoreFailed(
         {
           payload: {
             backup: { matchesDecryptionKey: false },
@@ -505,7 +503,7 @@ describe("Matrix destructive E2EE backup failure assertions", () => {
 
   it("accepts the SDK secret-storage load diagnostic", () => {
     expect(() =>
-      testing.assertMatrixQaCliBackupRestoreFailed(
+      assertMatrixQaCliBackupRestoreFailed(
         {
           payload: {
             backup: {
