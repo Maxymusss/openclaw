@@ -6,23 +6,12 @@ import { withTempDir } from "openclaw/plugin-sdk/test-env";
 import { describe, expect, it, vi } from "vitest";
 import {
   MATRIX_QA_CLEANUP_TIMEOUT_MS,
-  MATRIX_QA_SERVICE,
-  buildVersionsUrl,
   isMatrixVersionsReachable,
   waitForReachableMatrixBaseUrl,
   writeMatrixQaHarnessFiles,
 } from "./harness.runtime-internals.js";
 import { startMatrixQaHarness } from "./harness.runtime.js";
 import type { MatrixQaRecordingProxy } from "./recording-proxy.js";
-
-const testing = {
-  MATRIX_QA_CLEANUP_TIMEOUT_MS,
-  MATRIX_QA_SERVICE,
-  buildVersionsUrl,
-  isMatrixVersionsReachable,
-  waitForReachableMatrixBaseUrl,
-  writeMatrixQaHarnessFiles,
-};
 
 type MatrixQaHarnessDeps = Parameters<typeof startMatrixQaHarness>[1];
 type MatrixQaHarnessResult = Awaited<ReturnType<typeof startMatrixQaHarness>>;
@@ -115,7 +104,7 @@ describe("matrix harness runtime", () => {
     const outputDir = await mkdtemp(path.join(os.tmpdir(), "matrix-qa-harness-"));
 
     try {
-      const result = await testing.writeMatrixQaHarnessFiles({
+      const result = await writeMatrixQaHarnessFiles({
         outputDir,
         homeserverPort: 28008,
         registrationToken: "secret-token",
@@ -326,9 +315,9 @@ describe("matrix harness runtime", () => {
     const cancel = vi.fn(async () => {});
     const fetchImpl = vi.fn(async () => ({ ok: true, body: { cancel } }));
 
-    await expect(
-      testing.isMatrixVersionsReachable("http://127.0.0.1:28008/", fetchImpl),
-    ).resolves.toBe(true);
+    await expect(isMatrixVersionsReachable("http://127.0.0.1:28008/", fetchImpl)).resolves.toBe(
+      true,
+    );
 
     expect(fetchImpl).toHaveBeenCalledWith("http://127.0.0.1:28008/_matrix/client/versions", {
       signal: expect.any(AbortSignal),
@@ -344,7 +333,7 @@ describe("matrix harness runtime", () => {
       const { fetchImpl, probeSignals } = createStalledVersionsFetch();
       const sleepImpl = vi.fn(async () => {});
       const startedAt = Date.now();
-      const waiting = testing.waitForReachableMatrixBaseUrl({
+      const waiting = waitForReachableMatrixBaseUrl({
         composeFile: "/tmp/docker-compose.matrix-qa.yml",
         containerBaseUrl: null,
         fetchImpl,
@@ -378,7 +367,7 @@ describe("matrix harness runtime", () => {
       const sleepImpl = vi.fn(async (ms: number) => {
         vi.setSystemTime(Date.now() + ms);
       });
-      const waiting = testing.waitForReachableMatrixBaseUrl({
+      const waiting = waitForReachableMatrixBaseUrl({
         composeFile: "/tmp/docker-compose.matrix-qa.yml",
         containerBaseUrl: null,
         fetchImpl,
@@ -422,7 +411,7 @@ describe("matrix harness runtime", () => {
     });
 
     await expect(
-      testing.waitForReachableMatrixBaseUrl({
+      waitForReachableMatrixBaseUrl({
         composeFile: "/tmp/docker-compose.matrix-qa.yml",
         containerBaseUrl: "http://172.18.0.10:8008/",
         fetchImpl,
@@ -458,7 +447,7 @@ describe("matrix harness runtime", () => {
     });
 
     await expect(
-      testing.waitForReachableMatrixBaseUrl({
+      waitForReachableMatrixBaseUrl({
         composeFile: "/tmp/docker-compose.matrix-qa.yml",
         containerBaseUrl: "http://172.18.0.10:8008/",
         fetchImpl,

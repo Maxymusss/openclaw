@@ -7,15 +7,6 @@ import {
   resolveNextRegistrationAuth,
 } from "./client-message-content.js";
 import { createMatrixQaClient, provisionMatrixQaRoom } from "./client.js";
-import { createMatrixQaRoomObserver } from "./sync.js";
-
-const testing = {
-  buildMatrixQaMessageContent,
-  buildMatrixQaReplacementMessageContent,
-  buildMatrixReactionRelation,
-  createMatrixQaRoomObserver,
-  resolveNextRegistrationAuth,
-};
 
 function resolveRequestUrl(input: RequestInfo | URL) {
   if (typeof input === "string") {
@@ -37,7 +28,7 @@ function parseJsonRequestBody(init?: RequestInit) {
 describe("matrix driver client", () => {
   it("builds Matrix HTML mentions for QA driver messages", () => {
     expect(
-      testing.buildMatrixQaMessageContent({
+      buildMatrixQaMessageContent({
         body: "@sut:matrix-qa.test reply with exactly: TOKEN",
         mentionUserIds: ["@sut:matrix-qa.test"],
       }),
@@ -55,7 +46,7 @@ describe("matrix driver client", () => {
 
   it("omits Matrix HTML markup when the body has no visible mention token", () => {
     expect(
-      testing.buildMatrixQaMessageContent({
+      buildMatrixQaMessageContent({
         body: "reply with exactly: TOKEN",
         mentionUserIds: ["@sut:matrix-qa.test"],
       }),
@@ -69,7 +60,7 @@ describe("matrix driver client", () => {
   });
 
   it("builds trimmed Matrix reaction relations for QA driver events", () => {
-    expect(testing.buildMatrixReactionRelation(" $msg-1 ", " 👍 ")).toEqual({
+    expect(buildMatrixReactionRelation(" $msg-1 ", " 👍 ")).toEqual({
       "m.relates_to": {
         rel_type: "m.annotation",
         event_id: "$msg-1",
@@ -80,7 +71,7 @@ describe("matrix driver client", () => {
 
   it("builds Matrix replacement messages with replacement-local mention metadata", () => {
     expect(
-      testing.buildMatrixQaReplacementMessageContent({
+      buildMatrixQaReplacementMessageContent({
         body: "@sut:matrix-qa.test updated prompt",
         mentionUserIds: ["@sut:matrix-qa.test"],
         targetEventId: " $msg-1 ",
@@ -106,7 +97,7 @@ describe("matrix driver client", () => {
   });
 
   it("advances Matrix registration through token then dummy auth stages", () => {
-    const firstStage = testing.resolveNextRegistrationAuth({
+    const firstStage = resolveNextRegistrationAuth({
       registrationToken: "reg-token",
       response: {
         session: "uiaa-session",
@@ -121,7 +112,7 @@ describe("matrix driver client", () => {
     });
 
     expect(
-      testing.resolveNextRegistrationAuth({
+      resolveNextRegistrationAuth({
         registrationToken: "reg-token",
         response: {
           session: "uiaa-session",
@@ -137,7 +128,7 @@ describe("matrix driver client", () => {
 
   it("rejects Matrix UIAA flows that require unsupported stages", () => {
     expect(() =>
-      testing.resolveNextRegistrationAuth({
+      resolveNextRegistrationAuth({
         registrationToken: "reg-token",
         response: {
           session: "uiaa-session",

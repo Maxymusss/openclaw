@@ -124,8 +124,6 @@ describe("matrix qa config", () => {
     );
 
     expect(next.plugins?.allow).toEqual(["acpx", "memory-core", "qa-lab", "openai", "matrix"]);
-    expect(next.plugins?.allow).not.toContain("unrelated");
-    expect(next.plugins?.allow).not.toContain("anthropic");
     expect(next.plugins?.entries?.matrix).toEqual({
       config: { preserve: "matrix-config" },
       enabled: true,
