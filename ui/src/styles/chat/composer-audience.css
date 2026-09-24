@@ -1,0 +1,40 @@
+/* Only the chat audience row changes; reply/palette mention strips retain their layout. */
+.chat-composer-audience.field.checkbox {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  margin: 0 0 0 auto;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.chat-composer-audience input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+@media (max-width: 560px) {
+  .composer-context-strip--audience {
+    flex-wrap: wrap;
+  }
+
+  .composer-context-strip--audience .chat-composer-audience.field.checkbox {
+    min-height: 44px;
+  }
+
+  .composer-context-strip--audience .composer-context-strip__people {
+    order: 2;
+    flex-basis: calc(100% - 32px);
+  }
+
+  .composer-context-strip--audience .composer-context-strip__dismiss {
+    order: 3;
+  }
+}

@@ -26,6 +26,7 @@ type ComposerKeyDownDeps = {
   alternateFollowUpMode?: ChatFollowUpMode;
   goalComposer: GoalComposerController;
   humanDiscussion?: boolean;
+  participation?: "agent" | "humans";
 };
 
 export function createComposerKeyDownHandler({
@@ -43,6 +44,7 @@ export function createComposerKeyDownHandler({
   alternateFollowUpMode,
   goalComposer,
   humanDiscussion,
+  participation,
 }: ComposerKeyDownDeps): (event: KeyboardEvent) => void {
   return (event) => {
     // The handler only ever binds to the composer textarea; narrowing here
@@ -119,6 +121,7 @@ export function createComposerKeyDownHandler({
         keyCode: event.keyCode,
       });
       if (result.handled) {
+        state.audience = null;
         state.editRevision += 1;
         if (result.preventDefault) {
           event.preventDefault();
@@ -189,8 +192,8 @@ export function createComposerKeyDownHandler({
       }
       const followUpModeOverride =
         (event.metaKey || event.ctrlKey) && !event.altKey ? alternateFollowUpMode : undefined;
-      if (humanDiscussion) {
-        void props.onSend(undefined, event, "humans");
+      if (participation) {
+        void props.onSend(humanDiscussion ? undefined : followUpModeOverride, event, participation);
       } else {
         void props.onSend(followUpModeOverride, event);
       }

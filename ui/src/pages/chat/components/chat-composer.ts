@@ -19,6 +19,7 @@ import { detectTextDirection } from "../../../lib/text-direction.ts";
 import { ComposerDictationController, insertComposerDictation } from "../composer-dictation.ts";
 import { normalizeChatComposerDraft } from "../composer-draft.ts";
 import { ComposerMicrophonePicker } from "../composer-microphone-picker.ts";
+import { resolveChatComposerAudience } from "./chat-composer-audience.ts";
 import { renderContextNotice } from "./chat-composer-context.ts";
 import { renderMicrophonePicker, type ChatRunControlsProps } from "./chat-composer-controls.ts";
 import {
@@ -35,7 +36,10 @@ import { createComposerKeyDownHandler } from "./chat-composer-keydown.ts";
 import type { HumanMentionMenuHost } from "./chat-composer-mention-menu.ts";
 import { resolveChatSlashCommandArgOptions, resolveComposerMenus } from "./chat-composer-menus.ts";
 import { resolveComposerQuestionPanel } from "./chat-composer-question.ts";
-import { createChatComposerSendHandler } from "./chat-composer-send.ts";
+import {
+  createChatComposerSendHandler,
+  syncChatComposerDraftAfterSend,
+} from "./chat-composer-send.ts";
 import {
   isSkillMenuVisible,
   resetSkillMenuState,
@@ -48,7 +52,6 @@ import {
   updateSlashMenu,
 } from "./chat-composer-slash-menu.ts";
 import {
-  clearPendingClearedSubmittedDraft,
   commitComposerDraft,
   composerDraftKey,
   consumeComposerInputIntent,
@@ -72,8 +75,6 @@ export function renderChatComposer(props: ChatComposerProps) {
   const state = getChatComposerState(props.paneId);
   state.slashCommandDispatchConnected = props.connected;
   const canCompose = props.canCompose ?? props.canSend;
-  const humanDiscussion =
-    props.discussionAvailable && props.replyTarget?.participation === "humans";
   const isBusy = props.sending || props.stream !== null;
   const canAbort = Boolean(props.canAbort && props.onAbort);
   const showAbortableUi = canAbort && !hasTerminalRunStatus(props.runStatus);
@@ -163,6 +164,18 @@ export function renderChatComposer(props: ChatComposerProps) {
           : t("chat.composer.runInterrupted");
   const requestUpdate = props.onRequestUpdate ?? (() => {});
   const goalComposer = createGoalComposerController(props, state, requestUpdate);
+  const {
+    participation,
+    humanDiscussion,
+    control: audienceControl,
+  } = resolveChatComposerAudience(
+    props,
+    state,
+    draftKey,
+    visibleDraft,
+    goalComposer.active,
+    requestUpdate,
+  );
   const mentionsUnsupported = props.mentionsUnsupported || goalComposer.active;
   state.mentionMenu.syncDirectory(
     props.connected && canCompose && !mentionsUnsupported ? props.mentionDirectory : undefined,
@@ -266,26 +279,8 @@ export function renderChatComposer(props: ChatComposerProps) {
     (props.connected || !draft.trimStart().startsWith("/"));
   const renderedDraftCanSubmit = canSubmitDraft(visibleDraft);
 
-  const syncComposerDraftAfterSend = (target: HTMLTextAreaElement | null) => {
-    state.emojiMenu.close();
-    state.mentionMenu.close();
-    const submittedDraft = target?.value ?? props.getDraft?.() ?? props.draft;
-    const hostDraft = props.getDraft?.() ?? props.draft;
-    const clearedSubmittedDraft =
-      hostDraft === "" && submittedDraft !== "" && target?.value === submittedDraft;
-    if (clearedSubmittedDraft) {
-      state.pendingClearedSubmittedDraft = {
-        key: draftKey,
-        value: submittedDraft,
-      };
-    } else {
-      clearPendingClearedSubmittedDraft(state, draftKey);
-    }
-    if (target && target.value !== hostDraft) {
-      target.value = hostDraft;
-      adjustTextareaHeight(target);
-    }
-  };
+  const syncComposerDraftAfterSend = (target: HTMLTextAreaElement | null) =>
+    syncChatComposerDraftAfterSend(props, state, draftKey, target);
 
   const handleKeyDown = createComposerKeyDownHandler({
     state,
@@ -302,6 +297,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     alternateFollowUpMode,
     goalComposer,
     humanDiscussion,
+    participation,
   });
 
   const syncComposerValue = (target: HTMLTextAreaElement, typedAtSign = false) => {
@@ -327,8 +323,9 @@ export function renderChatComposer(props: ChatComposerProps) {
     if (!goalComposer.active && !humanDiscussion) {
       updateSlashMenu(target.value, state, slashMenuHost, requestUpdate);
       updateSkillMenu(target.value, target.selectionStart, state, skillMenuHost, requestUpdate);
-      const mentionIntent = typedAtSign ? "trigger" : "input";
-      state.mentionMenu.update(target, requestUpdate, mentionIntent);
+    }
+    if (!goalComposer.active) {
+      state.mentionMenu.update(target, requestUpdate, typedAtSign ? "trigger" : "input");
     }
     state.emojiMenu.update(
       target,
@@ -450,6 +447,7 @@ export function renderChatComposer(props: ChatComposerProps) {
     props,
     state,
     humanDiscussion,
+    participation,
     canSubmitDraft,
     goalComposer,
     syncComposerDraftAfterSend,
@@ -617,8 +615,8 @@ export function renderChatComposer(props: ChatComposerProps) {
     preparingAttachments:
       (props.getPendingAttachmentReads?.() ?? props.pendingAttachmentReads ?? 0) > 0,
     isBusy,
-    followUpMode: props.followUpMode,
-    alternateFollowUpMode,
+    followUpMode: humanDiscussion ? undefined : props.followUpMode,
+    alternateFollowUpMode: humanDiscussion ? undefined : alternateFollowUpMode,
     suggestionComposer: props.suggestionComposer,
     submissionLabel: goalComposer.submissionLabel,
     sending: props.sending,
@@ -634,10 +632,6 @@ export function renderChatComposer(props: ChatComposerProps) {
     onAbort: props.onAbort,
     onSend: handleSend,
     humanDiscussion,
-    onAlternateAudience:
-      props.discussionAvailable && !goalComposer.active
-        ? (event) => handleSend(event, humanDiscussion ? "agent" : "humans")
-        : undefined,
     onToggleVoice: props.onToggleRealtimeTalk ? handleVoicePrimaryAction : undefined,
     onToggleCamera: props.onToggleRealtimeCamera,
     microphonePicker,
@@ -727,5 +721,6 @@ export function renderChatComposer(props: ChatComposerProps) {
     slashMenuListboxId,
     slashMenuAnnouncementId,
     goalComposer,
+    audienceControl,
   });
 }

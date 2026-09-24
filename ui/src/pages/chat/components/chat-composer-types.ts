@@ -210,6 +210,12 @@ type ComposingDraft = {
 
 export type ChatComposerState = SkillMenuState &
   SlashMenuState & {
+    audience: {
+      key: string;
+      owner?: object;
+      hasDraft: boolean;
+      participation?: "agent" | "humans";
+    } | null;
     composerComposing: boolean;
     editRevision: number;
     mentionMenu: HumanMentionMenu;

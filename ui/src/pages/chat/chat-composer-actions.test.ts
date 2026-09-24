@@ -4,6 +4,7 @@ import { render } from "lit";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { t } from "../../i18n/index.ts";
+import type { HumanMention } from "../../lib/chat/chat-types.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import {
   findComposerButton as button,
@@ -37,39 +38,201 @@ function pressComposerEnter(
 }
 
 describe("renderChatComposer controls", () => {
-  it("offers a no-agent post without changing the ordinary send", () => {
+  function audienceFixture(overrides: Parameters<typeof renderComposer>[0] = {}) {
     const onSend = vi.fn();
-    const { container } = renderComposer({
+    const { container, props } = renderComposer({
       discussionAvailable: true,
-      draft: "Discuss this",
+      currentSessionId: "session-one",
+      draft: "@Morgan please check",
+      mentions: [{ profileId: "morgan", start: 0, end: 7 }],
       onSend,
+      ...overrides,
     });
-    const post = Array.from(container.querySelectorAll("button")).find(
-      (el) => el.textContent?.trim() === "Post to people",
-    );
-    expect(post).toBeDefined();
-    post?.click();
-    expect(onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event), "humans");
-    primaryButton(container).click();
-    expect(onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event));
+    document.body.append(container);
+    props.getDraft = () => props.draft;
+    props.onDraftChange = (next, mentions?: readonly HumanMention[]) => {
+      props.draft = next;
+      if (mentions) {
+        props.mentions = mentions;
+      }
+    };
+    const refresh = () => render(renderChatComposer(props), container);
+    props.onRequestUpdate = refresh;
+    refresh();
+    const checkbox = () => {
+      const input = container.querySelector<HTMLInputElement>(".chat-composer-audience input");
+      if (!input) {
+        throw new Error("expected Run agent checkbox");
+      }
+      return input;
+    };
+    return { container, props, refresh, checkbox, onSend };
+  }
+
+  it("keeps selected recipients while toggling intent without sending", () => {
+    const f = audienceFixture();
+    expect(f.container.textContent).toContain("Will notify");
+    expect(f.container.textContent).toContain("Morgan");
+    expect(f.container.textContent).not.toContain("Post to people");
+    expect(f.container.textContent).not.toContain("Ask agent");
+    expect(f.checkbox().checked).toBe(true);
+    f.checkbox().click();
+    expect(f.checkbox().checked).toBe(false);
+    expect(f.onSend).not.toHaveBeenCalled();
+    expect(f.props.mentions).toEqual([{ profileId: "morgan", start: 0, end: 7 }]);
+    expect(primaryButton(f.container).getAttribute("aria-label")).toBe("Send message");
   });
 
-  it("posts a human reply with Enter and offers Ask agent for mixed requests", () => {
-    const onSend = vi.fn();
-    const { container } = renderComposer({
-      discussionAvailable: true,
-      draft: "Please check",
-      onSend,
-      replyTarget: { messageId: "human", text: "Question", participation: "humans" },
+  it.each(["click", "enter"])("uses the same explicit audience through %s", (via) => {
+    const f = audienceFixture({ canAbort: true, followUpMode: "interrupt", onAbort: vi.fn() });
+    for (const participation of ["humans", "agent"] as const) {
+      f.checkbox().click();
+      if (via === "click") {
+        primaryButton(f.container).click();
+      } else {
+        pressComposerEnter(f.container);
+      }
+      expect(f.onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event), participation);
+      expect(f.props.onAbort).not.toHaveBeenCalled();
+    }
+  });
+
+  it("exposes human-reply intent without claiming notification, including an empty reply", () => {
+    const f = audienceFixture({
+      draft: "",
+      mentions: [],
+      replyTarget: {
+        messageId: "human",
+        text: "Question",
+        senderLabel: "Morgan",
+        participation: "humans",
+      },
     });
-    expect(primaryButton(container).getAttribute("aria-label")).toBe("Post to people");
-    pressComposerEnter(container);
-    expect(onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event), "humans");
-    const ask = Array.from(container.querySelectorAll("button")).find(
-      (el) => el.textContent?.trim() === "Ask agent",
+    expect(f.container.textContent).not.toContain("Will notify");
+    expect(f.checkbox().checked).toBe(false);
+    f.checkbox().click();
+    expect(f.checkbox().checked).toBe(true);
+    f.props.draft = "Agent, help Morgan";
+    f.refresh();
+    pressComposerEnter(f.container);
+    expect(f.onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event), "agent");
+    f.props.replyTarget = null;
+    f.refresh();
+    expect(f.container.querySelector(".chat-composer-audience")).toBeNull();
+    primaryButton(f.container).click();
+    expect(f.onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event));
+  });
+
+  it.each(["clear", "session", "incarnation", "connection", "queued-edit", "remove-mentions"])(
+    "retires unchecked draft intent on %s instead of creating ambient silent mode",
+    (change) => {
+      const f = audienceFixture();
+      f.checkbox().click();
+      f.props.draft += " more detail";
+      f.refresh();
+      expect(f.checkbox().checked).toBe(false);
+      switch (change) {
+        case "clear":
+          f.props.draft = "";
+          break;
+        case "session":
+          f.props.sessionKey = "another";
+          break;
+        case "incarnation":
+          f.props.currentSessionId = "replacement";
+          break;
+        case "connection":
+          f.props.gatewayScope = {};
+          break;
+        case "queued-edit":
+          f.props.queuedEdit = { editingId: "queued", onCancel: vi.fn() };
+          break;
+        case "remove-mentions":
+          f.props.mentions = [];
+          break;
+      }
+      f.refresh();
+      f.props.draft = "@Morgan restored draft";
+      f.props.mentions = [{ profileId: "morgan", start: 0, end: 7 }];
+      f.refresh();
+      expect(f.checkbox().checked).toBe(true);
+    },
+  );
+
+  it("resets intent when input history replaces the draft", () => {
+    const f = audienceFixture();
+    f.checkbox().click();
+    f.props.onHistoryKeydown = (input) => {
+      f.props.draft = "@Morgan restored from history";
+      return {
+        ...input,
+        handled: true,
+        preventDefault: true,
+        restoreCaret: null,
+        decision: "handled:history-up",
+        historyNavigationActiveBefore: true,
+        historyNavigationActiveAfter: true,
+      };
+    };
+    f.refresh();
+    f.container.querySelector("textarea")!.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        key: "ArrowUp",
+        bubbles: true,
+        cancelable: true,
+      }),
     );
-    ask?.click();
-    expect(onSend).toHaveBeenLastCalledWith(undefined, expect.any(Event), "agent");
+    expect(f.checkbox().checked).toBe(true);
+    expect(f.onSend).not.toHaveBeenCalled();
+  });
+
+  it("resets a successfully cleared submission but preserves a failed draft", () => {
+    const f = audienceFixture();
+    f.checkbox().click();
+    f.props.onSend = () => {
+      f.props.draft = "";
+      f.props.mentions = [];
+    };
+    f.refresh();
+    primaryButton(f.container).click();
+    f.refresh();
+    f.props.draft = "@Morgan next message";
+    f.props.mentions = [{ profileId: "morgan", start: 0, end: 7 }];
+    f.refresh();
+    expect(f.checkbox().checked).toBe(true);
+    f.props.onSend = async () => false;
+    f.checkbox().click();
+    primaryButton(f.container).click();
+    f.refresh();
+    expect(f.checkbox().checked).toBe(false);
+  });
+
+  it("holds unsupported attachment-only discussion without trapping the agent override", () => {
+    const attachment = { id: "image", mimeType: "image/png", fileName: "proof.png" };
+    const f = audienceFixture({ attachments: [attachment] });
+    expect(f.checkbox().checked).toBe(true);
+    expect(f.checkbox().disabled).toBe(true);
+    f.props.attachments = [];
+    f.refresh();
+    f.checkbox().click();
+    f.props.attachments = [attachment];
+    f.refresh();
+    expect(f.checkbox().checked).toBe(false);
+    expect(f.checkbox().disabled).toBe(false);
+    f.checkbox().click();
+    expect(f.checkbox().checked).toBe(true);
+    expect(f.onSend).not.toHaveBeenCalled();
+  });
+
+  it("keeps ordinary, new-session and assistant-reply composers free of audience controls", () => {
+    for (const overrides of [
+      { mentions: [], draft: "Normal request" },
+      { discussionAvailable: false },
+      { mentions: [], replyTarget: { messageId: "assistant", text: "Answer" } },
+    ]) {
+      const f = audienceFixture(overrides);
+      expect(f.container.querySelector(".chat-composer-audience")).toBeNull();
+    }
   });
 
   it.each(["local draft", "/stop"])(

@@ -18,7 +18,6 @@ import {
 import type { RealtimeTalkLevelSignal } from "../talk/level.ts";
 import type { RealtimeTalkStatus } from "../talk/session.ts";
 import type { RealtimeVoiceSelectionState } from "../talk/voice-selection.ts";
-import { renderChatAudienceAction } from "./chat-composer-audience.ts";
 import { renderRealtimeVoicePicker } from "./chat-realtime-controls.ts";
 import {
   renderChatVoiceStatus,
@@ -55,7 +54,6 @@ export type ChatRunControlsProps = {
   onPrimaryActionPointerDown?: (event: PointerEvent) => void;
   onAbort?: () => void;
   onSend: (submissionAction?: Event) => void;
-  onAlternateAudience?: (submissionAction?: Event) => void;
   humanDiscussion?: boolean;
   onToggleVoice?: () => void;
   onToggleCamera?: () => void;
@@ -513,7 +511,7 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
   const interruptsActiveRun = props.followUpMode === "interrupt";
   const activeRunActionLabel =
     props.submissionLabel ??
-    (props.humanDiscussion ? t("chat.messages.discussion.post") : undefined) ??
+    (props.humanDiscussion ? t("chat.runControls.send") : undefined) ??
     (props.suggestionComposer
       ? t("chat.sessionSuggestions.suggest")
       : !props.canAbort || props.followUpMode === undefined
@@ -525,7 +523,7 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
             : t("chat.runControls.queue"));
   const activeRunActionDescription =
     props.submissionLabel ??
-    (props.humanDiscussion ? t("chat.messages.discussion.post") : undefined) ??
+    (props.humanDiscussion ? t("chat.runControls.sendMessage") : undefined) ??
     (props.suggestionComposer
       ? t("chat.sessionSuggestions.suggestMessage")
       : !props.canAbort || props.followUpMode === undefined
@@ -647,7 +645,6 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
         : props.onToggleVoice
           ? mobileTalkAction
           : sendAction;
-  const audienceAction = renderChatAudienceAction(props, hasComposedContent, sendDisabledReason);
   const primaryActions =
     mobilePrimaryAction === desktopPrimaryAction
       ? html`<span class="chat-mobile-primary-action chat-desktop-primary-action"
@@ -743,7 +740,7 @@ export function renderChatPrimaryActions(props: ChatRunControlsProps) {
               >${abortAction}</span
             >
           `
-        : html` ${voiceControl} ${mobileDictationControl} ${audienceAction} ${primaryActions} `
+        : html` ${voiceControl} ${mobileDictationControl} ${primaryActions} `
     }
   `;
 }

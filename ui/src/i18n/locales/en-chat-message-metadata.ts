@@ -5,11 +5,10 @@ const enChatMessageMetadata = {
   chat: {
     messages: {
       discussion: {
-        post: "Post to people",
-        ask: "Ask agent",
-        hint: "Post without starting or interrupting the agent",
+        runAgent: "Run agent",
+        hint: "Allow the agent to respond or work on this message. Uncheck to post only to people.",
         textOnly:
-          "Human discussion supports text in an existing conversation. Remove attachments or choose Ask agent.",
+          "Human discussion supports text in an existing conversation. Remove attachments or enable Run agent.",
       },
       attachedContext: {
         label: "Context attached",
