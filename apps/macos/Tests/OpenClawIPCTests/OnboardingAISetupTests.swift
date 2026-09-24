@@ -188,25 +188,27 @@ private func isolatedAISetupDefaults(suiteName: String) -> UserDefaults? {
 }
 
 private actor AISetupConfigReadGate {
-    private var blockNextRead = false
+    private var readsBeforeBlock: Int?
     private var blocked = false
     private var released = false
     private var blockedWaiters: [CheckedContinuation<Void, Never>] = []
     private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
-    func armNextRead() {
-        self.blockNextRead = true
+    func armNextRead(afterReads: Int = 0) {
+        self.readsBeforeBlock = afterReads
     }
 
     func snapshotToken() async -> String {
-        if self.blockNextRead {
-            self.blockNextRead = false
-            self.blocked = true
-            self.blockedWaiters.forEach { $0.resume() }
-            self.blockedWaiters.removeAll()
-            if !self.released {
-                await withCheckedContinuation { continuation in
-                    self.releaseWaiters.append(continuation)
+        if let readsBeforeBlock {
+            self.readsBeforeBlock = readsBeforeBlock > 0 ? readsBeforeBlock - 1 : nil
+            if readsBeforeBlock == 0 {
+                self.blocked = true
+                self.blockedWaiters.forEach { $0.resume() }
+                self.blockedWaiters.removeAll()
+                if !self.released {
+                    await withCheckedContinuation { continuation in
+                        self.releaseWaiters.append(continuation)
+                    }
                 }
             }
         }
@@ -922,6 +924,8 @@ struct OnboardingAISetupTests {
     @Test(arguments: ["accept", "decline", "cancel", "error", "retry-cancel"], [false, true])
     func `activation consent uses shared wizard`(decision: String, manual: Bool) async throws {
         let recorder = AISetupRequestRecorder()
+        let settlementGate = AISetupConfigReadGate()
+        let gateSettlement = decision == "accept" && manual
         let cancellationFails = LockIsolated(true)
         let accepts = ["accept", "error"].contains(decision)
         let defaults = try #require(isolatedAISetupDefaults(prefix: "ActivationConsent"))
@@ -951,6 +955,11 @@ struct OnboardingAISetupTests {
                     case "consent":
                         let accepted = try #require(answer?["value"] as? Bool)
                         #expect(accepted == accepts)
+                        if gateSettlement {
+                            // Pass the transport's post-response check, then hold the
+                            // activation owner's final route validation after the sheet closes.
+                            await settlementGate.armNextRead(afterReads: 1)
+                        }
                         payload = if decision == "error" {
                             ["done": true, "status": "error", "error": "AI access was saved, but could not be applied."]
                         } else if accepted {
@@ -993,15 +1002,23 @@ struct OnboardingAISetupTests {
                     methods: ["openclaw.setup.activate", "openclaw.setup.activate.start"],
                     capabilities: ["openclaw-setup-model-ref"]))
             })
-        let gateway = try makeAISetupGateway(url: #require(URL(string: "ws://example.invalid")), session: session)
+        let url = try #require(URL(string: "ws://example.invalid"))
+        let gateway = GatewayConnection(
+            configProvider: {
+                let token = await settlementGate.snapshotToken()
+                return (url: url, token: token, password: nil)
+            },
+            sessionBox: WebSocketSessionBox(session: session))
         let model = makeAISetupModel(gateway: gateway, defaults: defaults)
+        var activationSettled = false
         let activation = Task {
             await model.detectAndAutoConnect()
             if manual {
                 model.manualProviderID = "openai-api-key"
                 model.manualKey = "fixture-key"
-                model.submitManualKey()
+                await model.submitManualKey()?.value
             }
+            activationSettled = true
         }
         defer {
             model.resetForGatewayChange()
@@ -1033,9 +1050,15 @@ struct OnboardingAISetupTests {
             model.authConfirmation = accepts
             model.continueProviderAuth()
         }
-        for _ in 0..<400 where model.activeAuthOption != nil {
-            try await Task.sleep(nanoseconds: 5_000_000)
+        if gateSettlement {
+            await settlementGate.waitUntilBlocked()
+            #expect(model.activeAuthOption == nil)
+            #expect(!activationSettled)
+            #expect(model.manualTesting)
+            #expect(model.manualError == nil)
+            await settlementGate.release()
         }
+        await activation.value
         await settleQueuedAISetupTasks()
         #expect(model.connected == (decision == "accept"))
         #expect(model.pendingActivationVerification == (decision == "error" || decision == "retry-cancel"))
