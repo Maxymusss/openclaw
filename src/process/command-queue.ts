@@ -1,6 +1,5 @@
 // Command queue serializes and limits process execution for shared command lanes.
 import { AsyncLocalStorage } from "node:async_hooks";
-import { normalizeAgentId } from "@openclaw/normalization-core/agent-id";
 import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { formatErrorMessage, readErrorName, toErrorObject } from "../infra/errors.js";
 import {
@@ -8,7 +7,6 @@ import {
   logLaneDequeue,
   logLaneEnqueue,
 } from "../logging/diagnostic-runtime.js";
-import { parseAgentSessionKey } from "../sessions/session-key-utils.js";
 import {
   applyCommandLaneCapacity,
   canAdmitInGroup,
@@ -646,55 +644,6 @@ export function listCommandLaneTotals(): Array<{
 }
 
 /**
- * Atomically reserve a heartbeat admission while the agent's scoped session
- * lanes are idle. Queue state and reservations live on the shared singleton so
- * bundled entry points make the same decision.
- *
- * This admission check only observes work already present. Later queue arrivals
- * retain their normal admission and preemption behavior.
- */
-export function tryAcquireHeartbeatAdmission(agentId: string): (() => void) | undefined {
-  const normalizedAgentId = normalizeAgentId(agentId);
-  const queueState = getQueueState();
-  if (queueState.heartbeatAdmissions.has(normalizedAgentId)) {
-    return undefined;
-  }
-
-  for (const state of queueState.lanes.values()) {
-    const scopedSessionKey = state.lane.startsWith("session:")
-      ? state.lane.slice("session:".length)
-      : state.lane.startsWith("nested:")
-        ? state.lane.slice("nested:".length)
-        : undefined;
-    if (!scopedSessionKey) {
-      continue;
-    }
-    const parsed = parseAgentSessionKey(scopedSessionKey);
-    if (
-      parsed &&
-      normalizeAgentId(parsed.agentId) === normalizedAgentId &&
-      (state.queue.length > 0 || state.activeTaskIds.size > 0)
-    ) {
-      return undefined;
-    }
-  }
-
-  const token = Symbol(normalizedAgentId);
-  queueState.heartbeatAdmissions.set(normalizedAgentId, token);
-  let released = false;
-  return () => {
-    if (released) {
-      return;
-    }
-    released = true;
-    const currentState = getQueueState();
-    if (currentState.heartbeatAdmissions.get(normalizedAgentId) === token) {
-      currentState.heartbeatAdmissions.delete(normalizedAgentId);
-    }
-  };
-}
-
-/**
  * Active task ids for a lane. Ids are process-monotonic, so recovery can
  * detect a turn that started after a point in time it captured earlier.
  */
@@ -772,7 +721,6 @@ export function resetCommandLane(lane: string = CommandLane.Main): number {
 export function resetAllLanes(): void {
   const queueState = getQueueState();
   resetGatewayWorkAdmission();
-  queueState.heartbeatAdmissions.clear();
   const lanesToDrain: string[] = [];
   for (const state of queueState.lanes.values()) {
     state.generation += 1;

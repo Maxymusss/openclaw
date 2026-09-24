@@ -17,6 +17,7 @@ import {
 } from "../process/command-queue.js";
 import { resetCommandQueueStateForTest } from "../process/command-queue.test-support.js";
 import { CommandLane } from "../process/lanes.js";
+import { resolveHeartbeatWakeStage } from "./heartbeat-runner-execution.js";
 import { runHeartbeatOnce } from "./heartbeat-runner.js";
 import {
   readSessionStoreForTest,
@@ -48,15 +49,31 @@ afterEach(() => {
   resetCommandQueueStateForTest();
 });
 
-function createOpsHeartbeatConfig(storePath: string): OpenClawConfig {
+function createOpsHeartbeatConfig(
+  storePath: string,
+  options: { defaultSkipWhenBusy?: boolean; entrySkipWhenBusy?: boolean },
+): OpenClawConfig {
   return {
     session: { store: storePath },
     agents: {
       defaults: {
-        heartbeat: { every: "30m", target: "last" },
+        heartbeat: {
+          every: "30m",
+          target: "last",
+          ...(options.defaultSkipWhenBusy === undefined
+            ? {}
+            : { skipWhenBusy: options.defaultSkipWhenBusy }),
+        },
         model: { primary: "openai/gpt-5.6-luna" },
       },
-      list: [{ id: "ops" }],
+      list: [
+        {
+          id: "ops",
+          ...(options.entrySkipWhenBusy === undefined
+            ? {}
+            : { heartbeat: { skipWhenBusy: options.entrySkipWhenBusy } }),
+        },
+      ],
     },
     channels: {
       telegram: { enabled: true, token: "fake", allowFrom: ["123"] },
@@ -81,14 +98,78 @@ async function waitForQueuedLane(lane: string, isProducerDone: () => boolean): P
 }
 
 describe("heartbeat runner admission against queued agent work", () => {
-  it.each([
-    { label: "other-session", nested: false },
-    { label: "nested-agent", nested: true },
-  ])(
-    "skips before preparing or dispatching while the real embedded producer has queued $label work",
-    async ({ label, nested }) => {
+  const queueCases = [
+    {
+      label: "other-session",
+      nested: false,
+      setting: "default true",
+      config: { defaultSkipWhenBusy: true },
+      intent: "scheduled",
+      shouldSkip: true,
+    },
+    {
+      label: "nested-agent",
+      nested: true,
+      setting: "default true",
+      config: { defaultSkipWhenBusy: true },
+      intent: "scheduled",
+      shouldSkip: true,
+    },
+    {
+      label: "other-session",
+      nested: false,
+      setting: "default false",
+      config: { defaultSkipWhenBusy: false },
+      intent: "scheduled",
+      shouldSkip: false,
+    },
+    {
+      label: "nested-agent",
+      nested: true,
+      setting: "unset",
+      config: {},
+      intent: "scheduled",
+      shouldSkip: false,
+    },
+    {
+      label: "other-session",
+      nested: false,
+      setting: "entry false overriding default true",
+      config: { defaultSkipWhenBusy: true, entrySkipWhenBusy: false },
+      intent: "scheduled",
+      shouldSkip: false,
+    },
+    {
+      label: "nested-agent",
+      nested: true,
+      setting: "entry true overriding default false",
+      config: { defaultSkipWhenBusy: false, entrySkipWhenBusy: true },
+      intent: "scheduled",
+      shouldSkip: true,
+    },
+    {
+      label: "other-session",
+      nested: false,
+      setting: "default true with immediate intent",
+      config: { defaultSkipWhenBusy: true },
+      intent: "immediate",
+      shouldSkip: true,
+    },
+    {
+      label: "nested-agent",
+      nested: true,
+      setting: "default true with manual intent",
+      config: { defaultSkipWhenBusy: true },
+      intent: "manual",
+      shouldSkip: true,
+    },
+  ] as const;
+
+  it.each(queueCases)(
+    "$setting $intent wake against real queued $label work",
+    async ({ label, nested, config, intent, shouldSkip }) => {
       await withTempHeartbeatSandbox(async ({ tmpDir, storePath, replySpy }) => {
-        const cfg = createOpsHeartbeatConfig(storePath);
+        const cfg = createOpsHeartbeatConfig(storePath, config);
         await seedHeartbeatScratchForTest({ content: "- Check status\n", agentId: "ops" });
         const heartbeatSessionKey = "agent:ops:main";
         await seedSessionStore(storePath, heartbeatSessionKey, {
@@ -149,11 +230,11 @@ describe("heartbeat runner admission against queued agent work", () => {
             resetCommandLane(sessionLane);
           }
 
-          const result = await runHeartbeatOnce({
+          const wakeOptions = {
             cfg,
             agentId: "ops",
             source: "interval",
-            intent: "scheduled",
+            intent,
             scheduledEveryMs: 30 * 60_000,
             deps: {
               getReplyFromConfig: replySpy,
@@ -162,11 +243,16 @@ describe("heartbeat runner admission against queued agent work", () => {
               listActiveReplyRunSessionKeys: () => [],
               listActiveEmbeddedRunSessionKeys: () => [],
             },
-          });
-
-          expect(result).toEqual({ status: "skipped", reason: "requests-in-flight" });
+          } as const;
+          if (shouldSkip) {
+            const result = await runHeartbeatOnce(wakeOptions);
+            expect(result).toEqual({ status: "skipped", reason: "lanes-busy" });
+            expect(readSessionStoreForTest(storePath)[heartbeatSessionKey]).toEqual(before);
+          } else {
+            const wake = await resolveHeartbeatWakeStage(wakeOptions);
+            expect(wake.kind).toBe("ready");
+          }
           expect(replySpy).not.toHaveBeenCalled();
-          expect(readSessionStoreForTest(storePath)[heartbeatSessionKey]).toEqual(before);
           expect(getCommandLaneSnapshot(blockedLane).queuedCount).toBeGreaterThan(0);
         } finally {
           setCommandLaneConcurrency(nested ? globalLane : sessionLane, 1);

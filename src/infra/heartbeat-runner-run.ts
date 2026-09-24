@@ -8,7 +8,6 @@ import {
 } from "../auto-reply/reply/reply-operation-run-state.js";
 import { withReplySystemEventContext } from "../auto-reply/reply/system-event-session-key.js";
 import type { MsgContext } from "../auto-reply/templating.js";
-import { tryAcquireHeartbeatAdmission } from "../process/command-queue.js";
 import { formatErrorMessage } from "./errors.js";
 import { resolveHeartbeatTimeoutOverrideSeconds } from "./heartbeat-config.js";
 import { createHeartbeatDispatch, deliverHeartbeatDispatch } from "./heartbeat-dispatch.js";
@@ -23,43 +22,15 @@ import {
   prepareHeartbeatRunStage,
   resolveHeartbeatWakeStage,
   type HeartbeatRunOptions,
-  type ReadyHeartbeatWake,
 } from "./heartbeat-runner-execution.js";
 import { createHeartbeatTypingCallbacks } from "./heartbeat-typing.js";
-import {
-  HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
-  getHeartbeatWakeAbortSignal,
-  type HeartbeatRunResult,
-} from "./heartbeat-wake.js";
+import { getHeartbeatWakeAbortSignal, type HeartbeatRunResult } from "./heartbeat-wake.js";
 
 export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<HeartbeatRunResult> {
   const wake = await resolveHeartbeatWakeStage(opts);
   if (wake.kind === "skipped") {
     return { status: "skipped", reason: wake.reason };
   }
-  const shouldReserveAdmission = opts.intent !== "immediate" && opts.intent !== "manual";
-  const releaseAdmission = shouldReserveAdmission
-    ? tryAcquireHeartbeatAdmission(wake.agentId)
-    : undefined;
-  if (shouldReserveAdmission && !releaseAdmission) {
-    emitHeartbeatEvent({
-      status: "skipped",
-      reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT,
-      durationMs: Date.now() - wake.startedAt,
-    });
-    return { status: "skipped", reason: HEARTBEAT_SKIP_REQUESTS_IN_FLIGHT };
-  }
-  try {
-    return await runPreparedHeartbeatOnce(opts, wake);
-  } finally {
-    releaseAdmission?.();
-  }
-}
-
-async function runPreparedHeartbeatOnce(
-  opts: HeartbeatRunOptions,
-  wake: ReadyHeartbeatWake,
-): Promise<HeartbeatRunResult> {
   const prepared = await prepareHeartbeatRunStage(wake);
   if (prepared.kind === "skipped") {
     return { status: "skipped", reason: prepared.reason };

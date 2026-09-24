@@ -766,12 +766,13 @@ describe("retired runtime config migrations", () => {
       agents: {
         defaults: {
           cliBackends: { custom: { sessionArg: "--session" } },
-          heartbeat: { ackMaxChars: 10, includeReasoning: true },
+          heartbeat: { ackMaxChars: 10, includeReasoning: true, skipWhenBusy: true },
           memory: { search: { query: { hybrid: { enabled: false } } } },
         },
         entries: {
           main: {
             groupChat: { visibleReplies: "automatic" },
+            heartbeat: { skipWhenBusy: false },
             tools: { exec: { security: "allowlist", ask: "on-miss" } },
           },
         },
@@ -856,6 +857,8 @@ describe("retired runtime config migrations", () => {
       proxy: { proxyUrl: "http://proxy.example" },
       discovery: { wideArea: { domain: "openclaw.internal" } },
     });
+    expect(result.raw).toHaveProperty("agents.defaults.heartbeat.skipWhenBusy", true);
+    expect(result.raw).toHaveProperty("agents.entries.main.heartbeat.skipWhenBusy", false);
     expect(result.raw).toHaveProperty("messages.responsePrefix", "[bot]");
     expect(result.raw).not.toHaveProperty("web");
     expect(result.raw).not.toHaveProperty("logging.redactSensitive");

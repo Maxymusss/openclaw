@@ -164,9 +164,7 @@ export function getQueueState() {
     nextQueueSequence: 1,
     laneGroups: new Map<string, LaneGroupState>(),
     laneGroupByLane: new Map<string, string>(),
-    heartbeatAdmissions: new Map<string, symbol>(),
   }));
-  state.heartbeatAdmissions ??= new Map<string, symbol>();
   return state;
 }
 
