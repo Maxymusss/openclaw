@@ -137,9 +137,23 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
       preview: extractChatMessagePreview(item.message),
     };
   });
-  // Retention controls settled history, not narration from the currently owned run.
+  const queuedSends = props.queue ?? [];
+  const segments = props.streamSegments;
+  let progress: ReturnType<typeof resolveWorkingProgress> | null = null;
+  const resolveProgress = () =>
+    (progress ??= resolveWorkingProgress(
+      props.sessionKey,
+      props.runId ?? null,
+      props.streamStartedAt,
+      queuedSends,
+      segments,
+      tools,
+    ));
+  // Retention and live status share the same explicit or inferred run ownership.
   const activeCommentaryRunId =
-    props.runWorking || props.runActive ? normalizeOptionalString(props.runId) : undefined;
+    props.persistCommentary === false && (props.runWorking || props.runActive)
+      ? normalizeOptionalString(resolveProgress().runId)
+      : undefined;
   const history = composeTranscriptDisplay(
     props.messages.filter(
       (message) =>
@@ -288,7 +302,6 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
       items.push(projected);
     }
   }
-  const queuedSends = props.queue ?? [];
   const { queue: threadQueuedSends, pendingInputs } = selectChatInputDisplay(
     history,
     queuedSends,
@@ -455,7 +468,6 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
       },
     });
   }
-  const segments = props.streamSegments;
   const afterBoundaryBySegment = new Map<ChatStreamSegment, string>();
   let latestBoundaryRunId: string | undefined;
   for (const segment of segments) {
@@ -664,16 +676,6 @@ export function buildChatItems(props: BuildChatItemsProps): Array<ChatItem | Mes
   if (props.runWorking !== true && props.stream === null && !showWorkingIndicator) {
     clearWorkingProgress(props.sessionKey);
   }
-  let progress: ReturnType<typeof resolveWorkingProgress> | null = null;
-  const resolveProgress = () =>
-    (progress ??= resolveWorkingProgress(
-      props.sessionKey,
-      props.runId ?? null,
-      props.streamStartedAt,
-      queuedSends,
-      segments,
-      tools,
-    ));
   const activeTurnRunId = latestBoundaryRunId ?? normalizeOptionalString(props.runId);
   const activeTurnBounds = activeTurnRunId ? createRunTurnLookup(items)(activeTurnRunId) : null;
   const appendActiveRunItem = (item: ChatItem) => {

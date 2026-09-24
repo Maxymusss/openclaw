@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 import { afterEach, beforeEach, expect, it } from "vitest";
+import type { ChatStreamSegment } from "../../lib/chat/chat-types.ts";
 import { resetChatViewState } from "./chat-view-state.ts";
 import { renderChatInto } from "./chat-view.test-helpers.ts";
 import {
@@ -87,6 +88,60 @@ it("keeps only the active run's durable commentary inline when commentary retent
   expect(container.textContent).toContain("Checking the result.");
   expect(messages).toHaveLength(3);
 });
+
+it.each(["segment", "tool", "cached"] as const)(
+  "keeps durable commentary for a run inferred from %s activity when retention is off",
+  (source) => {
+    const container = document.createElement("div");
+    const props = {
+      runActive: true,
+      runId: null,
+      stream: "Still checking.",
+      streamStartedAt: 1,
+      persistCommentary: false,
+      messages: [
+        preamble("Older run's commentary.", 0, "old", "old-run"),
+        user,
+        preamble("Checking the result.", 2, "check"),
+      ],
+      queue: [
+        {
+          id: "future-send",
+          text: "Run this next.",
+          createdAt: 10,
+          sendRunId: "future-run",
+          sendState: "waiting-reconnect" as const,
+          sendSubmittedAtMs: 1,
+          sendAttempts: 1,
+        },
+      ],
+    };
+    const boundary: ChatStreamSegment = { text: "", ts: 1, runId, boundaryMarker: true };
+    if (source === "cached") {
+      renderChatInto(container, { ...props, messages: [user], streamSegments: [boundary] });
+    }
+    renderChatInto(container, {
+      ...props,
+      streamSegments: source === "segment" ? [boundary] : [],
+      toolMessages:
+        source === "tool"
+          ? [
+              {
+                role: "toolResult",
+                toolName: "read",
+                toolCallId: "active-read",
+                runId,
+                content: "Read complete.",
+              },
+            ]
+          : [],
+    });
+    expect(container.textContent).toContain("Checking the result.");
+    expect(container.textContent).not.toContain("Older run's commentary.");
+    renderChatInto(container, { ...props, runActive: false, stream: null });
+    expect(container.textContent).not.toContain("Checking the result.");
+  },
+);
 
 it("leaves unphased answers and mixed-phase narration and final text in the transcript", () => {
   const container = document.createElement("div");
