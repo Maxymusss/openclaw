@@ -62,7 +62,6 @@ import {
   resolveExecElevatedMode,
   resolveExecReviewerDefaults,
 } from "./bash-tools.exec-support.js";
-import { createBackgroundExecTask } from "./bash-tools.exec-task-tracking.js";
 import type {
   ExecToolApprovalReview,
   ExecToolDefaults,
@@ -673,14 +672,18 @@ export function createExecTool(
         markBackgrounded(run.session);
         // Only the guarded yield transition owns task registration. A process
         // that settles before this timer fires must stay out of the task ledger.
-        settlement.backgroundTask = createBackgroundExecTask({
-          processSessionId: run.session.id,
-          command: run.session.command,
-          sessionKey: notifySessionKey,
-          agentId,
-          startedAt: run.startedAt,
-        });
-        backgrounded.resolve({ status: "backgrounded" });
+        const registration = settlement.register(run, notifySessionKey, agentId);
+        const finishPromotion = () => {
+          // A fast exit joins registration and its terminal write before returning.
+          if (!run.session.finalizing && !settlement.outcome) {
+            backgrounded.resolve({ status: "backgrounded" });
+          }
+        };
+        if (registration) {
+          void withoutGatewayToolCallerIdentity(() => registration.then(finishPromotion));
+        } else {
+          finishPromotion();
+        }
       };
 
       try {
