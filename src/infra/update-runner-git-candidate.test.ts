@@ -256,6 +256,35 @@ describe("Git candidate activation", () => {
     },
   );
 
+  it.each(["dev", "stable"] as const)(
+    "rebuilds a source-current %s checkout before activating its stale runtime",
+    async (channel) => {
+      const builtSha = beforeSha;
+      const target = await advanceRemote();
+      await git(remote, "tag", "v2026.9.1");
+      await git(root, "pull", "--ff-only");
+      beforeSha = target;
+      await expectRuntime(root, builtSha);
+
+      const result = await update({
+        channel,
+        beforeGitMutation: async () => {
+          expect(stopped).toBe(false);
+          await expectRuntime(root, builtSha);
+          stopped = true;
+          events.push("stop");
+        },
+      });
+
+      expect(result.status, JSON.stringify(result)).toBe("ok");
+      expect(result.before).toMatchObject({ sha: target, buildId: builtSha });
+      expect(result.after).toMatchObject({ sha: target, buildId: target });
+      expect(events).toEqual(["build", "validate", "stop", "migrate"]);
+      await expectRuntime(root, target);
+      await expectNoRuntimeStagingPaths();
+    },
+  );
+
   it("keeps build and exposure source selection in the admitted candidate", async () => {
     vi.stubEnv("OPENCLAW_DEV_SOURCE_ROOT", root);
     await advanceRemote();
