@@ -915,8 +915,8 @@ struct ChatTypingIndicatorBubble: View {
         .focusable(false)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
-            Text(verbatim: self.commentary ?? String(localized: "Writing"))
-                .font(OpenClawChatTypography.caption))
+            self.commentary.map { Text(verbatim: $0).font(OpenClawChatTypography.caption) } ??
+                Text("Writing").font(OpenClawChatTypography.caption))
     }
 }
 

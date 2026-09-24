@@ -26,8 +26,12 @@ struct ChatWorkingCommentary: Equatable, Sendable {
               let text = self.statusText(text),
               !["start", "update"].contains(event.data["phase"]?.value as? String ?? "")
         else { return nil }
-        return Self(runID: event.runId, itemID: itemID, messageID: nil,
-                    text: text, timestamp: Double(event.ts ?? 0))
+        return Self(
+            runID: event.runId,
+            itemID: itemID,
+            messageID: nil,
+            text: text,
+            timestamp: Double(event.ts ?? 0))
     }
 
     static func latest(runID: String, messages: [OpenClawChatMessage], live: Self?) -> Self? {
@@ -35,7 +39,8 @@ struct ChatWorkingCommentary: Equatable, Sendable {
         for message in messages where message.role.lowercased() == "assistant" {
             guard (message.transcriptRunID ?? message.streamFallback?.runId) == runID,
                   let text = self.statusText(self.commentaryBlocks(
-                      in: message, matchingItemID: live?.runID == runID ? live?.itemID : nil,
+                      in: message,
+                      matchingItemID: live?.runID == runID ? live?.itemID : nil,
                       matchingText: live?.runID == runID ? live?.text : nil)
                       .compactMap(\.text).joined(separator: "\n"))
             else { continue }
@@ -45,8 +50,12 @@ struct ChatWorkingCommentary: Equatable, Sendable {
                 // Retain the suppression key only if the live preamble owned it.
                 let completedItemID = live?.runID == runID && live?.itemID == message.streamSegmentID
                     ? live?.itemID : nil
-                latest = Self(runID: runID, itemID: completedItemID,
-                              messageID: message.id, text: text, timestamp: timestamp)
+                latest = Self(
+                    runID: runID,
+                    itemID: completedItemID,
+                    messageID: message.id,
+                    text: text,
+                    timestamp: timestamp)
             }
         }
         return latest
@@ -58,23 +67,40 @@ struct ChatWorkingCommentary: Equatable, Sendable {
               message.id == self.messageID || (self.itemID != nil && message.streamSegmentID == self.itemID)
         else { return message }
         let commentary = Self.commentaryBlocks(
-            in: message, matchingItemID: self.itemID, matchingText: self.text)
+            in: message,
+            matchingItemID: self.itemID,
+            matchingText: self.text)
         guard !commentary.isEmpty else { return message }
         let remaining = message.content.filter { !commentary.contains($0) }
         guard !remaining.isEmpty else { return nil }
         return OpenClawChatMessage(
-            id: message.id, role: message.role, content: remaining, timestamp: message.timestamp,
-            transcriptMessageID: message.transcriptMessageID, transcriptRunID: message.transcriptRunID,
-            isTruncated: message.isTruncated, idempotencyKey: message.idempotencyKey,
-            toolCallId: message.toolCallId, toolName: message.toolName, usage: message.usage,
-            stopReason: message.stopReason, errorMessage: message.errorMessage, details: message.details,
-            isError: message.isError, provenance: message.provenance, historyMarker: message.historyMarker,
-            turnBoundary: message.turnBoundary, steerTargetRunID: message.steerTargetRunID,
-            streamFallback: message.streamFallback, activity: message.activity)
+            id: message.id,
+            role: message.role,
+            content: remaining,
+            timestamp: message.timestamp,
+            transcriptMessageID: message.transcriptMessageID,
+            transcriptRunID: message.transcriptRunID,
+            isTruncated: message.isTruncated,
+            idempotencyKey: message.idempotencyKey,
+            toolCallId: message.toolCallId,
+            toolName: message.toolName,
+            usage: message.usage,
+            stopReason: message.stopReason,
+            errorMessage: message.errorMessage,
+            details: message.details,
+            isError: message.isError,
+            provenance: message.provenance,
+            historyMarker: message.historyMarker,
+            turnBoundary: message.turnBoundary,
+            steerTargetRunID: message.steerTargetRunID,
+            streamFallback: message.streamFallback,
+            activity: message.activity)
     }
 
     private static func commentaryBlocks(
-        in message: OpenClawChatMessage, matchingItemID: String?, matchingText: String?)
+        in message: OpenClawChatMessage,
+        matchingItemID: String?,
+        matchingText: String?)
         -> [OpenClawChatMessageContent]
     {
         // Segment markers alone do not prove commentary: an unphased final can
