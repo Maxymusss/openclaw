@@ -74,9 +74,10 @@ The `models` root also owns global model-catalog behavior.
   always wins.
 
 V2 includes pricing in each model row. Unknown or unavailable pricing does not
-mean a model is free. Unlike v1 mirrors, the default v2 feed does not include
-standalone prices for models outside the catalog, so estimates for historical or
-custom model IDs may be unavailable. Explicit model costs still take precedence.
+mean a model is free. Models outside the catalog, such as older model IDs or
+models routed through a gateway, use standalone rates in the same file: a
+gateway that charges the vendor's price reads that vendor's rate once, without a
+per-gateway copy. Explicit model costs still take precedence.
 
 Pricing updates ship in the same hosted catalog file as model metadata. The
 retired `models.pricing` toggle is removed automatically by `openclaw doctor

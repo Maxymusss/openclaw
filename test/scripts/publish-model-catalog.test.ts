@@ -97,7 +97,9 @@ function publishedPricingParams(bundle: RemoteModelCatalogBundle, provider: stri
       checked_at: bundle.generatedAt,
     }),
   });
+  // These bundles are v1 output; clients read v1 only from a configured mirror.
   const config: OpenClawConfig = {
+    models: { catalogRefresh: { url: "https://catalog.openclaw.ai/models/v1/catalog.json" } },
     plugins: { allow: [provider], entries: { [provider]: { enabled: true } } },
   };
   return { config, agentDir, provider };

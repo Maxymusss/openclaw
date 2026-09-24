@@ -13,6 +13,14 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 
 export type RemoteModelCatalogWireBundle = RemoteModelCatalogBundle | RemoteModelCatalogBundleV2;
 export type RemoteModelCatalogPrice = { cost: ModelCatalogCost; explicit: boolean };
+/**
+ * Upstream vendor/model rates in source priority order. Direct lookups use the first;
+ * passthrough providers use the first whose source their policy allows.
+ */
+export type RemoteModelCatalogUpstreamPrice = {
+  rates: Array<{ source: string; cost: ModelCatalogCost }>;
+  passthroughOnly: boolean;
+};
 
 /** Configured v1 mirrors remain a public input contract; runtime uses one projection. */
 export function parseRemoteModelCatalogWireBundle(value: unknown): RemoteModelCatalogWireBundle {
@@ -24,6 +32,7 @@ export function parseRemoteModelCatalogWireBundle(value: unknown): RemoteModelCa
 export function projectRemoteModelCatalog(bundle: RemoteModelCatalogWireBundle): {
   providers: Record<string, ModelCatalogProvider>;
   pricing: Record<string, RemoteModelCatalogPrice>;
+  upstreamPricing: Record<string, RemoteModelCatalogUpstreamPrice>;
 } {
   if (bundle.schemaVersion === 1) {
     return {
@@ -31,12 +40,16 @@ export function projectRemoteModelCatalog(bundle: RemoteModelCatalogWireBundle):
       pricing: Object.fromEntries(
         Object.entries(bundle.pricing ?? {}).map(([key, cost]) => [key, { cost, explicit: false }]),
       ),
+      upstreamPricing: {},
     };
   }
   const providers: Record<string, ModelCatalogProvider> = Object.fromEntries(
     Object.entries(bundle.providers).map(([id, provider]) => [id, { ...provider, models: [] }]),
   );
-  const prices: Array<[string, RemoteModelCatalogPrice]> = [];
+  // Provider-owned standalone rates keep v1 semantics: zero needs authoritative owner policy.
+  const prices: Array<[string, RemoteModelCatalogPrice]> = Object.entries(
+    bundle.providerPricing ?? {},
+  ).map(([key, { source: _source, ...cost }]) => [key, { cost, explicit: false }]);
   for (const { provider, pricing, ...model } of bundle.models) {
     let cost: ModelCatalogCost | undefined;
     if (pricing.status === "known") {
@@ -54,5 +67,25 @@ export function projectRemoteModelCatalog(bundle: RemoteModelCatalogWireBundle):
     // SAFETY: the v2 schema requires every model provider to be declared in bundle.providers.
     providers[provider]!.models.push({ ...model, ...(cost ? { cost } : {}) });
   }
-  return { providers, pricing: Object.fromEntries(prices) };
+  return {
+    providers,
+    pricing: Object.fromEntries(prices),
+    upstreamPricing: Object.fromEntries(
+      Object.entries(bundle.upstreamPricing ?? {}).map(
+        ([key, { source, passthroughOnly = false, alternatives = [], ...cost }]) => [
+          key,
+          {
+            rates: [
+              { source, cost },
+              ...alternatives.map(({ source: alternative, ...rates }) => ({
+                source: alternative,
+                cost: rates,
+              })),
+            ],
+            passthroughOnly,
+          },
+        ],
+      ),
+    ),
+  };
 }

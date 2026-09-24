@@ -10,6 +10,7 @@ import {
   parseRemoteModelCatalogWireBundle,
   projectRemoteModelCatalog,
   type RemoteModelCatalogPrice,
+  type RemoteModelCatalogUpstreamPrice,
   type RemoteModelCatalogWireBundle,
 } from "./remote-bundle.js";
 import { isRemoteModelCatalogRefreshEnabled, resolveRemoteCatalogUrl } from "./remote-config.js";
@@ -23,6 +24,7 @@ type RemoteModelCatalogMetadata = {
 type ActiveRemoteModelCatalog = RemoteModelCatalogMetadata & {
   providers: RemoteModelCatalogOverlay;
   pricing: Readonly<Record<string, RemoteModelCatalogPrice>>;
+  upstreamPricing: Readonly<Record<string, RemoteModelCatalogUpstreamPrice>>;
 };
 
 const STARTUP_SNAPSHOT_KEY = "openclaw.remoteModelCatalogStartupSnapshot";
@@ -190,6 +192,12 @@ export function getRemoteModelCatalogPricing(
   config: OpenClawConfig,
 ): Readonly<Record<string, RemoteModelCatalogPrice>> | undefined {
   return getActiveRemoteModelCatalog(config)?.pricing;
+}
+
+export function getRemoteModelCatalogUpstreamPricing(
+  config: OpenClawConfig,
+): Readonly<Record<string, RemoteModelCatalogUpstreamPrice>> | undefined {
+  return getActiveRemoteModelCatalog(config)?.upstreamPricing;
 }
 
 function setRemoteModelCatalogOverlaySourcesForTest(sources?: {

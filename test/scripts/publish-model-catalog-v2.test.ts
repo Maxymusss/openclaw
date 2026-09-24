@@ -32,7 +32,7 @@ function fixtureRoot() {
   fs.writeFileSync(
     path.join(dir, "openclaw.plugin.json"),
     JSON.stringify({
-      providers: ["anthropic", "openai", "fixture-native"],
+      providers: ["anthropic", "openai", "fixture-native", "gateway"],
       modelCatalog: {
         modelsDev: { "fixture-native": "upstream" },
         providers: {
@@ -51,7 +51,12 @@ function fixtureRoot() {
           },
         },
       },
-      modelPricing: { providers: { "fixture-native": { openCode: { provider: "upstream" } } } },
+      modelPricing: {
+        providers: {
+          "fixture-native": { openCode: { provider: "upstream" } },
+          gateway: { openRouter: { passthroughProviderModel: true }, liteLLM: false },
+        },
+      },
     }),
   );
   return root;
@@ -69,6 +74,14 @@ function fixtureFetch() {
             extra: { id: "extra", cost: { input: 5, output: 6 } },
           },
         },
+      });
+    }
+    if (url === "https://openrouter.ai/api/v1/models") {
+      return Response.json({
+        data: [
+          { id: "vendorx/model-a", pricing: { prompt: "0.000002", completion: "0.000004" } },
+          { id: "openai/seed-1", pricing: { prompt: "0.000001", completion: "0.000003" } },
+        ],
       });
     }
     return Response.json({ data: [] });
@@ -194,6 +207,22 @@ describe("publish model catalog v2", () => {
     });
     expect(v1.pricing?.["fixture-native/extra"]).toBeDefined();
     expect(v2.models.some((model) => model.id === "extra")).toBe(false);
+    // Standalone v2 rates keep v1's resolvable prices without per-gateway copies.
+    expect(v2.providerPricing?.["fixture-native/extra"]).toEqual({
+      ...v1.pricing?.["fixture-native/extra"],
+      source: "openCode",
+    });
+    expect(v2.upstreamPricing?.["vendorx/model-a"]).toEqual({
+      ...v1.pricing?.["gateway/vendorx/model-a"],
+      source: "openRouter",
+    });
+    expect(v2.upstreamPricing?.["openai/seed-1"]).toMatchObject({ passthroughOnly: true });
+    expect(v1.pricing?.["openai/seed-1"]).toBeUndefined();
+    expect(
+      Object.keys({ ...v2.upstreamPricing, ...v2.providerPricing }).some((key) =>
+        key.startsWith("gateway/"),
+      ),
+    ).toBe(false);
     expect(
       fetchImpl.mock.calls.filter(([url]) => url === "https://models.opencode.ai/api.json"),
     ).toHaveLength(1);

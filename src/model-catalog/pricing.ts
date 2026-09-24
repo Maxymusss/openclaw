@@ -23,10 +23,11 @@ import {
   type PluginMetadataSnapshot,
 } from "../plugins/plugin-metadata-snapshot.js";
 import { planEffectiveModelCatalogRows } from "./index.js";
-import type { RemoteModelCatalogPrice } from "./remote-bundle.js";
+import type { RemoteModelCatalogPrice, RemoteModelCatalogUpstreamPrice } from "./remote-bundle.js";
 import { isRemoteModelCatalogRefreshEnabled } from "./remote-config.js";
 import {
   getRemoteModelCatalogPricing,
+  getRemoteModelCatalogUpstreamPricing,
   prepareRemoteModelCatalogStartupSnapshot,
 } from "./remote-overlay.js";
 
@@ -34,12 +35,15 @@ type PricingValue = ModelCatalogCost;
 type ExternalPricingPolicy = {
   external: boolean;
   authoritative: boolean;
+  /** Sources whose vendor/model rates this provider charges unchanged, as for gateways. */
+  passthroughSources: readonly string[];
 };
 type PricingContext = {
   config: OpenClawConfig;
   normalizeKey: (provider: string, model: string) => string;
   catalog: ReadonlyMap<string, PricingValue>;
   hosted: Readonly<Record<string, RemoteModelCatalogPrice>>;
+  upstream: Readonly<Record<string, RemoteModelCatalogUpstreamPrice>>;
   normalizedHosted: ReadonlyMap<string, RemoteModelCatalogPrice>;
   policies: ReadonlyMap<string, ExternalPricingPolicy>;
   fingerprint: string;
@@ -103,14 +107,33 @@ function buildPricingContext(
         authoritative: MODEL_PRICING_SOURCES.some(
           ({ id, authoritative }) => authoritative && Boolean(policy[id]),
         ),
+        passthroughSources: MODEL_PRICING_SOURCES.flatMap(({ id }) => {
+          const source = policy[id];
+          return source && source.passthroughProviderModel ? [id] : [];
+        }),
       });
     }
   }
   // Hosted aliases are policy-resolved against installed manifests. If that metadata is
   // unavailable, fail closed instead of treating every provider as policy-free.
   const hosted = snapshot ? (getRemoteModelCatalogPricing(config) ?? {}) : {};
+  const upstream = snapshot ? (getRemoteModelCatalogUpstreamPricing(config) ?? {}) : {};
+  // Policy-free providers read both tables like v1's merged map; stable sort keeps hosted first.
+  const policyFree: Array<[string, RemoteModelCatalogPrice]> = [
+    ...Object.entries(hosted),
+    ...Object.entries(upstream).flatMap(([key, { rates, passthroughOnly }]) =>
+      passthroughOnly || !rates[0]
+        ? []
+        : [
+            [key, { cost: rates[0].cost, explicit: false }] satisfies [
+              string,
+              RemoteModelCatalogPrice,
+            ],
+          ],
+    ),
+  ];
   const normalizedHosted = new Map<string, RemoteModelCatalogPrice>();
-  for (const [key, pricing] of Object.entries(hosted).toSorted(([a], [b]) => a.localeCompare(b))) {
+  for (const [key, pricing] of policyFree.toSorted(([a], [b]) => a.localeCompare(b))) {
     const normalized = normalizedHostedKey(key, normalizeKey);
     if (normalized && !normalizedHosted.has(normalized)) {
       normalizedHosted.set(normalized, pricing);
@@ -119,13 +142,23 @@ function buildPricingContext(
   const fingerprint = JSON.stringify({
     catalog: [...catalog.entries()].toSorted(([a], [b]) => a.localeCompare(b)),
     hosted: Object.entries(hosted).toSorted(([a], [b]) => a.localeCompare(b)),
+    upstream: Object.entries(upstream).toSorted(([a], [b]) => a.localeCompare(b)),
     normalizedHosted: [...normalizedHosted.entries()].toSorted(([a], [b]) => a.localeCompare(b)),
     policies: [...policies.entries()].toSorted(([a], [b]) => a.localeCompare(b)),
     normalization: [...(snapshot?.owners.modelIdNormalizationPolicies ?? [])].toSorted(([a], [b]) =>
       a.localeCompare(b),
     ),
   });
-  return { config, normalizeKey, catalog, hosted, normalizedHosted, policies, fingerprint };
+  return {
+    config,
+    normalizeKey,
+    catalog,
+    hosted,
+    upstream,
+    normalizedHosted,
+    policies,
+    fingerprint,
+  };
 }
 
 /** Reuses the static pricing policy captured for this config. */
@@ -287,8 +320,18 @@ export function resolveModelPricing(
     if (policy?.external === false) {
       return undefined;
     }
+    // Gateways charge the vendor's rate: `gateway/vendor/model` reads `vendor/model` upstream
+    // from the first source the gateway's policy allows.
+    const passthrough = policy?.passthroughSources.length
+      ? context.upstream[pricingKey.slice(provider.length + 1)]?.rates.find(({ source }) =>
+          policy.passthroughSources.includes(source),
+        )
+      : undefined;
     const hosted =
-      context.hosted[pricingKey] ?? (policy ? undefined : context.normalizedHosted.get(pricingKey));
+      context.hosted[pricingKey] ??
+      (policy
+        ? passthrough && { cost: passthrough.cost, explicit: false }
+        : context.normalizedHosted.get(pricingKey));
     // V2 known rates belong to an admitted catalog row. V1 mirrors still need
     // exact owner policy to distinguish a free rate from a zero placeholder.
     if (
