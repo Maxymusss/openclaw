@@ -53,7 +53,7 @@ Independent hosted checks reached at most 664 seconds in this sample. Artifact b
 
 Numbered compact bins change when membership changes. A matching suffix does not establish a matching workload. Full manual native qualification, including iOS and Android, is not proven within fifteen minutes by these Linux measurements.
 
-## RunsOn remains unqualified
+## RunsOn qualification
 
 The next candidate diversifies every RunsOn request across five AMD types and
 both AZs exposed by the installed stack. The former 32-class Node rows need at least eight CPUs and
@@ -127,6 +127,66 @@ retry is enabled. The observed AMD cohort exceeds both thresholds; the pooled
 52.78% mixture does not establish an eight-minute statistical boundary. The
 480-second cutoff protects critical-path slack instead of claiming a fitted
 hazard model.
+
+### Repeated slowdown retention
+
+At `acd418249c462122f120a2455989cf553243b941`, RunsOn PR-shaped runs
+`35944538318` and `35945850656` and hybrid control `35947306985` executed
+the same source and runtime. Six complete rows exceeded the 25% slowdown
+threshold in both AWS samples with matching ordered work and effective worker
+policies. Their measured co-resident owners identify the retained envelopes;
+generated row numbers do not. If packing separates the owners or changes their
+resource contract, the exception no longer matches.
+
+Main shares the four storage envelopes. Its update/archive row omits one
+release-only tooling file from the measured PR contract; the larger native fit
+covers the included work, but no exact main-row speed ratio is inferred from
+that PR comparison.
+
+| Co-resident workload owners                          | RunsOn job seconds, two samples | Blacksmith control seconds |
+| ---------------------------------------------------- | ------------------------------: | -------------------------: |
+| Worktree acceleration and retirement snapshots       |                       296 / 290 |                        225 |
+| Canonical descendants and transcript session custody |                       335 / 354 |                        240 |
+| Update repair history and archived usage identity    |                       351 / 355 |                        246 |
+| Shared embedded run and inference activation         |                       288 / 303 |                        198 |
+| Unified declaration tooling                          |                       289 / 288 |                        212 |
+| SDK declarations and changed-test planning           |                       527 / 551 |                        379 |
+
+The controls used the Blacksmith 32-label with eight actual CPUs and about
+31 GiB; AWS used `c7a.4xlarge` with sixteen CPUs and about 31 GiB. Setup and
+cache differences remain part of these whole-job observations, so the comparison
+does not isolate hardware causality. Cron stays on RunsOn: its complete
+same-run comparison was 360 versus 323 seconds, below the retention threshold.
+
+The SDK/planner pair's 148-second prediction plus the existing market reserve
+admitted Spot, but both executions exceeded eight minutes. Its retained
+Blacksmith route removes that repeated forecast exception without changing
+other rows' reserves. A two-CPU, 8-GiB process scope passed its complete workload
+but reached a 7.728-GiB kernel memory peak; the 16-label retains memory headroom.
+A constrained process scope is not whole-VM performance proof. Actual-label,
+exact-head qualification remains required for every reduced allocation.
+
+The four storage envelopes passed separate two-CPU, 8-GiB scopes with zero
+memory-limit or OOM events. Worktree and descendant peaks were 3.937 and
+4.974 GiB on a constrained Blacksmith 16-label VM. Update/archive and
+embedded/inference peaks were 4.666 and 4.336 GiB on AWS Ubuntu 26.04 after
+two Blacksmith source transfers failed before tests started. The latter results
+retain that provider and OS limitation. Their selected 8-label allocations still
+require actual Blacksmith CI; no test was repeated for the transport failures.
+Unified declarations also passed its complete 80-file inventory on the AWS
+scope with a 4.564-GiB peak and the original compiler admission guard. It selects
+the 8-label too. The SDK/planner pair is the sole 16-label exception among these
+six measured envelopes.
+
+The four candidate walls were 743, 810, 740 and 992 seconds. All tests passed,
+but the last run fails the fifteen-minute requirement. Its Blacksmith cron
+comparator was last in the 118-row Node matrix and waited 572 seconds before a
+299-second execution. Both cron providers now receive the same existing
+admission priority, ahead of ordinary rows. This corrects the ordering omission;
+it does not explain the full wait, including 285 seconds after every other Node
+row had started. Matrix caps, routing, worker limits and deadlines are unchanged.
+The repository backend remains hybrid. Final same-head qualification and costs
+are recorded in [PR #156158](https://github.com/openclaw/openclaw/pull/156158).
 
 Reference hourly prices on September 23 are $0.1655 Spot / $0.48688 on-demand
 for `m8a.2xlarge`, versus $0.4256 / $1.23876 for `m8azn.3xlarge`.

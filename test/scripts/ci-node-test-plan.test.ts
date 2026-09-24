@@ -749,6 +749,47 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
     defaultShards = createNodeTestShards();
   });
 
+  const retainedRunsOnEnvelopes = [
+    {
+      name: "SDK declarations and CI planning",
+      config: "tooling",
+      owners: [
+        ["test/scripts/write-plugin-sdk-entry-dts.test.ts"],
+        ["test/scripts/ci-changed-node-test-plan.test.ts"],
+      ],
+      runner: "blacksmith-16vcpu-ubuntu-2404",
+    },
+    {
+      name: "unified declarations",
+      config: "tooling",
+      owners: [["test/scripts/write-unified-entry-dts.test.ts"]],
+      runner: DEFAULT_NODE_TEST_RUNNER,
+    },
+    ...[
+      [
+        "src/agents/worktrees/service.acceleration.test.ts",
+        "src/agents/worktrees/service.retire-snapshot.test.ts",
+      ],
+      [
+        "test/canonical-descendant.integration.test.ts",
+        "src/agents/tools/transcripts-tool.session-id.test.ts",
+      ],
+      [
+        "src/cli/update-cli/update-repair-history.test.ts",
+        "src/infra/session-cost-usage.archive-identity.test.ts",
+      ],
+      [
+        "src/agents/embedded-agent-runner/run.shared-integration.test.ts",
+        "src/system-agent/setup-inference-activate.test.ts",
+      ],
+    ].map((files) => ({
+      name: files[0],
+      config: "infra",
+      owners: [files],
+      runner: DEFAULT_NODE_TEST_RUNNER,
+    })),
+  ];
+
   it.each(["push", "pull-request"] as const)(
     "retains child policies while routing RunsOn from measured hybrid %s plans",
     (compactMode) => {
@@ -801,8 +842,21 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           .filter((job) => job.shardName !== "runson-cron")
           .map((job) =>
             Object.assign({}, job, {
-              runner:
-                job.runner === "runson-memory-32"
+              runner: retainedRunsOnEnvelopes.some(
+                ({ config, owners, runner }) =>
+                  job.runner === runner &&
+                  job.groups.length === owners.length &&
+                  owners.every((files) =>
+                    job.groups.some(
+                      (group) =>
+                        group.configs.length === 1 &&
+                        group.configs[0] === `test/vitest/vitest.${config}.config.ts` &&
+                        files.every((file) => group.includePatterns?.includes(file)),
+                    ),
+                  ),
+              )
+                ? EXTRA_LARGE_NODE_TEST_RUNNER
+                : job.runner === "runson-memory-32"
                   ? "blacksmith-32vcpu-ubuntu-2404"
                   : job.runner === "runson-general-16"
                     ? DEFAULT_NODE_TEST_RUNNER
@@ -907,6 +961,162 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
     }
   });
+
+  it.each(retainedRunsOnEnvelopes)(
+    "retains the measured $name envelope without changing execution",
+    ({ config, owners, runner }) => {
+      const originalShards = fullSuiteVitestShards.slice();
+      fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, {
+        name: "fixture",
+        config: "test/vitest/vitest.hooks.config.ts",
+        projects: ["test/vitest/vitest.hooks.config.ts"],
+      });
+      const sample: CompactNodeTestShard = {
+        checkName: "checks-node-fixture",
+        shardName: "fixture",
+        runner: EXTRA_LARGE_NODE_TEST_RUNNER,
+        predictedSeconds: 148,
+        planConcurrency: 1,
+        requiresDist: false,
+        ...(config === "infra" ? { env: { OPENCLAW_VITEST_MAX_WORKERS: "2" } } : {}),
+        groups: owners.map((files, index) => ({
+          shard_name: `fixture-owner-${index}`,
+          configs: [`test/vitest/vitest.${config}.config.ts`],
+          includePatterns: [...files, `test/scripts/fixture-companion-${index}.test.ts`],
+          ...(config === "tooling" ? { env: { OPENCLAW_VITEST_MAX_WORKERS: "2" } } : {}),
+          runner: BUNDLED_NODE_TEST_RUNNER,
+          requiresDist: false,
+        })),
+      };
+      const variants: Array<{
+        name: string;
+        change?: (job: CompactNodeTestShard) => void;
+        expectedRunner?: string;
+      }> = [
+        { name: "measured", expectedRunner: runner },
+        {
+          name: "reordered",
+          change: (job) => {
+            job.groups = job.groups.toReversed();
+            job.groups.forEach((group) => {
+              group.includePatterns = group.includePatterns?.toReversed();
+            });
+          },
+          expectedRunner: runner,
+        },
+        {
+          name: "unrelated companion omitted",
+          change: (job) => {
+            job.groups.forEach((group) => {
+              group.includePatterns = group.includePatterns?.filter(
+                (file) => !file.startsWith("test/scripts/fixture-companion-"),
+              );
+            });
+          },
+          expectedRunner: runner,
+        },
+        {
+          name: "other owner",
+          change: (job) => {
+            job.groups[0]!.includePatterns![0] = "test/scripts/other-owner.test.ts";
+          },
+        },
+        {
+          name: "unbounded workers",
+          change: (job) => {
+            delete job.env;
+            job.groups.forEach((group) => {
+              delete group.env;
+            });
+          },
+        },
+        {
+          name: "unmeasured companion",
+          change: (job) => {
+            job.groups.push({
+              ...job.groups[0]!,
+              includePatterns: ["test/scripts/unmeasured-companion.test.ts"],
+            });
+          },
+        },
+        {
+          name: "parallel plans",
+          change: (job) => {
+            job.planConcurrency = 2;
+          },
+        },
+        {
+          name: "job cap",
+          change: (job) => {
+            job.env = { OPENCLAW_VITEST_MAX_WORKERS: "1" };
+          },
+        },
+        {
+          name: "child cap",
+          change: (job) => {
+            job.groups[0]!.env = { OPENCLAW_VITEST_MAX_WORKERS: "8" };
+          },
+        },
+        {
+          name: "resource floor",
+          change: (job) => {
+            job.groups[0]!.minTotalMemoryBytes = 28 * 1024 ** 3;
+          },
+        },
+        {
+          name: "worker fallback",
+          change: (job) => {
+            job.groups[0]!.fallbackMaxWorkers = 2;
+          },
+        },
+        {
+          name: "other config",
+          change: (job) => {
+            job.groups[0]!.configs = ["test/vitest/vitest.hooks.config.ts"];
+          },
+        },
+        {
+          name: "job build",
+          change: (job) => {
+            job.pretestBuildMode = "runtime";
+          },
+          expectedRunner: EXTRA_LARGE_NODE_TEST_RUNNER,
+        },
+        {
+          name: "child build",
+          change: (job) => {
+            job.groups[0]!.pretestBuildMode = "runtime";
+          },
+          expectedRunner: EXTRA_LARGE_NODE_TEST_RUNNER,
+        },
+        {
+          name: "dist",
+          change: (job) => {
+            job.requiresDist = true;
+          },
+          expectedRunner: EXTRA_LARGE_NODE_TEST_RUNNER,
+        },
+      ];
+      const packing = vi.spyOn(measuredCompactPacking, "rebalanceMeasuredHybridJobs");
+      try {
+        for (const variant of variants) {
+          const job = structuredClone(sample);
+          variant.change?.(job);
+          packing.mockReturnValue([job]);
+          const plan = createNodeTestShardBundles({
+            compactMode: "pull-request",
+            runnerBackend: "runson",
+          });
+          expect(plan, variant.name).toEqual([
+            Object.assign({}, job, { runner: variant.expectedRunner ?? "runson-memory-32" }),
+          ]);
+        }
+      } finally {
+        packing.mockRestore();
+        fullSuiteVitestShards.splice(0, fullSuiteVitestShards.length, ...originalShards);
+      }
+    },
+  );
 
   // Frozen executor inputs keep measurement regression tests independent of
   // unrelated inventory additions. Only a new native observation updates them.

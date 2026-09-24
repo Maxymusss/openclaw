@@ -4170,6 +4170,54 @@ describe("ci workflow guards", () => {
     ]);
   });
 
+  it.each(["runson-cron", "changed-runson-cron"])(
+    "admits both %s qualification providers before ordinary Node work",
+    (shardName) => {
+      const manifest = runCiManifestFixture({
+        bundledPlanner: true,
+        eventName: "workflow_dispatch",
+        historicalCompatibility: false,
+        releaseGate: true,
+        runnerBackend: "hybrid",
+        runnerProfile: "hybrid",
+        nodeRunnerBackend: "runson",
+        changedPaths: [".github/workflows/ci.yml"],
+        nodeTestShards: [
+          {
+            checkName: "ordinary-short",
+            shardName: "ordinary-short",
+            configs: ["test/vitest/vitest.unit-src.config.ts"],
+            runner: "blacksmith-8vcpu-ubuntu-2404",
+            predictedSeconds: 120,
+          },
+          {
+            checkName: "cron-candidate",
+            shardName,
+            configs: ["test/vitest/vitest.cron.config.ts"],
+            runner: "runson-general-16",
+          },
+          {
+            checkName: "ordinary-long",
+            shardName: "ordinary-long",
+            configs: ["test/vitest/vitest.unit-src.config.ts"],
+            runner: "blacksmith-8vcpu-ubuntu-2404",
+            predictedSeconds: 600,
+          },
+        ],
+      });
+      expect(manifest.status, manifest.output).toBe(0);
+      const rows = JSON.parse(
+        expectDefined(manifest.outputs.checks_node_core_nondist_matrix, "qualification Node rows"),
+      ).include as { check_name: string }[];
+      expect(rows.map((row) => row.check_name)).toEqual([
+        "cron-candidate",
+        "checks-node-runson-cron-blacksmith-control",
+        "ordinary-long",
+        "ordinary-short",
+      ]);
+    },
+  );
+
   it("passes RunsOn only to the Node planner and keeps default qualification dispatches PR-shaped", () => {
     const fixture = {
       bundledPlanner: true,

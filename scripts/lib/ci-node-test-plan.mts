@@ -4006,6 +4006,80 @@ export function createSelectedNodeTestShardBundles(
   ];
 }
 
+// Keep the measured storage envelopes together; matching either owner alone
+// would transfer a provider observation to different work after repartitioning.
+const RUNSON_RETAINED_INFRA_TEST_PAIRS = [
+  [
+    "src/agents/worktrees/service.acceleration.test.ts",
+    "src/agents/worktrees/service.retire-snapshot.test.ts",
+  ],
+  [
+    "test/canonical-descendant.integration.test.ts",
+    "src/agents/tools/transcripts-tool.session-id.test.ts",
+  ],
+  [
+    "src/cli/update-cli/update-repair-history.test.ts",
+    "src/infra/session-cost-usage.archive-identity.test.ts",
+  ],
+  [
+    "src/agents/embedded-agent-runner/run.shared-integration.test.ts",
+    "src/system-agent/setup-inference-activate.test.ts",
+  ],
+];
+
+function resolveRunsOnRetainedBlacksmithRunner(job: CompactNodeTestShard): string | undefined {
+  const hasOnlyTwoWorkerEnv = (env: Record<string, string> | undefined) =>
+    Object.entries(env ?? {}).every(
+      ([key, value]) => key === "OPENCLAW_VITEST_MAX_WORKERS" && value === "2",
+    );
+  if (
+    job.runner !== EXTRA_LARGE_NODE_TEST_RUNNER ||
+    job.planConcurrency !== 1 ||
+    job.requiresDist ||
+    job.pretestBuildMode ||
+    !hasOnlyTwoWorkerEnv(job.env) ||
+    !job.groups.every(
+      (group) =>
+        group.configs.length === 1 &&
+        !group.requiresDist &&
+        !group.pretestBuildMode &&
+        group.fallbackMaxWorkers === undefined &&
+        group.minTotalMemoryBytes === undefined &&
+        hasOnlyTwoWorkerEnv(group.env) &&
+        (group.env?.OPENCLAW_VITEST_MAX_WORKERS ?? job.env?.OPENCLAW_VITEST_MAX_WORKERS) === "2",
+    )
+  ) {
+    return undefined;
+  }
+  const [group] = job.groups;
+  if (job.groups.length === 1 && group) {
+    if (
+      (group.configs[0] === "test/vitest/vitest.infra.config.ts" &&
+        RUNSON_RETAINED_INFRA_TEST_PAIRS.some((files) =>
+          files.every((file) => group.includePatterns?.includes(file)),
+        )) ||
+      (group.configs[0] === TOOLING_CONFIG &&
+        group.includePatterns?.includes(TOOLING_UNIFIED_DECLARATIONS_TEST_FILE))
+    ) {
+      return DEFAULT_NODE_TEST_RUNNER;
+    }
+  }
+  // The compiler/planner pair needs more headroom than the 8-GiB fit probe.
+  const sdkDeclarations = job.groups.find((entry) =>
+    entry.includePatterns?.includes("test/scripts/write-plugin-sdk-entry-dts.test.ts"),
+  );
+  return job.groups.length === 2 &&
+    job.groups.every((entry) => entry.configs[0] === TOOLING_CONFIG) &&
+    sdkDeclarations &&
+    job.groups.some(
+      (entry) =>
+        entry !== sdkDeclarations &&
+        entry.includePatterns?.includes("test/scripts/ci-changed-node-test-plan.test.ts"),
+    )
+    ? "blacksmith-16vcpu-ubuntu-2404"
+    : undefined;
+}
+
 function routeRunsOnJobs(
   jobs: CompactNodeTestShard[],
   compactNodeJobCap: number,
@@ -4101,6 +4175,10 @@ function routeRunsOnJobs(
         )
       ) {
         return Object.assign({}, job, { runner: "runson-general-16" });
+      }
+      const retainedRunner = resolveRunsOnRetainedBlacksmithRunner(job);
+      if (retainedRunner) {
+        return Object.assign({}, job, { runner: retainedRunner });
       }
       // The 32-class supplies eight CPUs and 31 GiB. Preserve its memory floor
       // for overlapping children and the eight-worker isolated Gateway cohort.

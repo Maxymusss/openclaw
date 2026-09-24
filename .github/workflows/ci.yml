@@ -1986,10 +1986,13 @@ jobs:
             "test/vitest/vitest.tooling-isolated.config.ts",
             "test/vitest/vitest.tooling-docker.config.ts",
           ]);
-          // The same capped matrix owns compact and plugin work; admit its longest rows first.
+          // Keep both cron providers together before admitting the longest ordinary rows.
+          const cronComparisonShards = new Set([
+            "runson-cron", "changed-runson-cron", "runson-cron-blacksmith-control",
+          ]);
           const nodeTestShards = rawNodeTestShards
             .toSorted((a, b) =>
-              Number(["runson-cron", "changed-runson-cron"].includes(b.shardName)) - Number(["runson-cron", "changed-runson-cron"].includes(a.shardName)) ||
+              Number(cronComparisonShards.has(b.shardName)) - Number(cronComparisonShards.has(a.shardName)) ||
               (b.predictedSeconds ?? 0) - (a.predictedSeconds ?? 0))
             .map((shard) => {
               const groups = shard.groups?.map(projectNodeTestGroup) ?? (
