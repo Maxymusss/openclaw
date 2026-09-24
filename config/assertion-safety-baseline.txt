@@ -886,7 +886,7 @@ extensions/qa-lab/src/auth-profile.fixture.ts	3
 extensions/qa-lab/src/browser-runtime.ts	2
 extensions/qa-lab/src/bundled-plugin-staging.ts	4
 extensions/qa-lab/src/bus-server.ts	3
-extensions/qa-lab/src/bus-state.ts	2
+extensions/qa-lab/src/bus-state.ts	1
 extensions/qa-lab/src/character-eval.ts	2
 extensions/qa-lab/src/ci-smoke-plan.ts	1
 extensions/qa-lab/src/cli.runtime.ts	9
@@ -958,13 +958,13 @@ extensions/qa-lab/src/posix-process-group.ts	3
 extensions/qa-lab/src/providers/aimock/server.ts	6
 extensions/qa-lab/src/providers/index.ts	1
 extensions/qa-lab/src/providers/live-config.ts	1
-extensions/qa-lab/src/providers/mock-openai/mock-anthropic-wire.ts	3
+extensions/qa-lab/src/providers/mock-openai/mock-anthropic-wire.ts	1
 extensions/qa-lab/src/providers/mock-openai/mock-openai-assistant-text.ts	3
 extensions/qa-lab/src/providers/mock-openai/mock-openai-contracts.ts	2
 extensions/qa-lab/src/providers/mock-openai/mock-openai-directives.ts	4
-extensions/qa-lab/src/providers/mock-openai/mock-openai-events.ts	4
+extensions/qa-lab/src/providers/mock-openai/mock-openai-events.ts	1
 extensions/qa-lab/src/providers/mock-openai/mock-openai-input.ts	6
-extensions/qa-lab/src/providers/mock-openai/mock-openai-responses-websocket.ts	2
+extensions/qa-lab/src/providers/mock-openai/mock-openai-responses-websocket.ts	1
 extensions/qa-lab/src/providers/mock-openai/server.ts	6
 extensions/qa-lab/src/providers/shared/auth-store.ts	1
 extensions/qa-lab/src/qa-transport.ts	1
@@ -988,7 +988,7 @@ extensions/qa-lab/src/test-file-scenario-script-evidence.ts	2
 extensions/qa-lab/src/test-file-scenario-vitest-report.ts	1
 extensions/qa-lab/src/tool-search-gateway.fixture.ts	13
 extensions/qa-lab/src/web-runtime.ts	1
-extensions/qa-lab/web/src/app.ts	42
+extensions/qa-lab/web/src/app.ts	40
 extensions/qa-lab/web/src/capture-saved-view.ts	7
 extensions/qa-lab/web/src/http.ts	1
 extensions/qa-lab/web/src/ui-render-capture-controls.ts	1
