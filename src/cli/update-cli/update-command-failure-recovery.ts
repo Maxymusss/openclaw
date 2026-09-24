@@ -29,6 +29,7 @@ export async function verifyUpdateFailureRecovery(params: {
   env?: NodeJS.ProcessEnv;
   timeoutMs?: number;
   serviceStopped?: boolean;
+  waitForStartup?: boolean;
   assertCurrent?: () => void;
 }): Promise<UpdateRunResult> {
   params.assertCurrent?.();
@@ -116,6 +117,7 @@ export async function verifyUpdateFailureRecovery(params: {
         expectedVersion: version,
         expectedBuildId: buildId ?? undefined,
         timeoutMs: params.timeoutMs,
+        waitForStartup: params.waitForStartup,
         assertCurrent: params.assertCurrent,
       });
       params.assertCurrent?.();
