@@ -25,6 +25,7 @@ import {
   type GatewayRequest,
 } from "./subagent-registry.lifecycle-fixture.test-support.js";
 import { createLifecycleWaits } from "./subagent-registry.lifecycle-waits.test-support.js";
+import { settleSubagentRegistryPersistenceWork } from "./subagent-registry.persistence.test-support.js";
 import * as mod from "./subagent-registry.test-helpers.js";
 
 const noop = () => {};
@@ -208,6 +209,7 @@ describe("subagent registry lifecycle error grace", () => {
     releaseAgentCallGate?.();
     releaseAgentCallGate = undefined;
     await vi.advanceTimersByTimeAsync(0);
+    await settleSubagentRegistryPersistenceWork();
     lifecycleHandler = undefined;
     subagentAnnounceDeliveryTesting.setDepsForTest();
     subagentAnnounceOutputTesting.setDepsForTest();
@@ -1087,6 +1089,8 @@ describe("subagent registry lifecycle error grace", () => {
     await flushAsync();
 
     await waitForAgentCallCount(4);
+    await waitForDeliveredCleanup("run-parallel-a");
+    await waitForDeliveredCleanup("run-parallel-b");
 
     expect(
       getAgentResultsForChildSession(getAgentCalls(), "agent:main:subagent:parallel-a"),

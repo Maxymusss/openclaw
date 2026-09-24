@@ -137,22 +137,19 @@ serveOwnedWorkerTasks(
           await import("../../infra/sqlite-transaction.js");
         const { readHistoricalSessionIdsInDatabase } =
           await import("./session-history-eviction-candidates.js");
-        return {
-          ok: true,
-          ...(await withHistoryDatabase(request.database, request.kind, () => {
-            const result = withOpenClawAgentDatabaseReadOnly(
-              (database) =>
-                runSqliteDeferredTransactionSync(database.db, () =>
-                  readHistoricalSessionIdsInDatabase({ ...request, database }),
-                ),
-              { ...request.database, env: request.env },
-            );
-            if (!result.found) {
-              throw new Error(`SQLite history eviction cannot read its database: ${result.reason}`);
-            }
-            return { kind: "historical-eviction-candidates" as const, sessionIds: result.value };
-          })),
-        };
+        return await withHistoryDatabase(request.database, request.kind, () => {
+          const result = withOpenClawAgentDatabaseReadOnly(
+            (database) =>
+              runSqliteDeferredTransactionSync(database.db, () =>
+                readHistoricalSessionIdsInDatabase({ ...request, database }),
+              ),
+            { ...request.database, env: request.env },
+          );
+          if (!result.found) {
+            throw new Error(`SQLite history eviction cannot read its database: ${result.reason}`);
+          }
+          return { kind: "historical-eviction-candidates" as const, sessionIds: result.value };
+        });
       }
       if (request.kind === "session-archive-pruning") {
         const { readSessionArchivePruningInWorker } =
@@ -254,38 +251,35 @@ serveOwnedWorkerTasks(
       if (request.kind === "session-entry-read") {
         const { loadSessionEntryReadOnlyResultInScope } =
           await import("./session-accessor.sqlite-entry.js");
-        return {
-          ok: true,
-          ...(await withHistoryDatabase(request.database, request.kind, () => {
-            let source: SessionTranscriptWorkerValues["session-entry-read"]["source"];
-            const read = loadSessionEntryReadOnlyResultInScope(
-              {
-                ...request.scope,
-                env: cloneEnvWithPlatformSemantics(request.scope.env ?? process.env),
-              },
-              request.continuation,
-              (readSource) => {
-                if (typeof readSource.databaseIdentity !== "string") {
-                  throw new Error("Private session entry requires its process-held owner");
-                }
-                source = { ...readSource, databaseIdentity: readSource.databaseIdentity };
-              },
-            );
-            if (!read.ok) {
-              const readError = encodeSessionTranscriptWorkerError(read.error);
-              if (!readError || readError.kind === "fence") {
-                throw read.error;
+        return await withHistoryDatabase(request.database, request.kind, () => {
+          let source: SessionTranscriptWorkerValues["session-entry-read"]["source"];
+          const read = loadSessionEntryReadOnlyResultInScope(
+            {
+              ...request.scope,
+              env: cloneEnvWithPlatformSemantics(request.scope.env ?? process.env),
+            },
+            request.continuation,
+            (readSource) => {
+              if (typeof readSource.databaseIdentity !== "string") {
+                throw new Error("Private session entry requires its process-held owner");
               }
-              return {
-                kind: "session-entry-read" as const,
-                entry: undefined,
-                source,
-                readError,
-              };
+              source = { ...readSource, databaseIdentity: readSource.databaseIdentity };
+            },
+          );
+          if (!read.ok) {
+            const readError = encodeSessionTranscriptWorkerError(read.error);
+            if (!readError || readError.kind === "fence") {
+              throw read.error;
             }
-            return { kind: "session-entry-read" as const, entry: read.value, source };
-          })),
-        };
+            return {
+              kind: "session-entry-read" as const,
+              entry: undefined,
+              source,
+              readError,
+            };
+          }
+          return { kind: "session-entry-read" as const, entry: read.value, source };
+        });
       }
       if (request.kind === "session-entry-list") {
         const { listSessionEntriesReadOnly } =
