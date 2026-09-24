@@ -54,6 +54,7 @@ import type {
 } from "./thread-lifecycle-types.js";
 import type { CodexAppServerThreadLifecycleBinding } from "./thread-lifecycle.js";
 import {
+  createCodexAppServerRetentionAuthority,
   isSameCodexAppServerThreadOwner,
   retainCodexAppServerBindingSubscription,
 } from "./thread-ownership.js";
@@ -381,7 +382,11 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       return false;
     }
     const { bindingStore, bindingIdentity } = connection;
-    const background = hasCodexNativeBackgroundProcesses(client, thread.threadId);
+    const hasBackgroundCustody = () => hasCodexNativeBackgroundProcesses(client, thread.threadId);
+    const retentionAuthority = createCodexAppServerRetentionAuthority({
+      authority: connection.authority,
+      hasBackgroundCustody,
+    });
     const retained = await bindingStore.withLease(
       bindingIdentity,
       async () => {
@@ -415,16 +420,21 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
         };
         // Decide after lease acquisition: background custody can end while this
         // waiter is queued, before retained-thread publication begins.
-        if (hasCodexNativeBackgroundProcesses(client, thread.threadId)) {
+        if (hasBackgroundCustody()) {
           retain();
         } else {
           await connection.withCurrent(retain);
         }
         return pending ? await pending : false;
       },
-      background
-        ? undefined
-        : { assertCurrent: connection.assertCurrent, authority: connection.authority },
+      {
+        assertCurrent: () => {
+          if (!hasBackgroundCustody()) {
+            connection.assertCurrent();
+          }
+        },
+        authority: retentionAuthority,
+      },
     );
     if (retained) {
       subscriptionSettlement = { thread, retained: true };

@@ -112,7 +112,7 @@ async function fixture(options: { failSettlement?: boolean } = {}) {
     await testCodexAppServerBindingStore.withLease(
       identity,
       async () => {
-        const gate = leaseOptions === undefined ? bindingLeaseGate : undefined;
+        const gate = bindingLeaseGate;
         if (gate) {
           bindingLeaseGate = undefined;
           gate.entered.resolve();
