@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeConfigMachineState } from "../state/config-machine-state-write.js";
 import { readConfigMachineState } from "../state/config-machine-state.js";
 import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
@@ -11,6 +12,8 @@ import {
   writeRemoteModelCatalog,
 } from "./remote-store.js";
 
+// Registered first so it removes directories after the database closes below.
+const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const roots: string[] = [];
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
@@ -140,9 +143,7 @@ describe("remote model catalog store", () => {
   });
 
   it("serves an upgraded install from the older client's row without writing it", () => {
-    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-catalog-")));
-    roots.push(root);
-    const options = { path: path.join(root, "state.sqlite") };
+    const options = { path: path.join(tempDirs.make("openclaw-catalog-"), "state.sqlite") };
     const legacy = {
       bundle_json: '{"schemaVersion":1,"legacy":true}',
       generated_at: 100,
