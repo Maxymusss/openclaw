@@ -137,14 +137,34 @@ export async function sendUpdateResultTelemetry(
     ) {
       return;
     }
-    const response = await (options.fetchImpl ?? fetch)(endpoint, {
+    const fetchImpl = options.fetchImpl ?? fetch;
+    const signal = AbortSignal.timeout(3000);
+    // Legacy receivers reject HEAD without recording it. Never send outcome data
+    // until this exact endpoint advertises the separately configured receiver.
+    const capability = await fetchImpl(endpoint, {
+      method: "HEAD",
+      redirect: "error",
+      credentials: "omit",
+      referrerPolicy: "no-referrer",
+      headers: { "User-Agent": "openclaw-update-result/1" },
+      signal,
+    });
+    await capability.body?.cancel();
+    if (
+      capability.status !== 204 ||
+      capability.headers.get("OpenClaw-Update-Results") !== "2" ||
+      !(options.getPolicy ?? (() => currentUpdatePolicy(env)))()
+    ) {
+      return;
+    }
+    const response = await fetchImpl(endpoint, {
       method: "POST",
       redirect: "error",
       credentials: "omit",
       referrerPolicy: "no-referrer",
       headers: { "Content-Type": "application/json", "User-Agent": "openclaw-update-result/1" },
       body,
-      signal: AbortSignal.timeout(3000),
+      signal,
     });
     await response.body?.cancel();
   } catch {

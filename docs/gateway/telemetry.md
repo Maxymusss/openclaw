@@ -228,7 +228,12 @@ suppression for outcomes. Current update-request policy is checked at new-run
 admission, terminal settlement, and immediately before network dispatch.
 Unreadable or invalid configuration fails closed.
 
-One schema-2 `update_result` POST can follow a settled success, failure, or rollback.
+One outcome attempt can follow a settled success, failure, or rollback. It first
+sends a payload-free `HEAD` to the configured endpoint. Only `204` with
+`OpenClaw-Update-Results: 2` permits a schema-2 `update_result` POST. Legacy
+receivers reject the probe without receiving outcome data; unconfigured receivers
+do not advertise support. Update-request policy is checked again after this
+probe, and the probe and POST share one three-second deadline.
 It uses the same complete `OPENCLAW_TELEMETRY_ENDPOINT` URL (the Foundation endpoint
 by default), without falling back to another server. The daily GET and schema-1
 feature POST remain unchanged. The outcome request has a fixed
@@ -247,12 +252,12 @@ Outcomes contain no identifiers, exact client timestamps, geography, logs, paths
 commands, configuration, plugin/provider/model inventory, exception text, or output
 streams. The companion receiver validates the closed schema and writes a separate
 outcome dataset, without the daily-check geography columns or public individual
-report access. **Deploy and verify the compatible receiver and outcome dataset before releasing
-the default-on client.**
-The legacy receiver does not recognize outcomes and can count these requests as
-ordinary version checks with its legacy geography processing. The companion receiver
-and its dedicated dataset must be deployed separately; this client change does
-not deploy or configure them.
+report access. The compatible receiver and outcome dataset need a separately
+authorized deployment before reports can be collected. The capability probe
+prevents outcome POSTs from reaching legacy or unconfigured receivers, so a client
+can safely precede receiver activation. This client change does not deploy or
+configure the receiver, and a successful capability response is not proof of a
+subsequent analytics write.
 
 Delivery is **at-most-once best effort, not exactly once**. The existing shared
 SQLite machine-state owner retains one bounded local-only record: up to 16 eligible

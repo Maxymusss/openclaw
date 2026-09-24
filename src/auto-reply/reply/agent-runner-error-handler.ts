@@ -177,9 +177,10 @@ export async function handleAgentExecutionError(params: {
         isHeartbeat: turn.isHeartbeat,
       },
     );
-    const text = params.shouldSurfaceToControlUi
-      ? renderControlUiAgentFailureCopy(message)
-      : externalReply.text;
+    const text =
+      params.shouldSurfaceToControlUi && err.userMessage === undefined
+        ? renderControlUiAgentFailureCopy(message)
+        : externalReply.text;
     return await settleFailure({ text }, externalReply.isGenericRunnerFailure);
   }
   const failoverFacts = resolveReplyFailoverFacts(err, message);
@@ -231,8 +232,6 @@ export async function handleAgentExecutionError(params: {
       kind: "final",
       payload: markAgentRunFailureReplyPayload({
         text: buildContextOverflowRecoveryText({
-          duringCompaction: true,
-          preserveSessionMapping: true,
           cfg: params.runtimeConfig,
           agentId: turn.followupRun.run.agentId,
           primaryProvider: turn.followupRun.run.provider,

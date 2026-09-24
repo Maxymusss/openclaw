@@ -18,8 +18,8 @@ import {
   isDeliverableMessageChannel,
   normalizeMessageChannel,
 } from "../../../utils/message-channel.js";
-import { buildAnnounceIdempotencyKey } from "../../announce-idempotency.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
+import { subagentRuns } from "../registry/subagent-registry-memory.js";
 import { selectConnectedSettledSubagentWave } from "../registry/subagent-registry-queries.js";
 import {
   countActiveDescendantRuns,
@@ -32,6 +32,7 @@ import type {
   RequesterSettleWakeState,
   SubagentRunRecord,
 } from "../registry/subagent-registry.types.js";
+import { buildRequesterSettleWakeIdentity } from "../registry/subagent-requester-settle-identity.js";
 import { hasSubagentRunEnded } from "../registry/subagent-run-liveness.js";
 import { withRequesterCronAuthority } from "../requester-cron-authority.js";
 import {
@@ -193,20 +194,8 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
   ) {
     return false;
   }
-  const requesterHasUnsettledDescendants = () =>
-    hasDescendantRunAwaitingSettle(
-      requesterSessionKey,
-      currentSettledEntry.runId,
-      requesterAgentId,
-      requesterStorePath,
-    );
-
   const frozenBatchRunIds = currentState.batchRunIds;
   const currentRearmGeneration = currentState.rearmGeneration;
-  const hasUnsettledDescendants = requesterHasUnsettledDescendants();
-  if ((!frozenBatchRunIds || frozenBatchRunIds.length === 0) && hasUnsettledDescendants) {
-    return false;
-  }
   let settledBatch: SubagentRunRecord[];
   if (frozenBatchRunIds && frozenBatchRunIds.length > 0) {
     const runsById = new Map(requesterRuns.map((entry) => [entry.runId, entry]));
@@ -244,6 +233,20 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     return false;
   }
 
+  const batchCreatedAt = Math.min(...settledBatch.map((entry) => entry.createdAt));
+  const requesterHasUnsettledDescendants = () =>
+    hasDescendantRunAwaitingSettle(
+      requesterSessionKey,
+      currentSettledEntry.runId,
+      requesterAgentId,
+      requesterStorePath,
+      batchCreatedAt,
+    );
+  const hasUnsettledDescendants = requesterHasUnsettledDescendants();
+  if ((!frozenBatchRunIds || frozenBatchRunIds.length === 0) && hasUnsettledDescendants) {
+    return false;
+  }
+
   const resolveGatewayContext = getSharedGatewayContextResolver(settledBatch);
   const hadGatewayContext = Boolean(resolveGatewayContext?.());
   // Runtime loading may outlive the Gateway. Unavailable ownership spends no delivery budget.
@@ -251,6 +254,11 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     return false;
   }
   const batchRunIds = settledBatch.map((entry) => entry.runId).toSorted();
+  // Scheduling is per child, but every replay of this frozen wave is one input.
+  // Retain all possible shipped sources only for exact accepted-input matching.
+  const settleWakeSourceSessionKeys = [
+    ...new Set(settledBatch.map((entry) => entry.childSessionKey)),
+  ].toSorted();
   const selectedState = readSharedBatchState(settledBatch);
   const isStoreCurrent = () =>
     settledBatch.every((entry) =>
@@ -422,14 +430,12 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     children: completionRows,
     preserveModelRouteNotice: !completionChannel || !isDeliverableMessageChannel(completionChannel),
   });
-  const wakeKeyBase = [
-    `requester-settle:${requesterAgentId ?? "unknown"}:${requesterSessionKey}:${batchRunIds.join(",")}`,
-    selectedState.rearmGeneration === undefined
-      ? undefined
-      : `yield-${selectedState.rearmGeneration}`,
-  ]
-    .filter(Boolean)
-    .join(":");
+  const { batchKey: wakeKeyBase } = buildRequesterSettleWakeIdentity({
+    requesterSessionKey,
+    requesterAgentId,
+    batchRunIds,
+    rearmGeneration: selectedState.rearmGeneration,
+  });
   if (activeRequesterSettleWakeBatches.get(wakeKeyBase)?.() === false) {
     return false;
   }
@@ -490,11 +496,14 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       params.transitionBatch(settledBatch, state);
     }
 
-    const directIdempotencyKey = buildAnnounceIdempotencyKey(
-      privateRows.length > 0 || attemptIndex === 0
-        ? wakeKeyBase
-        : `${wakeKeyBase}:retry-${attemptIndex}`,
-    );
+    const { runId: directIdempotencyKey } = buildRequesterSettleWakeIdentity({
+      requesterSessionKey,
+      requesterAgentId,
+      batchRunIds,
+      rearmGeneration: selectedState.rearmGeneration,
+      attemptIndex,
+      parentOnly,
+    });
     const requesterSessionId = requesterEntry.sessionId;
     const requesterLifecycleRevision = requesterEntry.lifecycleRevision;
     const isRequesterCurrent = () => {
@@ -532,7 +541,8 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
       return settledBatch.every(
         (entry) =>
           currentRuns.includes(entry) &&
-          entry.requesterSettleWake?.rearmGeneration === currentRearmGeneration,
+          entry.requesterSettleWake !== undefined &&
+          entry.requesterSettleWake.rearmGeneration === currentRearmGeneration,
       );
     };
     const isSourceSessionEffectsAllowed = () =>
@@ -568,57 +578,60 @@ export async function maybeWakeRequesterAfterAllChildrenSettled(
     }
     let delivery: Awaited<ReturnType<typeof deliverSubagentAnnouncement>>;
     try {
-      delivery = await withTaskProgressRequesterContinuation(
-        {
-          entries: settledBatch,
-          runId: directIdempotencyKey,
-          requesterSessionId: requesterEntry.sessionId,
-          isCurrent: isSourceSessionEffectsAllowed,
-        },
-        () =>
-          withRequesterCronAuthority(
-            {
-              requesterSessionKey,
-              requesterSessionId,
-              requesterAgentId,
-              batch: settledBatch,
-              rearmGeneration: state.requesterYieldBatch ? state.rearmGeneration : undefined,
-              runId: directIdempotencyKey,
-              isCurrent: isSourceSessionEffectsAllowed,
-            },
-            () =>
-              deliverSubagentAnnouncement({
+      delivery = await subagentRuns.runWithCompletionBatchAuthority(settledBatch, () =>
+        withTaskProgressRequesterContinuation(
+          {
+            entries: settledBatch,
+            runId: directIdempotencyKey,
+            requesterSessionId: requesterEntry.sessionId,
+            isCurrent: isSourceSessionEffectsAllowed,
+          },
+          () =>
+            withRequesterCronAuthority(
+              {
                 requesterSessionKey,
+                requesterSessionId,
                 requesterAgentId,
-                requesterRunTimeoutSeconds:
-                  requesterDepth >= 1 && requesterRun
-                    ? (requesterRun.runTimeoutSeconds ?? 0)
-                    : undefined,
-                triggerMessage: wakeMessage,
-                steerMessage: wakeMessage,
-                requesterSessionOrigin,
-                directOrigin,
-                sourceSessionKey: currentSettledEntry.childSessionKey,
-                sourceTool: "subagent_settle",
-                targetRequesterSessionKey: requesterSessionKey,
-                requesterIsSubagent: requesterDepth >= 1,
-                expectsCompletionMessage: false,
-                requireDirectDelivery: true,
-                ...(parentOnly
-                  ? {
-                      completionTarget: "parent",
-                      completionRequesterSessionId: requesterEntry.sessionId,
-                    }
-                  : {}),
-                ...(!parentOnly && requesterYieldedAfterDelivery
-                  ? { requireVisibleReply: true }
-                  : {}),
-                directIdempotencyKey,
-                signal: params.signal,
-                resolveGatewayContext,
-                isSourceSessionEffectsAllowed,
-              }),
-          ),
+                batch: settledBatch,
+                rearmGeneration: state.requesterYieldBatch ? state.rearmGeneration : undefined,
+                runId: directIdempotencyKey,
+                isCurrent: isSourceSessionEffectsAllowed,
+              },
+              () =>
+                deliverSubagentAnnouncement({
+                  requesterSessionKey,
+                  requesterAgentId,
+                  requesterRunTimeoutSeconds:
+                    requesterDepth >= 1 && requesterRun
+                      ? (requesterRun.runTimeoutSeconds ?? 0)
+                      : undefined,
+                  triggerMessage: wakeMessage,
+                  steerMessage: wakeMessage,
+                  requesterSessionOrigin,
+                  directOrigin,
+                  sourceSessionKey: settleWakeSourceSessionKeys[0],
+                  settleWakeSourceSessionKeys,
+                  sourceTool: "subagent_settle",
+                  targetRequesterSessionKey: requesterSessionKey,
+                  requesterIsSubagent: requesterDepth >= 1,
+                  expectsCompletionMessage: false,
+                  requireDirectDelivery: true,
+                  ...(parentOnly
+                    ? {
+                        completionTarget: "parent",
+                        completionRequesterSessionId: requesterEntry.sessionId,
+                      }
+                    : {}),
+                  ...(!parentOnly && requesterYieldedAfterDelivery
+                    ? { requireVisibleReply: true }
+                    : {}),
+                  directIdempotencyKey,
+                  signal: params.signal,
+                  resolveGatewayContext,
+                  isSourceSessionEffectsAllowed,
+                }),
+            ),
+        ),
       );
     } catch (error) {
       if (settleRevokedBatch()) {

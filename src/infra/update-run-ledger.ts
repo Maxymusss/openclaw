@@ -31,11 +31,7 @@ import {
   recordedUpdateRunDrivers,
 } from "./update-run-activity.js";
 import { runUpdateRunAdmission } from "./update-run-admission.js";
-import {
-  decodeRun,
-  encodeRun,
-  type UpdateRunLedgerOptions as LedgerOptions,
-} from "./update-run-codec.js";
+import { encodeRun, type UpdateRunLedgerOptions as LedgerOptions } from "./update-run-codec.js";
 import {
   inspectUpdateRunDriver,
   readUpdateRunDriver,
@@ -44,9 +40,13 @@ import {
 } from "./update-run-driver.js";
 import { LEGACY_UPDATE_RUN_EXPIRED_REASON } from "./update-run-legacy-expiry.js";
 import {
+  decodeRun,
+  hasStoredUpdateRecovery,
+  readUpdateRunRecord as readRun,
+} from "./update-run-read.kernel.js";
+import {
   inspectUpdateRunReconciliation,
   readUpdateRunReconciliationCandidates,
-  readUpdateRunRecord as readRun,
   type UpdateRunReconciliationCandidate,
   type UpdateRunReconciliationInput,
 } from "./update-run-reader.js";
@@ -59,7 +59,7 @@ import {
   type UpdateRunStep,
 } from "./update-run-record.js";
 import { isUpdateRecoveryPending } from "./update-run-recovery-schema.js";
-import { hasStoredUpdateRecovery, readRecoveries } from "./update-run-recovery-store.js";
+import { readRecoveries } from "./update-run-recovery-store.js";
 import { recordUpdateRunVerificationRecord } from "./update-run-verification.js";
 import {
   mutateRun,
@@ -74,13 +74,12 @@ export {
   getLatestUpdateFetchFailure,
   getUpdateRun,
   getUpdateRunAsync,
+  getUpdateRunStatusAsync,
   listUpdateRuns,
   listUpdateRunsAsync,
 } from "./update-run-reader.js";
 
-export { finishUpdateRun, recordUpdateRunDiagnostic } from "./update-run-terminal.js";
-
-export { recordUpdateRunDiagnostics } from "./update-run-write.js";
+export { finishUpdateRun, recordUpdateRunDiagnostics } from "./update-run-write.js";
 
 type LedgerDatabase = Pick<DB, "update_runs">;
 type RunPatch = Partial<
@@ -277,8 +276,9 @@ export function heartbeatUpdateRun(
   );
 }
 
-/** Record the operator's successful ledger-only repair without changing the failed outcome. */
-export function acknowledgeAbandonedUpdateRun(runId: string, options: LedgerOptions = {}): void {
+/** Record successful repair without changing the failed outcome; report only new acknowledgment. */
+export function acknowledgeAbandonedUpdateRun(runId: string, options: LedgerOptions = {}): boolean {
+  let acknowledged = false;
   mutateRun(
     runId,
     (record) => {
@@ -291,10 +291,12 @@ export function acknowledgeAbandonedUpdateRun(runId: string, options: LedgerOpti
           status: "completed",
           endedAtMs: Date.now(),
         });
+        acknowledged = true;
       }
     },
     options,
   );
+  return acknowledged;
 }
 
 function canReconcileCandidates(
@@ -529,6 +531,22 @@ export function recordUpdateRunRepairContinuation(
             ? `Repair continued within the owning update by PID ${process.pid}.`
             : `Repair took over Gateway activation by PID ${process.pid} under abandonment admission.`,
       });
+    },
+    options,
+  );
+}
+
+/** A terminal process diagnostic adds evidence without reopening the recorded outcome. */
+export function recordUpdateRunDiagnostic(
+  runId: string,
+  detail: string,
+  options: LedgerOptions = {},
+  step = "finalize:exit",
+): UpdateRunRecord {
+  return mutateRun(
+    runId,
+    (record) => {
+      upsertStep(record, { step, status: "completed", endedAtMs: Date.now(), detail });
     },
     options,
   );

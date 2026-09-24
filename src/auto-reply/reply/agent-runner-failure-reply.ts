@@ -1,4 +1,5 @@
 import { expectDefined } from "@openclaw/normalization-core";
+import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
@@ -9,7 +10,10 @@ import {
 } from "../../agents/auth-profiles/oauth-refresh-failure.js";
 import { classifyFailoverReason } from "../../agents/embedded-agent-helpers.js";
 import { sanitizeUserFacingText } from "../../agents/embedded-agent-helpers/sanitize-user-facing-text.js";
-import { renderUserFacingText } from "../../agents/embedded-agent-helpers/user-facing-text.js";
+import {
+  renderAgentHarnessPreflightUserMessage,
+  renderUserFacingText,
+} from "../../agents/embedded-agent-helpers/user-facing-text.js";
 import { classifyCompactionReason } from "../../agents/embedded-agent-runner/compact-reasons.js";
 import {
   describeFailoverError,
@@ -40,7 +44,13 @@ import { isAgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { isProviderAuthError } from "../../agents/model-auth-runtime-shared.js";
 import { buildProviderAuthRecoveryHint } from "../../agents/provider-auth-recovery-hint.js";
 import type { ReplyCompletion, ReplyExpectation } from "../../agents/reply-completion.js";
-import { formatErrorMessage } from "../../infra/errors.js";
+import {
+  collectErrorGraphCandidates,
+  extractErrorCode,
+  formatErrorMessage,
+  readErrorCauses,
+  readErrorName,
+} from "../../infra/errors.js";
 import { extractErrorHttpStatus } from "../../shared/assistant-error-format.js";
 import { buildProviderLoginRecovery } from "../provider-login-recovery.js";
 import {
@@ -244,6 +254,23 @@ function formatForwardedExternalRunFailureText(message: string): string {
     : GENERIC_EXTERNAL_RUN_FAILURE_TEXT;
 }
 
+function hasLocalWorkerTimeoutCause(error: unknown): boolean {
+  let localTimeout = false;
+  for (const candidate of collectErrorGraphCandidates(error, readErrorCauses)) {
+    // Failover wrappers may synthesize HTTP-like statuses; original HTTP facts still win.
+    if (isFailoverError(candidate)) {
+      continue;
+    }
+    const original = asOptionalObjectRecord(candidate);
+    if (original?.status !== undefined || original?.statusCode !== undefined) {
+      return false;
+    }
+    localTimeout ||=
+      readErrorName(candidate) === "WorkerTaskError" && extractErrorCode(candidate) === "timeout";
+  }
+  return localTimeout;
+}
+
 export function buildExternalRunFailureReply(
   input: ExternalRunFailureInput,
   options?: {
@@ -261,6 +288,13 @@ export function buildExternalRunFailureReply(
   // unattended in the owner's session, so they disclose it without the verbose
   // opt-in; raw thrown detail further below stays verbose-gated.
   if (isAgentHarnessPreflightError(error)) {
+    const userMessage = renderAgentHarnessPreflightUserMessage(error);
+    if (userMessage !== undefined) {
+      return {
+        text: userMessage,
+        isGenericRunnerFailure: false,
+      };
+    }
     const sanitizedMessage = sanitizeUserFacingText(normalizedMessage, { errorContext: true });
     return {
       text: options?.isHeartbeat
@@ -366,6 +400,12 @@ export function buildExternalRunFailureReply(
   if (codexAppServerFailure) {
     return { text: codexAppServerFailure, isGenericRunnerFailure: false };
   }
+  if (failoverFacts.reason === "timeout" && hasLocalWorkerTimeoutCause(error)) {
+    return {
+      text: "A local worker task timed out. Please try again.",
+      isGenericRunnerFailure: false,
+    };
+  }
   const classifiedFailure =
     failoverFacts.formatFailureText ?? renderAssistantRequestFailureCopy(failoverFacts);
   if (classifiedFailure) {
@@ -460,10 +500,16 @@ export function buildKnownAgentRunFailureReplyPayload(params: {
   sessionCtx: TemplateContext;
   resolvedVerboseLevel: VerboseLevel | undefined;
 }): ReplyPayload | undefined {
-  // Direct preflight diagnostics are not provider failures; preserve their
-  // identity for the caller's generic settlement and disclosure policy.
+  // Preflight diagnostics are not provider failures. Only explicit public copy
+  // can bypass the caller's diagnostic disclosure policy.
   if (isAgentHarnessPreflightError(params.err)) {
-    return undefined;
+    const reply = buildExternalRunFailureReply({
+      message: params.err.message,
+      error: params.err,
+    });
+    return reply.isGenericRunnerFailure
+      ? undefined
+      : markAgentRunFailureReplyPayload({ text: reply.text });
   }
   const message = formatErrorMessage(params.err);
   const failoverFacts = resolveReplyFailoverFacts(params.err, message);

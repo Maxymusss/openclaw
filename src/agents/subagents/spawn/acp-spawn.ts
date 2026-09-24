@@ -29,7 +29,7 @@ import {
 } from "../../../routing/session-key.js";
 import { recordSessionCreated } from "../../../sessions/session-created.js";
 import { recordSubagentSpawned } from "../../../sessions/session-state-events.js";
-import { deliveryContextFromSession } from "../../../utils/delivery-context.shared.js";
+import { deliveryContextFromSession } from "../../../utils/delivery-context.read.js";
 import { resolveSessionAgentId } from "../../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../../child-admission.js";
 import {
@@ -642,6 +642,8 @@ export async function spawnAcpDirect(
         runTimeoutSeconds,
         expectsCompletionMessage,
         spawnMode,
+        // ACP's Gateway manager publishes the task; avoid a second registry projection.
+        taskRowOwnership: "gateway_best_effort",
       };
     },
   });

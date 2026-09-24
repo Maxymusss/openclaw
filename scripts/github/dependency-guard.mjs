@@ -4,6 +4,7 @@
 // lockfile-only PR changes without executing contributor code.
 import { appendFile } from "node:fs/promises";
 import {
+  SupersededReviewError,
   assertGuardUnchanged,
   findMaintainerApproval,
   finishGuard,
@@ -14,6 +15,8 @@ import {
   GITHUB_API_REQUEST_TIMEOUT_MS,
   GITHUB_ERROR_BODY_MAX_BYTES,
   GITHUB_RESPONSE_BODY_MAX_BYTES,
+  GitHubDiffDataError,
+  GitHubRateLimitError,
   createGitHubApi,
   createIssueMutationHelpers,
   normalizeGuardLoginSet,
@@ -218,22 +221,27 @@ export function renderRemovalOnlyDependencyComment({ dependencyGraphChanges, hea
   ].join("\n");
 }
 
-export function renderAutoscrubbedDependencyComment({ baseBranch, lockfileChanges, commitSha }) {
+export function renderAutoscrubbedDependencyComment({
+  baseBranch,
+  lockfileChanges,
+  commitSha,
+  mergeBaseSha,
+}) {
   const safeBranch = sanitizeGuardDisplayValue(baseBranch ?? "main");
   const fileLines = lockfileChanges.map((path) => `- ${markdownCode(path)}`);
   return `${dependencyGraphGuardMarker}
 
 ### Dependency lockfile changes were removed
 
-This PR did not change dependency graph fields in package manifests and had no maintainer approval, so the workflow restored the lockfile residue from the target branch automatically.
+This PR did not change dependency graph fields in package manifests and had no maintainer approval, so the workflow restored the lockfiles to this PR's merge base automatically.
 
 Restored lockfiles:
 ${fileLines.join("\n")}
 
 - Target branch: ${markdownCode(safeBranch)}
+- Merge base: ${markdownCode(mergeBaseSha)}
 - Cleanup commit: ${markdownCode(commitSha)}
-- Workflow action: restored each listed lockfile from the target branch and pushed the cleanup commit to this PR head.
-- Verification result: this PR no longer carries those package lockfile diffs after the cleanup commit.
+- Workflow action: restored each listed lockfile to its merge-base state, removing files added by this PR, and pushed the cleanup commit to this PR head.
 
 No action is needed unless this PR intentionally requires a dependency update. If it does, explain the update in the PR and request a maintainer's review.`;
 }
@@ -256,6 +264,7 @@ export function renderClearedDependencyGuardComment({ headSha }) {
 
 /**
  * @param {{
+ *   baseRepository: string,
  *   baseBranch?: string,
  *   headSha?: string,
  *   lockfileChanges: string[],
@@ -265,6 +274,7 @@ export function renderClearedDependencyGuardComment({ headSha }) {
  * }} options
  */
 export function renderBlockedDependencyComment({
+  baseRepository,
   baseBranch,
   headSha,
   lockfileChanges,
@@ -273,17 +283,16 @@ export function renderBlockedDependencyComment({
   dependencyFiles = [],
 }) {
   const safeBranch = sanitizeGuardDisplayValue(baseBranch ?? "main");
-  const baseRef = shellQuote(`origin/${safeBranch}`);
   const autoscrubLines = renderAutoscrubStatusLines(autoscrubStatus);
   const removalSteps =
     lockfileChanges.length > 0
       ? [
           "",
-          "To remove lockfile changes, restore them from the target branch:",
+          "To remove lockfile changes, restore them from this PR's merge base:",
           "",
           "```bash",
-          "git fetch origin",
-          `git checkout ${baseRef} -- ${lockfileChanges.map(shellQuote).join(" ")}`,
+          `git fetch ${shellQuote(`https://github.com/${baseRepository}.git`)} ${shellQuote(safeBranch)}`,
+          `git restore --source="$(git merge-base HEAD FETCH_HEAD)" --staged --worktree -- ${lockfileChanges.map(shellQuote).join(" ")}`,
           `git commit -m ${shellQuote(autoscrubCommitMessage)}`,
           "git push",
           "```",
@@ -431,23 +440,41 @@ async function readBase64FileAtRef(api, { owner, repo, path, ref }) {
   throw new Error(`Unable to read base64 file contents for ${path}`);
 }
 
+async function readDependencyMergeBase(api, { owner, repo, pullRequest }) {
+  // Match the PR diff, not unrelated updates on the target branch. Page two
+  // omits file patches; only the comparison metadata is needed.
+  const baseSha = pullRequest.base?.sha;
+  const comparison = await api.request(
+    `/repos/${owner}/${repo}/compare/${baseSha}...${pullRequest.head?.sha}?per_page=1&page=2`,
+  );
+  if (
+    comparison?.base_commit?.sha !== baseSha ||
+    !/^[a-f0-9]{40}$/u.test(comparison?.merge_base_commit?.sha ?? "")
+  ) {
+    throw new GitHubDiffDataError("GitHub returned an invalid dependency merge base.");
+  }
+  return comparison.merge_base_commit.sha;
+}
+
 async function collectDependencyManifestChanges(api, { owner, repo, pullRequest, files }) {
   const { isDependencyManifest } = loadSecurityReviewPolicy();
   const changes = [];
+  let mergeBaseSha;
   for (const file of files) {
     const basePath = file.previous_filename ?? file.filename;
     const headPath = file.filename;
     if (!isDependencyManifest(basePath) && !isDependencyManifest(headPath)) {
       continue;
     }
-    const [baseManifest, headManifest] = await Promise.all([
-      isDependencyManifest(basePath)
-        ? readJsonFileAtRef(api, { owner, repo, path: basePath, ref: pullRequest.base?.sha })
-        : null,
-      isDependencyManifest(headPath)
-        ? readJsonFileAtRef(api, { owner, repo, path: headPath, ref: pullRequest.head?.sha })
-        : null,
-    ]);
+    if (!mergeBaseSha) {
+      mergeBaseSha = await readDependencyMergeBase(api, { owner, repo, pullRequest });
+    }
+    const baseManifest = isDependencyManifest(basePath)
+      ? await readJsonFileAtRef(api, { owner, repo, path: basePath, ref: mergeBaseSha })
+      : null;
+    const headManifest = isDependencyManifest(headPath)
+      ? await readJsonFileAtRef(api, { owner, repo, path: headPath, ref: pullRequest.head?.sha })
+      : null;
     const fields = dependencyFieldChanges(baseManifest, headManifest);
     if (fields.length > 0 || basePath !== headPath) {
       changes.push({
@@ -468,6 +495,7 @@ export async function createAutoscrubCommit(
   const headRef = pullRequest.head.ref;
   const writeOwner = targetRepository.owner;
   const writeRepo = targetRepository.repo;
+  const mergeBaseSha = await readDependencyMergeBase(baseApi, { owner, repo, pullRequest });
   const additions = [];
   const deletions = [];
   for (const path of lockfileChanges) {
@@ -475,7 +503,7 @@ export async function createAutoscrubCommit(
       owner,
       repo,
       path,
-      ref: pullRequest.base?.sha,
+      ref: mergeBaseSha,
     });
     if (contents) {
       additions.push({ path, contents });
@@ -510,7 +538,7 @@ export async function createAutoscrubCommit(
       },
     },
   );
-  return { sha: data.createCommitOnBranch.commit.oid };
+  return { sha: data.createCommitOnBranch.commit.oid, mergeBaseSha };
 }
 
 async function writeSummary(markdown) {
@@ -543,7 +571,7 @@ export async function reviewDependencyChanges(
     prepared,
   );
   if (!guard) {
-    return;
+    return true;
   }
   const { api, owner, repo, pullRequest, issuePath, files } = guard;
   const { isDependencyFile, isDependencyManifest, isPackageLockfile } = loadSecurityReviewPolicy();
@@ -606,13 +634,11 @@ export async function reviewDependencyChanges(
     await writeSummary(
       "## Dependency Guard\n\nDependency analysis complete; the final guard job publishes the review result.",
     );
-    return;
+    return true;
   }
 
-  const [comments, labels] = await Promise.all([
-    api.paginate(`${issuePath}/comments`),
-    api.paginate(`${issuePath}/labels`),
-  ]);
+  const comments = await api.paginate(`${issuePath}/comments`);
+  const labels = await api.paginate(`${issuePath}/labels`);
   const trustedCommentAuthors = dependencyGuardCommentAuthors(
     process.env.OPENCLAW_DEPENDENCY_GUARD_COMMENT_BOTS,
   );
@@ -641,9 +667,9 @@ export async function reviewDependencyChanges(
     }
     await writeSummary("## Dependency Guard\n\nNo dependency-related file changes detected.");
     if (mode === "enforce") {
-      await finishGuard(guard, { description: "No dependency changes require review." });
+      return await finishGuard(guard, { description: "No dependency changes require review." });
     }
-    return;
+    return true;
   }
   await addLabelIfMissing(dependencyChangedLabel);
 
@@ -653,7 +679,12 @@ export async function reviewDependencyChanges(
       try {
         const token = process.env.OPENCLAW_DEPENDENCY_GUARD_AUTOSCRUB_TOKEN;
         if (!token) {
-          throw new Error("autoscrub app token was unavailable");
+          await writeSummary(
+            "## Dependency Guard\n\nAutomatic lockfile cleanup is unavailable because no write token could be created. Remove the lockfile changes manually or request maintainer approval. Final dependency review remains required.",
+          );
+          // Optional cleanup cannot grant approval; the final enforcement step
+          // still evaluates these unchanged dependency files.
+          return false;
         }
         const commit = await createAutoscrubCommit(
           { baseApi: api, writeApi: githubApi(token), guard },
@@ -663,18 +694,26 @@ export async function reviewDependencyChanges(
           await writeSummary(
             "## Dependency Guard\n\nMaintainer approval arrived; lockfile changes were preserved.",
           );
-          return;
+          return true;
         }
         await removeLabelIfPresent(dependencyChangedLabel);
         const body = renderAutoscrubbedDependencyComment({
           baseBranch: pullRequest.base.ref,
           lockfileChanges,
           commitSha: commit.sha,
+          mergeBaseSha: commit.mergeBaseSha,
         });
         await upsertComment(existingGuardComment, body);
         await writeSummary(body);
-        return;
+        return true;
       } catch (error) {
+        if (
+          error instanceof GitHubRateLimitError ||
+          error instanceof GitHubDiffDataError ||
+          error instanceof SupersededReviewError
+        ) {
+          throw error;
+        }
         autoscrubStatus = {
           kind: "failed",
           reason: error instanceof Error ? error.message : String(error),
@@ -685,7 +724,7 @@ export async function reviewDependencyChanges(
       await writeSummary(
         "## Dependency Guard\n\nNo unapproved lockfile-only change needs autoscrub.",
       );
-      return;
+      return true;
     }
   } else if (autoscrubCandidate && !autoscrubTarget && !approval && !removalOnly) {
     autoscrubStatus = { kind: "not-attempted" };
@@ -724,12 +763,13 @@ export async function reviewDependencyChanges(
           );
       await upsertComment(existingGuardComment, body);
       await writeSummary(body);
-      return;
+      return true;
     }
   }
   const body = withApprovalRequest(
     guard,
     renderBlockedDependencyComment({
+      baseRepository: `${owner}/${repo}`,
       baseBranch: pullRequest.base.ref,
       headSha: pullRequest.head.sha,
       lockfileChanges,
@@ -740,14 +780,19 @@ export async function reviewDependencyChanges(
   );
   await upsertComment(existingGuardComment, body);
   await writeSummary(body);
-  throw new Error(
-    "Dependency changes require a maintainer's /allow-dependencies-change comment for the current revision.",
-  );
+  if (autoscrubStatus?.kind === "failed") {
+    throw new Error(`Dependency lockfile autoscrub failed: ${autoscrubStatus.reason}`);
+  }
+  return false;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {
   reviewDependencyChanges().catch(
     /** @param {unknown} error */ (error) => {
+      if (error instanceof SupersededReviewError) {
+        console.log(error.message);
+        return;
+      }
       console.error(error instanceof Error ? error.message : error);
       process.exitCode = 1;
     },

@@ -188,6 +188,7 @@ export async function resolveEmbeddedRunTerminal(input: {
   replayState: EmbeddedRunReplayState;
   activePromptPersisted: boolean;
   activateInternalPrompt: (prompt: string) => void;
+  markOwnedTranscriptRetry: () => void;
   activateCompactionContinuation: (instruction: string) => void;
   clearCompactionContinuation: () => void;
   setSuppressNextUserMessagePersistence: (value: boolean) => void;
@@ -213,7 +214,12 @@ export async function resolveEmbeddedRunTerminal(input: {
   attemptAuthProfileStore: AuthProfileStore;
   apiKeyInfo: ResolvedProviderAuth | null;
   agentHarnessId: string;
-  settledTurnFinalizationOutcome: "not-attempted" | "answered" | "completed-empty" | "failed";
+  settledTurnFinalizationOutcome:
+    | "not-attempted"
+    | "answered"
+    | "completed-empty"
+    | "failed"
+    | "silent-fallback";
   pluginHarnessOwnsTransport: boolean;
   pluginHarnessOwnsAuthBootstrap: boolean;
   reportedModelRef: { provider: string; model: string };
@@ -252,7 +258,11 @@ export async function resolveEmbeddedRunTerminal(input: {
   // its settled side effects cascade into any ordinary retry family.
   const settledTurnFinalizationAttempted = input.settledTurnFinalizationOutcome !== "not-attempted";
   const emptyAssistantReplyIsSilent = shouldTreatEmptyAssistantReplyAsSilent({
-    terminalReplyExpectation: resolveReplyExpectation(runParams),
+    // The host intentionally suppressed its cron placeholder, not a required model answer.
+    terminalReplyExpectation:
+      input.settledTurnFinalizationOutcome === "silent-fallback"
+        ? "optional"
+        : resolveReplyExpectation(runParams),
     payloadCount,
     aborted: terminalAborted,
     timedOut: terminalTimedOut,
@@ -455,6 +465,9 @@ export async function resolveEmbeddedRunTerminal(input: {
     input.activateInternalPrompt(
       `${BEFORE_AGENT_FINALIZE_RETRY_PROMPT_PREFIX}\n\n${beforeFinalizeRevisionReason}`,
     );
+    // Settlement excluded the rejected draft with a leaf control. Wait for its
+    // transcript projection to rebuild before reopening for the hidden pass.
+    input.markOwnedTranscriptRetry();
     log.warn(
       `before_agent_finalize requested one more pass: ` +
         `runId=${runParams.runId} sessionId=${runParams.sessionId} ` +
@@ -515,13 +528,16 @@ async function completeEmbeddedRun(
           attempt: input.attempt,
           incompleteTurnText,
         });
-  const stopReason = error
-    ? undefined
-    : input.attempt.clientToolCalls
-      ? "tool_calls"
-      : input.attempt.yieldDetected
-        ? "end_turn"
-        : (input.attemptAssistant?.stopReason as string | undefined);
+  // Cancellation belongs to the runtime owner, not the last model tool-call message.
+  const stopReason = terminalAborted
+    ? input.terminalState.outcome.stopReason
+    : error
+      ? undefined
+      : input.attempt.clientToolCalls
+        ? "tool_calls"
+        : input.attempt.yieldDetected
+          ? "end_turn"
+          : (input.attemptAssistant?.stopReason as string | undefined);
   if (error) {
     input.setTerminalLifecycleMeta({ replayInvalid, livenessState });
     if (input.authProfileId) {

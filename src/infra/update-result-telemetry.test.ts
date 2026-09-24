@@ -20,6 +20,14 @@ import type { UpdateRunRecord } from "./update-run-record.js";
 
 const dirs = createTempDirTracker();
 const defaultPolicy = {};
+function capableReceiver() {
+  return vi
+    .fn<typeof fetch>()
+    .mockResolvedValueOnce(
+      new Response(null, { status: 204, headers: { "OpenClaw-Update-Results": "2" } }),
+    )
+    .mockResolvedValue(new Response("ok"));
+}
 function fixture(enabled = true) {
   const directory = dirs.make("update-result-");
   const configPath = path.join(directory, "openclaw.json");
@@ -391,13 +399,13 @@ describe("bounded transport", () => {
     async (config) => {
       const options = fixture();
       fs.writeFileSync(options.configPath, JSON.stringify(config));
-      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response("ok"));
+      const fetchImpl = capableReceiver();
       await sendUpdateResultTelemetry(buildUpdateResultPayload(result())!, {
         env: options.env,
         fetchImpl,
       });
-      expect(fetchImpl).toHaveBeenCalledTimes(1);
-      const body = fetchImpl.mock.calls[0]?.[1]?.body;
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      const body = fetchImpl.mock.calls[1]?.[1]?.body;
       if (typeof body !== "string") {
         throw new Error("Expected a JSON request body");
       }
@@ -407,7 +415,7 @@ describe("bounded transport", () => {
   );
   it.each(["1", "true"])("does not treat DNT=%s as an update-request opt-out", async (dnt) => {
     const options = fixture();
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response("ok"));
+    const fetchImpl = capableReceiver();
     const env = { ...options.env, DO_NOT_TRACK: dnt };
     const run = createUpdateRun({ trigger: "cli" }, { env });
     finishUpdateRun(run.runId, { status: "succeeded" }, { env });
@@ -415,7 +423,7 @@ describe("bounded transport", () => {
       attempted: [run.runId],
     });
     await sendUpdateResultTelemetry(buildUpdateResultPayload(result())!, { env, fetchImpl });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
   });
   it("does not dispatch when configuration cannot be parsed", async () => {
     const options = fixture();
@@ -444,14 +452,21 @@ describe("bounded transport", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
   it("uses only fixed headers and the configured endpoint, without waiting for a daily check", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(new Response("ok"));
+    const fetchImpl = capableReceiver();
     const payload = buildUpdateResultPayload(result())!;
     await sendUpdateResultTelemetry(payload, {
       env: { OPENCLAW_TELEMETRY_ENDPOINT: "http://localhost/synthetic" },
       fetchImpl,
       getPolicy: () => true,
     });
-    expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      1,
+      "http://localhost/synthetic",
+      expect.objectContaining({ method: "HEAD" }),
+    );
+    expect(fetchImpl).toHaveBeenNthCalledWith(
+      2,
       "http://localhost/synthetic",
       expect.objectContaining({
         method: "POST",
@@ -461,6 +476,44 @@ describe("bounded transport", () => {
         headers: { "Content-Type": "application/json", "User-Agent": "openclaw-update-result/1" },
       }),
     );
+  });
+  it.each([
+    { status: 405, capability: undefined },
+    { status: 503, capability: undefined },
+    { status: 204, capability: undefined },
+    { status: 204, capability: "1" },
+    { status: 200, capability: "2" },
+  ])("sends no outcome body to an unsupported receiver %j", async ({ status, capability }) => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(null, {
+        status,
+        headers: capability ? { "OpenClaw-Update-Results": capability } : {},
+      }),
+    );
+    await sendUpdateResultTelemetry(buildUpdateResultPayload(result())!, {
+      fetchImpl,
+      getPolicy: () => true,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+      method: "HEAD",
+      redirect: "error",
+      credentials: "omit",
+    });
+    expect(fetchImpl.mock.calls[0]?.[1]).not.toHaveProperty("body");
+  });
+  it("rechecks update policy after receiver negotiation before exposing the report", async () => {
+    let enabled = true;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () => {
+      enabled = false;
+      return new Response(null, { status: 204, headers: { "OpenClaw-Update-Results": "2" } });
+    });
+    await sendUpdateResultTelemetry(buildUpdateResultPayload(result())!, {
+      fetchImpl,
+      getPolicy: () => enabled,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[1]?.method).toBe("HEAD");
   });
   it("rechecks update policy at network admission and never falls back on endpoint failure", async () => {
     const fetchImpl = vi
