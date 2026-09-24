@@ -12,13 +12,13 @@ import {
 export { optionalStringEnum, stringEnum } from "./string-enum.js";
 
 /** Describe the intended work; completion is reported by the tool result. */
-export function executionTitleSchema() {
-  return Type.Optional(
-    Type.String({
-      maxLength: 120,
-      description: "Every call: short purpose; never claim success. No secrets.",
-    }),
-  );
+export function executionTitleSchema(options: { required?: boolean } = {}) {
+  const schema = Type.String({
+    maxLength: 120,
+    description: "Every call: short purpose; never claim success. No secrets.",
+    ...(options.required ? { minLength: 1, pattern: "\\S" } : {}),
+  });
+  return options.required ? schema : Type.Optional(schema);
 }
 
 /** Builds a schema for one outbound channel target. */
