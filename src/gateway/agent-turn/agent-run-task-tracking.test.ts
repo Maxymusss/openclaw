@@ -413,7 +413,19 @@ describe("Gateway followup completion custody", () => {
     },
   );
 
-  it("rejects mismatched requester and unsupported legacy before creating a task", async () => {
+  it("preserves registered runtime admission when no core completion request was prepared", async () => {
+    const f = followupFixture();
+    const finalizeRun = vi.fn(() => [f.task]);
+    mocks.getRegisteredDetachedTaskLifecycleRuntime.mockReturnValue({});
+    mocks.prepareRunningTaskRun.mockReturnValue({ kind: "legacy", task: f.task, finalizeRun });
+    const tracking = await f.register();
+    expect(tracking).toMatchObject({ kind: "legacy", task: f.task, finalizeRun });
+    expect(mocks.prepareRunningTaskRun).toHaveBeenCalledOnce();
+    expect(f.receipt.bindRunOwner).not.toHaveBeenCalled();
+    expect(f.request.completion).toBeUndefined();
+  });
+
+  it("rejects mismatched requester and a runtime change after core custody preparation", async () => {
     const f = followupFixture();
     f.request.requesterSessionKey = "other-requester";
     await expect(

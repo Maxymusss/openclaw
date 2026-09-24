@@ -3,7 +3,16 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayClient } from "../../gateway/server-methods/types.js";
 import type { PreparedSessionMutationFacts } from "../../gateway/session-sharing-policy.js";
 import { rolePolicyConfig, sharingPolicyClient } from "../../gateway/session-sharing.test-utils.js";
+import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
+import {
+  clearActivePluginRegistry,
+  getActivePluginRegistry,
+  setActivePluginRegistry,
+} from "../../plugins/runtime.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
+import type { DetachedTaskLifecycleRuntime } from "../../tasks/detached-task-runtime-contract.js";
+import { getRegisteredDetachedTaskLifecycleRuntime } from "../../tasks/detached-task-runtime-state.js";
+import { setDetachedTaskLifecycleRuntime } from "../../tasks/detached-task-runtime.test-support.js";
 import type { FollowupRequest } from "../../tasks/task-followup-completion.types.js";
 import { prepareSessionsSendFollowup } from "./sessions-send-followup.js";
 const mocks = vi.hoisted(() => ({
@@ -24,6 +33,7 @@ vi.mock("../../gateway/session-sharing-preparation.js", () => ({
 }));
 vi.mock("../../plugins/runtime/gateway-request-scope.js", () => ({
   getPluginRuntimeGatewayRequestScope: () => ({ client: mocks.client() }),
+  getPluginRegistryForContext: () => getActivePluginRegistry(),
 }));
 vi.mock("../../state/user-channel-identity-operations.js", () => ({
   prepareUserProfileRoleAuthority: mocks.profile,
@@ -42,6 +52,7 @@ const input = {
 const facts = new Map<string, PreparedSessionMutationFacts>();
 const active: FollowupRequest[] = [];
 beforeEach(() => {
+  setActivePluginRegistry(createEmptyPluginRegistry());
   mocks.config.mockReturnValue({ ...rolePolicyConfig(), agents: { entries: { main: {} } } });
   mocks.client.mockReturnValue(sharingPolicyClient({ user: "requester" }));
   mocks.profile.mockResolvedValue({
@@ -84,10 +95,11 @@ beforeEach(() => {
     release: () => {},
   }));
 });
-afterEach(() => {
+afterEach(async () => {
   for (const request of active.splice(0)) {
     request.custody.release();
   }
+  await clearActivePluginRegistry();
   vi.clearAllMocks();
 });
 async function prepare() {
@@ -106,6 +118,24 @@ function target() {
   return value;
 }
 describe("followup retained session authorization", () => {
+  it("keeps a registered task runtime on its existing path before capturing core custody", async () => {
+    const runtime: DetachedTaskLifecycleRuntime = {
+      createQueuedTaskRun: vi.fn(() => null),
+      createRunningTaskRun: vi.fn(() => null),
+      startTaskRunByRunId: vi.fn(() => []),
+      recordTaskRunProgressByRunId: vi.fn(() => []),
+      completeTaskRunByRunId: vi.fn(() => []),
+      failTaskRunByRunId: vi.fn(() => []),
+      setDetachedTaskDeliveryStatusByRunId: vi.fn(() => []),
+      cancelDetachedTaskRunById: vi.fn(async () => ({ found: false, cancelled: false })),
+    };
+    setDetachedTaskLifecycleRuntime(runtime, "registered-owner");
+    expect(getRegisteredDetachedTaskLifecycleRuntime()).toBe(runtime);
+    await expect(prepareSessionsSendFollowup(input)).resolves.toBeUndefined();
+    expect(runtime.createRunningTaskRun).not.toHaveBeenCalled();
+    expect(mocks.capture).not.toHaveBeenCalled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+  });
   it("uses the original operator and current prepared membership, and latches revocation", async () => {
     const request = await prepare();
     expect(() => request.custody.assertCurrent()).not.toThrow();
