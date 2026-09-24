@@ -1,231 +1,2707 @@
-name: Workflow Sanity
-
-on:
-  pull_request:
-    paths-ignore:
-      - "CHANGELOG.md"
-      - "CHANGELOG/**"
-  push:
-    branches: [main]
-    paths-ignore:
-      - "CHANGELOG.md"
-      - "CHANGELOG/**"
-  workflow_dispatch:
-
+name: Ratchet Economics Pilot
+'on':
+  workflow_dispatch: null
 permissions:
   contents: read
-
-concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
-
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  NODE_VERSION: 24.19.0
 jobs:
-  no-tabs:
-    # Release priority: hosted-runner work defers while OPENCLAW_RELEASE_PRIORITY_RUN names an active Full Release Validation.
-    if: (vars.OPENCLAW_RELEASE_PRIORITY_RUN == '' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release') || startsWith(github.base_ref, 'release')) && (github.event_name != 'workflow_dispatch')
+  control_pass_combined:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: pass
     steps:
-      - &workflow_sanity_checkout_step
-        name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 1
-          persist-credentials: false
+    - &id001
+      name: Checkout
+      shell: bash
+      env:
+        CHECKOUT_REPO: openclaw/openclaw
+        CHECKOUT_TOKEN: ${{ github.token }}
+        CHECKOUT_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+        WORKFLOW_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      run: |
+        set -euo pipefail
+        python_command=python3
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          python_command=python
+        fi
+        run_owner() {
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # Later fetch steps reuse workflow code outside the selected/deletable checkout.
+            printf '%s' "$1" > "$RUNNER_TEMP/ci-git-owner.py"
+            exec "$python_command" -I -S "$RUNNER_TEMP/ci-git-owner.py"
+          fi
+          exec "$python_command" -I -S -c "$1"
+        }
+        # Generated from .github/actions/git-owner/owner.py; do not edit here.
+        run_owner 'import base64
+        import builtins
+        import json
+        import os
+        import re
+        import runpy
+        import shutil
+        import signal
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        from types import TracebackType
 
-      - name: Fail on tabs in workflow files
-        run: |
-          python - <<'PY'
-          from __future__ import annotations
+        linux = os.environ.get("RUNNER_OS", sys.platform) in ("Linux", "linux")
+        fetch_timeout_seconds = 120 if linux else 90
+        cleanup_seconds = 10
+        cancelled = 0
+        closed = False
+        git = shutil.which("git")
+        checkout_environment = {}
 
-          import pathlib
-          import sys
 
-          root = pathlib.Path(".github/workflows")
-          bad: list[str] = []
-          for path in sorted(root.rglob("*.yml")):
-            if b"\t" in path.read_bytes():
-              bad.append(str(path))
+        def cancel(signum, _frame):
+            global cancelled
+            cancelled = signum
 
-          for path in sorted(root.rglob("*.yaml")):
-            if b"\t" in path.read_bytes():
-              bad.append(str(path))
 
-          if bad:
-            print("Tabs found in workflow file(s):")
-            for path in bad:
-              print(f"- {path}")
-            sys.exit(1)
-          PY
+        for signame in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
+            if hasattr(signal, signame):
+                signal.signal(getattr(signal, signame), cancel)
 
-  actionlint:
-    # Release priority: hosted-runner work defers while OPENCLAW_RELEASE_PRIORITY_RUN names an active Full Release Validation.
-    if: (vars.OPENCLAW_RELEASE_PRIORITY_RUN == '' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/heads/release') || startsWith(github.base_ref, 'release')) && (github.event_name != 'workflow_dispatch')
+
+        def check_cancelled():
+            if cancelled:
+                raise SystemExit(128 + cancelled)
+
+
+        # The bootstrap inherits only this Job handle and stdio, joins before spawning Git,
+        # then closes its copy. Even owner death before assignment kills it on that close.
+        windows_api = '\'''\'''\''
+        import ctypes as c
+        from ctypes import wintypes as w
+        import os, subprocess, sys
+        kernel = c.WinDLL("kernel32", use_last_error=True)
+        def checked(value, function, arguments):
+            if not value:
+                raise c.WinError(c.get_last_error())
+            return value
+        def bind(name, result, *arguments):
+            function = getattr(kernel, name)
+            function.restype, function.argtypes = result, arguments
+            function.errcheck = checked
+            return function
+        close_handle = bind("CloseHandle", w.BOOL, w.HANDLE)
+        '\'''\'''\''
+        if os.name == "nt":
+            exec(windows_api)
+
+            class BasicLimits(c.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", c.c_int64), ("PerJobUserTimeLimit", c.c_int64),
+                    ("LimitFlags", w.DWORD), ("MinimumWorkingSetSize", c.c_size_t),
+                    ("MaximumWorkingSetSize", c.c_size_t), ("ActiveProcessLimit", w.DWORD),
+                    ("Affinity", c.c_size_t), ("PriorityClass", w.DWORD), ("SchedulingClass", w.DWORD),
+                ]
+
+            class IoCounters(c.Structure):
+                _fields_ = [(name, c.c_uint64) for name in (
+                    "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                    "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+                )]
+
+            class ExtendedLimits(c.Structure):
+                _fields_ = [("BasicLimitInformation", BasicLimits), ("IoInfo", IoCounters)] + [
+                    (name, c.c_size_t) for name in (
+                        "ProcessMemoryLimit", "JobMemoryLimit", "PeakProcessMemoryUsed", "PeakJobMemoryUsed",
+                    )
+                ]
+
+            class Accounting(c.Structure):
+                _fields_ = [(name, c.c_int64) for name in (
+                    "TotalUserTime", "TotalKernelTime", "ThisPeriodTotalUserTime", "ThisPeriodTotalKernelTime",
+                )] + [(name, w.DWORD) for name in (
+                    "TotalPageFaultCount", "TotalProcesses", "ActiveProcesses", "TotalTerminatedProcesses",
+                )]
+
+            if (c.sizeof(BasicLimits), c.sizeof(ExtendedLimits), c.sizeof(Accounting), Accounting.ActiveProcesses.offset) != (64, 144, 48, 40):
+                raise RuntimeError("Unsupported Windows Job structure layout")
+
+            create_job = bind("CreateJobObjectW", w.HANDLE, c.c_void_p, w.LPCWSTR)
+            set_job = bind("SetInformationJobObject", w.BOOL, w.HANDLE, c.c_int, c.c_void_p, w.DWORD)
+            query_job = bind("QueryInformationJobObject", w.BOOL, w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.c_void_p)
+            terminate_job = bind("TerminateJobObject", w.BOOL, w.HANDLE, w.UINT)
+            open_process = bind("OpenProcess", w.HANDLE, w.DWORD, w.BOOL, w.DWORD)
+            in_job = bind("IsProcessInJob", w.BOOL, w.HANDLE, w.HANDLE, c.POINTER(w.BOOL))
+            wait_process = kernel.WaitForSingleObject
+            wait_process.argtypes, wait_process.restype = [w.HANDLE, w.DWORD], w.DWORD
+
+            def job_members(job, deadline):
+                # PIDs are discovery hints only. Hold query/synchronize handles and verify
+                # job membership before using them; never signal a process found by PID.
+                before = Accounting()
+                query_job(job, 1, c.byref(before), c.sizeof(before), None)
+                capacity = max(16, before.ActiveProcesses + 1)
+                while True:
+                    if time.monotonic() >= deadline or capacity > 65536:
+                        raise RuntimeError("Job member census did not complete")
+                    class Members(c.Structure):
+                        _fields_ = [("assigned", w.DWORD), ("count", w.DWORD),
+                                    ("pids", c.c_size_t * capacity)]
+                    members = Members()
+                    try:
+                        query_job(job, 3, c.byref(members), c.sizeof(members), None)
+                        break
+                    except OSError as error:
+                        if error.winerror != 234:  # ERROR_MORE_DATA: retry the census, not cleanup.
+                            raise
+                        capacity *= 2
+                handles = []
+                try:
+                    for pid in members.pids[:members.count]:
+                        handle = open_process(0x00100000 | 0x1000, False, pid)
+                        handles.append(handle)
+                        member = w.BOOL()
+                        in_job(handle, job, c.byref(member))
+                        if not member.value:
+                            raise RuntimeError("Job member identity changed during census")
+                    after = Accounting()
+                    query_job(job, 1, c.byref(after), c.sizeof(after), None)
+                    if after.TotalProcesses != before.TotalProcesses:
+                        raise RuntimeError("Job membership grew during census")
+                    return handles, after.TotalProcesses
+                except BaseException:
+                    for handle in handles:
+                        close_handle(handle)
+                    raise
+            bootstrap = windows_api + '\'''\'''\''
+        job = int(sys.argv[1])
+        assign = bind("AssignProcessToJobObject", w.BOOL, w.HANDLE, w.HANDLE)
+        current = bind("GetCurrentProcess", w.HANDLE)
+        assign(job, current())
+        close_handle(job)
+        sys.exit(subprocess.call(sys.argv[2:], stdin=subprocess.DEVNULL))
+        '\'''\'''\''
+
+
+        def group_signal(pgid, signum, deadline):
+            try:
+                os.killpg(pgid, signum)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # Darwin can refuse signals while members are exiting but not yet zombies.
+                # Keep those members pending until drain proves termination; never accept a live denial.
+                states = group_states(pgid, deadline)
+                if any(not state.startswith("Z") and not (sys.platform == "darwin" and "E" in state)
+                       for state in states):
+                    raise
+                return any(not state.startswith("Z") for state in states)
+            return True
+
+
+        def group_alive(pgid, deadline):
+            return any(not state.startswith("Z") for state in group_states(pgid, deadline))
+
+
+        def group_states(pgid, deadline):
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return []
+            except PermissionError:
+                pass  # EPERM can mean zombie-only; the census must still prove extinction.
+            # Darwin -g selects a group; procps selects its session (a superset because
+            # run_git starts a new session). Pin Darwin'\''s standard, not legacy, -g syntax.
+            try:
+                result = subprocess.run(
+                    ["ps", "-o", "pgid=,stat=", "-g", str(pgid)], stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env={**os.environ, "COMMAND_MODE": "unix2003"},
+                    timeout=max(0.001, deadline - time.monotonic()),
+                )
+            except subprocess.TimeoutExpired as error:
+                print((error.stderr or b"").decode(errors="replace"), end="", file=sys.stderr)
+                raise
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            states = []
+            if result.returncode != 1 or result.stdout or result.stderr:
+                result.check_returncode()
+                # Validate the complete census before ignoring zombies; Darwin ps can
+                # report sysctl errors on stderr with exit 0. Neither permits reuse.
+                if result.stderr or not re.fullmatch(
+                    r"(?:[ \t]*[1-9][0-9]*[ \t]+[RSDTtXZxKWPIU?][<+NLlsEVWX]*[ \t]*\n)+", result.stdout
+                ):
+                    raise RuntimeError("Invalid process group census")
+                states = [state for group, state in (line.split() for line in result.stdout.splitlines())
+                          if int(group) == pgid]
+            if states:
+                return states
+            # Empty selection (exit 1), or a session with only other groups, can race
+            # extinction. Require native ESRCH; a bare status 1 or EPERM proves nothing.
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return []
+            raise RuntimeError("Process group census missed a present group")
+
+
+        def drain(child, job):
+            deadline = time.monotonic() + cleanup_seconds
+            if os.name == "nt":
+                # Stop/join even a pre-assignment bootstrap before terminating the Job:
+                # an empty Job alone cannot prove that no Git will start afterwards.
+                child.kill()
+                child.wait(timeout=max(0.001, deadline - time.monotonic()))
+                handles = []
+                terminated = False
+                try:
+                    handles, total = job_members(job, deadline)
+                    terminate_job(job, 1)
+                    terminated = True
+                    accounting = Accounting()
+                    while True:
+                        settled = True
+                        for handle in handles:
+                            status = wait_process(handle, 0)
+                            if status == 258:  # WAIT_TIMEOUT: accounting can reach zero first.
+                                settled = False
+                            elif status != 0:
+                                raise c.WinError(c.get_last_error())
+                        query_job(job, 1, c.byref(accounting), c.sizeof(accounting), None)
+                        if accounting.TotalProcesses != total:
+                            raise RuntimeError("Job membership grew during cleanup")
+                        if accounting.ActiveProcesses == 0 and settled:
+                            return
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Job cleanup did not complete")
+                        time.sleep(0.05)
+                finally:
+                    try:
+                        if not terminated:
+                            terminate_job(job, 1)
+                    finally:
+                        for handle in handles:
+                            close_handle(handle)
+            else:
+                # The group remains ours after leader exit. Reserve half the existing
+                # cleanup allowance for KILL and extinction verification after TERM.
+                try:
+                    group_signal(child.pid, signal.SIGTERM, deadline)
+                    kill_at = deadline - cleanup_seconds / 2
+                    while True:
+                        child.poll()
+                        if not group_alive(child.pid, deadline):
+                            child.wait(timeout=max(0.001, deadline - time.monotonic()))
+                            return
+                        if time.monotonic() >= kill_at:
+                            group_signal(child.pid, signal.SIGKILL, deadline)
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Process group cleanup did not complete")
+                        time.sleep(0.05)
+                except Exception:
+                    group_signal(child.pid, signal.SIGKILL, deadline)
+                    # KILL queues termination; a leader wait cannot join descendants.
+                    # Count zombies conservatively here, but never reset the allowance or retry.
+                    while time.monotonic() < deadline:
+                        child.poll()
+                        if not group_signal(child.pid, 0, deadline):
+                            break
+                        time.sleep(0.05)
+                    child.wait(timeout=max(0.001, deadline - time.monotonic()))
+                    raise
+
+
+        class FetchTimeout(Exception):
+            pass
+
+
+        class GitFailure(Exception):
+            def __init__(self, code):
+                self.code = code
+
+
+        def git_lock_files(directory):
+            git_dir = os.path.join(os.path.realpath(directory), ".git")
+            if not os.path.lexists(git_dir):
+                return set()
+            if not os.path.isdir(git_dir) or os.path.realpath(git_dir) != git_dir:
+                raise RuntimeError("Checkout Git directory is not physical")
+            def scan_error(error):
+                raise error
+            locks = set()
+            for root, directories, files in os.walk(git_dir, onerror=scan_error):
+                directories[:] = [name for name in directories
+                                  if os.path.realpath(os.path.join(root, name)) == os.path.join(root, name)]
+                locks.update(os.path.join(root, name) for name in files if name.endswith(".lock"))
+            return locks
+
+
+        def git_auth_environment(remote, token):
+            # Git'\''s promisor fetch inherits this process-only config from checkout.
+            # Reject redirects: http.<url> matching does not re-scope redirected requests.
+            count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+            if count < 0:
+                raise ValueError("Invalid Git environment configuration count")
+            header = f"http.{remote}.extraheader"
+            authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+            settings = [(header, ""), (header, f"AUTHORIZATION: basic {authorization}"),
+                        (f"http.{remote}.followRedirects", "false")]
+            environment = {"GIT_CONFIG_COUNT": str(count + len(settings)), "GIT_TERMINAL_PROMPT": "0"}
+            for index, (key, value) in enumerate(settings, count):
+                environment[f"GIT_CONFIG_KEY_{index}"] = key
+                environment[f"GIT_CONFIG_VALUE_{index}"] = value
+            return environment
+
+
+        def run_git(directory, *arguments, timeout=None, stdout=None, stderr=None, env=None,
+                    reclaim_locks=False):
+            global closed
+            if closed:
+                raise RuntimeError("Git owner is closed")
+            check_cancelled()
+            if git is None:
+                raise RuntimeError("Git unavailable")
+            # Process ownership alone does not grant metadata ownership: generic callers
+            # may use linked worktrees. Only exclusive checkout fetches reclaim locks.
+            previous_locks = git_lock_files(directory) if reclaim_locks else None
+            command = [git, "-C", directory, *arguments]
+            job = None
+            child = None
+            timed_out = False
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            try:
+                environment = ({**os.environ, **checkout_environment, **(env or {})}
+                               if checkout_environment or env is not None else None)
+                options = {"stdin": subprocess.DEVNULL, "stdout": stdout, "stderr": stderr,
+                           "env": environment}
+                if os.name == "nt":
+                    job = create_job(None, None)
+                    limits = ExtendedLimits()
+                    limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE; no breakaway.
+                    set_job(job, 9, c.byref(limits), c.sizeof(limits))
+                    os.set_handle_inheritable(job, True)
+                    startup = subprocess.STARTUPINFO()
+                    startup.lpAttributeList = {"handle_list": [job]}
+                    options.update(startupinfo=startup, close_fds=True)
+                    # The selected checkout must not inject Python startup code into its owner.
+                    command = [sys.executable, "-I", "-S", "-c", bootstrap, str(job), *command]
+                else:
+                    options["start_new_session"] = True
+                # Signal handlers only latch cancellation, so Popen cannot lose ownership
+                # between process creation and saving its handle/group for cleanup.
+                child = subprocess.Popen(command, **options)
+                if job is not None:
+                    os.set_handle_inheritable(job, False)
+                while child.poll() is None and not cancelled:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        timed_out = True
+                        raise FetchTimeout()
+                    time.sleep(0.05)
+            finally:
+                # Failed inspection/cleanup permanently fences this policy process. Only
+                # verified extinction permits another command, even after a caught error.
+                closed = True
+                try:
+                    if child is not None:
+                        drain(child, job)
+                        if previous_locks is not None and (timed_out or cancelled or child.returncode):
+                            # Forced termination skips Git'\''s lockfile cleanup. This checkout is exclusive;
+                            # reclaim only newly created locks after tree extinction, never existing locks.
+                            for lock in sorted(git_lock_files(directory) - previous_locks):
+                                os.unlink(lock)
+                finally:
+                    if job is not None:
+                        close_handle(job)
+                closed = False
+                # Run even while a timeout is unwinding: cancellation received during
+                # draining outranks it, but failed cleanup above still outranks both.
+                check_cancelled()
+            if child.returncode:
+                raise GitFailure(child.returncode if child.returncode > 0 else 128 - child.returncode)
+
+
+        def backoff(seconds):
+            retry_at = time.monotonic() + seconds
+            while time.monotonic() < retry_at:
+                check_cancelled()
+                time.sleep(0.05)
+
+
+        def fetch(directory, *refs, prune=False, max_attempts=3, depth=1,
+                  blobless=False, retry_failures=False, retry_codes=()):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    run_git(directory, "-c", "protocol.version=2", "fetch", "--no-tags",
+                            *(["--prune"] if prune else []), "--no-recurse-submodules", f"--depth={depth}",
+                            *(["--filter=blob:none"] if blobless else []), "origin", *refs,
+                            timeout=fetch_timeout_seconds, reclaim_locks=True)
+                    return
+                except (FetchTimeout, GitFailure) as error:
+                    check_cancelled()
+                    retryable = isinstance(error, FetchTimeout) or retry_failures or error.code in retry_codes
+                    if not retryable or attempt == max_attempts:
+                        raise
+                    print(f"::warning::checkout fetch failed on attempt {attempt}; retrying", flush=True)
+                    backoff(5)
+
+
+        def git_output(directory, *arguments, timeout=None, env=None):
+            with tempfile.TemporaryFile() as output:
+                run_git(directory, *arguments, timeout=timeout, env=env, stdout=output)
+                output.seek(0)
+                return output.read().decode("utf-8", errors="surrogateescape")
+
+
+        def resolve_ref(ref):
+            return git_output(workspace, "rev-parse", ref).strip()
+
+
+        def checkout_selected_ref():
+            ref = os.environ["CHECKOUT_REF"]
+            fallback = os.environ["CHECKOUT_FALLBACK_REF"]
+            manual = os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+            requested = ref if kind == "preflight" and re.fullmatch("[0-9a-f]{40}", ref) else None
+            # Prefer the event ref for an exact manual SHA, but detect a ref that moved in the queue.
+            if requested and manual and ref == fallback and os.environ.get("CHECKOUT_EVENT_REF"):
+                ref = os.environ["CHECKOUT_EVENT_REF"]
+
+            def fetch_ref(value):
+                fetch(workspace, f"+{value}:refs/remotes/origin/checkout", prune=True,
+                      depth=1 if kind == "preflight" else 2, retry_codes=(124, 137))
+
+            try:
+                fetch_ref(ref)
+            except GitFailure as error:
+                if error.code in (124, 137) or not manual or os.environ["CHECKOUT_REF"] == fallback:
+                    raise
+                print("::warning::workflow_dispatch target_ref is unavailable; falling back to head SHA", flush=True)
+                fetch_ref(fallback)
+            if requested:
+                resolved = resolve_ref("refs/remotes/origin/checkout")
+                if resolved != requested and ref != requested:
+                    print("::notice::checkout ref moved; fetching requested SHA", flush=True)
+                    fetch_ref(requested)
+                    resolved = resolve_ref("refs/remotes/origin/checkout")
+                if resolved != requested:
+                    print("::error::checkout ref did not resolve to the requested SHA", file=sys.stderr)
+                    raise GitFailure(1)
+            if kind == "preflight":
+                # Diff-base callers need parent commits/trees, not their blobs.
+                try:
+                    fetch(workspace, resolve_ref("refs/remotes/origin/checkout"), prune=True,
+                          depth=2, blobless=True, retry_failures=True)
+                except (FetchTimeout, GitFailure):
+                    raise GitFailure(1)
+            run_git(workspace, "checkout", "--detach", "refs/remotes/origin/checkout")
+
+
+        def checkout_harness(sha):
+            action = ".github/actions/setup-node-env/action.yml"
+            node_setup_scripts = ("scripts/lib/pnpm-lockfile-documents.mjs",)
+            evidence_scripts = ("scripts/ios-screenshot-evidence.mjs", "scripts/lib/direct-run.mjs")
+            platform_scripts = ("scripts/lib/swift-toolchain.sh",)
+            upgrade_scripts = ("scripts/lib/release-upgrade-baseline.mjs", "scripts/lib/release-version.mjs")
+            if kind == "linux-node" and not os.path.isfile(os.path.join(workspace, action)):
+                raise GitFailure(1)
+            harness = os.path.join(workspace, ".ci-harness")
+            # This owner creates the harness, not candidate source. Keep strict source-status
+            # checks useful without hiding tracked edits or similarly named nested paths.
+            exclude = os.path.join(workspace, git_output(workspace, "rev-parse", "--git-path", "info/exclude").strip())
+            os.makedirs(os.path.dirname(exclude), exist_ok=True)
+            with open(exclude, "a+b") as output:
+                output.seek(0)
+                if output.read().splitlines()[-1:] != [b"/.ci-harness/"]:
+                    output.write(b"\n/.ci-harness/\n")
+            os.makedirs(harness, exist_ok=True)
+            if sha == os.environ["WORKFLOW_SHA"]:
+                # Export the workflow revision from the freshly populated index, replacing
+                # retained harness files without updating the index or trusting later edits.
+                pathspecs = [".github/actions", *node_setup_scripts]
+                if kind in ("platform", "linux-node"):
+                    pathspecs += evidence_scripts
+                elif kind == "preflight":
+                    pathspecs += ["scripts/lib/release-context.mjs", "scripts/lib/release-version.mjs"]
+                if kind == "platform":
+                    pathspecs += platform_scripts
+                if kind == "linux-node":
+                    pathspecs += upgrade_scripts
+                paths = git_output(workspace, "ls-files", "-z", "--", *pathspecs).split("\0")[:-1]
+                run_git(workspace, "checkout-index", "--force", f"--prefix={harness}/", "--", *paths)
+            else:
+                run_git(harness, "init", harness)
+                run_git(harness, "remote", "add", "origin", remote)
+                sparse_paths = ["/.github/actions/", *(f"/{path}" for path in node_setup_scripts)]
+                if kind in ("platform", "linux-node"):
+                    sparse_paths += [f"/{path}" for path in evidence_scripts]
+                if kind == "platform":
+                    sparse_paths += [f"/{path}" for path in platform_scripts]
+                if kind == "linux-node":
+                    sparse_paths += [f"/{path}" for path in upgrade_scripts]
+                # Rooted non-cone patterns keep the kind-owned workflow files exact.
+                # Sparse first, then blob-less avoids downloading a second repository snapshot.
+                run_git(harness, "sparse-checkout", "set", "--no-cone", *sparse_paths)
+                fetch(harness, f"+{os.environ['\''WORKFLOW_SHA'\'']}:refs/remotes/origin/ci-harness",
+                      max_attempts=1, blobless=True)
+                # Checkout now materializes the sparse blobs over the network, so it carries the
+                # fetch deadline instead of running unbounded like a local checkout.
+                run_git(harness, "checkout", "--force", "--detach", os.environ["WORKFLOW_SHA"],
+                        timeout=fetch_timeout_seconds)
+            if not os.path.isfile(os.path.join(harness, action)):
+                raise GitFailure(1)
+            check_cancelled()
+
+
+        def checkout():
+            check_cancelled()
+            prerequisites = json.loads(os.environ.get("CHECKOUT_GIT_COMMITS_JSON", "null")) if kind == "linux-node" else None
+            if prerequisites is None:
+                prerequisites = []
+            if not isinstance(prerequisites, list) or any(
+                not isinstance(commit, str) or not re.fullmatch("[0-9a-f]{40}", commit)
+                for commit in prerequisites
+            ):
+                raise ValueError("Invalid immutable test prerequisite commits")
+            if reset:
+                os.makedirs(workspace, exist_ok=True)
+                # Every earlier Git group has been drained before deleting its workspace.
+                subprocess.run(["find", workspace, "-mindepth", "1", "-maxdepth", "1",
+                                "-exec", "rm", "-rf", "{}", "+"], check=True)
+            run_git(workspace, "init", workspace)
+            if kind in ("linux-node", "android"):
+                run_git(workspace, "config", "--global", "--add", "safe.directory", workspace)
+            run_git(workspace, "config", "gc.auto", "0")
+            run_git(workspace, "remote", "add", "origin", remote)
+            if kind in ("preflight", "manual"):
+                checkout_selected_ref()
+                if kind == "preflight" and resolve_ref("HEAD") == os.environ["WORKFLOW_SHA"]:
+                    checkout_harness(os.environ["WORKFLOW_SHA"])
+                return
+            target = "refs/remotes/origin/ci-target" if kind in ("linux-node", "android") else "refs/remotes/origin/checkout"
+            sha = "refs/heads/main" if kind == "clawhub" else os.environ["CHECKOUT_SHA"]
+            refs = [f"+{sha}:{target}"]
+            base = os.environ.get("CHECKOUT_BASE_SHA") if kind == "linux-node" else None
+            if base:
+                refs.append(f"+{base}:refs/remotes/origin/ci-ratchet-base")
+            # Fetch full reader objects with the authenticated checkout, before its
+            # credential scope ends and test workers create historical worktrees.
+            refs.extend(prerequisites)
+            fetch(workspace, *refs, prune=True, max_attempts=1 if reset else 3,
+                  retry_codes=(124, 137) if kind == "skills" else ())
+            run_git(workspace, "checkout", *(["--force"] if reset else []), "--detach",
+                    sha if kind in ("linux-node", "android") else target)
+            if kind == "android":
+                if not os.access(os.path.join(workspace, "apps/android/gradlew"), os.X_OK):
+                    raise GitFailure(1)
+                return
+            if kind in ("clawhub", "skills"):
+                return
+            checkout_harness(sha)
+
+
+        def main():
+            global kind, workspace, remote, reset
+            if len(sys.argv) > 1:
+                if sys.argv[1] == "--policy":
+                    # The caller supplies trusted policy bytes; imports share this exact
+                    # owner and its terminal lifecycle state, never a second supervisor.
+                    sys.modules["ci_git_owner"] = sys.modules[__name__]
+                    try:
+                        if sys.argv[2] == "-":
+                            exec(compile(sys.stdin.read(), "<git-policy>", "exec"), {"__name__": "__main__"})
+                        else:
+                            runpy.run_path(sys.argv[2], run_name="__main__")
+                    finally:
+                        if closed:
+                            raise RuntimeError("Git owner is closed")
+                        check_cancelled()
+                    return
+                if sys.argv[1] not in ("--git", "--checkout-git"):
+                    raise ValueError("Unknown Git owner command")
+                run_git(os.getcwd(), *sys.argv[3:], timeout=float(sys.argv[2]) or None,
+                        reclaim_locks=sys.argv[1] == "--checkout-git")
+                return
+            if git is None:
+                raise RuntimeError("Git unavailable")
+            kind = os.environ.get("CHECKOUT_KIND", "linux-node" if linux else "platform")
+            if kind == "prepare":
+                raise SystemExit(0)
+            workspace = os.environ["GITHUB_WORKSPACE"]
+            remote = f"https://github.com/{os.environ['\''CHECKOUT_REPO'\'']}.git"
+            # The workflow'\''s token is repository-bound; never lend it to a sibling checkout.
+            token = os.environ.pop("CHECKOUT_TOKEN", "")
+            if token and os.environ["CHECKOUT_REPO"] == os.environ.get("GITHUB_REPOSITORY"):
+                checkout_environment.update(git_auth_environment(remote, token))
+            del token
+            if kind == "clawhub":
+                workspace = os.path.join(workspace, "clawhub-source")
+            reset = kind in ("linux-node", "android", "clawhub")
+            label = "ClawHub checkout" if kind == "clawhub" else "checkout"
+            started_at = time.monotonic()
+            try:
+                for attempt in range(1, 6 if reset else 2):
+                    try:
+                        checkout()
+                        if reset:
+                            print(f"{label} attempt {attempt}/5 succeeded", flush=True)
+                        if kind == "clawhub":
+                            print(f"{label} completed in {int(time.monotonic() - started_at)}s", flush=True)
+                        raise SystemExit(0)
+                    except (FetchTimeout, GitFailure) as error:
+                        # Only command failures are retryable. Ownership/inspection errors
+                        # escape to the fail-closed boundary below, never workspace deletion.
+                        check_cancelled()
+                        if not reset:
+                            raise SystemExit(124 if isinstance(error, FetchTimeout) else error.code)
+                        print(f"::warning::{label} attempt {attempt}/5 failed", flush=True)
+                        backoff(attempt * 5)
+                print(f"{label} failed after 5 attempts", file=sys.stderr)
+                raise SystemExit(1)
+            finally:
+                checkout_environment.clear()
+
+
+        def terminal_diagnostic(error, owner_code):
+            # Code identity, not a filename supplied by policy, proves source provenance.
+            codes = {id(owner_code): owner_code}
+            pending = [owner_code]
+            while pending:
+                for value in pending.pop().co_consts:
+                    if type(value) is type(owner_code):
+                        codes[id(value)] = value
+                        pending.append(value)
+            names = {value: value.__name__ for value in vars(builtins).values()
+                     if isinstance(value, type) and issubclass(value, BaseException)}
+            names.update({FetchTimeout: "FetchTimeout", GitFailure: "GitFailure"})
+            records, seen, via = [], set(), "terminal"
+            while error is not None and id(error) not in seen and len(records) < 4:
+                seen.add(id(error))
+                record = {"type": names.get(type(error), "unknown"), "via": via}
+                for field in ("errno", "winerror"):
+                    value = getattr(error, field, None)
+                    if type(value) is int and -(2 ** 31) <= value < 2 ** 32:
+                        record[field] = value
+                frames, trace = [], error.__traceback__
+                # Bound traversal as well as output; malformed metadata cannot stall exit.
+                for _ in range(256):
+                    if trace is None:
+                        break
+                    if type(trace) is not TracebackType:
+                        raise TypeError
+                    frame, code = trace.tb_frame, trace.tb_frame.f_code
+                    if frame.f_globals is globals() and id(code) in codes and 0 < trace.tb_lineno < 2 ** 31:
+                        frames.append({"function": code.co_name[:64], "line": trace.tb_lineno})
+                        frames = frames[-6:]
+                    trace = trace.tb_next
+                record["owner_frames"] = frames
+                if trace is not None:
+                    record["traceback_truncated"] = 1
+                records.append(record)
+                cause = error.__cause__
+                error, via = (cause, "cause") if cause is not None else (error.__context__, "context")
+            return records
+
+
+        if __name__ == "__main__":
+            exit_code, terminal_error = 0, None
+            try:
+                main()
+            except FetchTimeout:
+                exit_code = 124
+            except GitFailure as error:
+                exit_code = error.code
+            except Exception as error:
+                exit_code, terminal_error = 125, error
+            # Leave the handler before diagnostics or exit can raise: older Python'\''s
+            # implicit exception chaining can loop on an already-cyclic context.
+            if terminal_error is not None:
+                name, diagnostic = "unknown", "unavailable"
+                try:
+                    records = terminal_diagnostic(terminal_error, sys._getframe().f_code)
+                    diagnostic = json.dumps(records, separators=(",", ":"))
+                    name = records[0]["type"]
+                except BaseException:
+                    pass  # Diagnostics must never replace the authoritative terminal exit.
+                try:
+                    print(f"::error::Git ownership/setup failed ({name}); refusing reuse or retry", file=sys.stderr)
+                    print(f"[ci-git-owner] diagnostic={diagnostic}", file=sys.stderr)
+                except BaseException:
+                    pass
+            raise SystemExit(exit_code)
+        '
+        # End generated CI Git owner.
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+        restore-test-caches: 'false'
+    - &id002
+      name: Record pinned runtime identity
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$(git rev-parse HEAD)" = "d9d8f0829d87bcedd2b3ab6735334289c83defb0"
+        test "$(git rev-parse refs/remotes/origin/ci-ratchet-base)" = "d9d8f0829d87bcedd2b3ab6735334289c83defb0"
+        test "$(node -p process.versions.node)" = "24.19.0"
+        test "$(pnpm --version)" = "12.4.2"
+        printf 'runtime=%s base=%s node=%s pnpm=%s row_sha256=%s\n' "d9d8f0829d87bcedd2b3ab6735334289c83defb0" "d9d8f0829d87bcedd2b3ab6735334289c83defb0" "$(node -p process.versions.node)" "$(pnpm --version)" "239195cfd0ea20b2286272b8518bfdb4b0930cc74cd4ba7f414f80628f7fb393"
+    - &id003
+      name: Apply real assertion failure overlay
+      if: env.PILOT_OUTCOME == 'fail'
+      shell: bash
+      run: |
+        set -euo pipefail
+        test ! -e src/ci-ratchet-economics-probe.ts
+        printf '%s\n' 'export const probe = 0 as number;' > src/ci-ratchet-economics-probe.ts
+        test "$(sha256sum src/ci-ratchet-economics-probe.ts | cut -d' ' -f1)" = "c0ef9a4b71536e8c5470c9ea77ac1e25fe51813d075af90aa19de705f724ae68"
+    - name: Run production ratchets
+      env:
+        OPENCLAW_TEST_PROJECTS_PARALLEL: '3'
+        PROTOCOL_SINCE_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+        RATCHET_PR_HEAD_SHA: ''
+        TASK: baseline-ratchets
+      shell: bash
+      run: |
+        cat > "$RUNNER_TEMP/pilot-ratchet.sh" <<'PRODUCTION_RATCHET_40e3e00c9c519154'
+        set -euo pipefail
+        has_package_script() {
+          node -e '
+            const scripts = require("./package.json").scripts ?? {};
+            process.exit(Object.hasOwn(scripts, process.argv[1]) ? 0 : 1);
+          ' "$1"
+        }
+        case "$TASK" in
+          bundled-protocol)
+            pnpm test:bundled
+            test "$(git rev-parse refs/remotes/origin/ci-ratchet-base^{commit})" = "$PROTOCOL_SINCE_BASE_SHA"
+            pnpm protocol:check
+            ;;
+          contracts-plugins-ci-routing)
+            pnpm test:contracts:plugins
+            pnpm test src/commands/status.scan-result.test.ts src/scripts/ci-changed-scope*.test.ts test/scripts/changed-lanes.test.ts test/scripts/changed-path-facts.test.ts test/scripts/ci-changed-node-test-plan.test.ts test/scripts/ci-docker-seed-plan.test.ts test/scripts/ci-run-node-test-shard.test.ts test/scripts/ci-hourly.test.ts test/scripts/ci-workflow-guards.test.ts test/scripts/ci-workflow-planning.test.ts test/scripts/ci-workflow-evidence.test.ts test/scripts/run-vitest.test.ts test/scripts/test-projects.test.ts
+            ;;
+          ci-routing)
+            pnpm test src/commands/status.scan-result.test.ts src/scripts/ci-changed-scope*.test.ts test/scripts/changed-lanes.test.ts test/scripts/changed-path-facts.test.ts test/scripts/ci-changed-node-test-plan.test.ts test/scripts/ci-docker-seed-plan.test.ts test/scripts/ci-run-node-test-shard.test.ts test/scripts/ci-hourly.test.ts test/scripts/ci-workflow-guards.test.ts test/scripts/ci-workflow-planning.test.ts test/scripts/ci-workflow-evidence.test.ts test/scripts/run-vitest.test.ts test/scripts/test-projects.test.ts
+            ;;
+          coercion-helpers)
+            pnpm check:coercion-helpers
+            ;;
+          baseline-ratchets)
+            for required_script in check:max-lines-ratchet check:assertion-safety config:docs:check plugins:inventory:check; do
+              if ! has_package_script "$required_script"; then
+                echo "Current CI targets must provide ${required_script}." >&2
+                exit 1
+              fi
+            done
+            base_ref="${RATCHET_BASE_REF:-refs/remotes/origin/ci-ratchet-base}"
+            if ! git cat-file -e "${base_ref}^{commit}" 2>/dev/null; then
+              echo "Prepared ratchet base ${base_ref} is unavailable." >&2
+              exit 1
+            fi
+            if [[ -n "${RATCHET_PR_HEAD_SHA:-}" ]]; then
+              mapfile -t merge_parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+              if [[ "${#merge_parents[@]}" != "2" || "${merge_parents[1]:-}" != "$RATCHET_PR_HEAD_SHA" ]]; then
+                echo "Pull request checkout is not the expected two-parent merge tree." >&2
+                exit 1
+              fi
+              prepared_base="$(git rev-parse "$base_ref")"
+              if [[ "${merge_parents[0]}" != "$prepared_base" ]]; then
+                echo "Pull request merge base does not match the prepared preflight base." >&2
+                exit 1
+              fi
+            fi
+            pnpm check:max-lines-ratchet --base "$base_ref"
+            if [[ -n "${RATCHET_PR_HEAD_SHA:-}" ]]; then
+              pnpm check:line-cap-ratchet --base "$base_ref"
+            fi
+            pnpm check:assertion-safety --base "$base_ref"
+            pnpm config:docs:check
+            pnpm plugins:inventory:check
+            ;;
+          release-lint-core-*)
+            stripe="${TASK#release-lint-core-}"
+            node --import tsx scripts/run-oxlint-shards.mts \
+              --only=core --split-core --core-stripe="${stripe}/5" --threads=1
+            ;;
+          release-lint-extensions)
+            node --import tsx scripts/run-oxlint-shards.mts --only=extensions --threads=1
+            ;;
+          bun-launcher)
+            OPENCLAW_E2E_SKIP_BUILD=1 OPENCLAW_TEST_BUN_LAUNCHER=1 pnpm test test/openclaw-launcher.e2e.test.ts
+            if [[ -f src/plugins/plugin-module-generation.test.ts ]]; then
+              OPENCLAW_TEST_BUN_LAUNCHER=1 pnpm test src/plugins/plugin-module-generation.test.ts --testNamePattern Bun
+            elif [[ "false" != "true" ]]; then
+              echo "Current CI targets must provide src/plugins/plugin-module-generation.test.ts." >&2
+              exit 1
+            fi
+            ;;
+          *)
+            echo "Unsupported checks-fast task: $TASK" >&2
+            exit 1
+            ;;
+        esac
+        PRODUCTION_RATCHET_40e3e00c9c519154
+        set +e
+        bash "$RUNNER_TEMP/pilot-ratchet.sh" 2>&1 | tee "$RUNNER_TEMP/pilot-ratchet-output.txt"
+        result=${PIPESTATUS[0]}
+        set -e
+        if grep -Fq 'Uncommented type assertions exceed the grandfathered per-file baseline:' "$RUNNER_TEMP/pilot-ratchet-output.txt" && grep -Fq 'src/ci-ratchet-economics-probe.ts' "$RUNNER_TEMP/pilot-ratchet-output.txt"; then
+          echo 'probe_failure=true' >> "$GITHUB_OUTPUT"
+        else
+          echo 'probe_failure=false' >> "$GITHUB_OUTPUT"
+        fi
+        rm -f "$RUNNER_TEMP/pilot-ratchet-output.txt"
+        exit "$result"
+      id: ratchet
+    - name: Check startup corpus
+      env:
+        OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON: ''
+      run: |
+        set -euo pipefail
+        # Prepare once before Vitest workers consume the runtime.
+        pnpm build qaRuntime
+        run_startup_corpus() {
+          if [[ "false" == "true" ]]; then
+            node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts "$@"
+          else
+            node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts \
+              --reporter verbose --reporter github-actions --reporter ./scripts/lib/vitest-resource-reporter.mts "$@"
+          fi
+        }
+        if [[ -n "${OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON:-}" ]]; then
+          # Use the manifest's inventory for both Node receipts and this fallback.
+          startup_files_text="$(node -p 'JSON.parse(process.env.OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON).join(" ")')"
+          read -r -a startup_files <<< "$startup_files_text"
+          startup_workers="$(node -p 'Math.min(4, require("node:os").availableParallelism())')"
+          run_startup_corpus --maxWorkers="$startup_workers" "${startup_files[@]}"
+          exit 0
+        elif [[ -f test/vitest/vitest.startup-corpus-paths.mjs ]]; then
+          # Runner labels can advertise more CPUs than this process can use.
+          startup_workers="$(node -p 'Math.min(4, require("node:os").availableParallelism())')"
+          run_startup_corpus --maxWorkers="$startup_workers" src/config/config-startup-corpus.test.ts \
+            src/config/state-startup-corpus*.test.ts
+          exit 0
+        elif [[ "false" != "true" ]]; then
+          echo "Current CI targets must provide the startup corpus file inventory." >&2
+          exit 1
+        fi
+        # Frozen targets before the file split retain their complete legacy matrix.
+        cores="$(node -p 'require("node:os").availableParallelism()')"
+        # Worker compilation also uses CPU: reserve four cores per invocation.
+        # The 4-vCPU ratchets label can deliver only two usable CPUs.
+        concurrency=$((cores / 4))
+        if (( concurrency < 1 )); then concurrency=1; fi
+        if (( concurrency > 5 )); then concurrency=5; fi
+        echo "[corpus:resources] logicalCpuCount=$cores admitted runs=$concurrency"
+        pids=()
+        labels=()
+        result=0
+        wait_corpus_batch() {
+          for index in "${!pids[@]}"; do
+            if ! wait "${pids[$index]}"; then
+              echo "::error::${labels[$index]} failed"
+              result=1
+            fi
+          done
+          pids=()
+          labels=()
+        }
+        for shard in {0..4}; do
+          if (( shard == 0 )); then
+            run_startup_corpus src/config/config-startup-corpus.test.ts &
+            labels+=("config corpus")
+          else
+            OPENCLAW_TEST_STARTUP_CORPUS_SHARD="${shard}/4" \
+              run_startup_corpus src/config/state-startup-corpus.test.ts &
+            labels+=("state corpus ${shard}/4")
+          fi
+          pids+=("$!")
+          if (( ${#pids[@]} == concurrency )); then
+            wait_corpus_batch
+          fi
+        done
+        wait_corpus_batch
+        exit "$result"
+    outputs:
+      probe_failure: ${{ steps.ratchet.outputs.probe_failure }}
+  control_pass_shard:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: pass
     steps:
-      - *workflow_sanity_checkout_step
-      - name: Setup Python
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.12"
-
-      - name: Prepare Git owner
-        uses: openclaw/openclaw/.github/actions/git-owner@dd4528b6393e7d00063067a080ca7241b48ce475
-
-      - name: Prepare trusted workflow audit configs
-        if: github.event_name == 'pull_request'
-        env:
-          BASE_REF: ${{ github.event.pull_request.base.ref }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-        run: |
-          set -euo pipefail
-          exec python3 -I -S "$CI_GIT_OWNER" --policy - <<'PYTHON'
-          import os
-          from pathlib import Path
-          from subprocess import DEVNULL
-          from tempfile import TemporaryFile
-          from ci_git_owner import FetchTimeout, GitFailure, backoff, check_cancelled, run_git
-
-          workspace = os.getcwd()
-          base, branch = os.environ["BASE_SHA"], os.environ["BASE_REF"]
-          remote = f"refs/remotes/origin/{branch}"
-          trusted_config = Path(os.environ["RUNNER_TEMP"]) / "pre-commit-base.yaml"
-          trusted_zizmor_config = Path(os.environ["RUNNER_TEMP"]) / "zizmor-base.yml"
-
-          def has_object(spec):
-              try:
-                  run_git(workspace, "cat-file", "-e", spec, stderr=DEVNULL)
-                  return True
-              except GitFailure:
-                  return False
-
-          def fetch_base(ref, target):
-              for attempt in range(1, 4):
-                  try:
-                      run_git(workspace, "fetch", "--no-tags", "--depth=1", "origin",
-                              f"+{ref}:{target}", timeout=30, reclaim_locks=True)
-                      return
-                  except (FetchTimeout, GitFailure) as error:
-                      if (isinstance(error, GitFailure) and error.code not in (124, 137)) or attempt == 3:
-                          raise
-                      print(f"::warning::trusted base fetch for '{ref}' timed out on attempt {attempt}; retrying", flush=True)
-                      backoff(5)
-
-          if not has_object(f"{base}^{{commit}}"):
-              try:
-                  fetch_base(base, "refs/remotes/origin/security-base")
-              except (FetchTimeout, GitFailure):
-                  fetch_base(f"refs/heads/{branch}", remote)
-
-          for source, target, label in [
-              (".pre-commit-config.yaml", trusted_config, "pre-commit"),
-              (".github/zizmor.yml", trusted_zizmor_config, "zizmor"),
-          ]:
-              exact = has_object(f"{base}:{source}")
-              # Only joined Git output may become a config; fatal ownership never selects another ref.
-              with TemporaryFile() as output:
-                  try:
-                      run_git(workspace, "show", f"{base if exact else remote}:{source}",
-                              stdout=output, stderr=None if exact else DEVNULL)
-                  except GitFailure:
-                      if exact:
-                          raise
-                      print(f"::error title=trusted {label} config unavailable::Could not read {source} from {base} or origin/{branch}.")
-                      raise SystemExit(1)
-                  output.seek(0)
-                  check_cancelled()
-                  target.write_bytes(output.read())
-              if not exact:
-                  print(f"Base SHA {base} does not expose {source}; using origin/{branch} instead.")
-
-          text = trusted_config.read_text()
-          if ".github/zizmor.yml" not in text:
-              raise SystemExit("trusted pre-commit config does not reference .github/zizmor.yml")
-          trusted_config.write_text(text.replace(".github/zizmor.yml", str(trusted_zizmor_config)))
-          check_cancelled()
-          with open(os.environ["GITHUB_ENV"], "a") as output:
-              output.write(f"PRE_COMMIT_CONFIG_PATH={trusted_config}\n")
-          PYTHON
-
-      - name: Install pre-commit
-        run: python -m pip install --disable-pip-version-check pre-commit==4.6.2
-
-      - name: Install ShellCheck
-        shell: bash
-        run: |
-          set -euo pipefail
-          SHELLCHECK_VERSION="0.11.0"
-          archive="shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
-          curl --connect-timeout 10 --max-time 120 \
-            --retry 5 --retry-delay 2 --retry-all-errors -sSfL \
-            -o "${archive}" \
-            "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/${archive}"
-          echo "8c3be12b05d5c177a04c29e3c78ce89ac86f1595681cab149b65b97c4e227198  ${archive}" | sha256sum -c -
-          tar -xJf "${archive}" "shellcheck-v${SHELLCHECK_VERSION}/shellcheck"
-          sudo install -m 0755 "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
-
-      - name: Setup Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        with:
-          go-version: "1.25.0"
-          cache: false
-
-      - name: Install actionlint
-        shell: bash
-        run: |
-          set -euo pipefail
-          # v1.7.12 writes ShellCheck stdin before starting it and deadlocks on large run blocks.
-          # Pin the upstream fix until a release includes rhysd/actionlint#651.
-          ACTIONLINT_REVISION="011a6d15e749bb3f2d771eed9c7aa0e7e3e10ee7"
-          export GOBIN="$RUNNER_TEMP/actionlint-bin"
-          go install "github.com/rhysd/actionlint/cmd/actionlint@${ACTIONLINT_REVISION}"
-          version="$("$GOBIN/actionlint" -version)"
-          printf '%s\n' "$version"
-          grep -Fxq "v1.7.13-0.20260419144658-${ACTIONLINT_REVISION:0:12}" <<< "$version"
-          echo "$GOBIN" >> "$GITHUB_PATH"
-
-      - name: Lint workflows
-        run: actionlint
-
-      - name: Audit all workflows with zizmor
-        shell: bash
-        run: |
-          set -euo pipefail
-          mapfile -t workflow_files < <(
-            find .github/workflows -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort
-          )
-          pre-commit run --config "${PRE_COMMIT_CONFIG_PATH:-.pre-commit-config.yaml}" zizmor --files "${workflow_files[@]}"
-
-      - name: Disallow direct inputs interpolation in composite run blocks
-        run: python3 scripts/check-composite-action-input-interpolation.py
-
-      - name: Setup supported Node runtime
-        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: "24.19.0"
-          package-manager-cache: false
-
-      - name: Disallow tracked merge conflict markers
-        run: node scripts/check-no-conflict-markers.mjs
-
-  generated-doc-baselines:
-    if: github.event_name == 'workflow_dispatch'
+    - *id001
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+        vitest-fs-cache: 'true'
+        vitest-worker-cache: 'true'
+        node-compile-cache: 'true'
+    - *id002
+    - *id003
+    - name: Configure Node test resources
+      env:
+        PREDICTED_TEST_SECONDS: ''
+        SHARD_PLAN_CONCURRENCY: ''
+        FROZEN_TARGET: 'false'
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        RUNSON_JOB: 'false'
+      run: |
+        cores="$(nproc)"
+        if [ "$RUNSON_JOB" = "true" ]; then
+          workers=2
+        elif [ "$SHARD_PLAN_CONCURRENCY" != "1" ]; then
+          workers=2
+        elif [ "$cores" -ge 12 ]; then
+          workers=6
+        elif [ "$cores" -ge 6 ]; then
+          workers=4
+        else
+          workers=3
+        fi
+        if [[ "$RUNSON_JOB" != "true" && "$RUNNER_ENVIRONMENT" == "self-hosted" && "$FROZEN_TARGET" != "true" && "$SHARD_PLAN_CONCURRENCY" == "1" ]]; then
+          workers="$(CI_LEGACY_WORKERS="$workers" node --input-type=module <<'JS'
+        import { isConstrainedCiCheckHost } from './scripts/lib/local-check-runtime.mts';
+        import { detectVitestHostInfo, resolveLocalVitestScheduling } from './scripts/lib/vitest-local-scheduling.mts';
+        const host = detectVitestHostInfo();
+        const constrained = isConstrainedCiCheckHost({
+          logicalCpuCount: host.cpuCount,
+          totalMemoryBytes: host.totalMemoryBytes,
+        });
+        console.log(constrained ? process.env.CI_LEGACY_WORKERS : resolveLocalVitestScheduling(process.env, host).maxWorkers);
+        JS
+          )"
+        fi
+        if [ "$workers" -gt "$cores" ]; then
+          workers="$cores"
+        fi
+        echo "detected cores=$cores plan_concurrency=${SHARD_PLAN_CONCURRENCY:-default} predicted_test_seconds=${PREDICTED_TEST_SECONDS:-unknown} -> workers=$workers"
+        echo "OPENCLAW_VITEST_MAX_WORKERS=$workers" >> "$GITHUB_ENV"
+    - name: Run Node test shard
+      env:
+        NODE_OPTIONS: --max-old-space-size=8192
+        OPENCLAW_CI_TEST_RUNTIME_POLICY: dual
+        FROZEN_TARGET: 'false'
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: H4sIAAAAAAAAE5WSy24DIQxF/4V1zOzzFd1HUWUZz2CVMSNwWlVV/73MI1U2rciKBZxzfS0uX46yjjJVd74442rDuzwcnvI8o4bq92feqruenCilW+AXNOOiG1sLDffHQ8hkuQDeLAKhZhXCBLgIvPEnYBKsftM33elvdExosJQ8SuIuYJapoElWEI1cWoUAeb15Di5MLIt1RW56qBKYsPQANWJpYx0ZXUS+FWLIH8o9CT7w0uy4lqckzyzQR9Gu2v6QQmRMXev1R+//gX2blmqbmsckUzS/S36J9v1WVXhVnNmdHU6sJgR3BzyEuu/rD1IF4PviAgAA
+        OPENCLAW_NODE_TEST_GROUPS_JSON: ''
+        OPENCLAW_NODE_TEST_CONFIGS_JSON: 'null'
+        OPENCLAW_NODE_TEST_ENV_JSON: 'null'
+        OPENCLAW_NODE_TEST_INCLUDE_PATTERNS_JSON: 'null'
+        OPENCLAW_NODE_TEST_TARGETS_JSON: 'null'
+        OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '[]'
+        OPENCLAW_VITEST_SHARD_NAME: agentic-commands-doctor-auth
+        OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: '300000'
+        OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        runner="scripts/ci-run-node-test-shard.mts"
+        if [[ ! -f "$runner" ]]; then
+          runner=".ci-workflow/${runner}"
+          [[ -f "$runner" ]]
+        fi
+        time -p node --import tsx "$runner"
+    - name: Record runner memory peak
+      if: always()
+      shell: bash
+      run: |
+        # This includes setup and every child process, not just the test step.
+        if peak_memory="$(cat /sys/fs/cgroup/memory.peak 2>/dev/null)"; then
+          echo "runner cgroup peak memory bytes=$peak_memory"
+        fi
+  candidate_pass_ratchet:
     runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: pass
     steps:
-      - *workflow_sanity_checkout_step
-      - name: Setup Node environment
-        uses: ./.github/actions/setup-node-env
-        with:
-          cache-mode: restore
-          install-bun: "false"
+    - &id004
+      name: Checkout
+      shell: bash
+      env:
+        CHECKOUT_REPO: openclaw/openclaw
+        CHECKOUT_TOKEN: ${{ github.token }}
+        CHECKOUT_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+        WORKFLOW_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      run: |
+        set -euo pipefail
+        python_command=python3
+        if [ "$RUNNER_OS" = "Windows" ]; then
+          python_command=python
+        fi
+        run_owner() {
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            # Later fetch steps reuse workflow code outside the selected/deletable checkout.
+            printf '%s' "$1" > "$RUNNER_TEMP/ci-git-owner.py"
+            exec "$python_command" -I -S "$RUNNER_TEMP/ci-git-owner.py"
+          fi
+          exec "$python_command" -I -S -c "$1"
+        }
+        # Generated from .github/actions/git-owner/owner.py; do not edit here.
+        run_owner 'import base64
+        import builtins
+        import json
+        import os
+        import re
+        import runpy
+        import shutil
+        import signal
+        import subprocess
+        import sys
+        import tempfile
+        import time
+        from types import TracebackType
 
-      - name: Check config docs drift statefile
-        run: pnpm config:docs:check
+        linux = os.environ.get("RUNNER_OS", sys.platform) in ("Linux", "linux")
+        fetch_timeout_seconds = 120 if linux else 90
+        cleanup_seconds = 10
+        cancelled = 0
+        closed = False
+        git = shutil.which("git")
+        checkout_environment = {}
 
-      - name: Check SQLite sessions/transcripts schema baseline drift
-        run: pnpm sqlite:sessions-schema:check
 
-      - name: Check plugin SDK surface budget
-        run: pnpm plugin-sdk:surface:check
+        def cancel(signum, _frame):
+            global cancelled
+            cancelled = signum
+
+
+        for signame in ("SIGINT", "SIGTERM", "SIGHUP", "SIGBREAK"):
+            if hasattr(signal, signame):
+                signal.signal(getattr(signal, signame), cancel)
+
+
+        def check_cancelled():
+            if cancelled:
+                raise SystemExit(128 + cancelled)
+
+
+        # The bootstrap inherits only this Job handle and stdio, joins before spawning Git,
+        # then closes its copy. Even owner death before assignment kills it on that close.
+        windows_api = '\'''\'''\''
+        import ctypes as c
+        from ctypes import wintypes as w
+        import os, subprocess, sys
+        kernel = c.WinDLL("kernel32", use_last_error=True)
+        def checked(value, function, arguments):
+            if not value:
+                raise c.WinError(c.get_last_error())
+            return value
+        def bind(name, result, *arguments):
+            function = getattr(kernel, name)
+            function.restype, function.argtypes = result, arguments
+            function.errcheck = checked
+            return function
+        close_handle = bind("CloseHandle", w.BOOL, w.HANDLE)
+        '\'''\'''\''
+        if os.name == "nt":
+            exec(windows_api)
+
+            class BasicLimits(c.Structure):
+                _fields_ = [
+                    ("PerProcessUserTimeLimit", c.c_int64), ("PerJobUserTimeLimit", c.c_int64),
+                    ("LimitFlags", w.DWORD), ("MinimumWorkingSetSize", c.c_size_t),
+                    ("MaximumWorkingSetSize", c.c_size_t), ("ActiveProcessLimit", w.DWORD),
+                    ("Affinity", c.c_size_t), ("PriorityClass", w.DWORD), ("SchedulingClass", w.DWORD),
+                ]
+
+            class IoCounters(c.Structure):
+                _fields_ = [(name, c.c_uint64) for name in (
+                    "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                    "ReadTransferCount", "WriteTransferCount", "OtherTransferCount",
+                )]
+
+            class ExtendedLimits(c.Structure):
+                _fields_ = [("BasicLimitInformation", BasicLimits), ("IoInfo", IoCounters)] + [
+                    (name, c.c_size_t) for name in (
+                        "ProcessMemoryLimit", "JobMemoryLimit", "PeakProcessMemoryUsed", "PeakJobMemoryUsed",
+                    )
+                ]
+
+            class Accounting(c.Structure):
+                _fields_ = [(name, c.c_int64) for name in (
+                    "TotalUserTime", "TotalKernelTime", "ThisPeriodTotalUserTime", "ThisPeriodTotalKernelTime",
+                )] + [(name, w.DWORD) for name in (
+                    "TotalPageFaultCount", "TotalProcesses", "ActiveProcesses", "TotalTerminatedProcesses",
+                )]
+
+            if (c.sizeof(BasicLimits), c.sizeof(ExtendedLimits), c.sizeof(Accounting), Accounting.ActiveProcesses.offset) != (64, 144, 48, 40):
+                raise RuntimeError("Unsupported Windows Job structure layout")
+
+            create_job = bind("CreateJobObjectW", w.HANDLE, c.c_void_p, w.LPCWSTR)
+            set_job = bind("SetInformationJobObject", w.BOOL, w.HANDLE, c.c_int, c.c_void_p, w.DWORD)
+            query_job = bind("QueryInformationJobObject", w.BOOL, w.HANDLE, c.c_int, c.c_void_p, w.DWORD, c.c_void_p)
+            terminate_job = bind("TerminateJobObject", w.BOOL, w.HANDLE, w.UINT)
+            open_process = bind("OpenProcess", w.HANDLE, w.DWORD, w.BOOL, w.DWORD)
+            in_job = bind("IsProcessInJob", w.BOOL, w.HANDLE, w.HANDLE, c.POINTER(w.BOOL))
+            wait_process = kernel.WaitForSingleObject
+            wait_process.argtypes, wait_process.restype = [w.HANDLE, w.DWORD], w.DWORD
+
+            def job_members(job, deadline):
+                # PIDs are discovery hints only. Hold query/synchronize handles and verify
+                # job membership before using them; never signal a process found by PID.
+                before = Accounting()
+                query_job(job, 1, c.byref(before), c.sizeof(before), None)
+                capacity = max(16, before.ActiveProcesses + 1)
+                while True:
+                    if time.monotonic() >= deadline or capacity > 65536:
+                        raise RuntimeError("Job member census did not complete")
+                    class Members(c.Structure):
+                        _fields_ = [("assigned", w.DWORD), ("count", w.DWORD),
+                                    ("pids", c.c_size_t * capacity)]
+                    members = Members()
+                    try:
+                        query_job(job, 3, c.byref(members), c.sizeof(members), None)
+                        break
+                    except OSError as error:
+                        if error.winerror != 234:  # ERROR_MORE_DATA: retry the census, not cleanup.
+                            raise
+                        capacity *= 2
+                handles = []
+                try:
+                    for pid in members.pids[:members.count]:
+                        handle = open_process(0x00100000 | 0x1000, False, pid)
+                        handles.append(handle)
+                        member = w.BOOL()
+                        in_job(handle, job, c.byref(member))
+                        if not member.value:
+                            raise RuntimeError("Job member identity changed during census")
+                    after = Accounting()
+                    query_job(job, 1, c.byref(after), c.sizeof(after), None)
+                    if after.TotalProcesses != before.TotalProcesses:
+                        raise RuntimeError("Job membership grew during census")
+                    return handles, after.TotalProcesses
+                except BaseException:
+                    for handle in handles:
+                        close_handle(handle)
+                    raise
+            bootstrap = windows_api + '\'''\'''\''
+        job = int(sys.argv[1])
+        assign = bind("AssignProcessToJobObject", w.BOOL, w.HANDLE, w.HANDLE)
+        current = bind("GetCurrentProcess", w.HANDLE)
+        assign(job, current())
+        close_handle(job)
+        sys.exit(subprocess.call(sys.argv[2:], stdin=subprocess.DEVNULL))
+        '\'''\'''\''
+
+
+        def group_signal(pgid, signum, deadline):
+            try:
+                os.killpg(pgid, signum)
+            except ProcessLookupError:
+                return False
+            except PermissionError:
+                # Darwin can refuse signals while members are exiting but not yet zombies.
+                # Keep those members pending until drain proves termination; never accept a live denial.
+                states = group_states(pgid, deadline)
+                if any(not state.startswith("Z") and not (sys.platform == "darwin" and "E" in state)
+                       for state in states):
+                    raise
+                return any(not state.startswith("Z") for state in states)
+            return True
+
+
+        def group_alive(pgid, deadline):
+            return any(not state.startswith("Z") for state in group_states(pgid, deadline))
+
+
+        def group_states(pgid, deadline):
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return []
+            except PermissionError:
+                pass  # EPERM can mean zombie-only; the census must still prove extinction.
+            # Darwin -g selects a group; procps selects its session (a superset because
+            # run_git starts a new session). Pin Darwin'\''s standard, not legacy, -g syntax.
+            try:
+                result = subprocess.run(
+                    ["ps", "-o", "pgid=,stat=", "-g", str(pgid)], stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    env={**os.environ, "COMMAND_MODE": "unix2003"},
+                    timeout=max(0.001, deadline - time.monotonic()),
+                )
+            except subprocess.TimeoutExpired as error:
+                print((error.stderr or b"").decode(errors="replace"), end="", file=sys.stderr)
+                raise
+            if result.stderr:
+                print(result.stderr, end="", file=sys.stderr)
+            states = []
+            if result.returncode != 1 or result.stdout or result.stderr:
+                result.check_returncode()
+                # Validate the complete census before ignoring zombies; Darwin ps can
+                # report sysctl errors on stderr with exit 0. Neither permits reuse.
+                if result.stderr or not re.fullmatch(
+                    r"(?:[ \t]*[1-9][0-9]*[ \t]+[RSDTtXZxKWPIU?][<+NLlsEVWX]*[ \t]*\n)+", result.stdout
+                ):
+                    raise RuntimeError("Invalid process group census")
+                states = [state for group, state in (line.split() for line in result.stdout.splitlines())
+                          if int(group) == pgid]
+            if states:
+                return states
+            # Empty selection (exit 1), or a session with only other groups, can race
+            # extinction. Require native ESRCH; a bare status 1 or EPERM proves nothing.
+            try:
+                os.killpg(pgid, 0)
+            except ProcessLookupError:
+                return []
+            raise RuntimeError("Process group census missed a present group")
+
+
+        def drain(child, job):
+            deadline = time.monotonic() + cleanup_seconds
+            if os.name == "nt":
+                # Stop/join even a pre-assignment bootstrap before terminating the Job:
+                # an empty Job alone cannot prove that no Git will start afterwards.
+                child.kill()
+                child.wait(timeout=max(0.001, deadline - time.monotonic()))
+                handles = []
+                terminated = False
+                try:
+                    handles, total = job_members(job, deadline)
+                    terminate_job(job, 1)
+                    terminated = True
+                    accounting = Accounting()
+                    while True:
+                        settled = True
+                        for handle in handles:
+                            status = wait_process(handle, 0)
+                            if status == 258:  # WAIT_TIMEOUT: accounting can reach zero first.
+                                settled = False
+                            elif status != 0:
+                                raise c.WinError(c.get_last_error())
+                        query_job(job, 1, c.byref(accounting), c.sizeof(accounting), None)
+                        if accounting.TotalProcesses != total:
+                            raise RuntimeError("Job membership grew during cleanup")
+                        if accounting.ActiveProcesses == 0 and settled:
+                            return
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Job cleanup did not complete")
+                        time.sleep(0.05)
+                finally:
+                    try:
+                        if not terminated:
+                            terminate_job(job, 1)
+                    finally:
+                        for handle in handles:
+                            close_handle(handle)
+            else:
+                # The group remains ours after leader exit. Reserve half the existing
+                # cleanup allowance for KILL and extinction verification after TERM.
+                try:
+                    group_signal(child.pid, signal.SIGTERM, deadline)
+                    kill_at = deadline - cleanup_seconds / 2
+                    while True:
+                        child.poll()
+                        if not group_alive(child.pid, deadline):
+                            child.wait(timeout=max(0.001, deadline - time.monotonic()))
+                            return
+                        if time.monotonic() >= kill_at:
+                            group_signal(child.pid, signal.SIGKILL, deadline)
+                        if time.monotonic() >= deadline:
+                            raise RuntimeError("Process group cleanup did not complete")
+                        time.sleep(0.05)
+                except Exception:
+                    group_signal(child.pid, signal.SIGKILL, deadline)
+                    # KILL queues termination; a leader wait cannot join descendants.
+                    # Count zombies conservatively here, but never reset the allowance or retry.
+                    while time.monotonic() < deadline:
+                        child.poll()
+                        if not group_signal(child.pid, 0, deadline):
+                            break
+                        time.sleep(0.05)
+                    child.wait(timeout=max(0.001, deadline - time.monotonic()))
+                    raise
+
+
+        class FetchTimeout(Exception):
+            pass
+
+
+        class GitFailure(Exception):
+            def __init__(self, code):
+                self.code = code
+
+
+        def git_lock_files(directory):
+            git_dir = os.path.join(os.path.realpath(directory), ".git")
+            if not os.path.lexists(git_dir):
+                return set()
+            if not os.path.isdir(git_dir) or os.path.realpath(git_dir) != git_dir:
+                raise RuntimeError("Checkout Git directory is not physical")
+            def scan_error(error):
+                raise error
+            locks = set()
+            for root, directories, files in os.walk(git_dir, onerror=scan_error):
+                directories[:] = [name for name in directories
+                                  if os.path.realpath(os.path.join(root, name)) == os.path.join(root, name)]
+                locks.update(os.path.join(root, name) for name in files if name.endswith(".lock"))
+            return locks
+
+
+        def git_auth_environment(remote, token):
+            # Git'\''s promisor fetch inherits this process-only config from checkout.
+            # Reject redirects: http.<url> matching does not re-scope redirected requests.
+            count = int(os.environ.get("GIT_CONFIG_COUNT", "0"))
+            if count < 0:
+                raise ValueError("Invalid Git environment configuration count")
+            header = f"http.{remote}.extraheader"
+            authorization = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+            settings = [(header, ""), (header, f"AUTHORIZATION: basic {authorization}"),
+                        (f"http.{remote}.followRedirects", "false")]
+            environment = {"GIT_CONFIG_COUNT": str(count + len(settings)), "GIT_TERMINAL_PROMPT": "0"}
+            for index, (key, value) in enumerate(settings, count):
+                environment[f"GIT_CONFIG_KEY_{index}"] = key
+                environment[f"GIT_CONFIG_VALUE_{index}"] = value
+            return environment
+
+
+        def run_git(directory, *arguments, timeout=None, stdout=None, stderr=None, env=None,
+                    reclaim_locks=False):
+            global closed
+            if closed:
+                raise RuntimeError("Git owner is closed")
+            check_cancelled()
+            if git is None:
+                raise RuntimeError("Git unavailable")
+            # Process ownership alone does not grant metadata ownership: generic callers
+            # may use linked worktrees. Only exclusive checkout fetches reclaim locks.
+            previous_locks = git_lock_files(directory) if reclaim_locks else None
+            command = [git, "-C", directory, *arguments]
+            job = None
+            child = None
+            timed_out = False
+            deadline = time.monotonic() + timeout if timeout is not None else None
+            try:
+                environment = ({**os.environ, **checkout_environment, **(env or {})}
+                               if checkout_environment or env is not None else None)
+                options = {"stdin": subprocess.DEVNULL, "stdout": stdout, "stderr": stderr,
+                           "env": environment}
+                if os.name == "nt":
+                    job = create_job(None, None)
+                    limits = ExtendedLimits()
+                    limits.BasicLimitInformation.LimitFlags = 0x2000  # KILL_ON_JOB_CLOSE; no breakaway.
+                    set_job(job, 9, c.byref(limits), c.sizeof(limits))
+                    os.set_handle_inheritable(job, True)
+                    startup = subprocess.STARTUPINFO()
+                    startup.lpAttributeList = {"handle_list": [job]}
+                    options.update(startupinfo=startup, close_fds=True)
+                    # The selected checkout must not inject Python startup code into its owner.
+                    command = [sys.executable, "-I", "-S", "-c", bootstrap, str(job), *command]
+                else:
+                    options["start_new_session"] = True
+                # Signal handlers only latch cancellation, so Popen cannot lose ownership
+                # between process creation and saving its handle/group for cleanup.
+                child = subprocess.Popen(command, **options)
+                if job is not None:
+                    os.set_handle_inheritable(job, False)
+                while child.poll() is None and not cancelled:
+                    if deadline is not None and time.monotonic() >= deadline:
+                        timed_out = True
+                        raise FetchTimeout()
+                    time.sleep(0.05)
+            finally:
+                # Failed inspection/cleanup permanently fences this policy process. Only
+                # verified extinction permits another command, even after a caught error.
+                closed = True
+                try:
+                    if child is not None:
+                        drain(child, job)
+                        if previous_locks is not None and (timed_out or cancelled or child.returncode):
+                            # Forced termination skips Git'\''s lockfile cleanup. This checkout is exclusive;
+                            # reclaim only newly created locks after tree extinction, never existing locks.
+                            for lock in sorted(git_lock_files(directory) - previous_locks):
+                                os.unlink(lock)
+                finally:
+                    if job is not None:
+                        close_handle(job)
+                closed = False
+                # Run even while a timeout is unwinding: cancellation received during
+                # draining outranks it, but failed cleanup above still outranks both.
+                check_cancelled()
+            if child.returncode:
+                raise GitFailure(child.returncode if child.returncode > 0 else 128 - child.returncode)
+
+
+        def backoff(seconds):
+            retry_at = time.monotonic() + seconds
+            while time.monotonic() < retry_at:
+                check_cancelled()
+                time.sleep(0.05)
+
+
+        def fetch(directory, *refs, prune=False, max_attempts=3, depth=1,
+                  blobless=False, retry_failures=False, retry_codes=()):
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    run_git(directory, "-c", "protocol.version=2", "fetch", "--no-tags",
+                            *(["--prune"] if prune else []), "--no-recurse-submodules", f"--depth={depth}",
+                            *(["--filter=blob:none"] if blobless else []), "origin", *refs,
+                            timeout=fetch_timeout_seconds, reclaim_locks=True)
+                    return
+                except (FetchTimeout, GitFailure) as error:
+                    check_cancelled()
+                    retryable = isinstance(error, FetchTimeout) or retry_failures or error.code in retry_codes
+                    if not retryable or attempt == max_attempts:
+                        raise
+                    print(f"::warning::checkout fetch failed on attempt {attempt}; retrying", flush=True)
+                    backoff(5)
+
+
+        def git_output(directory, *arguments, timeout=None, env=None):
+            with tempfile.TemporaryFile() as output:
+                run_git(directory, *arguments, timeout=timeout, env=env, stdout=output)
+                output.seek(0)
+                return output.read().decode("utf-8", errors="surrogateescape")
+
+
+        def resolve_ref(ref):
+            return git_output(workspace, "rev-parse", ref).strip()
+
+
+        def checkout_selected_ref():
+            ref = os.environ["CHECKOUT_REF"]
+            fallback = os.environ["CHECKOUT_FALLBACK_REF"]
+            manual = os.environ["GITHUB_EVENT_NAME"] == "workflow_dispatch"
+            requested = ref if kind == "preflight" and re.fullmatch("[0-9a-f]{40}", ref) else None
+            # Prefer the event ref for an exact manual SHA, but detect a ref that moved in the queue.
+            if requested and manual and ref == fallback and os.environ.get("CHECKOUT_EVENT_REF"):
+                ref = os.environ["CHECKOUT_EVENT_REF"]
+
+            def fetch_ref(value):
+                fetch(workspace, f"+{value}:refs/remotes/origin/checkout", prune=True,
+                      depth=1 if kind == "preflight" else 2, retry_codes=(124, 137))
+
+            try:
+                fetch_ref(ref)
+            except GitFailure as error:
+                if error.code in (124, 137) or not manual or os.environ["CHECKOUT_REF"] == fallback:
+                    raise
+                print("::warning::workflow_dispatch target_ref is unavailable; falling back to head SHA", flush=True)
+                fetch_ref(fallback)
+            if requested:
+                resolved = resolve_ref("refs/remotes/origin/checkout")
+                if resolved != requested and ref != requested:
+                    print("::notice::checkout ref moved; fetching requested SHA", flush=True)
+                    fetch_ref(requested)
+                    resolved = resolve_ref("refs/remotes/origin/checkout")
+                if resolved != requested:
+                    print("::error::checkout ref did not resolve to the requested SHA", file=sys.stderr)
+                    raise GitFailure(1)
+            if kind == "preflight":
+                # Diff-base callers need parent commits/trees, not their blobs.
+                try:
+                    fetch(workspace, resolve_ref("refs/remotes/origin/checkout"), prune=True,
+                          depth=2, blobless=True, retry_failures=True)
+                except (FetchTimeout, GitFailure):
+                    raise GitFailure(1)
+            run_git(workspace, "checkout", "--detach", "refs/remotes/origin/checkout")
+
+
+        def checkout_harness(sha):
+            action = ".github/actions/setup-node-env/action.yml"
+            node_setup_scripts = ("scripts/lib/pnpm-lockfile-documents.mjs",)
+            evidence_scripts = ("scripts/ios-screenshot-evidence.mjs", "scripts/lib/direct-run.mjs")
+            platform_scripts = ("scripts/lib/swift-toolchain.sh",)
+            upgrade_scripts = ("scripts/lib/release-upgrade-baseline.mjs", "scripts/lib/release-version.mjs")
+            if kind == "linux-node" and not os.path.isfile(os.path.join(workspace, action)):
+                raise GitFailure(1)
+            harness = os.path.join(workspace, ".ci-harness")
+            # This owner creates the harness, not candidate source. Keep strict source-status
+            # checks useful without hiding tracked edits or similarly named nested paths.
+            exclude = os.path.join(workspace, git_output(workspace, "rev-parse", "--git-path", "info/exclude").strip())
+            os.makedirs(os.path.dirname(exclude), exist_ok=True)
+            with open(exclude, "a+b") as output:
+                output.seek(0)
+                if output.read().splitlines()[-1:] != [b"/.ci-harness/"]:
+                    output.write(b"\n/.ci-harness/\n")
+            os.makedirs(harness, exist_ok=True)
+            if sha == os.environ["WORKFLOW_SHA"]:
+                # Export the workflow revision from the freshly populated index, replacing
+                # retained harness files without updating the index or trusting later edits.
+                pathspecs = [".github/actions", *node_setup_scripts]
+                if kind in ("platform", "linux-node"):
+                    pathspecs += evidence_scripts
+                elif kind == "preflight":
+                    pathspecs += ["scripts/lib/release-context.mjs", "scripts/lib/release-version.mjs"]
+                if kind == "platform":
+                    pathspecs += platform_scripts
+                if kind == "linux-node":
+                    pathspecs += upgrade_scripts
+                paths = git_output(workspace, "ls-files", "-z", "--", *pathspecs).split("\0")[:-1]
+                run_git(workspace, "checkout-index", "--force", f"--prefix={harness}/", "--", *paths)
+            else:
+                run_git(harness, "init", harness)
+                run_git(harness, "remote", "add", "origin", remote)
+                sparse_paths = ["/.github/actions/", *(f"/{path}" for path in node_setup_scripts)]
+                if kind in ("platform", "linux-node"):
+                    sparse_paths += [f"/{path}" for path in evidence_scripts]
+                if kind == "platform":
+                    sparse_paths += [f"/{path}" for path in platform_scripts]
+                if kind == "linux-node":
+                    sparse_paths += [f"/{path}" for path in upgrade_scripts]
+                # Rooted non-cone patterns keep the kind-owned workflow files exact.
+                # Sparse first, then blob-less avoids downloading a second repository snapshot.
+                run_git(harness, "sparse-checkout", "set", "--no-cone", *sparse_paths)
+                fetch(harness, f"+{os.environ['\''WORKFLOW_SHA'\'']}:refs/remotes/origin/ci-harness",
+                      max_attempts=1, blobless=True)
+                # Checkout now materializes the sparse blobs over the network, so it carries the
+                # fetch deadline instead of running unbounded like a local checkout.
+                run_git(harness, "checkout", "--force", "--detach", os.environ["WORKFLOW_SHA"],
+                        timeout=fetch_timeout_seconds)
+            if not os.path.isfile(os.path.join(harness, action)):
+                raise GitFailure(1)
+            check_cancelled()
+
+
+        def checkout():
+            check_cancelled()
+            prerequisites = json.loads(os.environ.get("CHECKOUT_GIT_COMMITS_JSON", "null")) if kind == "linux-node" else None
+            if prerequisites is None:
+                prerequisites = []
+            if not isinstance(prerequisites, list) or any(
+                not isinstance(commit, str) or not re.fullmatch("[0-9a-f]{40}", commit)
+                for commit in prerequisites
+            ):
+                raise ValueError("Invalid immutable test prerequisite commits")
+            if reset:
+                os.makedirs(workspace, exist_ok=True)
+                # Every earlier Git group has been drained before deleting its workspace.
+                subprocess.run(["find", workspace, "-mindepth", "1", "-maxdepth", "1",
+                                "-exec", "rm", "-rf", "{}", "+"], check=True)
+            run_git(workspace, "init", workspace)
+            if kind in ("linux-node", "android"):
+                run_git(workspace, "config", "--global", "--add", "safe.directory", workspace)
+            run_git(workspace, "config", "gc.auto", "0")
+            run_git(workspace, "remote", "add", "origin", remote)
+            if kind in ("preflight", "manual"):
+                checkout_selected_ref()
+                if kind == "preflight" and resolve_ref("HEAD") == os.environ["WORKFLOW_SHA"]:
+                    checkout_harness(os.environ["WORKFLOW_SHA"])
+                return
+            target = "refs/remotes/origin/ci-target" if kind in ("linux-node", "android") else "refs/remotes/origin/checkout"
+            sha = "refs/heads/main" if kind == "clawhub" else os.environ["CHECKOUT_SHA"]
+            refs = [f"+{sha}:{target}"]
+            base = os.environ.get("CHECKOUT_BASE_SHA") if kind == "linux-node" else None
+            if base:
+                refs.append(f"+{base}:refs/remotes/origin/ci-ratchet-base")
+            # Fetch full reader objects with the authenticated checkout, before its
+            # credential scope ends and test workers create historical worktrees.
+            refs.extend(prerequisites)
+            fetch(workspace, *refs, prune=True, max_attempts=1 if reset else 3,
+                  retry_codes=(124, 137) if kind == "skills" else ())
+            run_git(workspace, "checkout", *(["--force"] if reset else []), "--detach",
+                    sha if kind in ("linux-node", "android") else target)
+            if kind == "android":
+                if not os.access(os.path.join(workspace, "apps/android/gradlew"), os.X_OK):
+                    raise GitFailure(1)
+                return
+            if kind in ("clawhub", "skills"):
+                return
+            checkout_harness(sha)
+
+
+        def main():
+            global kind, workspace, remote, reset
+            if len(sys.argv) > 1:
+                if sys.argv[1] == "--policy":
+                    # The caller supplies trusted policy bytes; imports share this exact
+                    # owner and its terminal lifecycle state, never a second supervisor.
+                    sys.modules["ci_git_owner"] = sys.modules[__name__]
+                    try:
+                        if sys.argv[2] == "-":
+                            exec(compile(sys.stdin.read(), "<git-policy>", "exec"), {"__name__": "__main__"})
+                        else:
+                            runpy.run_path(sys.argv[2], run_name="__main__")
+                    finally:
+                        if closed:
+                            raise RuntimeError("Git owner is closed")
+                        check_cancelled()
+                    return
+                if sys.argv[1] not in ("--git", "--checkout-git"):
+                    raise ValueError("Unknown Git owner command")
+                run_git(os.getcwd(), *sys.argv[3:], timeout=float(sys.argv[2]) or None,
+                        reclaim_locks=sys.argv[1] == "--checkout-git")
+                return
+            if git is None:
+                raise RuntimeError("Git unavailable")
+            kind = os.environ.get("CHECKOUT_KIND", "linux-node" if linux else "platform")
+            if kind == "prepare":
+                raise SystemExit(0)
+            workspace = os.environ["GITHUB_WORKSPACE"]
+            remote = f"https://github.com/{os.environ['\''CHECKOUT_REPO'\'']}.git"
+            # The workflow'\''s token is repository-bound; never lend it to a sibling checkout.
+            token = os.environ.pop("CHECKOUT_TOKEN", "")
+            if token and os.environ["CHECKOUT_REPO"] == os.environ.get("GITHUB_REPOSITORY"):
+                checkout_environment.update(git_auth_environment(remote, token))
+            del token
+            if kind == "clawhub":
+                workspace = os.path.join(workspace, "clawhub-source")
+            reset = kind in ("linux-node", "android", "clawhub")
+            label = "ClawHub checkout" if kind == "clawhub" else "checkout"
+            started_at = time.monotonic()
+            try:
+                for attempt in range(1, 6 if reset else 2):
+                    try:
+                        checkout()
+                        if reset:
+                            print(f"{label} attempt {attempt}/5 succeeded", flush=True)
+                        if kind == "clawhub":
+                            print(f"{label} completed in {int(time.monotonic() - started_at)}s", flush=True)
+                        raise SystemExit(0)
+                    except (FetchTimeout, GitFailure) as error:
+                        # Only command failures are retryable. Ownership/inspection errors
+                        # escape to the fail-closed boundary below, never workspace deletion.
+                        check_cancelled()
+                        if not reset:
+                            raise SystemExit(124 if isinstance(error, FetchTimeout) else error.code)
+                        print(f"::warning::{label} attempt {attempt}/5 failed", flush=True)
+                        backoff(attempt * 5)
+                print(f"{label} failed after 5 attempts", file=sys.stderr)
+                raise SystemExit(1)
+            finally:
+                checkout_environment.clear()
+
+
+        def terminal_diagnostic(error, owner_code):
+            # Code identity, not a filename supplied by policy, proves source provenance.
+            codes = {id(owner_code): owner_code}
+            pending = [owner_code]
+            while pending:
+                for value in pending.pop().co_consts:
+                    if type(value) is type(owner_code):
+                        codes[id(value)] = value
+                        pending.append(value)
+            names = {value: value.__name__ for value in vars(builtins).values()
+                     if isinstance(value, type) and issubclass(value, BaseException)}
+            names.update({FetchTimeout: "FetchTimeout", GitFailure: "GitFailure"})
+            records, seen, via = [], set(), "terminal"
+            while error is not None and id(error) not in seen and len(records) < 4:
+                seen.add(id(error))
+                record = {"type": names.get(type(error), "unknown"), "via": via}
+                for field in ("errno", "winerror"):
+                    value = getattr(error, field, None)
+                    if type(value) is int and -(2 ** 31) <= value < 2 ** 32:
+                        record[field] = value
+                frames, trace = [], error.__traceback__
+                # Bound traversal as well as output; malformed metadata cannot stall exit.
+                for _ in range(256):
+                    if trace is None:
+                        break
+                    if type(trace) is not TracebackType:
+                        raise TypeError
+                    frame, code = trace.tb_frame, trace.tb_frame.f_code
+                    if frame.f_globals is globals() and id(code) in codes and 0 < trace.tb_lineno < 2 ** 31:
+                        frames.append({"function": code.co_name[:64], "line": trace.tb_lineno})
+                        frames = frames[-6:]
+                    trace = trace.tb_next
+                record["owner_frames"] = frames
+                if trace is not None:
+                    record["traceback_truncated"] = 1
+                records.append(record)
+                cause = error.__cause__
+                error, via = (cause, "cause") if cause is not None else (error.__context__, "context")
+            return records
+
+
+        if __name__ == "__main__":
+            exit_code, terminal_error = 0, None
+            try:
+                main()
+            except FetchTimeout:
+                exit_code = 124
+            except GitFailure as error:
+                exit_code = error.code
+            except Exception as error:
+                exit_code, terminal_error = 125, error
+            # Leave the handler before diagnostics or exit can raise: older Python'\''s
+            # implicit exception chaining can loop on an already-cyclic context.
+            if terminal_error is not None:
+                name, diagnostic = "unknown", "unavailable"
+                try:
+                    records = terminal_diagnostic(terminal_error, sys._getframe().f_code)
+                    diagnostic = json.dumps(records, separators=(",", ":"))
+                    name = records[0]["type"]
+                except BaseException:
+                    pass  # Diagnostics must never replace the authoritative terminal exit.
+                try:
+                    print(f"::error::Git ownership/setup failed ({name}); refusing reuse or retry", file=sys.stderr)
+                    print(f"[ci-git-owner] diagnostic={diagnostic}", file=sys.stderr)
+                except BaseException:
+                    pass
+            raise SystemExit(exit_code)
+        '
+        # End generated CI Git owner.
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+    - *id002
+    - *id003
+    - name: Run production ratchets
+      env:
+        RATCHET_PR_HEAD_SHA: ''
+      shell: bash
+      run: |
+        cat > "$RUNNER_TEMP/pilot-ratchet.sh" <<'PRODUCTION_RATCHET_9e82b8727f1722f5'
+        set -euo pipefail
+        has_package_script() {
+          node -e '
+            const scripts = require("./package.json").scripts ?? {};
+            process.exit(Object.hasOwn(scripts, process.argv[1]) ? 0 : 1);
+          ' "$1"
+        }
+        for required_script in check:max-lines-ratchet check:assertion-safety config:docs:check plugins:inventory:check; do
+          if ! has_package_script "$required_script"; then
+            echo "Current CI targets must provide ${required_script}." >&2
+            exit 1
+          fi
+        done
+        base_ref="${RATCHET_BASE_REF:-refs/remotes/origin/ci-ratchet-base}"
+        if ! git cat-file -e "${base_ref}^{commit}" 2>/dev/null; then
+          echo "Prepared ratchet base ${base_ref} is unavailable." >&2
+          exit 1
+        fi
+        if [[ -n "${RATCHET_PR_HEAD_SHA:-}" ]]; then
+          mapfile -t merge_parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          if [[ "${#merge_parents[@]}" != "2" || "${merge_parents[1]:-}" != "$RATCHET_PR_HEAD_SHA" ]]; then
+            echo "Pull request checkout is not the expected two-parent merge tree." >&2
+            exit 1
+          fi
+          prepared_base="$(git rev-parse "$base_ref")"
+          if [[ "${merge_parents[0]}" != "$prepared_base" ]]; then
+            echo "Pull request merge base does not match the prepared preflight base." >&2
+            exit 1
+          fi
+        fi
+        pnpm check:max-lines-ratchet --base "$base_ref"
+        if [[ -n "${RATCHET_PR_HEAD_SHA:-}" ]]; then
+          pnpm check:line-cap-ratchet --base "$base_ref"
+        fi
+        pnpm check:assertion-safety --base "$base_ref"
+        pnpm config:docs:check
+        pnpm plugins:inventory:check
+        PRODUCTION_RATCHET_9e82b8727f1722f5
+        set +e
+        bash "$RUNNER_TEMP/pilot-ratchet.sh" 2>&1 | tee "$RUNNER_TEMP/pilot-ratchet-output.txt"
+        result=${PIPESTATUS[0]}
+        set -e
+        if grep -Fq 'Uncommented type assertions exceed the grandfathered per-file baseline:' "$RUNNER_TEMP/pilot-ratchet-output.txt" && grep -Fq 'src/ci-ratchet-economics-probe.ts' "$RUNNER_TEMP/pilot-ratchet-output.txt"; then
+          echo 'probe_failure=true' >> "$GITHUB_OUTPUT"
+        else
+          echo 'probe_failure=false' >> "$GITHUB_OUTPUT"
+        fi
+        rm -f "$RUNNER_TEMP/pilot-ratchet-output.txt"
+        exit "$result"
+      id: ratchet
+    outputs:
+      probe_failure: ${{ steps.ratchet.outputs.probe_failure }}
+  candidate_pass_corpus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: pass
+    steps:
+    - *id004
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+        restore-test-caches: 'false'
+    - *id002
+    - *id003
+    - name: Run production startup-corpus task
+      env:
+        OPENCLAW_TEST_PROJECTS_PARALLEL: '3'
+        PROTOCOL_SINCE_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+        RATCHET_PR_HEAD_SHA: ''
+        TASK: startup-corpus
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "$TASK" in
+          bundled-protocol)
+            pnpm test:bundled
+            test "$(git rev-parse refs/remotes/origin/ci-ratchet-base^{commit})" = "$PROTOCOL_SINCE_BASE_SHA"
+            pnpm protocol:check
+            ;;
+          contracts-plugins-ci-routing)
+            pnpm test:contracts:plugins
+            pnpm test src/commands/status.scan-result.test.ts src/scripts/ci-changed-scope*.test.ts test/scripts/changed-lanes.test.ts test/scripts/changed-path-facts.test.ts test/scripts/ci-changed-node-test-plan.test.ts test/scripts/ci-docker-seed-plan.test.ts test/scripts/ci-run-node-test-shard.test.ts test/scripts/ci-hourly.test.ts test/scripts/ci-workflow-guards.test.ts test/scripts/ci-workflow-planning.test.ts test/scripts/ci-workflow-evidence.test.ts test/scripts/run-vitest.test.ts test/scripts/test-projects.test.ts
+            ;;
+          ci-routing)
+            pnpm test src/commands/status.scan-result.test.ts src/scripts/ci-changed-scope*.test.ts test/scripts/changed-lanes.test.ts test/scripts/changed-path-facts.test.ts test/scripts/ci-changed-node-test-plan.test.ts test/scripts/ci-docker-seed-plan.test.ts test/scripts/ci-run-node-test-shard.test.ts test/scripts/ci-hourly.test.ts test/scripts/ci-workflow-guards.test.ts test/scripts/ci-workflow-planning.test.ts test/scripts/ci-workflow-evidence.test.ts test/scripts/run-vitest.test.ts test/scripts/test-projects.test.ts
+            ;;
+          coercion-helpers)
+            pnpm check:coercion-helpers
+            ;;
+          startup-corpus)
+            # The following step owns startup coverage; policy runs in the dedicated ratchet job.
+            ;;
+          release-lint-core-*)
+            stripe="${TASK#release-lint-core-}"
+            node --import tsx scripts/run-oxlint-shards.mts \
+              --only=core --split-core --core-stripe="${stripe}/5" --threads=1
+            ;;
+          release-lint-extensions)
+            node --import tsx scripts/run-oxlint-shards.mts --only=extensions --threads=1
+            ;;
+          bun-launcher)
+            OPENCLAW_E2E_SKIP_BUILD=1 OPENCLAW_TEST_BUN_LAUNCHER=1 pnpm test test/openclaw-launcher.e2e.test.ts
+            if [[ -f src/plugins/plugin-module-generation.test.ts ]]; then
+              OPENCLAW_TEST_BUN_LAUNCHER=1 pnpm test src/plugins/plugin-module-generation.test.ts --testNamePattern Bun
+            elif [[ "false" != "true" ]]; then
+              echo "Current CI targets must provide src/plugins/plugin-module-generation.test.ts." >&2
+              exit 1
+            fi
+            ;;
+          *)
+            echo "Unsupported checks-fast task: $TASK" >&2
+            exit 1
+            ;;
+        esac
+    - name: Check startup corpus
+      env:
+        OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON: ''
+      run: |
+        set -euo pipefail
+        # Prepare once before Vitest workers consume the runtime.
+        pnpm build qaRuntime
+        run_startup_corpus() {
+          if [[ "false" == "true" ]]; then
+            node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts "$@"
+          else
+            node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts \
+              --reporter verbose --reporter github-actions --reporter ./scripts/lib/vitest-resource-reporter.mts "$@"
+          fi
+        }
+        if [[ -n "${OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON:-}" ]]; then
+          # Use the manifest's inventory for both Node receipts and this fallback.
+          startup_files_text="$(node -p 'JSON.parse(process.env.OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON).join(" ")')"
+          read -r -a startup_files <<< "$startup_files_text"
+          startup_workers="$(node -p 'Math.min(4, require("node:os").availableParallelism())')"
+          run_startup_corpus --maxWorkers="$startup_workers" "${startup_files[@]}"
+          exit 0
+        elif [[ -f test/vitest/vitest.startup-corpus-paths.mjs ]]; then
+          # Runner labels can advertise more CPUs than this process can use.
+          startup_workers="$(node -p 'Math.min(4, require("node:os").availableParallelism())')"
+          run_startup_corpus --maxWorkers="$startup_workers" src/config/config-startup-corpus.test.ts \
+            src/config/state-startup-corpus*.test.ts
+          exit 0
+        elif [[ "false" != "true" ]]; then
+          echo "Current CI targets must provide the startup corpus file inventory." >&2
+          exit 1
+        fi
+        # Frozen targets before the file split retain their complete legacy matrix.
+        cores="$(node -p 'require("node:os").availableParallelism()')"
+        # Worker compilation also uses CPU: reserve four cores per invocation.
+        # The 4-vCPU ratchets label can deliver only two usable CPUs.
+        concurrency=$((cores / 4))
+        if (( concurrency < 1 )); then concurrency=1; fi
+        if (( concurrency > 5 )); then concurrency=5; fi
+        echo "[corpus:resources] logicalCpuCount=$cores admitted runs=$concurrency"
+        pids=()
+        labels=()
+        result=0
+        wait_corpus_batch() {
+          for index in "${!pids[@]}"; do
+            if ! wait "${pids[$index]}"; then
+              echo "::error::${labels[$index]} failed"
+              result=1
+            fi
+          done
+          pids=()
+          labels=()
+        }
+        for shard in {0..4}; do
+          if (( shard == 0 )); then
+            run_startup_corpus src/config/config-startup-corpus.test.ts &
+            labels+=("config corpus")
+          else
+            OPENCLAW_TEST_STARTUP_CORPUS_SHARD="${shard}/4" \
+              run_startup_corpus src/config/state-startup-corpus.test.ts &
+            labels+=("state corpus ${shard}/4")
+          fi
+          pids+=("$!")
+          if (( ${#pids[@]} == concurrency )); then
+            wait_corpus_batch
+          fi
+        done
+        wait_corpus_batch
+        exit "$result"
+  candidate_pass_shard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: pass
+    steps:
+    - *id004
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+        vitest-fs-cache: 'true'
+        vitest-worker-cache: 'true'
+        node-compile-cache: 'true'
+    - *id002
+    - *id003
+    - name: Configure Node test resources
+      env:
+        PREDICTED_TEST_SECONDS: ''
+        SHARD_PLAN_CONCURRENCY: ''
+        FROZEN_TARGET: 'false'
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        RUNSON_JOB: 'false'
+      run: |
+        cores="$(nproc)"
+        if [ "$RUNSON_JOB" = "true" ]; then
+          workers=2
+        elif [ "$SHARD_PLAN_CONCURRENCY" != "1" ]; then
+          workers=2
+        elif [ "$cores" -ge 12 ]; then
+          workers=6
+        elif [ "$cores" -ge 6 ]; then
+          workers=4
+        else
+          workers=3
+        fi
+        if [[ "$RUNSON_JOB" != "true" && "$RUNNER_ENVIRONMENT" == "self-hosted" && "$FROZEN_TARGET" != "true" && "$SHARD_PLAN_CONCURRENCY" == "1" ]]; then
+          workers="$(CI_LEGACY_WORKERS="$workers" node --input-type=module <<'JS'
+        import { isConstrainedCiCheckHost } from './scripts/lib/local-check-runtime.mts';
+        import { detectVitestHostInfo, resolveLocalVitestScheduling } from './scripts/lib/vitest-local-scheduling.mts';
+        const host = detectVitestHostInfo();
+        const constrained = isConstrainedCiCheckHost({
+          logicalCpuCount: host.cpuCount,
+          totalMemoryBytes: host.totalMemoryBytes,
+        });
+        console.log(constrained ? process.env.CI_LEGACY_WORKERS : resolveLocalVitestScheduling(process.env, host).maxWorkers);
+        JS
+          )"
+        fi
+        if [ "$workers" -gt "$cores" ]; then
+          workers="$cores"
+        fi
+        echo "detected cores=$cores plan_concurrency=${SHARD_PLAN_CONCURRENCY:-default} predicted_test_seconds=${PREDICTED_TEST_SECONDS:-unknown} -> workers=$workers"
+        echo "OPENCLAW_VITEST_MAX_WORKERS=$workers" >> "$GITHUB_ENV"
+    - name: Run Node test shard
+      env:
+        NODE_OPTIONS: --max-old-space-size=8192
+        OPENCLAW_CI_TEST_RUNTIME_POLICY: dual
+        FROZEN_TARGET: 'false'
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: H4sIAAAAAAAAE5WSy24DIQxF/4V1zOzzFd1HUWUZz2CVMSNwWlVV/73MI1U2rciKBZxzfS0uX46yjjJVd74442rDuzwcnvI8o4bq92feqruenCilW+AXNOOiG1sLDffHQ8hkuQDeLAKhZhXCBLgIvPEnYBKsftM33elvdExosJQ8SuIuYJapoElWEI1cWoUAeb15Di5MLIt1RW56qBKYsPQANWJpYx0ZXUS+FWLIH8o9CT7w0uy4lqckzyzQR9Gu2v6QQmRMXev1R+//gX2blmqbmsckUzS/S36J9v1WVXhVnNmdHU6sJgR3BzyEuu/rD1IF4PviAgAA
+        OPENCLAW_NODE_TEST_GROUPS_JSON: ''
+        OPENCLAW_NODE_TEST_CONFIGS_JSON: 'null'
+        OPENCLAW_NODE_TEST_ENV_JSON: 'null'
+        OPENCLAW_NODE_TEST_INCLUDE_PATTERNS_JSON: 'null'
+        OPENCLAW_NODE_TEST_TARGETS_JSON: 'null'
+        OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '[]'
+        OPENCLAW_VITEST_SHARD_NAME: agentic-commands-doctor-auth
+        OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: '300000'
+        OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        runner="scripts/ci-run-node-test-shard.mts"
+        if [[ ! -f "$runner" ]]; then
+          runner=".ci-workflow/${runner}"
+          [[ -f "$runner" ]]
+        fi
+        time -p node --import tsx "$runner"
+    - name: Record runner memory peak
+      if: always()
+      shell: bash
+      run: |
+        # This includes setup and every child process, not just the test step.
+        if peak_memory="$(cat /sys/fs/cgroup/memory.peak 2>/dev/null)"; then
+          echo "runner cgroup peak memory bytes=$peak_memory"
+        fi
+    needs:
+    - candidate_pass_ratchet
+    if: ${{ !cancelled() && needs.candidate_pass_ratchet.result == 'success' }}
+  pass_receipt:
+    runs-on: ubuntu-24.04
+    needs:
+    - control_pass_combined
+    - control_pass_shard
+    - candidate_pass_ratchet
+    - candidate_pass_corpus
+    - candidate_pass_shard
+    if: ${{ always() }}
+    timeout-minutes: 2
+    steps:
+    - name: Require every passing cell job
+      env:
+        RESULTS: ${{ toJSON(needs) }}
+      run: python3 -c 'import json,os; d=json.loads(os.environ["RESULTS"]); assert all(x["result"] == "success" for x in d.values()),
+        d'
+  control_fail_combined:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: fail
+    steps:
+    - *id001
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+        restore-test-caches: 'false'
+    - *id002
+    - *id003
+    - name: Run production ratchets
+      env:
+        OPENCLAW_TEST_PROJECTS_PARALLEL: '3'
+        PROTOCOL_SINCE_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+        RATCHET_PR_HEAD_SHA: ''
+        TASK: baseline-ratchets
+      shell: bash
+      run: |
+        cat > "$RUNNER_TEMP/pilot-ratchet.sh" <<'PRODUCTION_RATCHET_40e3e00c9c519154'
+        set -euo pipefail
+        has_package_script() {
+          node -e '
+            const scripts = require("./package.json").scripts ?? {};
+            process.exit(Object.hasOwn(scripts, process.argv[1]) ? 0 : 1);
+          ' "$1"
+        }
+        case "$TASK" in
+          bundled-protocol)
+            pnpm test:bundled
+            test "$(git rev-parse refs/remotes/origin/ci-ratchet-base^{commit})" = "$PROTOCOL_SINCE_BASE_SHA"
+            pnpm protocol:check
+            ;;
+          contracts-plugins-ci-routing)
+            pnpm test:contracts:plugins
+            pnpm test src/commands/status.scan-result.test.ts src/scripts/ci-changed-scope*.test.ts test/scripts/changed-lanes.test.ts test/scripts/changed-path-facts.test.ts test/scripts/ci-changed-node-test-plan.test.ts test/scripts/ci-docker-seed-plan.test.ts test/scripts/ci-run-node-test-shard.test.ts test/scripts/ci-hourly.test.ts test/scripts/ci-workflow-guards.test.ts test/scripts/ci-workflow-planning.test.ts test/scripts/ci-workflow-evidence.test.ts test/scripts/run-vitest.test.ts test/scripts/test-projects.test.ts
+            ;;
+          ci-routing)
+            pnpm test src/commands/status.scan-result.test.ts src/scripts/ci-changed-scope*.test.ts test/scripts/changed-lanes.test.ts test/scripts/changed-path-facts.test.ts test/scripts/ci-changed-node-test-plan.test.ts test/scripts/ci-docker-seed-plan.test.ts test/scripts/ci-run-node-test-shard.test.ts test/scripts/ci-hourly.test.ts test/scripts/ci-workflow-guards.test.ts test/scripts/ci-workflow-planning.test.ts test/scripts/ci-workflow-evidence.test.ts test/scripts/run-vitest.test.ts test/scripts/test-projects.test.ts
+            ;;
+          coercion-helpers)
+            pnpm check:coercion-helpers
+            ;;
+          baseline-ratchets)
+            for required_script in check:max-lines-ratchet check:assertion-safety config:docs:check plugins:inventory:check; do
+              if ! has_package_script "$required_script"; then
+                echo "Current CI targets must provide ${required_script}." >&2
+                exit 1
+              fi
+            done
+            base_ref="${RATCHET_BASE_REF:-refs/remotes/origin/ci-ratchet-base}"
+            if ! git cat-file -e "${base_ref}^{commit}" 2>/dev/null; then
+              echo "Prepared ratchet base ${base_ref} is unavailable." >&2
+              exit 1
+            fi
+            if [[ -n "${RATCHET_PR_HEAD_SHA:-}" ]]; then
+              mapfile -t merge_parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+              if [[ "${#merge_parents[@]}" != "2" || "${merge_parents[1]:-}" != "$RATCHET_PR_HEAD_SHA" ]]; then
+                echo "Pull request checkout is not the expected two-parent merge tree." >&2
+                exit 1
+              fi
+              prepared_base="$(git rev-parse "$base_ref")"
+              if [[ "${merge_parents[0]}" != "$prepared_base" ]]; then
+                echo "Pull request merge base does not match the prepared preflight base." >&2
+                exit 1
+              fi
+            fi
+            pnpm check:max-lines-ratchet --base "$base_ref"
+            if [[ -n "${RATCHET_PR_HEAD_SHA:-}" ]]; then
+              pnpm check:line-cap-ratchet --base "$base_ref"
+            fi
+            pnpm check:assertion-safety --base "$base_ref"
+            pnpm config:docs:check
+            pnpm plugins:inventory:check
+            ;;
+          release-lint-core-*)
+            stripe="${TASK#release-lint-core-}"
+            node --import tsx scripts/run-oxlint-shards.mts \
+              --only=core --split-core --core-stripe="${stripe}/5" --threads=1
+            ;;
+          release-lint-extensions)
+            node --import tsx scripts/run-oxlint-shards.mts --only=extensions --threads=1
+            ;;
+          bun-launcher)
+            OPENCLAW_E2E_SKIP_BUILD=1 OPENCLAW_TEST_BUN_LAUNCHER=1 pnpm test test/openclaw-launcher.e2e.test.ts
+            if [[ -f src/plugins/plugin-module-generation.test.ts ]]; then
+              OPENCLAW_TEST_BUN_LAUNCHER=1 pnpm test src/plugins/plugin-module-generation.test.ts --testNamePattern Bun
+            elif [[ "false" != "true" ]]; then
+              echo "Current CI targets must provide src/plugins/plugin-module-generation.test.ts." >&2
+              exit 1
+            fi
+            ;;
+          *)
+            echo "Unsupported checks-fast task: $TASK" >&2
+            exit 1
+            ;;
+        esac
+        PRODUCTION_RATCHET_40e3e00c9c519154
+        set +e
+        bash "$RUNNER_TEMP/pilot-ratchet.sh" 2>&1 | tee "$RUNNER_TEMP/pilot-ratchet-output.txt"
+        result=${PIPESTATUS[0]}
+        set -e
+        if grep -Fq 'Uncommented type assertions exceed the grandfathered per-file baseline:' "$RUNNER_TEMP/pilot-ratchet-output.txt" && grep -Fq 'src/ci-ratchet-economics-probe.ts' "$RUNNER_TEMP/pilot-ratchet-output.txt"; then
+          echo 'probe_failure=true' >> "$GITHUB_OUTPUT"
+        else
+          echo 'probe_failure=false' >> "$GITHUB_OUTPUT"
+        fi
+        rm -f "$RUNNER_TEMP/pilot-ratchet-output.txt"
+        exit "$result"
+      id: ratchet
+    - name: Check startup corpus
+      env:
+        OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON: ''
+      run: |
+        set -euo pipefail
+        # Prepare once before Vitest workers consume the runtime.
+        pnpm build qaRuntime
+        run_startup_corpus() {
+          if [[ "false" == "true" ]]; then
+            node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts "$@"
+          else
+            node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts \
+              --reporter verbose --reporter github-actions --reporter ./scripts/lib/vitest-resource-reporter.mts "$@"
+          fi
+        }
+        if [[ -n "${OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON:-}" ]]; then
+          # Use the manifest's inventory for both Node receipts and this fallback.
+          startup_files_text="$(node -p 'JSON.parse(process.env.OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON).join(" ")')"
+          read -r -a startup_files <<< "$startup_files_text"
+          startup_workers="$(node -p 'Math.min(4, require("node:os").availableParallelism())')"
+          run_startup_corpus --maxWorkers="$startup_workers" "${startup_files[@]}"
+          exit 0
+        elif [[ -f test/vitest/vitest.startup-corpus-paths.mjs ]]; then
+          # Runner labels can advertise more CPUs than this process can use.
+          startup_workers="$(node -p 'Math.min(4, require("node:os").availableParallelism())')"
+          run_startup_corpus --maxWorkers="$startup_workers" src/config/config-startup-corpus.test.ts \
+            src/config/state-startup-corpus*.test.ts
+          exit 0
+        elif [[ "false" != "true" ]]; then
+          echo "Current CI targets must provide the startup corpus file inventory." >&2
+          exit 1
+        fi
+        # Frozen targets before the file split retain their complete legacy matrix.
+        cores="$(node -p 'require("node:os").availableParallelism()')"
+        # Worker compilation also uses CPU: reserve four cores per invocation.
+        # The 4-vCPU ratchets label can deliver only two usable CPUs.
+        concurrency=$((cores / 4))
+        if (( concurrency < 1 )); then concurrency=1; fi
+        if (( concurrency > 5 )); then concurrency=5; fi
+        echo "[corpus:resources] logicalCpuCount=$cores admitted runs=$concurrency"
+        pids=()
+        labels=()
+        result=0
+        wait_corpus_batch() {
+          for index in "${!pids[@]}"; do
+            if ! wait "${pids[$index]}"; then
+              echo "::error::${labels[$index]} failed"
+              result=1
+            fi
+          done
+          pids=()
+          labels=()
+        }
+        for shard in {0..4}; do
+          if (( shard == 0 )); then
+            run_startup_corpus src/config/config-startup-corpus.test.ts &
+            labels+=("config corpus")
+          else
+            OPENCLAW_TEST_STARTUP_CORPUS_SHARD="${shard}/4" \
+              run_startup_corpus src/config/state-startup-corpus.test.ts &
+            labels+=("state corpus ${shard}/4")
+          fi
+          pids+=("$!")
+          if (( ${#pids[@]} == concurrency )); then
+            wait_corpus_batch
+          fi
+        done
+        wait_corpus_batch
+        exit "$result"
+    outputs:
+      probe_failure: ${{ steps.ratchet.outputs.probe_failure }}
+    needs:
+    - pass_receipt
+  control_fail_shard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: fail
+    steps:
+    - *id001
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+        vitest-fs-cache: 'true'
+        vitest-worker-cache: 'true'
+        node-compile-cache: 'true'
+    - *id002
+    - *id003
+    - name: Configure Node test resources
+      env:
+        PREDICTED_TEST_SECONDS: ''
+        SHARD_PLAN_CONCURRENCY: ''
+        FROZEN_TARGET: 'false'
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        RUNSON_JOB: 'false'
+      run: |
+        cores="$(nproc)"
+        if [ "$RUNSON_JOB" = "true" ]; then
+          workers=2
+        elif [ "$SHARD_PLAN_CONCURRENCY" != "1" ]; then
+          workers=2
+        elif [ "$cores" -ge 12 ]; then
+          workers=6
+        elif [ "$cores" -ge 6 ]; then
+          workers=4
+        else
+          workers=3
+        fi
+        if [[ "$RUNSON_JOB" != "true" && "$RUNNER_ENVIRONMENT" == "self-hosted" && "$FROZEN_TARGET" != "true" && "$SHARD_PLAN_CONCURRENCY" == "1" ]]; then
+          workers="$(CI_LEGACY_WORKERS="$workers" node --input-type=module <<'JS'
+        import { isConstrainedCiCheckHost } from './scripts/lib/local-check-runtime.mts';
+        import { detectVitestHostInfo, resolveLocalVitestScheduling } from './scripts/lib/vitest-local-scheduling.mts';
+        const host = detectVitestHostInfo();
+        const constrained = isConstrainedCiCheckHost({
+          logicalCpuCount: host.cpuCount,
+          totalMemoryBytes: host.totalMemoryBytes,
+        });
+        console.log(constrained ? process.env.CI_LEGACY_WORKERS : resolveLocalVitestScheduling(process.env, host).maxWorkers);
+        JS
+          )"
+        fi
+        if [ "$workers" -gt "$cores" ]; then
+          workers="$cores"
+        fi
+        echo "detected cores=$cores plan_concurrency=${SHARD_PLAN_CONCURRENCY:-default} predicted_test_seconds=${PREDICTED_TEST_SECONDS:-unknown} -> workers=$workers"
+        echo "OPENCLAW_VITEST_MAX_WORKERS=$workers" >> "$GITHUB_ENV"
+    - name: Run Node test shard
+      env:
+        NODE_OPTIONS: --max-old-space-size=8192
+        OPENCLAW_CI_TEST_RUNTIME_POLICY: dual
+        FROZEN_TARGET: 'false'
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: H4sIAAAAAAAAE5WSy24DIQxF/4V1zOzzFd1HUWUZz2CVMSNwWlVV/73MI1U2rciKBZxzfS0uX46yjjJVd74442rDuzwcnvI8o4bq92feqruenCilW+AXNOOiG1sLDffHQ8hkuQDeLAKhZhXCBLgIvPEnYBKsftM33elvdExosJQ8SuIuYJapoElWEI1cWoUAeb15Di5MLIt1RW56qBKYsPQANWJpYx0ZXUS+FWLIH8o9CT7w0uy4lqckzyzQR9Gu2v6QQmRMXev1R+//gX2blmqbmsckUzS/S36J9v1WVXhVnNmdHU6sJgR3BzyEuu/rD1IF4PviAgAA
+        OPENCLAW_NODE_TEST_GROUPS_JSON: ''
+        OPENCLAW_NODE_TEST_CONFIGS_JSON: 'null'
+        OPENCLAW_NODE_TEST_ENV_JSON: 'null'
+        OPENCLAW_NODE_TEST_INCLUDE_PATTERNS_JSON: 'null'
+        OPENCLAW_NODE_TEST_TARGETS_JSON: 'null'
+        OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '[]'
+        OPENCLAW_VITEST_SHARD_NAME: agentic-commands-doctor-auth
+        OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: '300000'
+        OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        runner="scripts/ci-run-node-test-shard.mts"
+        if [[ ! -f "$runner" ]]; then
+          runner=".ci-workflow/${runner}"
+          [[ -f "$runner" ]]
+        fi
+        time -p node --import tsx "$runner"
+    - name: Record runner memory peak
+      if: always()
+      shell: bash
+      run: |
+        # This includes setup and every child process, not just the test step.
+        if peak_memory="$(cat /sys/fs/cgroup/memory.peak 2>/dev/null)"; then
+          echo "runner cgroup peak memory bytes=$peak_memory"
+        fi
+    needs:
+    - pass_receipt
+  candidate_fail_ratchet:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: fail
+    steps:
+    - *id004
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+    - *id002
+    - *id003
+    - name: Run production ratchets
+      env:
+        RATCHET_PR_HEAD_SHA: ''
+      shell: bash
+      run: |
+        cat > "$RUNNER_TEMP/pilot-ratchet.sh" <<'PRODUCTION_RATCHET_9e82b8727f1722f5'
+        set -euo pipefail
+        has_package_script() {
+          node -e '
+            const scripts = require("./package.json").scripts ?? {};
+            process.exit(Object.hasOwn(scripts, process.argv[1]) ? 0 : 1);
+          ' "$1"
+        }
+        for required_script in check:max-lines-ratchet check:assertion-safety config:docs:check plugins:inventory:check; do
+          if ! has_package_script "$required_script"; then
+            echo "Current CI targets must provide ${required_script}." >&2
+            exit 1
+          fi
+        done
+        base_ref="${RATCHET_BASE_REF:-refs/remotes/origin/ci-ratchet-base}"
+        if ! git cat-file -e "${base_ref}^{commit}" 2>/dev/null; then
+          echo "Prepared ratchet base ${base_ref} is unavailable." >&2
+          exit 1
+        fi
+        if [[ -n "${RATCHET_PR_HEAD_SHA:-}" ]]; then
+          mapfile -t merge_parents < <(git cat-file -p HEAD | sed -n 's/^parent //p')
+          if [[ "${#merge_parents[@]}" != "2" || "${merge_parents[1]:-}" != "$RATCHET_PR_HEAD_SHA" ]]; then
+            echo "Pull request checkout is not the expected two-parent merge tree." >&2
+            exit 1
+          fi
+          prepared_base="$(git rev-parse "$base_ref")"
+          if [[ "${merge_parents[0]}" != "$prepared_base" ]]; then
+            echo "Pull request merge base does not match the prepared preflight base." >&2
+            exit 1
+          fi
+        fi
+        pnpm check:max-lines-ratchet --base "$base_ref"
+        if [[ -n "${RATCHET_PR_HEAD_SHA:-}" ]]; then
+          pnpm check:line-cap-ratchet --base "$base_ref"
+        fi
+        pnpm check:assertion-safety --base "$base_ref"
+        pnpm config:docs:check
+        pnpm plugins:inventory:check
+        PRODUCTION_RATCHET_9e82b8727f1722f5
+        set +e
+        bash "$RUNNER_TEMP/pilot-ratchet.sh" 2>&1 | tee "$RUNNER_TEMP/pilot-ratchet-output.txt"
+        result=${PIPESTATUS[0]}
+        set -e
+        if grep -Fq 'Uncommented type assertions exceed the grandfathered per-file baseline:' "$RUNNER_TEMP/pilot-ratchet-output.txt" && grep -Fq 'src/ci-ratchet-economics-probe.ts' "$RUNNER_TEMP/pilot-ratchet-output.txt"; then
+          echo 'probe_failure=true' >> "$GITHUB_OUTPUT"
+        else
+          echo 'probe_failure=false' >> "$GITHUB_OUTPUT"
+        fi
+        rm -f "$RUNNER_TEMP/pilot-ratchet-output.txt"
+        exit "$result"
+      id: ratchet
+    outputs:
+      probe_failure: ${{ steps.ratchet.outputs.probe_failure }}
+    needs:
+    - pass_receipt
+  candidate_fail_corpus:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: fail
+    steps:
+    - *id004
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+        restore-test-caches: 'false'
+    - *id002
+    - *id003
+    - name: Run production startup-corpus task
+      env:
+        OPENCLAW_TEST_PROJECTS_PARALLEL: '3'
+        PROTOCOL_SINCE_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+        RATCHET_PR_HEAD_SHA: ''
+        TASK: startup-corpus
+      shell: bash
+      run: |
+        set -euo pipefail
+        case "$TASK" in
+          bundled-protocol)
+            pnpm test:bundled
+            test "$(git rev-parse refs/remotes/origin/ci-ratchet-base^{commit})" = "$PROTOCOL_SINCE_BASE_SHA"
+            pnpm protocol:check
+            ;;
+          contracts-plugins-ci-routing)
+            pnpm test:contracts:plugins
+            pnpm test src/commands/status.scan-result.test.ts src/scripts/ci-changed-scope*.test.ts test/scripts/changed-lanes.test.ts test/scripts/changed-path-facts.test.ts test/scripts/ci-changed-node-test-plan.test.ts test/scripts/ci-docker-seed-plan.test.ts test/scripts/ci-run-node-test-shard.test.ts test/scripts/ci-hourly.test.ts test/scripts/ci-workflow-guards.test.ts test/scripts/ci-workflow-planning.test.ts test/scripts/ci-workflow-evidence.test.ts test/scripts/run-vitest.test.ts test/scripts/test-projects.test.ts
+            ;;
+          ci-routing)
+            pnpm test src/commands/status.scan-result.test.ts src/scripts/ci-changed-scope*.test.ts test/scripts/changed-lanes.test.ts test/scripts/changed-path-facts.test.ts test/scripts/ci-changed-node-test-plan.test.ts test/scripts/ci-docker-seed-plan.test.ts test/scripts/ci-run-node-test-shard.test.ts test/scripts/ci-hourly.test.ts test/scripts/ci-workflow-guards.test.ts test/scripts/ci-workflow-planning.test.ts test/scripts/ci-workflow-evidence.test.ts test/scripts/run-vitest.test.ts test/scripts/test-projects.test.ts
+            ;;
+          coercion-helpers)
+            pnpm check:coercion-helpers
+            ;;
+          startup-corpus)
+            # The following step owns startup coverage; policy runs in the dedicated ratchet job.
+            ;;
+          release-lint-core-*)
+            stripe="${TASK#release-lint-core-}"
+            node --import tsx scripts/run-oxlint-shards.mts \
+              --only=core --split-core --core-stripe="${stripe}/5" --threads=1
+            ;;
+          release-lint-extensions)
+            node --import tsx scripts/run-oxlint-shards.mts --only=extensions --threads=1
+            ;;
+          bun-launcher)
+            OPENCLAW_E2E_SKIP_BUILD=1 OPENCLAW_TEST_BUN_LAUNCHER=1 pnpm test test/openclaw-launcher.e2e.test.ts
+            if [[ -f src/plugins/plugin-module-generation.test.ts ]]; then
+              OPENCLAW_TEST_BUN_LAUNCHER=1 pnpm test src/plugins/plugin-module-generation.test.ts --testNamePattern Bun
+            elif [[ "false" != "true" ]]; then
+              echo "Current CI targets must provide src/plugins/plugin-module-generation.test.ts." >&2
+              exit 1
+            fi
+            ;;
+          *)
+            echo "Unsupported checks-fast task: $TASK" >&2
+            exit 1
+            ;;
+        esac
+    - name: Check startup corpus
+      env:
+        OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON: ''
+      run: |
+        set -euo pipefail
+        # Prepare once before Vitest workers consume the runtime.
+        pnpm build qaRuntime
+        run_startup_corpus() {
+          if [[ "false" == "true" ]]; then
+            node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts "$@"
+          else
+            node scripts/run-vitest.mjs run --config test/vitest/vitest.runtime-config.config.ts \
+              --reporter verbose --reporter github-actions --reporter ./scripts/lib/vitest-resource-reporter.mts "$@"
+          fi
+        }
+        if [[ -n "${OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON:-}" ]]; then
+          # Use the manifest's inventory for both Node receipts and this fallback.
+          startup_files_text="$(node -p 'JSON.parse(process.env.OPENCLAW_CI_STARTUP_CORPUS_TEST_FILES_JSON).join(" ")')"
+          read -r -a startup_files <<< "$startup_files_text"
+          startup_workers="$(node -p 'Math.min(4, require("node:os").availableParallelism())')"
+          run_startup_corpus --maxWorkers="$startup_workers" "${startup_files[@]}"
+          exit 0
+        elif [[ -f test/vitest/vitest.startup-corpus-paths.mjs ]]; then
+          # Runner labels can advertise more CPUs than this process can use.
+          startup_workers="$(node -p 'Math.min(4, require("node:os").availableParallelism())')"
+          run_startup_corpus --maxWorkers="$startup_workers" src/config/config-startup-corpus.test.ts \
+            src/config/state-startup-corpus*.test.ts
+          exit 0
+        elif [[ "false" != "true" ]]; then
+          echo "Current CI targets must provide the startup corpus file inventory." >&2
+          exit 1
+        fi
+        # Frozen targets before the file split retain their complete legacy matrix.
+        cores="$(node -p 'require("node:os").availableParallelism()')"
+        # Worker compilation also uses CPU: reserve four cores per invocation.
+        # The 4-vCPU ratchets label can deliver only two usable CPUs.
+        concurrency=$((cores / 4))
+        if (( concurrency < 1 )); then concurrency=1; fi
+        if (( concurrency > 5 )); then concurrency=5; fi
+        echo "[corpus:resources] logicalCpuCount=$cores admitted runs=$concurrency"
+        pids=()
+        labels=()
+        result=0
+        wait_corpus_batch() {
+          for index in "${!pids[@]}"; do
+            if ! wait "${pids[$index]}"; then
+              echo "::error::${labels[$index]} failed"
+              result=1
+            fi
+          done
+          pids=()
+          labels=()
+        }
+        for shard in {0..4}; do
+          if (( shard == 0 )); then
+            run_startup_corpus src/config/config-startup-corpus.test.ts &
+            labels+=("config corpus")
+          else
+            OPENCLAW_TEST_STARTUP_CORPUS_SHARD="${shard}/4" \
+              run_startup_corpus src/config/state-startup-corpus.test.ts &
+            labels+=("state corpus ${shard}/4")
+          fi
+          pids+=("$!")
+          if (( ${#pids[@]} == concurrency )); then
+            wait_corpus_batch
+          fi
+        done
+        wait_corpus_batch
+        exit "$result"
+    needs:
+    - pass_receipt
+  candidate_fail_shard:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_BASE_SHA: d9d8f0829d87bcedd2b3ab6735334289c83defb0
+      CHECKOUT_GIT_COMMITS_JSON: '[]'
+      HISTORICAL_TARGET: 'false'
+      PILOT_OUTCOME: fail
+    steps:
+    - *id004
+    - name: Setup Node environment
+      uses: ./.ci-harness/.github/actions/setup-node-env
+      with:
+        cache-mode: restore
+        node-version: 24.19.0
+        install-bun: 'false'
+        dependency-cache: 'false'
+        vitest-fs-cache: 'true'
+        vitest-worker-cache: 'true'
+        node-compile-cache: 'true'
+    - *id002
+    - *id003
+    - name: Configure Node test resources
+      env:
+        PREDICTED_TEST_SECONDS: ''
+        SHARD_PLAN_CONCURRENCY: ''
+        FROZEN_TARGET: 'false'
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        RUNSON_JOB: 'false'
+      run: |
+        cores="$(nproc)"
+        if [ "$RUNSON_JOB" = "true" ]; then
+          workers=2
+        elif [ "$SHARD_PLAN_CONCURRENCY" != "1" ]; then
+          workers=2
+        elif [ "$cores" -ge 12 ]; then
+          workers=6
+        elif [ "$cores" -ge 6 ]; then
+          workers=4
+        else
+          workers=3
+        fi
+        if [[ "$RUNSON_JOB" != "true" && "$RUNNER_ENVIRONMENT" == "self-hosted" && "$FROZEN_TARGET" != "true" && "$SHARD_PLAN_CONCURRENCY" == "1" ]]; then
+          workers="$(CI_LEGACY_WORKERS="$workers" node --input-type=module <<'JS'
+        import { isConstrainedCiCheckHost } from './scripts/lib/local-check-runtime.mts';
+        import { detectVitestHostInfo, resolveLocalVitestScheduling } from './scripts/lib/vitest-local-scheduling.mts';
+        const host = detectVitestHostInfo();
+        const constrained = isConstrainedCiCheckHost({
+          logicalCpuCount: host.cpuCount,
+          totalMemoryBytes: host.totalMemoryBytes,
+        });
+        console.log(constrained ? process.env.CI_LEGACY_WORKERS : resolveLocalVitestScheduling(process.env, host).maxWorkers);
+        JS
+          )"
+        fi
+        if [ "$workers" -gt "$cores" ]; then
+          workers="$cores"
+        fi
+        echo "detected cores=$cores plan_concurrency=${SHARD_PLAN_CONCURRENCY:-default} predicted_test_seconds=${PREDICTED_TEST_SECONDS:-unknown} -> workers=$workers"
+        echo "OPENCLAW_VITEST_MAX_WORKERS=$workers" >> "$GITHUB_ENV"
+    - name: Run Node test shard
+      env:
+        NODE_OPTIONS: --max-old-space-size=8192
+        OPENCLAW_CI_TEST_RUNTIME_POLICY: dual
+        FROZEN_TARGET: 'false'
+        RUNNER_ENVIRONMENT: ${{ runner.environment }}
+        OPENCLAW_NODE_TEST_GROUPS_GZIP_BASE64: H4sIAAAAAAAAE5WSy24DIQxF/4V1zOzzFd1HUWUZz2CVMSNwWlVV/73MI1U2rciKBZxzfS0uX46yjjJVd74442rDuzwcnvI8o4bq92feqruenCilW+AXNOOiG1sLDffHQ8hkuQDeLAKhZhXCBLgIvPEnYBKsftM33elvdExosJQ8SuIuYJapoElWEI1cWoUAeb15Di5MLIt1RW56qBKYsPQANWJpYx0ZXUS+FWLIH8o9CT7w0uy4lqckzyzQR9Gu2v6QQmRMXev1R+//gX2blmqbmsckUzS/S36J9v1WVXhVnNmdHU6sJgR3BzyEuu/rD1IF4PviAgAA
+        OPENCLAW_NODE_TEST_GROUPS_JSON: ''
+        OPENCLAW_NODE_TEST_CONFIGS_JSON: 'null'
+        OPENCLAW_NODE_TEST_ENV_JSON: 'null'
+        OPENCLAW_NODE_TEST_INCLUDE_PATTERNS_JSON: 'null'
+        OPENCLAW_NODE_TEST_TARGETS_JSON: 'null'
+        OPENCLAW_NODE_TEST_VITEST_ARGS_JSON: '[]'
+        OPENCLAW_VITEST_SHARD_NAME: agentic-commands-doctor-auth
+        OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: '300000'
+        OPENCLAW_NODE_TEST_PLAN_CONCURRENCY: ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        runner="scripts/ci-run-node-test-shard.mts"
+        if [[ ! -f "$runner" ]]; then
+          runner=".ci-workflow/${runner}"
+          [[ -f "$runner" ]]
+        fi
+        time -p node --import tsx "$runner"
+    - name: Record runner memory peak
+      if: always()
+      shell: bash
+      run: |
+        # This includes setup and every child process, not just the test step.
+        if peak_memory="$(cat /sys/fs/cgroup/memory.peak 2>/dev/null)"; then
+          echo "runner cgroup peak memory bytes=$peak_memory"
+        fi
+    needs:
+    - pass_receipt
+    - candidate_fail_ratchet
+    if: ${{ !cancelled() && needs.candidate_fail_ratchet.result == 'success' && needs.pass_receipt.result == 'success' }}
+  failure_receipt:
+    runs-on: ubuntu-24.04
+    needs:
+    - pass_receipt
+    - control_fail_combined
+    - control_fail_shard
+    - candidate_fail_ratchet
+    - candidate_fail_corpus
+    - candidate_fail_shard
+    if: ${{ always() }}
+    timeout-minutes: 2
+    steps:
+    - name: Require real rejection and unchanged failure accounting
+      env:
+        RESULTS: ${{ toJSON(needs) }}
+      run: |
+        python3 - <<'PYCODE'
+        import json, os
+        r=json.loads(os.environ['RESULTS'])
+        assert r['pass_receipt']['result']=='success',r
+        for name,expected in {'control_fail_combined': 'failure', 'control_fail_shard': 'success', 'candidate_fail_ratchet': 'failure', 'candidate_fail_corpus': 'success', 'candidate_fail_shard': 'skipped'}.items(): assert r[name]['result']==expected,(name,r[name])
+        for name in ['control_fail_combined','candidate_fail_ratchet']: assert r[name]['outputs'].get('probe_failure')=='true',(name,r[name])
+        print('Both real assertion checkers rejected the overlay; control shard ran, candidate shard skipped; corpus cost retained.')
+        PYCODE
