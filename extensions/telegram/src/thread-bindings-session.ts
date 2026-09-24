@@ -5,21 +5,10 @@ import {
   type SessionBindingRecord,
 } from "openclaw/plugin-sdk/conversation-runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type {
-  TelegramBindingTargetKind,
-  TelegramThreadBindingRecord,
-} from "./thread-bindings-store.js";
+import type { TelegramThreadBindingRecord } from "./thread-bindings-store.js";
 
 export function resolveBindingKey(params: { accountId: string; conversationId: string }): string {
   return `${params.accountId}:${params.conversationId}`;
-}
-
-function toSessionBindingTargetKind(raw: TelegramBindingTargetKind): BindingTargetKind {
-  return raw === "subagent" ? "subagent" : "session";
-}
-
-function toTelegramTargetKind(raw: BindingTargetKind): TelegramBindingTargetKind {
-  return raw === "subagent" ? "subagent" : "acp";
 }
 
 export function toSessionBindingRecord(
@@ -32,7 +21,7 @@ export function toSessionBindingRecord(
       conversationId: record.conversationId,
     }),
     targetSessionKey: record.targetSessionKey,
-    targetKind: toSessionBindingTargetKind(record.targetKind),
+    targetKind: record.targetKind === "subagent" ? "subagent" : "session",
     conversation: {
       channel: "telegram",
       accountId: record.accountId,
@@ -76,7 +65,7 @@ export function fromSessionBindingInput(params: {
   const now = Date.now();
   const metadata = params.input.metadata ?? {};
   const existing = params.existing;
-  const targetKind = toTelegramTargetKind(params.input.targetKind);
+  const targetKind = params.input.targetKind === "subagent" ? "subagent" : "acp";
   // Runtime metadata follows the target; conversation lifecycle settings still carry forward below.
   const previous =
     existing?.targetSessionKey === params.input.targetSessionKey &&

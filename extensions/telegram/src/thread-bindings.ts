@@ -458,18 +458,13 @@ async function initializeThreadBindingManager(
         });
       });
     },
-    listBySession: (targetSessionKeyRaw) => {
-      const targetSessionKey = targetSessionKeyRaw.trim();
-      if (!targetSessionKey) {
-        return [];
-      }
-      return manager.listBySessionKey(targetSessionKey).map((entry) =>
+    listBySession: (targetSessionKey) =>
+      manager.listBySessionKey(targetSessionKey).map((entry) =>
         toSessionBindingRecord(entry, {
           idleTimeoutMs,
           maxAgeMs,
         }),
-      );
-    },
+      ),
     resolveByConversation: (ref) => {
       if (ref.channel !== "telegram") {
         return null;

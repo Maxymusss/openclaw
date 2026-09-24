@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import { runWithTelegramSpooledReplayUpdate } from "./bot-processing-outcome.js";
 import {
   createBot,
+  admitSpooledUpdate,
   commandMessage,
   harness,
   chat,
@@ -429,7 +430,7 @@ describe("createTelegramBot typed command pipeline", () => {
     },
   );
 
-  it("uses the chat identity for a malformed senderless webhook but not an unlisted sender", async () => {
+  it("uses the chat identity for a senderless update but not an unlisted sender", async () => {
     const bot = await createBot(false, true, {
       channels: { telegram: { dmPolicy: "allowlist", allowFrom: ["42001"] } },
     });
@@ -439,14 +440,12 @@ describe("createTelegramBot typed command pipeline", () => {
       message: { ...message, from: { ...from, id: 99999 } },
     });
     expect(harness.replySpy).not.toHaveBeenCalled();
-    const webhook = webhookCallback(bot, "std/http");
-    await webhook(
-      new Request("http://localhost/telegram", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ update_id: 2004, message: { ...message, message_id: 204 } }),
+    await expect(
+      admitSpooledUpdate(bot, {
+        update_id: 2004,
+        message: { ...message, message_id: 204 },
       }),
-    );
+    ).resolves.toMatchObject({ kind: "durable" });
     expect(harness.replySpy.mock.calls.map(([ctx]) => [ctx.SessionKey, ctx.RawBody])).toEqual([
       ["agent:main:main", "senderless request"],
     ]);
