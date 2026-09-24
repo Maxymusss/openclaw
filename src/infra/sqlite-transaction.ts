@@ -8,10 +8,7 @@ import { createSubsystemLogger, type SubsystemLogger } from "../logging/subsyste
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 // The cache-state module keeps this lifecycle edge off the kysely value graph
 // so cold control-plane paths using transactions do not load kysely.
-import {
-  clearNodeSqliteKyselyCacheForDatabase,
-  executeWithCachedStatement,
-} from "./kysely-sync-cache-state.js";
+import { clearNodeSqliteKyselyCacheForDatabase } from "./kysely-sync-cache-state.js";
 import { normalizeWindowsPathPreservingCase } from "./path-guards.js";
 import {
   readSqliteBusyTimeout,
@@ -264,15 +261,27 @@ export function logSlowSqliteCoordinatorWait(
   if (!isMainThread || elapsedMs <= 100) {
     return;
   }
-  transactionLogger(undefined).warn("slow SQLite coordinator lock wait", {
-    async: false,
-    ...transactionDiagnosticLabels(undefined, options),
-    elapsedMs,
-    isMainThread,
-    pid: process.pid,
-    threadId,
-    thresholdMs: 100,
-  });
+  try {
+    // Capture only slow waits, while the synchronous owner's call chain is still on the stack.
+    const trace = new Error();
+    Error.captureStackTrace(trace, logSlowSqliteCoordinatorWait);
+    transactionLogger(undefined).warn("slow SQLite coordinator lock wait", {
+      async: false,
+      caller: trace.stack
+        ?.split("\n")
+        .slice(1, 9)
+        .map((frame) => frame.trim())
+        .join(" <- "),
+      ...transactionDiagnosticLabels(undefined, options),
+      elapsedMs,
+      isMainThread,
+      pid: process.pid,
+      threadId,
+      thresholdMs: 100,
+    });
+  } catch {
+    // Diagnostics cannot abandon an acquired coordinator or replace its admission error.
+  }
 }
 
 function logSlowTransactionStep(params: {
@@ -489,23 +498,6 @@ export function runSqliteDeferredTransactionSync<T>(
   options?: SqliteTransactionOptions,
 ): T {
   return runSqliteTransactionSync(db, operation, "deferred", options);
-}
-
-/** Pin an implicit read snapshot without requiring transaction-control authorization. */
-export function runSqlitePinnedReadSnapshotSync<T>(db: DatabaseSync, operation: () => T): T {
-  return executeWithCachedStatement(db, "PRAGMA schema_version", [], (statement) => {
-    // sqlite-allow-raw: Stepping this pragma pins the connection's implicit read transaction.
-    const snapshot = statement.iterate();
-    try {
-      const first = snapshot.next();
-      if (first.done) {
-        throw new Error("SQLite schema version query returned no row");
-      }
-      return operation();
-    } finally {
-      snapshot.return?.();
-    }
-  });
 }
 
 export function runSqliteImmediateTransactionSync<T>(
