@@ -211,7 +211,7 @@ describe("Telegram live QA scenario gate", () => {
     expect(mocks.runQaFlowSuiteFromRuntime).not.toHaveBeenCalled();
   });
 
-  it("keeps script scenarios out of the default flow-suite invocation", async () => {
+  it("forwards selected scenarios to the flow suite", async () => {
     writeSummary("pass");
     mocks.resolveTelegramQaScenarioIds.mockReturnValue([
       "channel-message-flows",
@@ -226,7 +226,7 @@ describe("Telegram live QA scenario gate", () => {
 
     expect(mocks.runQaFlowSuiteFromRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
-        scenarioIds: expect.not.arrayContaining(["telegram-startup-getme-live"]),
+        scenarioIds: ["channel-message-flows", "telegram-help-command"],
       }),
     );
   });
