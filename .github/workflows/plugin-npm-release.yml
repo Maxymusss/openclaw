@@ -1890,6 +1890,8 @@ jobs:
           EXPECTED_WORKFLOW_BRANCH: ${{ inputs.release_publish_branch }}
           EXPECTED_WORKFLOW_FULL_REF: ${{ inputs.release_publish_full_ref }}
           EXPECTED_WORKFLOW_SHA: ${{ github.workflow_sha }}
+          # Revalidate a sealed soak waiver against the live variable before publishing.
+          OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: ${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}
         run: |
           set -euo pipefail
           if [[ "$PACKAGE_VERSION" == *"-beta."* && "$PUBLISH_TAG" == "beta" ]]; then

@@ -322,6 +322,8 @@ export async function runReleasePublishPreflight(
             npmDistTag: options.npmDistTag,
             pluginSdkApiAcknowledgement: options.pluginSdkApiAcknowledgement,
             stableSoakWaiver: options.stableSoakWaiver,
+            // Report a sealed waiver as active only while the variable still holds it.
+            currentStableSoakWaiver: process.env.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER,
           }),
       );
       if (sealedInputs) {

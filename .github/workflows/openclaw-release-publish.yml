@@ -1528,6 +1528,9 @@ jobs:
           TARGET_SHA: ${{ needs.resolve_release_target.outputs.sha }}
           RELEASE_PROFILE: ${{ needs.resolve_release_target.outputs.release_profile }}
           STABLE_SOAK_WAIVER: ${{ fromJSON(needs.resolve_release_target.outputs.stable_soak_waiver || '""') }}
+          EXPLICIT_STABLE_SOAK_WAIVER: ${{ inputs.stable_soak_waiver }}
+          # A sealed waiver authorizes bootstrap only while the variable still holds it.
+          OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: ${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}
           VALIDATION_RUN_ID: ${{ inputs.full_release_validation_run_id }}
           VALIDATION_RUN_ATTEMPT: ${{ needs.resolve_release_target.outputs.full_release_validation_run_attempt }}
           PLUGIN_PUBLISH_SCOPE: ${{ inputs.plugin_publish_scope }}
@@ -1549,6 +1552,12 @@ jobs:
             throw new Error("Stable npm bootstrap requires an explicit complete plugin selection.");
           }
           const packages = resolveSelectedPublishablePluginPackages({ plugins, selection });
+          const resolvedWaiver = (process.env.STABLE_SOAK_WAIVER ?? "").trim();
+          const explicitWaiver = (process.env.EXPLICIT_STABLE_SOAK_WAIVER ?? "").trim();
+          const currentWaiver = (process.env.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER ?? "").trim();
+          const stableSoakWaiverSource = explicitWaiver ? "explicit" : resolvedWaiver ? "sealed" : "";
+          const stableSoakWaiver =
+            stableSoakWaiverSource === "sealed" && currentWaiver !== resolvedWaiver ? "" : resolvedWaiver;
           const approval = createStablePluginNpmBootstrapApproval({
             repository: process.env.GITHUB_REPOSITORY,
             parentRunId: process.env.GITHUB_RUN_ID,
@@ -1560,7 +1569,8 @@ jobs:
             targetSha: process.env.TARGET_SHA,
             publishTag: "latest",
             releaseProfile: process.env.RELEASE_PROFILE,
-            stableSoakWaiver: process.env.STABLE_SOAK_WAIVER,
+            stableSoakWaiver,
+            stableSoakWaiverSource,
             validationRunId: process.env.VALIDATION_RUN_ID,
             validationRunAttempt: Number(process.env.VALIDATION_RUN_ATTEMPT),
             packages: packages.map((plugin) => plugin.packageName),

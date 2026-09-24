@@ -382,7 +382,7 @@ An early standalone product-performance run is optional beta confidence. If
 useful, start it against the frozen Code SHA in parallel with release work:
 
 ```bash
-# Optional confidence; performance is advisory for every release profile.
+# Advisory for beta; stable publication needs blocking performance evidence unless waived.
 fail_on_regression=false
 gh workflow run openclaw-performance.yml \
   --repo openclaw/openclaw \
