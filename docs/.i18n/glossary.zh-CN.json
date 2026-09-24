@@ -4926,5 +4926,29 @@
   {
     "source": "Onnx plugin reference",
     "target": "ONNX 插件参考"
+  },
+  {
+    "source": "Release references",
+    "target": "发布参考"
+  },
+  {
+    "source": "Release validation reference",
+    "target": "发布验证参考"
+  },
+  {
+    "source": "Release publication reference",
+    "target": "发布操作参考"
+  },
+  {
+    "source": "Extended-stable releases",
+    "target": "扩展稳定版发布"
+  },
+  {
+    "source": "Release platforms and closeout",
+    "target": "发布平台与收尾"
+  },
+  {
+    "source": "Release changelogs",
+    "target": "发布变更日志"
   }
 ]
