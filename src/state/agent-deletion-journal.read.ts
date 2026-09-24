@@ -23,7 +23,13 @@ import {
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { DB } from "./openclaw-state-db.generated.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
+import type { OpenClawStateReadCommand } from "./openclaw-state-read.types.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
+
+type AgentDeletionReadCommand = Extract<
+  OpenClawStateReadCommand,
+  { type: "agentDatabaseDeletion.snapshot" | "agentDeletionJournal.status" }
+>;
 
 /** Completed cleanup still retains a deletion tombstone. */
 export function readAgentDeletionJournalStatusInDatabase(
@@ -104,6 +110,26 @@ export function readAgentDatabaseDeletionSnapshotInDatabase(
     retainedDeletions: readRetainedAgentDeletionsFromDatabase(database),
     registeredAgentDatabases: readRegisteredAgentDatabaseRows(database, statePath, false),
   }));
+}
+
+export function executeAgentDeletionRead(
+  database: DatabaseSync,
+  statePath: string,
+  command: AgentDeletionReadCommand,
+) {
+  const common = { ok: true as const };
+  if (command.type === "agentDatabaseDeletion.snapshot") {
+    return {
+      ...common,
+      type: command.type,
+      snapshot: readAgentDatabaseDeletionSnapshotInDatabase(database, statePath),
+    };
+  }
+  return {
+    ...common,
+    type: command.type,
+    status: readAgentDeletionJournalStatusInDatabase(database, command.agentId),
+  };
 }
 
 export function readAgentDatabaseDeletionSnapshot(env: NodeJS.ProcessEnv) {

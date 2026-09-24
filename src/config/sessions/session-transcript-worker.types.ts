@@ -283,7 +283,7 @@ export type SessionExactEntriesWorkerInput = {
   env: NodeJS.ProcessEnv;
   sessionKeys: readonly string[];
   lifecycleSessionKey?: string;
-  projection?: "full" | "backing" | "sharing" | "replacement";
+  projection?: "full" | "backing" | "sharing" | "replacement" | "creation";
   includeMembers?: boolean;
   includeAuthorization?: boolean;
   replacementSelection?: SessionEntryReplacementSelection;
@@ -302,6 +302,9 @@ export type SessionExactEntriesWorkerResult = {
   };
   members?: Record<string, SessionMember[]>;
   replacement?: SessionEntryReplacementState & { databaseIdentity: string };
+  creation?: import("./session-accessor.sqlite-creation-read.js").SessionCreationSnapshot & {
+    databaseIdentity: string;
+  };
   sharing?: {
     source: { agentId: string; path: string };
     databaseIdentity: string;
@@ -492,6 +495,7 @@ export type SessionHistoryWorkerDatabase = {
   ) => Promise<SessionTranscriptCurrentTurnEntryRead>;
   readExactEntries: (
     input: Omit<SessionExactEntriesWorkerInput, "kind" | "database">,
+    signal?: AbortSignal,
   ) => Promise<SessionExactEntriesWorkerResult>;
   readRowFacts: (
     input: Omit<SessionRowFactsWorkerInput, "kind" | "database">,

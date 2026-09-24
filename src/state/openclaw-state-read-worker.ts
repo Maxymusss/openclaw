@@ -86,6 +86,12 @@ function readPool(): ReadPool {
 }
 
 function captureCommand(command: OpenClawStateReadCommand): OpenClawStateReadCommand {
+  if (command.type === "sessionRepositoryWorkspaces.find") {
+    return {
+      type: command.type,
+      owners: command.owners.map(({ agentId, sessionKey }) => ({ agentId, sessionKey })),
+    };
+  }
   if (command.type === "acpSessions.metadata") {
     return structuredClone(command);
   }
@@ -216,6 +222,15 @@ function commandBytes(command: OpenClawStateReadRequest["command"]): number {
   let bytes = Buffer.byteLength(command.type, "utf8");
   if (command.type === "agentDeletionJournal.status") {
     return bytes + Buffer.byteLength(command.agentId, "utf8");
+  }
+  if (command.type === "sessionRepositoryWorkspaces.find") {
+    return command.owners.reduce(
+      (total, owner) =>
+        total +
+        Buffer.byteLength(owner.agentId, "utf8") +
+        Buffer.byteLength(owner.sessionKey, "utf8"),
+      bytes,
+    );
   }
   if (command.type === "subagents.runs") {
     return (

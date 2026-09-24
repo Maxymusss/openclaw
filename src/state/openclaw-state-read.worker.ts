@@ -66,10 +66,7 @@ import {
   readTaskRegistryMutationSnapshotInDatabase,
   readTaskRegistrySnapshot,
 } from "../tasks/task-registry.store.kernel.js";
-import {
-  readAgentDatabaseDeletionSnapshotInDatabase,
-  readAgentDeletionJournalStatusInDatabase,
-} from "./agent-deletion-journal.read.js";
+import { executeAgentDeletionRead } from "./agent-deletion-journal.read.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
 import { readGitHubPublicationSessionLifecycle } from "./github-publication-session-lifecycles.js";
 import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";
@@ -84,6 +81,7 @@ import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { OpenClawStateReadReply } from "./openclaw-state-read.types.js";
 import { isReadRequest } from "./openclaw-state-read.validation.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
+import { findSessionRepositoryWorkspaceInDatabase } from "./session-repository-workspaces.js";
 import {
   listUserChannelIdentitiesInDatabase,
   resolveUserChannelIdentityInDatabase,
@@ -128,18 +126,21 @@ serveOwnedWorkerTasks(
             if (command.type === "admit") {
               return { ok: true, type: "admit" };
             }
+            const locationArgs = [
+              input.databasePath,
+              input.location,
+              undefined,
+              input.expectedIdentity,
+              input.snapshotRoot,
+              true,
+            ] as const;
             if (command.type === "agentDatabaseRegistry.read") {
               const result = readOpenClawStateReadOnlyLocation(
                 ({ db }) => {
                   sourceAdmitted = true;
                   return readRegisteredAgentDatabaseRows(db, input.databasePath, false);
                 },
-                input.databasePath,
-                input.location,
-                undefined,
-                input.expectedIdentity,
-                input.snapshotRoot,
-                true,
+                ...locationArgs,
               );
               return {
                 ok: true,
@@ -157,12 +158,7 @@ serveOwnedWorkerTasks(
                   sourceAdmitted = true;
                   return loadSubagentSessionListRunsFromSqlite(undefined, { db });
                 },
-                input.databasePath,
-                input.location,
-                undefined,
-                input.expectedIdentity,
-                input.snapshotRoot,
-                true,
+                ...locationArgs,
               );
               if (result.status === "unavailable" && sourceAdmitted !== true) {
                 throw result.error;
@@ -184,20 +180,13 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
-                if (command.type === "agentDatabaseDeletion.snapshot") {
+                if (
+                  command.type === "agentDatabaseDeletion.snapshot" ||
+                  command.type === "agentDeletionJournal.status"
+                ) {
                   return {
-                    ok: true,
-                    type: command.type,
+                    ...executeAgentDeletionRead(db, input.databasePath, command),
                     sourceAdmitted,
-                    snapshot: readAgentDatabaseDeletionSnapshotInDatabase(db, input.databasePath),
-                  };
-                }
-                if (command.type === "agentDeletionJournal.status") {
-                  return {
-                    ok: true,
-                    type: command.type,
-                    sourceAdmitted,
-                    status: readAgentDeletionJournalStatusInDatabase(db, command.agentId),
                   };
                 }
                 if (command.type === "acpSessions.metadata") {
@@ -609,6 +598,19 @@ serveOwnedWorkerTasks(
                     ),
                   };
                 }
+                if (command.type === "sessionRepositoryWorkspaces.find") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    workspaces: runSqliteDeferredTransactionSync(db, () =>
+                      command.owners.flatMap((owner) => {
+                        const workspace = findSessionRepositoryWorkspaceInDatabase(db, owner);
+                        return workspace ? [workspace] : [];
+                      }),
+                    ),
+                  };
+                }
                 if (command.type === "sandboxRegistry.list") {
                   return {
                     ok: true,
@@ -675,12 +677,7 @@ serveOwnedWorkerTasks(
                       cell: getFleetCellInDatabase(db, command.tenantId),
                     };
               },
-              input.databasePath,
-              input.location,
-              undefined,
-              input.expectedIdentity,
-              input.snapshotRoot,
-              true,
+              ...locationArgs,
             );
           },
         ),

@@ -104,8 +104,12 @@ describe.each(["borrowed", "captured"] as const)(
         };
         const { db, worker } = await setup({ preparation });
         let current = true;
+        const admitted = createDeferredCore();
         const work = worker.run(
-          (scope) => scope.execute({ type: "append", input: { value: "prepared" } }),
+          (scope) => {
+            admitted.resolve();
+            return scope.execute({ type: "append", input: { value: "prepared" } });
+          },
           () => {
             if (!current) {
               throw new Error("fixture authority revoked during preparation");
@@ -114,6 +118,7 @@ describe.each(["borrowed", "captured"] as const)(
         );
         void work.catch(() => undefined);
         try {
+          await Promise.race([admitted.promise, work]);
           await waitForMarker(preparation.codeMarker, work);
           expect(fs.existsSync(preparation.commandMarker)).toBe(false);
           expect(db.prepare("SELECT value FROM worker_proof").all()).toEqual([]);

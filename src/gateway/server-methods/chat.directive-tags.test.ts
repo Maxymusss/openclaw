@@ -84,6 +84,7 @@ import { handleChatSend, handleTrustedInternalChatSend } from "./chat-send-handl
 import { readChatSendDedupeResponse } from "./chat-send-pre-admission.js";
 import {
   createChatDirectiveSuiteResources,
+  expectClaimOnlyTranscriptMedia,
   seedChatDirectiveFileTranscript,
 } from "./chat.directive-tags.test-support.js";
 import { initializeSessionReadContext } from "./sessions-read-cache.test-support.js";
@@ -620,28 +621,6 @@ const { handleDirectExternalChatSend } = await import("./chat-send-external-entr
 // Multi-media transcript mirroring can exceed 1s on loaded CI before the async broadcast lands.
 async function waitForAssertion(assertion: () => void, timeoutMs = 5_000, stepMs = 2) {
   await vi.waitFor(assertion, { interval: stepMs, timeout: timeoutMs });
-}
-
-function expectClaimOnlyTranscriptMedia(
-  message: unknown,
-  expectedMedia: unknown[],
-  forbiddenValues: string[],
-) {
-  const media = (
-    message as { __openclaw?: { media?: Array<Record<string, unknown>> } } | undefined
-  )?.["__openclaw"]?.media;
-  expect(media).toEqual(expectedMedia);
-  for (const fact of media ?? []) {
-    expect(fact.url).toMatch(/^media:\/\/inbound\/[^?#]+$/u);
-    expect(fact).not.toHaveProperty("path");
-    expect(fact).not.toHaveProperty("workspaceDir");
-    expect(fact).not.toHaveProperty("data");
-  }
-  const serialized = JSON.stringify(message);
-  expect(serialized).not.toContain("base64");
-  for (const value of forbiddenValues) {
-    expect(serialized).not.toContain(value);
-  }
 }
 
 function createFixturePaths(prefix: string): { dir: string; transcriptPath: string } {
@@ -6272,6 +6251,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
   });
 
   it("prepares non-image chat.send attachments as claim-only media refs without dispatch images", async () => {
+    const fileName = "brief café 雪 🦞.pdf";
     await createReadyChatTranscript("openclaw-chat-send-user-transcript-file-");
     mockState.triggerAgentRunStart = true;
     setSavedMediaResults(["/tmp/chat-send-brief.pdf", "application/pdf"]);
@@ -6281,7 +6261,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
       requestParams: {
         attachments: [
           createFileAttachment(
-            "brief.pdf",
+            fileName,
             "application/pdf",
             Buffer.from("%PDF-1.4\n").toString("base64"),
           ),
@@ -6297,6 +6277,9 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
         | undefined;
       expect(mockState.lastDispatchImages).toBeUndefined();
       expect(mockState.lastDispatchImageOrder).toBeUndefined();
+      expect(mockState.lastDispatchCtx?.media).toEqual([
+        expect.objectContaining({ path: "/tmp/chat-send-brief.pdf", fileName }),
+      ]);
       expect(mockState.lastDispatchCtx?.Body).toBe(
         "summarize this\n[media attached: media://inbound/saved-media]",
       );
@@ -6312,7 +6295,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
             url: "media://inbound/saved-media",
             contentType: "application/pdf",
             kind: "document",
-            fileName: "brief.pdf",
+            fileName,
             sizeBytes: 9,
             hydrationSuppressed: true,
           },
@@ -6605,6 +6588,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(mockState.lastDispatchCtx?.Body).not.toContain("media://");
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "attachment-1",
         path: "/tmp/1.png",
         contentType: "image/png",
         workspaceDir: "/tmp",
@@ -6740,6 +6724,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(mockState.lastDispatchCtx?.Body).not.toContain("media://");
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "attachment-1",
         path: "/tmp/1.png",
         contentType: "image/png",
         workspaceDir: "/tmp",
@@ -6772,6 +6757,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
 
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "report.pdf",
         path: "/home/user/.openclaw/media/inbound/report.pdf",
         contentType: "application/pdf",
         workspaceDir: "/home/user/.openclaw/media/inbound",
@@ -6814,6 +6800,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     ]);
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "fake.png",
         path: "/home/user/.openclaw/media/inbound/fake.zip",
         contentType: "application/zip",
         workspaceDir: "/home/user/.openclaw/media/inbound",
@@ -6852,6 +6839,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
 
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "report.pdf",
         path: "media/inbound/report.pdf",
         contentType: "application/pdf",
         workspaceDir: "/sandbox/workspace",
@@ -6903,6 +6891,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     expect(mockState.lastDispatchImageOrder).toEqual(["inline"]);
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "report.pdf",
         path: "media/inbound/report.pdf",
         contentType: "application/pdf",
         workspaceDir: "/sandbox/workspace",
@@ -7075,6 +7064,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     // Reaches dispatch through the same staged workspace path as other files.
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "huge.pdf",
         path: "media/inbound/huge.pdf",
         contentType: "application/pdf",
         workspaceDir: "/sandbox/workspace",
@@ -7114,6 +7104,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     // dir) and the media-store entry is preserved for host-side extraction.
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "report.pdf",
         path: "/home/user/.openclaw/media/inbound/report.pdf",
         contentType: "application/pdf",
         workspaceDir: "/home/user/.openclaw/media/inbound",
@@ -7147,6 +7138,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
 
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "report.pdf",
         path: "/home/user/.openclaw/media/inbound/report.pdf",
         contentType: "application/pdf",
         workspaceDir: "/sandbox/workspace",
@@ -7231,6 +7223,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
 
     expect(mockState.lastDispatchCtx?.media).toEqual([
       {
+        fileName: "huge.bin",
         path: "media/inbound/huge.bin",
         contentType: "application/octet-stream",
         workspaceDir: "/sandbox/workspace",

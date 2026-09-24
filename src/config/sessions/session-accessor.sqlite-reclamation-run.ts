@@ -63,6 +63,7 @@ export async function runPreparedSqliteSessionReclamation(
     worker: SqliteReclamationWorker;
     assertRequestCurrent: () => void;
     commitGate: SharedArrayBuffer;
+    signal: AbortSignal;
   },
 ): Promise<SqliteSessionReclamationResult> {
   const { database, claim, worker, assertRequestCurrent, commitGate } = owner;
@@ -148,7 +149,15 @@ export async function runPreparedSqliteSessionReclamation(
               "session.reclamation.worker-commit",
               { ...params.diagnostics, reclamationAdmission },
               "worker",
-            ),
+              owner.signal,
+            ).catch((error: unknown) => {
+              // Queue cancellation must retain the domain owner's more specific
+              // claim/authority refusal, just like an admitted callback does.
+              if (owner.signal.aborted) {
+                assertCommitAllowed();
+              }
+              throw error;
+            }),
           transferList: prepareReclamationWorkerTransferList(plan),
         }),
     );
@@ -160,6 +169,8 @@ export async function runPreparedSqliteSessionReclamation(
         runAuthorized,
         "session.maintenance.finalize",
         params.diagnostics,
+        "foreground",
+        owner.signal,
       )
     : await runAuthorized();
 }
