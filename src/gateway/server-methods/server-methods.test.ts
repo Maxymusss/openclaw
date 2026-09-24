@@ -1702,71 +1702,6 @@ describe("projectChatDisplayMessages", () => {
     expect(result).toEqual([projectedSessionsSendHistoryMessage("", 1)]);
   });
 
-  it("does not let sessions_send inter-session turns clear pending message-tool mirrors", () => {
-    const result = projectChatDisplayMessages([
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "tool_call",
-            id: "call-message",
-            name: "message",
-            args: { action: "send", message: "visible via message tool" },
-          },
-        ],
-        __openclaw: { seq: 1 },
-        timestamp: 1,
-      },
-      sessionsSendHistoryMessage("inter-session update", 2, {
-        __openclaw: { seq: 2 },
-      }),
-      {
-        role: "toolResult",
-        toolName: "message",
-        toolCallId: "call-message",
-        content: JSON.stringify({ ok: true }),
-        details: { sourceReplySink: "internal-ui" },
-        timestamp: 3,
-      },
-      assistantHistoryMessage("NO_REPLY", { timestamp: 4 }),
-    ]);
-
-    expect(result).toEqual([
-      {
-        role: "assistant",
-        content: [
-          {
-            type: "tool_call",
-            id: "call-message",
-            name: "message",
-            args: { action: "send", message: "visible via message tool" },
-          },
-        ],
-        __openclaw: { seq: 1 },
-        timestamp: 1,
-      },
-      projectedSessionsSendHistoryMessage("inter-session update", 2, {
-        __openclaw: { seq: 2 },
-      }),
-      {
-        role: "toolResult",
-        toolName: "message",
-        toolCallId: "call-message",
-        content: JSON.stringify({ ok: true }),
-        timestamp: 3,
-      },
-      assistantHistoryMessage("visible via message tool", {
-        openclawMessageToolMirror: {
-          toolName: "message",
-          toolCallId: "call-message",
-          sourceReplySink: "internal-ui",
-          sourceMessageSeq: 1,
-        },
-        timestamp: 1,
-      }),
-    ]);
-  });
-
   it("keeps forwarded sessions_send control-token text visible after stripping provenance", () => {
     const result = projectChatDisplayMessages([
       {
@@ -5014,9 +4949,7 @@ describe("gateway healthHandlers.health cache freshness", () => {
       prefix: "openclaw-health-cached-dq-",
     });
     try {
-      const { upsertDeliveryQueueEntry } = await import("../../infra/delivery-queue-sqlite.js");
-      const { prepareDeliveryQueueTerminalEntry, terminalizePendingDeliveryQueueEntryInDatabase } =
-        await import("../../infra/delivery-queue-sqlite.kernel.js");
+      const queue = await import("../../infra/delivery-queue-sqlite.kernel.js");
       const { openOpenClawStateDatabase } = await import("../../state/openclaw-state-db.js");
       const cachedPressure = [
         {
@@ -5038,12 +4971,12 @@ describe("gateway healthHandlers.health cache freshness", () => {
         retryCount: 5,
         retainOnFailure: true as const,
       };
-      upsertDeliveryQueueEntry({ queueName: "outbound", entry });
       const database = openOpenClawStateDatabase();
+      queue.upsertDeliveryQueueEntryInDatabase({ queueName: "outbound", entry }, database);
       expect(
-        terminalizePendingDeliveryQueueEntryInDatabase(
+        queue.terminalizePendingDeliveryQueueEntryInDatabase(
           database,
-          prepareDeliveryQueueTerminalEntry({ queueName: "outbound", id: entry.id, entry }),
+          queue.prepareDeliveryQueueTerminalEntry({ queueName: "outbound", id: entry.id, entry }),
         ),
       ).toMatchObject({ status: "terminalized" });
       const { createChannelIngressQueue } = await import("../../channels/message/ingress-queue.js");

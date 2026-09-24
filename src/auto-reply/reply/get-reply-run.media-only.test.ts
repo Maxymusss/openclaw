@@ -1,6 +1,7 @@
 // Tests media-only get-reply runs and sandboxed media attachment handling.
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import { createTestAdmittedRunContext } from "../../agents/admitted-run-context.test-support.js";
 import {
   createCronCreatorAuthorityCapability,
@@ -54,6 +55,13 @@ import {
   loadSessionUpdatesRuntime,
 } from "./get-reply-run-helpers.js";
 import { runPreparedReply } from "./get-reply-run.js";
+import {
+  createInboundBody,
+  createInboundTurn,
+  createProviderSurface,
+  createSessionBody,
+  createSessionTurn,
+} from "./get-reply-run.test-support.js";
 import { buildDirectChatContext, buildGroupChatContext, buildGroupIntro } from "./groups.js";
 import { finalizeInboundContext, finalizeInboundContextForSdk } from "./inbound-context.js";
 import {
@@ -62,6 +70,7 @@ import {
   resolveInboundUserContextPromptJoiner,
 } from "./inbound-meta.js";
 import { prepareReplyConversation } from "./prompt-session-context.js";
+import { resolveFollowupAbortSignal } from "./queue/types.js";
 import { REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS, createReplyOperation } from "./reply-run-registry.js";
 import { getActiveReplyRunCount } from "./reply-run-registry.registry.js";
 import { testing as replyRunTesting } from "./reply-run-registry.test-support.js";
@@ -364,34 +373,6 @@ function createGatewayDrainingError(): Error {
 
 const ROOM_EVENT_MESSAGE_TOOL_DIRECTIVE =
   "Treat this message as observed room activity, not a request. You were not explicitly tagged or mentioned in this room event. Default: stay silent. Only respond if you have something useful, substantial, or important to add. A previous mention or reply is not an invitation to keep talking. To respond visibly, use message(action=send); your final text here stays private either way.";
-
-function createInboundBody<T extends string>(body: T) {
-  return { Body: body, RawBody: body, CommandBody: body };
-}
-
-function createSessionBody<T extends string>(body: T) {
-  return { Body: body, BodyStripped: body };
-}
-
-function createProviderSurface<T extends string>(provider: T) {
-  return { Provider: provider, Surface: provider };
-}
-
-function createInboundTurn<
-  TBody extends string,
-  TProvider extends string,
-  TChatType extends string,
->(body: TBody, provider: TProvider, chatType: TChatType) {
-  return { ...createInboundBody(body), ...createProviderSurface(provider), ChatType: chatType };
-}
-
-function createSessionTurn<
-  TBody extends string,
-  TProvider extends string,
-  TChatType extends string,
->(body: TBody, provider: TProvider, chatType: TChatType) {
-  return { ...createSessionBody(body), ...createProviderSurface(provider), ChatType: chatType };
-}
 
 function baseParams(
   overrides: Partial<Parameters<typeof runPreparedReply>[0]> = {},
@@ -1000,53 +981,30 @@ describe("runPreparedReply media-only handling", () => {
     expect(requireRunReplyAgentCall().followupRun.run.spawnedBy).toBe(spawnedBy);
   });
 
-  it("propagates non-visible assistant silence for group runs", async () => {
-    await runPrepared();
-
-    let call = requireLastRunReplyAgentCall();
-    expect(call?.followupRun.run.allowEmptyAssistantReplyAsSilent).toBe(true);
-    expect(call?.followupRun.run.terminalReplyExpectation).toBe("required");
-
+  it("keeps accepted unmentioned group input optional when silence is allowed", async () => {
+    const defaults = baseParams();
     await runPrepared({
       defaultActivation: "mention",
+      opts: { sourceReplyDeliveryMode: "message_tool_only" },
+      ctx: {
+        ...defaults.ctx,
+        InboundEventKind: "user_request",
+        WasMentioned: false,
+      },
+      sessionCtx: {
+        ...defaults.sessionCtx,
+        InboundEventKind: "user_request",
+        WasMentioned: false,
+      },
+      cfg: { agents: { defaults: { silentReply: { group: "allow" } } } },
     });
 
-    call = requireLastRunReplyAgentCall();
-    expect(call?.followupRun.run.allowEmptyAssistantReplyAsSilent).toBe(true);
-    expect(call?.followupRun.run.terminalReplyExpectation).toBe("required");
+    expect(requireLastRunReplyAgentCall().followupRun.run.terminalReplyExpectation).toBe(
+      "optional",
+    );
   });
 
-  it.each([
-    {
-      name: "mention",
-      ctx: { WasMentioned: true },
-    },
-    {
-      name: "native command",
-      ctx: {
-        CommandTurn: {
-          kind: "native" as const,
-          source: "native" as const,
-          authorized: true,
-          commandName: "status",
-          body: "/status",
-        },
-      },
-    },
-  ])("keeps empty-assistant silence disabled for a directed group $name", async ({ ctx }) => {
-    await runPrepared({
-      ctx: {
-        ...baseParams().ctx,
-        ...ctx,
-      },
-    });
-
-    const call = requireLastRunReplyAgentCall();
-    expect(call?.followupRun.run.allowEmptyAssistantReplyAsSilent).toBe(false);
-    expect(call?.followupRun.run.terminalReplyExpectation).toBe("required");
-  });
-
-  it("keeps empty-assistant silence optional for ambient room events", async () => {
+  it("keeps ambient room replies optional despite stale mention facts and silent policy", async () => {
     const defaults = baseParams();
     await runPrepared({
       ctx: {
@@ -1068,11 +1026,9 @@ describe("runPreparedReply media-only handling", () => {
       },
     });
 
-    const call = requireLastRunReplyAgentCall();
-    expect(call.followupRun.run).toMatchObject({
-      allowEmptyAssistantReplyAsSilent: true,
-      terminalReplyExpectation: "optional",
-    });
+    expect(requireLastRunReplyAgentCall().followupRun.run.terminalReplyExpectation).toBe(
+      "optional",
+    );
   });
 
   it("hydrates runtime thinking metadata before trusting static provider support", async () => {
@@ -1187,30 +1143,27 @@ describe("runPreparedReply media-only handling", () => {
     expect(sessionStore["session-key"]?.thinkingLevel).toBe("high");
   });
 
-  it.each([
-    ["telegram", "direct", "automatic"],
-    ["telegram", "group", "automatic"],
-    ["slack", "direct", "automatic"],
-    ["slack", "group", "automatic"],
-    ["telegram", "direct", "message_tool_only"],
-    ["telegram", "group", "message_tool_only"],
-    ["slack", "direct", "message_tool_only"],
-    ["slack", "group", "message_tool_only"],
-  ] as const)("allows a silent heartbeat for %s %s %s", async (channel, chatType, deliveryMode) => {
-    await runPrepared({
-      opts: { isHeartbeat: true, sourceReplyDeliveryMode: deliveryMode },
-      ctx: { ...createInboundTurn("Heartbeat check-in", channel, chatType), WasMentioned: true },
-      sessionCtx: createSessionTurn("Heartbeat check-in", channel, chatType),
-    });
+  it.each(["automatic", "message_tool_only"] as const)(
+    "keeps heartbeat replies optional with %s transport",
+    async (deliveryMode) => {
+      await runPrepared({
+        opts: { isHeartbeat: true, sourceReplyDeliveryMode: deliveryMode },
+        ctx: {
+          ...createInboundTurn("Heartbeat check-in", "slack", "group"),
+          WasMentioned: true,
+        },
+        sessionCtx: {
+          ...createSessionTurn("Heartbeat check-in", "slack", "group"),
+          WasMentioned: true,
+        },
+        cfg: { agents: { defaults: { silentReply: { group: "disallow" } } } },
+      });
 
-    const call = requireRunReplyAgentCall();
-    expect(call.followupRun.run).toMatchObject({
-      allowEmptyAssistantReplyAsSilent: true,
-      terminalReplyExpectation: "optional",
-    });
-  });
+      expect(requireRunReplyAgentCall().followupRun.run.terminalReplyExpectation).toBe("optional");
+    },
+  );
 
-  it("keeps empty-assistant silence disabled for direct runs by default", async () => {
+  it("requires a reply to a direct media-only request", async () => {
     await runPrepared({
       ctx: {
         ...createInboundBody(""),
@@ -1231,7 +1184,7 @@ describe("runPreparedReply media-only handling", () => {
     });
 
     const call = requireLastRunReplyAgentCall();
-    expect(call?.followupRun.run.allowEmptyAssistantReplyAsSilent).toBe(false);
+    expect(call.followupRun.run.terminalReplyExpectation).toBe("required");
   });
 
   it("passes message-tool-only delivery into direct chat prompt context", async () => {
@@ -1408,70 +1361,6 @@ describe("runPreparedReply media-only handling", () => {
       content: "please answer here",
     });
     expect(persistedUserMessage.content).not.toContain(MESSAGE_TOOL_ONLY_DELIVERY_HINT);
-  });
-
-  it.each(["direct", "dm"] as const)(
-    "does not propagate empty-assistant silence for %s runs",
-    async (chatType) => {
-      await runPrepared({
-        ctx: {
-          ...createInboundBody(""),
-          ThreadHistoryBody: "Earlier direct message",
-          OriginatingChannel: "slack",
-          OriginatingTo: "D123",
-          ChatType: chatType,
-        },
-        sessionCtx: {
-          ...createSessionBody(""),
-          ThreadHistoryBody: "Earlier direct message",
-          media: [{ path: "/tmp/input.png" }],
-          Provider: "slack",
-          ChatType: chatType,
-          OriginatingChannel: "slack",
-          OriginatingTo: "D123",
-        },
-        cfg: {
-          session: {},
-          channels: {},
-          agents: {},
-        },
-      });
-
-      const call = requireLastRunReplyAgentCall();
-      expect(call?.followupRun.run.allowEmptyAssistantReplyAsSilent).toBe(false);
-    },
-  );
-
-  it("does not borrow target-session silence for native commands sent from direct chats", async () => {
-    await runPrepared({
-      agentId: "main",
-      sessionKey: "agent:main:telegram:group:target",
-      ctx: {
-        ...createInboundBody(""),
-        ThreadHistoryBody: "Earlier direct message",
-        OriginatingChannel: "telegram",
-        OriginatingTo: "D123",
-        ChatType: "direct",
-        CommandSource: "native",
-        SessionKey: "agent:main:telegram:direct:source",
-        CommandTargetSessionKey: "agent:main:telegram:group:target",
-      },
-      sessionCtx: {
-        ...createSessionBody(""),
-        ThreadHistoryBody: "Earlier direct message",
-        media: [{ path: "/tmp/input.png" }],
-        Provider: "telegram",
-        ChatType: "direct",
-        OriginatingChannel: "telegram",
-        OriginatingTo: "D123",
-        CommandSource: "native",
-        SessionKey: "agent:main:telegram:direct:source",
-        CommandTargetSessionKey: "agent:main:telegram:group:target",
-      },
-    });
-
-    const call = requireLastRunReplyAgentCall();
-    expect(call?.followupRun.run.allowEmptyAssistantReplyAsSilent).toBe(false);
   });
 
   it("allows media-only prompts and preserves thread context in queued followups", async () => {
@@ -3970,6 +3859,13 @@ describe("runPreparedReply media-only handling", () => {
     const queueSettings = await import("./queue/settings-runtime.js");
     const embeddedAgentRuntime = await import("../../agents/embedded-agent.runtime.js");
     const abortController = new AbortController();
+    const operatorController = new AbortController();
+    const operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "guest",
+      scopes: ["operator.write"],
+      assertCurrent: () => operatorController.signal.throwIfAborted(),
+      signal: operatorController.signal,
+    });
     vi.mocked(queueSettings.resolveQueueSettings).mockReturnValueOnce({
       mode: "collect",
       debounceMs: 500,
@@ -3984,7 +3880,7 @@ describe("runPreparedReply media-only handling", () => {
     vi.mocked(buildInboundUserContextPrefix).mockReturnValueOnce("user request context");
 
     await runPrepared({
-      opts: { abortSignal: abortController.signal },
+      opts: { abortSignal: abortController.signal, operatorAuthority },
       ctx: {
         ...createInboundTurn("@bot keep this", "telegram", "group"),
       },
@@ -4001,6 +3897,11 @@ describe("runPreparedReply media-only handling", () => {
     expect(call.isActive).toBe(true);
     expect(call.followupRun.currentInboundEventKind).toBe("user_request");
     expect(call.followupRun.abortSignal).toBeUndefined();
+    expect(call.followupRun.operatorAuthority).toBe(operatorAuthority);
+    abortController.abort();
+    expect(resolveFollowupAbortSignal(call.followupRun)?.aborted).toBe(false);
+    operatorController.abort();
+    expect(resolveFollowupAbortSignal(call.followupRun)?.aborted).toBe(true);
   });
 
   it("queues active room events instead of interrupting active user requests", async () => {

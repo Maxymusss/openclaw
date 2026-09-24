@@ -25,6 +25,41 @@ type TranscriptSessionEntry = {
 };
 type TranscriptSessionMatchEntry = TranscriptSessionEntry & { inputRevision: string };
 
+export function readTranscriptExportOwnership(
+  database: DatabaseSync,
+  session: TranscriptSessionIdentity,
+) {
+  return executeSqliteQueryTakeFirstSync(
+    database,
+    meetingTranscriptSessionQuery(database, session).select([
+      "export_manifest_json",
+      "export_pending_json",
+    ]),
+  );
+}
+
+export function readTranscriptExportPathCollisions(database: DatabaseSync, exportKey: string) {
+  return executeSqliteQuerySync(
+    database,
+    meetingTranscriptDb(database)
+      .selectFrom("meeting_transcript_sessions")
+      .select(["session_id", "started_at", "selector", "export_pending_json"])
+      .where("export_key", "=", exportKey)
+      .orderBy("selector", "asc"),
+  ).rows;
+}
+
+export function readTranscriptExportPathOwners(database: DatabaseSync, exportKey: string) {
+  return executeSqliteQuerySync(
+    database,
+    meetingTranscriptDb(database)
+      .selectFrom("meeting_transcript_sessions")
+      .select(["session_id", "started_at", "export_manifest_json", "export_pending_json"])
+      .where("export_key", "=", exportKey)
+      .orderBy("selector", "asc"),
+  ).rows;
+}
+
 /** Runs inside the read worker's transaction so input and replacement basis agree. */
 export function readTranscriptSummarySnapshot(
   database: DatabaseSync,
@@ -98,16 +133,10 @@ export function readTranscriptSessionMatches(
   };
   const entries = (selection: typeof query) =>
     executeSqliteQuerySync(database, selection).rows.map(matchedEntry);
-  const canonical = executeSqliteQueryTakeFirstSync(
-    database,
-    meetingTranscriptDb(database)
-      .selectFrom("meeting_transcript_sessions")
-      .selectAll()
-      .where("selector", "=", value),
-  );
+  const canonical = entries(query.where("selector", "=", value))[0];
   const date = value.match(/^(\d{4}-\d{2}-\d{2})\//u)?.[1];
   const qualified = canonical
-    ? [matchedEntry(canonical)]
+    ? [canonical]
     : date
       ? entries(
           query.where("session_id", "=", value.slice(11)).where("started_at", "like", `${date}T%`),

@@ -59,7 +59,7 @@ import type {
 } from "./registry-contribution-types.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import type { SessionCatalogProvider } from "./session-catalog.js";
-import type { PluginDependencyStatus } from "./status-dependencies-core.js";
+import type { PluginDependencyStatus } from "./status-dependencies.types.js";
 import type { PluginMcpServerConnectionResolverRegistration } from "./types.mcp-connection.js";
 type ChannelPlugin = import("../channels/plugins/types.plugin.js").ChannelPlugin;
 type CliBackendPlugin = import("./types.js").CliBackendPlugin;
@@ -149,6 +149,8 @@ type PluginHostedMediaResolverRegistration = PluginRegistrationOwner & {
 
 export type PluginChannelRegistration = PluginRegistrationOwner & {
   plugin: ChannelPlugin;
+  /** Prepared views retain the exact transport donor in addition to their local admission. */
+  borrowedRuntimeRecord?: PluginRecord;
   /** Exact record-bound runtime resolver captured when the active plugin registered the channel. */
   resolveChannelRuntime?: () => PluginRuntime["channel"];
   /** Loader-owned provenance. Missing values are conservative legacy registrations. */
@@ -420,6 +422,10 @@ export type PluginRegistry = {
   agentHarnesses: PluginAgentHarnessRegistration[];
   pluginRuntimeArtifacts: Map<string, ResolvedPluginRuntimeArtifact>;
   compactionProviders: RegisteredCompactionProvider[];
+  decisionProviders: Array<{
+    pluginId: string;
+    host: import("../decisions/provider-host.js").DecisionProviderHost;
+  }>;
   detachedTaskRuntimes: DetachedTaskLifecycleRuntimeRegistration[];
   legacyInternalHooks: PluginLegacyInternalHookRegistration[];
   memoryCapabilities: MemoryPluginCapabilityRegistration[];

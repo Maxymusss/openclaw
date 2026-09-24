@@ -1,5 +1,6 @@
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
+import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-registration";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { sanitizeTerminalText } from "openclaw/plugin-sdk/text-chunking";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -54,6 +55,7 @@ async function fixture(
   };
   const homeId = await codexCatalogResidentHomeKey({ startOptions });
   const harness = createClientHarness();
+  const nativeReads = vi.spyOn(harness.client, "request");
   const readNative = vi.fn(async (params: CodexThreadListParams) => {
     const offset = Number(params.cursor ?? 0);
     const limit = params.limit ?? 64;
@@ -74,7 +76,7 @@ async function fixture(
   });
   cleanups.push(async () => {
     harness.client.close();
-    await index.close();
+    await Promise.all([index.close(), harness.client.closeAndWait()]);
   });
   await observeCodexCatalogClient(harness.client, { startOptions });
   if (options.initialize !== false) {
@@ -89,8 +91,9 @@ async function fixture(
       params: { threadId: "thread-1", includeTurns: false },
     });
     harness.send({ id: request.id, result: { thread: value } });
+    await nativeReads.mock.results[position]!.value;
   };
-  return { index, harness, startOptions, readNative, complete, reply };
+  return { index, harness, startOptions, nativeReads, readNative, complete, reply };
 }
 
 function notifyNameAndStatus(harness: ReturnType<typeof createClientHarness>): void {
@@ -116,6 +119,88 @@ afterEach(async () => {
 });
 
 describe("resident Codex catalog notifications", () => {
+  it.each(["queued", "written"])(
+    "defers a %s observation when its physical client closes and recovers on the current owner",
+    async (phase) => {
+      vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+      const { index, harness, nativeReads, readNative, startOptions, complete } = await fixture(
+        [thread()],
+        { local: true },
+      );
+      const warnings = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => {});
+      complete();
+      if (phase === "written") {
+        await harness.waitForWrite(0);
+        complete();
+      }
+      harness.client.close();
+      await vi.waitFor(() => expect(index.hasActiveWork()).toBe(false));
+      expect(nativeReads).toHaveBeenCalledTimes(phase === "written" ? 1 : 0);
+      expect(warnings).toHaveBeenCalledOnce();
+      const warning = warnings.mock.calls[0]?.[1];
+      expect(warning).toMatchObject({
+        error: {
+          message: expect.stringContaining(
+            "metadata refresh deferred to the current catalog owner",
+          ),
+        },
+      });
+      if (phase === "written") {
+        expect(warning).toMatchObject({
+          error: {
+            cause: {
+              code: "CODEX_APP_SERVER_REQUEST_TRANSPORT_INDETERMINATE",
+              mayHaveWritten: true,
+            },
+          },
+        });
+      }
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(index.hasActiveWork()).toBe(false));
+      expect(readNative).toHaveBeenCalledTimes(2);
+      const replacement = createClientHarness();
+      cleanups.push(async () => replacement.client.closeAndWait().then(() => undefined));
+      await observeCodexCatalogClient(replacement.client, { startOptions });
+      replacement.send({ method: "turn/completed", params: { threadId: "thread-1", turn: {} } });
+      const request = JSON.parse(await replacement.waitForWrite(0));
+      replacement.send({
+        id: request.id,
+        result: { thread: thread({ name: "Recovered metadata" }) },
+      });
+      await vi.waitFor(() =>
+        expect(index.get("thread-1")?.page.sessions[0]?.name).toBe("Recovered metadata"),
+      );
+      expect(warnings).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each(["activity", "safety"])(
+    "settles a failed %s refresh until fresh activity or the next safety cycle",
+    async (trigger) => {
+      vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
+      const { index, harness, readNative } = await fixture();
+      const warnings = vi.spyOn(embeddedAgentLog, "warn").mockImplementation(() => {});
+      readNative.mockRejectedValueOnce(new Error("native catalog unavailable"));
+      const notify = () => harness.send({ method: "thread/started", params: { thread: thread() } });
+      if (trigger === "activity") {
+        notify();
+        await vi.waitFor(() => expect(index.hasActiveWork()).toBe(false));
+      }
+      await vi.advanceTimersByTimeAsync(trigger === "activity" ? 30_000 : 15 * 60_000);
+      await vi.waitFor(() => expect(index.hasActiveWork()).toBe(false));
+      expect(readNative).toHaveBeenCalledTimes(2);
+      expect(warnings).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(4 * 30_000);
+      expect(readNative).toHaveBeenCalledTimes(2);
+      notify();
+      await vi.waitFor(() => expect(index.hasActiveWork()).toBe(false));
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => expect(index.hasActiveWork()).toBe(false));
+      expect(readNative).toHaveBeenCalledTimes(3);
+      expect(warnings).toHaveBeenCalledOnce();
+    },
+  );
+
   it("leaves an unchanged home idle until the 15-minute native safety walk", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setInterval", "clearInterval"] });
     const inventory = Array.from({ length: 192 }, (_, i) =>
@@ -192,7 +277,7 @@ describe("resident Codex catalog notifications", () => {
     async ({ repeatFirst, expected }) => {
       const first = thread({ id: "first" });
       const second = thread({ id: "second" });
-      const { index, harness, readNative } = await fixture([first, second]);
+      const { index, harness, nativeReads, readNative } = await fixture([first, second]);
       let turn = 0;
       const start = (threadId: string) =>
         harness.send({
@@ -217,6 +302,7 @@ describe("resident Codex catalog notifications", () => {
         id: secondRead.id,
         result: { thread: { ...second, name: "Second read returned first" } },
       });
+      await nativeReads.mock.results[1]!.value;
       await vi.waitFor(() =>
         expect(index.get(second.id)?.page.sessions[0]?.name).toBe("Second read returned first"),
       );
@@ -224,6 +310,7 @@ describe("resident Codex catalog notifications", () => {
         id: firstRead.id,
         result: { thread: { ...first, name: "First read returned last" } },
       });
+      await nativeReads.mock.results[0]!.value;
       await vi.waitFor(() =>
         expect(index.get(first.id)?.page.sessions[0]?.name).toBe("First read returned last"),
       );
@@ -233,6 +320,7 @@ describe("resident Codex catalog notifications", () => {
           id: latestRead.id,
           result: { thread: { ...first, name: "Latest first turn" } },
         });
+        await nativeReads.mock.results[2]!.value;
         await vi.waitFor(() =>
           expect(index.get(first.id)?.page.sessions[0]?.name).toBe("Latest first turn"),
         );

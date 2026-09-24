@@ -26,6 +26,12 @@ includes blocked channel startup after a local plugin requests trusted runtime
 state, with the source and supported installation remedy. An unavailable Gateway
 does not prevent availability or run-history output.
 
+For a local Gateway, status also shows when its last shutdown recorded an
+installation replacement, even after the successor starts. JSON exposes the
+recorded reason and completion time as `lastGatewayInstallationReplacement`.
+This is historical information, not a current health verdict or an update run;
+a manual package-manager replacement does not create updater history.
+
 ```bash
 openclaw update status
 openclaw update status --json
@@ -208,7 +214,12 @@ the Gateway broadcasts `update.run.changed` with `runId`, `phase`, `status`, and
 
 When a history request needs a read-only snapshot, the Gateway prepares it
 asynchronously so other requests can continue. The snapshot preserves the source
-database and its sidecar files.
+database and its sidecar files. The Gateway's `update.status` reads its two run
+records through the already-open database when available, avoiding full-database
+copies on each poll. Cold status reads prepare one private snapshot. When
+diagnostics are enabled, status requests lasting at least one second log phase
+durations for sentinel refresh, checkout refresh, install identity, reconciliation,
+history, and response.
 
 Native service-stop observations do not advance the update's recorded phase.
 If the Control UI cannot read fresh progress, it shows the read error alongside

@@ -25,6 +25,7 @@ import type { readSessionRowFacts } from "./server-methods/session-placement-rea
 import { yieldSessionListWork } from "./session-projection-work.js";
 import { readSessionRowModelFacts } from "./session-row-model-facts.js";
 import { withPreparedSessionRows, type SessionRowReadView } from "./session-row-prepared-read.js";
+import { readSessionRowAncestors } from "./session-row-projection-ancestors.js";
 import {
   createSessionRowProjectionArchive,
   isColdArchivedSessionRow as isCold,
@@ -32,6 +33,7 @@ import {
 import { createSessionRowProjectionBackfill } from "./session-row-projection-backfill.js";
 import { createSessionRowProjectionCatalog } from "./session-row-projection-catalog.js";
 import { createSessionRowProjectionContext } from "./session-row-projection-context.js";
+import { createSessionRowCreatorIndex } from "./session-row-projection-identities.js";
 import {
   createSessionRowMaterializationBatch,
   readIncognitoSessionRow,
@@ -61,6 +63,7 @@ export async function createSessionRowProjection(params: {
   const inOwnerContext = AsyncLocalStorage.snapshot();
   let cfg = params.cfg;
   const rows = new Map<string, records.Row>();
+  const creators = createSessionRowCreatorIndex();
   let stores = new Map<
     string,
     { target: SessionStoreTarget; agentId: string; identity: string | symbol; filename: string }
@@ -74,6 +77,7 @@ export async function createSessionRowProjection(params: {
   let topologyDirty = true,
     disposed = false;
   let epoch = 0;
+  let rowRevision = 0;
   let materializedCount = 0;
   let scope: ReturnType<typeof prepareSessionRowScopes>;
   let pending: Promise<void> | undefined;
@@ -81,9 +85,9 @@ export async function createSessionRowProjection(params: {
     modelCatalog: params.modelCatalog,
     getModelCatalog: params.getModelCatalog,
     onInvalidated: () => mark({ all: true, scope: "catalog" }),
-    onRefreshed(adopted) {
-      if (adopted) {
-        // Rows served during renewal used the previous catalog and must be presented again.
+    onRefreshed(changed) {
+      if (changed) {
+        // Rows served during renewal need new materializations only when their model facts changed.
         epoch++;
         metadata.invalidate({ all: true, scope: "catalog" });
         archive.invalidateRows({ all: true, scope: "catalog" }, rows.values());
@@ -137,7 +141,9 @@ export async function createSessionRowProjection(params: {
     transcriptUpdates.remove(id);
     const row = rows.get(id);
     if (row) {
+      rowRevision++;
       markRelated(row);
+      creators.update(row);
       records.index(row, indexes, true);
       rows.delete(id);
     }
@@ -145,7 +151,9 @@ export async function createSessionRowProjection(params: {
     backfill.remove(id);
   }
   function put(row: records.Row) {
+    rowRevision++;
     const previous = rows.get(records.identity(row));
+    creators.update(previous, row);
     if (previous) {
       if (previous.generation !== row.generation) {
         transcriptUpdates.remove(records.identity(row));
@@ -514,15 +522,7 @@ export async function createSessionRowProjection(params: {
           }
           markRelated(row);
           if ("current" in mutation && mutation.current.sessionKeys.includes(row.key)) {
-            put({
-              ...row,
-              entry: undefined,
-              storedEntry: undefined,
-              materialized: undefined,
-              lastMessagePreview: undefined,
-              fallbackModel: undefined,
-              generation: Symbol("row"),
-            });
+            put(records.renewGeneration(row));
             dirty.add(records.identity(row));
           } else {
             remove(records.identity(row));
@@ -575,6 +575,7 @@ export async function createSessionRowProjection(params: {
       return row;
     });
   function dispose() {
+    rowRevision++;
     disposed = true;
     catalog.dispose();
     transcriptUpdates.dispose();
@@ -586,6 +587,7 @@ export async function createSessionRowProjection(params: {
       map.clear();
     }
     dirty.clear();
+    creators.dispose();
     archive.clear();
   }
   function selectEntries(query: records.Query = {}) {
@@ -643,6 +645,8 @@ export async function createSessionRowProjection(params: {
       return row?.entry?.sessionId === query.sessionId ? [row] : [];
     },
     describe,
+    ancestorRows: (record: records.MaterializedRow) =>
+      readSessionRowAncestors(record, { cfg, context: metadata.current, referenced, describe }),
     setArchivePageSize: archive.setPageSize,
     modelFacts(row: records.EntryRow) {
       return readSessionRowModelFacts({
@@ -679,6 +683,8 @@ export async function createSessionRowProjection(params: {
         metadata.prepare(epoch, cfg, matching, put);
       }
       return {
+        // Include replacements and lifecycle-only removals as well as publications/materialization.
+        revision: epoch + rowRevision + materializedCount,
         cfg,
         modelCatalog: catalog.current,
         rowContext: metadata.current,
@@ -687,6 +693,8 @@ export async function createSessionRowProjection(params: {
     },
     isCurrent,
     selectEntries,
+    listCreatedActors: (): ReturnType<typeof creators.list> =>
+      inOwnerContext(() => creators.list(projection.state.scope({}).paths, matching)),
     snapshot(query: records.Lookup, options: records.SnapshotOptions = {}) {
       const record = describe(query);
       return record

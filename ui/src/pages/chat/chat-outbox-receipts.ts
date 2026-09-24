@@ -20,6 +20,7 @@ import { retryableGatewayDelayMs } from "./chat-outbox-retry.ts";
 import { applyChatPendingInputs } from "./chat-pending-inputs.ts";
 import {
   clearPendingQueueItemsForRun,
+  confirmQueuedMessageCustody,
   removeDeliveredQueuedChatSendForRun,
   syncVisibleChatQueueProjection,
   updateQueuedMessage,
@@ -82,6 +83,15 @@ function reconcilePendingChatOutboxInput(
   }
   const inputReceipt = readChatInputReceipt(history, item);
   if (inputReceipt === "pending") {
+    const pending = history.pendingInputs?.items.find((input) => input.runId === item.sendRunId);
+    const confirmsLocal = Boolean(
+      pending?.state !== "cancelled" &&
+      historySessionId &&
+      (!item.sessionId || item.sendState === "unconfirmed"),
+    );
+    if (confirmsLocal && !confirmQueuedMessageCustody(host, item, historySessionId)) {
+      return "blocked";
+    }
     if (
       visibleSessionMatches(host, outbox.sessionKey, outbox.agentId) &&
       historySessionId === host.currentSessionId &&
@@ -89,20 +99,14 @@ function reconcilePendingChatOutboxInput(
     ) {
       applyChatPendingInputs(host, history.pendingInputs);
     }
-    const pending = history.pendingInputs?.items.find((input) => input.runId === item.sendRunId);
     if (pending?.state === "cancelled") {
       return removeDeliveredQueuedChatSendForRun(host, item.sendRunId, outbox) !== null ||
         !readStoredChatOutbox(host, outbox)?.queue.some((entry) => entry.id === item.id)
         ? "continue"
         : "blocked";
     }
-    if (!item.sessionId && historySessionId) {
-      return updateQueuedMessage(host, item.id, (entry) => ({
-        ...entry,
-        sessionId: historySessionId,
-      }))
-        ? "continue"
-        : "blocked";
+    if (confirmsLocal) {
+      return "continue";
     }
     // Only positive unconsumed custody can cross a restart. The new request
     // acquires current authority; an absent receipt is still an uncertain send.
@@ -144,6 +148,8 @@ export async function readCurrentStoredChatHistory(
   const runId = host.chatRunId;
   const runGeneration = host.chatRunLifecycleGeneration;
   const sessionId = host.currentSessionId;
+  const isCurrent = () =>
+    host.client === client && host.connectionEpoch === connectionEpoch && host.connected;
   let history: ChatHistoryResult;
   let pendingBefore: number | undefined;
   const request = {
@@ -168,7 +174,7 @@ export async function readCurrentStoredChatHistory(
       history.pendingInputs?.nextBefore !== undefined &&
       (pendingBefore === undefined || history.pendingInputs.nextBefore < pendingBefore)
     ) {
-      if (host.client !== client || host.connectionEpoch !== connectionEpoch || !host.connected) {
+      if (!isCurrent()) {
         return "blocked";
       }
       pendingBefore = history.pendingInputs.nextBefore;
@@ -179,20 +185,15 @@ export async function readCurrentStoredChatHistory(
       });
     }
   } catch (err) {
-    const connectionCurrent =
-      host.client === client && host.connectionEpoch === connectionEpoch && host.connected;
     const retryDelayMs = retryableGatewayDelayMs(err);
     if (retryDelayMs !== null) {
-      if (connectionCurrent) {
+      if (isCurrent()) {
         scheduleRetry(retryDelayMs);
       }
       return "blocked";
     }
-    // An authoritative non-retryable rejection (auth loss, revoked scope) will
-    // repeat on every drain wakeup; leaving the head silently "blocked" wedges
-    // the whole FIFO lane forever. Fail or park it visibly so the operator sees
-    // the outcome and the lane can move past a never-attempted head.
-    if (!connectionCurrent || !(err instanceof GatewayRequestError)) {
+    // Fail or park non-retryable rejections visibly so they cannot silently block FIFO.
+    if (!isCurrent() || !(err instanceof GatewayRequestError)) {
       return "blocked";
     }
     const attempted =
@@ -214,16 +215,14 @@ export async function readCurrentStoredChatHistory(
       outbox.sessionKey,
       outbox.agentId,
       parked ? error : OFFLINE_QUEUE_STORAGE_ERROR,
-      // A parked attempted message owns its inline bubble footer; the pane
-      // banner would duplicate it. Never-attempted failures, command chips,
-      // and storage failures keep the banner — they render no bubble.
+      // Attempted messages own their inline error; other failures need the banner.
       { inline: Boolean(parked && attempted && !item.localCommandName) },
     );
     return parked && !attempted ? "continue" : "blocked";
   }
   const currentOutbox = readStoredChatOutbox(host, outbox);
   const currentItem = currentOutbox?.queue.find((entry) => entry.id === item.id);
-  if (host.client !== client || host.connectionEpoch !== connectionEpoch || !host.connected) {
+  if (!isCurrent()) {
     return "blocked";
   }
   if (!currentOutbox || !currentItem || !sameQueuedDeliveryVersion(currentItem, item)) {
@@ -251,12 +250,7 @@ export async function readCurrentStoredChatHistory(
       (await retireDeliveredQueuedUserTurn(host, item.sendRunId, outbox, {
         inputConsumed: requiresChatInputConsumption(item),
       })) === "retired";
-    if (
-      !retired ||
-      host.client !== client ||
-      host.connectionEpoch !== connectionEpoch ||
-      !host.connected
-    ) {
+    if (!retired || !isCurrent()) {
       return "blocked";
     }
     if (visibleSessionMatches(host, outbox.sessionKey, outbox.agentId)) {

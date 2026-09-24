@@ -1,8 +1,14 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { WEBSOCKET_NON_RETRYABLE_CLOSE_ERROR_CODE } from "@openclaw/ai/diagnostics";
 import { APIError } from "openai/core/error";
-import { describe, expect, it, vi } from "vitest";
+import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { projectProviderError } from "../../../../packages/ai/src/utils/provider-error.js";
+import { createTempDirTracker } from "../../../../test/helpers/temp-dir.js";
 import { sleepWithAbort } from "../../../infra/backoff.js";
+import { flushDiagnosticsTimeline } from "../../../infra/diagnostics-timeline.js";
+import { withEnvAsync } from "../../../test-utils/env.js";
 import {
   buildEmbeddedRunnerAssistant,
   createMockUsage,
@@ -24,6 +30,10 @@ vi.mock("../../../infra/backoff.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../infra/backoff.js")>()),
   sleepWithAbort: vi.fn(async () => {}),
 }));
+
+const tempDirs = createTempDirTracker();
+const requireRecord = createRequireRecord("record", "expected-label-object-capitalized");
+afterEach(() => tempDirs.cleanup());
 
 function handleAssistantFailureAfterRecovery(
   fixture: Awaited<ReturnType<typeof recoverAfterTransportDrop>>,
@@ -83,6 +93,58 @@ const outputLimitScenario = {
 } satisfies TransportDropScenario;
 
 describe("recoverEmbeddedRunAttempt", () => {
+  it.each([
+    { retryAvailable: true, decision: "accepted", reason: "transient_retry" },
+    { retryAvailable: false, decision: "rejected", reason: "replay_unsafe" },
+  ] as const)(
+    "records $decision recovery with prior tool settlement but no private content",
+    async ({ retryAvailable, decision, reason }) => {
+      const path = join(tempDirs.make("openclaw-recovery-timeline-"), "timeline.jsonl");
+      await withEnvAsync(
+        {
+          OPENCLAW_DIAGNOSTICS: undefined,
+          OPENCLAW_DIAGNOSTICS_TIMELINE_PATH: path,
+        },
+        async () => {
+          await recoverAfterTransportDrop({
+            config: { diagnostics: { flags: ["timeline"] } },
+            retryAvailable,
+            errorMessage: "WebSocket error: private-provider-payload",
+          });
+          flushDiagnosticsTimeline();
+        },
+      );
+      const written = readFileSync(path, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => requireRecord(JSON.parse(line), "recovery timeline event"));
+      expect(written.filter((event) => event.name === "model.retry.decision")).toEqual([
+        expect.objectContaining({
+          attributes: {
+            decision: retryAvailable ? "accepted" : "rejected",
+            reason: retryAvailable ? "backoff_completed" : "retry_budget_exhausted",
+            retryCount: 0,
+          },
+        }),
+      ]);
+      const events = written.filter((event) => event.name === "model.recovery.decision");
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        type: "mark",
+        runId: "run:transport-drop",
+        attributes: {
+          decision,
+          reason,
+          allToolsProvenSettled: true,
+          allToolCallsRecorded: true,
+          replaySafe: false,
+        },
+      });
+      expect(JSON.stringify(events)).not.toMatch(
+        /private-provider-payload|synthetic-model|sessionFile|toolName|messagesSnapshot/,
+      );
+    },
+  );
   it("continues an output-limited response before any tool executes", async () => {
     const { recovery, continueFromCurrentTranscript } = await recoverAfterTransportDrop({
       ...outputLimitScenario,
@@ -373,6 +435,67 @@ describe("recoverEmbeddedRunAttempt", () => {
       expect(sleepWithAbort).toHaveBeenCalledExactlyOnceWith(delayMs, undefined);
     } finally {
       clock.mockRestore();
+    }
+  });
+
+  it.each([
+    {
+      label: "fails over past the saved maxRetryDelayMs when a fallback exists",
+      errorMessage:
+        '429 rate limit: {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account\'s rate limit. Please try again later."}}',
+      errorBody: JSON.stringify({ headers: { "retry-after": "9897" } }),
+      fallbackConfigured: true,
+      replaySafe: true,
+      providerRetryMaxDelayMs: 30_000,
+      expectedAction: "proceed",
+      expectedSleepMs: undefined,
+    },
+    {
+      // Live shape: exec/write already ran, so rotation and fallback are both
+      // refused downstream. Declining the wait would end the turn; keep waiting.
+      label: "keeps waiting past the cap when tool activity made the attempt replay-unsafe",
+      errorMessage: "429 rate_limit_exceeded; Retry-After: 9897",
+      fallbackConfigured: true,
+      replaySafe: false,
+      providerRetryMaxDelayMs: 30_000,
+      expectedAction: "retry",
+      expectedSleepMs: 9_897_000,
+    },
+    {
+      label: "still sleeps the same floor with no fallback",
+      errorMessage: "429 rate_limit_exceeded; Retry-After: 9897",
+      fallbackConfigured: false,
+      replaySafe: true,
+      providerRetryMaxDelayMs: 30_000,
+      expectedAction: "retry",
+      expectedSleepMs: 9_897_000,
+    },
+    {
+      label: "keeps a floor inside the cap on the same model",
+      errorMessage: "429 rate_limit_exceeded; Retry-After: 20",
+      fallbackConfigured: true,
+      replaySafe: true,
+      providerRetryMaxDelayMs: 30_000,
+      expectedAction: "retry",
+      expectedSleepMs: 20_000,
+    },
+  ])("$label", async (scenario) => {
+    vi.mocked(sleepWithAbort).mockClear();
+    const { recovery, continueFromCurrentTranscript } = await recoverAfterTransportDrop({
+      errorMessage: scenario.errorMessage,
+      errorBody: scenario.errorBody,
+      fallbackConfigured: scenario.fallbackConfigured,
+      replaySafe: scenario.replaySafe,
+      providerRetryMaxDelayMs: scenario.providerRetryMaxDelayMs,
+      diagnostics: [],
+    });
+    expect(recovery.action).toBe(scenario.expectedAction);
+    if (scenario.expectedSleepMs === undefined) {
+      expect(sleepWithAbort).not.toHaveBeenCalled();
+      expect(continueFromCurrentTranscript).not.toHaveBeenCalled();
+    } else {
+      expect(sleepWithAbort).toHaveBeenCalledExactlyOnceWith(scenario.expectedSleepMs, undefined);
+      expect(continueFromCurrentTranscript).toHaveBeenCalledOnce();
     }
   });
 

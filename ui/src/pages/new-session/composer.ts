@@ -233,10 +233,13 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
       mentionMenu.close();
     } else {
       mentionMenu.update(
-        target.value,
-        target.selectionStart,
+        target,
         options.requestUpdate,
-        event?.inputType === "insertText" && event.data?.includes("@") === true,
+        !event
+          ? "selection"
+          : event.inputType === "insertText" && event.data?.includes("@") === true
+            ? "trigger"
+            : "input",
       );
     }
     updateEmojiMenu(target);
@@ -245,6 +248,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
     const target = event.currentTarget;
     if (target instanceof HTMLTextAreaElement) {
       if (event.type === "keyup") {
+        mentionMenu.update(target, options.requestUpdate);
         updateEmojiMenu(target);
       } else {
         updateMenus(target);
@@ -515,7 +519,7 @@ export function renderNewSessionComposer(options: NewSessionComposerOptions) {
       ${
         options.blockedSubmitNotice
           ? html`<div
-              class="new-session-page__blocked-submit agent-chat__composer-underlaps"
+              class="new-session-page__blocked-submit agent-chat__composer-status"
               data-tone="info"
               role="status"
             >

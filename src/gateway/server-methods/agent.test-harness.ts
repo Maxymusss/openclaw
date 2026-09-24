@@ -296,7 +296,8 @@ vi.mock("../../agents/agent-scope.js", async () => {
   };
 });
 
-vi.mock("../../infra/agent-events.js", () => ({
+vi.mock("../../infra/agent-events.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../infra/agent-events.js")>()),
   assertAgentRunLifecycleGenerationCurrent: (lifecycleGeneration: string) => {
     if (lifecycleGeneration === mocks.lifecycleGeneration) {
       return;
@@ -305,17 +306,11 @@ vi.mock("../../infra/agent-events.js", () => ({
     error.name = "AbortError";
     throw error;
   },
-  claimAgentRunContext: mocks.registerAgentRunContext,
-  clearAgentRunContext: mocks.clearAgentRunContext,
   emitAgentEvent: mocks.emitAgentEvent,
   getAgentEventLifecycleGeneration: () => mocks.lifecycleGeneration,
-  getAgentRunContext: vi.fn(() => undefined),
-  resolveProjectedAgentRunProgressState: vi.fn(() => undefined),
   isAgentEventLifecycleGenerationCurrent: (generation: string) =>
     generation === mocks.lifecycleGeneration,
   registerAgentEventLifecycleRotationHandler: vi.fn(),
-  registerAgentRunContext: mocks.registerAgentRunContext,
-  onAgentEvent: vi.fn(),
 }));
 vi.mock("../../infra/agent-run-registry.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../infra/agent-run-registry.js")>()),
@@ -1092,12 +1087,10 @@ export function applyGatewaySubagentRegistryTestDeps(
   overrides?: Parameters<typeof setSubagentRegistryDepsForTest>[0],
 ) {
   setSubagentRegistryDepsForTest({
-    // Direct handler tests have no live Gateway owner. Keep registry polling
-    // deterministic so a real connection timeout cannot cross test boundaries.
+    // Registration alone does not complete a child. Completion fixtures supply
+    // their own terminal observation before exercising cleanup or announcement.
     callGateway: (async () => ({
-      status: "ok",
-      startedAt: Date.now(),
-      endedAt: Date.now(),
+      status: "pending",
     })) as SubagentRegistryDeps["callGateway"],
     loadAgentRuntimePluginRegistryHandle: () => undefined,
     // Handler fixtures own no browser sessions; lifecycle cleanup has separate coverage.

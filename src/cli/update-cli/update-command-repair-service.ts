@@ -2,6 +2,7 @@ import { readGatewayServiceState, resolveGatewayService } from "../../daemon/ser
 import { formatErrorMessage } from "../../infra/errors.js";
 import { recordUpdateRunStep } from "../../infra/update-run-ledger.js";
 import type { UpdateRunResult } from "../../infra/update-runner.js";
+import { hasCommandProcessCleanupError } from "../../process/exec-result.js";
 import type { UpdateCommandOptions } from "./shared.js";
 import { appendPluginUpdateWarnings } from "./update-command-plugins-internals.js";
 import { runUpdateCommandRepair } from "./update-command-repair.js";
@@ -128,9 +129,11 @@ export async function repairUpdateService(params: {
                 assertCurrent,
               },
               "restart",
-              true,
             );
           } catch (error) {
+            if (hasCommandProcessCleanupError(error)) {
+              throw error;
+            }
             // A stale restart error is not permission to append diagnostics or
             // start a new serving turn under the superseded repair attempt.
             assertCurrent();
@@ -175,12 +178,13 @@ export async function repairUpdateService(params: {
   });
   return repair.status === "repaired" ||
     (repair.status === "unrepaired" &&
-      repair.reason === "gateway-readiness-pending" &&
-      repair.finalValidation.stopReason === "gateway-readiness-pending")
+      (repair.reason === "gateway-readiness-pending" || repair.reason === "still-starting") &&
+      repair.finalValidation.stopReason === repair.reason)
     ? {
         ...result,
         status: "ok",
-        reason: undefined,
+        reason:
+          repair.finalValidation.stopReason === "still-starting" ? "still-starting" : undefined,
         recovery:
           repair.status === "repaired" &&
           result.recovery?.packageRollbackVerified &&

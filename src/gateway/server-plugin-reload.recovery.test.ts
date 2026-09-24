@@ -13,7 +13,10 @@ import { clearActivePluginRegistry, resetPluginRuntimeStateForTest } from "../pl
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { cleanupTrackedTempDirs, makeTrackedTempDir } from "../plugins/test-helpers/fs-fixtures.js";
 import type { OpenClawPluginApi, OpenClawPluginServiceContext } from "../plugins/types.js";
-import { resetGatewayWorkAdmission } from "../process/gateway-work-admission.js";
+import {
+  markGatewayRestartDraining,
+  resetGatewayWorkAdmission,
+} from "../process/gateway-work-admission.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   closeOpenClawStateDatabaseAsync,
@@ -43,6 +46,10 @@ import {
   verifyGatewayCacheOwnership,
   verifySharedGatewayCacheOwnership,
 } from "./server-plugin-reload.cache.test-support.js";
+import {
+  verifyDecisionSelectionIsolation,
+  verifyDecisionEarlyReloadRecovery,
+} from "./server-plugin-reload.decisions.test-support.js";
 import {
   verifyManagedCandidateRetirement,
   verifyExpandedReplacementTargets,
@@ -74,14 +81,14 @@ import {
 } from "./server-plugin-reload.transcripts.test-support.js";
 
 const mocks = vi.hoisted(() => ({
-  loadPluginMetadataSnapshot: vi.fn(),
+  resolveConfigWidePluginMetadataSnapshot: vi.fn(),
   loadPluginLookUpTable: vi.fn(),
   log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
 
-vi.mock("../plugins/plugin-metadata-snapshot.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../plugins/plugin-metadata-snapshot.js")>()),
-  loadPluginMetadataSnapshot: mocks.loadPluginMetadataSnapshot,
+vi.mock("../config/io.plugin-metadata.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../config/io.plugin-metadata.js")>()),
+  resolveConfigWidePluginMetadataSnapshot: mocks.resolveConfigWidePluginMetadataSnapshot,
 }));
 vi.mock("../plugins/plugin-lookup-table.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../plugins/plugin-lookup-table.js")>()),
@@ -104,11 +111,11 @@ const tempDirs: string[] = [];
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.loadPluginMetadataSnapshot.mockReset();
+  mocks.resolveConfigWidePluginMetadataSnapshot.mockReset();
   mocks.loadPluginLookUpTable.mockReset();
   resetPluginRuntimeStateForTest();
   resetGatewayWorkAdmission();
-  mocks.loadPluginMetadataSnapshot.mockImplementation(() =>
+  mocks.resolveConfigWidePluginMetadataSnapshot.mockImplementation(() =>
     Object.assign(
       createPluginMetadataSnapshotFixture({ plugins: [{ id: "first" }, { id: "sibling" }] }),
       { discovery: { candidates: [], diagnostics: [] } },
@@ -171,6 +178,7 @@ it.each(["commit", "rollback"] as const)(
   async (outcome) => {
     let serviceGetter: OpenClawPluginServiceContext["getCron"];
     let hookGetter: PluginHookGatewayContext["getCron"];
+    let hookSignal: PluginHookGatewayContext["abortSignal"];
     const schedulers = ["first", "next"].map((name) => {
       const cron = new CronService({
         storePath: path.join(makeTrackedTempDir(`reload-cron-${name}`, tempDirs), "jobs.sqlite"),
@@ -205,6 +213,7 @@ it.each(["commit", "rollback"] as const)(
         });
         api.on("gateway_start", (_event, ctx) => {
           hookGetter = ctx.getCron;
+          hookSignal = ctx.abortSignal;
         });
       },
     });
@@ -230,6 +239,13 @@ it.each(["commit", "rollback"] as const)(
     const remove = vi.spyOn(first.cron, "remove");
     await expect(stale.remove("must-not-mutate")).rejects.toThrow("scheduler was replaced");
     expect(remove).not.toHaveBeenCalled();
+    expect(hookSignal?.aborted).toBe(false);
+    if (outcome === "commit") {
+      fixture.runtime.requestEntryLifetime.beginClose();
+    } else {
+      markGatewayRestartDraining();
+    }
+    expect(hookSignal?.aborted).toBe(true);
   },
 );
 
@@ -270,7 +286,7 @@ it("keeps a live Gateway's generated setup callbacks through another Gateway's r
   verifyGatewayCacheOwnership(
     createRecoveryFixture,
     makeTrackedTempDir("gateway-setup-cache-owner", tempDirs),
-    (load) => mocks.loadPluginMetadataSnapshot.mockImplementation(load),
+    (load) => mocks.resolveConfigWidePluginMetadataSnapshot.mockImplementation(load),
   ));
 
 it.each(["lookup", "replacement"] as const)(
@@ -279,7 +295,7 @@ it.each(["lookup", "replacement"] as const)(
     verifySharedGatewayCacheOwnership(
       createRecoveryFixture,
       makeTrackedTempDir("gateway-shared-setup-owner", tempDirs),
-      (load) => mocks.loadPluginMetadataSnapshot.mockImplementation(load),
+      (load) => mocks.resolveConfigWidePluginMetadataSnapshot.mockImplementation(load),
       mode,
     ),
 );
@@ -309,6 +325,9 @@ it.each(["prepare", "committed"] as const)(
   "preserves the operation receipt when a %s failure has an unreadable message",
   (boundary) => verifyMalformedReloadFailureReceipt(createRecoveryFixture, boundary),
 );
+
+it("keeps another agent's decision request live across a default selection change", () =>
+  verifyDecisionSelectionIsolation(createRecoveryFixture));
 
 it.each(["held-close", "failed-close"] as const)(
   "drains retained memory before Gateway provider replacement (%s)",
@@ -1012,4 +1031,9 @@ it.for(["replace", "remove", "disable"] as const)(
       }
     });
   },
+);
+
+it.each(["prepare", "drain", "discovery"] as const)(
+  "recovers decision admission after early %s failure",
+  (boundary) => verifyDecisionEarlyReloadRecovery(createRecoveryFixture, boundary),
 );

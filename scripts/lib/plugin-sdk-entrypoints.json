@@ -1,5 +1,6 @@
 [
   "core",
+  "control-ui-link-reader",
   "provider-setup",
   "sandbox",
   "routing",
@@ -136,6 +137,7 @@
   "host-runtime",
   "types",
   "process-runtime",
+  "worker-task-server",
   "windows-spawn",
   "acp-runtime",
   "acp-runtime-backend",
@@ -337,6 +339,7 @@
   "param-readers",
   "secret-input",
   "secret-input-runtime",
+  "decisions",
   "secret-ref-readonly",
   "channel-status",
   "status-helpers",
