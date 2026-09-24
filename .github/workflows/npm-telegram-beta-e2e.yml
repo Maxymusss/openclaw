@@ -117,11 +117,6 @@ on:
         required: false
         default: false
         type: boolean
-      advisory:
-        description: Treat package Telegram failures as advisory for the caller
-        required: false
-        default: false
-        type: boolean
       allow_frozen_target_scenario_omissions:
         description: Allow source-qualified omission of current-only default scenarios
         required: false
@@ -139,11 +134,6 @@ on:
         required: false
         default: ""
         type: string
-      advisory:
-        description: Treat package Telegram failures as advisory for the caller
-        required: false
-        default: false
-        type: boolean
       allow_frozen_target_scenario_omissions:
         description: Allow source-qualified omission of current-only default scenarios
         required: false
@@ -286,7 +276,6 @@ jobs:
   run_package_telegram_e2e:
     name: Run package Telegram E2E
     runs-on: ${{ (inputs.runner_group || (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP) || '') != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON((inputs.runner_group || (github.event_name == 'workflow_dispatch' && startsWith(inputs.dispatch_id, 'full-release-validation-') && vars.OPENCLAW_RELEASE_RUNNER_GROUP) || '')), toJSON(vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404'))) || (vars.OPENCLAW_CI_RUNNER_BACKEND == 'github' && 'ubuntu-24.04' || 'blacksmith-32vcpu-ubuntu-2404') }}
-    continue-on-error: ${{ inputs.advisory }}
     timeout-minutes: 60
     environment: qa-live-shared
     permissions:
@@ -824,7 +813,6 @@ jobs:
       - name: Summarize Telegram attempt
         if: always()
         env:
-          ADVISORY: ${{ inputs.advisory }}
           LANE_OUTCOME: ${{ steps.run_lane.outcome }}
         shell: bash
         run: |
@@ -833,10 +821,9 @@ jobs:
             echo "## Package Telegram attempt"
             echo
             echo "- Telegram attempt: ${LANE_OUTCOME}"
-            echo "- Advisory: ${ADVISORY}"
           } >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$ADVISORY" == "true" && "$LANE_OUTCOME" != "success" ]]; then
-            echo "::warning::Package Telegram attempt: ${LANE_OUTCOME}; release testing is best effort."
+          if [[ "$LANE_OUTCOME" != "success" ]]; then
+            echo "::error::Package Telegram attempt: ${LANE_OUTCOME}"
           fi
 
       - name: Upload npm Telegram E2E artifacts

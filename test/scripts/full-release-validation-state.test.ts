@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -7,10 +8,6 @@ import {
   buildFullReleaseCandidateBinding,
   buildFullReleaseCandidateRequest,
 } from "../../scripts/full-release-candidate-contract.mjs";
-import {
-  releaseFlakeIntentSha256,
-  selectReleaseFlakeIntent,
-} from "../../scripts/full-release-flake-policy.mjs";
 import {
   createPublicationAdmission,
   createPublicationObservations,
@@ -468,42 +465,53 @@ describe("full release execution plan", () => {
     expect(affectedActiveRunIds([reused], [{ runId: "101" }])).toEqual([]);
   });
 
-  it("binds declared flakes to the sealed plan and rejects changed source or omitted selectors", () => {
-    const selectors = ["normalCi:checks-node"];
-    expect(() =>
-      validateReleaseExecutionPlanArtifact({
-        ...executionPlan({ rerunGroup: "ci" }),
-        knownFlakyJobs: selectors,
-      }),
-    ).toThrow("schema");
-    const sealed = executionPlan(
-      { rerunGroup: "all", childPhaseVersion: 3 },
-      {
-        attemptEvidenceVersion: 3,
-        candidateRequest: canonicalCandidateRequest(),
-        knownFlakyJobs: selectors,
-      },
+  it("retains the published empty retry field in the original execution-plan digest", () => {
+    const current = executionPlan(
+      { childPhaseVersion: 3, rerunGroup: "ci" },
+      { attemptEvidenceVersion: 3, candidateRequest: canonicalCandidateRequest() },
     );
-    expect(validateReleaseExecutionPlanArtifact(sealed).knownFlakyJobs).toEqual(selectors);
-    expect(() => validateReleaseExecutionPlanArtifact({ ...sealed, knownFlakyJobs: [] })).toThrow(
-      "digest",
-    );
-    const omitted = { ...sealed };
-    delete omitted.knownFlakyJobs;
-    omitted.sha256 = releaseExecutionPlanSha256(omitted);
-    expect(() =>
-      validateReleaseExecutionPlanArtifact(omitted, { knownFlakyJobs: selectors }),
-    ).toThrow("known flaky");
-    const source = {
-      ...sealed,
-      sha256: "",
-      sourceAdmissionContract: "1",
-      sourceAdmission: sourceFact(),
+    // The published v2026.9.6 artifact hashes this ordered wire shape.
+    const digestPayload = {
+      knownFlakyJobs: [],
+      ...Object.fromEntries(
+        [
+          "attemptEvidenceVersion",
+          "blockers",
+          "candidate",
+          "candidateRequest",
+          "children",
+          "errors",
+          "evidenceReuse",
+          "gates",
+          "kind",
+          "parentRunAttempt",
+          "parentRunId",
+          "releaseProfile",
+          "repository",
+          "rerunGroup",
+          "targetSha",
+          "trustedWorkflow",
+          "version",
+          "workflowRef",
+          "workflowSha",
+        ].map((key) => [key, current[key]]),
+      ),
     };
-    source.sha256 = releaseExecutionPlanSha256(source);
-    expect(() => validateReleaseExecutionPlanArtifact(source)).toThrow(
-      "known flaky jobs differ from source",
-    );
+    const retained = {
+      ...current,
+      knownFlakyJobs: [],
+      sha256: createHash("sha256").update(JSON.stringify(digestPayload)).digest("hex"),
+    };
+    const before = JSON.stringify(retained);
+    expect(validateReleaseExecutionPlanArtifact(retained)).toEqual(retained);
+    expect(JSON.stringify(retained)).toBe(before);
+    expect(retained.sha256).not.toBe(current.sha256);
+    expect(() =>
+      validateReleaseExecutionPlanArtifact({ ...retained, knownFlakyJobs: ["normalCi:test"] }),
+    ).toThrow("knownFlakyJobs must be empty");
+    expect(() =>
+      validateReleaseExecutionPlanArtifact({ ...retained, knownFlakyJobs: undefined }),
+    ).toThrow("knownFlakyJobs must be empty");
   });
 
   it("retains B observations and post-upload binding through completed plan sealing", () => {
@@ -592,7 +600,7 @@ describe("full release execution plan", () => {
     stableCoverage,
     { ...stableCoverage, coveragePolicy: undefined, releaseProfile: "full" },
   ])(
-    "allows advisory OS filtering while retaining every Linux gate: $releaseProfile",
+    "allows OS coverage filtering while retaining every Linux gate: $releaseProfile",
     (coverage) => {
       const unfiltered = plan(coverage);
       for (const crossOsSuiteFilter of [
@@ -1435,7 +1443,7 @@ describe("release decision policy", () => {
   ].map((name) => ({ name, conclusion: "failure", status: "completed" }));
 
   it.each(["beta", "stable", "full"])(
-    "records Windows Node shard and macOS Swift failures of the CI child without blocking %s publication",
+    "records %s Windows Node and macOS Swift failures as advisory beside a green CI aggregate",
     (releaseProfile) => {
       const snapshot = child("normalCi", {
         conclusion: "success",
@@ -1452,6 +1460,7 @@ describe("release decision policy", () => {
         workflowRef: "main",
       });
       expect(result).toMatchObject({ blockers: [], blockerCount: 0, errors: [], state: "passed" });
+      expect(terminalPolicyPass(snapshot, releaseProfile, "main")).toBe(true);
       expect(
         formatReleaseStateOutcome(
           buildReleaseStateArtifact({
@@ -1507,7 +1516,7 @@ describe("release decision policy", () => {
   );
 
   it.each(["beta", "stable", "full"])(
-    "records Windows/macOS failures without blocking %s publication",
+    "records every Windows and macOS release-check failure as advisory for %s",
     (releaseProfile) => {
       const jobs = ["Windows", "macOS"].flatMap((os) =>
         ["packaged fresh", "installer fresh", "packaged upgrade"].map((suite) => ({
@@ -1696,6 +1705,7 @@ describe("release decision policy", () => {
       releaseProfile: "stable",
       workflowRef: "main",
     });
+    // Telegram execution stays advisory; its provenance error still surfaces as an error.
     expect(result).toMatchObject({
       blockers: [expect.objectContaining({ job: "Run install smoke" })],
       errors: [expect.objectContaining({ kind: "identity_mismatch" })],
@@ -2289,78 +2299,6 @@ describe("release state artifacts", () => {
     );
   }
 
-  it.each(["missing", "rejected"])(
-    "requires settled automatic retry records when every child is green (%s)",
-    (outcome) => {
-      const sealed = executionPlan(
-        { rerunGroup: "ci", childPhaseVersion: 3 },
-        {
-          attemptEvidenceVersion: 3,
-          candidateRequest: canonicalCandidateRequest(),
-          knownFlakyJobs: ["normalCi:upgrade-survivor"],
-        },
-      );
-      const composite = composeReleaseAttemptJobs(
-        [
-          {
-            runAttempt: 1,
-            jobs: [
-              { id: 501, name: "upgrade-survivor", status: "completed", conclusion: "failure" },
-            ],
-          },
-          {
-            runAttempt: 2,
-            jobs: [
-              { id: 601, name: "upgrade-survivor", status: "completed", conclusion: "success" },
-            ],
-          },
-        ],
-        { plannedRunAttempt: 1, effectiveRunAttempt: 2 },
-      );
-      const recovered = {
-        compositeJobsSha256: composite.sha256,
-        dispatchActor: "github-actions[bot]",
-        triggeringActor: "release-operator",
-        repository: "openclaw/openclaw",
-        plannedRunAttempt: 1,
-        observedRunAttempts: [1, 2],
-        runAttempt: 2,
-        jobs: composite.jobs,
-      };
-      const decision = artifact("decision", 2, sealed, recovered);
-      const drain = artifact("drain", 2, sealed, recovered);
-      if (outcome === "rejected") {
-        const selected = sealed.children.find((entry) => entry.key === "normalCi")!;
-        const intent = selectReleaseFlakeIntent(
-          sealed,
-          selected,
-          { run_attempt: 1, status: "completed" },
-          [{ id: 501, name: "upgrade-survivor", status: "completed", conclusion: "failure" }],
-        )!;
-        decision.automaticRetries = drain.automaticRetries = [
-          {
-            child: selected.key,
-            executionPlanSha256: sealed.sha256,
-            intent,
-            outcome,
-            replacements: [],
-          },
-        ];
-        expect(() =>
-          verifyReleaseStateArtifacts(sealed, decision, drain, stateExpected()),
-        ).not.toThrow();
-        return;
-      }
-      expect(() => verifyReleaseStateArtifacts(sealed, decision, drain, stateExpected())).toThrow(
-        "omits unresolved automatic retry",
-      );
-      delete decision.automaticRetries;
-      expect(() => verifyReleaseStateArtifacts(sealed, decision, drain, stateExpected())).toThrow(
-        "omitted automatic retry receipts",
-      );
-    },
-  );
-
   it("uses one policy for decision, drain, and final verification", () => {
     expect(
       verifyReleaseStateArtifacts(
@@ -2370,6 +2308,19 @@ describe("release state artifacts", () => {
         { ...stateExpected(), parentRunAttempt: 2 },
       ),
     ).toMatchObject({ decision: { state: "passed" }, drain: { state: "passed" } });
+    const decision = { ...artifact("decision"), automaticRetries: [] };
+    const drain = { ...artifact("drain"), automaticRetries: [] };
+    expect(
+      verifyReleaseStateArtifacts(
+        executionPlan({ rerunGroup: "ci" }),
+        decision,
+        drain,
+        stateExpected(),
+      ),
+    ).toMatchObject({ decision: { automaticRetries: [] }, drain: { automaticRetries: [] } });
+    expect(() =>
+      validateReleaseStateArtifact({ ...decision, automaticRetries: [{ outcome: "observed" }] }),
+    ).toThrow("automaticRetries must be empty");
   });
 
   it("records a blocker while transport is simultaneously uncertain", () => {
@@ -2614,7 +2565,7 @@ describe("release state artifacts", () => {
       ],
     ],
     [
-      "beta release-check advisory",
+      "beta release-check lane",
       "qa-parity",
       "releaseChecks",
       [
@@ -2633,7 +2584,10 @@ describe("release state artifacts", () => {
   ])(
     "rejects divergent terminal conclusions on the $0 surface",
     (_label, rerunGroup, key, jobs) => {
-      const sealedPlan = executionPlan({ rerunGroup }, { releaseProfile: "beta", rerunGroup });
+      const sealedPlan = executionPlan(
+        { rerunGroup },
+        { laneWaiver: "ship", releaseProfile: "beta", rerunGroup },
+      );
       const plannedChild = sealedPlan.children.find(
         (entry: Record<string, any>) => entry.key === key,
       );
@@ -3387,272 +3341,6 @@ describe("release state artifacts", () => {
 });
 
 describe("collector subprocess", () => {
-  it.each([
-    { outcome: "rejected", parentAttempt: 1, exit: 0, witnessed: true },
-    { outcome: "unknown", parentAttempt: 1, exit: 0, witnessed: false },
-    { outcome: "rejected", parentAttempt: 2, exit: 1, witnessed: false },
-  ])(
-    "writes only an original confirmed rejection witness ($outcome/$parentAttempt)",
-    ({ outcome, parentAttempt, exit, witnessed }) => {
-      const root = tempDirs.make("frv-rejection-witness-");
-      const sealed = executionPlan(
-        { rerunGroup: "ci", childPhaseVersion: 3 },
-        {
-          attemptEvidenceVersion: 3,
-          candidateRequest: canonicalCandidateRequest(),
-          knownFlakyJobs: ["normalCi:test"],
-        },
-      );
-      const selected = sealed.children.find((entry) => entry.key === "normalCi")!;
-      const intent = selectReleaseFlakeIntent(
-        sealed,
-        selected,
-        { run_attempt: 1, status: "completed" },
-        [{ id: 501, name: "test", status: "completed", conclusion: "failure" }],
-      )!;
-      const planPath = join(root, "plan.json");
-      const recordPath = join(root, "record.json");
-      writeFileSync(planPath, serializeReleaseArtifact(sealed));
-      writeFileSync(
-        recordPath,
-        serializeReleaseArtifact({
-          child: selected.key,
-          executionPlanSha256: sealed.sha256,
-          intent,
-          outcome,
-          replacements: [],
-        }),
-      );
-      const result = spawnSync(
-        process.execPath,
-        [resolve("scripts/full-release-flake-retry.mjs"), "witness"],
-        {
-          encoding: "utf8",
-          env: {
-            PATH: process.env.PATH,
-            FULL_RELEASE_EXECUTION_PLAN_PATH: planPath,
-            FULL_RELEASE_RETRY_RECORD_PATH: recordPath,
-            FULL_RELEASE_RETRY_DEADLINE_MS: String(Date.now() + 60_000),
-            GITHUB_RUN_ID: "77",
-            GITHUB_RUN_ATTEMPT: String(parentAttempt),
-            GITHUB_REPOSITORY: "openclaw/openclaw",
-            GITHUB_SHA: SHA,
-            GITHUB_REF_NAME: "release-ci/tooling",
-          },
-        },
-      );
-      expect(result.status, result.stderr).toBe(exit);
-      expect(result.stdout).toBe(
-        witnessed
-          ? `FRV_AUTO_RETRY_REJECTED_INTENT_SHA256=${releaseFlakeIntentSha256(intent)}\n`
-          : "",
-      );
-    },
-  );
-
-  it.each([
-    { mode: "drain", drift: false, reads: 2, active: [] },
-    { mode: "decision", drift: false, reads: 1, active: ["101"] },
-    { mode: "drain", drift: true, reads: 1, active: ["101"] },
-  ])(
-    "$mode keeps retry-owner errors while collecting siblings (drift=$drift)",
-    ({ mode, drift, reads, active }) => {
-      const root = tempDirs.make("frv-retry-error-drain-");
-      const sealed = executionPlan(
-        { rerunGroup: "ci", childPhaseVersion: 3 },
-        {
-          attemptEvidenceVersion: 3,
-          candidateRequest: canonicalCandidateRequest(),
-          knownFlakyJobs: ["normalCi:test"],
-        },
-      );
-      const planned = sealed.children.find((entry) => entry.key === "normalCi")!;
-      const planPath = join(root, "plan.json");
-      const outputPath = join(root, "state.json");
-      const countPath = join(root, "reads");
-      const clockPath = join(root, "instant-poll.mjs");
-      writeFileSync(planPath, JSON.stringify(sealed));
-      writeFileSync(countPath, "0");
-      writeFileSync(
-        clockPath,
-        `const original = globalThis.setTimeout;
-globalThis.setTimeout = (callback, delay, ...args) => { if (delay === 1) { queueMicrotask(() => callback(...args)); return 0; } return original(callback, delay, ...args); };
-`,
-      );
-      const response = {
-        id: 101,
-        event: "workflow_dispatch",
-        path: ".github/workflows/ci.yml",
-        display_title: planned.displayTitle,
-        head_branch: planned.workflowRef,
-        head_sha: drift ? "c".repeat(40) : SHA,
-        run_attempt: 1,
-        actor: { login: "github-actions[bot]" },
-        triggering_actor: { login: "github-actions[bot]" },
-        repository: { full_name: "openclaw/openclaw" },
-      };
-      const gh = join(root, "gh");
-      writeFileSync(
-        gh,
-        `#!/usr/bin/env node
-const fs = require("node:fs");
-const path = ${JSON.stringify(countPath)};
-if (process.argv.some((arg) => arg.includes("/jobs?"))) {
-  console.log(JSON.stringify({ id: 501, name: "test", status: "completed", conclusion: "success" }));
-} else {
-  const count = Number(fs.readFileSync(path, "utf8")) + 1; fs.writeFileSync(path, String(count));
-  console.log(JSON.stringify({ ...${JSON.stringify(response)}, status: count === 1 ? "in_progress" : "completed", conclusion: count === 1 ? null : "success" }));
-}
-`,
-      );
-      chmodSync(gh, 0o755);
-      const result = spawnSync(process.execPath, ["--import", clockPath, SCRIPT, mode], {
-        encoding: "utf8",
-        timeout: 10_000,
-        env: {
-          ...process.env,
-          PATH: `${root}:${process.env.PATH}`,
-          FULL_RELEASE_EXECUTION_PLAN_PATH: planPath,
-          FULL_RELEASE_STATE_PATH: outputPath,
-          FULL_RELEASE_RETRY_OWNER_RESULT: "failure",
-          FULL_RELEASE_POLL_INTERVAL_MS: "1",
-          GITHUB_RUN_ID: "77",
-          GITHUB_RUN_ATTEMPT: "1",
-          GITHUB_REPOSITORY: "openclaw/openclaw",
-          GITHUB_SHA: SHA,
-          GITHUB_REF_NAME: "release-ci/tooling",
-          TARGET_SHA,
-          RELEASE_PROFILE: "stable",
-          RERUN_GROUP: "ci",
-        },
-      });
-      expect(result.status, result.stderr).toBe(2);
-      expect(Number(readFileSync(countPath, "utf8"))).toBe(reads);
-      expect(JSON.parse(readFileSync(outputPath, "utf8"))).toMatchObject({
-        state: "orchestration_error",
-        activeRunIds: active,
-        errors: expect.arrayContaining([
-          expect.objectContaining({ kind: "automatic_retry_owner_failed" }),
-          expect.objectContaining({ kind: "automatic_retry_unresolved" }),
-        ]),
-      });
-    },
-  );
-
-  it.each(["missing", "failed-prepare", "failed-transport", "prepared"] as const)(
-    "requires original no-mutation proof when retry intent is missing (owner=%s)",
-    (ownerState) => {
-      const ownerMissing = ownerState === "missing";
-      const root = tempDirs.make("frv-auto-retry-restore-");
-      const planPath = join(root, "plan.json");
-      const recordPath = join(root, "record.json");
-      const callsPath = join(root, "calls.jsonl");
-      const sealed = executionPlan(
-        { rerunGroup: "ci", childPhaseVersion: 3 },
-        {
-          attemptEvidenceVersion: 3,
-          candidateRequest: canonicalCandidateRequest(),
-          knownFlakyJobs: [ownerState === "failed-prepare" ? "normalCi:missing" : "normalCi:test"],
-        },
-      );
-      writeFileSync(planPath, JSON.stringify(sealed));
-      const parent = {
-        id: 77,
-        repository: { full_name: "openclaw/openclaw" },
-        head_sha: SHA,
-        head_branch: "release-ci/tooling",
-        path: ".github/workflows/full-release-validation.yml",
-        event: "workflow_dispatch",
-        run_attempt: 1,
-      };
-      const owner = {
-        name: "Automatic retry (normalCi)",
-        steps: [
-          "Prepare automatic retry intent",
-          "Upload automatic retry intent",
-          "Record automatic retry intent digest",
-          "Execute automatic retry",
-        ].map((name) => ({
-          name,
-          status: "completed",
-          conclusion:
-            name === "Prepare automatic retry intent"
-              ? ownerState.startsWith("failed")
-                ? "failure"
-                : "success"
-              : "skipped",
-        })),
-      };
-      const planned = sealed.children.find((entry) => entry.key === "normalCi")!;
-      const childRun = {
-        ...parent,
-        id: 101,
-        path: ".github/workflows/ci.yml",
-        display_title: planned.displayTitle,
-        run_attempt: ownerState === "failed-transport" ? 2 : 1,
-        status: "completed",
-        conclusion: "success",
-        actor: { login: "github-actions[bot]" },
-        triggering_actor: { login: "github-actions[bot]" },
-      };
-      const gh = join(root, "gh");
-      writeFileSync(
-        gh,
-        `#!/usr/bin/env node
-const fs = require("node:fs");
-fs.appendFileSync(${JSON.stringify(callsPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");
-const route = process.argv.find((arg) => arg.startsWith("repos/"));
-if (route.includes("/runs/77/") && route.includes("/jobs?")) {
-  process.stdout.write(${JSON.stringify(ownerMissing ? "" : JSON.stringify(owner) + "\n")});
-} else if (route.includes("/jobs?")) {
-  const attempt = Number(route.match(/attempts\\/(\\d+)/)[1]);
-  console.log(JSON.stringify({ id: 500 + attempt, name: "test", status: "completed", conclusion: attempt === 1 && ${JSON.stringify(ownerState === "failed-transport")} ? "failure" : "success" }));
-} else process.stdout.write(route.endsWith("/runs/101") ? ${JSON.stringify(JSON.stringify(childRun))} : ${JSON.stringify(JSON.stringify(parent))});
-`,
-      );
-      chmodSync(gh, 0o755);
-      const result = spawnSync(
-        process.execPath,
-        [resolve("scripts/full-release-flake-retry.mjs"), "prepare"],
-        {
-          encoding: "utf8",
-          timeout: 10_000,
-          env: {
-            ...process.env,
-            PATH: `${root}:${process.env.PATH}`,
-            FULL_RELEASE_EXECUTION_PLAN_PATH: planPath,
-            FULL_RELEASE_RETRY_CHILD: "normalCi",
-            FULL_RELEASE_RETRY_DEADLINE_MS: String(Date.now() + 60_000),
-            FULL_RELEASE_RETRY_INTENT_PATH: join(root, "missing-intent.json"),
-            FULL_RELEASE_RETRY_RECORD_PATH: recordPath,
-            GITHUB_RUN_ID: "77",
-            GITHUB_RUN_ATTEMPT: "2",
-            GITHUB_REPOSITORY: "openclaw/openclaw",
-            GITHUB_SHA: SHA,
-            GITHUB_REF_NAME: "release-ci/tooling",
-          },
-        },
-      );
-      expect(result.status, result.stderr).toBe(
-        ["prepared", "failed-transport"].includes(ownerState) ? 0 : 1,
-      );
-      if (!["prepared", "failed-transport"].includes(ownerState)) {
-        expect(result.stderr).toContain(
-          ownerMissing
-            ? "original owner is missing or duplicated"
-            : "unknown known_flaky_jobs_json job",
-        );
-      } else {
-        expect(JSON.parse(readFileSync(recordPath, "utf8"))).toMatchObject({
-          child: "normalCi",
-          intent: null,
-          outcome: "not-attempted",
-        });
-      }
-      expect(readFileSync(callsPath, "utf8")).not.toContain("POST");
-    },
-  );
-
   it.each([false, true])(
     "seals the canonical packagePublished=%s candidate request without reconstruction",
     (packagePublished) => {
@@ -4002,17 +3690,17 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
     {
       rerunGroup: "ci",
       childKey: "normalCi",
-      jobName: "checks-windows-node-test-1",
+      jobName: "install-smoke (linux)",
       conclusion: "failure",
     },
     {
       rerunGroup: "cross-os",
       childKey: "releaseChecks",
-      jobName: "cross_os_release_checks / Windows / packaged fresh",
+      jobName: "install_smoke_release_checks / Linux",
       conclusion: "failure",
     },
   ])(
-    "binds the $rerunGroup manifest to the candidate and records advisory conclusions",
+    "binds the $rerunGroup manifest to the candidate and rejects failed required proof jobs",
     ({ rerunGroup, childKey, jobName, conclusion }) => {
       const root = mkdtempSync(join(tmpdir(), "frv-generated-candidate-manifest-"));
       const decisionPath = join(root, "decision.json");
@@ -4145,21 +3833,14 @@ printf '%s\\n' '{"id":101,"event":"workflow_dispatch","path":".github/workflows/
         env,
         timeout: 10_000,
       });
+      if (conclusion === "failure") {
+        expect(valid.status).toBe(2);
+        expect(valid.stderr).toContain("blocked_complete");
+        expect(valid.stderr).toContain(jobName);
+        return;
+      }
       expect(valid.status, valid.stderr).toBe(0);
-
-      expect(JSON.parse(readFileSync(manifestPath, "utf8")).advisoryJobs).toEqual(
-        jobName === "test"
-          ? []
-          : [
-              {
-                child: childKey,
-                job: jobName,
-                status: "completed",
-                conclusion,
-                policy: "advisory",
-              },
-            ],
-      );
+      expect(JSON.parse(readFileSync(manifestPath, "utf8")).advisoryJobs).toEqual([]);
       const changed = {
         ...manifest,
         candidateBinding: {
@@ -4794,24 +4475,25 @@ describe("operator lane waiver", () => {
     });
 
   it.each([
-    ["success", "passed", "passed", "passed"],
-    ["failure", "passed", "passed", "passed"],
-    ["skipped", "blocked_complete", "blocked_complete", "blocked_complete"],
-    ["neutral", "blocked_complete", "blocked_complete", "blocked_complete"],
-    ["cancelled", "blocked_complete", "blocked_complete", "blocked_complete"],
-    ["timed_out", "blocked_complete", "blocked_complete", "blocked_complete"],
+    ["success", "passed"],
+    ["failure", "passed"],
+    ["skipped", "blocked_complete"],
+    ["neutral", "blocked_complete"],
+    ["cancelled", "blocked_complete"],
+    ["timed_out", "blocked_complete"],
   ])(
     "requires a finished aggregator result for failed workflows: %s",
-    (conclusion, releaseState, waivedReleaseState, ciState) => {
+    (conclusion, waivedState) => {
       for (const laneWaiver of ["", "ship"]) {
-        for (const [key, gate, lane, expectedState] of [
+        // Advisory lanes never need the waiver; only the aggregator verdict matters.
+        const expectedState = waivedState;
+        for (const [key, gate, lane] of [
           [
             "releaseChecksCandidate",
             "Verify release checks",
             "cross_os_release_checks / macOS / packaged fresh",
-            laneWaiver ? waivedReleaseState : releaseState,
           ],
-          ["normalCi", "openclaw/ci-gate", "checks-windows-node-test-5", ciState],
+          ["normalCi", "openclaw/ci-gate", "checks-windows-node-test-5"],
         ] as const) {
           const snapshot = child(key, {
             conclusion: "failure",
@@ -4829,7 +4511,7 @@ describe("operator lane waiver", () => {
     },
   );
 
-  it("keeps native app and UI lane failures advisory without a waiver", () => {
+  it("records native app and UI lane failures as advisory without a waiver", () => {
     const ci = child("normalCi", {
       conclusion: "failure",
       jobs: [
