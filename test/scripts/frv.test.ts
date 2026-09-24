@@ -81,6 +81,13 @@ function preflightMethods(
   };
 }
 
+// Advisory children fail only ordinary lanes; blocking children fail a required proof.
+function blockingChildJobName(childKey: string | undefined) {
+  return childKey === "npmTelegram" || childKey === "productPerformance"
+    ? "test"
+    : "Run install smoke";
+}
+
 function controllerClient(
   children: ReturnType<typeof child>[],
   childRuns: Map<string, { attempt: number; conclusion: string | null }>,
@@ -91,7 +98,7 @@ function controllerClient(
     ...preflightMethods(children, (entry) => runFor(entry, 1, "failure")),
     getAttemptJobs: async (runId: string, attempt: number) => [
       job(
-        "test",
+        blockingChildJobName(byRunId.get(runId)?.key),
         attempt === childRuns.get(runId)?.attempt
           ? (childRuns.get(runId)?.conclusion ?? "")
           : "failure",
@@ -1563,6 +1570,13 @@ describe("FRV manual and automatic retry ownership", () => {
         {
           ...job("test", attempt === 1 ? "failure" : "success"),
           id: Number(id) * 10,
+          run_id: Number(id),
+          run_attempt: attempt,
+        },
+        {
+          // A failed required proof keeps the child blocking under the advisory policy.
+          ...job("Run install smoke", attempt === 1 ? "failure" : "success"),
+          id: Number(id) * 10 + 1,
           run_id: Number(id),
           run_attempt: attempt,
         },
