@@ -6880,6 +6880,7 @@ jobs:
       - checks-ui-e2e-real-gateway
       - control-ui-i18n
       - checks-fast-core
+      - checks-baseline-ratchets
       - qa-smoke-ci-profile
       - checks-fast-plugin-contracts-shard
       - checks-fast-channel-contracts-shard

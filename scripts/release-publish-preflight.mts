@@ -349,6 +349,9 @@ export async function runReleasePublishPreflight(
             releaseTag: options.tag,
             npmDistTag: options.npmDistTag,
             stableSoakWaiver: options.stableSoakWaiver,
+            // The gate re-resolves the manifest; carry the live variable so a
+            // revoked sealed waiver is reported as revoked here too.
+            currentStableSoakWaiver: process.env.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER ?? "",
             laneWaiver: options.laneWaiver,
             expectedSha: sourceSha,
             expectedReleaseProfile: options.releaseProfile,

@@ -88,12 +88,19 @@ export function validateStablePluginNpmBootstrapApproval(approval, expected) {
   ) {
     throw new Error("Stable npm bootstrap approval does not cover this package and version.");
   }
-  // A waiver sealed from the repository variable authorizes the token-backed
-  // publish only while the variable still holds the same text right now.
+  assertStableSoakWaiverStillHeld(approval, expected.currentStableSoakWaiver ?? "");
+}
+
+/**
+ * A waiver sealed from the repository variable authorizes the token-backed
+ * publish only while the variable still holds the same text right now; call
+ * this immediately before npm I/O as well as at approval validation.
+ */
+export function assertStableSoakWaiverStillHeld(approval, currentStableSoakWaiver) {
   if (
     approval.stableSoakWaiver &&
     approval.stableSoakWaiverSource === "sealed" &&
-    (expected.currentStableSoakWaiver ?? "").trim() !== approval.stableSoakWaiver.trim()
+    String(currentStableSoakWaiver ?? "").trim() !== approval.stableSoakWaiver.trim()
   ) {
     throw new Error(
       "Stable npm bootstrap approval relies on a sealed soak waiver that the repository variable no longer holds.",

@@ -7313,6 +7313,19 @@ NODE
     },
   );
 
+  it("rechecks a sealed soak waiver immediately before the token-backed plugin publish", () => {
+    const publish = workflowStep(
+      workflowJob(".github/workflows/plugin-npm-release.yml", "publish_plugins_npm"),
+      "Publish approved bootstrap tarball",
+    );
+    expect(publish.env).toMatchObject({
+      OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: "${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}",
+    });
+    const run = publish.run ?? "";
+    expect(run).toContain("assertStableSoakWaiverStillHeld");
+    expect(run.indexOf("assertStableSoakWaiverStillHeld")).toBeLessThan(run.indexOf("npm publish"));
+  });
+
   it("lets a closeout replay carry the operator waivers that authorized the stable", () => {
     const definition = parse(readFileSync(STABLE_MAIN_CLOSEOUT_WORKFLOW, "utf8")) as {
       on: { workflow_dispatch: { inputs: Record<string, { default?: unknown }> } };

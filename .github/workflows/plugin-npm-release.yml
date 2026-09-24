@@ -1937,12 +1937,23 @@ jobs:
           WORKFLOW_FULL_REF: ${{ github.ref }}
           WORKFLOW_REF: ${{ github.ref_name }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
+          BOOTSTRAP_APPROVAL_PATH: ${{ runner.temp }}/npm-stable-bootstrap-approval/approval.json
+          # Read owner-held waiver authority immediately before the token-backed publish.
+          OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: ${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}
         run: |
           set -euo pipefail
           [[ -n "${NPM_TOKEN// }" ]] || {
             echo "npm token bootstrap requires the protected npm release token." >&2
             exit 1
           }
+          if [[ -f "$BOOTSTRAP_APPROVAL_PATH" ]]; then
+            node --input-type=module - "$BOOTSTRAP_APPROVAL_PATH" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertStableSoakWaiverStillHeld } from "./scripts/plugin-npm-bootstrap-approval.mjs";
+          const approval = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          assertStableSoakWaiverStillHeld(approval, process.env.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER ?? "");
+          NODE
+          fi
           publish_home="$(mktemp -d "${RUNNER_TEMP}/plugin-npm-bootstrap.XXXXXX")"
           cleanup() {
             rm -rf "$publish_home"

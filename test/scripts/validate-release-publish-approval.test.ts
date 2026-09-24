@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import {
+  assertStableSoakWaiverStillHeld,
   createStablePluginNpmBootstrapApproval,
   validateStablePluginNpmBootstrapApproval,
 } from "../../scripts/plugin-npm-bootstrap-approval.mjs";
@@ -965,6 +966,11 @@ describe("stable npm bootstrap soak waiver authority", () => {
     );
     expect(() =>
       validateStablePluginNpmBootstrapApproval(approval, expected("2026.9.6 ship the hotfix")),
+    ).not.toThrow();
+    // The same check guards the token-backed publish step itself.
+    expect(() => assertStableSoakWaiverStillHeld(approval, "")).toThrow("no longer holds");
+    expect(() =>
+      assertStableSoakWaiverStillHeld(approval, "2026.9.6 ship the hotfix"),
     ).not.toThrow();
   });
 

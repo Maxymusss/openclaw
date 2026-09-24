@@ -412,8 +412,9 @@ acquisition consumes raw npm bytes while npm qualification continues. Candidate
 Plugin Prerelease and Release Checks start as soon as that candidate is verified;
 they do not wait for independent validation or Docker preparation. The immutable
 execution plan still binds every selected child, and publication still requires
-qualified artifacts. Non-proof execution lanes are advisory by default; performance
-never gates npm or ClawHub publication.
+qualified artifacts. Non-proof execution lanes are recorded as advisory during
+validation; a beta publishes without performance evidence, while a stable needs
+blocking performance evidence unless the operator waives it (see [publication modes](#publication-modes-strict-default-and-operator-fast-path)).
 
 The sealed manifest also carries `publishInputs`: the Plugin SDK API evidence
 digest from the qualified npm artifact, each package's registry publication
