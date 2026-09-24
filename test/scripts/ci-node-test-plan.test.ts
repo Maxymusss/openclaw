@@ -763,7 +763,7 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
       name: "unified declarations",
       config: "tooling",
       owners: [["test/scripts/write-unified-entry-dts.test.ts"]],
-      runner: DEFAULT_NODE_TEST_RUNNER,
+      runner: EXTRA_LARGE_NODE_TEST_RUNNER,
     },
     ...[
       [
@@ -1015,6 +1015,21 @@ describe("scripts/lib/ci-node-test-plan.mts", () => {
           },
           expectedRunner: runner,
         },
+        ...(config === "tooling" && owners.length === 1
+          ? [
+              {
+                name: "new compiler companions",
+                change: (job: CompactNodeTestShard) => {
+                  job.groups[0]!.includePatterns = [
+                    ...owners[0]!,
+                    "test/scripts/ci-workflow-planning.test.ts",
+                    "test/scripts/managed-child-process.windows.test.ts",
+                  ];
+                },
+                expectedRunner: EXTRA_LARGE_NODE_TEST_RUNNER,
+              },
+            ]
+          : []),
         {
           name: "other owner",
           change: (job) => {

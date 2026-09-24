@@ -138,7 +138,7 @@ policies. Their measured co-resident owners identify the retained envelopes;
 generated row numbers do not. If packing separates the owners or changes their
 resource contract, the exception no longer matches.
 
-Main shares the four storage envelopes. Its update/archive row omits one
+At that revision, main shared the four storage envelopes. Its update/archive row omitted one
 release-only tooling file from the measured PR contract; the larger native fit
 covers the included work, but no exact main-row speed ratio is inferred from
 that PR comparison.
@@ -159,8 +159,8 @@ does not isolate hardware causality. Cron stays on RunsOn: its complete
 same-run comparison was 360 versus 323 seconds, below the retention threshold.
 
 The SDK/planner pair's 148-second prediction plus the existing market reserve
-admitted Spot, but both executions exceeded eight minutes. Its retained
-Blacksmith route removes that repeated forecast exception without changing
+admitted Spot, but both executions exceeded eight minutes. Its guarded
+Blacksmith route addresses that repeated forecast exception without changing
 other rows' reserves. A two-CPU, 8-GiB process scope passed its complete workload
 but reached a 7.728-GiB kernel memory peak; the 16-label retains memory headroom.
 A constrained process scope is not whole-VM performance proof. Actual-label,
@@ -171,12 +171,25 @@ memory-limit or OOM events. Worktree and descendant peaks were 3.937 and
 4.974 GiB on a constrained Blacksmith 16-label VM. Update/archive and
 embedded/inference peaks were 4.666 and 4.336 GiB on AWS Ubuntu 26.04 after
 two Blacksmith source transfers failed before tests started. The latter results
-retain that provider and OS limitation. Their selected 8-label allocations still
+retain that provider and OS limitation. Their proposed 8-label allocations still
 require actual Blacksmith CI; no test was repeated for the transport failures.
 Unified declarations also passed its complete 80-file inventory on the AWS
-scope with a 4.564-GiB peak and the original compiler admission guard. It selects
-the 8-label too. The SDK/planner pair is the sole 16-label exception among these
-six measured envelopes.
+scope with a 4.564-GiB peak and the original compiler admission guard. These
+measurements describe the recorded workloads, not every later companion set.
+
+Main's later inventory and packing update at `63fa1d2dedac` changes all six
+envelopes. The guarded storage and SDK/planner exceptions no longer match the
+current broad plans: their owners separated, gained children, or changed
+concurrency. The remaining unified-declaration row has 47 files, only ten of
+which belonged to its previous 80-file probe. Thirty-seven different companions
+and updated test dependencies invalidate the smaller-fit inference. It retains
+the original Blacksmith 32-label until its current workload qualifies on a
+smaller allocation. No historical probe is counted as current whole-VM proof.
+
+The rebased RunsOn planner emits 81 compact PR descriptors (79 Node rows),
+plus 41 plugin Node rows before the separate cron comparator; its main plan
+has 68 compact descriptors and 67 Node rows. This capacity correction changes
+only the unified row's runner, without another shard or execution-policy change.
 
 The four candidate walls were 743, 810, 740 and 992 seconds. All tests passed,
 but the last run fails the fifteen-minute requirement. Its Blacksmith cron

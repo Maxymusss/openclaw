@@ -4054,14 +4054,19 @@ function resolveRunsOnRetainedBlacksmithRunner(job: CompactNodeTestShard): strin
   const [group] = job.groups;
   if (job.groups.length === 1 && group) {
     if (
-      (group.configs[0] === "test/vitest/vitest.infra.config.ts" &&
-        RUNSON_RETAINED_INFRA_TEST_PAIRS.some((files) =>
-          files.every((file) => group.includePatterns?.includes(file)),
-        )) ||
-      (group.configs[0] === TOOLING_CONFIG &&
-        group.includePatterns?.includes(TOOLING_UNIFIED_DECLARATIONS_TEST_FILE))
+      group.configs[0] === "test/vitest/vitest.infra.config.ts" &&
+      RUNSON_RETAINED_INFRA_TEST_PAIRS.some((files) =>
+        files.every((file) => group.includePatterns?.includes(file)),
+      )
     ) {
       return DEFAULT_NODE_TEST_RUNNER;
+    }
+    if (
+      group.configs[0] === TOOLING_CONFIG &&
+      group.includePatterns?.includes(TOOLING_UNIFIED_DECLARATIONS_TEST_FILE)
+    ) {
+      // Repacked compiler companions have no matching small-host fit.
+      return EXTRA_LARGE_NODE_TEST_RUNNER;
     }
   }
   // The compiler/planner pair needs more headroom than the 8-GiB fit probe.
