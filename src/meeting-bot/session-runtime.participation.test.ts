@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
   createParticipationTestRuntime,
-  type createTestRuntime,
+  createTestRuntime,
 } from "./session-runtime.test-support.js";
 import type { MeetingTranscriptSnapshot } from "./session-types.js";
 
@@ -107,6 +107,48 @@ describe("MeetingSessionRuntime participation ownership", () => {
     expect(runtime.participationContext(session.id)).toMatchObject({ sourceOrder: 0, sources: [] });
     await runtime.leave(session.id);
   });
+
+  it.each(["tab", "id", "url", "state", "transport", "node"] as const)(
+    "permits only tab recovery during non-participation capture (%s)",
+    async (change) => {
+      const pending = createDeferredCore<MeetingTranscriptSnapshot>();
+      const entered = createDeferredCore();
+      const { runtime } = createTestRuntime({
+        transcribe: true,
+        captureTranscript: async () => {
+          entered.resolve();
+          return await pending.promise;
+        },
+        joinTransport: async ({ session }) => {
+          session.browser = {
+            launched: true,
+            tab: { targetId: "original-tab", openedByPlugin: false },
+          };
+          return {};
+        },
+        releaseBrowserTab: async () => true,
+      });
+      const url = "https://meeting.example/room";
+      const { session } = await runtime.join({ url, agentId: "operator" });
+      const sessionId = session.id;
+      const reading = runtime.transcript(sessionId);
+      await entered.promise;
+      session.browser!.tab!.targetId = "recovered-tab";
+      session.id = change === "id" ? "another-session" : session.id;
+      session.url = change === "url" ? `${url}/other` : url;
+      session.state = change === "state" ? "ended" : session.state;
+      session.transport = change === "transport" ? "chrome-node" : session.transport;
+      session.browser!.nodeId = change === "node" ? "another-node" : undefined;
+      pending.resolve({ droppedLines: 0, lines: [{ text: "Recovered caption" }] });
+      if (change === "tab") {
+        await expect(reading).resolves.toMatchObject({ lines: [{ text: "Recovered caption" }] });
+      } else {
+        await expect(reading).rejects.toThrow("no longer owns the captured browser tab and route");
+      }
+      session.id = sessionId;
+      await runtime.leave(sessionId);
+    },
+  );
 
   it("records a caption's original order before finalization and revokes it on a pending correction", async () => {
     const source = {

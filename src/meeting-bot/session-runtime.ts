@@ -108,7 +108,9 @@ export class MeetingSessionRuntime<
       isTranscribeSession: (session) => this.options.isTranscribeMode(session.mode),
       hasBrowserTab: (session) => Boolean(this.options.getBrowser(session)?.tab),
       capture: async (session, captureOptions) => {
-        const isCurrent = this.#captureSessionOwnership(session);
+        const isCurrent = this.#captureSessionOwnership(session, {
+          requireSameTab: this.#participation !== undefined,
+        });
         const snapshot = await this.options.captureTranscript(session, captureOptions);
         if (!isCurrent(session.id)) {
           throw new Error("The meeting session no longer owns the captured browser tab and route.");
@@ -423,7 +425,10 @@ export class MeetingSessionRuntime<
     this.#noteSession(session, reason);
   }
 
-  #captureSessionOwnership(session: TSession): (sessionId: string) => boolean {
+  #captureSessionOwnership(
+    session: TSession,
+    { requireSameTab = true }: { requireSameTab?: boolean } = {},
+  ): (sessionId: string) => boolean {
     const browser = this.options.getBrowser(session);
     const targetId = browser?.tab?.targetId;
     const nodeId = browser?.nodeId;
@@ -437,7 +442,7 @@ export class MeetingSessionRuntime<
         session.url === url &&
         session.transport === transport &&
         latest?.nodeId === nodeId &&
-        latest?.tab?.targetId === targetId
+        (!requireSameTab || latest?.tab?.targetId === targetId)
       );
     };
   }

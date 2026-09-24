@@ -16,12 +16,13 @@ import type {
   MeetingTranscriptSnapshot,
 } from "./session-types.js";
 
-type TestTransport = "chrome";
+type TestTransport = "chrome" | "chrome-node";
 type TestMode = "agent";
 type TestRequest = { url: string; agentId: string };
 export type TestSession = MeetingSessionRecord<TestTransport, TestMode> & {
   browser?: {
     launched: boolean;
+    nodeId?: string;
     tab?: MeetingBrowserTab;
     health?: MeetingBrowserHealth;
     hasAudioBridge?: boolean;
@@ -126,6 +127,7 @@ export function createTestRuntime(params: {
       session.browser
         ? {
             launched: session.browser.launched,
+            nodeId: session.browser.nodeId,
             tab: session.browser.tab,
             health: session.browser.health,
             hasAudioBridge: session.browser.hasAudioBridge === true,
