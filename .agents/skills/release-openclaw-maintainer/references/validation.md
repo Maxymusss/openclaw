@@ -62,10 +62,11 @@ uses `--video-providers fal`. Full transform modes require intentional
 credentialed tests. Local live model/Parallels rosters require both OpenAI and
 Anthropic keys; missing either blocks those lanes, never print their values.
 
-## Beta-publish and default stable-publish
+## Beta-publish and the stable fast path
 
-Use `release_profile=beta`, `run_release_soak=false` for beta and, with the
-stable soak waiver, for the default stable path. A qualifying `all` run for
+Use `release_profile=beta`, `run_release_soak=false` for beta. Stable-publish
+defaults to `release_profile=stable`; the beta profile is a stable's explicit
+operator fast path only with `stable_soak_waiver`. A qualifying `all` run for
 an actual beta on its canonical branch/tag records `npm-beta-v1`. Native app
 CI, performance, and published-package Telegram move to confidence. Node,
 Control UI, plugin, cross-OS, QA parity, runtime-pair/restart, and tool coverage

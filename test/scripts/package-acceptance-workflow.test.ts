@@ -7318,12 +7318,16 @@ NODE
       workflowJob(".github/workflows/plugin-npm-release.yml", "publish_plugins_npm"),
       "Publish approved bootstrap tarball",
     );
-    expect(publish.env).toMatchObject({
-      OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: "${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}",
-    });
+    // The variable is fetched live after identity verification, not read from the job env.
+    expect(publish.env?.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER).toBeUndefined();
     const run = publish.run ?? "";
+    expect(run).toContain("actions/variables/OPENCLAW_RELEASE_STABLE_SOAK_WAIVER");
     expect(run).toContain("assertStableSoakWaiverStillHeld");
+    expect(run.indexOf("release-tooling-identity.mjs verify")).toBeLessThan(
+      run.indexOf("actions/variables/OPENCLAW_RELEASE_STABLE_SOAK_WAIVER"),
+    );
     expect(run.indexOf("assertStableSoakWaiverStillHeld")).toBeLessThan(run.indexOf("npm publish"));
+    expect(run).toContain('grep -q "HTTP 404"');
   });
 
   it("lets a closeout replay carry the operator waivers that authorized the stable", () => {

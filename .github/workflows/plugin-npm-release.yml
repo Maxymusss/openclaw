@@ -1938,22 +1938,12 @@ jobs:
           WORKFLOW_REF: ${{ github.ref_name }}
           WORKFLOW_SHA: ${{ github.workflow_sha }}
           BOOTSTRAP_APPROVAL_PATH: ${{ runner.temp }}/npm-stable-bootstrap-approval/approval.json
-          # Read owner-held waiver authority immediately before the token-backed publish.
-          OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: ${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}
         run: |
           set -euo pipefail
           [[ -n "${NPM_TOKEN// }" ]] || {
             echo "npm token bootstrap requires the protected npm release token." >&2
             exit 1
           }
-          if [[ -f "$BOOTSTRAP_APPROVAL_PATH" ]]; then
-            node --input-type=module - "$BOOTSTRAP_APPROVAL_PATH" <<'NODE'
-          import { readFileSync } from "node:fs";
-          import { assertStableSoakWaiverStillHeld } from "./scripts/plugin-npm-bootstrap-approval.mjs";
-          const approval = JSON.parse(readFileSync(process.argv[2], "utf8"));
-          assertStableSoakWaiverStillHeld(approval, process.env.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER ?? "");
-          NODE
-          fi
           publish_home="$(mktemp -d "${RUNNER_TEMP}/plugin-npm-bootstrap.XXXXXX")"
           cleanup() {
             rm -rf "$publish_home"
@@ -1979,6 +1969,26 @@ jobs:
             --release-publish-ref "$RELEASE_PUBLISH_REF" \
             --release-publish-full-ref "$RELEASE_PUBLISH_FULL_REF" \
             --release-publish-parent-state-policy "$RELEASE_PUBLISH_PARENT_STATE_POLICY"
+          # Owner-held waiver authority is fetched afresh here, after every other
+          # verification and immediately before the token-backed publish.
+          if [[ -f "$BOOTSTRAP_APPROVAL_PATH" ]]; then
+            current_waiver="$(gh api "repos/${GITHUB_REPOSITORY}/actions/variables/OPENCLAW_RELEASE_STABLE_SOAK_WAIVER" \
+              -H "Cache-Control: max-age=0" --jq '.value' 2>"${RUNNER_TEMP}/waiver-read.err")" || {
+              if grep -q "HTTP 404" "${RUNNER_TEMP}/waiver-read.err"; then
+                current_waiver=""
+              else
+                cat "${RUNNER_TEMP}/waiver-read.err" >&2
+                echo "Could not read OPENCLAW_RELEASE_STABLE_SOAK_WAIVER before npm publish; refusing to publish." >&2
+                exit 1
+              fi
+            }
+            CURRENT_STABLE_SOAK_WAIVER="$current_waiver" node --input-type=module - "$BOOTSTRAP_APPROVAL_PATH" <<'NODE'
+          import { readFileSync } from "node:fs";
+          import { assertStableSoakWaiverStillHeld } from "./scripts/plugin-npm-bootstrap-approval.mjs";
+          const approval = JSON.parse(readFileSync(process.argv[2], "utf8"));
+          assertStableSoakWaiverStillHeld(approval, process.env.CURRENT_STABLE_SOAK_WAIVER ?? "");
+          NODE
+          fi
           HOME="$publish_home" \
             NPM_CONFIG_GLOBALCONFIG=/dev/null \
             NPM_CONFIG_IGNORE_SCRIPTS=true \
