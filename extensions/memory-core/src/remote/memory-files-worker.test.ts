@@ -62,12 +62,12 @@ it("closes remote watch admission while startup is waiting on a filesystem probe
     });
   // oxlint-disable-next-line typescript/unbound-method -- Invoked below with the intercepted watcher owner.
   const originalClose = MemoryFileWatcher.prototype.close;
-  const close = vi
-    .spyOn(MemoryFileWatcher.prototype, "close")
-    .mockImplementation(function (this: MemoryFileWatcher) {
-      closing.resolve();
-      return originalClose.call(this);
-    });
+  const close = vi.spyOn(MemoryFileWatcher.prototype, "close").mockImplementation(function (
+    this: MemoryFileWatcher,
+  ) {
+    closing.resolve();
+    return originalClose.call(this);
+  });
   let worker: Promise<void> | undefined;
   try {
     await fs.mkdir(path.join(workspace, "memory"));
