@@ -87,13 +87,17 @@ writes back to that person's account record rather than a shared or agent-local
 credential.
 
 Older installations may still contain `auth-profiles.json`, `auth-state.json`,
-per-agent `auth.json`, or shared `credentials/oauth.json`. Run
+or per-agent `auth.json`. Run
 `openclaw doctor --fix` once after upgrading. Doctor imports verified values,
 records a migration receipt, and renames the original file to a timestamped
 archive.
 
+The older shared `credentials/oauth.json` importer has retired. Doctor leaves
+that file untouched and reports the [upgrade through `2026.9.5`](/install/updating#upgrading-very-old-versions)
+needed to import it before installing the latest release.
+
 Runtime never uses credentials from these retired files. What happens when one
-is still present depends on whether SQLite can already serve credentials for
+of the supported import files is still present depends on whether SQLite can already serve credentials for
 that agent:
 
 - The store holds profiles: the retired file is leftover bytes. Runtime logs a

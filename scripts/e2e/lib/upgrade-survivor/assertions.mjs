@@ -411,7 +411,7 @@ function seedState() {
     );
   }
   if (scenario === "versioned-runtime-deps") {
-    const version = process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION || "2026.4.24";
+    const version = requireEnv("OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION");
     for (const plugin of ["discord", "feishu", "telegram", "whatsapp"]) {
       writeJson(
         path.join(
@@ -720,7 +720,7 @@ function assertStateSurvived() {
     );
   }
   if (scenario === "versioned-runtime-deps") {
-    const version = process.env.OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION || "2026.4.24";
+    const version = requireEnv("OPENCLAW_UPGRADE_SURVIVOR_BASELINE_VERSION");
     for (const plugin of ["discord", "feishu", "telegram", "whatsapp"]) {
       const sentinel = path.join(
         legacyRuntimeRoot,
@@ -1546,10 +1546,7 @@ function assertRecoverableUpdateJson([file, expectedVersion, , baselineVersion])
   assertStrict.equal(result.after?.version, expectedVersion);
   assertStrict.ok(result.steps?.length > 0);
   assertStrict.ok(result.steps.every((step) => step.exitCode === 0));
-  // April warning-only updaters predate the separately reported install swap.
-  for (const name of result.status === "ok"
-    ? ["global update"]
-    : ["global update", "global install swap"]) {
+  for (const name of ["global update", "global install swap"]) {
     assertStrict.ok(result.steps.some((step) => step.name === name));
   }
   const plugins = result.postUpdate?.plugins;

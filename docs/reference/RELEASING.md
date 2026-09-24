@@ -728,8 +728,8 @@ release, rebuilds binaries, republishes assets or changes registry selectors.
 ### Previous updater compatibility
 
 Before freezing the release, refresh `scripts/lib/update-compat-inventory.json`
-from every release in the supported upgrade window. The current window includes
-2026.9.1, 2026.9.2, and 2026.9.3. Download each npm tarball and verify it against
+from every release in the supported upgrade window, currently 2026.9.1 through
+2026.9.6. Download each npm tarball and verify it against
 its published `dist.integrity` before extracting it. Pass each verified artifact
 to the recorder with a repeatable `--release` argument:
 
@@ -737,7 +737,10 @@ to the recorder with a repeatable `--release` argument:
 pnpm update:compat:gen \
   --release '<unpacked-2026.9.1-directory>=<verified-npm-dist.integrity>' \
   --release '<unpacked-2026.9.2-directory>=<verified-npm-dist.integrity>' \
-  --release '<unpacked-2026.9.3-directory>=<verified-npm-dist.integrity>'
+  --release '<unpacked-2026.9.3-directory>=<verified-npm-dist.integrity>' \
+  --release '<unpacked-2026.9.4-directory>=<verified-npm-dist.integrity>' \
+  --release '<unpacked-2026.9.5-directory>=<verified-npm-dist.integrity>' \
+  --release '<unpacked-2026.9.6-directory>=<verified-npm-dist.integrity>'
 ```
 
 The recorder writes releases in version order and replaces the recorded set.
@@ -746,8 +749,8 @@ the inventory must not accumulate indefinitely. A release with no post-swap
 imports still has an entry with an empty chunk list, so coverage is explicit.
 Conflicting origins for the same chunk export across releases fail generation.
 
-The recorder corrects one verified historical bundler annotation: the 2026.9.1,
-2026.9.2, and 2026.9.3 registry-lifecycle chunks grouped the retirement function
+The recorder corrects one verified historical bundler annotation: the 2026.9.1
+through 2026.9.4 registry-lifecycle chunks grouped the retirement function
 under the cache module's source region. The correction requires the exact release
 version, build identity, commit, npm integrity, chunk and export. It changes only
 recorded source provenance; missing or ambiguous current exports still fail the
