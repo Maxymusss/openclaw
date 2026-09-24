@@ -11,15 +11,17 @@ case "$1" in
   phone-then-wear)
     # Each child owns and joins its emulator before the next launch. A failed
     # phone gate stops the sequence, exactly as the screenshot entrypoint does.
-    bash "$0" phone
+    DIAGNOSTIC_DIR="$DIAGNOSTIC_DIR/phone" bash "$0" phone
     exec bash "$0" wear
     ;;
   phone)
+    # Preserve the released standalone phone root alongside workflow setup evidence.
     AVD_NAME=OpenClaw_Screenshots_API36
     DEVICE_PROFILE=pixel_2
     SYSTEM_IMAGE='system-images;android-36;google_apis;x86_64'
     ;;
   wear)
+    DIAGNOSTIC_DIR="$DIAGNOSTIC_DIR/wear"
     AVD_NAME=OpenClaw_Wear_Screenshots_API34
     DEVICE_PROFILE=wearos_large_round
     SYSTEM_IMAGE='system-images;android-34;android-wear;x86_64'
@@ -29,7 +31,6 @@ case "$1" in
     exit 2
     ;;
 esac
-DIAGNOSTIC_DIR="$DIAGNOSTIC_DIR/$1"
 mkdir -p "$DIAGNOSTIC_DIR"
 ANDROID_SCREENSHOT_EMULATOR_TIMEOUT_SECONDS=180
 emulator_pid=""

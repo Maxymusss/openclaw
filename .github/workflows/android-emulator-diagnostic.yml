@@ -95,10 +95,13 @@ jobs:
       matrix:
         include:
           - scenario: phone
+            artifact_name: android-emulator-diagnostic
             timeout_minutes: 25
           - scenario: wear
+            artifact_name: android-emulator-diagnostic-wear
             timeout_minutes: 25
           - scenario: phone-then-wear
+            artifact_name: android-emulator-diagnostic-phone-then-wear
             timeout_minutes: 40
     permissions:
       contents: read
@@ -278,6 +281,6 @@ jobs:
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: android-emulator-diagnostic-${{ matrix.scenario }}-${{ github.run_id }}-${{ github.run_attempt }}
+          name: ${{ matrix.artifact_name }}-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/android-emulator-diagnostic
           retention-days: 7
