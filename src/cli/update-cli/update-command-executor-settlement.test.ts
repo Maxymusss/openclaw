@@ -13,6 +13,7 @@ import {
   resolveCommandProcessSignal,
   retainCommandProcessCleanup,
 } from "../../process/exec-spawn.js";
+import { defaultRuntime } from "../../runtime.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { withMockedPlatform } from "../../test-utils/vitest-spies.js";
 import { UpdateActivationTimeoutError } from "./update-command-activation.js";
@@ -24,6 +25,7 @@ import {
   withUpdateCommandExecutorChild,
   type UpdateCommandExecutor,
 } from "./update-command-executor.js";
+import { failUpdateCommandRun } from "./update-command-result.js";
 import { resolvePackageRuntimePreflight } from "./update-command-service-plan.js";
 import {
   deferUpdateCommandTerminalResult,
@@ -348,22 +350,67 @@ afterEach(() => {
 });
 
 it.each(["direct", "delegated"] as const)(
-  "delivers a bounded %s timeout while its callback remains pending",
+  "revokes %s diagnostics after an ordinary command reports uncertain cleanup",
   async (kind) => {
+    const admission = withMockedPlatform("freebsd", () => createFreeBsdUpdateWriteAdmission()!);
+    await admission.revalidate(() => {});
+    const observe = vi.fn(admission.revoke);
+    const original = new CommandProcessCleanupError();
+    const error = await runWithExecutorFence(
+      kind,
+      async () => {
+        throw original;
+      },
+      undefined,
+      observe,
+    ).catch((cause: unknown) => cause);
+    expect(collectNestedErrorCandidates(error)).toContain(original);
+    expect(observe).toHaveBeenCalledExactlyOnceWith(error);
+    expect(admission.failure).toBe(error);
+    expect(admission.canWrite).toBe(false);
+    const read = vi.spyOn(updateRunLedger, "getUpdateRun");
+    const write = vi.spyOn(updateRunLedger, "recordUpdateRunPhase");
+    vi.spyOn(defaultRuntime, "error").mockImplementation(() => {});
+    expect(
+      failUpdateCommandRun(new Error("late diagnostic"), {
+        runId: "run",
+        env: {},
+        freebsdWriteAdmission: admission,
+      }),
+    ).toBeUndefined();
+    expect(read).not.toHaveBeenCalled();
+    expect(write).not.toHaveBeenCalled();
+    expect(rows.size).toBe(kind === "direct" ? 1 : 2);
+  },
+);
+
+it.each([
+  { kind: "direct", cleanupResult: "forced" },
+  { kind: "direct", cleanupResult: "uncertain" },
+  { kind: "delegated", cleanupResult: "forced" },
+  { kind: "delegated", cleanupResult: "uncertain" },
+] as const)(
+  "delivers a bounded $kind timeout with $cleanupResult cleanup while its callback remains pending",
+  async ({ kind, cleanupResult }) => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const admitted = createDeferredCore();
     const finish = createDeferredCore();
+    const admission = withMockedPlatform("freebsd", () => createFreeBsdUpdateWriteAdmission()!);
+    await admission.revalidate(() => {});
+    const observe = vi.fn(admission.revoke);
     let signal: AbortSignal | undefined;
     let ended = false;
     const work = runWithExecutorFence(
       kind,
       async () => {
+        retainCommandProcessCleanup(Promise.resolve(cleanupResult));
         signal = resolveCommandProcessSignal();
         admitted.resolve();
         await finish.promise;
         signal!.throwIfAborted();
       },
       1000,
+      observe,
     )
       .catch((error: unknown) => error)
       .finally(() => {
@@ -373,15 +420,25 @@ it.each(["direct", "delegated"] as const)(
       await admitted.promise;
       await vi.advanceTimersByTimeAsync(2000);
       expect(ended).toBe(true);
-      expect(await work).toBe(signal!.reason);
-      expect(await work).toBeInstanceOf(UpdateActivationTimeoutError);
+      const result = await work;
+      expect(signal!.reason).toBeInstanceOf(UpdateActivationTimeoutError);
+      expect(collectNestedErrorCandidates(result)).toContain(signal!.reason);
+      expect(hasCommandProcessCleanupError(result)).toBe(cleanupResult === "uncertain");
+      expect(admission.canWrite).toBe(cleanupResult === "forced");
+      if (cleanupResult === "uncertain") {
+        expect(observe).toHaveBeenCalledExactlyOnceWith(result);
+        expect(admission.failure).toBe(result);
+      } else {
+        expect(result).toBe(signal!.reason);
+        expect(observe).not.toHaveBeenCalled();
+      }
       expect(rows.size).toBe(kind === "direct" ? 1 : 2);
     } finally {
       finish.resolve();
       await work;
       await setImmediate();
     }
-    expect(rows.size).toBe(kind === "direct" ? 0 : 2);
+    expect(rows.size).toBe(kind === "direct" ? (cleanupResult === "uncertain" ? 1 : 0) : 2);
   },
 );
 
@@ -391,15 +448,22 @@ it.each(["forced", "uncertain"] as const)(
     const admitted = createDeferredCore();
     const cleanup = createDeferredCore<"forced" | "uncertain">();
     const original = new Error("operation cancelled");
+    const admission = withMockedPlatform("freebsd", () => createFreeBsdUpdateWriteAdmission()!);
+    await admission.revalidate(() => {});
+    const observe = vi.fn(admission.revoke);
     let saved: UpdateCommandExecutor | undefined;
     let fence: UpdateRecoveryFence | undefined;
-    const work = withUpdateCommandExecutor("run", async (executor) => {
-      saved = executor;
-      fence = await executor.enter(root);
-      retainCommandProcessCleanup(cleanup.promise);
-      admitted.resolve();
-      throw original;
-    }).catch((error: unknown) => error);
+    const work = withUpdateCommandExecutor(
+      "run",
+      async (executor) => {
+        saved = executor;
+        fence = await executor.enter(root);
+        retainCommandProcessCleanup(cleanup.promise);
+        admitted.resolve();
+        throw original;
+      },
+      { onAuthorityFailure: observe },
+    ).catch((error: unknown) => error);
     try {
       await admitted.promise;
       await setImmediate();
@@ -411,6 +475,9 @@ it.each(["forced", "uncertain"] as const)(
     }
     const error = await work;
     expect(hasCommandProcessCleanupError(error)).toBe(cleanupResult === "uncertain");
+    expect(admission.canWrite).toBe(cleanupResult === "forced");
+    expect(observe).toHaveBeenCalledTimes(cleanupResult === "uncertain" ? 1 : 0);
+    expect(collectNestedErrorCandidates(error)).toContain(original);
     expect(rows.has(root)).toBe(cleanupResult === "uncertain");
     if (cleanupResult === "forced") {
       expect(error).toBe(original);
@@ -462,6 +529,9 @@ it.each(["forced", "uncertain"] as const)(
 it.each(["forced", "uncertain"] as const)(
   "keeps delegated authority through command cleanup reporting %s",
   async (cleanupResult) => {
+    const admission = withMockedPlatform("freebsd", () => createFreeBsdUpdateWriteAdmission()!);
+    await admission.revalidate(() => {});
+    const observe = vi.fn(admission.revoke);
     const parent = lease(root, "parent", process.ppid);
     const childKey = `${root}/.openclaw-update-child-00000000-0000-0000-0000-000000000000`;
     const child = { ...lease(childKey, "run"), helper: parent.executor };
@@ -480,6 +550,7 @@ it.each(["forced", "uncertain"] as const)(
         admitted.resolve();
         return "complete";
       },
+      { onAuthorityFailure: observe },
     ).catch((error: unknown) => error);
     try {
       await admitted.promise;
@@ -491,6 +562,8 @@ it.each(["forced", "uncertain"] as const)(
     }
     const result = await work;
     expect(hasCommandProcessCleanupError(result)).toBe(cleanupResult === "uncertain");
+    expect(admission.canWrite).toBe(cleanupResult === "forced");
+    expect(observe).toHaveBeenCalledTimes(cleanupResult === "uncertain" ? 1 : 0);
     if (cleanupResult === "forced") {
       expect(result).toBe("complete");
     }

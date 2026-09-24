@@ -11,6 +11,7 @@ import {
 import { resolveStartupInstallStatus } from "../../infra/update-install-status.js";
 import type { UpdateRequester } from "../../infra/update-requester-authority.js";
 import {
+  getUpdateRun,
   recordUpdateRunDiagnostics,
   recordUpdateRunPhase,
   recordUpdateRunStep,
@@ -93,6 +94,9 @@ export function recordHandoffFailure(
     failureFacts,
   };
   try {
+    if (error instanceof UpdatePreMutationError) {
+      recordUpdateRunPhase(runId, "requested", { origin: { nextAction: error.message } });
+    }
     recordUpdateRunStep(runId, { step: step.name, status: "failed", reason });
   } catch {
     warn("Update failure state could not be recorded; preserving the original error.");
@@ -113,11 +117,19 @@ export function recordHandoffFailure(
 }
 
 export function createUnexpectedUpdateFailureResult(
-  current: UpdateRunRecord,
+  admitted: UpdateRunRecord,
   previous: UpdateRunResult,
   error: unknown,
   warn: (message: string) => void,
 ): UpdateRunResult {
+  let current = admitted;
+  try {
+    current = getUpdateRun(admitted.runId) ?? admitted;
+  } catch {
+    warn(
+      "Update history could not be read; preserving the original update failure with captured admission facts.",
+    );
+  }
   const activeStep = current.steps.findLast((step) => step.status === "in_progress");
   const name = activeStep?.step ?? current.phase;
   const reason = error instanceof FreeBsdPkgOwnershipError ? error.reason : "unexpected-error";

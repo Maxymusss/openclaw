@@ -20,7 +20,7 @@ import {
   clearUpdateCommandExecutorAdmission,
   preflightReleases,
   retainedOwners,
-  type ManagedUpdateLeaseAuthority,
+  type UpdateCommandExecutorOptions,
 } from "./update-command-executor-admission.js";
 import {
   createChildOwner,
@@ -43,6 +43,18 @@ function observeAuthorityFailure(observer: ((cause: unknown) => void) | undefine
   if (!(cause instanceof UpdateActivationTimeoutError)) {
     observer?.(cause);
   }
+}
+
+function rethrowExecutorFailure(
+  observer: ((cause: unknown) => void) | undefined,
+  cause: unknown,
+): never {
+  // The deadline's outer command scope can report cleanup before its callback
+  // settles. Revoke diagnostics at that boundary too, preserving the full cause.
+  if (hasCommandProcessCleanupError(cause)) {
+    observeAuthorityFailure(observer, cause);
+  }
+  throw cause;
 }
 
 function observeNativeAuthority(
@@ -100,7 +112,7 @@ export async function withDelegatedUpdateCommandExecutor<T>(
   },
 ): Promise<T> {
   const activation = createUpdateOperationDeadline();
-  return await activation.run(() =>
+  const execution = activation.run(() =>
     withCommandProcessScope(async () => {
       const identityWarnings = createUpdateIdentityWarningReporter(runId);
       const binding = resolveUpdateCommandChildBinding(grant, runId, root, identityWarnings.warn);
@@ -247,6 +259,9 @@ export async function withDelegatedUpdateCommandExecutor<T>(
       }
     }, activation.signal),
   );
+  return await execution.catch((cause: unknown) =>
+    rethrowExecutorFailure(options?.onAuthorityFailure, cause),
+  );
 }
 
 /**
@@ -257,35 +272,10 @@ export async function withDelegatedUpdateCommandExecutor<T>(
 export async function withUpdateCommandExecutor<T>(
   runId: string,
   operation: (executor: UpdateCommandExecutor) => Promise<T>,
-  options?: (
-    | {
-        existingAuthority?: never;
-        legacyManagedParent?: never;
-        legacyPackageParent?: never;
-        legacyPackageHandoff?: never;
-      }
-    | {
-        existingAuthority: Omit<ManagedUpdateLeaseAuthority, "owner">;
-        legacyManagedParent?: never;
-        legacyPackageParent?: never;
-        legacyPackageHandoff?: never;
-      }
-    | {
-        existingAuthority?: never;
-        legacyManagedParent: { runId: string; handoffId: string; root: string };
-        legacyPackageParent?: never;
-        legacyPackageHandoff?: never;
-      }
-    | {
-        existingAuthority?: never;
-        legacyManagedParent?: never;
-        legacyPackageParent: Extract<LegacyUpdateExecutorParent, { kind: "package" }>["identity"];
-        legacyPackageHandoff?: { handoffId: string; root: string };
-      }
-  ) & { onAuthorityFailure?: (cause: unknown) => void },
+  options?: UpdateCommandExecutorOptions,
 ): Promise<T> {
   const activation = createUpdateOperationDeadline();
-  return await activation.run(() =>
+  const execution = activation.run(() =>
     withCommandProcessScope(async () => {
       let active = true;
       let entering = false;
@@ -675,12 +665,10 @@ export async function withUpdateCommandExecutor<T>(
       childOwners.delete(fence);
       clearUpdateCommandExecutorAdmission(fence);
       if ("error" in outcome && hasCommandProcessCleanupError(outcome.error)) {
-        const failure = new UpdateCommandRecoveryPendingError(
+        throw new UpdateCommandRecoveryPendingError(
           "Command cleanup is unconfirmed; update ownership remains retained.",
           { cause: outcome.error },
         );
-        observeAuthorityFailure(options?.onAuthorityFailure, failure);
-        throw failure;
       }
       try {
         if (serviceLease && store && (serviceLease.version === 3 || !store.release(serviceLease))) {
@@ -727,5 +715,8 @@ export async function withUpdateCommandExecutor<T>(
       }
       return outcome.result;
     }, activation.signal),
+  );
+  return await execution.catch((cause: unknown) =>
+    rethrowExecutorFailure(options?.onAuthorityFailure, cause),
   );
 }

@@ -12,7 +12,7 @@ import {
   parseModule,
   type UpdateCompatibilityOrigin,
 } from "./update-compat-module-graph.mts";
-import { isUpdateSourceScriptImport } from "./update-compat-source-imports.mts";
+import { isUpdatePackageAssetImport } from "./update-compat-source-imports.mts";
 
 export { isUpdateCompatibilityChunk } from "./update-compat-contract.mjs";
 export const UPDATE_COMPATIBILITY_INVENTORY_FILE = "update-compat-inventory.json";
@@ -198,7 +198,7 @@ export function recordUpdateCompatibilityRelease(params: {
         if (owner && POST_SWAP_OWNER.test(owner) && owner !== "src/cli/update-cli/wizard.ts") {
           const specifier = node.arguments[0];
           if (!specifier || !ts.isStringLiteralLike(specifier)) {
-            if (isUpdateSourceScriptImport(owner, node)) {
+            if (isUpdatePackageAssetImport(owner, node)) {
               return;
             }
             throw new Error(`Nonliteral post-swap import in ${file}: ${node.getText()}`);
@@ -462,11 +462,13 @@ export function writeUpdateCompatibilityChunks(params: {
   const candidates = new Map<string, Map<string, { file: string; exported: string }>>();
   for (const file of moduleFiles(distDir)) {
     const relative = portable(path.relative(distDir, file));
-    // Retained config repairs are built separately from the updater's runtime graph.
+    // Retained config repairs and one-shot relays own isolated build graphs.
+    // Their copies are not bindings in the updater's runtime graph.
     if (
       relative.startsWith("extensions/") ||
       relative.startsWith("plugin-sdk/") ||
-      relative.startsWith("config-doctor/")
+      relative.startsWith("config-doctor/") ||
+      relative.startsWith("native-hook-relay/")
     ) {
       continue;
     }

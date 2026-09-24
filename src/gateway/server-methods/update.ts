@@ -608,15 +608,7 @@ export const updateHandlers: GatewayRequestHandlers = {
       context?.logGateway?.warn(
         `update.run failed error=${error instanceof FreeBsdPkgOwnershipError ? error.message : formatErrorMessage(error)}`,
       );
-      let recorded = run;
-      try {
-        recorded = getUpdateRun(runId) ?? run;
-      } catch {
-        context?.logGateway?.warn(
-          "Update history could not be read; preserving the original update failure with captured admission facts.",
-        );
-      }
-      result = createUnexpectedUpdateFailureResult(recorded, result, error, warn);
+      result = createUnexpectedUpdateFailureResult(run, result, error, warn);
     }
 
     let outcomeRun = recordUpdateRunPhase(runId, "requested", {

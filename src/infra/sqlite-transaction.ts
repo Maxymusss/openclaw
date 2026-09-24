@@ -3,7 +3,6 @@ import type { DatabaseSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 import { isMainThread, threadId } from "node:worker_threads";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { executeWithCachedStatement } from "./kysely-sync-cache-state.js";
 import { readSqliteBusyTimeout, runWithSqliteBusyTimeout } from "./sqlite-busy-timeout.js";
 import { isSqliteLockError } from "./sqlite-error-diagnostics.js";
 import {
@@ -31,15 +30,27 @@ export function logSlowSqliteCoordinatorWait(
   if (!isMainThread || elapsedMs <= 100) {
     return;
   }
-  reportSqliteTransactionWarning(transactionLog, "slow SQLite coordinator lock wait", {
-    async: false,
-    ...transactionDiagnosticLabels(undefined, options),
-    elapsedMs,
-    isMainThread,
-    pid: process.pid,
-    threadId,
-    thresholdMs: 100,
-  });
+  try {
+    // Capture only slow waits, while the synchronous owner's call chain is still on the stack.
+    const trace = new Error();
+    Error.captureStackTrace(trace, logSlowSqliteCoordinatorWait);
+    reportSqliteTransactionWarning(transactionLog, "slow SQLite coordinator lock wait", {
+      async: false,
+      caller: trace.stack
+        ?.split("\n")
+        .slice(1, 9)
+        .map((frame) => frame.trim())
+        .join(" <- "),
+      ...transactionDiagnosticLabels(undefined, options),
+      elapsedMs,
+      isMainThread,
+      pid: process.pid,
+      threadId,
+      thresholdMs: 100,
+    });
+  } catch {
+    // Diagnostics cannot abandon an acquired coordinator or replace its admission error.
+  }
 }
 
 /** Run synchronous reads against one deferred SQLite snapshot. */
@@ -51,23 +62,6 @@ export function runSqliteDeferredTransactionSync<T>(
   return runSqliteTransactionSync(db, operation, "deferred", {
     ...options,
     logger: options?.logger ?? transactionLog,
-  });
-}
-
-/** Pin an implicit read snapshot without requiring transaction-control authorization. */
-export function runSqlitePinnedReadSnapshotSync<T>(db: DatabaseSync, operation: () => T): T {
-  return executeWithCachedStatement(db, "PRAGMA schema_version", [], (statement) => {
-    // sqlite-allow-raw: Stepping this pragma pins the connection's implicit read transaction.
-    const snapshot = statement.iterate();
-    try {
-      const first = snapshot.next();
-      if (first.done) {
-        throw new Error("SQLite schema version query returned no row");
-      }
-      return operation();
-    } finally {
-      snapshot.return?.();
-    }
   });
 }
 

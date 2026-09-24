@@ -31,7 +31,21 @@ export const en: TranslationMap & {
     pullRequests: TranslationMap;
   };
   configPage: TranslationMap;
-  profilePage: TranslationMap & { personalInstructions: TranslationMap };
+  profilePage: TranslationMap & {
+    personalInstructions: TranslationMap;
+    identity: TranslationMap &
+      Record<
+        | "title"
+        | "menuLabel"
+        | "menuButtonLabel"
+        | "description"
+        | "avatar"
+        | "chooseAvatar"
+        | "displayName"
+        | "linkedEmails",
+        string
+      >;
+  };
   connection: TranslationMap;
   configView: TranslationMap;
   custodian: TranslationMap;
@@ -942,9 +956,8 @@ export const en: TranslationMap & {
     automationPrefix: "Automation:",
     actionRequiresConnection: "Connect to the Gateway to change sessions.",
     actionUnavailable: "This Gateway does not support this session action.",
-    actionRequiresRead: "This action requires operator.read access.",
-    actionRequiresWrite: "This action requires operator.write access.",
-    actionRequiresAdmin: "This action requires operator.admin access.",
+    actionRequiresScope: "This action requires {scope} access.",
+    actionRequiresOwnership: "Only the session owner can make this change.",
     deletePreservedReasons: {
       "owner-mismatch": "owned elsewhere",
       busy: "live run or cleanup active",
@@ -2807,6 +2820,7 @@ export const en: TranslationMap & {
         "Tell this agent about you and how you like to work. This edits only your personal USER.md, not the shared workspace file.",
     },
     offline: "Connect to the gateway to meet your agent.",
+    access: {},
     usageStatistics: "Usage statistics",
     usageStatisticsDescription: "View activity, costs, and usage trends.",
     identity: {
@@ -2814,39 +2828,10 @@ export const en: TranslationMap & {
       menuLabel: "Identity menu",
       menuButtonLabel: "Identity and app menu for {name}",
       description: "Your profile on this gateway.",
-      loading: "Loading your identity…",
-      profileUnavailable: "Your identity profile could not be loaded.",
-      unidentified:
-        "This connection has no personal profile; sign in through Cloudflare Access, Tailscale Serve, or a trusted proxy to set a name and avatar.",
-      writeRequired: "Profile editing requires operator.write access.",
       avatar: "Avatar",
-      avatarDescription: "PNG, JPEG, or WebP. Images are resized to 256 × 256 or smaller.",
       chooseAvatar: "Choose image",
-      processingAvatar: "Processing…",
       displayName: "Display name",
-      displayNameDescription: "Shown to other people using this gateway.",
       linkedEmails: "Linked emails",
-      linkedEmailsDescription: "Email addresses connected to this profile.",
-      githubAccount: "GitHub account",
-      githubAccountDescription:
-        "Verified sign-in identity, not permission to publish. Manage publishing access under GitHub connections below.",
-      githubVerified: "Verified from your GitHub-backed sign-in",
-      githubUnavailable: "Unavailable",
-      githubUnavailableDescription: "GitHub-backed sign-in is unavailable. Refresh to retry.",
-      ownerGithubDescription:
-        "GitHub-backed sign-in through Cloudflare Access or Tailscale Serve provides this identity.",
-      gitCoauthor: "Git co-author credit",
-      gitCoauthorDescription:
-        "Adds this account's public GitHub noreply address to commits created from shared sessions. Turning it off affects future commits only.",
-      gitCoauthorUnavailable:
-        "Available after your GitHub-backed sign-in is verified. Refresh to retry.",
-      ownerGitCoauthorDescription:
-        "Requires GitHub-backed sign-in through Cloudflare Access or Tailscale Serve.",
-      avatarErrors: {
-        invalid: "That image could not be processed.",
-        sourceTooLarge: "Choose an image that is 10 MB or smaller.",
-        tooLarge: "The processed avatar is larger than 512 KB.",
-      },
     },
     modelAccounts: {},
   },
@@ -3326,6 +3311,7 @@ export const en: TranslationMap & {
     },
     cloudWorkerFailed: "Runner failed: {error}",
     errorDetails: "Error details",
+    checkStatus: "Check status",
     details: "Details",
     copyError: "Copy error",
     providerAccessRemoved:
@@ -3374,6 +3360,7 @@ export const en: TranslationMap & {
       preparingContext: "Preparing this turn…",
       memoryFlushing: "Saving conversation memory…",
       startingModel: "Waiting for a response…",
+      waitingForState: "Temporarily busy—retrying…",
     },
     archivedSessionDisabled: "This session is archived. Unarchive it to continue the conversation.",
     subagentViewOnly: "View-only subagent",
@@ -3511,6 +3498,7 @@ export const en: TranslationMap & {
       selected: "Member",
       noPeople: "No paired people found.",
       readOnlyNotice: "Only the session owner and members can act in this session.",
+      scopeReadOnlyNotice: "Sending messages is unavailable with your current access.",
       publicAccess: "Public access",
       publicIndicator: "Public",
       worldReadable: "Public — anyone can read without signing in.",
@@ -3759,6 +3747,10 @@ export const en: TranslationMap & {
     outboxRecoveryFull:
       "Recovery is full. Restore saved entries to make room; remaining legacy data is still retained in this browser.",
     outboxRecoveryMessages: "Queued messages: {count}",
+    incognitoExpiredTitle: "Incognito session expired",
+    incognitoExpiredBody:
+      "Incognito sessions last for 24 hours or until the Gateway restarts. Your unsent input stays in this tab.",
+    newIncognitoSession: "New Incognito session",
     restartRecoveryTitle: "This session ended during a restart.",
     restartRecoveryDisabled: "Its transcript is safe.",
     resumeInNewSession: "Resume in new session",
@@ -4043,6 +4035,7 @@ export const en: TranslationMap & {
       },
       askLabel: "Ask in side chat",
       askPlaceholder: "Ask a question",
+      askImageQuestion: "What does this image show?",
       askSubmit: "Ask",
       askPending: "Answering from this session…",
       askBusy: "Side chat is already answering a question.",
@@ -4335,6 +4328,7 @@ export const en: TranslationMap & {
       htmlPreviewUnavailable:
         "Could not preview this HTML file. HTML previews require UTF-8 files up to 2 MiB. Download it to read the full file.",
       readFailed: "Could not attach: {names}{more}",
+      imagesOnly: "Side chat accepts image attachments only.",
       tooLarge: "Too large to send: {names}{more}",
       showInTextField: "Show in text field",
       pastedText: "Pasted text",
