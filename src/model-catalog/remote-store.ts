@@ -23,14 +23,20 @@ type RemoteModelCatalogWriteResult =
 
 // Older clients retain their v1 slot, including when both versions refresh the same mirror.
 const REMOTE_MODEL_CATALOG_STATE_KEY = "modelCatalog.remote.v2";
+// Upgrades read the older client's row until this client stores its own. The row parses as
+// a v1 bundle, and activation still checks its source and age. It is never written here, so
+// a downgraded client keeps its catalog.
+const LEGACY_REMOTE_MODEL_CATALOG_STATE_KEY = "modelCatalog.remote";
 
 export function readRemoteModelCatalog(
   options: OpenClawStateDatabaseOptions = {},
 ): RemoteModelCatalogStoreRow | undefined {
-  const snapshot = readConfigMachineState<RemoteModelCatalogSnapshot>(
-    REMOTE_MODEL_CATALOG_STATE_KEY,
-    options,
-  );
+  const snapshot =
+    readConfigMachineState<RemoteModelCatalogSnapshot>(REMOTE_MODEL_CATALOG_STATE_KEY, options) ??
+    readConfigMachineState<RemoteModelCatalogSnapshot>(
+      LEGACY_REMOTE_MODEL_CATALOG_STATE_KEY,
+      options,
+    );
   return snapshot ? { id: 1, ...snapshot } : undefined;
 }
 
@@ -94,9 +100,15 @@ export function markRemoteModelCatalogChecked(
   options: OpenClawStateDatabaseOptions = {},
 ): boolean {
   let matched = false;
+  // A revalidated legacy row is adopted into this client's slot; the legacy slot is untouched.
+  const legacy = readConfigMachineState<RemoteModelCatalogSnapshot>(
+    LEGACY_REMOTE_MODEL_CATALOG_STATE_KEY,
+    options,
+  );
   updateConfigMachineState<RemoteModelCatalogSnapshot>(
     REMOTE_MODEL_CATALOG_STATE_KEY,
-    (current) => {
+    (stored) => {
+      const current = stored ?? legacy;
       if (!current) {
         return undefined;
       }

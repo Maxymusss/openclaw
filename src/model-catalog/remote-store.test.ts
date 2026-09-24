@@ -24,8 +24,6 @@ describe("remote model catalog store", () => {
     const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-catalog-")));
     roots.push(root);
     const options = { path: path.join(root, "state.sqlite") };
-    const legacy = { bundle_json: '{"schemaVersion":1}', generated_at: 100 };
-    writeConfigMachineState("modelCatalog.remote", legacy, options);
     expect(readRemoteModelCatalog(options)).toBeUndefined();
     expect(
       markRemoteModelCatalogChecked(
@@ -139,8 +137,39 @@ describe("remote model catalog store", () => {
       last_modified: null,
       checked_at: 6,
     });
+  });
+
+  it("serves an upgraded install from the older client's row without writing it", () => {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-catalog-")));
+    roots.push(root);
+    const options = { path: path.join(root, "state.sqlite") };
+    const legacy = {
+      bundle_json: '{"schemaVersion":1,"legacy":true}',
+      generated_at: 100,
+      min_version: "2026.7.0",
+      source_url: "https://mirror.test/v1/catalog.json",
+      etag: '"legacy"',
+      last_modified: null,
+      checked_at: 10,
+    };
+    writeConfigMachineState("modelCatalog.remote", legacy, options);
+    // Offline or unchanged mirrors keep their catalog across the upgrade.
+    expect(readRemoteModelCatalog(options)).toEqual({ id: 1, ...legacy });
+    // A 304 revalidation adopts the row into this client's slot.
+    expect(
+      markRemoteModelCatalogChecked(
+        20,
+        { expected: legacy, etag: '"legacy"', lastModified: null },
+        options,
+      ),
+    ).toBe(true);
+    expect(readConfigMachineState("modelCatalog.remote.v2", options)).toEqual({
+      ...legacy,
+      checked_at: 20,
+    });
     expect(readConfigMachineState("modelCatalog.remote", options)).toEqual(legacy);
+    // Once adopted, later writes by the older client no longer affect this client.
     writeConfigMachineState("modelCatalog.remote", { ...legacy, generated_at: 200 }, options);
-    expect(readRemoteModelCatalog(options)?.generated_at).toBe(3);
+    expect(readRemoteModelCatalog(options)?.generated_at).toBe(100);
   });
 });
