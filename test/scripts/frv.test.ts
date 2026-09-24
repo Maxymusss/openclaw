@@ -3692,7 +3692,7 @@ describe("publication status real CLI", () => {
     expect(result.status).toBe(0);
     expect(
       JSON.parse(result.stdout).children.every(
-        (child: Record<string, unknown>) => !Object.hasOwn(child, "jobs"),
+        (entry: Record<string, unknown>) => !Object.hasOwn(entry, "jobs"),
       ),
     ).toBe(true);
     expect(result.stdout + result.stderr).not.toMatch(/synthetic-secret|private\/fixture/u);
