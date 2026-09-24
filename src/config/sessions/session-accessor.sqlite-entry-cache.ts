@@ -57,6 +57,7 @@ export {
   type SessionEntryCreationOperation,
   type SessionEntryPlaceholder,
   type SessionEntryReplacementPublication,
+  type SessionTranscriptInitializationPublication,
 } from "./session-accessor.sqlite-entry-cache-publication.js";
 
 type SessionEntryCacheTables = Pick<OpenClawAgentKyselyDatabase, "session_nodes">;

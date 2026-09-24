@@ -10,6 +10,7 @@ import {
   persistSessionTranscriptTurn,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import * as transcriptWorker from "../../config/sessions/session-accessor.sqlite-replacement-worker.js";
 import * as transcriptHeader from "../../config/sessions/session-accessor.sqlite-transcript-header.js";
 import {
   registerProjectRegistry,
@@ -220,62 +221,74 @@ export function registerSessionOperatorPreparationTests(fixture: {
         }
       },
     );
-    it("creates a logical secondary agent session in the main agent's exact shared store", async () => {
-      const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-creation-shared-store-"));
-      const storePath = path.join(root, "shared.sqlite");
-      try {
-        const caller = fixture.personClient(fixture.profileId(), ["operator.admin"]);
-        const context = contextFor(caller);
-        const cfg = context.getRuntimeConfig();
-        cfg.session = { ...cfg.session, store: storePath };
-        const physicalDatabase = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
-        expect(physicalDatabase.agentId).toBe("main");
-        const key = "agent:work:dashboard:shared-physical-main";
-        const params = { agentId: "work", key, model: "openai/gpt-5.6-sol" };
-        const authorized = resolveSessionMutationAuthorization({
-          method: "sessions.create",
-          client: caller,
-          context,
-          requestParams: params,
-        });
-        expect(authorized.error).toBeNull();
-        const responses: Parameters<RespondFn>[] = [];
-        await sessionCreateHandlers["sessions.create"]!({
-          req: { type: "req", id: key, method: "sessions.create", params },
-          params,
-          client: caller,
-          context,
-          isWebchatConnect: () => true,
-          hasCurrentClientAuthority: () => !caller.invalidated,
-          sessionMutationAuthorization: authorized.authorization,
-          respond: (...response) => {
-            responses.push(response);
-          },
-        });
-        expect(responses).toHaveLength(1);
-        expect(responses[0]?.[0], JSON.stringify(responses[0])).toBe(true);
-        expect(responses[0]?.[1]).toMatchObject({
-          key,
-          entry: { providerOverride: "openai", modelOverride: "gpt-5.6-sol" },
-        });
-        const entry = loadSessionEntry({ agentId: "work", sessionKey: key, storePath });
-        expect(entry).toMatchObject({ providerOverride: "openai", modelOverride: "gpt-5.6-sol" });
-        expect(
-          loadTranscriptEventsSync({
-            agentId: "work",
-            sessionKey: key,
-            sessionId: entry!.sessionId,
-            storePath,
-          }),
-        ).toEqual(expect.arrayContaining([expect.objectContaining({ type: "session" })]));
-        expect(openOpenClawAgentDatabase({ agentId: "main", path: storePath })).toBe(
-          physicalDatabase,
-        );
-      } finally {
-        disposeOpenClawAgentDatabaseByPath(storePath);
-        await fs.rm(root, { recursive: true, force: true });
-      }
-    });
+    it.each(["existing", "missing"] as const)(
+      "creates a logical secondary agent session in the main agent's %s exact shared store",
+      async (birth) => {
+        const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-creation-shared-store-"));
+        const storePath = path.join(root, "shared.sqlite");
+        try {
+          const caller = fixture.personClient(fixture.profileId(), ["operator.admin"]);
+          const context = contextFor(caller);
+          const cfg = context.getRuntimeConfig();
+          cfg.session = { ...cfg.session, store: storePath };
+          const physicalDatabase =
+            birth === "existing"
+              ? openOpenClawAgentDatabase({ agentId: "main", path: storePath })
+              : undefined;
+          if (physicalDatabase) {
+            expect(physicalDatabase.agentId).toBe("main");
+          } else {
+            await expect(fs.stat(storePath)).rejects.toMatchObject({ code: "ENOENT" });
+          }
+          const key = "agent:work:dashboard:shared-physical-main";
+          const params = { agentId: "work", key, model: "openai/gpt-5.6-sol" };
+          const authorized = resolveSessionMutationAuthorization({
+            method: "sessions.create",
+            client: caller,
+            context,
+            requestParams: params,
+          });
+          expect(authorized.error).toBeNull();
+          const responses: Parameters<RespondFn>[] = [];
+          await sessionCreateHandlers["sessions.create"]!({
+            req: { type: "req", id: key, method: "sessions.create", params },
+            params,
+            client: caller,
+            context,
+            isWebchatConnect: () => true,
+            hasCurrentClientAuthority: () => !caller.invalidated,
+            sessionMutationAuthorization: authorized.authorization,
+            respond: (...response) => {
+              responses.push(response);
+            },
+          });
+          expect(responses).toHaveLength(1);
+          expect(responses[0]?.[0], JSON.stringify(responses[0])).toBe(true);
+          expect(responses[0]?.[1]).toMatchObject({
+            key,
+            entry: { providerOverride: "openai", modelOverride: "gpt-5.6-sol" },
+          });
+          const entry = loadSessionEntry({ agentId: "work", sessionKey: key, storePath });
+          expect(entry).toMatchObject({ providerOverride: "openai", modelOverride: "gpt-5.6-sol" });
+          expect(
+            loadTranscriptEventsSync({
+              agentId: "work",
+              sessionKey: key,
+              sessionId: entry!.sessionId,
+              storePath,
+            }),
+          ).toEqual(expect.arrayContaining([expect.objectContaining({ type: "session" })]));
+          const currentDatabase = openOpenClawAgentDatabase({ agentId: "main", path: storePath });
+          expect(currentDatabase.agentId).toBe("main");
+          if (physicalDatabase) {
+            expect(currentDatabase).toBe(physicalDatabase);
+          }
+        } finally {
+          disposeOpenClawAgentDatabaseByPath(storePath);
+          await fs.rm(root, { recursive: true, force: true });
+        }
+      },
+    );
     it("preserves creation provenance when a stored project reenters its captured existing-schema scope", async () => {
       const root = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-creation-schema-project-"));
       try {
@@ -417,6 +430,7 @@ export function registerSessionOperatorPreparationTests(fixture: {
         const context = contextFor(caller);
         const getCurrentConfig = context.getRuntimeConfig;
         const header = vi.spyOn(transcriptHeader, "ensureTranscriptHeader");
+        const workerHeader = vi.spyOn(transcriptWorker, "initializeSessionTranscriptInWorker");
         const forked = vi.spyOn(sessionFork, "forkSessionFromParentWithDecision");
         const revoked = new Error("original creation source ended after header commit");
         let committedHeaderId: string | undefined;
@@ -458,6 +472,9 @@ export function registerSessionOperatorPreparationTests(fixture: {
                         let childId = header.mock.calls.find(
                           ([, scope]) => scope.sessionKey === childKey,
                         )?.[1].sessionId;
+                        childId ??= workerHeader.mock.calls.find(
+                          (call) => call[2].sessionKey === childKey,
+                        )?.[2].sessionId;
                         if (fork) {
                           const index = forked.mock.calls.findIndex(
                             ([params]) => params.sessionKey === childKey,
@@ -564,6 +581,7 @@ export function registerSessionOperatorPreparationTests(fixture: {
           }
         } finally {
           header.mockRestore();
+          workerHeader.mockRestore();
           forked.mockRestore();
         }
       },

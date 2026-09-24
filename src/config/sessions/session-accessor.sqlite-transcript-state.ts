@@ -142,7 +142,10 @@ export function ensureTranscriptSessionRoot(
   database: OpenClawAgentDatabase,
   scope: ResolvedTranscriptScope,
   updatedAt: number,
-  options: { allowStoredAlias?: boolean } = {},
+  options: {
+    allowStoredAlias?: boolean;
+    onPlaceholderInserted?: (placeholder: { sessionKey: string; sessionId: string }) => void;
+  } = {},
 ): void {
   const db = getSessionKysely(database.db);
   let nodeExists = false;
@@ -249,6 +252,7 @@ export function ensureTranscriptSessionRoot(
         sessionKey: scope.sessionKey,
         sessionId: scope.sessionId,
       });
+      options.onPlaceholderInserted?.({ sessionKey: scope.sessionKey, sessionId: scope.sessionId });
     }
   }
   executeSqliteQuerySync(

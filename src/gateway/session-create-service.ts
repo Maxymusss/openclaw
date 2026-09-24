@@ -478,19 +478,28 @@ export async function createGatewaySession(
           : []),
       ]
     : [];
+  const operatorReady = params.operatorAuthority?.then((captured) => {
+    operatorAuthority = captured?.authority;
+  });
   await using targetCustody = prepareGatewaySessionLifecycleTargets({
     cfg: params.cfg,
     targets: authorityTargets,
+    getCurrentConfig: params.getCurrentConfig,
+    ...(operatorReady && !incognito
+      ? { creation: { ready: operatorReady, assertCurrent: () => commitGuard?.() } }
+      : {}),
   });
-  if (params.operatorAuthority) {
+  if (operatorReady) {
+    assertPreparedTargetCurrent = targetCustody.assertCurrent;
     try {
-      operatorAuthority = (await params.operatorAuthority)?.authority;
+      await operatorReady;
     } catch (error) {
       return { ok: false, error: errorShape(ErrorCodes.FORBIDDEN, formatErrorMessage(error)) };
     }
     const preparedTargets = await Promise.all(targetCustody.preparations);
     bindPreparedCreation = preparedTargets[0]?.bindCreation;
     assertPreparedTargetCurrent = () => {
+      targetCustody.assertCurrent();
       for (const [index, prepared] of preparedTargets.entries()) {
         if (index === 0 && createdTargetCommitted) {
           continue;
@@ -1315,12 +1324,11 @@ export async function createGatewaySession(
             error: errorShape(ErrorCodes.UNAVAILABLE, "failed to fork parent session transcript"),
           };
         }
-        const fork = forkResult.transcript;
         return {
           ...initialized,
           entry: buildForkedGatewaySessionEntry(
             entry,
-            fork,
+            forkResult.transcript,
             {
               sessionKey: forkParentSessionKey,
               sessionId: currentParentSessionEntry.sessionId,
@@ -1352,6 +1360,7 @@ export async function createGatewaySession(
               resolveOwnerAssignment: () => (createdNewEntry ? inheritedSpawnOwner : undefined),
             }
           : {}),
+        afterCommitted: params.afterSessionCommitted,
         onLifecycleCommitted: (entry) => {
           lifecyclePreparationCommitted = true;
           createdTargetCommitted = true;

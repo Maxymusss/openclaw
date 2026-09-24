@@ -1,5 +1,10 @@
 import type { SessionProviderReviewComparison } from "../config/sessions/provider-review.types.js";
 import type {
+  TranscriptArchivePublishPlan,
+  TranscriptArchivePublishResult,
+} from "../config/sessions/session-accessor.sqlite-archive-types.js";
+import type { SessionTranscriptInitializationPublication } from "../config/sessions/session-accessor.sqlite-entry-cache-publication.js";
+import type {
   SessionEntryReplacementCommit,
   SessionEntryReplacementCommitted,
 } from "../config/sessions/session-accessor.sqlite-replacement-state.js";
@@ -9,6 +14,7 @@ import type {
 } from "../config/sessions/session-history-archive-pruning.types.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { SqliteWalReclamationResult } from "../infra/sqlite-wal-reclamation.js";
+import type { DatabasePathIdentity } from "../infra/sqlite-worker-identity.js";
 import type {
   SqliteWorkerAdmissionFactory,
   SqliteWorkerAdmissionRequest,
@@ -19,13 +25,14 @@ import type { AgentDatabaseDomainOperations } from "./openclaw-agent-execution-d
 export type AgentDatabaseExecutionIdentity = {
   kind: "file";
   physicalIdentity: string;
+  birthtime?: string;
   incarnation: string;
   nativeLocation: string;
 };
 
 export type AgentDatabaseExecutionFileIdentity = Pick<
   AgentDatabaseExecutionIdentity,
-  "kind" | "physicalIdentity" | "nativeLocation"
+  "kind" | "physicalIdentity" | "birthtime" | "nativeLocation"
 >;
 
 export type AgentDatabaseExecutionOpen = {
@@ -35,9 +42,25 @@ export type AgentDatabaseExecutionOpen = {
   stateDatabasePath: string;
   environment: { OPENCLAW_STATE_DIR: string; OPENCLAW_SUPERVISOR_MODE?: "external" };
   expectedIdentity?: AgentDatabaseExecutionFileIdentity;
+  creatingIdentity?: DatabasePathIdentity;
 };
 
 export type AgentDatabaseOperations = AgentDatabaseDomainOperations & {
+  "session.archives.preparePublication": {
+    input: {
+      archiveDirectory: string;
+      requested: readonly Pick<TranscriptArchivePublishPlan, "sessionId" | "generation">[];
+    };
+    output: TranscriptArchivePublishPlan[];
+  };
+  "session.archives.recordPublication": {
+    input: { results: readonly TranscriptArchivePublishResult[]; nowMs: number };
+    output: void;
+  };
+  "session.transcript.initialize": {
+    input: { sessionKey: string; sessionId: string; cwd?: string };
+    output: SessionTranscriptInitializationPublication;
+  };
   "database.prepareWrite": { input: undefined; output: void };
   "session.entries.replace": {
     input: SessionEntryReplacementCommit;

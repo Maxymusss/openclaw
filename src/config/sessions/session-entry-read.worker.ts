@@ -16,6 +16,7 @@ import type { DB as OpenClawAgentKyselyDatabase } from "../../state/openclaw-age
 import { SessionMetadataUnavailableError } from "../../state/session-metadata-unavailable-error.js";
 import { readSessionActivitySummary } from "./activity-summary.js";
 import { resolveSessionLifecycleTimestamps } from "./lifecycle.js";
+import { readSessionCreationSnapshotInDatabase } from "./session-accessor.sqlite-creation-read.js";
 import { readExactSessionEntryCandidatesInDatabase } from "./session-accessor.sqlite-entry-cache.js";
 import { readTranscriptHeaderFromDatabase } from "./session-accessor.sqlite-read.js";
 import { readSessionEntryReplacementState } from "./session-accessor.sqlite-replacement-read.js";
@@ -55,6 +56,28 @@ export function readExactSessionEntriesWithLifecycle(
         : withSqlitePostCommitPublications(database.db, () =>
             runSqliteDeferredTransactionSync(database.db, () => {
               assertCanonicalSqliteSessionKeysCurrent(database);
+              if (request.projection === "creation") {
+                const identity = readOpenClawAgentDatabaseIdentity(database).identity;
+                const sessionKey = request.sessionKeys[0];
+                if (
+                  typeof identity !== "string" ||
+                  !sessionKey ||
+                  request.sessionKeys.length !== 1
+                ) {
+                  throw new Error(
+                    "Session creation snapshot requires its durable owner and target",
+                  );
+                }
+                return {
+                  kind: "session-exact-entries" as const,
+                  entries: [],
+                  lifecycleTimestamps: {},
+                  creation: {
+                    ...readSessionCreationSnapshotInDatabase(database, sessionKey),
+                    databaseIdentity: identity,
+                  },
+                };
+              }
               if (request.projection === "replacement") {
                 const identity = readOpenClawAgentDatabaseIdentity(database).identity;
                 if (typeof identity !== "string" || !request.replacementSelection) {

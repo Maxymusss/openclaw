@@ -4,21 +4,49 @@ import {
   errorShape,
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
+import { prepareSessionEntryCreationDatabase } from "../config/sessions/session-accessor.entry-mutation.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { CreateGatewaySessionParams } from "./session-create-service.types.js";
-import { prepareSessionMutationFacts } from "./session-sharing-preparation.js";
+import {
+  captureSessionMutationRouting,
+  prepareSessionMutationFacts,
+} from "./session-sharing-preparation.js";
 import type { GatewaySessionStoreTarget } from "./session-utils-store.types.js";
 
 /** Retain the canonical targets across asynchronous authority preparation and mutation. */
 export function prepareGatewaySessionLifecycleTargets(params: {
   cfg: OpenClawConfig;
+  getCurrentConfig?: () => OpenClawConfig;
+  creation?: { ready: Promise<void>; assertCurrent: () => void };
   targets: readonly {
     target: Pick<GatewaySessionStoreTarget, "agentId" | "canonicalKey" | "storePath">;
     entry?: Pick<SessionEntry, "sessionId" | "lifecycleRevision">;
   }[];
 }) {
   const cfg = params.cfg;
+  const assertRoutingCurrent = captureSessionMutationRouting(cfg);
+  let preparedDatabase: Awaited<ReturnType<typeof prepareSessionEntryCreationDatabase>> | undefined;
+  const scopes = params.targets.map(({ target }) => ({
+    agentId: target.agentId,
+    sessionKey: target.canonicalKey,
+    storePath: target.storePath,
+  }));
+  const creationScope = scopes[0];
+  if (params.creation && !creationScope) {
+    throw new Error("Session creation preparation requires its original target");
+  }
+  const databasePreparation =
+    params.creation && creationScope
+      ? prepareSessionEntryCreationDatabase(
+          creationScope,
+          params.creation.ready,
+          params.creation.assertCurrent,
+          scopes.slice(1),
+        ).then((prepared) => {
+          preparedDatabase = prepared;
+        })
+      : undefined;
   const preparations = params.targets.map(async ({ target, entry }) => {
     const selected = { ...target };
     const sessionId = entry?.sessionId;
@@ -28,6 +56,7 @@ export function prepareGatewaySessionLifecycleTargets(params: {
       sessionKey: selected.canonicalKey,
       agentId: selected.agentId,
       allowMissing: true,
+      storageReady: databasePreparation,
     });
     return {
       matchesCurrent(currentConfig: OpenClawConfig) {
@@ -53,12 +82,18 @@ export function prepareGatewaySessionLifecycleTargets(params: {
   }
   return {
     preparations,
+    assertCurrent: () => {
+      assertRoutingCurrent(params.getCurrentConfig?.() ?? cfg);
+      preparedDatabase?.assertCurrent();
+    },
     async [Symbol.asyncDispose]() {
       for (const result of await Promise.allSettled(preparations)) {
         if (result.status === "fulfilled") {
           result.value.release();
         }
       }
+      await databasePreparation?.catch(() => {});
+      await preparedDatabase?.[Symbol.asyncDispose]();
     },
   };
 }

@@ -58,10 +58,20 @@ function routeFacts(cfg: OpenClawConfig) {
   };
 }
 
+export function captureSessionMutationRouting(cfg: OpenClawConfig) {
+  const route = routeFacts(cfg);
+  return (current: OpenClawConfig) => {
+    if (!isDeepStrictEqual(routeFacts(current), route)) {
+      throw new SessionMutationFactsUnavailableError();
+    }
+  };
+}
+
 type SessionFactsRequest = {
   cfg: OpenClawConfig;
   sessionKey: string;
   agentId: string;
+  storageReady?: Promise<void>;
 };
 type SessionFactsRead<Facts extends PreparedSessionMutationFacts> = {
   readonly storageTarget: Pick<GatewaySessionStoreTarget, "agentId" | "canonicalKey" | "storePath">;
@@ -80,10 +90,11 @@ export function prepareSessionMutationFacts(
 export async function prepareSessionMutationFacts(
   params: SessionFactsRequest & { allowMissing?: true },
 ): Promise<SessionFactsRead<PreparedSessionMutationFacts>> {
-  const route = routeFacts(params.cfg);
+  const assertRoutingCurrent = captureSessionMutationRouting(params.cfg);
   const { canonicalKey, agentId } = resolveSessionStoreIdentity(params);
   const releases: Array<() => void> = [];
   let active = true;
+  let beforeDiscovery = params.storageReady !== undefined;
   let invalidated = false;
   let facts: PreparedSessionMutationFacts | undefined;
   let creation: SessionEntryCreationOperation | undefined;
@@ -108,6 +119,10 @@ export async function prepareSessionMutationFacts(
   };
   const changed = (change: SessionRowChange) => {
     if ("all" in change) {
+      // Writer promotion settles registry publications before the first discovery snapshot.
+      if (beforeDiscovery && change.scope === "stores") {
+        return;
+      }
       if (
         typeof change.scope === "string" &&
         [
@@ -191,6 +206,11 @@ export async function prepareSessionMutationFacts(
     }),
   );
   try {
+    if (params.storageReady) {
+      await params.storageReady;
+      beforeDiscovery = false;
+      assertActive();
+    }
     let storageTarget: SessionFactsRead<PreparedSessionMutationFacts>["storageTarget"];
     let readFacts = () => facts!;
     if (isIncognitoSessionKey(canonicalKey)) {
@@ -472,9 +492,7 @@ export async function prepareSessionMutationFacts(
     const readCurrent = (cfg: OpenClawConfig) => {
       try {
         assertActive();
-        if (!isDeepStrictEqual(routeFacts(cfg), route)) {
-          throw new SessionMutationFactsUnavailableError();
-        }
+        assertRoutingCurrent(cfg);
         const currentIdentity = resolveSessionStoreIdentity({ ...params, cfg });
         if (currentIdentity.agentId !== agentId || currentIdentity.canonicalKey !== canonicalKey) {
           throw new SessionMutationFactsUnavailableError();

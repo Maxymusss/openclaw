@@ -28,20 +28,38 @@ type CommittedSessionSharingFacts = {
 };
 const creationBrand = Symbol("sessionEntryCreation");
 export type SessionEntryCreationOperation = Readonly<{ [creationBrand]: true }>;
+type CreationDatabase =
+  | {
+      kind: "native";
+      database: SessionEntryCacheDatabase & { path: string };
+      agentId: string | undefined;
+    }
+  | {
+      kind: "file";
+      path: string;
+      agentId: string;
+      databaseIdentity: string;
+      assertCurrent: () => void;
+    };
 type CreationRecord = {
   agentId: string;
-  physicalAgentId: string | undefined;
   operation: SessionEntryCreationOperation;
-  database: SessionEntryCacheDatabase & { path: string };
+  source: CreationDatabase;
   sessionKey: string;
   active: boolean;
 };
 type PlaceholderReceipt = {
   creation: CreationRecord | undefined;
-  database: DatabaseSync;
+  databaseIdentity: DatabaseSync | string;
   sessionKey: string;
   placeholder: SessionEntryPlaceholder;
   committed: boolean;
+};
+
+export type SessionTranscriptInitializationPublication = {
+  kind: "session-transcript-initialized";
+  sessionKey: string;
+  placeholder?: SessionEntryPlaceholder;
 };
 
 export type SessionEntryReplacementPublication = {
@@ -121,22 +139,50 @@ export function emitPreparedSessionSharingChange(
   sessionChanges.emit(change, database.db);
 }
 
+function assertCreationCurrent(creation: CreationRecord): void {
+  if (!creation.active) {
+    throw new Error("Session creation publication owner is no longer current");
+  }
+  const source = creation.source;
+  if (source.kind === "file") {
+    source.assertCurrent();
+  } else if (!source.database.db.isOpen || source.database.agentId !== source.agentId) {
+    throw new Error("Session creation publication owner is no longer current");
+  }
+}
+
+function creationDatabaseIdentity(creation: CreationRecord): DatabaseSync | string {
+  return creation.source.kind === "native"
+    ? creation.source.database.db
+    : creation.source.databaseIdentity;
+}
+
+function creationMatchesDatabase(creation: CreationRecord, database: SessionEntryCacheDatabase) {
+  return creation.source.kind === "native"
+    ? creation.source.database.db === database.db
+    : creation.source.agentId === database.agentId &&
+        findOpenClawAgentDatabaseIdentity(database)?.identity === creation.source.databaseIdentity;
+}
+
 /** Canonical creation scopes provenance only; caller and target guards still authorize each write. */
 export async function withSessionEntryCreationPublication<T>(
   params: {
-    database: SessionEntryCacheDatabase & { path: string };
     agentId: string;
     sessionKey: string;
     bind?: (operation: SessionEntryCreationOperation) => void;
-  },
+  } & (
+    | { database: SessionEntryCacheDatabase & { path: string }; file?: never }
+    | { database?: never; file: Omit<Extract<CreationDatabase, { kind: "file" }>, "kind"> }
+  ),
   run: (operation: SessionEntryCreationOperation) => Promise<T>,
 ): Promise<T> {
   const operation: SessionEntryCreationOperation = Object.freeze({ [creationBrand]: true });
   const creation: CreationRecord = {
     agentId: params.agentId,
-    physicalAgentId: params.database.agentId,
     operation,
-    database: params.database,
+    source: params.database
+      ? { kind: "native", database: params.database, agentId: params.database.agentId }
+      : { kind: "file", ...params.file },
     sessionKey: params.sessionKey,
     active: true,
   };
@@ -156,9 +202,10 @@ export function runWithSessionEntryCreationPublication<T>(
   run: () => Promise<T>,
 ): Promise<T> {
   const creation = preparedSharingChanges.operations.get(operation);
-  if (!creation?.active || !creation.database.db.isOpen) {
+  if (!creation) {
     throw new Error("Session creation publication owner is no longer current");
   }
+  assertCreationCurrent(creation);
   return preparedSharingChanges.current.run(creation, run);
 }
 
@@ -167,13 +214,16 @@ export function assertSessionEntryCreationPublication(
   target: { agentId: string; sessionKey: string; paths: ReadonlySet<string> },
 ): void {
   const creation = preparedSharingChanges.operations.get(operation);
+  if (!creation) {
+    throw new Error("Session creation publication owner is no longer current");
+  }
+  assertCreationCurrent(creation);
+  const sourcePath =
+    creation.source.kind === "native" ? creation.source.database.path : creation.source.path;
   if (
-    !creation?.active ||
-    !creation.database.db.isOpen ||
     creation.agentId !== target.agentId ||
-    creation.database.agentId !== creation.physicalAgentId ||
     creation.sessionKey !== target.sessionKey ||
-    !target.paths.has(path.resolve(creation.database.path))
+    !target.paths.has(path.resolve(sourcePath))
   ) {
     throw new Error("Session creation publication owner is no longer current");
   }
@@ -185,11 +235,17 @@ export function readSessionEntryCreationTransition(
 ): SessionEntryPlaceholder | undefined {
   const receipt = preparedSharingChanges.changes.get(change);
   const creation = preparedSharingChanges.operations.get(operation);
-  return creation?.active &&
-    creation.database.db.isOpen &&
-    receipt?.committed &&
+  if (!creation) {
+    return undefined;
+  }
+  try {
+    assertCreationCurrent(creation);
+  } catch {
+    return undefined;
+  }
+  return receipt?.committed &&
     receipt.creation === creation &&
-    receipt.database === creation.database.db &&
+    receipt.databaseIdentity === creationDatabaseIdentity(creation) &&
     receipt.sessionKey === creation.sessionKey
     ? receipt.placeholder
     : undefined;
@@ -204,12 +260,14 @@ export function publishSessionEntryPlaceholderInsertion(
   const placeholder = Object.freeze({ sessionId });
   const current = preparedSharingChanges.current.getStore();
   const creation =
-    current?.active && current.database.db === database.db && current.sessionKey === sessionKey
+    current?.active &&
+    creationMatchesDatabase(current, database) &&
+    current.sessionKey === sessionKey
       ? current
       : undefined;
   const receipt: PlaceholderReceipt = {
     creation,
-    database: database.db,
+    databaseIdentity: creation ? creationDatabaseIdentity(creation) : database.db,
     sessionKey,
     placeholder,
     committed: false,
@@ -476,6 +534,7 @@ export function retainSessionEntryWorkerPublication(params: {
   storePath: string;
   databaseIdentity: string;
 }) {
+  const creation = preparedSharingChanges.current.getStore();
   const owner: PendingSessionEntryPublication = {
     superseded: new Map(),
     membershipInvalidated: new Set(),
@@ -499,17 +558,26 @@ export function retainSessionEntryWorkerPublication(params: {
         pendingSessionEntryPublications.set(key, owners);
       }
     },
-    settle(receipt: SessionEntryReplacementPublication | undefined, unknown: boolean) {
+    settle(
+      receipt:
+        | SessionEntryReplacementPublication
+        | SessionTranscriptInitializationPublication
+        | undefined,
+      unknown: boolean,
+    ) {
       if (!pending) {
         return undefined;
       }
+      const replacement = receipt?.kind === "session-entry-replacements" ? receipt : undefined;
+      const initialization =
+        receipt?.kind === "session-transcript-initialized" ? receipt : undefined;
       const current = (sessionKey: string) => !owner.superseded.has(sessionKey);
       const currentIdentity = (sessionKey: string) => {
         if (current(sessionKey)) {
           return true;
         }
         const native = owner.superseded.get(sessionKey);
-        const committed = receipt?.current.get(sessionKey);
+        const committed = replacement?.current.get(sessionKey);
         // A later metadata write supersedes sharing facts, but retains this lifecycle transition.
         return (
           native !== undefined &&
@@ -520,15 +588,18 @@ export function retainSessionEntryWorkerPublication(params: {
       };
       // A later native metadata write cannot restore membership omitted by an alias move.
       const membershipInvalidated = new Set(
-        receipt
-          ? receipt.membershipInvalidatedKeys.filter(currentIdentity)
+        replacement
+          ? replacement.membershipInvalidatedKeys.filter(currentIdentity)
           : unknown
             ? owner.membershipInvalidated
             : [],
       );
       const changed = [
         ...new Set([
-          ...(receipt?.changedKeys ?? (unknown ? keys : [])).filter(current),
+          ...(
+            replacement?.changedKeys ??
+            (initialization?.placeholder ? [initialization.sessionKey] : unknown ? keys : [])
+          ).filter(current),
           ...membershipInvalidated,
         ]),
       ];
@@ -542,15 +613,18 @@ export function retainSessionEntryWorkerPublication(params: {
       }
       const changes: SessionRowChange[] = [];
       for (const sessionKey of changed) {
-        const sharingEntry = receipt?.current.get(sessionKey);
+        const sharingEntry = replacement?.current.get(sessionKey);
+        const placeholder =
+          initialization?.sessionKey === sessionKey ? initialization.placeholder : undefined;
         for (const read of preparedSharingReads.get(`${identityKey}\0${sessionKey}`) ?? []) {
           const previous = read.facts;
-          read.facts =
-            !membershipInvalidated.has(sessionKey) &&
-            sharingEntry &&
-            previous?.entry &&
-            previous.entry.sessionId === sharingEntry.sessionId &&
-            previous.entry.lifecycleRevision === sharingEntry.lifecycleRevision
+          read.facts = placeholder
+            ? { entry: undefined, placeholder, membership: new Set() }
+            : !membershipInvalidated.has(sessionKey) &&
+                sharingEntry &&
+                previous?.entry &&
+                previous.entry.sessionId === sharingEntry.sessionId &&
+                previous.entry.lifecycleRevision === sharingEntry.lifecycleRevision
               ? { entry: sharingEntry, membership: previous.membership }
               : undefined;
         }
@@ -561,17 +635,37 @@ export function retainSessionEntryWorkerPublication(params: {
           factsInvalidated: true,
         };
         if (receipt) {
-          preparedSharingChanges.changes.set(change, undefined);
+          // A COMMIT receipt can survive unknown settlement without retaining creation custody.
+          const ownedPlaceholder =
+            !unknown &&
+            placeholder &&
+            creation?.active &&
+            creation.source.kind === "file" &&
+            creation.source.databaseIdentity === params.databaseIdentity &&
+            creation.source.agentId === params.agentId &&
+            creation.sessionKey === sessionKey;
+          preparedSharingChanges.changes.set(
+            change,
+            ownedPlaceholder
+              ? {
+                  creation,
+                  databaseIdentity: params.databaseIdentity,
+                  sessionKey,
+                  placeholder,
+                  committed: true,
+                }
+              : undefined,
+          );
         }
         changes.push(change);
       }
       owner.settled = true;
       try {
         sessionChanges.emitBatch(changes);
-        return receipt
+        return replacement
           ? {
-              previous: new Map([...receipt.previous].filter(([key]) => currentIdentity(key))),
-              current: new Map([...receipt.current].filter(([key]) => currentIdentity(key))),
+              previous: new Map([...replacement.previous].filter(([key]) => currentIdentity(key))),
+              current: new Map([...replacement.current].filter(([key]) => currentIdentity(key))),
             }
           : undefined;
       } finally {
