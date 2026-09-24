@@ -628,13 +628,61 @@ jobs:
             osTotalMemoryBytes: os.totalmem(), osFreeMemoryBytes: os.freemem(),
             args, environment,
           }, null, 2) + "\n");
-          const result = spawnSync(process.execPath, args, { stdio: "inherit" });
+          const focused = "src/agents/bash-tools.exec.script-preflight.test.ts";
+          const targeted = ["scripts/run-vitest.mjs", focused, "-t", "runs valid JavaScript through a Windows relative path"];
+          const candidate = readFileSync(focused, "utf8");
+          const original = candidate.replace(", allowBackground: false });", " });");
+          if (original === candidate) throw new Error("Missing expected candidate fixture repair");
+          const logResult = 'console.log("MV1_RESULT " + JSON.stringify(result.details));';
+          const assertion = 'expect(result.details).toMatchObject({ status: "completed", exitCode: 0, aggregated: "ok" });';
+          const diagnostic = original.replace(assertion, logResult + "\n      " + assertion);
+          if (diagnostic === original) throw new Error("Missing Windows completion assertion");
+          const outcomes = [];
+          function execute(label, commandArgs, env = {}) {
+            const started = performance.now();
+            const result = spawnSync(process.execPath, commandArgs, {
+              env: { ...process.env, ...env }, encoding: "utf8", maxBuffer: 32 * 1024 * 1024,
+            });
+            const output = (result.stdout ?? "") + (result.stderr ?? "");
+            process.stdout.write(output);
+            writeFileSync(path.join(evidence, label + ".log"), output);
+            const outcome = { label, status: result.status, signal: result.signal, seconds: (performance.now() - started) / 1000 };
+            outcomes.push(outcome);
+            writeFileSync(path.join(evidence, "mv1-outcomes.json"), JSON.stringify(outcomes, null, 2) + "\n");
+            console.log("MV1_OUTCOME " + JSON.stringify(outcome));
+            if (result.error) throw result.error;
+            return { ...outcome, output };
+          }
+          let reproduced;
+          try {
+            writeFileSync(focused, diagnostic);
+            reproduced = execute("original-forced-yield", targeted, { OPENCLAW_BASH_YIELD_MS: "10", OPENCLAW_VITEST_MAX_WORKERS: "8" });
+          } finally {
+            writeFileSync(focused, candidate);
+          }
+          if (reproduced.status === 0 || !reproduced.output.includes('MV1_RESULT {"status":"running"')) {
+            throw new Error("Original fixture did not reproduce continuation before cleanup");
+          }
+          if (execute("fixed-forced-yield", targeted, { OPENCLAW_BASH_YIELD_MS: "10", OPENCLAW_VITEST_MAX_WORKERS: "8" }).status !== 0) {
+            throw new Error("Fixed fixture failed forced-yield regression");
+          }
+          if (execute("fixed-worker1-cost", ["scripts/run-vitest.mjs", focused, "--maxWorkers=1"]).status !== 0) {
+            throw new Error("Fixed fixture failed cost measurement");
+          }
+          for (let iteration = 1; iteration <= 20; iteration++) {
+            if (execute(`focused-${iteration}`, ["scripts/run-vitest.mjs", focused], { OPENCLAW_VITEST_MAX_WORKERS: "8" }).status !== 0) {
+              throw new Error(`Focused repetition ${iteration} failed`);
+            }
+          }
+          for (let iteration = 1; iteration <= 3; iteration++) {
+            if (execute(`shard-${iteration}`, args).status !== 0) {
+              throw new Error(`Original shard repetition ${iteration} failed`);
+            }
+          }
           writeFileSync(path.join(evidence, "process-result.json"), JSON.stringify({
-            status: result.status, signal: result.signal, spawnError: result.error?.code ?? null,
-            descendantSettlement: "not-attested; frozen runner owns test lifetime; Actions owns final runner teardown",
+            status: 0, signal: null, spawnError: null,
+            descendantSettlement: "frozen runner owns test lifetime; Actions owns final runner teardown",
           }, null, 2) + "\n");
-          if (result.error) throw result.error;
-          process.exit(result.status ?? 1);
           WINDOWS_REPLAY
           result=("${PIPESTATUS[@]}")
           if [[ "${result[0]}" != 0 ]]; then exit "${result[0]}"; fi
