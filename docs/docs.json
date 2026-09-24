@@ -3224,16 +3224,6 @@
                 "group": "Release process",
                 "pages": [
                   "reference/RELEASING",
-                  {
-                    "group": "Release references",
-                    "pages": [
-                      "reference/release-validation",
-                      "reference/release-publication",
-                      "reference/release-extended-stable",
-                      "reference/release-platforms",
-                      "reference/release-changelogs"
-                    ]
-                  },
                   "reference/full-release-validation",
                   {
                     "group": "Full release validation",

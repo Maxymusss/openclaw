@@ -7,7 +7,7 @@ approved version, cut SHA, release branch and product-complete Code SHA,
 including final notes when ready. Use [validation](validation.md) to select
 phase-specific gates and `$release-openclaw-ci` for dispatch/recovery.
 
-Follow the stable release process in `docs/reference/RELEASING.md`: one cut named
+Use one release cut named
 exactly `release/YYYY.M.PATCH` (no `-cutN` or staging suffixes), version
 alignment plus changelog and contribution record in one commit so Code SHA =
 Release SHA, one Tooling SHA frozen at dispatch, and one validation parent.
@@ -15,26 +15,30 @@ Record the cut time and validation outcome. Backports are
 merged `main` PRs cherry-picked before dispatch (pure-data model/catalog
 additions and bundled-runtime bumps qualify); after dispatch admit only a fix
 for a required-lane defect. A second cut (re-basing the candidate on newer
-`main`) needs Peter's explicit request in that release; otherwise cherry-pick
+`main`) needs an explicit operator request for that release; otherwise cherry-pick
 merged `main` commits only for a confirmed release blocker and name each one in
 the handoff record.
 
 Run deterministic source preflight, then validate the exact Code SHA:
 
 ```bash
-PUBLICATION_SELECTION='{"route":"normal","npmDistTag":"latest","publishOpenclawNpm":true,"pluginPublishScope":"all-publishable","plugins":[]}'
+PUBLICATION_SELECTION='{"route":"normal","npmDistTag":"beta","publishOpenclawNpm":true,"pluginPublishScope":"all-publishable","plugins":[]}'
 node scripts/full-release-validation-at-sha.mjs \
   --sha <code-sha> --target-ref release/YYYY.M.PATCH --workflow-sha <tooling-sha> \
-  -f validation_purpose=publish -f publication_selection_json="$PUBLICATION_SELECTION"
+  -f validation_purpose=publish -f publication_selection_json="$PUBLICATION_SELECTION" \
+  -f release_profile=stable -f run_release_soak=true
 ```
 
-Choose `npmDistTag=beta` for a beta or `route=prepared` for the prepared button.
+This example qualifies a final version for beta-first publication. Select
+`npmDistTag=latest` for approved direct stable publication, or `route=prepared`
+for the prepared button. A beta prerelease uses the beta profile and soak policy.
 Keep that intended selection on later notes-only parents. This admits committed
 publication source, not registry eligibility or publication authority.
 
-Record and reuse the full trusted Tooling SHA. Beta-publish uses
+Record and reuse the full trusted Tooling SHA. A beta prerelease uses
 `release_profile=beta`, `run_release_soak=false`; require `npm-beta-v1` for a
-qualifying canonical beta target. Stable-publish requires `release_profile=stable`
+qualifying canonical beta target. Every final stable version, including first
+publication to npm `beta`, requires `release_profile=stable`
 or `full`, with `run_release_soak=true` and blocking performance. Record each
 child's first failure and fix its owner before focused validation; never replace
 failure with an automatic passing replay. Keep the candidate fixed unless a
@@ -48,8 +52,9 @@ An early `OpenClaw Performance` run is optional beta confidence:
 off, `fail_on_regression=false`. It may overlap validation; stable/full keeps
 its blocking performance child. Compare available agent-turn/resource,
 Gateway startup ready/listen/RSS/CPU and CLI startup metrics against earlier
-releases. Record minor regressions; major regressions block unless waived or
-proven infrastructure noise.
+releases. Record minor regressions; major regressions block unless the optional beta comparison has an explicit
+operator exception or the result is confirmed infrastructure noise. Required
+stable/full performance remains blocking.
 
 ## Qualify publication bytes
 
@@ -60,7 +65,7 @@ release profile's required gates. No second commit or validation run is needed
 solely to name a Release SHA.
 
 If notes change after Code qualification, use `$openclaw-changelog-update`
-with current main for canonical PR provenance and commit the selected
+with current main for the canonical PR history and commit the selected
 `CHANGELOG/YYYY.M.PATCH.md`, with any matching record and root index updates.
 The complete Code-to-Release delta must include that entry and only those
 paths, without renames or deletions, to optionally use
@@ -83,7 +88,7 @@ prepare-only request does not
 authorize pushing publication tags: use an existing matching protected tooling
 ref where available, otherwise report that qualification still needs one.
 With publication/tag-push authority, create and push the protected lightweight `release-publish/<tooling-sha12>-<epoch>` tooling tag at the recorded
-Tooling SHA (see `docs/reference/RELEASING.md`). The push may print a
+Tooling SHA. The push may print a
 `Cannot create ref due to creations being restricted` ruleset warning while the
 tag still exists: verify with `gh api repos/openclaw/openclaw/git/ref/tags/<tag>`
 and, only if missing, create it with
@@ -95,6 +100,7 @@ pnpm release:candidate -- \
   --tag <tag> \
   --target-sha <release-sha> \
   --npm-dist-tag <beta-or-latest> \
+  --release-profile <beta-stable-or-full> \
   --publication-route <normal-or-prepared> \
   --full-release-run <release-sha-validation-run-id> \
   --publish-workflow-ref release-publish/<tooling-sha12>-<epoch> \
@@ -102,8 +108,8 @@ pnpm release:candidate -- \
   --skip-dispatch
 ```
 
-Match `--npm-dist-tag` and `--publication-route` to the frozen validation
-selection; the helper defaults to `beta` and `normal`.
+Match channel, route, and profile to the validation selection. The channel and
+route default to `beta` and `normal`; final versions still require stable/full.
 `--publish-workflow-ref` selects the publication tag, not the helper checkout.
 The same-checkout bootstrap fetches the workflow branch tip. Verify that the
 executing helper's Tooling SHA matches the recorded tag; if it differs, use
@@ -137,8 +143,8 @@ Read [publication authentication and recovery](publication-recovery.md) and
 keep the admitted publication route. For `prepared`, run the candidate's
 printed `openclaw-release-prepare.yml` command after the frozen release tag
 exists. Once preparation succeeds, pass its summary's `prepared_artifact` JSON
-to `openclaw-release-button.yml` at the same protected Tooling tag. Follow
-[the release-button procedure](../../../../docs/reference/RELEASING.md#prepare-once-then-use-the-release-button)
+to `openclaw-release-promote.yml` at the same protected Tooling tag. Follow
+[publication recovery](publication-recovery.md)
 and its readiness receipt; do not also dispatch the normal publisher.
 
 For `normal`, dispatch `.github/workflows/openclaw-release-publish.yml` using the candidate
@@ -155,12 +161,12 @@ on recovery; never rebuild or republish successful versions. Each npm child
 needs its own `npm-release` approval and ClawHub children must never be
 approved by hand; watch `pending_deployments` on every child per
 `$release-openclaw-ci` (Publish children). Children run on hosted
-`ubuntu-latest`; if that pool is saturated, apply the runner-priority recipe in
-`docs/reference/RELEASING.md` (Blacksmith testbox runs do not compete).
+`ubuntu-latest`; if that pool is saturated, use `pnpm frv prioritize --run <parent>` and restore its record after the
+release settles. Do not pause Security Review. Blacksmith testboxes do not compete.
 
-After the core child logs `+ openclaw@<version>`, the package takes 5-6 minutes
-to appear in `npm view openclaw versions --json --prefer-online`; poll it before
-the dist-tag sync, the GitHub flip, or verification. Run postpublish
+After the core child logs `+ openclaw@<version>`, verify public availability with
+`npm view openclaw versions --json --prefer-online` before selector repair or
+postpublish verification. The log alone does not prove availability. Run postpublish
 verification from a checkout of the Release SHA (a newer tooling checkout
 reports main-only bundled plugin files as missing), with the tooling identity
 exported, or it fails `SHA-pinned release-publish ref does not match`:
@@ -171,20 +177,20 @@ OPENCLAW_NPM_EXPECTED_WORKFLOW_SHA=<tooling-sha> \
 node --import tsx scripts/openclaw-npm-postpublish-verify.ts <version>
 ```
 
-If the parent fails at `Complete publish workflows` (it requires `beta` ==
-`latest` for every package) after core published, do not re-publish: run the
-dist-tag sync, sweep stale children, and dispatch a new parent with the same
-inputs; already-published bytes are recognized and it only runs ClawHub, GitHub
-release evidence, and Docker.
+If `Complete publish workflows` fails after core publication, inspect the
+original child and registry evidence before recovery. Core and every published
+official plugin require **beta at or above latest**, not equality. Repair stale
+floors through [registry selectors](publication-recovery.md#registry-selectors),
+preserving newer beta versions. Resume incomplete stages through the selected
+route; never republish successful immutable versions.
 
-As soon as `openclaw@<version>` is visible on npm under the target dist-tag,
-flip the GitHub release public: un-draft it and mark it latest for stable.
-Never wait for Docker, ClawHub, the app publishers, or the parent's finalize
-step; the macOS publisher requires the public release. Dispatch the
-`sync_beta_to_stable` dist-tag sync right after core npm and before the parent's
-completion verify, which fails on a stale `beta` tag. If the parent has not
-flipped it, run
-`gh release edit v<version> --repo openclaw/openclaw --draft=false --latest`.
+Normal publication finalizes GitHub after npm and Docker verification. The
+prepared button also verifies public ClawHub downloads before activation. Let
+the selected finalizer make the draft public; do not manually bypass failed
+gates. The explicitly approved `finalize_release_before_docker=true` direct
+route changes ordering only; it retains activation approval and still requires
+Docker for parent success. It does not apply to prepared publication or waive
+stable validation.
 
 Native applications use [platform publication](platform-publication.md) as
 independent tasks; beta runs them only if requested. Their approval, build,
@@ -195,8 +201,9 @@ failure without republishing npm.
 
 Run [postpublish confidence](validation.md#postpublish-confidence) against the
 exact published package. For a beta-to-latest promotion, deferred lanes must
-pass before promotion, including published-package Telegram. Direct stable
-publication also requires its stable/full validation and soak before publishing. Run safe
+pass before promotion, including published-package Telegram. Every final stable
+version requires stable/full validation and soak before its first publication,
+including first publication to npm `beta`. Run safe
 independent rosters concurrently while controlling local Docker/VM load.
 Classify failures before admitting a fix to the next beta; do not scan moving
 main or automatically rerun all groups. An operator's beta-attempt cap counts

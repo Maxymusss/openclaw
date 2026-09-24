@@ -4,6 +4,12 @@ This gate starts only after stable publication. It is a narrow shipped-state
 closeout, not permission to heal broader `main`. Stable publication is not
 complete until `main` carries the actual shipped release state.
 
+Closeout requires successful stable/full validation, release soak, and blocking
+performance. Historical soak waivers do not qualify. Completion requires both
+the closeout manifest and its matching checksum. If only the checksum is missing,
+replay the recorded closeout to regenerate identical bytes; do not manufacture
+new evidence. Invalid or mismatched assets remain blocking.
+
 1. Start from fresh latest `main`. Use a same-repository PR targeting `main`,
    with branch `release/<version>-main-closeout` and exact title
    `chore(release): close out <version> on main`. `<version>` is the published
