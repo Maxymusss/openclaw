@@ -273,7 +273,9 @@ describe("memory file watcher lifecycle", () => {
         );
         expect(first).toBeDefined();
         const admitted = createdNativeWatchers.slice();
-        first!.emitError(Object.assign(new Error("watch capacity exhausted"), { code }));
+        first!.emitError(
+          Object.assign(new Error("watch capacity exhausted"), { code, syscall: "watch" }),
+        );
         expect(fileWatcher.capacityDegraded).toBe(true);
         expect(onUnavailable).toHaveBeenCalledOnce();
         expect(onDirty).toHaveBeenCalledOnce();
