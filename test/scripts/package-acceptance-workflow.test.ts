@@ -7303,6 +7303,33 @@ NODE
     },
   );
 
+  it("lets a closeout replay carry the operator waivers that authorized the stable", () => {
+    const definition = parse(readFileSync(STABLE_MAIN_CLOSEOUT_WORKFLOW, "utf8")) as {
+      on: { workflow_dispatch: { inputs: Record<string, { default?: unknown }> } };
+    };
+    expect(definition.on.workflow_dispatch.inputs.stable_soak_waiver).toMatchObject({
+      default: "",
+    });
+    expect(definition.on.workflow_dispatch.inputs.lane_waiver).toMatchObject({ default: "" });
+    const verify = workflowJob(STABLE_MAIN_CLOSEOUT_WORKFLOW, "verify");
+    const gateStep = workflowStep(verify, "Verify release workflow evidence");
+    expect(gateStep.env).toMatchObject({
+      STABLE_SOAK_WAIVER: "${{ fromJSON(needs.resolve.outputs.stable_soak_waiver) }}",
+      LANE_WAIVER: "${{ fromJSON(needs.resolve.outputs.lane_waiver) }}",
+      OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: "${{ vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER }}",
+    });
+    const writer = workflowStep(verify, "Verify stable state and write closeout manifest");
+    expect(writer.run).toContain('waiver_args+=(--stable-soak-waiver "$STABLE_SOAK_WAIVER")');
+    expect(writer.run).toContain('waiver_args+=(--lane-waiver "$LANE_WAIVER")');
+    expect(writer.run).toContain('"${waiver_args[@]}"');
+    const resolveStep = workflowJob(STABLE_MAIN_CLOSEOUT_WORKFLOW, "resolve");
+    const inputs = JSON.stringify(resolveStep.steps);
+    expect(inputs).toContain("INPUT_STABLE_SOAK_WAIVER");
+    expect(inputs).toContain("INPUT_LANE_WAIVER");
+    expect(inputs).toContain(".stableSoakWaiver //");
+    expect(inputs).toContain(".laneWaiver //");
+  });
+
   it("verifies immutable postpublish evidence before stable closeout reads it", () => {
     const workflow = readFileSync(STABLE_MAIN_CLOSEOUT_WORKFLOW, "utf8");
     const evidenceStep = workflowStep(
@@ -10935,15 +10962,19 @@ printf '%s\\n' "$DEEPSEEK_API_KEY" "$DEEPINFRA_API_KEY"`,
 
   it.each([
     { label: "canonical beta", scope: "npm-beta" },
-    { label: "Linux-only beta", crossOsSuiteFilter: "ubuntu", scope: "npm-beta" },
+    {
+      label: "explicit all-OS beta",
+      crossOsSuiteFilter: "ubuntu,windows,macos",
+      scope: "npm-beta",
+    },
     { label: "beta soak", runReleaseSoak: "true", scope: "full" },
     { label: "focused beta CI", rerunGroup: "ci", scope: "full" },
     { label: "stable profile", releaseProfile: "stable", scope: "full" },
     { label: "stable version", version: "2026.8.1", scope: "full" },
     { label: "main beta profile", targetRef: "main", scope: "full" },
     {
-      label: "canonical stable with Windows omitted",
-      crossOsSuiteFilter: "ubuntu,macos",
+      label: "canonical stable with explicit suites",
+      crossOsSuiteFilter: "packaged-fresh,installer-fresh,packaged-upgrade",
       releaseProfile: "stable",
       version: "2026.8.1",
       runReleaseSoak: "true",

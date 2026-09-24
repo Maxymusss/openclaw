@@ -5552,7 +5552,6 @@ describe("lane waiver advisory evidence", () => {
       "normalCi:checks-node-fast:policy",
       "normalCi:checks-windows-node-test-1:policy",
       "normalCi:openclaw/ci-gate:policy",
-      "releaseChecksCandidate:cross_os_release_checks / Linux / packaged fresh:policy",
     ]);
     expect(
       releaseAdvisoryJobEvidence(childEvidence, "stable", "main").map((entry) => entry.job),

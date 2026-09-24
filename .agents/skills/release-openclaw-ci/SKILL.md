@@ -53,14 +53,16 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   access first; unset preserves ordinary routing. Shared workers inherit the
   caller group; PR/main CI and unrelated scheduled work remain outside it.
 - Validate provider secrets before dispatching expensive full release matrices.
-- Normal CI, plugin prerelease, all cross-OS, performance, and QA test results
-  are advisory for npm/ClawHub in every profile. Flaky tests in those suites never
-  hold publication; record failures without requiring a lane waiver or green
-  rerun. Record the first failing attempt; there is no automatic retry wave,
-  and a passing replay alone does not prove a fix. Required artifact,
-  install-smoke, survivor, first-hop, pack/npm qualification, package-integrity,
-  target-resolution, and corresponding aggregator proofs remain enforced with
-  exact provenance.
+- Two publication modes (RELEASING.md "Publication modes"). Strict default: a
+  stable tag needs stable/full evidence with soak and blocking performance and no
+  failed non-proof lane. Operator fast path: `stable_soak_waiver` /
+  `lane_waiver` (input or repository variable, reason prefixed with the target
+  version) are the only way past that; waivers are recorded in the manifest,
+  decision, receipt, release evidence, and closeout, and reported as warnings.
+  Every lane runs once on every OS; first failures are recorded, never retried.
+  Required in every mode: artifact children, install-smoke, survivors,
+  first-hop compat, pack/npm qualification, package integrity, target
+  resolution, Linux Gateway cross-OS lanes, and their aggregators.
 - Native macOS, Windows, Linux, and Android publication is independent of
   npm/ClawHub, GitHub finalization, and main closeout. Each platform retains
   its own signing, qualification, artifact, and updater requirements; report
@@ -203,8 +205,9 @@ until their dependent enforcement changes land.
   - `beta-publish`: `release_profile=beta`, `run_release_soak=false`
   - `postpublish-confidence`: published package inputs with
     `run_release_soak=true` or explicit focused groups
-  - `stable-publish`: the default beta profile with an approved soak waiver;
-    explicit `release_profile=stable` selects exhaustive coverage
+  - `stable-publish`: `release_profile=stable` with soak and performance by
+    default (strict); beta-profile evidence publishes a stable only with an
+    approved `stable_soak_waiver` (operator fast path)
 - An `all` run without soak for an actual beta package on its matching canonical
   release branch or beta tag records `coveragePolicy=npm-beta-v1`. It keeps
   Linux/macOS/Windows Node, Control UI, plugin, package, install/update,
@@ -714,10 +717,11 @@ Interpret state precisely:
 - `cancelled_with_children`: the collector was cancelled while exact children
   remained active.
 
-Read **advisory** entries separately from Release Decision. Normal CI, plugin,
-all cross-OS, performance, and QA lanes retain actual conclusions in the manifest and summary;
-`passed` does not mean those advisory lanes passed. Selected lanes still need
-terminal evidence, and filtered-out lanes are not run, never passed.
+Read **advisory** entries separately from Release Decision. Non-proof lanes
+retain actual conclusions in the manifest and summary; `passed` does not mean
+they passed, and a stable publishes with failed ones only under `lane_waiver`.
+Selected lanes still need terminal evidence, and filtered-out lanes are not
+run, never passed.
 
 The `full-release-diagnostics-<run-id>-<attempt>` artifact is the terminal
 failure and timing manifest. Use it after an early blocker instead of

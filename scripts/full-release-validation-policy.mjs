@@ -10,7 +10,7 @@ import {
   validatePublicationAdmissionBinding,
   validatePublicationSourceBinding,
 } from "./full-release-publication-contract.mjs";
-import { hasRequiredLinuxCrossOsSuites } from "./lib/cross-os-release-checks/suite-filter.mjs";
+import { hasRequiredCrossOsSuites } from "./lib/cross-os-release-checks/suite-filter.mjs";
 import { candidateArtifactJsonFromBinding } from "./lib/full-release-candidate-reuse.mjs";
 import {
   MAX_RELEASE_ARTIFACT_BYTES,
@@ -522,9 +522,11 @@ export function normalizeReleaseCoveragePolicy({
   candidateVersion,
   crossOsSuiteFilter = "",
 }) {
-  // All-group evidence may omit advisory OS lanes, never required Linux suites.
-  if (rerunGroup === "all" && !hasRequiredLinuxCrossOsSuites(crossOsSuiteFilter)) {
-    throw new Error("release coverage policy requires all Linux cross-OS suites");
+  // All-group evidence records every OS Gateway lane; only Linux outcomes are proof.
+  if (rerunGroup === "all" && !hasRequiredCrossOsSuites(crossOsSuiteFilter)) {
+    throw new Error(
+      "release coverage policy requires all Linux, Windows, and macOS cross-OS suites",
+    );
   }
   if (coveragePolicy === undefined) {
     return undefined;
@@ -1563,6 +1565,8 @@ const REQUIRED_PROOF_JOB_PATTERNS = [
   /pack budget|npm-pack|Qualify release npm/iu,
   /Package integrity/u,
   /resolve_target/u,
+  // Linux Gateway install/upgrade lanes are proof; Windows/macOS variants are advisory.
+  /cross_os_release_checks \/ Linux \//u,
 ];
 const DERIVATIVE_GATE_JOB_PATTERN =
   /^(?:openclaw\/ci-gate|Verify release checks|Run package acceptance \/ Verify package acceptance)$/u;

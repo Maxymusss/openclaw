@@ -37,15 +37,22 @@ describe("release publication control admission", () => {
     { name: "unsealed rerun", overrides: { rerunGroup: "performance" }, failures: ["rerun-group"] },
     { name: "missing soak", overrides: { runReleaseSoak: "false" }, failures: ["soak"] },
     {
+      // Strict default: stable evidence without blocking performance fails closed.
       name: "advisory performance",
       overrides: { controls: { performanceBlocking: false } },
-      failures: [],
+      failures: ["performance"],
     },
     {
       name: "waived advisory and soak",
       overrides: { controls: { performanceBlocking: false }, runReleaseSoak: "false" },
-      waiver: "Approved after infrastructure failure",
+      waiver: "2026.9.5 Approved after infrastructure failure",
       failures: [],
+    },
+    {
+      name: "waiver naming another release train",
+      overrides: { runReleaseSoak: "false" },
+      waiver: "2026.9.7 Approved",
+      failures: ["waiver-target"],
     },
     {
       name: "blank waiver",
@@ -59,12 +66,22 @@ describe("release publication control admission", () => {
         controls: { performanceBlocking: false },
         childRuns: { productPerformance: { conclusion: "failure" } },
       },
-      failures: [],
+      failures: ["performance"],
+    },
+    {
+      // A waiver cannot stand in for a performance child that failed.
+      name: "waived failed advisory performance",
+      overrides: {
+        controls: { performanceBlocking: false },
+        childRuns: { productPerformance: { conclusion: "failure" } },
+      },
+      waiver: "2026.9.5 Approved",
+      failures: ["performance"],
     },
     {
       name: "missing performance evidence",
       overrides: { controls: {}, childRuns: {} },
-      failures: [],
+      failures: ["performance"],
     },
   ])("evaluates every publication consumer for $name", ({ overrides, waiver, failures }) => {
     for (const consumer of ["publisher", "core-npm", "stable-closeout"] as const) {
@@ -82,18 +99,18 @@ describe("release publication control admission", () => {
     }
   });
 
-  it.each(["beta", "stable", "full"])("keeps performance advisory for %s evidence", (profile) => {
+  it("keeps performance advisory for beta tags published to beta", () => {
     const input = {
       manifest: {
         ...manifest,
-        releaseProfile: profile,
+        releaseProfile: "beta",
         controls: { performanceBlocking: false },
         childRuns: { productPerformance: { conclusion: "failure" } },
       },
-      releaseTag: "v2026.9.5",
-      npmDistTag: "latest",
+      releaseTag: "v2026.9.5-beta.1",
+      npmDistTag: "beta",
     };
-    for (const consumer of ["publisher", "core-npm", "stable-closeout"] as const) {
+    for (const consumer of ["publisher", "core-npm"] as const) {
       expect(
         evaluateReleasePublishGates({ ...input, consumer }).filter(
           (gate) => gate.status === "FAIL",
@@ -153,7 +170,8 @@ describe("release publication control admission", () => {
       JSON.stringify({
         ...manifest,
         runReleaseSoak: "false",
-        controls: { performanceBlocking: false },
+        controls: { performanceBlocking: true },
+        childRuns: { productPerformance: { conclusion: "success" } },
         sourceAdmission: {
           validationPurpose: "publish",
           publicationSelection: { npmDistTag: "latest" },
@@ -165,7 +183,7 @@ describe("release publication control admission", () => {
           npmDistTag: "latest",
           pluginSdkApiEvidenceDigest: "a".repeat(64),
           pluginSdkApiAcknowledgement: "",
-          stableSoakWaiver: "approved earlier",
+          stableSoakWaiver: "2026.9.5 approved earlier",
           npmDecisions: [],
         },
       }),
@@ -194,7 +212,7 @@ describe("release publication control admission", () => {
           },
         },
       );
-    expect(run("approved earlier").status).toBe(0);
+    expect(run("2026.9.5 approved earlier").status).toBe(0);
     const revoked = run("");
     expect(revoked.status).not.toBe(0);
     expect(revoked.stderr).toContain("Stable releases require Full Release Validation");
@@ -208,7 +226,7 @@ describe("release publication control admission", () => {
       const manifestPath = join(root, "manifest.json");
       const output = join(root, "output");
       const summary = join(root, "summary");
-      const waiver = 'Infrastructure 100% unavailable\nOperator "approved"';
+      const waiver = '2026.9.5 Infrastructure 100% unavailable\nOperator "approved"';
       writeFileSync(
         manifestPath,
         JSON.stringify({
@@ -265,7 +283,9 @@ describe("release publication control admission", () => {
         },
       );
       expect(result.status, result.stderr).toBe(0);
-      expect(result.stdout).toContain('Infrastructure 100%25 unavailable%0AOperator "approved"');
+      expect(result.stdout).toContain(
+        '2026.9.5 Infrastructure 100%25 unavailable%0AOperator "approved"',
+      );
       expect(readFileSync(output, "utf8").split("\n")).toEqual([
         `stable_soak_waiver=${JSON.stringify(waiver)}`,
         `plugin_sdk_api_acknowledgement=${sealed ? "aaaaaaaa" : ""}`,
@@ -277,6 +297,124 @@ describe("release publication control admission", () => {
       expect(readFileSync(summary, "utf8")).toBe(`- Stable soak waived by operator: ${waiver}\n`);
     },
   );
+});
+
+describe("strict default and operator fast path", () => {
+  const stableGates = (input: {
+    manifest: unknown;
+    stableSoakWaiver?: string;
+    laneWaiver?: string;
+    releaseTag?: string;
+  }) =>
+    evaluateReleasePublishGates({
+      consumer: "publisher",
+      releaseTag: "v2026.9.6",
+      npmDistTag: "latest",
+      expectedSha: targetSha,
+      ...input,
+    });
+  const byId = (gates: ReturnType<typeof evaluateReleasePublishGates>, id: string) =>
+    gates.find((entry) => entry.id === `publisher.${id}`);
+  const betaEvidence = {
+    ...manifest,
+    releaseProfile: "beta",
+    runReleaseSoak: "false",
+    controls: { performanceBlocking: false },
+  };
+
+  it("fails closed for a stable tag published from beta evidence without waivers", () => {
+    const gates = stableGates({ manifest: betaEvidence });
+    expect(byId(gates, "stable-profile")).toMatchObject({ status: "FAIL" });
+    expect(byId(gates, "soak")).toMatchObject({ status: "FAIL" });
+    expect(byId(gates, "performance")).toMatchObject({ status: "FAIL" });
+  });
+
+  it("warns instead of failing when the operator supplies a version-bound soak waiver", () => {
+    const gates = stableGates({
+      manifest: { ...betaEvidence, childRuns: { productPerformance: { conclusion: "success" } } },
+      stableSoakWaiver: "2026.9.6 ship the hotfix",
+    });
+    expect(byId(gates, "waiver-target")).toBeUndefined();
+    expect(byId(gates, "stable-profile")).toMatchObject({ status: "WARN" });
+    expect(byId(gates, "soak")).toMatchObject({ status: "WARN" });
+  });
+
+  it("rejects waiver reasons that do not name the target version", () => {
+    const gates = stableGates({ manifest: betaEvidence, stableSoakWaiver: "ship it" });
+    expect(byId(gates, "waiver-target")).toMatchObject({ status: "FAIL" });
+    expect(
+      byId(stableGates({ manifest: betaEvidence, laneWaiver: "2026.9.7 other" }), "waiver-target"),
+    ).toMatchObject({ status: "FAIL" });
+  });
+
+  it("requires lane_waiver to publish a stable with a failed non-proof lane", () => {
+    const withFailure = {
+      ...manifest,
+      advisoryJobs: [
+        {
+          child: "normalCi",
+          job: "checks-windows-node-test-1",
+          status: "completed",
+          conclusion: "failure",
+          policy: "advisory",
+        },
+      ],
+    };
+    expect(byId(stableGates({ manifest: withFailure }), "lane-waiver")).toMatchObject({
+      status: "FAIL",
+    });
+    expect(
+      byId(
+        stableGates({ manifest: withFailure, laneWaiver: "2026.9.6 known flake" }),
+        "lane-waiver",
+      ),
+    ).toMatchObject({
+      status: "WARN",
+      message:
+        "Operator lane waiver: 2026.9.6 known flake; waived lanes (1): normalCi checks-windows-node-test-1",
+    });
+    expect(
+      byId(stableGates({ manifest: withFailure, releaseTag: "v2026.9.6-beta.1" }), "lane-waiver"),
+    ).toBeUndefined();
+  });
+});
+
+describe("stable closeout of a soak-waived stable", () => {
+  const waivedStable = {
+    ...manifest,
+    releaseProfile: "beta",
+    runReleaseSoak: false,
+    controls: { performanceBlocking: false },
+    childRuns: { productPerformance: { conclusion: "success" } },
+  };
+  const closeout = (stableSoakWaiver?: string) =>
+    evaluateReleasePublishGates({
+      consumer: "stable-closeout",
+      releaseTag: "v2026.9.6",
+      npmDistTag: "latest",
+      expectedSha: targetSha,
+      manifest: waivedStable,
+      stableSoakWaiver,
+    });
+
+  it("passes with the acknowledged waiver and fails without it", () => {
+    const waived = closeout("2026.9.6 operator approved");
+    expect(waived.filter((gate) => gate.status === "FAIL")).toEqual([]);
+    expect(waived.filter((gate) => gate.status === "WARN").map((gate) => gate.id)).toEqual([
+      "stable-closeout.performance",
+      "stable-closeout.stable-profile",
+      "stable-closeout.soak",
+    ]);
+    expect(
+      closeout()
+        .filter((gate) => gate.status === "FAIL")
+        .map((gate) => gate.id),
+    ).toEqual([
+      "stable-closeout.performance",
+      "stable-closeout.stable-profile",
+      "stable-closeout.soak",
+    ]);
+  });
 });
 
 describe("operator lane waiver acknowledgement", () => {
@@ -311,14 +449,14 @@ describe("operator lane waiver acknowledgement", () => {
   it("blocks waived evidence until the operator acknowledges it", () => {
     expect(gate({ manifest: waived })).toMatchObject({ status: "FAIL" });
     expect(gate({ manifest: waived, laneWaiver: " " })).toMatchObject({ status: "FAIL" });
-    expect(gate({ manifest: waived, laneWaiver: "ack" })).toMatchObject({
+    expect(gate({ manifest: waived, laneWaiver: "2026.9.6 ack" })).toMatchObject({
       status: "WARN",
       message:
-        "Operator lane waiver: ship 2026.9.6; waived lanes (1): normalCi checks-node-bundle-infra-small-runtime-2",
+        "Operator lane waiver: 2026.9.6 ack; waived lanes (2): normalCi checks-node-bundle-infra-small-runtime-2, releaseChecksCandidate cross_os_release_checks / Windows / packaged upgrade",
     });
   });
 
   it("ignores the acknowledgement when evidence carries no waiver", () => {
-    expect(gate({ manifest, laneWaiver: "ack" })).toBeUndefined();
+    expect(gate({ manifest, laneWaiver: "2026.9.6 ack" })).toBeUndefined();
   });
 });

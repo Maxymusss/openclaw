@@ -80,11 +80,14 @@ npm/ClawHub decision: record their conclusion and fix them in parallel.
 Windows node-test outcomes are also advisory for npm/ClawHub; repair their
 owner in parallel without holding publication for a green rerun.
 
-All cross-OS outcomes are advisory for beta/stable/full. All-group
-`cross_os_suite_filter` may omit advisory OS lanes; `npm-beta-v1` and
-`npm-stable-v1` still require all Linux suites. Focused cross-OS rerun semantics
-remain unchanged. Read required versus advisory conclusions in the manifest
-and `release-ci-summary`.
+Linux Gateway cross-OS lanes are required proof; Windows/macOS variants are
+recorded as advisory. Coverage is never reduced: all-group
+`cross_os_suite_filter` selections must retain `packaged-fresh`,
+`installer-fresh`, and `packaged-upgrade` on all three OSes (nine pairs).
+Focused `cross-os` reruns may select individual lanes. Publishing a stable with
+a failed advisory lane requires `lane_waiver` (RELEASING.md "Publication
+modes"). Read required versus advisory conclusions in the manifest and
+`release-ci-summary`.
 
 ## Postpublish confidence
 

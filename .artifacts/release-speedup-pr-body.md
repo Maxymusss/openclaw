@@ -101,6 +101,17 @@ rather than acquiring another serializer.
 
 - Item10: 85 affected cases passed across five suites (7.36s Vitest / 11.61s wrapper); new routing suite 31 cases / 233ms. Workflow checks, root types, corrected lint, final changed gate, diff and fresh P2 review passed. Initial broad performance selection was interrupted, not passing proof. No native runner provisioning or wall-time measurement.
 
+## Reconciliation with #156811 / #156934
+
+Main landed two policy commits while this PR was in flight; both intents are kept (operator decision, Peter, 2026-09-23/24: fast stable path, flaky and non-proof lanes never block on their own).
+
+- **Coverage (#156811, RomneyDa).** All-group validation must select every Gateway install/upgrade lane on Linux, Windows, and macOS (`hasRequiredCrossOsSuites`, nine pairs) plus the profile's Telegram, QA, plugin, and performance lanes; each lane runs once and first failures are preserved in the manifest, receipts, and summary. Linux Gateway cross-OS lanes join the required proof set and block; Windows/macOS variants and other non-proof lanes are recorded as advisory (`- Advisory:` decision entries, `::warning`). No lane he added is dropped; only their blocking classification differs from his commit.
+- **Full stable validation (#156934, RomneyDa).** Stable tags default to `release_profile=stable` with soak and performance dispatched in parallel at `t=0`. His publisher gates are kept as the strict default: `stable-profile`, `soak`, and `performance` fail closed without waivers, and `pnpm release:candidate` rejects beta-profile stable candidates without an explicit waiver.
+- **Operator fast path (Peter).** The `stable_soak_waiver` / `lane_waiver` plumbing is retained and is the only way to publish a stable without soak/performance evidence, from beta-profile evidence, or with failed non-proof lanes. Reasons must start with the target version; a sealed waiver takes effect only while the repository variable still holds it at publish time; waivers are recorded in the sealed manifest, Release Decision, publish receipt, GitHub release evidence, and closeout manifest, and surfaced as warnings.
+- **Required in every mode.** Artifact children, install smoke, upgrade survivors, first-hop compat, pack budget/npm qualification, package integrity, `resolve_target`, Linux Gateway cross-OS lanes, and their Verify aggregators.
+- **Planner (item 9).** Main's #156729 ("scope PR tests to affected consumers") already runs plugin coverage for plugin-relevant PR changes with precise retention; its planner and tests are adopted wholesale and the branch's earlier canonical-shard variant of item 9 is dropped as superseded; item 4's hosted-row timing split is re-applied on top of that planner.
+- **Closeout replay.** `openclaw-stable-main-closeout.yml` gains `stable_soak_waiver` / `lane_waiver` dispatch inputs that fall back to the waivers sealed in the publish evidence, passes them (and the live repository variable) to its `stable-closeout` gate, and records them in the closeout manifest. This unblocks the 2026.9.6 closeout replay (run 35965160697 failed under #156934 with "does not record blocking product performance evidence" although the release was published under the operator soak waiver).
+
 ## Follow-ups
 
 The first-hop parallel-lane branch must land separately; do not duplicate it. Item 2 is complete locally; hosted receipt

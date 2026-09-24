@@ -599,29 +599,27 @@ describe("full release execution plan", () => {
     betaCoverage,
     stableCoverage,
     { ...stableCoverage, coveragePolicy: undefined, releaseProfile: "full" },
-  ])(
-    "allows OS coverage filtering while retaining every Linux gate: $releaseProfile",
-    (coverage) => {
-      const unfiltered = plan(coverage);
-      for (const crossOsSuiteFilter of [
-        "ubuntu",
-        "ubuntu,macos",
-        "ubuntu/packaged-fresh,ubuntu/installer-fresh,ubuntu/packaged-upgrade",
-        "packaged-fresh,installer-fresh,packaged-upgrade",
-      ]) {
-        expect(plan({ ...coverage, crossOsSuiteFilter })).toEqual(unfiltered);
-      }
-      for (const crossOsSuiteFilter of [
-        "windows,macos",
-        "packaged-fresh",
-        "ubuntu/packaged-upgrade",
-      ]) {
-        expect(() => plan({ ...coverage, crossOsSuiteFilter })).toThrow(
-          /all Linux cross-OS suites/u,
-        );
-      }
-    },
-  );
+  ])("keeps every OS Gateway lane in all-group coverage: $releaseProfile", (coverage) => {
+    const unfiltered = plan(coverage);
+    for (const crossOsSuiteFilter of [
+      "ubuntu,windows,macos",
+      "packaged-fresh,installer-fresh,packaged-upgrade",
+    ]) {
+      expect(plan({ ...coverage, crossOsSuiteFilter })).toEqual(unfiltered);
+    }
+    for (const crossOsSuiteFilter of [
+      "ubuntu",
+      "ubuntu,macos",
+      "ubuntu/packaged-fresh,ubuntu/installer-fresh,ubuntu/packaged-upgrade",
+      "windows,macos",
+      "packaged-fresh",
+      "ubuntu/packaged-upgrade",
+    ]) {
+      expect(() => plan({ ...coverage, crossOsSuiteFilter })).toThrow(
+        /all Linux, Windows, and macOS cross-OS suites/u,
+      );
+    }
+  });
 
   function coveragePlan(coverage = betaCoverage) {
     const request = {
@@ -4536,7 +4534,7 @@ describe("operator lane waiver", () => {
     const children = [
       failedCi(),
       releaseChecks([
-        job("cross_os_release_checks / Linux / packaged fresh"),
+        job("cross_os_release_checks / Windows / packaged fresh"),
         job("Run package acceptance / Docker product acceptance (artifact-only) / Gateway E2E"),
       ]),
       ...[

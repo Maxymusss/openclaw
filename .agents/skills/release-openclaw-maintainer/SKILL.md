@@ -26,14 +26,17 @@ Read only the references needed for the selected phase:
 
 ## Shared release boundaries
 
-Flaky tests never block npm/ClawHub through ordinary CI, plugin, cross-OS,
-performance, or QA evidence: those suites are advisory by default, without a
-lane waiver. Diagnose and record failures; an untouched test or a passing rerun
-alone does not establish a flake or a fix. Required artifact children, install
-smoke, both survivor lanes, every `update-first-hop-compat*` lane, pack/npm
-qualification, target resolution, and aggregators of required inputs remain
-enforced. Preserve identity, provenance, complete evidence, and existing
-publication approvals.
+Every lane runs once; first failures are recorded and fixed at their owner, and
+a passing rerun alone does not establish a flake or a fix. Strict default: a
+stable publishes only from stable/full evidence with soak, blocking performance,
+and no failed non-proof lane. Operator fast path: `stable_soak_waiver` and
+`lane_waiver` (reason prefixed with the target version, input or repository
+variable) are the only way past that and are recorded everywhere the release
+is described. Required in every mode: artifact children, install smoke, both
+survivor lanes, every `update-first-hop-compat*` lane, pack/npm qualification,
+package integrity, target resolution, Linux Gateway cross-OS lanes, and
+aggregators of required inputs. Preserve identity, provenance, complete
+evidence, and existing publication approvals.
 
 The operating objectives are approximately 20 minutes to seal validation and
 publication within an hour, not measured guarantees. Source-only children start
@@ -105,7 +108,8 @@ Required publication proofs and enforced environment approvals remain required.
 A passing sibling cannot replace missing required evidence. npm + ClawHub is the
 priority path. macOS, Windows, Linux, and Android native publication runs in
 parallel and never gates npm/ClawHub, GitHub release finalization, or main closeout.
-Normal Windows/macOS Node and native-app CI results are advisory for the npm
-decision. Classify and repair their failures in parallel without re-cutting or
-rerunning the full npm validation. Platform publishers retain their own artifact
+Windows/macOS Gateway variants, Windows/macOS Node, and native-app CI results
+are recorded as advisory during validation; a stable publishes with failed ones
+only under `lane_waiver`. Classify and repair their failures in parallel without
+re-cutting or rerunning the full npm validation. Platform publishers retain their own artifact
 and updater contracts; report pending platforms and proof gaps accurately.

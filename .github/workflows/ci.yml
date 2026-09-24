@@ -967,6 +967,7 @@ jobs:
             /test/vitest/
             /config/ci-test-timings.json
             /packages/normalization-core/src/stable-stringify.ts
+            /src/infra/node-runtime-executable.ts
           sparse-checkout-cone-mode: false
           persist-credentials: false
 

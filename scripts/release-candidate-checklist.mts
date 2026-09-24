@@ -339,6 +339,17 @@ export function parseArgs(argv: string[]) {
   if (!["beta", "stable", "full"].includes(options.releaseProfile)) {
     throw new Error("--release-profile must be beta, stable, or full");
   }
+  // Strict default for stable tags; the operator fast path needs an explicit waiver.
+  if (
+    !options.tag.includes("-alpha.") &&
+    !options.tag.includes("-beta.") &&
+    options.releaseProfile === "beta" &&
+    !options.stableSoakWaiver.trim()
+  ) {
+    throw new Error(
+      "stable release candidates require --release-profile stable or full, or an explicit --stable-soak-waiver",
+    );
+  }
   if (options.runParallels && options.skipParallels) {
     throw new Error("--run-parallels and --skip-parallels cannot be combined");
   }

@@ -462,6 +462,9 @@ export function verifyStableMainCloseout(params) {
     fullReleaseValidationRunId: params.fullReleaseValidationRunId,
     fullReleaseValidationRunAttempt,
     releasePublishRunId: params.releasePublishRunId,
+    // Operator waivers that authorized this stable travel into the closeout record.
+    ...(params.stableSoakWaiver ? { stableSoakWaiver: params.stableSoakWaiver } : {}),
+    ...(params.laneWaiver ? { laneWaiver: params.laneWaiver } : {}),
     ...(existingManifest
       ? copyOwnFields(existingManifest, "releasePublishRecovery")
       : params.allowFailedPublishRecovery

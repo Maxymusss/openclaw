@@ -33,10 +33,11 @@ Choose `npmDistTag=beta` for a beta or `route=prepared` for the prepared button.
 Keep that intended selection on later notes-only parents. This admits committed
 publication source, not registry eligibility or publication authority.
 
-Record and reuse the full trusted Tooling SHA. Beta-publish and default
-stable-publish use `release_profile=beta`, `run_release_soak=false`; require
-`npm-beta-v1` for a qualifying canonical beta target, otherwise retain
-the broader selected coverage with ordinary test outcomes advisory. Diagnose
+Record and reuse the full trusted Tooling SHA. Beta-publish uses
+`release_profile=beta`, `run_release_soak=false` (`npm-beta-v1` for a qualifying
+canonical beta target). Stable-publish defaults to `release_profile=stable` with
+soak and performance dispatched in parallel; beta-profile evidence publishes a
+stable only with `stable_soak_waiver` (RELEASING.md "Publication modes"). Diagnose
 failures and use the controller's bounded retry for affected required proof.
 Continue eligible parents to seal; a parent that produced its own sealed
 candidate artifacts requires a new parent with verified successful evidence

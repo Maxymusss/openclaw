@@ -59,10 +59,8 @@ import {
 } from "../vitest/vitest.extension-database-workers-paths.mjs";
 import { isGatewayServerTestFile } from "../vitest/vitest.gateway-server-paths.mjs";
 import { isSharedVitestExcludedPath } from "../vitest/vitest.pattern-file.ts";
-import { createPluginsVitestConfig } from "../vitest/vitest.plugins.config.ts";
 import { startupCorpusTestFiles } from "../vitest/vitest.startup-corpus-paths.mjs";
 import { boundaryTestFiles } from "../vitest/vitest.unit-paths.mjs";
-import { listMatchedTestFiles } from "./ci-node-test-plan.test-support.js";
 
 const CODEX_TEST_PROCESS_FILE_LIMIT = 24;
 const argvTempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -338,11 +336,7 @@ function selectedFiles(shards: ReturnType<typeof createChangedNodeTestShards>) {
 function expectAllExtensionConfigs(
   shards: ReturnType<typeof createChangedExtensionFallbackShards>,
 ) {
-  const configs = new Set(
-    fallbackGroups(shards)
-      .flatMap((group) => group.configs)
-      .filter((config) => config !== "test/vitest/vitest.plugins.config.ts"),
-  );
+  const configs = new Set(fallbackGroups(shards).flatMap((group) => group.configs));
   const expectedConfigs = new Set(
     listAvailableExtensionIds().map((extensionId) =>
       resolveExtensionTestConfig(`extensions/${extensionId}`),
@@ -1256,6 +1250,7 @@ describe("CI changed Node test plan", () => {
   it.each([
     "src/node-host/node-worker-bundle-installer.test.ts",
     "src/plugin-sdk/config-runtime.test.ts",
+    "src/plugins/contracts/registry.retry.test.ts",
     "src/channels/plugins/config-schema.test.ts",
     "src/tasks/task-registry.test.ts",
   ])("keeps exact test leaf %s focused while retaining boundary coverage", (target) => {
@@ -1279,34 +1274,6 @@ describe("CI changed Node test plan", () => {
         shardName: "changed-boundary",
       },
     ]);
-  });
-
-  it.each([
-    "extensions/copilot/openclaw.plugin.json",
-    "src/plugins/bundled-plugin-metadata.test.ts",
-  ])("runs the whole plugin owner once in a precise PR plan for %s", (changedPath) => {
-    const shards = expectDefined(createChangedNodeTestShards([changedPath]), "precise plugin plan");
-    const owners = fallbackGroups(shards).filter((group) =>
-      group.configs.includes("test/vitest/vitest.plugins.config.ts"),
-    );
-    expect(owners).toHaveLength(1);
-    expect(owners[0]).toMatchObject({
-      configs: ["test/vitest/vitest.plugins.config.ts"],
-      pretestBuildMode: "runtime",
-      requiresDist: false,
-    });
-    expect(owners[0]?.includePatterns).toBeUndefined();
-    const pluginFiles = listMatchedTestFiles(createPluginsVitestConfig({}));
-    expect(pluginFiles).toEqual(
-      expect.arrayContaining([
-        "src/plugins/bundled-plugin-metadata.test.ts",
-        "src/plugins/bundled-plugin-metadata.public-surfaces.test.ts",
-        "src/plugins/copy-bundled-plugin-metadata.test.ts",
-        "src/plugins/manifest-categories.test.ts",
-      ]),
-    );
-    const separatelySelected = shards.flatMap((shard) => shard.targets ?? []);
-    expect(separatelySelected.filter((target) => pluginFiles.includes(target))).toEqual([]);
   });
 
   it.each([
@@ -2187,30 +2154,23 @@ describe("CI changed Node test plan", () => {
     "src/plugin-sdk/gone.test.ts",
     "src/plugins/contracts/gone.test.ts",
     "src/channels/plugins/gone.test.ts",
-  ])(
-    "preserves deletion coverage without borrowing plugin owners from another checkout: %s",
-    (target) => {
-      const cwd = mkdtempSync(path.join(tmpdir(), "openclaw-ci-deleted-test-"));
-      try {
-        expect(createChangedExtensionFallbackShards([target], { cwd })).toEqual([]);
-        if (target.startsWith("src/plugins/")) {
-          expect(createChangedNodeTestShards([target], { cwd })).toBeNull();
-          return;
-        }
-        expect(createChangedNodeTestShards([target], { cwd })).toEqual([
-          {
-            checkName: "checks-node-changed-boundary",
-            configs: ["test/vitest/vitest.boundary.config.ts"],
-            requiresDist: false,
-            runner: "blacksmith-8vcpu-ubuntu-2404",
-            shardName: "changed-boundary",
-          },
-        ]);
-      } finally {
-        rmSync(cwd, { force: true, recursive: true });
-      }
-    },
-  );
+  ])("runs only the boundary shard when a diff deletes %s", (target) => {
+    const cwd = mkdtempSync(path.join(tmpdir(), "openclaw-ci-deleted-test-"));
+    try {
+      expect(createChangedExtensionFallbackShards([target], { cwd })).toEqual([]);
+      expect(createChangedNodeTestShards([target], { cwd })).toEqual([
+        {
+          checkName: "checks-node-changed-boundary",
+          configs: ["test/vitest/vitest.boundary.config.ts"],
+          requiresDist: false,
+          runner: "blacksmith-8vcpu-ubuntu-2404",
+          shardName: "changed-boundary",
+        },
+      ]);
+    } finally {
+      rmSync(cwd, { force: true, recursive: true });
+    }
+  });
 
   it.each([
     "tsconfig.json",
@@ -2836,10 +2796,6 @@ describe("CI changed Node test plan", () => {
       requiresDist: false,
       pretestBuildMode: "runtime",
     });
-    if (pluginOwned) {
-      expect(owners?.[0]?.includePatterns).toBeUndefined();
-      expect(listMatchedTestFiles(createPluginsVitestConfig({}))).toContain(target);
-    }
   });
 
   it("retains delivery-cache coverage and private QA preparation", () => {

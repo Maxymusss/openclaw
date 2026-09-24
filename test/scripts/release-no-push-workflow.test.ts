@@ -938,7 +938,7 @@ describe("release validation no-push transport", () => {
     ["qa-live", "qa-live-matrix", ""],
     ["live-e2e", " Repo-E2E,\trepo-smoke ", ""],
     ["cross-os", "", " Windows/Packaged-Upgrade "],
-    ["all", "", " Ubuntu,macOS "],
+    ["all", "", " Ubuntu,Windows,macOS "],
   ])(
     "parent accepts rerun_group=%s with its owned selector",
     (group, liveSuiteFilter, crossOsSuiteFilter) => {
@@ -1051,8 +1051,8 @@ describe("release validation no-push transport", () => {
 
   it.each([
     ["cross-os", "windows/packaged-upgrade"],
-    ["all", "ubuntu,macos"],
-    ["all", "ubuntu/packaged-fresh,ubuntu/installer-fresh,ubuntu/packaged-upgrade"],
+    ["all", "ubuntu,windows,macos"],
+    ["all", "packaged-fresh,installer-fresh,packaged-upgrade"],
   ])("accepts cross-OS selection %s/%s without changing scheduled groups", (group, filter) => {
     const outputs = runReleaseGroupCapture(group, false, "", filter);
     const unfiltered = runReleaseGroupCapture(group);
@@ -1060,15 +1060,21 @@ describe("release validation no-push transport", () => {
     expect(outputs.cross_os_scheduled).toBe("true");
   });
 
-  it.each(["windows,macos", "packaged-fresh", "ubuntu/packaged-upgrade"])(
-    "rejects all-group selection %s that omits required Linux suites at either entry point",
+  it.each([
+    "windows,macos",
+    "ubuntu,macos",
+    "packaged-fresh",
+    "ubuntu/packaged-upgrade",
+    "ubuntu/packaged-fresh,ubuntu/installer-fresh,ubuntu/packaged-upgrade",
+  ])(
+    "rejects all-group selection %s that omits an OS Gateway suite at either entry point",
     (filter) => {
       for (const { result } of [
         executeParentFilterValidation("all", "", filter),
         executeReleaseGroupCapture("all", false, "", filter),
       ]) {
         expect(result.status).not.toBe(0);
-        expect(result.stderr).toContain("requires all Linux cross-OS suites");
+        expect(result.stderr).toContain("requires all Linux, Windows, and macOS cross-OS suites");
       }
     },
   );

@@ -3633,6 +3633,9 @@ async function main() {
     if (sourceManifest.validationInputs?.laneWaiver) {
       console.log(`lane-waiver: ${sourceManifest.validationInputs.laneWaiver}`);
     }
+    if (sourceManifest.publishInputs?.stableSoakWaiver) {
+      console.log(`soak-waiver: ${sourceManifest.publishInputs.stableSoakWaiver}`);
+    }
     for (const job of sourceManifest.advisoryJobs) {
       const failed = job.status === "completed" && job.conclusion !== "success";
       console.log(
