@@ -3,15 +3,94 @@ on:
   workflow_dispatch:
 permissions:
   contents: read
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+  NODE_VERSION: "24.19.0"
 jobs:
-  npm-lock-owner-proof:
+  npm-lock-production-pilot:
+    name: npm-lock-${{ matrix.case }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        case: [baseline, irrelevant, relevant]
+    env:
+      PILOT_CASE: ${{ matrix.case }}
+      CHECKOUT_KIND: linux-node
+      CHECKOUT_REPO: openclaw/openclaw
+      CHECKOUT_SHA: b0f8701e4b213293af3e2c1e194368733553f34d
+      CHECKOUT_BASE_SHA: 948115ac6b2262f698e58566bdd96f4bff1c49e1
+      WORKFLOW_SHA: fe9afc72544f0364bd7496b9fe05ac190843cc90
+      HISTORICAL_TARGET: "false"
     steps:
-      - name: Checkout proof
+      - name: Checkout experiment harness
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
           fetch-depth: 1
-      - name: Actual owner depth-one export and production check shell
-        run: python3 scripts/npm-lock-hosted-owner-proof.py
+      - name: Actual production owner checkout
+        env:
+          CHECKOUT_TOKEN: ${{ github.token }}
+        run: |
+          cp scripts/npm-lock-production-pilot.py "$RUNNER_TEMP/pilot-bootstrap.py"
+          python3 "$RUNNER_TEMP/pilot-bootstrap.py"
+      - name: Check npm lock scope before setup
+        id: npm-lock-scope
+        if: matrix.case != 'baseline'
+        shell: bash
+        run: |
+          # A missing runtime or unfamiliar target must keep the existing check.
+          if decision="$(node .ci-harness/scripts/ci-npm-lock-admission.mjs)"; then
+            echo "$decision" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Setup Node environment
+        id: setup
+        if: steps.npm-lock-scope.outputs.skip != 'true'
+        uses: ./.ci-harness/.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          install-bun: "false"
+          dependency-cache: "false"
+      - name: Run check shard
+        id: check
+        env:
+          SKIP_NPM_LOCK: ${{ steps.npm-lock-scope.outputs.skip }}
+          FROZEN_TARGET: "false"
+          HISTORICAL_TARGET: "false"
+          FORMAT_CHECK: "false"
+          RELEASE_GATE: "false"
+          RUN_CONTROL_UI_I18N: "false"
+          RUN_UI_TESTS: "false"
+          HOSTED_RUNNER_STRIPES: "true"
+          RUNNER_PROFILE: github
+          OPENCLAW_LOCAL_CHECK: "0"
+          CHANGED_CORE_TEST_PATHS_JSON: "[]"
+          TASK: npm-lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash "$RUNNER_TEMP/pilot-check.sh" | tee "$RUNNER_TEMP/pilot-check-output.txt"
+          case "$PILOT_CASE" in
+            baseline) grep -Fx 'No npm-lock package changes detected.' "$RUNNER_TEMP/pilot-check-output.txt" ;;
+            irrelevant) grep -Fx 'No npm-lock package changes detected; dependency setup skipped.' "$RUNNER_TEMP/pilot-check-output.txt" ;;
+            relevant)
+              grep -Fx 'Validating 1 npm package lock with 1 job.' "$RUNNER_TEMP/pilot-check-output.txt"
+              grep -Fx 'extensions/arcee: npm package lock validated.' "$RUNNER_TEMP/pilot-check-output.txt"
+              ;;
+          esac
+      - name: Verify real setup selection
+        env:
+          SKIP: ${{ steps.npm-lock-scope.outputs.skip }}
+          SETUP: ${{ steps.setup.outcome }}
+        run: |
+          if [ "$PILOT_CASE" = irrelevant ]; then
+            test "$SKIP" = true
+            test "$SETUP" = skipped
+          else
+            test "$SKIP" != true
+            test "$SETUP" = success
+          fi
