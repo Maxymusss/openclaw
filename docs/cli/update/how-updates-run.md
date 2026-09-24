@@ -44,6 +44,13 @@ Native-definition reconciliation on launchd, Scheduled Tasks, and systemd keeps
 custom policy values with an advisory while refreshing recognized old defaults.
 For example, `TimeoutStartSec=45` stays unchanged while the old installer value
 `TimeoutStopSec=30` becomes `330`. Existing identity and command checks still apply.
+
+An already-current result can include a zero-duration `managed-service-reconciliation`
+step with `exitCode: 0` to record service advisories. Its `advisory` or `warnings`
+describe what happened, including when service management was skipped. This
+diagnostic step does not mean its displayed command ran or a package was reinstalled;
+`status: "skipped"` and `reason: "already-current"` do not require an empty `steps` array.
+
 Maintenance stops also read the resident Gateway's recorded shutdown budget.
 Published 2026.9.5 residents keep their startup budget even after `daemon-reload`;
 their first stop therefore uses the short/unknown-budget path. The Gateway's

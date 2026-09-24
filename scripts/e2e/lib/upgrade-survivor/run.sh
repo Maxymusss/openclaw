@@ -1119,7 +1119,11 @@ const text = fs.readFileSync(process.argv[2], "utf8");
 const result = JSON.parse(text.slice(text.indexOf("{")));
 assert.equal(result.status, "skipped", "second update was not a clean no-op");
 assert.equal(result.reason, "already-current", "second update was not already current");
-assert.deepEqual(result.steps, [], "second update executed package mutations");
+for (const step of result.steps) {
+  assert.equal(step.name, "managed-service-reconciliation", "second update executed package mutations");
+  assert.equal(step.exitCode, 0, "second update recorded failed service reconciliation");
+  assert.equal(step.durationMs, 0, "second update recorded an executed service command");
+}
 assert(!result.nextAction, "second update requested repair");
 console.log("Second update: already-current, no package mutations or repair required.");
 NODE
