@@ -13,14 +13,14 @@ jobs:
     runs-on: xcode-27
     timeout-minutes: 60
     env:
-      CANDIDATE_SHA: 3846b975e5e80656e9a25095649c46fc95cc67a5
+      CANDIDATE_SHA: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
       BASELINE_SHA: 8c870f669e3528864881333d04875512ef81cfdc
       RUN_FOCUSED_TESTS: "false"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: 3846b975e5e80656e9a25095649c46fc95cc67a5
-          fetch-depth: 2
+          ref: b9ae24aec6ad8ef987f904d3ed2fb748daac4892
+          fetch-depth: 3
           persist-credentials: false
       - name: Verify exact source and Apple capability
         run: |
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         if: always()
         with:
-          name: ios-narration-native-3846b975e5e
+          name: ios-narration-native-b9ae24aec6a
           path: ${{ runner.temp }}/narration-proof
           if-no-files-found: error
           retention-days: 7
