@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, expect, it, vi } from "vitest";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
   legacyConfigRules,
   normalizeCompatibilityConfig,
