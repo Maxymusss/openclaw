@@ -598,6 +598,7 @@ public struct OpenClawChatView: View {
                 showsAssistantAvatar: self.showsAssistantAvatars,
                 isClean: self.composerChrome == .clean,
                 runIdentity: self.viewModel.workingIndicatorIdentity,
+                commentary: self.activeCommentary?.text,
                 outputTokens: self.viewModel.liveRunOutputTokens)
                 .equatable()
         }
@@ -832,7 +833,14 @@ public struct OpenClawChatView: View {
         } else {
             base = self.viewModel.messages
         }
-        var rows = ChatTranscriptRow.build(from: self.mergeToolResults(in: base))
+        let commentary = self.showsWorkingIndicator ? self.activeCommentary : nil
+        // Project out only the status-owned content while working. The source
+        // messages remain untouched for recovery, history, and final settlement.
+        let displayed = self.mergeToolResults(in: base).compactMap { message in
+            guard let commentary else { return message }
+            return commentary.transcriptMessage(message)
+        }
+        var rows = ChatTranscriptRow.build(from: displayed)
         if self.collapsesCompletedWork {
             rows = ChatTranscriptRow.collapseCompletedWork(
                 rows,
@@ -958,6 +966,11 @@ public struct OpenClawChatView: View {
 
     private var hasVisibleStreamingAssistantText: Bool {
         guard let text = self.viewModel.streamingAssistantText else { return false }
+        // An unphased chat delta can briefly mirror the completed keyed item.
+        // Hide only an exact match; a growing answer remains its own bubble.
+        if self.activeCommentary?.matchesStreamingText(text) == true {
+            return false
+        }
         return AssistantTextParser.hasVisibleContent(
             in: text,
             includeThinking: self.displayOptions.contains(.reasoning))
@@ -966,6 +979,14 @@ public struct OpenClawChatView: View {
     private var showsWorkingIndicator: Bool {
         self.viewModel.hasBlockingRunActivity &&
             (!self.hasVisibleStreamingAssistantText || self.viewModel.liveUsageRunID != nil)
+    }
+
+    private var activeCommentary: ChatWorkingCommentary? {
+        #if os(iOS)
+            self.viewModel.workingCommentary
+        #else
+            nil
+        #endif
     }
 
     private var turnRecapObservation: ChatTurnRecapObservation {
