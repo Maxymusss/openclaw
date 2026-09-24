@@ -6,6 +6,11 @@ proof_repo="$(cd "$2" && pwd)"
 output="$3"
 baseline="$4"
 candidate="$5"
+stages=(before after)
+if [[ "${6:-both}" != both ]]; then
+  [[ "$6" == before || "$6" == after ]]
+  stages=("$6")
+fi
 [[ "$baseline" =~ ^[0-9a-f]{40}$ && "$candidate" =~ ^[0-9a-f]{40}$ ]]
 mkdir -p "$output"
 output="$(cd "$output" && pwd)"
@@ -54,7 +59,7 @@ export TEST_RUNNER_OPENCLAW_IOS_LIVE_GATEWAY=1
 export TEST_RUNNER_OPENCLAW_IOS_LIVE_SETUP_CODE='{"url":"ws://127.0.0.1:19876","token":"synthetic-navigation-token"}'
 export TEST_RUNNER_OPENCLAW_IOS_NARRATION_FIXTURE_URL=http://127.0.0.1:19876
 
-for stage in before after; do
+for stage in "${stages[@]}"; do
   revision="$baseline"
   [[ "$stage" == before ]] || revision="$candidate"
   checkout="$scratch/$stage"

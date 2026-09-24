@@ -980,12 +980,16 @@ final class OpenClawSnapshotUITests: XCTestCase {
         input.typeText("Review the mobile layout.")
         let send = app.buttons["chat-send-message"]
         self.waitForEnabled(send)
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
-        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+        XCTAssertTrue(send.isHittable)
         send.tap()
         let accepted = try await control("await-send")
         XCTAssertEqual(accepted["phase"] as? String, "accepted")
-        XCTAssertTrue(app.staticTexts["Review the mobile layout."].waitForExistence(timeout: 5))
+        let submitted = app.staticTexts["Review the mobile layout."]
+        XCTAssertTrue(submitted.waitForExistence(timeout: 5))
+        // An empty-chat coordinate can hit a starter prompt. The committed
+        // plain-text user row dismisses the keyboard without sending another turn.
+        submitted.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
 
         _ = try await control("work", method: "POST")
         let current = narration("Preparing the layout summary.", in: app)
