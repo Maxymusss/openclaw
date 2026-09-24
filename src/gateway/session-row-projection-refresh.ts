@@ -180,11 +180,16 @@ export function createSessionRowRefresh(
     }
     await owner.placementFacts.prepare();
     // Capture one handoff; later exact traffic cannot starve resident readiness.
-    const exact = exactReads.values().next().value;
-    if (exact) {
-      // The exact caller owns its failure; either outcome releases this resident slice.
-      await exact.completion.promise.catch(() => {});
-      await yieldSessionListWork();
+    const oldest = exactReads.entries().next().value;
+    if (oldest) {
+      const [id, exact] = oldest;
+      const row = owner.rows.get(id);
+      // Accepted exact facts can finish in this slice while their caller is still pending.
+      if (row && !row.pendingDatabaseFacts && (owner.dirty.has(id) || isCold(row))) {
+        // The exact caller owns its failure; either outcome releases this resident slice.
+        await exact.completion.promise.catch(() => {});
+        await yieldSessionListWork();
+      }
     }
     for (
       let pending = owner.prepareRegistryFacts();

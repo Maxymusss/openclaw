@@ -233,6 +233,7 @@ it("hands a resident slice to the oldest exact read without waiting for later re
     let elapsed = 0;
     let workMs = 0;
     const rendered: string[] = [];
+    const suffixRendered = createDeferredCore();
     vi.useFakeTimers({ toFake: ["setImmediate"] });
     // This runner retains the promise timer binding when installing the fake clock.
     const immediate = vi.spyOn(timers, "setImmediate").mockImplementation(
@@ -247,6 +248,9 @@ it("hands a resident slice to the oldest exact read without waiting for later re
       const inputs = readInputs(params);
       rendered.push(params.key);
       elapsed += workMs;
+      if (workMs > 0 && params.key === entries[1]!.scope.sessionKey) {
+        suffixRendered.resolve();
+      }
       return inputs;
     });
     const releaseForeground = retainSessionListForegroundWork();
@@ -348,6 +352,7 @@ it("hands a resident slice to the oldest exact read without waiting for later re
         session: expect.objectContaining({ key: exact[0]!.scope.sessionKey, label: "Current row" }),
       });
       await vi.advanceTimersToNextTimerAsync();
+      await suffixRendered.promise;
       expect(rendered).toEqual([
         entries[0]!.scope.sessionKey,
         exact[0]!.scope.sessionKey,
