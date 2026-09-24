@@ -949,6 +949,103 @@ final class OpenClawSnapshotUITests: XCTestCase {
         self.waitForValue("All", of: menu)
     }
 
+    /// Real onboarding and chat UI against a synthetic Gateway; no app fixture mode or model calls.
+    func testLiveGatewayInlineNarrationAndRecovery() async throws {
+        try XCTSkipUnless(
+            ProcessInfo.processInfo.environment["OPENCLAW_IOS_NARRATION_FIXTURE_URL"] != nil,
+            "Requires scripts/test-ios-shell-gateway.mjs --narration on the owned loopback host")
+        let fixture = try XCTUnwrap(ProcessInfo.processInfo.environment["OPENCLAW_IOS_NARRATION_FIXTURE_URL"])
+        let fixtureURL = try XCTUnwrap(URL(string: fixture))
+        XCTAssertEqual(fixtureURL.host, "127.0.0.1")
+        let stage = ProcessInfo.processInfo.environment["OPENCLAW_IOS_NARRATION_BASELINE"] == "1"
+            ? "before" : "after"
+
+        func control(_ action: String, method: String = "GET") async throws -> [String: Any] {
+            var request = URLRequest(url: fixtureURL.appendingPathComponent("narration/\(action)"))
+            request.httpMethod = method
+            request.timeoutInterval = 20
+            let (data, response) = try await URLSession.shared.data(for: request)
+            XCTAssertEqual((response as? HTTPURLResponse)?.statusCode, 200, "Narration fixture transition failed")
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        }
+
+        func narration(_ text: String, in app: XCUIApplication) -> XCUIElement {
+            app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", text)).firstMatch
+        }
+
+        let app = try self.launchPairedLiveGatewayApp(initialTab: "chat", initialDestination: "chat")
+        let input = self.chatMessageInput(in: app)
+        XCTAssertTrue(input.waitForExistence(timeout: 8), "Narration fixture chat did not open")
+        input.tap()
+        input.typeText("Review the mobile layout.")
+        let send = app.buttons["chat-send-message"]
+        self.waitForEnabled(send)
+        app.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.2)).tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForNonExistence(timeout: 3))
+        send.tap()
+        let accepted = try await control("await-send")
+        XCTAssertEqual(accepted["phase"] as? String, "accepted")
+        XCTAssertTrue(app.staticTexts["Review the mobile layout."].waitForExistence(timeout: 5))
+
+        _ = try await control("work", method: "POST")
+        let current = narration("Preparing the layout summary.", in: app)
+        // This distinct current-answer marker follows every narration event on
+        // the socket. A broken connection must not count as the baseline defect.
+        XCTAssertTrue(current.waitForExistence(timeout: 10), "Narration fixture live traffic did not arrive")
+        let first = narration("Reading the mobile layout.", in: app)
+        let second = narration("Checking spacing and contrast.", in: app)
+        let activeVisible = first.waitForExistence(timeout: 2) && second.waitForExistence(timeout: 2)
+        if activeVisible {
+            XCTAssertLessThan(first.frame.minY, second.frame.minY)
+            XCTAssertLessThan(second.frame.minY, current.frame.minY)
+        }
+        self.attachScreenshot(named: "narration-\(stage)-active")
+        _ = try await control("capture/\(stage)-active", method: "POST")
+
+        let reloaded = self.relaunchConnectedLiveGatewayApp(initialTab: "chat", initialDestination: "chat")
+        _ = try await control("await-reconnect")
+        XCTAssertTrue(narration("Preparing the layout summary.", in: reloaded).waitForExistence(timeout: 10),
+                      "Narration fixture in-flight history did not load")
+        let recoveredFirst = narration("Reading the mobile layout.", in: reloaded)
+        let recoveredSecond = narration("Checking spacing and contrast.", in: reloaded)
+        let recoveredVisible = recoveredFirst.waitForExistence(timeout: 2) &&
+            recoveredSecond.waitForExistence(timeout: 2)
+        if recoveredVisible {
+            XCTAssertLessThan(recoveredFirst.frame.minY, recoveredSecond.frame.minY)
+        }
+        self.attachScreenshot(named: "narration-\(stage)-reconnected")
+        _ = try await control("capture/\(stage)-reconnected", method: "POST")
+
+        _ = try await control("complete", method: "POST")
+        let finalReply = narration("The mobile layout is ready.", in: reloaded)
+        XCTAssertTrue(finalReply.waitForExistence(timeout: 10), "Narration fixture final reply did not arrive")
+        let work = reloaded.buttons.matching(NSPredicate(format: "label BEGINSWITH %@", "Worked for")).firstMatch
+        XCTAssertTrue(work.waitForExistence(timeout: 8), "Completed work disclosure is missing")
+        XCTAssertTrue(recoveredFirst.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(recoveredSecond.waitForNonExistence(timeout: 5))
+        self.attachScreenshot(named: "narration-\(stage)-completed")
+        _ = try await control("capture/\(stage)-completed", method: "POST")
+
+        work.tap()
+        XCTAssertTrue(recoveredFirst.waitForExistence(timeout: 5))
+        XCTAssertTrue(recoveredSecond.waitForExistence(timeout: 5))
+        XCTAssertLessThan(recoveredFirst.frame.minY, recoveredSecond.frame.minY)
+        XCTAssertTrue(finalReply.exists, "Expanding work must preserve the final reply")
+        self.attachScreenshot(named: "narration-\(stage)-expanded")
+        _ = try await control("capture/\(stage)-expanded", method: "POST")
+        for _ in 0..<3 where !work.isHittable { reloaded.swipeDown() }
+        XCTAssertTrue(work.isHittable)
+        work.tap()
+        XCTAssertTrue(recoveredFirst.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(recoveredSecond.waitForNonExistence(timeout: 5))
+        XCTAssertTrue(finalReply.exists, "Collapsing work must preserve the final reply")
+        _ = try await control("capture/\(stage)-collapsed", method: "POST")
+
+        // The baseline still captures the entire real flow, including settled
+        // history. Only missing live/replayed narration produces this marker.
+        XCTAssertTrue(activeVisible && recoveredVisible, "NARRATION_MISSING_WHILE_RUNNING")
+    }
+
     /// Real app onboarding, history decoder, artifact RPC, HTTP loader, and system share sheet.
     /// Only the loopback Gateway is synthetic; no production UI state is injected.
     func testManagedDocumentDownloadAndSystemShare() async throws {

@@ -1,0 +1,134 @@
+#!/bin/bash
+# Verification-branch driver: real iOS app, synthetic loopback Gateway, exact source revisions.
+set -euo pipefail
+source_repo="$(cd "$1" && pwd)"
+proof_repo="$(cd "$2" && pwd)"
+output="$3"
+baseline="$4"
+candidate="$5"
+[[ "$baseline" =~ ^[0-9a-f]{40}$ && "$candidate" =~ ^[0-9a-f]{40}$ ]]
+mkdir -p "$output"
+output="$(cd "$output" && pwd)"
+scratch="$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/ios-narration.XXXXXX")"
+simulator=""
+fixture_pid=""
+recorder_pid=""
+checkout=""
+cleanup() {
+  local status=$?
+  if [[ -n "$recorder_pid" ]]; then kill -INT "$recorder_pid" 2>/dev/null || true; wait "$recorder_pid" || true; fi
+  if [[ -n "$fixture_pid" ]]; then kill "$fixture_pid" 2>/dev/null || true; wait "$fixture_pid" || true; fi
+  if [[ -n "$simulator" ]]; then
+    xcrun simctl shutdown "$simulator" 2>/dev/null || true
+    xcrun simctl delete "$simulator" || true
+  fi
+  if [[ -n "$checkout" ]]; then git -C "$source_repo" worktree remove --force "$checkout" || true; fi
+  rm -rf "$scratch"
+  if [[ "$status" -ne 0 ]]; then printf '[ios-narration-proof] FAILED (exit %s)\n' "$status" >&2; fi
+}
+trap cleanup EXIT
+
+test "$(git -C "$source_repo" rev-parse HEAD)" = "$candidate"
+git -C "$source_repo" cat-file -e "$baseline^{commit}"
+# Check physical devices before choosing a task-owned simulator on the hosted Mac.
+xcrun devicectl list devices > "$output/physical-devices.txt"
+xcrun simctl list devices available --json > "$scratch/devices.json"
+xcrun simctl help io > "$output/simctl-io-contract.txt"
+node -e '
+const fs=require("node:fs");
+const runtimes=Object.entries(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).devices);
+for(const [runtime,devices] of runtimes){
+ const phone=devices.find(d=>d.isAvailable&&d.name==="iPhone 17 Pro")??devices.find(d=>d.isAvailable&&d.name.startsWith("iPhone"));
+ if(phone){console.log(phone.name);console.log(runtime);process.exit(0);}
+}
+throw new Error("No available iPhone simulator");
+' "$scratch/devices.json" > "$scratch/device.txt"
+device="$(sed -n '1p' "$scratch/device.txt")"
+runtime="$(sed -n '2p' "$scratch/device.txt")"
+printf 'Baseline: %s\nCandidate: %s\nDevice: %s\nRuntime: %s\n' \
+  "$baseline" "$candidate" "$device" "$runtime" > "$output/provenance.txt"
+xcodebuild -version >> "$output/provenance.txt"
+swift --version >> "$output/provenance.txt"
+
+export TEST_RUNNER_OPENCLAW_IOS_LIVE_GATEWAY=1
+export TEST_RUNNER_OPENCLAW_IOS_LIVE_SETUP_CODE='{"url":"ws://127.0.0.1:19876","token":"synthetic-navigation-token"}'
+export TEST_RUNNER_OPENCLAW_IOS_NARRATION_FIXTURE_URL=http://127.0.0.1:19876
+
+for stage in before after; do
+  revision="$baseline"
+  [[ "$stage" == before ]] || revision="$candidate"
+  checkout="$scratch/$stage"
+  git -C "$source_repo" worktree add --detach "$checkout" "$revision"
+  # Both trees run identical UI-test code; application/library sources stay byte-identical to their commits.
+  cp "$proof_repo/apps/ios/UITests/OpenClawSnapshotUITests.swift" "$checkout/apps/ios/UITests/"
+  cp "$proof_repo/scripts/test-ios-shell-gateway.mjs" "$checkout/scripts/"
+  (
+    cd "$checkout"
+    pnpm install --frozen-lockfile
+    ./scripts/ios-configure-signing.sh
+    ./scripts/ios-write-version-xcconfig.sh
+    node scripts/ios-write-swift-filelist.mjs
+    xcodegen generate --spec apps/ios/project.yml --project apps/ios
+  ) > "$output/$stage-setup.log" 2>&1
+  git -C "$checkout" diff --exit-code -- apps/ios/Sources apps/shared/OpenClawKit/Sources
+  simulator="$(xcrun simctl create "OpenClaw narration $stage $$" "$device" "$runtime")"
+  xcrun simctl boot "$simulator"
+  xcrun simctl bootstatus "$simulator" -b
+  xcrun simctl status_bar "$simulator" override --time 09:41 --batteryState charged --batteryLevel 100
+  xcrun simctl ui "$simulator" appearance dark
+  args=(
+    -project "$checkout/apps/ios/OpenClaw.xcodeproj" -scheme OpenClawUITests
+    -configuration Debug -destination "platform=iOS Simulator,id=$simulator"
+    -derivedDataPath "$scratch/derived-$stage"
+    -clonedSourcePackagesDirPath "$scratch/packages"
+    -testLanguage en -testRegion US -parallel-testing-enabled NO
+    -only-testing:OpenClawUITests/OpenClawSnapshotUITests/testLiveGatewayInlineNarrationAndRecovery
+  )
+  if ! xcodebuild "${args[@]}" build-for-testing > "$output/$stage-build.log" 2>&1; then
+    tail -n 100 "$output/$stage-build.log"
+    exit 1
+  fi
+  node "$checkout/scripts/test-ios-shell-gateway.mjs" --narration > "$output/$stage-gateway.log" 2>&1 &
+  fixture_pid=$!
+  for attempt in {1..30}; do
+    if curl --fail --silent http://127.0.0.1:19876/narration > "$output/$stage-initial.json"; then break; fi
+    kill -0 "$fixture_pid"
+    sleep 1
+  done
+  curl --fail --silent http://127.0.0.1:19876/narration > "$output/$stage-initial.json"
+  if [[ "$stage" == before ]]; then
+    export TEST_RUNNER_OPENCLAW_IOS_NARRATION_BASELINE=1
+  else
+    unset TEST_RUNNER_OPENCLAW_IOS_NARRATION_BASELINE
+  fi
+  node -e 'console.log(Date.now())' > "$output/$stage-recording-start.txt"
+  xcrun simctl io "$simulator" recordVideo --codec=h264 --force "$output/$stage.mov" > "$output/$stage-recorder.log" 2>&1 &
+  recorder_pid=$!
+  status=0
+  xcodebuild "${args[@]}" -collect-test-diagnostics never \
+    -resultBundlePath "$output/$stage.xcresult" test-without-building > "$output/$stage-test.log" 2>&1 || status=$?
+  kill -INT "$recorder_pid"
+  wait "$recorder_pid"
+  recorder_pid=""
+  curl --fail --silent http://127.0.0.1:19876/narration > "$output/$stage-events.json"
+  xcrun xcresulttool get test-results summary --path "$output/$stage.xcresult" --compact > "$output/$stage-summary.json"
+  xcrun xcresulttool export attachments --path "$output/$stage.xcresult" --output-path "$output/$stage-images"
+  tail -n 80 "$output/$stage-test.log"
+  if [[ "$stage" == before ]]; then
+    [[ "$status" -ne 0 ]]
+    grep -q NARRATION_MISSING_WHILE_RUNNING "$output/$stage-test.log"
+    node -e 'const r=require(process.argv[1]);if(r.result!=="Failed"||r.failedTests!==1||r.passedTests!==0)process.exit(1)' "$output/$stage-summary.json"
+  else
+    [[ "$status" -eq 0 ]]
+    node -e 'const r=require(process.argv[1]);if(r.result!=="Passed"||r.failedTests!==0||r.passedTests!==1)process.exit(1)' "$output/$stage-summary.json"
+  fi
+  git -C "$checkout" diff --exit-code -- apps/ios/Sources apps/shared/OpenClawKit/Sources
+  kill "$fixture_pid"
+  wait "$fixture_pid"
+  fixture_pid=""
+  xcrun simctl shutdown "$simulator"
+  xcrun simctl delete "$simulator"
+  simulator=""
+  git -C "$source_repo" worktree remove --force "$checkout"
+  checkout=""
+done

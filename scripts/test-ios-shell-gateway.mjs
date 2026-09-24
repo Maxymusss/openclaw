@@ -15,10 +15,13 @@
 // OpenClawUITests/ChatCatalogUITests/testGuestModelPolicyRetiresOpenChoices.
 // Forward OPENCLAW_IOS_GUEST_MODEL_POLICY_PROOF=1, OPENCLAW_IOS_LIVE_SETUP_CODE,
 // and OPENCLAW_IOS_MODEL_POLICY_FIXTURE_URL=http://127.0.0.1:19876 via TEST_RUNNER_.
+// Narration proof: --narration, then opt into testLiveGatewayInlineNarrationAndRecovery
+// with OPENCLAW_IOS_NARRATION_FIXTURE_URL=http://127.0.0.1:19876 and the live settings above.
 import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
 const attachmentMode = process.argv.includes("--attachments");
+const narrationMode = process.argv.includes("--narration");
 const attachmentMessage = attachmentMode
   ? JSON.parse(
       readFileSync(
@@ -45,6 +48,27 @@ let policyPhase = "permitted";
 let policyHistoryReads = 0;
 let partial = false;
 const created = Date.now();
+const narrationAgentId = "narration-proof";
+const narrationSessionKey = `agent:${narrationAgentId}:main`;
+const narrationText = {
+  first: "**Reading** the mobile layout.",
+  second: "Checking **spacing** and contrast.",
+  current: "Preparing the layout summary.",
+  final: "The mobile layout is ready.",
+};
+let narrationPhase = "idle";
+let narrationRunId;
+let narrationStartedAt;
+let narrationUser;
+let narrationTool;
+let narrationFinal;
+let narrationEvents = [];
+let narrationConnections = 0;
+let narrationActiveConnection;
+const narrationHistoryReads = [];
+const narrationCaptures = [];
+const narrationWaiters = new Set();
+const narrationRunWaiters = new Set();
 const approval = {
   id: "navigation-proof-approval",
   urlPath: "/approval/navigation-proof-approval",
@@ -89,8 +113,203 @@ const methods = [
   "models.list",
   "sessions.preview",
   "chat.send",
+  ...(narrationMode ? ["sessions.messages.subscribe", "sessions.branches.list", "agent.wait"] : []),
   ...(attachmentMode ? ["artifacts.download"] : []),
 ];
+
+function narrationSession() {
+  const active = narrationPhase === "accepted" || narrationPhase === "active";
+  return {
+    key: narrationSessionKey,
+    sessionId: "synthetic-narration-session",
+    agentId: narrationAgentId,
+    displayName: "Mobile layout review",
+    kind: "direct",
+    updatedAt: Date.now(),
+    hasActiveRun: active,
+    activeRunIds: active ? [narrationRunId] : [],
+  };
+}
+
+function narrationState() {
+  return {
+    phase: narrationPhase,
+    runId: narrationRunId,
+    connections: narrationConnections,
+    historyReads: narrationHistoryReads,
+    captures: narrationCaptures,
+  };
+}
+
+function notifyNarrationWaiters() {
+  for (const waiter of narrationWaiters) {
+    const ready =
+      waiter.action === "await-send"
+        ? narrationPhase !== "idle"
+        : narrationActiveConnection !== undefined &&
+          narrationHistoryReads.some(
+            (read) => read.connection > narrationActiveConnection && read.phase === "active",
+          );
+    if (ready) {
+      waiter.res.end(JSON.stringify(narrationState()));
+      narrationWaiters.delete(waiter);
+    }
+  }
+}
+
+function publishNarration(event, payload) {
+  for (const ws of wss.clients) {
+    if (ws.readyState === WebSocket.OPEN && ws.proofRole === "operator") {
+      ws.send(JSON.stringify({ type: "event", event, payload }));
+    }
+  }
+}
+
+function narrationHistory() {
+  const active = narrationPhase === "accepted" || narrationPhase === "active";
+  const commentary = narrationEvents
+    .filter((event) => event.data.kind === "preamble")
+    .map((event) => ({
+      role: "assistant",
+      content: [{ type: "text", text: event.data.progressText }],
+      timestamp: event.ts,
+      __openclaw: { id: `saved-${event.data.itemId}`, runId: narrationRunId },
+      openclawStreamFallback: {
+        source: "segment",
+        itemId: event.data.itemId,
+        runId: narrationRunId,
+      },
+    }));
+  return {
+    sessionKey: narrationSessionKey,
+    sessionId: "synthetic-narration-session",
+    thinkingLevel: "off",
+    sessionInfo: narrationSession(),
+    // While active, commentary is available only through its actual live/replay
+    // event contract. Polling must not accidentally make the broken baseline pass.
+    messages:
+      narrationPhase === "completed"
+        ? [narrationUser, commentary[0], narrationTool, commentary[1], narrationFinal]
+        : [narrationUser, narrationTool].filter(Boolean),
+    ...(active
+      ? {
+          inFlightRun: {
+            runId: narrationRunId,
+            startedAt: narrationStartedAt,
+            text: narrationPhase === "active" ? narrationText.current : "",
+            events: narrationEvents,
+          },
+        }
+      : {}),
+  };
+}
+
+function handleNarrationControl(req, res) {
+  if (!narrationMode || !req.url?.startsWith("/narration")) return false;
+  const action = req.url.slice("/narration/".length);
+  if (req.method === "GET" && req.url === "/narration") {
+    res.end(JSON.stringify(narrationState()));
+  } else if (req.method === "GET" && ["await-send", "await-reconnect"].includes(action)) {
+    const waiter = { action, res };
+    narrationWaiters.add(waiter);
+    res.once("close", () => narrationWaiters.delete(waiter));
+    notifyNarrationWaiters();
+  } else if (
+    req.method === "POST" &&
+    /^capture\/(before|after)-(active|reconnected|completed|expanded|collapsed)$/.test(action)
+  ) {
+    const name = action.slice("capture/".length);
+    if (name.endsWith("-active")) narrationActiveConnection = narrationConnections;
+    const capture = { name, atMs: Date.now(), phase: narrationPhase };
+    narrationCaptures.push(capture);
+    console.log(JSON.stringify({ narrationCapture: capture }));
+    res.end(JSON.stringify(narrationState()));
+  } else if (req.method === "POST" && action === "work" && narrationPhase === "accepted") {
+    // Identical recorded run timing makes before/after headings comparable.
+    const timestamp = narrationStartedAt + 1000;
+    const event = (seq, stream, data) => ({
+      runId: narrationRunId,
+      sessionKey: narrationSessionKey,
+      agentId: narrationAgentId,
+      seq,
+      stream,
+      ts: timestamp + seq,
+      data,
+    });
+    narrationEvents = [
+      event(1, "item", {
+        kind: "preamble",
+        phase: "end",
+        itemId: "layout-reading",
+        progressText: narrationText.first,
+      }),
+      event(2, "tool", {
+        phase: "start",
+        name: "read",
+        toolCallId: "layout-read",
+        args: { path: "Layout.swift" },
+      }),
+      event(3, "tool", {
+        phase: "result",
+        name: "read",
+        toolCallId: "layout-read",
+        result: { content: [{ type: "text", text: "Layout checked." }] },
+      }),
+      event(4, "item", {
+        kind: "preamble",
+        phase: "end",
+        itemId: "layout-spacing",
+        progressText: narrationText.second,
+      }),
+    ];
+    narrationTool = {
+      role: "assistant",
+      timestamp: timestamp + 2,
+      stopReason: "toolUse",
+      __openclaw: { id: "layout-read-message", runId: narrationRunId },
+      content: [
+        { type: "toolCall", id: "layout-read", name: "read", arguments: { path: "Layout.swift" } },
+        { type: "tool_result", id: "layout-read", name: "read", text: "Layout checked." },
+      ],
+    };
+    narrationPhase = "active";
+    for (const payload of narrationEvents) publishNarration("agent", payload);
+    publishNarration("session.message", {
+      sessionKey: narrationSessionKey,
+      agentId: narrationAgentId,
+      messageId: "layout-read-message",
+      message: narrationTool,
+    });
+    publishNarration(
+      "agent",
+      event(5, "assistant", { itemId: "layout-answer", text: narrationText.current }),
+    );
+    res.end(JSON.stringify(narrationState()));
+  } else if (req.method === "POST" && action === "complete" && narrationPhase === "active") {
+    narrationPhase = "completed";
+    narrationFinal = {
+      role: "assistant",
+      phase: "final_answer",
+      timestamp: narrationStartedAt + 13_000,
+      stopReason: "stop",
+      __openclaw: { id: "layout-final", runId: narrationRunId },
+      content: [{ type: "text", text: narrationText.final }],
+    };
+    publishNarration("chat", {
+      runId: narrationRunId,
+      sessionKey: narrationSessionKey,
+      agentId: narrationAgentId,
+      state: "final",
+      message: narrationFinal,
+    });
+    for (const finish of narrationRunWaiters) finish();
+    res.end(JSON.stringify(narrationState()));
+  } else {
+    res.statusCode = 409;
+    res.end(JSON.stringify({ error: "Unexpected narration transition", ...narrationState() }));
+  }
+  return true;
+}
 
 function policyCatalog() {
   const modelIDs =
@@ -204,6 +423,7 @@ const server = createServer((req, res) => {
   if (handlePolicyControl(req, res)) {
     return;
   }
+  if (handleNarrationControl(req, res)) return;
   const url = new URL(req.url, "http://127.0.0.1");
   if (attachmentMode && url.pathname === document.url) {
     if (documentDenied || url.searchParams.get("mediaTicket") !== "synthetic-document-ticket") {
@@ -303,6 +523,9 @@ wss.on("connection", (ws) => {
     switch (req.method) {
       case "connect": {
         ws.proofRole = params.role;
+        if (narrationMode && params.role === "operator") {
+          ws.narrationConnection = ++narrationConnections;
+        }
         ws.proofScopes = guestModelPolicy
           ? params.role === "operator"
             ? guestScopes
@@ -318,16 +541,21 @@ wss.on("connection", (ws) => {
                 events: ["chat.metadata.changed", "tick"],
                 capabilities: ["published-model-catalog"],
               }
-            : { methods, events: ["exec.approval.requested", "tick"] },
+            : {
+                methods,
+                events: narrationMode
+                  ? ["agent", "chat", "session.message", "tick"]
+                  : ["exec.approval.requested", "tick"],
+              },
           snapshot: {
             presence: [],
             health: { ok: true },
             stateVersion: { presence: 1, health: 1 },
             uptimeMs: 1000,
             sessionDefaults: {
-              defaultAgentId: "main",
+              defaultAgentId: narrationMode ? narrationAgentId : "main",
               mainKey: "main",
-              mainSessionKey: "agent:main:main",
+              mainSessionKey: narrationMode ? narrationSessionKey : "agent:main:main",
               scope: "per-sender",
             },
           },
@@ -353,7 +581,11 @@ wss.on("connection", (ws) => {
       case "config.get":
         reply({
           config: {
-            agents: { defaults: { model: { primary: "openai/gpt-5" } } },
+            agents: {
+              defaults: {
+                model: { primary: narrationMode ? "fixture/layout-preview" : "openai/gpt-5" },
+              },
+            },
             gateway: { mode: "local" },
           },
           hash: "synthetic",
@@ -362,13 +594,26 @@ wss.on("connection", (ws) => {
         break;
       case "agents.list":
         reply({
-          defaultId: "main",
+          defaultId: narrationMode ? narrationAgentId : "main",
           mainKey: "main",
           scope: "per-sender",
-          agents: [{ id: "main", name: "Navigation proof" }],
+          agents: narrationMode
+            ? [{ id: narrationAgentId, name: "Atlas" }]
+            : [{ id: "main", name: "Navigation proof" }],
         });
         break;
       case "sessions.list": {
+        if (narrationMode) {
+          reply({
+            ts: Date.now(),
+            count: 1,
+            totalCount: 1,
+            hasMore: false,
+            defaults: {},
+            sessions: [narrationSession()],
+          });
+          break;
+        }
         if (guestModelPolicy) {
           reply({
             ts: Date.now(),
@@ -414,6 +659,16 @@ wss.on("connection", (ws) => {
         break;
       }
       case "chat.history":
+        if (narrationMode) {
+          narrationHistoryReads.push({
+            phase: narrationPhase,
+            connection: ws.narrationConnection,
+            atMs: Date.now(),
+          });
+          reply(narrationHistory());
+          notifyNarrationWaiters();
+          break;
+        }
         if (guestModelPolicy) {
           policyHistoryReads++;
         }
@@ -435,6 +690,63 @@ wss.on("connection", (ws) => {
               : [],
         });
         break;
+      case "chat.send":
+        if (
+          !narrationMode ||
+          narrationPhase !== "idle" ||
+          typeof params.idempotencyKey !== "string"
+        ) {
+          fail("Unexpected synthetic chat send");
+          break;
+        }
+        narrationRunId = params.idempotencyKey;
+        narrationStartedAt = Date.now();
+        narrationPhase = "accepted";
+        narrationUser = {
+          role: "user",
+          timestamp: narrationStartedAt,
+          __openclaw: {
+            id: "layout-user",
+            runId: narrationRunId,
+            idempotencyKey: `${narrationRunId}:user`,
+          },
+          content: [{ type: "text", text: params.message }],
+        };
+        reply({ runId: narrationRunId, status: "pending" });
+        publishNarration("session.message", {
+          sessionKey: narrationSessionKey,
+          agentId: narrationAgentId,
+          messageId: "layout-user",
+          message: narrationUser,
+          hasActiveRun: true,
+          activeRunIds: [narrationRunId],
+        });
+        notifyNarrationWaiters();
+        break;
+      case "agent.wait": {
+        if (!narrationMode || params.runId !== narrationRunId) {
+          fail("Unexpected synthetic run");
+          break;
+        }
+        const finish = () => {
+          clearTimeout(timer);
+          narrationRunWaiters.delete(finish);
+          if (ws.readyState === WebSocket.OPEN) {
+            reply({
+              runId: narrationRunId,
+              status: narrationPhase === "completed" ? "ok" : "timeout",
+            });
+          }
+        };
+        const timer = setTimeout(finish, Math.min(params.timeoutMs ?? 60_000, 60_000));
+        narrationRunWaiters.add(finish);
+        ws.once("close", () => {
+          clearTimeout(timer);
+          narrationRunWaiters.delete(finish);
+        });
+        if (narrationPhase === "completed") finish();
+        break;
+      }
       case "artifacts.download":
         if (
           !attachmentMode ||
@@ -480,7 +792,14 @@ wss.on("connection", (ws) => {
         break;
       case "sessions.subscribe":
       case "sessions.unsubscribe":
+      case "sessions.messages.subscribe":
         reply({ ok: true });
+        break;
+      case "sessions.branches.list":
+        reply({ branches: [] });
+        break;
+      case "session.status":
+        reply({ session: narrationMode ? narrationSession() : sessions[0] });
         break;
       case "models.list": {
         if (!guestModelPolicy) {
@@ -540,6 +859,8 @@ function stop() {
     res.destroy();
   }
   policyWaiters.clear();
+  for (const { res } of narrationWaiters) res.destroy();
+  narrationWaiters.clear();
   // close() waits for existing peers; a connected simulator must not keep this fixture alive.
   for (const ws of wss.clients) {
     ws.terminate();
