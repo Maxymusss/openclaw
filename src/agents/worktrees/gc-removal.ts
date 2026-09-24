@@ -81,7 +81,7 @@ export function createWorktreeGcErrorHandler(context: {
                 progress.record(
                   "orphans",
                   "retired",
-                  "missing-gitdir; checkout files preserved",
+                  `missing-gitdir; checkout files preserved at ${record.path}`,
                   record.id,
                 );
               } finally {

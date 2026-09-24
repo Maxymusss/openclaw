@@ -137,9 +137,15 @@ it("finishes CLI cleanup with moved HEADs, missing gitdirs, and 600 mixed regist
         "manual worktrees require explicit removal": 4,
         "branch-moved": 1,
       },
+      issues: expect.arrayContaining([
+        expect.objectContaining({ id: orphan!.id, reason: expect.stringContaining(orphan!.path) }),
+      ]),
     }),
   );
   expect(getRegistryWorktree(env, orphan!.id)?.removedAt).toBe(now);
+  expect((await service.list()).some((record) => record.id === orphan!.id)).toBe(false);
+  await expect(service.restore({ id: orphan!.id })).rejects.toThrow("is not restorable");
+  expect(await requireGit(repo, ["rev-parse", "--verify", orphan!.branch])).toBeTruthy();
   expect(getRegistryWorktree(env, moved!.id)?.removedAt).toBeUndefined();
   expect(await requireGit(repo, ["rev-parse", "--verify", moved!.branch])).toBeTruthy();
   expect(await fs.readFile(path.join(orphan!.path, "local.txt"), "utf8")).toBe(
