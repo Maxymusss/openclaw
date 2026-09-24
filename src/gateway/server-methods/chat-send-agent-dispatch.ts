@@ -39,6 +39,7 @@ import { createChatSendReplyDispatch } from "./chat-send-reply-dispatch.js";
 import { finalizeChatSendDispatchedReplies } from "./chat-send-reply-finalization.js";
 import {
   classifyAcceptedChatSendFailure,
+  createChatSendStateAcquisitionDeadline,
   runAcceptedChatSendDispatch,
   waitForAcceptedChatSendRetry,
 } from "./chat-send-retry.js";
@@ -123,6 +124,9 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
   const { chatSendAckedAtMs, chatSendTiming } = timing;
 
   const jobSessionBinding = admission.sessionBinding;
+  const stateAcquisitionDeadline = createChatSendStateAcquisitionDeadline(
+    activeRunAbort.entry?.expiresAtMs,
+  );
   let agentRunStarted = false;
   let replyDispatchRun: ReplyDispatchRun | undefined;
   const isRunCurrent = () =>
@@ -339,6 +343,7 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                   ? { admittedSessionSettings: admission.admittedSessionSettings }
                   : {}),
                 runId: clientRunId,
+                stateAcquisitionDeadline,
                 operatorAuthority: admission.operatorAuthority,
                 providerReviewAcknowledgment: request.providerReviewAcknowledgment,
                 dashboardReadAdmission,

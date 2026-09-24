@@ -185,6 +185,7 @@ async function handleChatSendWithOptions(
   try {
     const assertInputAdmissionCurrent = () => {
       admitted.value.assertWorkAdmissionCurrent();
+      admitted.value.assertSessionTargetCurrent();
       sessionMutationCommitGuard?.();
     };
     assertInputAdmissionCurrent();
@@ -223,8 +224,7 @@ async function handleChatSendWithOptions(
       startedAt: admissionStartedAt,
       warn: (message) => context.logGateway.warn(message),
       mentionInbox: context.mentionInbox,
-      assertOriginalInputCommit:
-        req.expectedProfileId === undefined ? undefined : assertInputAdmissionCurrent,
+      assertOriginalInputCommit: assertInputAdmissionCurrent,
       assertGoalCurrent: () => {
         sessionMutationCommitGuard?.();
         sessionMutationAuthorization?.assertCurrent();
@@ -311,6 +311,7 @@ async function handleChatSendWithOptions(
       pendingStageAttempted = true;
       const assertCustodyCurrent = () => {
         admitted.value.assertWorkAdmissionCurrent();
+        admitted.value.assertSessionTargetCurrent();
         if (sessionMutationAuthorization?.assertAdmittedInputCurrent) {
           sessionMutationAuthorization.assertAdmittedInputCurrent();
         } else {
@@ -605,6 +606,7 @@ async function handleChatSendWithOptions(
     // After the ACK, dispatch owns the turn: its error lifecycle persists the
     // user transcript (which references the media) on every path, so a
     // post-ACK cleanupAdmittedRun must not race that persist with a discard.
+    admitted.value.assertSessionTargetCurrent();
     admitted.value.setDiscardAbandonedPreparedMedia(undefined);
     respond(true, ackPayload, undefined, { runId: clientRunId });
     context.recordClientActivity?.(client);
