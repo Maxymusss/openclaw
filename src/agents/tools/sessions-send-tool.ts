@@ -876,26 +876,34 @@ export function createSessionsSendTool(opts?: SessionsSendToolOptions): AnyAgent
                   targetSessionKey: resolvedKey,
                 })
               : undefined;
-          const { start, completion } = await startSessionsSendFollowup(followup, {
-            cfg,
-            callGateway: gatewayCall,
-            runId,
-            mode,
-            sendParams,
-            sessionKey: mode ? resolvedKey : displayKey,
-            sessionStoreTarget: targetSession,
-            deliveryTimeoutMs: announceTimeoutMs,
-            ...(timeoutSeconds === 0
-              ? {
-                  allowActiveRunQueueDelivery: true,
-                  // An exact-incarnation grant authorizes only this target. Never
-                  // reroute a worker-owned send to a durable Cron parent outside
-                  // the scoped lifecycle admission or replace its stable key.
-                  allowActiveRunQueueFallback: !expectedSessionId,
-                  expectedSessionId,
-                }
-              : {}),
-          });
+          const { start, completion } = await startSessionsSendFollowup(
+            followup,
+            {
+              cfg,
+              callGateway: gatewayCall,
+              runId,
+              mode,
+              sendParams,
+              sessionKey: mode ? resolvedKey : displayKey,
+              sessionStoreTarget: targetSession,
+              deliveryTimeoutMs: announceTimeoutMs,
+              ...(timeoutSeconds === 0
+                ? {
+                    allowActiveRunQueueDelivery: true,
+                    // An exact-incarnation grant authorizes only this target. Never
+                    // reroute a worker-owned send to a durable Cron parent outside
+                    // the scoped lifecycle admission or replace its stable key.
+                    allowActiveRunQueueFallback: !expectedSessionId,
+                    expectedSessionId,
+                  }
+                : {}),
+            },
+            {
+              requesterSession: requesterContinuationSession,
+              requesterOrigin,
+              requesterChannel,
+            },
+          );
           if (!start.ok) {
             return start.result;
           }

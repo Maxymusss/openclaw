@@ -13,8 +13,17 @@ import { sessionChanges } from "../../sessions/session-row-changes.js";
 import type { DetachedTaskLifecycleRuntime } from "../../tasks/detached-task-runtime-contract.js";
 import { getRegisteredDetachedTaskLifecycleRuntime } from "../../tasks/detached-task-runtime-state.js";
 import { setDetachedTaskLifecycleRuntime } from "../../tasks/detached-task-runtime.test-support.js";
-import type { FollowupRequest } from "../../tasks/task-followup-completion.types.js";
-import { prepareSessionsSendFollowup } from "./sessions-send-followup.js";
+import { readFollowupRequest } from "../../tasks/task-followup-completion.js";
+import type {
+  FollowupRequest,
+  FollowupCompletionOwner,
+} from "../../tasks/task-followup-completion.types.js";
+import {
+  prepareSessionsSendFollowup,
+  startSessionsSendFollowup,
+} from "./sessions-send-followup.js";
+import { startSessionsSendReplyFlow } from "./sessions-send-reply-flow.js";
+vi.mock("./sessions-send-reply-flow.js", () => ({ startSessionsSendReplyFlow: vi.fn() }));
 const mocks = vi.hoisted(() => ({
   config: vi.fn<() => OpenClawConfig>(),
   client: vi.fn<() => GatewayClient | null>(),
@@ -118,6 +127,89 @@ function target() {
   return value;
 }
 describe("followup retained session authorization", () => {
+  it("retains exact requester incarnation and route when an accepted start loses its ACK", async () => {
+    const request = await prepare();
+    const unexpected = () => {
+      throw new Error("Unexpected completion operation during ACK reconciliation");
+    };
+    const close = vi.fn();
+    const completion: FollowupCompletionOwner = {
+      request,
+      get receipt() {
+        return unexpected();
+      },
+      accepted: true,
+      assertCurrent: unexpected,
+      markAccepted: unexpected,
+      finishExecution: unexpected,
+      ownsExecution: unexpected,
+      isLive: unexpected,
+      activate: unexpected,
+      promoteYield: unexpected,
+      successor: unexpected,
+      prepareSuccessor: unexpected,
+      adopt: unexpected,
+      settle: unexpected,
+      take: unexpected,
+      replaceCohortEntry: unexpected,
+      close,
+    };
+    const callGateway = vi.fn(async () => {
+      expect(readFollowupRequest(input.runId, input.targetSessionKey)).toBe(request);
+      request.completion = completion;
+      throw new Error("accepted but transport ACK lost");
+    });
+    const replyContext = {
+      requesterSession: { sessionId: "requester-id", lifecycleRevision: "requester-revision" },
+      requesterOrigin: {
+        channel: "telegram",
+        to: "chat-123",
+        accountId: "account-1",
+        threadId: "thread-7",
+      },
+      requesterChannel: "telegram",
+    };
+    const result = await startSessionsSendFollowup(
+      request,
+      {
+        cfg: mocks.config(),
+        callGateway,
+        runId: input.runId,
+        sessionKey: input.targetSessionKey,
+        sessionStoreTarget: {
+          agentId: "main",
+          canonicalKey: input.targetSessionKey,
+          storePath: "/synthetic/agent.sqlite",
+        },
+        sendParams: {
+          agentId: "main",
+          message: "followup",
+          sourceReplyDeliveryMode: "message_tool_only",
+          inputProvenance: { kind: "inter_session", sourceSessionKey: input.requesterSessionKey },
+        },
+      },
+      replyContext,
+    );
+    expect(result.start.ok).toBe(false);
+    if (result.start.ok) {
+      throw new Error("Expected failed ACK");
+    }
+    expect(result.start.result.details).toMatchObject({ sentBeforeError: true });
+    expect(callGateway).toHaveBeenCalledTimes(1);
+    expect(startSessionsSendReplyFlow).toHaveBeenCalledTimes(1);
+    expect(startSessionsSendReplyFlow).toHaveBeenCalledWith(
+      expect.objectContaining({
+        ...replyContext,
+        completion,
+        runId: input.runId,
+        skip: false,
+        requesterSessionKey: input.requesterSessionKey,
+        notifyRequesterOnWaitFailure: true,
+      }),
+    );
+    expect(close).not.toHaveBeenCalled();
+  });
+
   it("keeps a registered task runtime on its existing path before capturing core custody", async () => {
     const runtime: DetachedTaskLifecycleRuntime = {
       createQueuedTaskRun: vi.fn(() => null),

@@ -211,6 +211,10 @@ export async function prepareSessionsSendFollowup(params: {
 export async function startSessionsSendFollowup(
   request: FollowupRequest | undefined,
   params: Parameters<typeof startSessionsSendAgentRun>[0],
+  replyContext: Pick<
+    Parameters<typeof startSessionsSendReplyFlow>[0],
+    "requesterSession" | "requesterOrigin" | "requesterChannel"
+  >,
 ) {
   const dispatch = () => startSessionsSendAgentRun(params);
   const start = request ? await withFollowupRequest(request, dispatch) : await dispatch();
@@ -233,6 +237,7 @@ export async function startSessionsSendFollowup(
         replyMode: "one-way",
         requesterAgentId: request.requesterAgentId,
         requesterSessionKey: request.requesterSessionKey,
+        ...replyContext,
         notifyRequesterOnWaitFailure: true,
       });
       return {
