@@ -1,7 +1,7 @@
 // Session creation tests protect dashboard-origin session records, transcript
 // creation, parent linkage, and model/provider overrides exposed by the gateway API.
 import { execFile } from "node:child_process";
-import fsSync, { constants as fsConstants, readdirSync } from "node:fs";
+import fsSync, { readdirSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -40,7 +40,7 @@ import {
   resolveSqliteStoreScope,
   runExclusiveSqliteSessionWrite,
 } from "../config/sessions/session-accessor.sqlite-scope.js";
-import { addSessionMember, removeSessionMember } from "../config/sessions/session-sharing-store.js";
+import * as sessionMembers from "../config/sessions/session-sharing-store.native.js";
 import { resolveSqliteTargetFromSessionStorePath } from "../config/sessions/session-sqlite-target.js";
 import type { GatewayOperatorRoleDefinition } from "../config/types.gateway.js";
 import { peekSystemEvents } from "../infra/system-events.js";
@@ -60,7 +60,7 @@ import {
 import { listSessionStateEventsSince } from "../sessions/session-state-events.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
-  closeOpenClawAgentDatabasesForTest,
+  closeOpenClawAgentDatabaseByPathAsync,
   listOpenIncognitoAgentDatabases,
   openOpenClawAgentDatabase,
   resolveIncognitoOpenClawAgentSqlitePath,
@@ -82,10 +82,17 @@ import {
 import { GATEWAY_CLIENT_MODES, GATEWAY_CLIENT_NAMES } from "../utils/message-channel.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.js";
 import { createMentionInbox } from "./mention-inbox.js";
+import { disposeSessionReadContexts } from "./server-methods/sessions-read-cache.test-support.js";
 import { sessionLog } from "./server-methods/sessions-shared.js";
 import { identifiedClient, soloClient } from "./server-methods/sessions-sharing.test-support.js";
 import type { GatewayClient } from "./server-methods/types.js";
-import { waitForCreatedSessionRun } from "./server.sessions.create.projects.test-support.js";
+import {
+  copyGitWorkspace,
+  createGitWorkspace,
+  settleWorkspaceRuns,
+  waitForCreatedSessionRun,
+} from "./server.sessions.create.projects.test-support.js";
+import { expectNonAdminWorktreeSetupIsSkipped } from "./server.sessions.create.worktree-scope.test-support.js";
 import { listSessionGroups } from "./session-groups.js";
 import {
   resolveSessionMutationAuthorization,
@@ -104,9 +111,10 @@ import {
   testState,
   writeSessionStore,
 } from "./test-helpers.js";
+import { releaseGatewaySessionStoreFixture } from "./test/server-sessions-resources.test-helpers.js";
 import {
   setupGatewaySessionsTestHarness,
-  createCheckpointFixture,
+  createCompactedSessionFixture,
   getGatewayConfigModule,
   sessionStoreEntry,
   directSessionReq,
@@ -174,6 +182,9 @@ vi.mock("./server-methods/chat-send-background.js", async (importOriginal) => {
   return { ...actual, scheduleChatDashboardSessionTitle: dashboardTitleScheduleMocks.schedule };
 });
 
+// Shared Gateway helpers must register dispatch and lifecycle mocks before this graph loads.
+const chatSendOwner = await import("./server-methods/chat-send-external-entry.js");
+
 let gitWorkspaceTemplate: string;
 const {
   createSessionStoreDir,
@@ -186,6 +197,12 @@ const {
 const execFileAsync = promisify(execFile);
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const directoryLinkType = process.platform === "win32" ? "junction" : "dir";
+
+async function closeIncognitoSessionDatabases() {
+  for (const { agentId, storePath } of listOpenIncognitoAgentDatabases()) {
+    await closeOpenClawAgentDatabaseByPathAsync(storePath, agentId);
+  }
+}
 
 async function withFixedOwnerSessionStore(
   scope: "global" | "per-sender",
@@ -478,8 +495,8 @@ test("sessions.create commits the personal default before dispatching its initia
       await createPersonalAccountSessionFixture();
     const key = "agent:main:dashboard:personal-default-initial-turn";
     const observedProfiles: Array<string | undefined> = [];
-    const { chatHandlers } = await import("./server-methods/chat.js");
-    const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(({ respond }) => {
+    const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+    chatSend.mockImplementation(async ({ respond }) => {
       observedProfiles.push(loadSessionEntry({ sessionKey: key, storePath })?.authProfileOverride);
       respond(true, { runId: "personal-default-first-turn", status: "started" });
     });
@@ -692,22 +709,20 @@ test.each([
                 profile: string | undefined;
                 source: string | undefined;
               }> = [];
-              const { chatHandlers } = await import("./server-methods/chat.js");
-              const chatSend = vi
-                .spyOn(chatHandlers, "chat.send")
-                .mockImplementation(({ respond }) => {
-                  const entry = loadSessionEntry({
-                    sessionKey: key,
-                    storePath,
-                    readConsistency: "latest",
-                  });
-                  observedSelections.push({
-                    ...resolveSessionModelRef(cfg, entry, "main"),
-                    profile: entry?.authProfileOverride,
-                    source: entry?.authProfileOverrideSource,
-                  });
-                  respond(true, { runId: "arcee-linked-default-first-turn", status: "started" });
+              const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+              chatSend.mockImplementation(async ({ respond }) => {
+                const entry = loadSessionEntry({
+                  sessionKey: key,
+                  storePath,
+                  readConsistency: "latest",
                 });
+                observedSelections.push({
+                  ...resolveSessionModelRef(cfg, entry, "main"),
+                  profile: entry?.authProfileOverride,
+                  source: entry?.authProfileOverrideSource,
+                });
+                respond(true, { runId: "arcee-linked-default-first-turn", status: "started" });
+              });
               try {
                 const created = await directSessionReq<{ runStarted: boolean }>(
                   "sessions.create",
@@ -808,7 +823,7 @@ test.each(["foreign admin", "unidentified admin", "synthetic owner"] as const)(
   "sessions.create rejects a fresh personal account from a %s before worktree naming",
   async (kind) => {
     await withOpenClawTestState({ layout: "state-only" }, async (state) => {
-      const workspace = await initializeGitWorkspace(state.root);
+      const workspace = await copyGitWorkspace(gitWorkspaceTemplate, state.root);
       testState.agentConfig = { workspace };
       const { storePath, authProfileId, client, context } =
         await createPersonalAccountSessionFixture();
@@ -1144,7 +1159,7 @@ test("sessions.create revalidates parent participation before committing a fork 
     storePath,
     messages: [{ role: "user", content: "private parent context" }],
   });
-  addSessionMember(
+  sessionMembers.addSessionMember(
     { agentId: "main", sessionKey: parentSessionKey, storePath },
     { identityId: "member", addedBy: "owner", expectedSessionId: parentSessionId },
   );
@@ -1217,7 +1232,7 @@ test("sessions.create revalidates parent participation before committing a fork 
 
   try {
     await firstGuard.promise;
-    removeSessionMember(
+    sessionMembers.removeSessionMember(
       { agentId: "main", sessionKey: parentSessionKey, storePath },
       "member",
       undefined,
@@ -1516,21 +1531,10 @@ test("sessions.create keeps incognito rows process-local through list, spawn, re
       },
     });
     const durableCollisionKey = "agent:main:dashboard:incognito-durable-collision";
-    const durableCollisionUpdatedAt = Date.now();
-    persistentDatabase.db
-      .prepare(
-        "INSERT INTO session_nodes (session_key, current_session_id, entry_json, updated_at) VALUES (?, 'durable-collision', ?, ?)",
-      )
-      .run(
-        durableCollisionKey,
-        JSON.stringify({ sessionId: "durable-collision", updatedAt: durableCollisionUpdatedAt }),
-        durableCollisionUpdatedAt,
-      );
-    persistentDatabase.db
-      .prepare(
-        "INSERT INTO session_windows (session_id, session_key, session_scope, created_at, updated_at) VALUES ('durable-collision', ?, 'conversation', ?, ?)",
-      )
-      .run(durableCollisionKey, durableCollisionUpdatedAt, durableCollisionUpdatedAt);
+    await upsertSessionEntryCore(
+      { agentId: "main", sessionKey: durableCollisionKey, storePath },
+      sessionStoreEntry("durable-collision"),
+    );
     const parse = vi.spyOn(JSON, "parse");
     try {
       const rejectedExplicitDashboard = await directSessionReq("sessions.create", {
@@ -1550,7 +1554,7 @@ test("sessions.create keeps incognito rows process-local through list, spawn, re
       parse.mockRestore();
     }
   } finally {
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
   }
 });
 
@@ -1575,7 +1579,7 @@ test("incognito webchat rejects a vanished non-default-agent session before disp
     const sessionKey = requireNonEmptyString(created.payload?.key, "incognito webchat key");
     const sessionId = requireNonEmptyString(created.payload?.sessionId, "incognito webchat id");
 
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
     dispatchInboundMessageMock.mockClear();
     const stale = await rpcReq(ws, "chat.send", {
       sessionKey,
@@ -1602,7 +1606,7 @@ test("incognito webchat rejects a vanished non-default-agent session before disp
     ).toBeUndefined();
   } finally {
     ws.close();
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
   }
 });
 
@@ -1693,7 +1697,7 @@ test("createGatewaySession rechecks admin scope after incognito inheritance reso
       createGatewaySession({ ...base, requestingOperatorScopes: ["operator.admin"] }),
     ).resolves.toMatchObject({ ok: true, entry: { incognito: true } });
   } finally {
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
   }
 });
 
@@ -1729,7 +1733,6 @@ test("createGatewaySession forwards its commit guard into main-session reset", a
     );
   } finally {
     testState.sessionConfig = undefined;
-    closeOpenClawAgentDatabasesForTest();
   }
 });
 
@@ -1794,7 +1797,6 @@ test("chat.send fences dashboard title persistence from concurrent session delet
     expect(dispatchAdmissionsReleased).toBeDefined();
     await dispatchAdmissionsReleased;
     expect(isSessionWorkAdmissionActive(storePath, [sessionKey])).toBe(true);
-
     const drainStarted = createDeferredCore();
     const drainProbe = await beginSessionWorkAdmission({
       scope: storePath,
@@ -1967,7 +1969,7 @@ test("incognito operator RPCs treat identityless connections as owner-equivalent
     admin.ws.close();
     reader.ws.close();
     writer.ws.close();
-    closeOpenClawAgentDatabasesForTest();
+    await closeIncognitoSessionDatabases();
   }
 });
 
@@ -1978,33 +1980,15 @@ function waitForFast<T>(
   return vi.waitFor(callback, { interval: 1, ...options });
 }
 
-async function createGitWorkspace(root: string): Promise<string> {
-  const workspace = path.join(root, "workspace");
-  await fs.mkdir(workspace, { recursive: true });
-  await execFileAsync("git", ["-C", workspace, "init", "-b", "main"]);
-  await fs.writeFile(path.join(workspace, "README.md"), "base\n");
-  await execFileAsync("git", ["-C", workspace, "add", "README.md"]);
-  await execFileAsync("git", [
-    "-c",
-    "user.name=OpenClaw Test",
-    "-c",
-    "user.email=openclaw-test@example.invalid",
-    "-C",
-    workspace,
-    "commit",
-    "-m",
-    "initial",
-  ]);
-  return await fs.realpath(workspace);
-}
-
-async function initializeGitWorkspace(root: string): Promise<string> {
-  const workspace = path.join(root, "workspace");
-  await fs.cp(gitWorkspaceTemplate, workspace, {
-    recursive: true,
-    mode: fsConstants.COPYFILE_FICLONE,
-  });
-  return await fs.realpath(workspace);
+async function removeSessionWorktree(key: string | undefined) {
+  const worktree = key ? managedWorktrees.findLiveByOwner("session", key) : undefined;
+  if (worktree) {
+    await managedWorktrees.remove({
+      id: worktree.id,
+      reason: "test-cleanup",
+      allowSnapshotLoss: true,
+    });
+  }
 }
 
 function managedWorktreeFixture(params: {
@@ -2027,7 +2011,7 @@ function managedWorktreeFixture(params: {
 
 test("sessions.create atomically arms a private workspace diff claim", async () => {
   const root = tempDirs.make("openclaw-session-diff-baseline-");
-  const workspace = await initializeGitWorkspace(root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, root);
   await fs.appendFile(path.join(workspace, "README.md"), "dirty at session start\n");
   const { storePath } = await createSessionStoreDir();
   sessionDiffBaselineMocks.useReal = true;
@@ -2069,7 +2053,7 @@ test("sessions.create atomically arms a private workspace diff claim", async () 
 
 test("sessions.create fences the first workspace write behind its diff baseline", async () => {
   const root = tempDirs.make("openclaw-session-diff-first-write-");
-  const workspace = await initializeGitWorkspace(root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, root);
   await fs.appendFile(path.join(workspace, "README.md"), "dirty before session\n");
   const { storePath } = await createSessionStoreDir();
   const sessionKey = "agent:main:dashboard:diff-first-write";
@@ -2080,9 +2064,9 @@ test("sessions.create fences the first workspace write behind its diff baseline"
   sessionDiffBaselineMocks.useReal = true;
 
   const { ensureSessionDiffBaseline } = await import("../sessions/session-diff-baseline.js");
-  const { chatHandlers } = await import("./server-methods/chat.js");
   let firstTurn: Promise<void> | undefined;
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     respond(true, { runId: "diff-first-write-run", status: "started" });
     firstTurn = (async () => {
       const entry = loadSessionEntry({ agentId: "main", sessionKey, storePath });
@@ -2090,6 +2074,7 @@ test("sessions.create fences the first workspace write behind its diff baseline"
         throw new Error("expected the precreated session entry");
       }
       await ensureSessionDiffBaseline({
+        agentId: "main",
         cwd: workspace,
         entry,
         isNewSession: false,
@@ -2286,9 +2271,9 @@ test("sessions.create persists explicit tool overrides before the first turn", a
     skills: { release: false },
     webSearch: false,
   };
-  const { chatHandlers } = await import("./server-methods/chat.js");
   const observed: Array<unknown> = [];
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     observed.push(loadSessionEntry({ agentId: "main", sessionKey, storePath })?.toolOverrides);
     respond(true, { runId: "create-tool-overrides-run", status: "started" });
   });
@@ -2348,7 +2333,7 @@ test("sessions.create rolls back failed provisioning before a same-key creator p
     layout: "state-only",
     prefix: "openclaw-session-worktree-rollback-",
   });
-  const workspace = await initializeGitWorkspace(openClawState.root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, openClawState.root);
   closeOpenClawStateDatabaseForTest();
   testState.agentConfig = { workspace };
   testState.sessionConfig = { sharing: { drafts: false } };
@@ -2458,7 +2443,7 @@ test("sessions.create rolls back failed provisioning before a same-key creator p
         allowSnapshotLoss: true,
       });
     }
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     testState.sessionConfig = undefined;
     await openClawState.cleanup();
@@ -2477,7 +2462,7 @@ test.each([
       layout: "state-only",
       prefix: "openclaw-session-worktree-allocation-outcome-",
     });
-    const workspace = await initializeGitWorkspace(openClawState.root);
+    const workspace = await copyGitWorkspace(gitWorkspaceTemplate, openClawState.root);
     closeOpenClawStateDatabaseForTest();
     const disk = fsSync.statfsSync(openClawState.root);
     const diskSpace = vi.spyOn(fsSync, "statfsSync").mockReturnValue({
@@ -2590,7 +2575,7 @@ test.each([
         });
       }
       diskSpace.mockRestore();
-      closeOpenClawStateDatabaseForTest();
+      await disposeSessionReadContexts();
       testState.agentConfig = undefined;
       testState.sessionConfig = undefined;
       await openClawState.cleanup();
@@ -2603,12 +2588,11 @@ test("sessions.create provisions and reuses a session worktree for later runs", 
     layout: "state-only",
     prefix: "openclaw-session-worktree-",
   });
-  const root = openClawState.root;
-  const workspace = await initializeGitWorkspace(root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, openClawState.root);
   await execFileAsync("git", ["-C", workspace, "branch", "selected-base"]);
   closeOpenClawStateDatabaseForTest();
   testState.agentConfig = { workspace };
-  const { storePath } = await createSessionStoreDir();
+  const { dir, storePath } = await createSessionStoreDir();
   const originalCreate = managedWorktrees.createWithOutcome.bind(managedWorktrees);
   const createSpy = vi
     .spyOn(managedWorktrees, "createWithOutcome")
@@ -2616,7 +2600,7 @@ test("sessions.create provisions and reuses a session worktree for later runs", 
       expect(isSessionLifecycleMutationActive(storePath, [params.ownerId])).toBe(true);
       return await originalCreate(params);
     });
-  let worktreeId: string | undefined;
+  let sessionKey: string | undefined;
   try {
     const created = await directSessionReq<{
       key: string;
@@ -2645,7 +2629,7 @@ test("sessions.create provisions and reuses a session worktree for later runs", 
     expect(created.payload?.entry.permissionMode).toBeUndefined();
     expect(loadSessionEntry({ sessionKey: key, storePath })?.permissionMode).toBeUndefined();
     expect(created.payload?.entry.sessionRoot).toBe(worktree?.path);
-    worktreeId = worktree?.id;
+    sessionKey = key;
     expect(findLiveRegistryWorktreeByOwner(process.env, "session", key)).toMatchObject({
       id: worktree?.id,
       path: worktree?.path,
@@ -2700,15 +2684,10 @@ test("sessions.create provisions and reuses a session worktree for later runs", 
     });
     ws.close();
   } finally {
+    await disposeSessionReadContexts();
+    await releaseGatewaySessionStoreFixture(dir);
     createSpy.mockRestore();
-    if (worktreeId) {
-      await managedWorktrees.remove({
-        id: worktreeId,
-        reason: "test-cleanup",
-        allowSnapshotLoss: true,
-      });
-    }
-    closeOpenClawStateDatabaseForTest();
+    await removeSessionWorktree(sessionKey);
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -2719,7 +2698,7 @@ test("sessions.create runs an existing managed worktree cwd for initial and foll
     layout: "state-only",
     prefix: "openclaw-session-existing-worktree-cwd-",
   });
-  const workspace = await initializeGitWorkspace(openClawState.root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, openClawState.root);
   closeOpenClawStateDatabaseForTest();
   testState.agentsConfig = {
     list: [
@@ -2859,7 +2838,7 @@ test("sessions.create runs an existing managed worktree cwd for initial and foll
       reason: "test-cleanup",
       allowSnapshotLoss: true,
     });
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentsConfig = undefined;
     await openClawState.cleanup();
   }
@@ -2870,7 +2849,7 @@ test("sessions.create preserves pending worktree intent when initial-turn admiss
     layout: "state-only",
     prefix: "openclaw-session-worktree-post-commit-failure-",
   });
-  const workspace = await initializeGitWorkspace(openClawState.root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, openClawState.root);
   closeOpenClawStateDatabaseForTest();
   testState.agentConfig = { workspace };
   const { storePath } = await createSessionStoreDir();
@@ -2911,7 +2890,7 @@ test("sessions.create preserves pending worktree intent when initial-turn admiss
     });
     expect(findLiveRegistryWorktreeByOwner(process.env, "session", key)).toBeUndefined();
   } finally {
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -2987,131 +2966,116 @@ test.each([
   },
 ])(
   "sessions.create shares a title routed through the $name selection with its worktree and first chat send",
-  async ({ request, catalogTarget, parentEntry, expectedEntry, expectedTitleSelection }) => {
-    const openClawState = await createOpenClawTestState({
-      layout: "state-only",
-      prefix: "openclaw-session-worktree-title-selection-",
-    });
-    const workspace = await initializeGitWorkspace(openClawState.root);
-    closeOpenClawStateDatabaseForTest();
-    testState.agentConfig = {
-      workspace,
-      model: { primary: "openai/gpt-5.6-luna" },
-    };
-    agentDiscoveryMock.enabled = true;
-    agentDiscoveryMock.models = [
-      { id: "gpt-5.6-luna", name: "GPT 5.6 Luna", provider: "openai" },
-      { id: "gpt-5.6-sol", name: "GPT 5.6 Sol", provider: "openai" },
-      { id: "sonnet-4.6", name: "Sonnet 4.6", provider: "anthropic" },
-    ];
-    if (catalogTarget) {
-      const registry = createEmptyPluginRegistry();
-      registry.sessionCatalogs.push({
-        pluginId: "anthropic",
-        source: "test",
-        provider: {
-          id: "claude",
-          label: "Claude Code",
-          resolveCreateSession: () => catalogTarget,
-          list: vi.fn(async () => []),
-          read: vi.fn(async ({ hostId, threadId }) => ({ hostId, threadId, items: [] })),
-        },
-      });
-      registry.cliBackends.push({
-        pluginId: "anthropic",
-        source: "test",
-        backend: {
-          id: "claude-cli",
-          modelProvider: "anthropic",
-          config: { command: "claude" },
-          bundleMcp: false,
-        },
-      });
-      setActivePluginRegistry(registry);
-    }
-    const { storePath } = await createSessionStoreDir();
-    if (parentEntry) {
-      await writeSessionStore({
-        entries: { main: sessionStoreEntry("worktree-title-parent", parentEntry) },
-      });
-    }
-    let worktreeId: string | undefined;
-    let sessionKey: string | undefined;
-    const pastedText = `Pasted deployment plan ${"x".repeat(2_000)}`;
-    const context = { chatAbortControllers: new Map<string, ChatAbortControllerEntry>() };
-    const message = "Review this rollout [[reply_to_current]]";
-    const attachment = {
-      type: "file",
-      mimeType: "text/plain",
-      content: Buffer.from(pastedText).toString("base64"),
-    };
-    dashboardTitleGenerationMocks.generate.mockResolvedValueOnce("Attachment Repair");
-    const dispatchCountBefore = dispatchInboundMessageMock.mock.calls.length;
-    dispatchInboundMessageMock.mockResolvedValueOnce({
-      queuedFinal: false,
-      counts: { block: 0, final: 0, tool: 0 },
-    });
-    try {
-      const created = await directSessionReq<{
-        key: string;
-        entry: {
-          providerOverride?: string;
-          modelOverride?: string;
-          agentRuntimeOverride?: string;
-          authProfileOverride?: string;
-        };
-        runId: string;
-        runStarted: boolean;
-      }>(
-        "sessions.create",
-        {
-          agentId: "main",
-          worktree: true,
-          message,
-          attachments: [attachment],
-          ...request,
-        },
-        { client: { connect: { scopes: ["operator.admin"] } } as never, context },
-      );
-
-      expect(created.ok, JSON.stringify(created.error)).toBe(true);
-      expect(created.payload?.entry).toMatchObject(expectedEntry);
-      expect(created.payload, JSON.stringify(created.payload)).toMatchObject({ runStarted: true });
-      sessionKey = requireNonEmptyString(created.payload?.key, "created session key");
-      expect(await waitForCreatedSessionRun(context, storePath, sessionKey)).toBe(true);
-      expect(loadSessionEntry({ agentId: "main", sessionKey, storePath })).toMatchObject({
-        displayName: "Attachment Repair",
-        worktree: { branch: "openclaw/attachment-repair" },
-      });
-      expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(dispatchCountBefore + 1);
-      worktreeId = loadSessionEntry({ agentId: "main", sessionKey, storePath })?.worktree?.id;
-      expect(dashboardTitleGenerationMocks.generate).toHaveBeenCalledWith(
-        expect.objectContaining({ timeoutMs: 4_000, ...expectedTitleSelection }),
-      );
-      expect(dashboardTitleGenerationMocks.generate).toHaveBeenCalledOnce();
-    } finally {
-      for (const entry of context.chatAbortControllers.values()) {
-        entry.controller.abort();
+  async ({ request, catalogTarget, parentEntry, expectedEntry, expectedTitleSelection }) =>
+    await withOpenClawTestState({ layout: "state-only" }, async (state) => {
+      const workspace = await copyGitWorkspace(gitWorkspaceTemplate, state.root);
+      testState.agentConfig = {
+        workspace,
+        model: { primary: "openai/gpt-5.6-luna" },
+      };
+      agentDiscoveryMock.enabled = true;
+      agentDiscoveryMock.models = [
+        { id: "gpt-5.6-luna", name: "GPT 5.6 Luna", provider: "openai" },
+        { id: "gpt-5.6-sol", name: "GPT 5.6 Sol", provider: "openai" },
+        { id: "sonnet-4.6", name: "Sonnet 4.6", provider: "anthropic" },
+      ];
+      if (catalogTarget) {
+        const registry = createEmptyPluginRegistry();
+        registry.sessionCatalogs.push({
+          pluginId: "anthropic",
+          source: "test",
+          provider: {
+            id: "claude",
+            label: "Claude Code",
+            resolveCreateSession: () => catalogTarget,
+            list: vi.fn(async () => []),
+            read: vi.fn(async ({ hostId, threadId }) => ({ hostId, threadId, items: [] })),
+          },
+        });
+        registry.cliBackends.push({
+          pluginId: "anthropic",
+          source: "test",
+          backend: {
+            id: "claude-cli",
+            modelProvider: "anthropic",
+            config: { command: "claude" },
+            bundleMcp: false,
+          },
+        });
+        setActivePluginRegistry(registry);
       }
-      expect(await waitForCreatedSessionRun(context, storePath, sessionKey)).toBe(true);
-      if (worktreeId) {
-        await managedWorktrees.remove({
-          id: worktreeId,
-          reason: "test-cleanup",
-          allowSnapshotLoss: true,
+      const { storePath } = await createSessionStoreDir();
+      if (parentEntry) {
+        await writeSessionStore({
+          entries: { main: sessionStoreEntry("worktree-title-parent", parentEntry) },
         });
       }
-      setActivePluginRegistry(createEmptyPluginRegistry());
-      closeOpenClawStateDatabaseForTest();
-      testState.agentConfig = undefined;
-      await openClawState.cleanup();
-    }
-  },
+      let sessionKey: string | undefined;
+      const pastedText = `Pasted deployment plan ${"x".repeat(2_000)}`;
+      const context = { chatAbortControllers: new Map<string, ChatAbortControllerEntry>() };
+      const message = "Review this rollout [[reply_to_current]]";
+      const attachment = {
+        type: "file",
+        mimeType: "text/plain",
+        content: Buffer.from(pastedText).toString("base64"),
+      };
+      dashboardTitleGenerationMocks.generate.mockResolvedValueOnce("Attachment Repair");
+      const dispatchCountBefore = dispatchInboundMessageMock.mock.calls.length;
+      dispatchInboundMessageMock.mockResolvedValueOnce({
+        queuedFinal: false,
+        counts: { block: 0, final: 0, tool: 0 },
+      });
+      try {
+        const created = await directSessionReq<{
+          key: string;
+          entry: {
+            providerOverride?: string;
+            modelOverride?: string;
+            agentRuntimeOverride?: string;
+            authProfileOverride?: string;
+          };
+          runId: string;
+          runStarted: boolean;
+        }>(
+          "sessions.create",
+          {
+            agentId: "main",
+            worktree: true,
+            message,
+            attachments: [attachment],
+            ...request,
+          },
+          { client: { connect: { scopes: ["operator.admin"] } } as never, context },
+        );
+
+        expect(created.ok, JSON.stringify(created.error)).toBe(true);
+        expect(created.payload?.entry).toMatchObject(expectedEntry);
+        expect(created.payload, JSON.stringify(created.payload)).toMatchObject({
+          runStarted: true,
+        });
+        sessionKey = requireNonEmptyString(created.payload?.key, "created session key");
+        expect(await waitForCreatedSessionRun(context, storePath, sessionKey)).toBe(true);
+        expect(loadSessionEntry({ agentId: "main", sessionKey, storePath })).toMatchObject({
+          displayName: "Attachment Repair",
+          worktree: { branch: "openclaw/attachment-repair" },
+        });
+        expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(dispatchCountBefore + 1);
+        expect(dashboardTitleGenerationMocks.generate).toHaveBeenCalledWith(
+          expect.objectContaining(expectedTitleSelection),
+        );
+        expect(dashboardTitleGenerationMocks.generate).toHaveBeenCalledOnce();
+      } finally {
+        await settleWorkspaceRuns(context, storePath, sessionKey, true);
+        await removeSessionWorktree(sessionKey);
+        setActivePluginRegistry(createEmptyPluginRegistry());
+        testState.agentConfig = undefined;
+      }
+    }),
 );
 
 test("sessions.create names an adopted worktree with its committed account before selecting a new personal account", async () => {
   await withOpenClawTestState({ layout: "state-only" }, async (state) => {
-    const workspace = await initializeGitWorkspace(state.root);
+    const workspace = await copyGitWorkspace(gitWorkspaceTemplate, state.root);
     testState.agentConfig = { workspace, model: { primary: "openai/gpt-5.6-sol" } };
     const {
       storePath,
@@ -3173,14 +3137,7 @@ test("sessions.create names an adopted worktree with its committed account befor
         worktree: { branch: "openclaw/account-transition" },
       });
     } finally {
-      const worktree = managedWorktrees.findLiveByOwner("session", key);
-      if (worktree) {
-        await managedWorktrees.remove({
-          id: worktree.id,
-          reason: "test-cleanup",
-          allowSnapshotLoss: true,
-        });
-      }
+      await removeSessionWorktree(key);
       testState.agentConfig = undefined;
     }
   });
@@ -3191,7 +3148,7 @@ test("sessions.create does not start title generation for a model denied by poli
     layout: "state-only",
     prefix: "openclaw-session-worktree-title-denied-model-",
   });
-  const workspace = await initializeGitWorkspace(openClawState.root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, openClawState.root);
   closeOpenClawStateDatabaseForTest();
   testState.agentConfig = {
     workspace,
@@ -3224,83 +3181,18 @@ test("sessions.create does not start title generation for a model denied by poli
     expect(findLiveRegistryWorktreeByOwner(process.env, "session", key)).toBeUndefined();
     expect(loadSessionEntry({ agentId: "main", sessionKey: key, storePath })).toBeUndefined();
   } finally {
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
 });
-
-test.each([
-  {
-    name: "generator error",
-    key: "agent:main:subagent:worktree-title-error",
-    arrange: () => dashboardTitleGenerationMocks.generate.mockRejectedValueOnce(new Error("boom")),
-  },
-  {
-    name: "overall timeout",
-    key: "agent:main:subagent:worktree-title-timeout",
-    arrange: () =>
-      dashboardTitleGenerationMocks.generate.mockReturnValueOnce(new Promise<string>(() => {})),
-  },
-])(
-  "sessions.create falls back to the raw title source after $name",
-  async ({ key, arrange }) => {
-    const openClawState = await createOpenClawTestState({
-      layout: "state-only",
-      prefix: "openclaw-session-worktree-title-fallback-",
-    });
-    const workspace = await initializeGitWorkspace(openClawState.root);
-    closeOpenClawStateDatabaseForTest();
-    testState.agentConfig = { workspace };
-    const { storePath } = await createSessionStoreDir();
-    const context = { chatAbortControllers: new Map<string, ChatAbortControllerEntry>() };
-    let worktreeId: string | undefined;
-    arrange();
-    try {
-      const created = await directSessionReq<{ runStarted: boolean }>(
-        "sessions.create",
-        {
-          agentId: "main",
-          key,
-          worktree: true,
-          message: "Investigate the raw fallback title",
-        },
-        { client: { connect: { scopes: ["operator.admin"] } } as never, context },
-      );
-
-      expect(created.ok, JSON.stringify(created.error)).toBe(true);
-      expect(created.payload?.runStarted).toBe(true);
-      expect(await waitForCreatedSessionRun(context, storePath, key)).toBe(true);
-      const worktree = loadSessionEntry({ sessionKey: key, storePath })?.worktree;
-      worktreeId = worktree?.id;
-      expect(worktree?.branch).toBe("openclaw/investigate-the-raw-fallback-title");
-      expect(dashboardTitleGenerationMocks.generate).toHaveBeenCalledOnce();
-    } finally {
-      for (const entry of context.chatAbortControllers.values()) {
-        entry.controller.abort();
-      }
-      expect(await waitForCreatedSessionRun(context, storePath, key)).toBe(true);
-      if (worktreeId) {
-        await managedWorktrees.remove({
-          id: worktreeId,
-          reason: "test-cleanup",
-          allowSnapshotLoss: true,
-        });
-      }
-      closeOpenClawStateDatabaseForTest();
-      testState.agentConfig = undefined;
-      await openClawState.cleanup();
-    }
-  },
-  15_000,
-);
 
 test("sessions.create keeps the crustacean fallback when no title source exists", async () => {
   const openClawState = await createOpenClawTestState({
     layout: "state-only",
     prefix: "openclaw-session-worktree-empty-title-",
   });
-  const workspace = await initializeGitWorkspace(openClawState.root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, openClawState.root);
   closeOpenClawStateDatabaseForTest();
   testState.agentConfig = { workspace };
   await createSessionStoreDir();
@@ -3326,7 +3218,7 @@ test("sessions.create keeps the crustacean fallback when no title source exists"
         allowSnapshotLoss: true,
       });
     }
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -3339,7 +3231,7 @@ test.each(["packages/app", "..notes"])(
       layout: "state-only",
       prefix: "openclaw-session-worktree-options-",
     });
-    const repoRoot = await initializeGitWorkspace(openClawState.root);
+    const repoRoot = await copyGitWorkspace(gitWorkspaceTemplate, openClawState.root);
     const workspace = path.join(repoRoot, workspaceRelativePath);
     const worktreePath = path.join(openClawState.root, "managed-worktree");
     const key = "agent:main:dashboard:worktree-options";
@@ -3413,7 +3305,7 @@ test.each(["packages/app", "..notes"])(
       expect(rejected.ok).toBe(false);
     } finally {
       createSpy.mockRestore();
-      closeOpenClawStateDatabaseForTest();
+      await disposeSessionReadContexts();
       testState.agentConfig = undefined;
       await openClawState.cleanup();
     }
@@ -3430,8 +3322,8 @@ test("sessions.create maps an admin-selected worktree cwd and rejects repository
     await fs.realpath(os.tmpdir()),
   );
   const [configuredWorkspace, selectedWorkspace] = await Promise.all([
-    initializeGitWorkspace(openClawState.root),
-    initializeGitWorkspace(selectedRoot),
+    copyGitWorkspace(gitWorkspaceTemplate, openClawState.root),
+    copyGitWorkspace(gitWorkspaceTemplate, selectedRoot),
   ]);
   const worktreePath = path.join(openClawState.root, "selected-worktree");
   const key = "agent:main:dashboard:selected-workspace";
@@ -3482,7 +3374,7 @@ test("sessions.create maps an admin-selected worktree cwd and rejects repository
   } finally {
     createSpy.mockRestore();
     findSpy.mockRestore();
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -3670,7 +3562,6 @@ test("sessions.create rechecks Fast Mode before interrupting reset work", async 
     admission.release();
   }
 });
-
 test("sessions.create rejects a Fast Mode change completed by draining work before reset cleanup", async () => {
   const { storePath } = await createSessionStoreDir();
   const key = "agent:main:main";
@@ -4034,46 +3925,10 @@ test.each(["direct path", "symlink escape"])(
 );
 
 test("sessions.create skips the worktree setup script for non-admin callers", async () => {
-  const openClawState = await createOpenClawTestState({
-    layout: "state-only",
-    prefix: "openclaw-worktree-setup-scope-",
+  await expectNonAdminWorktreeSetupIsSkipped({
+    workspaceTemplate: gitWorkspaceTemplate,
+    prepareSessionStore: createSessionStoreDir,
   });
-  const root = openClawState.root;
-  const workspace = await initializeGitWorkspace(root);
-  await fs.mkdir(path.join(workspace, ".openclaw"), { recursive: true });
-  const setupScript = path.join(workspace, ".openclaw", "worktree-setup.sh");
-  await fs.writeFile(setupScript, "#!/bin/sh\ntouch setup-marker.txt\n");
-  await fs.chmod(setupScript, 0o755);
-  closeOpenClawStateDatabaseForTest();
-  testState.agentConfig = { workspace };
-  await createSessionStoreDir();
-  let worktreeId: string | undefined;
-  try {
-    const created = await directSessionReq<{
-      key: string;
-      worktree: { id: string; path: string; branch: string };
-    }>(
-      "sessions.create",
-      { agentId: "main", worktree: true },
-      { client: { connect: { scopes: ["operator.write"] } } as never },
-    );
-    expect(created.ok).toBe(true);
-    const worktree = requireNonEmptyString(created.payload?.worktree.path, "worktree path");
-    worktreeId = created.payload?.worktree.id;
-    // Write-scoped callers get provisioning but never repo-script execution.
-    await expect(fs.stat(path.join(worktree, "setup-marker.txt"))).rejects.toThrow();
-  } finally {
-    if (worktreeId) {
-      await managedWorktrees.remove({
-        id: worktreeId,
-        reason: "test-cleanup",
-        allowSnapshotLoss: true,
-      });
-    }
-    closeOpenClawStateDatabaseForTest();
-    testState.agentConfig = undefined;
-    await openClawState.cleanup();
-  }
 });
 
 test.each([
@@ -4089,7 +3944,7 @@ test.each([
       prefix: "openclaw-reset-retained-worktree-",
     });
     const root = openClawState.root;
-    const workspace = await initializeGitWorkspace(root);
+    const workspace = await copyGitWorkspace(gitWorkspaceTemplate, root);
     const origin = path.join(root, "origin.git");
     await execFileAsync("git", ["init", "--bare", origin]);
     await execFileAsync("git", ["-C", workspace, "remote", "add", "origin", origin]);
@@ -4180,7 +4035,7 @@ test.each([
           allowSnapshotLoss: true,
         });
       }
-      closeOpenClawStateDatabaseForTest();
+      await disposeSessionReadContexts();
       testState.agentConfig = undefined;
       testState.sessionConfig = undefined;
       await openClawState.cleanup();
@@ -4194,7 +4049,7 @@ test("sessions.create reset-in-place detaches the prior worktree permission boun
     prefix: "openclaw-reset-session-worktree-",
   });
   const root = openClawState.root;
-  const workspace = await initializeGitWorkspace(root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, root);
   // A remote makes the base commit reachable from `--remotes`, so leaving the worktree via a
   // plain New Chat is lossless and the reset can remove it (the real leave-worktree flow).
   const origin = path.join(root, "origin.git");
@@ -4328,7 +4183,7 @@ test("sessions.create reset-in-place detaches the prior worktree permission boun
         allowSnapshotLoss: true,
       });
     }
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     testState.sessionConfig = undefined;
     await openClawState.cleanup();
@@ -4930,8 +4785,8 @@ test("sessions.create commits no child after its worker turn closes", async () =
 test("sessions.create starts no initial turn when authority closes after session commit", async () => {
   const { storePath } = await createSessionStoreDir();
   const sessionKey = "agent:main:dashboard:authority-post-commit";
-  const { chatHandlers } = await import("./server-methods/chat.js");
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     respond(true, { runId: "must-not-start", status: "started" });
   });
   let authorityCurrent = true;
@@ -4981,7 +4836,7 @@ test("sessions.create removes a provisioned worktree when authority closes befor
     layout: "state-only",
     prefix: "openclaw-session-authority-worktree-",
   });
-  const workspace = await initializeGitWorkspace(openClawState.root);
+  const workspace = await copyGitWorkspace(gitWorkspaceTemplate, openClawState.root);
   closeOpenClawStateDatabaseForTest();
   testState.agentConfig = { workspace };
   const { storePath } = await createSessionStoreDir();
@@ -5043,7 +4898,7 @@ test("sessions.create removes a provisioned worktree when authority closes befor
     ).toEqual([]);
   } finally {
     createSpy.mockRestore();
-    closeOpenClawStateDatabaseForTest();
+    await disposeSessionReadContexts();
     testState.agentConfig = undefined;
     await openClawState.cleanup();
   }
@@ -5947,8 +5802,8 @@ test("sessions.create adopting an existing key does not restamp node provenance"
       }),
     },
   });
-  const { chatHandlers } = await import("./server-methods/chat.js");
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     respond(true, { runId: "adopted-run", status: "started" });
   });
 
@@ -5996,17 +5851,15 @@ test("sessions.create adopting an existing key does not restamp node provenance"
 
 test("sessions.create replays an identical creation once and rejects conflicting intent", async () => {
   await createSessionStoreDir();
-  const { chatHandlers } = await import("./server-methods/chat.js");
   const { sessionCreateHandlers } = await import("./server-methods/sessions-create.js");
   let sharedContext:
-    | Parameters<NonNullable<(typeof chatHandlers)["chat.send"]>>[0]["context"]
+    | Parameters<typeof chatSendOwner.handleDirectExternalChatSend>[0]["context"]
     | undefined;
-  const chatSend = vi
-    .spyOn(chatHandlers, "chat.send")
-    .mockImplementation(async ({ context, respond }) => {
-      sharedContext ??= context;
-      respond(true, { runId: "create-once", status: "started" });
-    });
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ context, respond }) => {
+    sharedContext ??= context;
+    respond(true, { runId: "create-once", status: "started" });
+  });
   const dedupe = new Map();
   const client = {
     connect: {
@@ -6716,7 +6569,7 @@ test("sessions.create rejects unknown parentSessionKey", async () => {
 test("sessions.create forks the parent transcript into the new session", async () => {
   const { dir, storePath } = await createSessionStoreDir();
   testState.sessionConfig = { scope: "per-sender" };
-  const parent = await createCheckpointFixture(dir);
+  const parent = await createCompactedSessionFixture(dir);
   const projectRoot = path.join(dir, "qa-writer");
   await fs.mkdir(projectRoot);
   await writeSessionStore({
@@ -6911,7 +6764,7 @@ test("sessions.create rejects a pre-existing locked harness session", async () =
 test("sessions.create rejects children of model-selection-locked sessions", async () => {
   const { dir } = await createSessionStoreDir();
   testState.sessionConfig = { dmScope: "main", scope: "per-sender" };
-  const parent = await createCheckpointFixture(dir);
+  const parent = await createCompactedSessionFixture(dir);
   await writeSessionStore({
     entries: {
       main: sessionStoreEntry(parent.sessionId, {
@@ -6981,7 +6834,7 @@ test("sessions.create retains the 100K fallback when only another provider has m
     cache: getContextWindowCaches().discoveredTokenCache,
     models: [{ id: "unresolved-model", provider: "other-provider", contextTokens: 300_000 }],
   });
-  const parent = await createCheckpointFixture(dir);
+  const parent = await createCompactedSessionFixture(dir);
   await writeSessionStore({
     entries: {
       main: sessionStoreEntry(parent.sessionId, {
@@ -7020,7 +6873,7 @@ test("sessions.create admits an explicit fork within the child model context win
   agentDiscoveryMock.models = [
     { id: "gpt-large", name: "Large", provider: "openai", contextWindow: 922_000 },
   ];
-  const parent = await createCheckpointFixture(dir);
+  const parent = await createCompactedSessionFixture(dir);
   await writeSessionStore({
     entries: {
       main: sessionStoreEntry(parent.sessionId, {
@@ -7051,7 +6904,7 @@ test("sessions.create rejects an explicit fork above the selected child model wi
   agentDiscoveryMock.models = [
     { id: "gpt-small", name: "Small", provider: "openai", contextWindow: 128_000 },
   ];
-  const parent = await createCheckpointFixture(dir);
+  const parent = await createCompactedSessionFixture(dir);
   await writeSessionStore({
     entries: {
       main: sessionStoreEntry(parent.sessionId, {
@@ -7093,7 +6946,7 @@ test("sessions.create clamps configured capacity to the selected child model win
       contextWindowDefault: "1m",
     },
   ];
-  const parent = await createCheckpointFixture(dir);
+  const parent = await createCompactedSessionFixture(dir);
   await writeSessionStore({
     entries: {
       main: sessionStoreEntry(parent.sessionId, {
@@ -7239,7 +7092,7 @@ test("sessions.create resolves an agent-qualified fork from the parent store", a
   testState.agentsConfig = { list: [{ id: "main", default: true }, { id: "work" }] };
   try {
     await fs.mkdir(workDir, { recursive: true });
-    const parent = await createCheckpointFixture(workDir);
+    const parent = await createCompactedSessionFixture(workDir);
     await writeSessionStore({
       storePath: workStorePath,
       agentId: "work",
@@ -7271,7 +7124,6 @@ test("sessions.create resolves an agent-qualified fork from the parent store", a
       parentSessionKey: "agent:work:main",
       fork: true,
     });
-
     expect(created.ok, JSON.stringify(created.error)).toBe(true);
     expect(created.payload?.key).toMatch(/^agent:main:dashboard:/);
     expect(created.payload?.entry?.parentSessionKey).toBe("agent:work:main");
@@ -7445,8 +7297,8 @@ test.each(mentionCreationOwners)(
 test("sessions.create forwards an attachment-only first turn", async () => {
   await createSessionStoreDir();
   testState.agentsConfig = { list: [{ id: "main", default: true }] };
-  const { chatHandlers } = await import("./server-methods/chat.js");
-  const chatSend = vi.spyOn(chatHandlers, "chat.send").mockImplementation(async ({ respond }) => {
+  const chatSend = vi.spyOn(chatSendOwner, "handleDirectExternalChatSend");
+  chatSend.mockImplementation(async ({ respond }) => {
     respond(true, { runId: "attachment-run", status: "started" });
   });
   const attachment = {

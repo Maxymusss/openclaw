@@ -29,7 +29,7 @@ export type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js"
 export type { ProjectedAgentRunIndex } from "./agent-run-registry.types.js";
 
 /** Reads the process-local version of the active-run projection inputs. */
-function readAgentRunIndexVersion(): number {
+export function readAgentRunIndexVersion(): number {
   return getAgentRunRegistryState().version;
 }
 
@@ -315,7 +315,7 @@ export function retainQueuedAgentRunContext(
       if (outcome === "admitted") {
         context.lastActiveAt = Date.now();
       }
-      if (remaining === 0 && !hasLiveAgentRunContext(runId)) {
+      if (!hasLiveAgentRunContext(runId)) {
         bumpAgentRunIndexVersion(context);
       }
     }
