@@ -49,8 +49,8 @@ describe("heartbeat command-lane admission", () => {
   );
 
   it("rejects an Ops heartbeat while a matching scoped lane is active", async () => {
-    const started = createDeferred<void>();
-    const finish = createDeferred<void>();
+    const started = createDeferred();
+    const finish = createDeferred();
     const active = enqueueCommandInLane("session:agent:ops:active-session", async () => {
       started.resolve();
       await finish.promise;

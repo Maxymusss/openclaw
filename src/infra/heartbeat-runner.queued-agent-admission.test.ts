@@ -73,7 +73,9 @@ async function waitForQueuedLane(lane: string, isProducerDone: () => boolean): P
     if (isProducerDone()) {
       throw new Error(`embedded producer settled before queueing ${lane}`);
     }
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await new Promise((resolve) => {
+      setTimeout(resolve, 10);
+    });
   }
   throw new Error(`timed out waiting for embedded producer to queue ${lane}`);
 }
@@ -136,7 +138,9 @@ describe("heartbeat runner admission against queued agent work", () => {
           const blockedLane = nested ? globalLane : sessionLane;
           await waitForQueuedLane(blockedLane, () => producerDone);
           if (producerError) {
-            throw producerError;
+            throw producerError instanceof Error
+              ? producerError
+              : new Error("embedded producer failed", { cause: producerError });
           }
           if (nested) {
             // The real producer is now waiting on its nested lane. Retire only
