@@ -44,6 +44,8 @@ const TOOLING_FILES = [
   "scripts/lib/mobile-version.ts",
   "scripts/lib/release-version.mjs",
 ] as const;
+// Ubuntu observer execution requires Bash associative arrays and Linux O_PATH.
+const linuxIt = it.runIf(process.platform === "linux");
 const tempRoots = useAutoCleanupTempDirTracker(afterEach);
 const joinedObservationRoots: string[] = [];
 afterEach(() => cleanupTempDirs(joinedObservationRoots));
@@ -2570,8 +2572,16 @@ describe("mobile release authority", () => {
     expect(observationFunctionStart).toBeGreaterThanOrEqual(0);
     expect(observationFunctionEnd).toBeGreaterThan(observationFunctionStart);
     expect(failureFunctionEnd).toBeGreaterThan(observationFunctionEnd);
-    const observationFunctions = diagnostic
-      .slice(observationFunctionStart, failureFunctionEnd)
+    // Readiness probes are portable; exclude the unrelated Linux observer from this slice.
+    const kvmFunctionStart = diagnostic.indexOf("capture_kvm_transition() {");
+    const kvmFunctionEnd = diagnostic.indexOf("capture_cold_boot_snapshot() {", kvmFunctionStart);
+    expect(kvmFunctionStart).toBeGreaterThan(observationFunctionStart);
+    expect(kvmFunctionEnd).toBeGreaterThan(kvmFunctionStart);
+    const observationFunctions = (
+      diagnostic.slice(observationFunctionStart, kvmFunctionStart) +
+      "capture_kvm_transition() { :; }\n" +
+      diagnostic.slice(kvmFunctionEnd, failureFunctionEnd)
+    )
       .replace("observation_poll_seconds=2", "observation_poll_seconds=1")
       .replace("final_snapshot_lead_seconds=15", "final_snapshot_lead_seconds=4")
       .replace("snapshot_properties_max_bytes=65536", "snapshot_properties_max_bytes=64")
@@ -3260,7 +3270,7 @@ fi`,
     return { result, trace, diagnostic };
   }
 
-  it("runs fixed phone and Wear diagnostics through the workflow's trusted shell", async () => {
+  linuxIt("runs phone and Wear diagnostics through the trusted workflow shell", async () => {
     const exercise = exerciseDiagnostic;
     for (const scenario of ["phone", "wear", "phone-then-wear"]) {
       const outcome = await exercise(scenario);
@@ -3340,17 +3350,21 @@ fi`,
         expect(outcome.trace).not.toContain("launch ");
       }
     }
-    const unsupported = await exercise("arbitrary; echo unsafe");
+  });
+
+  it("rejects unsupported diagnostics and untrusted tooling before Linux execution", async () => {
+    const unsupported = await exerciseDiagnostic("arbitrary; echo unsafe");
     expect(unsupported.result.code).toBe(2);
+    expect(unsupported.result.stderr).toContain("Expected phone, wear, or phone-then-wear");
     expect(unsupported.trace).toBe("");
     for (const admission of ["wrong-sha", "symlink", "changed-bytes"]) {
-      const rejected = await exercise("wear", "ready", admission);
-      expect(rejected.result.code).not.toBe(0);
+      const rejected = await exerciseDiagnostic("wear", "ready", admission);
+      expect(rejected.result.code).toBe(1);
       expect(rejected.trace).toBe("");
     }
   });
 
-  it("retains distinct numeric KVM transitions without changing denied Wear failure", async () => {
+  linuxIt("retains numeric KVM transitions without changing denied Wear failure", async () => {
     const outcome = await exerciseDiagnostic("phone-then-wear", "kvm-denied");
     expect(outcome.result.code, outcome.result.stderr).toBe(1);
     const read = (factor: string, checkpoint: string, file: string) =>
@@ -3407,7 +3421,7 @@ fi`,
     }
   });
 
-  it.each([
+  linuxIt.each([
     ["state-error", "state", "probe_exit_status=73"],
     ["state-shape", "state", "complete=false"],
     ["state-missing-tool", "state", "probe_exit_status=127"],
@@ -3462,7 +3476,7 @@ fi`,
     },
   );
 
-  it.each(["unset", "default"] as const)(
+  linuxIt.each(["unset", "default"] as const)(
     "classifies the %s KVM override without retaining a value",
     async (override) => {
       const outcome = await exerciseDiagnostic("phone", "ready", "matching", { override });
@@ -3476,7 +3490,7 @@ fi`,
     },
   );
 
-  it("preserves failed Wear status when its transition observer also fails", async () => {
+  linuxIt("preserves failed Wear status when its transition observer also fails", async () => {
     const outcome = await exerciseDiagnostic("phone-then-wear", "kvm-denied", "matching", {
       observerMode: "state-error",
     });
