@@ -144,7 +144,10 @@ describe("Codex attempt subscription recovery", () => {
       turnRequestSpy?.mockRestore();
       expect(harness.requests.some(({ method }) => method === "turn/start")).toBe(false);
       expect(isCodexAppServerLiveThreadClaimed(harness.client, threadId)).toBe(false);
-      expect(harness.client.getCloseError()).toBeUndefined();
+      const clientRetired = revoked === "abort" || revoked === "host";
+      expect(harness.client.getCloseError()?.message).toBe(
+        clientRetired ? "codex app-server client is closed" : undefined,
+      );
       if (revoked) {
         expect(hasCodexAppServerLiveThread(harness.client, threadId)).toBe(false);
         expect(

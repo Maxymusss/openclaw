@@ -413,8 +413,9 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
             ephemeralPolicy: thread.liveThreadEphemeralPolicy,
           });
         };
-        // Background custody belongs to the retained native owner, not the completed foreground source.
-        if (background) {
+        // Decide after lease acquisition: background custody can end while this
+        // waiter is queued, before retained-thread publication begins.
+        if (hasCodexNativeBackgroundProcesses(client, thread.threadId)) {
           retain();
         } else {
           await connection.withCurrent(retain);
