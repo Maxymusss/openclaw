@@ -269,7 +269,7 @@ async function finalizeLineInboundContext<Event extends MessageEvent | PostbackE
   commandBody?: string;
   messageSid: string;
   commandAuthorized: boolean;
-  resolveChannelIngress?: BuildLineMessageContextParams["resolveChannelIngress"];
+  channelIngress?: ResolvedChannelMessageIngress;
   media: readonly ChannelInboundMediaInput[];
   locationContext?: ReturnType<typeof toLocationContext>;
   verboseLog: { kind: "inbound" | "postback"; mediaCount?: number };
@@ -277,13 +277,6 @@ async function finalizeLineInboundContext<Event extends MessageEvent | PostbackE
   mentions?: LineInboundMentionAccess;
   buildContext?: typeof buildChannelInboundEventContext;
 }) {
-  // Conversation bindings can replace the base route; bind only to the final route.
-  const channelIngress = await params.resolveChannelIngress?.({
-    agentId: params.route.agentId,
-    sessionKey: params.route.sessionKey,
-    messageId: params.messageSid,
-    inboundEventKind: "user_request",
-  });
   const senderId = params.source.userId ?? "unknown";
   const clientOpts = {
     cfg: params.cfg,
@@ -350,7 +343,7 @@ async function finalizeLineInboundContext<Event extends MessageEvent | PostbackE
   });
 
   const ctxPayload = (params.buildContext ?? buildChannelInboundEventContext)({
-    channelIngress,
+    channelIngress: params.channelIngress,
     channel: "line",
     accountId: params.route.accountId,
     messageId: params.messageSid,
@@ -535,7 +528,13 @@ export async function buildLineMessageContext(params: BuildLineMessageContextPar
     mentions: params.mentions,
     messageSid: messageId,
     commandAuthorized,
-    resolveChannelIngress: params.resolveChannelIngress,
+    // Conversation bindings can replace the base route; bind only to the final route.
+    channelIngress: await params.resolveChannelIngress?.({
+      agentId: route.agentId,
+      sessionKey: route.sessionKey,
+      messageId,
+      inboundEventKind: "user_request",
+    }),
     buildContext: params.buildContext,
     media: mediaFacts,
     locationContext,
@@ -597,7 +596,12 @@ export async function buildLinePostbackContext(params: {
     agentBody,
     messageSid,
     commandAuthorized,
-    resolveChannelIngress: params.resolveChannelIngress,
+    channelIngress: await params.resolveChannelIngress?.({
+      agentId: route.agentId,
+      sessionKey: route.sessionKey,
+      messageId: messageSid,
+      inboundEventKind: "user_request",
+    }),
     buildContext: params.buildContext,
     media: [],
     verboseLog: { kind: "postback" },
