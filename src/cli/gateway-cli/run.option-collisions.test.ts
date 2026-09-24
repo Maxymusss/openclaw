@@ -967,10 +967,7 @@ describe("gateway run option collisions", () => {
       expect(process.env.OPENCLAW_STATE_DIR).toBe(selectedStateDir);
 
       const repairedConfig = {
-        agents: {
-          defaults: { heartbeat: { skipWhenBusy: true } },
-          entries: { main: {} },
-        },
+        agents: { defaults: { heartbeat: { skipWhenBusy: true } }, entries: { main: {} } },
         env: stableConfig.env,
         gateway: { mode: "local" as const },
         session: { reset: { mode: "idle", idleMinutes: 45 } },
