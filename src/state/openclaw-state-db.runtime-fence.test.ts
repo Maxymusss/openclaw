@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { OPENCLAW_STATE_SCHEMA_VERSION } from "./openclaw-state-db-contract.js";
 import {
@@ -9,17 +9,12 @@ import {
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-beforeEach(() => {
-  vi.useFakeTimers({ toFake: ["setImmediate"] });
-});
-
 afterEach(() => {
   closeOpenClawStateDatabaseForTest();
-  vi.useRealTimers();
 });
 
 describe("shared state runtime schema fence", () => {
-  it("latches a newer schema committed under an open cached handle", () => {
+  it("latches a newer schema committed under an open cached handle", async () => {
     const options = { env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-runtime-schema-") } };
     const initial = openOpenClawStateDatabase(options);
     const external = new DatabaseSync(initial.path);
@@ -37,7 +32,7 @@ describe("shared state runtime schema fence", () => {
       external.close();
     }
 
-    vi.runOnlyPendingTimers();
+    await Promise.resolve();
 
     let failure: unknown;
     try {
@@ -55,7 +50,7 @@ describe("shared state runtime schema fence", () => {
     expect(() => openOpenClawStateDatabase(options)).toThrow(failure);
   });
 
-  it("retains the cached handle after a compatible external data commit", () => {
+  it("retains the cached handle after a compatible external data commit", async () => {
     const options = { env: { OPENCLAW_STATE_DIR: tempDirs.make("openclaw-runtime-data-") } };
     const initial = openOpenClawStateDatabase(options);
     const external = new DatabaseSync(initial.path);
@@ -69,7 +64,7 @@ describe("shared state runtime schema fence", () => {
       external.close();
     }
 
-    vi.runOnlyPendingTimers();
+    await Promise.resolve();
 
     expect(openOpenClawStateDatabase(options)).toBe(initial);
     expect(initial.db.isOpen).toBe(true);

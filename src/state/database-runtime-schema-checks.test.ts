@@ -129,8 +129,7 @@ it("keeps admitted reads within the schema-query budget", () => {
   );
 });
 
-it("refuses schemas migrated by another process on the next turn", () => {
-  vi.useFakeTimers({ toFake: ["setImmediate"] });
+it("refuses schemas migrated by another process after an async boundary", async () => {
   const scope = {
     agentId: "main",
     env: { ...process.env, OPENCLAW_STATE_DIR: tempDirs.make("openclaw-schema-migration-") },
@@ -158,7 +157,7 @@ it("refuses schemas migrated by another process on the next turn", () => {
       ],
       { stdio: "pipe" },
     );
-    vi.runOnlyPendingTimers();
+    await Promise.resolve();
     expect(() => withOpenClawAgentDatabaseReadOnly(() => undefined, scope)).toThrow(
       /uses newer schema version/,
     );
@@ -174,6 +173,5 @@ it("refuses schemas migrated by another process on the next turn", () => {
       }
     }
     closeOpenClawStateDatabaseForTest();
-    vi.useRealTimers();
   }
 });

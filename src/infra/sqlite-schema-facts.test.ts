@@ -39,6 +39,26 @@ describe("admitted SQLite schema facts", () => {
     }
   });
 
+  it("observes a foreign schema commit after a worker reply in the same event-loop turn", async () => {
+    const filename = path.join(tempDirs.make("openclaw-schema-foreign-"), "state.sqlite");
+    const reader = openDatabase(undefined, true, filename);
+    expect(tableExists(reader, "foreign_table")).toBe(false);
+    const writer = new DatabaseSync(filename);
+    try {
+      writer.exec("CREATE TABLE foreign_table (id INTEGER); PRAGMA user_version = 999");
+      // A worker reply resumes its caller in a microtask before setImmediate runs.
+      await Promise.resolve();
+      expect(
+        reader.prepare("SELECT 1 FROM main.sqlite_schema WHERE name = 'foreign_table'").get(),
+      ).toBeDefined();
+      expect(tableExists(reader, "foreign_table")).toBe(true);
+      expect(reader.prepare("PRAGMA user_version").get()?.user_version).toBe(999);
+      expect(() => assertSupportedAgentSchemaVersion(reader, filename)).toThrow(/newer|schema/iu);
+    } finally {
+      writer.close();
+    }
+  });
+
   it("publishes local DDL to sibling handles while preserving their active snapshots", () => {
     const filename = path.join(tempDirs.make("openclaw-schema-siblings-"), "state.sqlite");
     const writer = openDatabase(undefined, true, filename);

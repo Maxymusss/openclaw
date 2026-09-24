@@ -573,8 +573,7 @@ describe("SQLite session entry cache", () => {
     expect(parseSessionEntryCalls).not.toHaveBeenCalled();
   });
 
-  it("fully reloads on the next turn after another connection commits", async () => {
-    vi.useFakeTimers({ toFake: ["setImmediate"] });
+  it("fully reloads after another connection commits across an async boundary", async () => {
     const scope = createSessionScope("external-write");
     const siblingScope = { ...scope, sessionKey: "agent:main:external-write-sibling" };
     await upsertSessionEntryCore(scope, {
@@ -610,7 +609,7 @@ describe("SQLite session entry cache", () => {
         .run(JSON.stringify(updated), updated.label, updated.updatedAt, scope.sessionKey);
 
       parseSessionEntryCalls.mockClear();
-      vi.runOnlyPendingTimers();
+      await Promise.resolve();
       expect(
         listSessionEntriesCore({ ...scope, clone: false, projection: "list" })[0]?.entry.label,
       ).toBe("projection-probe-after");
@@ -622,7 +621,6 @@ describe("SQLite session entry cache", () => {
   });
 
   it("fully reloads a cross-connection same-millisecond entry rewrite", async () => {
-    vi.useFakeTimers({ toFake: ["setImmediate"] });
     const scope = createSessionScope("external-same-ms");
     const siblingScope = { ...scope, sessionKey: "agent:main:external-same-ms-sibling" };
     await upsertSessionEntryCore(scope, {
@@ -656,7 +654,7 @@ describe("SQLite session entry cache", () => {
         .run(JSON.stringify(updated), updated.label, scope.sessionKey);
 
       parseSessionEntryCalls.mockClear();
-      vi.runOnlyPendingTimers();
+      await Promise.resolve();
       const after = listSessionEntriesCore({ ...scope, clone: false, projection: "list" });
 
       expect(after[0]?.entry.label).toBe("projection-probe-after");
@@ -667,8 +665,7 @@ describe("SQLite session entry cache", () => {
     }
   });
 
-  it("observes a commit during a listing on the next turn", async () => {
-    vi.useFakeTimers({ toFake: ["setImmediate"] });
+  it("observes a commit during a listing after the next async boundary", async () => {
     const scope = createSessionScope("external-race");
     const siblingScope = { ...scope, sessionKey: "agent:main:external-race-sibling" };
     await upsertSessionEntryCore(scope, {
@@ -718,7 +715,7 @@ describe("SQLite session entry cache", () => {
 
       expect(byId.get("external-race-local")?.label).toBe("local-after");
       expect(byId.get("external-race-sibling")?.label).toBe("external-before");
-      vi.runOnlyPendingTimers();
+      await Promise.resolve();
       expect(
         listSessionEntriesCore(scope).find(
           ({ entry }) => entry.sessionId === "external-race-sibling",

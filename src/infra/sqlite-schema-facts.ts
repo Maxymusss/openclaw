@@ -24,7 +24,7 @@ type SchemaOwner = {
   revision: number;
   facts?: SqliteSchemaFacts;
   dataVersion?: number;
-  probeTurn?: Promise<void>;
+  probeWindow?: Promise<void>;
   transactionalSchema: boolean;
   transactionalFacts: boolean;
   snapshot?: object;
@@ -239,7 +239,7 @@ function trackSchemaChanges(
   registerNodeSqliteDisposeCallback(database, () => {
     invalidate(owner);
     owner.dataVersion = undefined;
-    owner.probeTurn = undefined;
+    owner.probeWindow = undefined;
     // Native close can still fail; transaction settlement retains pending DDL publication.
     if (owner.scope) {
       scopes.finalizer.unregister(owner);
@@ -254,7 +254,7 @@ function trackSchemaChanges(
 export function readSqliteCacheDataVersion(database: DatabaseSync): number {
   const tracked = owners.get(database);
   const owner = tracked?.admitted ? tracked : undefined;
-  if (owner?.probeTurn && !owner.authorizerActive && owner.dataVersion !== undefined) {
+  if (owner?.probeWindow && !owner.authorizerActive && owner.dataVersion !== undefined) {
     return owner.dataVersion;
   }
   const row = executeWithCachedStatement(database, "PRAGMA data_version", [], (statement) =>
@@ -268,25 +268,25 @@ export function readSqliteCacheDataVersion(database: DatabaseSync): number {
       invalidate(owner);
       owner.dataVersion = row.data_version;
     }
-    if (!owner.probeTurn) {
-      // Retain only the facts, never a native handle or statement, until the next turn.
-      const turn = new Promise<void>((resolve) => {
-        setImmediate(() => {
-          if (owner.probeTurn === turn) {
-            owner.probeTurn = undefined;
+    if (!owner.probeWindow) {
+      // Reuse facts within synchronous work, but not after an awaited foreign commit.
+      const probe = new Promise<void>((resolve) => {
+        queueMicrotask(() => {
+          if (owner.probeWindow === probe) {
+            owner.probeWindow = undefined;
           }
           resolve();
-        }).unref();
+        });
       });
-      owner.probeTurn = turn;
+      owner.probeWindow = probe;
     }
   }
   return row.data_version;
 }
 
 /** A new asynchronous operation must not inherit a preceding operation's freshness probe. */
-export function waitForSqliteSchemaProbeTurn(database: DatabaseSync): Promise<void> | undefined {
-  return owners.get(database)?.probeTurn;
+export function waitForSqliteSchemaProbeWindow(database: DatabaseSync): Promise<void> | undefined {
+  return owners.get(database)?.probeWindow;
 }
 
 /** Install at native open, before callers can retain statements or install an authorizer. */
