@@ -277,12 +277,14 @@ describe("scripts/profile-extension-memory", () => {
       expect(result.status, result.stderr).toBe(0);
       expect(result.stderr).not.toContain("cliStartup");
       const report = JSON.parse(readFileSync(reportPath, "utf8"));
+      expect(report.repoRoot).toBe(root);
       expect(report.selectedExtensions).toEqual(expected.map(({ dir }) => dir));
       expect(report.results).toEqual(
         expected.map(({ dir, file }) =>
           expect.objectContaining({
             dir,
-            file,
+            file: path.join(root, file),
+            relativeFile: file,
             status: "ok",
             maxRssMb: expect.any(Number),
           }),

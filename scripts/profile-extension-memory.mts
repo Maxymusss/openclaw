@@ -706,7 +706,8 @@ async function main(): Promise<void> {
           });
           const entry = {
             dir: next.dir,
-            file: path.relative(repoRoot, next.file).split(path.sep).join("/"),
+            file: next.file,
+            relativeFile: path.relative(repoRoot, next.file).split(path.sep).join("/"),
             cpuDeltaFromBaseline: importCpuDelta(result.resources, baseline.resources),
             ...summarizeCase(result),
             deltaFromBaselineMb:
@@ -749,6 +750,7 @@ async function main(): Promise<void> {
         termination: "explicit-process-exit",
       },
       generatedAt: new Date().toISOString(),
+      repoRoot,
       provenance: {
         before: identityBefore,
         after: captureImportIdentity(repoRoot, entryFiles),
