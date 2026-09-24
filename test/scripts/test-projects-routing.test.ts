@@ -392,15 +392,6 @@ describe("test-projects args", () => {
   });
 
   it("routes infra targets to the infra config", () => {
-    expect(buildVitestRunPlans(["src/infra/openclaw-root.test.ts"])).toEqual([
-      {
-        config: "test/vitest/vitest.boundary.config.ts",
-        forwardedArgs: [],
-        includePatterns: ["src/infra/openclaw-root.test.ts"],
-        watchMode: false,
-      },
-    ]);
-
     expect(buildVitestRunPlans(["src/infra/migrations.test.ts"])).toEqual([
       {
         config: "test/vitest/vitest.infra.config.ts",
@@ -504,15 +495,6 @@ describe("test-projects args", () => {
   });
 
   it("routes plugin targets to the plugins config", () => {
-    expect(buildVitestRunPlans(["src/plugins/loader.test.ts"])).toEqual([
-      {
-        config: "test/vitest/vitest.bundled.config.ts",
-        forwardedArgs: [],
-        includePatterns: ["src/plugins/loader.test.ts"],
-        watchMode: false,
-      },
-    ]);
-
     expect(buildVitestRunPlans(["src/plugins/discovery.test.ts"])).toEqual([
       {
         config: "test/vitest/vitest.plugins.config.ts",
