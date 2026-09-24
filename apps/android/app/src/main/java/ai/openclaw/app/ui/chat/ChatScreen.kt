@@ -108,6 +108,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.interaction.DragInteraction
+import androidx.compose.foundation.interaction.Interaction
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -115,6 +118,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.absoluteOffset
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -202,6 +206,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.AbsoluteAlignment
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -211,6 +216,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -567,6 +573,15 @@ internal fun ChatScreen(
         viewModel.isCurrentChatComposerOwner(expected) && (canChangeThinking() || canChangeFastMode(expected))
       }
     }
+  var effortPreview by remember(
+    effortPicker.visible,
+    composerOwner,
+    selectedModelRef,
+    selectionGeneration,
+    thinkingLevel,
+    thinkingLevelSelection.options,
+    canAdminSessionSettings,
+  ) { mutableStateOf<String?>(null) }
   val backgroundTasks =
     remember(viewModel, pickerActivity, pickerView, lifecycleOwner) {
       ChatModelPickerSessionOwner(pickerActivity, pickerView, lifecycleOwner.lifecycle) { expected ->
@@ -1081,7 +1096,7 @@ internal fun ChatScreen(
         inputDrafts[composerOwner] = it
       },
       attachments = attachments,
-      thinkingLevel = thinkingLevel,
+      thinkingLevel = effortPreview ?: thinkingLevel,
       thinkingOptions = thinkingLevelSelection.options,
       thinkingSupported = thinkingSupported,
       thinkingLevelEnabled = canAdminSessionSettings,
@@ -1264,22 +1279,42 @@ internal fun ChatScreen(
   }
 
   effortPicker.visible?.let { opening ->
+    // Capture values, not the collectAsState delegates: an old callback must not
+    // adopt a new model/profile before Compose replaces its slider subtree.
+    val modelRef = selectedModelRef
+    val generation = selectionGeneration
+    val selectedId = thinkingLevel
+    val options = thinkingLevelSelection.options
+
+    fun selectionIsCurrent() =
+      viewModel.isCurrentChatSelection(opening.composerOwner, generation) &&
+        viewModel.chatSelectedModelRef.value == modelRef &&
+        viewModel.chatThinkingLevel.value == selectedId &&
+        viewModel.chatThinkingLevelSelection.value.options == options
+
     key(opening) {
       ChatEffortSheet(
         opening = opening,
-        options = thinkingLevelSelection.options,
-        selectedId = thinkingLevel,
+        modelRef = modelRef,
+        selectionGeneration = generation,
+        options = options,
+        selectedId = selectedId,
         thinkingSupported = thinkingSupported,
         thinkingLevelEnabled = canAdminSessionSettings,
         fastMode = fastMode,
         fastModeEnabled = canChangeFastMode(opening.composerOwner),
+        onPreviewChange = { level ->
+          if (level == null || (selectionIsCurrent() && effortPicker.admit(opening) && canChangeThinking())) {
+            effortPreview = level
+          }
+        },
         onSelect = { level ->
-          if (effortPicker.admit(opening) && canChangeThinking()) {
+          if (selectionIsCurrent() && effortPicker.admit(opening) && canChangeThinking()) {
             viewModel.setChatThinkingLevel(level)
           }
         },
         onFastModeChange = { enabled ->
-          if (effortPicker.admit(opening) && canChangeFastMode(opening.composerOwner)) {
+          if (selectionIsCurrent() && effortPicker.admit(opening) && canChangeFastMode(opening.composerOwner)) {
             viewModel.setChatSessionFastMode(
               sessionKey = opening.sessionKey,
               enabled = enabled,
@@ -1732,13 +1767,15 @@ private fun ChatMessageList(
           completedNewestItemId = transcriptAnchor?.completedNewestItemId,
         ),
     )
+  val toolBridge = remember(sessionKey) { LiveToolActivityBridge() }
+  val presentedTools = remember(toolBridge, history.toolScope, pendingToolCalls) { toolBridge.update(history.toolScope, pendingToolCalls) }
   var expandedWorkKeys by remember(sessionKey) { mutableStateOf(emptySet<String>()) }
   val timeline =
-    remember(history, turnRecap, expandedWorkKeys, activeRunCount, activeRunId, pendingToolCalls, subagentActivities, questions, streamingAssistantText, outboxItems, recoveryOutboxItems) {
+    remember(history, turnRecap, expandedWorkKeys, activeRunCount, activeRunId, presentedTools, subagentActivities, questions, streamingAssistantText, outboxItems, recoveryOutboxItems) {
       history
         .buildTimeline(
           pendingRunCount = activeRunCount,
-          pendingToolCalls = pendingToolCalls,
+          pendingToolCalls = presentedTools,
           streamingAssistantText = streamingAssistantText,
           subagentActivities = subagentActivities,
           outboxItems = outboxItems,
@@ -1868,12 +1905,8 @@ private fun ChatMessageList(
                       )
                     }
 
-                    is ChatTimelineItem.PendingTools -> {
-                      ToolBubble(toolCalls = item.toolCalls)
-                    }
-
-                    is ChatTimelineItem.CompletedTools -> {
-                      CompletedToolActivity(tools = item.tools, stableKey = item.key)
+                    is ChatTimelineItem.ToolActivity -> {
+                      key(toolBridge) { ToolActivityDisclosure(item, sessionKey) }
                     }
 
                     is ChatTimelineItem.SubagentActivity -> {
@@ -2484,53 +2517,19 @@ private fun ChatText(
 }
 
 @Composable
-private fun ToolBubble(toolCalls: List<ChatPendingToolCall>) {
-  ClawPanel {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-      ClawStatusPill(text = nativeString("Tool activity"), status = ClawStatus.Warning)
-      toolCalls.filter { it.activity?.isVisible != false }.forEach { tool ->
-        ClawListItem(
-          title = tool.activity?.title ?: tool.name,
-          subtitle =
-            when (tool.activity?.status) {
-              "running" -> nativeString("OpenClaw is working")
-              "completed" -> nativeString("Finished")
-              "failed" -> nativeString("Failed")
-              "blocked" -> nativeString("Blocked")
-              else -> if (tool.activity == null && !tool.isComplete) nativeString("OpenClaw is working") else nativeString("No result")
-            },
-          trailing = { tool.liveDiff?.let { DiffStatChips(it) } },
-        )
-      }
-      CompletedToolActivity(
-        toolCalls.filter { it.activity?.isVisible == false }.map {
-          ChatToolActivity(it.toolCallId, it.name, null, null, it.isError == true, it.args, it.activity, true)
-        },
-        stableKey = "pending-tool-details",
-      )
-    }
-  }
-}
-
-@Composable
-private fun CompletedToolActivity(
-  tools: List<ChatToolActivity>,
-  stableKey: String,
+private fun ToolActivityDisclosure(
+  item: ChatTimelineItem.ToolActivity,
+  sessionKey: String,
 ) {
+  val tools = item.tools
+  val stableKey = "$sessionKey:${item.disclosureKey}"
   if (tools.isEmpty()) return
-  if (tools.size == 1 && !tools.single().activityPrepared && tools.single().activity == null) {
-    val tool = tools.single()
-    CompletedToolActivityItem(
-      tool = tool,
-      saveableKey = tool.toolCallId ?: "${tool.name}:${tool.detail.orEmpty().hashCode()}",
-      parentStableKey = stableKey,
-    )
-    return
-  }
   var expanded by rememberSaveable(stableKey) { mutableStateOf(false) }
   var showAll by rememberSaveable(stableKey) { mutableStateOf(false) }
   val summary = completedToolGroupSummary(tools)
-  val hasError = tools.any { it.isError }
+  val hasError = tools.any { it.isError || it.activity?.status == "failed" }
+  val hasBlocked = tools.any { it.activity?.status == "blocked" }
+  val running = item.liveTools.values.any { !it.isComplete }
   val state = if (expanded) nativeString("Expanded") else nativeString("Collapsed")
   // Remeasure disclosures immediately: nested size springs leave blank space
   // while the reverse-layout transcript readjusts its bottom anchor.
@@ -2564,8 +2563,20 @@ private fun CompletedToolActivity(
           modifier = Modifier.size(16.dp),
           tint = if (hasError) ClawTheme.colors.danger else ClawTheme.colors.textMuted,
         )
-        if (hasError) {
-          Text(text = nativeString("Tool error"), style = ClawTheme.type.caption, color = ClawTheme.colors.danger)
+        Text(text = nativeString("Tool activity"), style = ClawTheme.type.caption, color = ClawTheme.colors.textMuted)
+        if (hasError || hasBlocked || running) {
+          Text(
+            text =
+              if (hasError) {
+                nativeString("Tool error")
+              } else if (hasBlocked) {
+                nativeString("Blocked")
+              } else {
+                nativeString("OpenClaw is working")
+              },
+            style = ClawTheme.type.caption,
+            color = if (hasError || hasBlocked) ClawTheme.colors.danger else ClawTheme.colors.textMuted,
+          )
         }
         Text(
           text = summary,
@@ -2600,11 +2611,16 @@ private fun CompletedToolActivity(
         verticalArrangement = Arrangement.spacedBy(2.dp),
       ) {
         (if (showAll) tools else tools.take(COMPLETED_TOOL_DETAIL_LIMIT)).forEachIndexed { index, tool ->
-          CompletedToolActivityItem(
-            tool = tool,
-            saveableKey = tool.toolCallId ?: "$index:${tool.name}:${tool.detail.orEmpty().hashCode()}",
-            parentStableKey = stableKey,
-          )
+          val toolKey = item.toolKeys[index]
+          val rowKey = tool.toolCallId?.takeIf { id -> tools.count { it.toolCallId == id } == 1 } ?: item.liveTools[toolKey]?.presentationId ?: toolKey
+          key(rowKey) {
+            ToolActivityItem(
+              tool = tool,
+              live = item.liveTools[toolKey],
+              saveableKey = rowKey,
+              parentStableKey = stableKey,
+            )
+          }
         }
         if (!showAll && tools.size > COMPLETED_TOOL_DETAIL_LIMIT) {
           Surface(
@@ -2638,8 +2654,9 @@ private fun CompletedToolActivity(
 }
 
 @Composable
-private fun CompletedToolActivityItem(
+private fun ToolActivityItem(
   tool: ChatToolActivity,
+  live: ChatPendingToolCall?,
   saveableKey: String,
   parentStableKey: String,
 ) {
@@ -2650,6 +2667,13 @@ private fun CompletedToolActivityItem(
   var expanded by rememberSaveable(parentStableKey, saveableKey) { mutableStateOf(false) }
   val kind = completedToolKind(tool.name)
   val resultPresentation = completedToolResultPresentation(tool)
+  val liveStatus =
+    when {
+      tool.isError || tool.activity?.status == "failed" -> nativeString("Failed")
+      tool.activity?.status == "blocked" -> nativeString("Blocked")
+      live?.isComplete == false -> nativeString("OpenClaw is working")
+      else -> null
+    }
   val preview =
     tool.detail
       ?.lineSequence()
@@ -2657,7 +2681,7 @@ private fun CompletedToolActivityItem(
       ?.trim()
   val summary =
     if (kind == CompletedToolKind.Command) {
-      completedCommandText(tool).orEmpty()
+      completedCommandText(tool) ?: tool.activity?.title ?: completedToolDisplayName(tool.name)
     } else {
       val name = completedToolDisplayName(tool.name)
       preview?.substringAfter(": ", preview)?.let { "$name · $it" } ?: name
@@ -2703,8 +2727,8 @@ private fun CompletedToolActivityItem(
           modifier = Modifier.size(16.dp),
           tint = if (tool.isError) ClawTheme.colors.danger else ClawTheme.colors.textMuted,
         )
-        resultPresentation.outcome?.let { outcome ->
-          Text(text = outcome, style = ClawTheme.type.caption, color = ClawTheme.colors.danger)
+        (liveStatus ?: resultPresentation.outcome)?.let { outcome ->
+          Text(text = outcome, style = ClawTheme.type.caption, color = if (tool.isError || tool.activity?.status in setOf("failed", "blocked")) ClawTheme.colors.danger else ClawTheme.colors.textMuted)
         }
         Row(
           modifier = Modifier.weight(1f),
@@ -2727,6 +2751,7 @@ private fun CompletedToolActivityItem(
             overflow = TextOverflow.Ellipsis,
           )
         }
+        live?.liveDiff?.let { DiffStatChips(it) }
         if (expandable) {
           Icon(
             imageVector = if (expanded) Icons.Default.KeyboardArrowUp else Icons.AutoMirrored.Filled.KeyboardArrowRight,
@@ -3510,10 +3535,7 @@ internal fun resolveChatEffortPosition(
   return ChatEffortPosition(optionIndex = selectedIndex, fraction = fraction)
 }
 
-internal fun chatEffortNeedleAngle(
-  position: ChatEffortPosition,
-  fastMode: Boolean = false,
-): Float? = if (fastMode) 330f else position.fraction?.let { 180f + it * 120f }
+internal fun chatEffortNeedleAngle(position: ChatEffortPosition): Float? = position.fraction?.let { 180f + it * 120f }
 
 internal fun chatEffortVisualFraction(
   fraction: Float,
@@ -3537,6 +3559,7 @@ private fun ChatThinkingLevelPicker(
   val dialColor = if (enabled) ClawTheme.colors.textMuted else ClawTheme.colors.textSubtle
   val needleColor = if (enabled) ClawTheme.colors.text else ClawTheme.colors.textSubtle
   val fastZoneColor = ClawTheme.colors.danger.copy(alpha = if (enabled) 1f else 0.5f)
+  val boltColor = ClawTheme.colors.danger
   Surface(
     onClick = onOpen,
     enabled = enabled,
@@ -3549,28 +3572,53 @@ private fun ChatThinkingLevelPicker(
     color = Color.Transparent,
   ) {
     Box(contentAlignment = Alignment.Center) {
-      Canvas(modifier = Modifier.size(22.dp).testTag("chat-thinking-gauge")) {
-        val radius = size.width * 0.43f
-        val hub = Offset(center.x, size.height * 0.72f)
-        val bounds = Offset(hub.x - radius, hub.y - radius)
-        val dialSize = Size(radius * 2, radius * 2)
-        val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Butt)
-        for (start in listOf(180f, 225f, 270f)) {
-          drawArc(dialColor, start, 39f, false, bounds, dialSize, style = stroke)
-        }
-        drawArc(fastZoneColor, 315f, 45f, false, bounds, dialSize, style = stroke)
-        // Fast mode occupies the red zone; otherwise the needle reflects advertised effort.
-        chatEffortNeedleAngle(position, fastMode)?.let { angle ->
-          rotate(angle, pivot = hub) {
-            drawLine(
-              color = needleColor,
-              start = hub,
-              end = Offset(hub.x + radius * 0.83f, hub.y),
-              strokeWidth = 2.dp.toPx(),
-              cap = StrokeCap.Round,
-            )
+      Box(modifier = Modifier.size(28.dp).testTag("chat-thinking-gauge")) {
+        Canvas(modifier = Modifier.matchParentSize()) {
+          val radius = size.width * 0.43f
+          val hub = Offset(center.x, size.height * 0.72f)
+          val bounds = Offset(hub.x - radius, hub.y - radius)
+          val dialSize = Size(radius * 2, radius * 2)
+          val stroke = Stroke(width = 2.dp.toPx(), cap = StrokeCap.Butt)
+          for (start in listOf(180f, 225f, 270f)) {
+            drawArc(dialColor, start, 39f, false, bounds, dialSize, style = stroke)
           }
-          drawCircle(color = needleColor, radius = 1.5.dp.toPx(), center = hub)
+          // The red Fast zone remains part of the dial; the bolt separately marks Fast as active.
+          drawArc(fastZoneColor, 315f, 45f, false, bounds, dialSize, style = stroke)
+          chatEffortNeedleAngle(position)?.let { angle ->
+            rotate(angle, pivot = hub) {
+              drawLine(
+                color = needleColor,
+                start = hub,
+                end = Offset(hub.x + radius * 0.83f, hub.y),
+                strokeWidth = 2.dp.toPx(),
+                cap = StrokeCap.Round,
+              )
+            }
+            drawCircle(color = needleColor, radius = 1.5.dp.toPx(), center = hub)
+          }
+        }
+        if (fastMode) {
+          Canvas(
+            modifier =
+              Modifier
+                .align(AbsoluteAlignment.TopLeft)
+                .absoluteOffset(x = 16.75.dp, y = 13.dp)
+                .size(7.dp)
+                .testTag("chat-fast-mode-badge"),
+          ) {
+            // Use the wedge width: the stock Bolt vector is mostly transparent at this scale.
+            val bolt =
+              Path().apply {
+                moveTo(size.width * 0.58f, 0f)
+                lineTo(size.width * 0.2f, size.height * 0.56f)
+                lineTo(size.width * 0.47f, size.height * 0.56f)
+                lineTo(size.width * 0.34f, size.height)
+                lineTo(size.width * 0.86f, size.height * 0.38f)
+                lineTo(size.width * 0.57f, size.height * 0.38f)
+                close()
+              }
+            drawPath(bolt, color = boltColor)
+          }
         }
       }
     }
@@ -3583,29 +3631,64 @@ internal fun ChatEffortSliderControl(
   options: List<ChatThinkingLevelOption>,
   selectedId: String,
   enabled: Boolean,
+  onPreviewChange: (String?) -> Unit = {},
   onSelect: (String) -> Unit,
 ) {
   val languageTag = currentAppLanguage().languageTag
   val selectedPosition = resolveChatEffortPosition(selectedId, options)
-  var previewing by remember(selectedId, options) { mutableStateOf(false) }
+  var previewing by remember(selectedId, options, enabled) { mutableStateOf(false) }
   val sliderState =
-    remember(selectedId, options) {
+    remember(selectedId, options, enabled) {
       SliderState(
         value = selectedPosition.optionIndex.coerceAtLeast(0).toFloat(),
         steps = (options.size - 2).coerceAtLeast(0),
         valueRange = 0f..options.lastIndex.coerceAtLeast(0).toFloat(),
       )
     }
-  sliderState.onValueChange = { value ->
-    sliderState.value = value
-    previewing = true
-  }
-  sliderState.onValueChangeFinished = {
-    options.getOrNull(sliderState.value.roundToInt())?.let { option ->
-      if (!option.id.equals(selectedId, ignoreCase = true)) onSelect(option.id)
-    }
+  var active by remember(sliderState) { mutableStateOf(true) }
+
+  fun resetPreview() {
     sliderState.value = selectedPosition.optionIndex.coerceAtLeast(0).toFloat()
     previewing = false
+    onPreviewChange(null)
+  }
+  val interactionSource =
+    remember(sliderState) {
+      val delegate = MutableInteractionSource()
+      object : MutableInteractionSource by delegate {
+        // Material finishes both releases and cancellations. Foundation emits
+        // Cancel first; observe it synchronously rather than racing a collector.
+        override suspend fun emit(interaction: Interaction) {
+          if (interaction is DragInteraction.Cancel) resetPreview()
+          delegate.emit(interaction)
+        }
+
+        override fun tryEmit(interaction: Interaction): Boolean {
+          if (interaction is DragInteraction.Cancel) resetPreview()
+          return delegate.tryEmit(interaction)
+        }
+      }
+    }
+  DisposableEffect(sliderState) {
+    onDispose {
+      active = false
+      resetPreview()
+    }
+  }
+  sliderState.onValueChange = { value ->
+    if (active && enabled) {
+      sliderState.value = value
+      previewing = true
+      onPreviewChange(options.getOrNull(sliderState.value.roundToInt())?.id)
+    }
+  }
+  sliderState.onValueChangeFinished = {
+    if (active && enabled && previewing) {
+      options.getOrNull(sliderState.value.roundToInt())?.let { option ->
+        if (!option.id.equals(selectedId, ignoreCase = true)) onSelect(option.id)
+      }
+    }
+    resetPreview()
   }
   val sliderIndex = sliderState.value.roundToInt()
   val selectedLabel =
@@ -3633,6 +3716,7 @@ internal fun ChatEffortSliderControl(
       Slider(
         state = sliderState,
         enabled = enabled,
+        interactionSource = interactionSource,
         modifier =
           Modifier.padding(horizontal = 20.dp).semantics {
             contentDescription = nativeString("Thinking")
@@ -3720,12 +3804,15 @@ private fun ChatEffortSliderTrack(
 @Composable
 private fun ChatEffortSheet(
   opening: ChatModelPickerSession,
+  modelRef: String?,
+  selectionGeneration: Long,
   options: List<ChatThinkingLevelOption>,
   selectedId: String,
   thinkingSupported: Boolean,
   thinkingLevelEnabled: Boolean,
   fastMode: Boolean,
   fastModeEnabled: Boolean,
+  onPreviewChange: (String?) -> Unit,
   onSelect: (String) -> Unit,
   onFastModeChange: (Boolean) -> Unit,
   onDismiss: () -> Unit,
@@ -3747,12 +3834,17 @@ private fun ChatEffortSheet(
           .padding(bottom = 24.dp),
     ) {
       if (thinkingOptions.isNotEmpty()) {
-        ChatEffortSliderControl(
-          options = thinkingOptions,
-          selectedId = selectedId,
-          enabled = thinkingLevelEnabled,
-          onSelect = onSelect,
-        )
+        // Geometry belongs to the native opening. Only the gesture subtree may
+        // restart when the model/selection changes; detaching the sheet revokes it.
+        key(modelRef, selectionGeneration) {
+          ChatEffortSliderControl(
+            options = thinkingOptions,
+            selectedId = selectedId,
+            enabled = thinkingLevelEnabled,
+            onPreviewChange = onPreviewChange,
+            onSelect = onSelect,
+          )
+        }
       }
       if (thinkingOptions.isNotEmpty()) {
         HorizontalDivider(color = ClawTheme.colors.border, modifier = Modifier.padding(top = 14.dp))
