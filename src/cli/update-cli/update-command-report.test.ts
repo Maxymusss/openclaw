@@ -5,7 +5,10 @@ import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import { runInteractiveUpdateFailureAction } from "./update-command-report.js";
 
 const mocks = vi.hoisted(() => ({
-  select: vi.fn<() => Promise<string | symbol>>(),
+  select:
+    vi.fn<
+      (params: { options: Array<{ value: string; label: string }> }) => Promise<string | symbol>
+    >(),
   confirm: vi.fn<() => Promise<boolean | symbol>>(),
   prepare:
     vi.fn<typeof import("../../infra/update-failure-report.js").prepareUpdateFailureReport>(),
@@ -228,18 +231,28 @@ describe("interactive update failure action", () => {
     );
   });
 
-  it("retains the reviewed report across repeated thrown uploads before success", async () => {
-    const fixture = setup(["report", "report", "report"], true);
+  it("retires a browser retry choice after submission errors while retaining the report", async () => {
+    const fixture = setup(["report", "report", "report", "report"], true);
     fixture.submit
+      .mockResolvedValueOnce({
+        status: "retryable",
+        message: "GitHub authentication is unavailable.",
+        savedReportPath: fixture.prepared.savedReportPath,
+      })
       .mockRejectedValueOnce(new Error("transport failed"))
       .mockRejectedValueOnce(new Error("still unavailable"));
 
     await expect(fixture.run()).resolves.toBe("handled");
 
-    expect(fixture.chooseAction).toHaveBeenCalledTimes(3);
+    expect(fixture.chooseAction).toHaveBeenCalledTimes(4);
+    expect(
+      fixture.chooseAction.mock.calls.map(([params]) =>
+        params.options.some((option) => option.value === "browser"),
+      ),
+    ).toEqual([false, true, false, false]);
     expect(fixture.prepare).toHaveBeenCalledOnce();
-    expect(fixture.submit).toHaveBeenCalledTimes(3);
-    expect(mocks.confirm).toHaveBeenCalledTimes(3);
+    expect(fixture.submit).toHaveBeenCalledTimes(4);
+    expect(mocks.confirm).toHaveBeenCalledTimes(4);
     expect(fixture.runtime.error).toHaveBeenCalledTimes(2);
     for (const [report, digest] of fixture.submit.mock.calls) {
       expect(report).toBe(fixture.prepared);

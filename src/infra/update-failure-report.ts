@@ -129,7 +129,7 @@ export async function submitUpdateFailureReport(
     ) => GithubIssueSubmitResult | Promise<GithubIssueSubmitResult>;
     env?: NodeJS.ProcessEnv;
     /** Browser-only callers must never use the host account, even for reconciliation. */
-    publicationMode?: "host" | "browser";
+    publicationMode?: "host" | "browser" | "reconcile";
     /** Interactive CLI retries stay in the terminal instead of publishing a browser handoff. */
     allowBrowserFallback?: boolean;
     artifactSweepHooks?: UpdateFailureReportSweepHooks;
@@ -260,6 +260,26 @@ export async function submitUpdateFailureReport(
       prepared.previewDigest,
       prepared.url,
     );
+  }
+  // A status check cannot become a new publication if its receipt disappears or changes.
+  if (options.publicationMode === "reconcile") {
+    return existingReceipt
+      ? resultFromExistingReceipt(
+          existingReceipt,
+          bindSavedReportArtifact(
+            prepared,
+            existingReceipt.reservationId,
+            existingReceipt.previewDigest,
+          ).savedReportPath,
+          prepared.previewDigest,
+          prepared.url,
+        )
+      : {
+          message:
+            "The report's submission status could not be verified. No new issue was submitted.",
+          savedReportPath: prepared.savedReportPath,
+          status: "pending",
+        };
   }
   if (options.validateCurrentAttempt && !(await options.validateCurrentAttempt())) {
     return {
@@ -432,6 +452,7 @@ export async function submitUpdateFailureReport(
 
   const assertCurrentPreCreateState = () => assertUpdateReportPreCreateState(options);
   const afterAuthPreflight = assertCurrentPreCreateState;
+  let publicationAdmitted = false;
   const beforeIssueCreate = async () => {
     await assertCurrentPreCreateState();
     // Transport invokes this after its last await, immediately before starting the child.
@@ -449,6 +470,7 @@ export async function submitUpdateFailureReport(
           "reservation",
         );
       }
+      publicationAdmitted = true;
     };
   };
   const createIssue =
@@ -481,34 +503,38 @@ export async function submitUpdateFailureReport(
       });
     }
   } catch (error) {
-    if (!(error instanceof UpdateReportPreCreateGuardError)) {
+    if (error instanceof UpdateReportPreCreateGuardError) {
+      if (error.reason === "reservation") {
+        await discardSavedUpdateFailureReportBestEffort(ownedPrepared, saved, true);
+        return resultFromExistingReceipt(
+          readReceipt(prepared.attemptId, stateEnv),
+          ownedPrepared.savedReportPath,
+          prepared.previewDigest,
+          prepared.url,
+        );
+      }
+      if (!(await cleanupOwnedPreparation())) {
+        return resultFromExistingReceipt(
+          readReceipt(prepared.attemptId, stateEnv),
+          ownedPrepared.savedReportPath,
+          prepared.previewDigest,
+          prepared.url,
+        );
+      }
+      if (error.reason === "stale") {
+        return {
+          message: error.message,
+          savedReportPath: ownedPrepared.savedReportPath,
+          status: "stale",
+        };
+      }
       throw error;
     }
-    if (error.reason === "reservation") {
-      await discardSavedUpdateFailureReportBestEffort(ownedPrepared, saved, true);
-      return resultFromExistingReceipt(
-        readReceipt(prepared.attemptId, stateEnv),
-        ownedPrepared.savedReportPath,
-        prepared.previewDigest,
-        prepared.url,
-      );
+    if (!publicationAdmitted) {
+      throw error;
     }
-    if (!(await cleanupOwnedPreparation())) {
-      return resultFromExistingReceipt(
-        readReceipt(prepared.attemptId, stateEnv),
-        ownedPrepared.savedReportPath,
-        prepared.previewDigest,
-        prepared.url,
-      );
-    }
-    if (error.reason === "stale") {
-      return {
-        message: error.message,
-        savedReportPath: ownedPrepared.savedReportPath,
-        status: "stale",
-      };
-    }
-    throw error;
+    // Admission precedes the child start; a thrown response cannot make retry safe.
+    created = { reason: "creation-outcome-unknown", status: "outcome-unknown" };
   }
   if (created.status === "created") {
     const receipt: UpdateFailureReportReceipt = {

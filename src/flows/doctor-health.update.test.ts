@@ -27,7 +27,8 @@ const mocks = vi.hoisted(() => ({
   updateCommand: vi.fn<typeof import("../cli/update-cli/update-command.js").updateCommand>(),
   triageCommand: vi.fn(async () => undefined),
   outro: vi.fn(),
-  select: vi.fn<() => Promise<string>>(),
+  select:
+    vi.fn<(params: { options: Array<{ value: string; label: string }> }) => Promise<string>>(),
   confirmReport: vi.fn<() => Promise<boolean>>(),
   runGh: vi.fn<RunGithubCli>(),
   config: vi.fn<() => OpenClawConfig>(),
@@ -144,7 +145,14 @@ describe("runDoctorHealthFlow update outcomes", () => {
     mocks.stateMigrationReceipts = [];
   });
 
-  it.each(["authentication", "rejected", "uncertain", "thrown"] as const)(
+  it.each([
+    "authentication",
+    "rejected",
+    "uncertain",
+    "thrown",
+    "browser",
+    "missing-cli-browser",
+  ] as const)(
     "retains completed Doctor results across repeated %s uploads until success or explicit exit",
     async (failure) => {
       await withOpenClawTestState({ scenario: "minimal" }, async () => {
@@ -156,7 +164,10 @@ describe("runDoctorHealthFlow update outcomes", () => {
         });
         const runtime = { log: vi.fn(), error: vi.fn(), exit: vi.fn() };
         const uncertain = failure === "uncertain" || failure === "thrown";
-        const actions = ["report", "report", uncertain ? "dismiss" : "report"];
+        const browser = failure === "browser" || failure === "missing-cli-browser";
+        const actions = browser
+          ? ["report", "browser"]
+          : ["report", uncertain ? "status" : "report", uncertain ? "dismiss" : "report"];
         mocks.select.mockReset().mockImplementation(async () => {
           expect(mocks.runContributions).toHaveBeenCalledOnce();
           const savedMessage = log.mock.calls
@@ -179,9 +190,12 @@ describe("runDoctorHealthFlow update outcomes", () => {
         mocks.runGh.mockReset().mockImplementation(async (args, options) => {
           if (args[0] === "auth") {
             authCalls += 1;
+            if (failure === "missing-cli-browser") {
+              return { started: false, status: null, errorCode: "ENOENT", stdout: Buffer.alloc(0) };
+            }
             return {
               started: true,
-              status: failure === "authentication" && authCalls < 3 ? 1 : 0,
+              status: browser || (failure === "authentication" && authCalls < 3) ? 1 : 0,
               stdout: Buffer.alloc(0),
             };
           }
@@ -230,20 +244,40 @@ describe("runDoctorHealthFlow update outcomes", () => {
         });
         expect(run).toHaveBeenCalledOnce();
         expect(mocks.runContributions).toHaveBeenCalledOnce();
-        expect(mocks.select).toHaveBeenCalledTimes(3);
+        for (const [menuIndex, [menu]] of mocks.select.mock.calls.entries()) {
+          expect(menu.options.some((option) => option.value === "browser")).toBe(
+            menuIndex > 0 && !uncertain,
+          );
+          if (uncertain && menuIndex > 0) {
+            expect(menu.options.find((option) => option.value === "status")?.label).toBe(
+              "Check report status",
+            );
+            expect(menu.options.some((option) => option.value === "report")).toBe(false);
+          }
+        }
+        expect(mocks.select).toHaveBeenCalledTimes(browser ? 2 : 3);
         const previews = log.mock.calls
           .map(([value]) => value)
           .filter(
             (value): value is string =>
               typeof value === "string" && value.startsWith("# OpenClaw update failure report"),
           );
-        expect(previews).toHaveLength(uncertain ? 2 : 3);
+        expect(previews).toHaveLength(uncertain || browser ? 2 : 3);
         expect(new Set(previews).size).toBe(1);
         expect(previews[0]).toContain("doctor");
-        expect(uploads).toHaveLength(failure === "rejected" ? 3 : 1);
-        expect(new Set(uploads).size).toBe(1);
-        expect(log).not.toHaveBeenCalledWith(expect.stringContaining("Prefilled issue:"));
-        if (uncertain) {
+        expect(uploads).toHaveLength(browser ? 0 : failure === "rejected" ? 3 : 1);
+        expect(new Set(uploads).size).toBe(browser ? 0 : 1);
+        if (browser) {
+          expect(authCalls).toBe(1);
+          expect(log).toHaveBeenCalledWith(
+            expect.stringContaining(
+              "Prefilled issue: https://github.com/openclaw/openclaw/issues/new?",
+            ),
+          );
+        } else {
+          expect(log).not.toHaveBeenCalledWith(expect.stringContaining("Prefilled issue:"));
+        }
+        if (uncertain || browser) {
           expect(log).not.toHaveBeenCalledWith(expect.stringContaining("Created GitHub issue:"));
         } else {
           expect(log).toHaveBeenCalledWith(

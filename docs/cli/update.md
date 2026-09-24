@@ -117,11 +117,14 @@ read-only request before issue creation. Fallback and pending outcomes retain th
 sanitized report locally; a confirmed issue keeps only its durable issue URL.
 If the CLI is missing, authentication is unavailable, or GitHub rejects the
 upload, OpenClaw keeps the sanitized report locally and returns to the previous
-action menu instead of exiting or handing off to a browser. Fix the problem,
-then choose **Report update failure** and confirm again to retry the same report;
-completed update and Doctor checks are not rerun. Preparation or submission
-errors also return to the menu. An uncertain upload stays pending: choosing
-Report again checks for the existing issue without creating another one.
+action menu. Fix the problem, then choose **Report update failure** and confirm
+again to retry the same report, or choose **Report in browser** to review and
+submit it with your browser's GitHub account. The browser choice is available
+when the prepared report fits a prefilled link and no uncertain upload is pending;
+it does not require the GitHub CLI. Completed update and Doctor checks are not
+rerun. Preparation or submission errors also return to the menu. An uncertain
+upload stays pending: **Check report status** looks for the existing issue without
+creating another one, and no browser handoff is offered.
 Successful submission, explicit exit, and cancellation retain their normal
 behavior; Diagnose runs only when selected explicitly.
 In the Control UI, an interrupted
