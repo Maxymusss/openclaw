@@ -36,8 +36,8 @@ import type {
   RespondFn,
 } from "./server-methods/types.js";
 import { getSessionRowProjection } from "./session-row-projection-access.js";
+import { createGatewaySessionEntryReader } from "./session-utils-store-lineage.js";
 import {
-  createGatewaySessionEntryReader,
   prepareGatewaySessionStoreTargetsReadOnly,
   resolveGatewaySessionStoreTarget,
   resolveGatewaySessionStoreTargetWithStore,

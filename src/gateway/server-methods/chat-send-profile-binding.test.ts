@@ -20,11 +20,15 @@ import {
   loadTranscriptEventsSync,
   patchSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
+import { addSessionMember } from "../../config/sessions/session-sharing-store.js";
+import { removeSessionMember as removeSessionMemberSync } from "../../config/sessions/session-sharing-store.native.js";
 import { runExclusiveSessionStoreWrite } from "../../config/sessions/store-writer.js";
 import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import { ensureProfileForEmail, linkEmail } from "../../state/user-profiles.js";
 import { createExpectedProfileBinding } from "../expected-profile.js";
 import { PENDING_CHAT_SEND_DEDUPE_PREFIX } from "../server-shared.js";
+import { resolveSessionMutationAuthorizationAsync } from "../session-sharing-authorization-async.js";
+import { roleClient, rolePolicyConfig } from "../session-sharing.test-utils.js";
 import { dispatchInboundMessageMock, installGatewayTestHooks } from "../test-helpers.js";
 import { admitChatSend } from "./chat-send-admission.js";
 import { useBrowserFollowupFixture } from "./chat-send-pending-inputs.test-support.js";
@@ -35,6 +39,70 @@ registerAgentSessionLoopTestLifecycle();
 const createBrowserFollowupFixture = useBrowserFollowupFixture();
 
 describe("native profile-bound input admission", () => {
+  it("rejects membership revoked inside retained chat admission before dispatch", async () => {
+    const fixture = await createBrowserFollowupFixture({
+      createdActor: { type: "human", source: "profile", id: "another-profile" },
+    });
+    const cfg = { ...rolePolicyConfig(), session: { store: fixture.scope.storePath } };
+    const member = roleClient("view", "chat-admission-member");
+    Object.assign(fixture.client, member, { connId: "chat-admission-member" });
+    fixture.context.getRuntimeConfig = () => cfg;
+    await patchSessionEntryCore(fixture.scope, (entry) => ({
+      ...entry,
+      visibility: "read-only",
+    }));
+    await addSessionMember(fixture.scope, {
+      identityId: member.authenticatedUserProfile!.profileId,
+      addedBy: "another-profile",
+    });
+    const normalized = normalizeChatSendRequest({ params: fixture.params, client: fixture.client });
+    if (!normalized.ok) {
+      throw new Error(normalized.error);
+    }
+    const prepared = await prepareChatSendSession({
+      request: normalized.value,
+      client: fixture.client,
+      context: fixture.context,
+    });
+    if (!prepared.ok) {
+      throw new Error("session preparation failed");
+    }
+    const session = qualifyChatSendSession(prepared.value);
+    const resolved = await resolveSessionMutationAuthorizationAsync({
+      client: fixture.client,
+      method: "chat.send",
+      requestParams: fixture.params,
+      context: fixture.context,
+    });
+    expect(resolved.error).toBeNull();
+    const authorization = resolved.authorization!;
+    const respond = vi.fn();
+    try {
+      await expect(
+        admitChatSend({
+          request: normalized.value,
+          session,
+          client: fixture.client,
+          context: fixture.context,
+          respond,
+          assertCurrent: authorization.assertCurrent,
+          withCurrent: authorization.withCurrent,
+          withPreparedCurrent: (facts, consume, assertSourceCurrent) => {
+            removeSessionMemberSync(fixture.scope, member.authenticatedUserProfile!.profileId);
+            return authorization.withPreparedCurrent!(facts, consume, assertSourceCurrent);
+          },
+        }),
+      ).resolves.toEqual({ ok: false });
+      expect(fixture.context.dedupe.size).toBe(0);
+      expect(fixture.context.chatAbortControllers.size).toBe(0);
+      expect(dispatchInboundMessageMock).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledWith(false, undefined, expect.anything());
+    } finally {
+      session.releaseSessionTarget();
+      await fixture.cleanup();
+    }
+  });
+
   it.each(["reservation", "writer", "approval"] as const)(
     "rejects a native account merge at %s without accepting or terminalizing input",
     async (boundary) => {
@@ -67,7 +135,7 @@ describe("native profile-bound input admission", () => {
           if (!normalized.ok) {
             throw new Error(normalized.error);
           }
-          const prepared = prepareChatSendSession({
+          const prepared = await prepareChatSendSession({
             request: normalized.value,
             client: fixture.client,
             context: fixture.context,

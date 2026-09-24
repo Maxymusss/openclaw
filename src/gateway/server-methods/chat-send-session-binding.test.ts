@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { prepareSystemAgentRunAdmission } from "../../agents/admitted-run-context.js";
@@ -39,7 +40,7 @@ import { createChatRunState } from "../server-chat-state.js";
 import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import { resolveSessionMutationAuthorization } from "../session-sharing.js";
-import * as sessionUtils from "../session-utils.js";
+import * as sessionStores from "../session-utils-store.js";
 import * as chatDispatch from "./chat-send-agent-dispatch.js";
 import { handleDirectExternalChatSend } from "./chat-send-external-entry.js";
 import { handleChatSend } from "./chat-send-handler.js";
@@ -602,16 +603,16 @@ it.each<{
       });
     const context = createDirectChatContext({ getRuntimeConfig });
     let databaseReplaced = false;
-    const loadSessionEntry = sessionUtils.loadSessionEntry;
+    const readSessionEntry = sessionStores.withGatewaySessionEntry;
     const replaceAfterSelection = scenario.replaceDatabase
-      ? vi.spyOn(sessionUtils, "loadSessionEntry").mockImplementation((...args) => {
-          const loaded = loadSessionEntry(...args);
+      ? vi.spyOn(sessionStores, "withGatewaySessionEntry").mockImplementation(async (...args) => {
+          const loaded = await readSessionEntry(...args);
           if (!databaseReplaced) {
-            const source = loaded.readSource;
-            if (!source) {
+            const source = isRecord(loaded) ? loaded.capturedReadSource : undefined;
+            if (!isRecord(source) || typeof source.path !== "string") {
               throw new Error("Expected the selected physical database before replacement");
             }
-            closeOpenClawAgentDatabaseByPath(source.path);
+            await closeOpenClawAgentDatabaseByPathAsync(source.path);
             if (scenario.replaceDatabase === "copy") {
               fs.renameSync(source.path, originalPath);
               fs.copyFileSync(originalPath, source.path);

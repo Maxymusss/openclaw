@@ -534,6 +534,16 @@ serveOwnedWorkerTasks(
                       ),
                     };
                   }
+                  if (request.request.kind === "message-by-id") {
+                    return {
+                      kind: "message-by-id",
+                      message: await options.readers.readSessionMessageByIdAsync(
+                        request.request.params.target,
+                        request.request.params.messageId,
+                        request.request.params.options,
+                      ),
+                    };
+                  }
                   if (request.request.kind === "recent") {
                     const { target, ...limits } = request.request.params;
                     const { messages } =
@@ -607,7 +617,7 @@ serveOwnedWorkerTasks(
       if (
         error instanceof SyntaxError &&
         request.kind === "history-page" &&
-        request.request.kind === "message-lookup"
+        (request.request.kind === "message-lookup" || request.request.kind === "message-by-id")
       ) {
         return { ok: false, error: { kind: "syntax", message: error.message } };
       }

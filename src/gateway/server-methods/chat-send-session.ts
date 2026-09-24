@@ -25,7 +25,7 @@ import type {
 import { buildSessionCreationStamp } from "../../config/sessions/session-entry-provenance.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { measureDiagnosticsTimelineSpanSync } from "../../infra/diagnostics-timeline.js";
+import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { resolveMissingAgentHarnessSessionError } from "../../sessions/agent-harness-session-key.js";
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
@@ -33,6 +33,10 @@ import { isBrowserOperatorUiClient } from "../../utils/message-channel.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
+import {
+  withGatewaySessionEntry,
+  withQualifiedGatewaySessionEntry,
+} from "../session-utils-store.js";
 import {
   loadSessionEntry,
   resolveDeletedAgentIdFromSessionKey,
@@ -89,7 +93,7 @@ export function prepareChatSendSessionEntry(params: {
   };
 }
 
-function loadChatSendSessionContext(params: {
+async function loadChatSendSessionContext(params: {
   request: NormalizedChatSendRequest;
   context: GatewayRequestHandlerOptions["context"];
 }) {
@@ -121,9 +125,22 @@ function loadChatSendSessionContext(params: {
       : rawSessionKey;
   const sessionLoadOptions = { agentId: requestedAgentId };
   const sessionLoadStartedAtMs = performance.now();
-  const sessionLoadResult = measureDiagnosticsTimelineSpanSync(
+  const sessionLoadResult = await measureDiagnosticsTimelineSpan(
     "gateway.chat_send.load_session",
-    () => loadSessionEntry(sessionLoadKey, sessionLoadOptions, runtimeConfig),
+    () =>
+      request.stopCommand
+        ? loadSessionEntry(sessionLoadKey, sessionLoadOptions, runtimeConfig)
+        : withGatewaySessionEntry(
+            sessionLoadKey,
+            sessionLoadOptions,
+            (entry) => entry,
+            runtimeConfig,
+            () => {
+              if (!isDeepStrictEqual(runtimeConfig, context.getRuntimeConfig())) {
+                throw new Error("Session routing changed during preparation");
+              }
+            },
+          ),
     {
       phase: "agent-turn",
       attributes: {
@@ -133,6 +150,9 @@ function loadChatSendSessionContext(params: {
       },
     },
   );
+  if (!isDeepStrictEqual(runtimeConfig, context.getRuntimeConfig())) {
+    throw new Error("Session routing changed during preparation");
+  }
   const sessionLoadMs = roundedChatSendTimingMs(performance.now() - sessionLoadStartedAtMs);
   const { cfg, agentId, storePath, entry, canonicalKey: sessionKey, legacyKey } = sessionLoadResult;
   const expectedSessionRoutingContract = normalizeOptionalChatText(
@@ -175,12 +195,12 @@ function loadChatSendSessionContext(params: {
 }
 
 /** Load and validate the session/model facts shared by later admission and dispatch phases. */
-export function prepareChatSendSession(params: {
+export async function prepareChatSendSession(params: {
   request: NormalizedChatSendRequest;
   context: GatewayRequestHandlerOptions["context"];
   client: GatewayRequestHandlerOptions["client"];
 }) {
-  const loaded = loadChatSendSessionContext(params);
+  const loaded = await loadChatSendSessionContext(params);
   if (!loaded.ok) {
     return loaded;
   }
@@ -262,7 +282,7 @@ export function prepareChatSendSession(params: {
 }
 
 export type LoadedChatSendSession = Extract<
-  ReturnType<typeof prepareChatSendSession>,
+  Awaited<ReturnType<typeof prepareChatSendSession>>,
   { ok: true }
 >["value"];
 
@@ -295,12 +315,11 @@ export function qualifyChatSendSession(loaded: LoadedChatSendSession): PreparedC
   };
 }
 
-/** Admission reloads once, retaining the original physical choice and logical identity. */
-export function loadCurrentChatSendSession(session: PreparedChatSendSession) {
-  const latest = loadSessionEntry(session.sessionLoadKey, {
-    ...session.sessionLoadOptions,
-    clone: false,
-  });
+/** Validate a worker-prepared admission row against the qualified session source. */
+export function assertCurrentChatSendSession(
+  session: PreparedChatSendSession,
+  latest: ReturnType<typeof loadSessionEntry>,
+) {
   if (session.sessionRoutingChanged(latest.cfg)) {
     throw new Error(SESSION_ROUTING_CHANGED_ERROR_REASON);
   }
@@ -313,7 +332,41 @@ export function loadCurrentChatSendSession(session: PreparedChatSendSession) {
     throw new Error("Session storage changed while starting work. Retry.");
   }
   session.assertSessionTargetCurrent();
-  return latest;
+}
+
+export function withCurrentChatSendSession<T>(params: {
+  session: PreparedChatSendSession;
+  getRuntimeConfig: () => OpenClawConfig;
+  includeMembership: boolean;
+  consume: Parameters<typeof withGatewaySessionEntry<T>>[2];
+}) {
+  const { session } = params;
+  const assertConfigCurrent = () => {
+    const currentConfig = params.getRuntimeConfig();
+    if (
+      !isDeepStrictEqual(session.cfg, currentConfig) ||
+      session.sessionRoutingChanged(currentConfig)
+    ) {
+      throw new Error(SESSION_ROUTING_CHANGED_ERROR_REASON);
+    }
+  };
+  if (isIncognitoSessionKey(session.sessionKey)) {
+    return withGatewaySessionEntry(
+      session.sessionLoadKey,
+      { ...session.sessionLoadOptions, includeMembership: params.includeMembership },
+      params.consume,
+      session.cfg,
+      assertConfigCurrent,
+    );
+  }
+  return withQualifiedGatewaySessionEntry({
+    cfg: session.cfg,
+    target: session.sessionTarget,
+    logicalStorePath: session.storePath,
+    includeMembership: params.includeMembership,
+    consume: params.consume,
+    assertConfigCurrent,
+  });
 }
 
 /** Refuse before send admission so confirmation can retain the unsent composer. */
@@ -323,6 +376,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
   client: GatewayRequestHandlerOptions["client"];
   context: GatewayRequestHandlerOptions["context"];
   assertCurrent?: () => void;
+  assertCurrentAsync?: () => Promise<void>;
 }): Promise<ErrorShape | undefined> {
   const { request, session, client, context } = params;
   const { entry, cfg, agentId, sessionKey, resolvedSessionModel } = session;
@@ -391,7 +445,7 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
     import("../../config/sessions/session-accessor.reset.js"),
     import("../../sessions/session-created.js"),
   ]);
-  params.assertCurrent?.();
+  await (params.assertCurrentAsync ? params.assertCurrentAsync() : params.assertCurrent?.());
   const scope = { agentId, sessionKey, storePath: session.storePath };
   const snapshot = loadReplySessionInitializationSnapshot(scope);
   if (snapshot.currentEntry) {
@@ -413,7 +467,6 @@ export async function prepareChatSendNativeRuntimeRestriction(params: {
     sessionEntry: prepared.entry,
     commitGuard: () => {
       params.assertCurrent?.();
-      session.assertSessionTargetCurrent();
       prepared.assertSkillSelection();
       const currentConfig = context.getRuntimeConfig();
       const current = loadSessionEntry(session.sessionLoadKey, session.sessionLoadOptions);
