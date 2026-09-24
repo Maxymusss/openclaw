@@ -46,9 +46,8 @@ const isWin = process.platform === "win32";
 
 const describeNonWin = isWin ? describe.skip : describe;
 const describeWin = isWin ? describe : describe.skip;
-// These fixtures own the working directory until the child has settled. A running
-// result would let withTempDir remove a live child cwd (EBUSY on Windows).
 const createPreflightTool = () =>
+  // Each fixture owns its cwd until the command settles; no process tool polls a continuation.
   createExecTool({ host: "gateway", security: "full", ask: "on-miss", allowBackground: false });
 const runExecPreflight = (params: { command: string; workdir: string }) =>
   createPreflightTool().execute("call-script-preflight", params);
