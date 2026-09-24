@@ -188,7 +188,7 @@ async function expectRestartNotice(page: Page, key: string) {
           count: historyText(messages).filter((text) => text === restartNotice).length,
           messageCount: matching.length,
           messages: matching.slice(0, 8).map((message) => {
-            const metadata = asNullableRecord(asNullableRecord(message)?.__openclaw);
+            const metadata = asNullableRecord(asNullableRecord(message)?.["__openclaw"]);
             return {
               id: identity(metadata?.id),
               runId: identity(metadata?.runId),
