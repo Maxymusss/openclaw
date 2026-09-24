@@ -37,6 +37,7 @@ import {
 import {
   ensureTaskRegistryReadyAsync,
   runTaskRegistryWorkerMutation,
+  tasks,
 } from "./task-registry-state.js";
 import type { TaskRegistryStore } from "./task-registry.store.js";
 import {
@@ -163,6 +164,20 @@ function createTaskRunReceipt(
       await captureTaskRegistryReadFence(creation.context.admission);
       assertBindingCurrent();
       const bound = binding.bind(captureTaskPersistenceReceipt(readAcknowledged()));
+      bound.owner.readCurrent = () => {
+        creation.assertStores();
+        const current = tasks.get(acknowledged.taskId);
+        if (
+          !current ||
+          !matchesTaskPersistenceReceipt(current, captureTaskPersistenceReceipt(readAcknowledged()))
+        ) {
+          throw new Error("Task creation receipt was replaced or removed.");
+        }
+        return current;
+      };
+      bound.owner.assertCurrent = () => {
+        bound.owner.readCurrent?.();
+      };
       return {
         owner: bound.owner,
         release() {

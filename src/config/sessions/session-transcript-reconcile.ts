@@ -269,7 +269,11 @@ async function finalizePreparedProjection(
         );
       if (session) {
         sessionChanges.emit(
-          { storePath: database.path, sessionKey: session.session_key },
+          {
+            storePath: database.path,
+            sessionKey: session.session_key,
+            facts: { kind: "unchanged" },
+          },
           database.db,
         );
       }

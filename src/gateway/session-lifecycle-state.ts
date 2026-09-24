@@ -541,6 +541,8 @@ export async function persistGatewaySessionLifecycleEvent(params: {
           sessionKey: sessionEntry.canonicalKey,
           agentId: sessionEntry.agentId,
           storePath: sessionEntry.storePath,
+          // The SQLite writer already published sharing facts; this adapter only projects run state.
+          facts: { kind: "unchanged" },
         }),
       ...(params.assertCommitAllowed || providerReview
         ? {

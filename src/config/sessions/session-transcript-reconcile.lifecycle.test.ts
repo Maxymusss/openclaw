@@ -339,6 +339,8 @@ describe("session transcript reconcile worker lifecycle", () => {
       const probe = createPlanFinishFence(scope.sessionId);
       const changes = vi.fn(() => database.db.isTransaction);
       const unsubscribe = sessionChanges.subscribe(changes);
+      const facts = vi.fn();
+      const unsubscribeFacts = sessionChanges.subscribeFacts(facts);
       startSessionTranscriptIndexReconcile({
         ...databaseOptions,
         preferredSessionId: scope.sessionId,
@@ -376,6 +378,11 @@ describe("session transcript reconcile worker lifecycle", () => {
           sessionKey: scope.sessionKey,
         });
         expect(changes.mock.results[0]?.value).toBe(false);
+        expect(facts).toHaveBeenCalledWith({
+          storePath: database.path,
+          sessionKey: scope.sessionKey,
+          facts: { kind: "unchanged" },
+        });
         await vi.waitFor(() => expect(targetOutcome).toEqual({ ready: true }));
         expect(allReconciled).toBe(false);
         expect(
@@ -391,6 +398,7 @@ describe("session transcript reconcile worker lifecycle", () => {
           await Promise.all([targetReconciliation, allReconciliation]);
         } finally {
           unsubscribe();
+          unsubscribeFacts();
         }
       }
       expect(changes.mock.calls).toEqual([

@@ -109,6 +109,7 @@ export async function runSessionsSendA2AFlow(params: {
   sourceReplyDelivered?: true;
   roundOneReply?: string;
   waitRunId?: string;
+  settledReply?: AgentWaitResult & { replyText?: string };
   notifyRequesterOnWaitFailure?: boolean;
 }) {
   const runContextId = params.waitRunId ?? "unknown";
@@ -116,13 +117,15 @@ export async function runSessionsSendA2AFlow(params: {
   try {
     let primaryReply = params.roundOneReply;
     let sourceReplyDelivered = params.sourceReplyDelivered;
-    if (!primaryReply && params.waitRunId) {
-      const wait = await waitForAgentRunReply({
-        runId: params.waitRunId,
-        timeoutMs: Math.min(params.announceTimeoutMs, 60_000),
-        callGateway: gatewayCall,
-        untilTerminal: true,
-      });
+    if (!primaryReply && (params.waitRunId || params.settledReply)) {
+      const wait =
+        params.settledReply ??
+        (await waitForAgentRunReply({
+          runId: params.waitRunId!,
+          timeoutMs: Math.min(params.announceTimeoutMs, 60_000),
+          callGateway: gatewayCall,
+          untilTerminal: true,
+        }));
       if (wait.status === "ok") {
         primaryReply = wait.replyText;
         sourceReplyDelivered = wait.sourceReplyDelivered;

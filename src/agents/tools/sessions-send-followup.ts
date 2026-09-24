@@ -1,0 +1,253 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { getRuntimeConfig } from "../../config/config.js";
+import {
+  resolveGatewayOperatorRoleActor,
+  resolveOperatorRolePolicyForAssignment,
+} from "../../gateway/operator-role-policy.js";
+import { captureOperatorToolGatewayContinuationContext } from "../../gateway/server-plugin-in-process-dispatch.js";
+import { authorizePreparedSessionMutation } from "../../gateway/session-sharing-policy.js";
+import {
+  prepareSessionMutationFacts,
+  SessionMutationFactsUnavailableError,
+} from "../../gateway/session-sharing-preparation.js";
+import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
+import { prepareUserProfileRoleAuthority } from "../../state/user-channel-identity-operations.js";
+import { withFollowupRequest, type FollowupRequest } from "../../tasks/task-followup-completion.js";
+import {
+  captureGatewayToolCallerAssertion,
+  getGatewayToolCallerIdentity,
+} from "./gateway-caller-context.js";
+import { startSessionsSendReplyFlow } from "./sessions-send-reply-flow.js";
+import { startSessionsSendAgentRun } from "./sessions-send-tool.delivery.js";
+import { jsonResult } from "./tool-results.js";
+
+class FollowupAccessChangedError extends Error {}
+
+/** Prepare current facts through their worker owner; no stored identity becomes authority. */
+export async function prepareSessionsSendFollowup(params: {
+  runId: string;
+  requesterAgentId: string;
+  requesterSessionKey: string;
+  targetAgentId: string;
+  targetSessionKey: string;
+}): Promise<FollowupRequest | undefined> {
+  const caller = getGatewayToolCallerIdentity();
+  if (!caller) {
+    return undefined;
+  }
+  const assertInvocation = captureGatewayToolCallerAssertion();
+  assertInvocation?.();
+  if (
+    caller.agentId !== params.requesterAgentId ||
+    caller.sessionKey !== params.requesterSessionKey
+  ) {
+    throw new Error("Followup result requester differs from its admitted tool caller.");
+  }
+  const captured = captureOperatorToolGatewayContinuationContext();
+  if (!captured) {
+    throw new Error("Followup completion requires in-process caller custody.");
+  }
+  const facts: Awaited<ReturnType<typeof prepareSessionMutationFacts>>[] = [];
+  const revoked = new AbortController();
+  const signal = AbortSignal.any([captured.signal, revoked.signal]);
+  let stopAccessWatch: (() => void) | undefined;
+  let released = false;
+  const release = () => {
+    if (released) {
+      return;
+    }
+    released = true;
+    stopAccessWatch?.();
+    for (const read of facts) {
+      read.release();
+    }
+    captured.release();
+  };
+  try {
+    const cfg = getRuntimeConfig();
+    const client = captured.run(() => getPluginRuntimeGatewayRequestScope()?.client);
+    const actor = resolveGatewayOperatorRoleActor(client ?? null);
+    if (!client || !actor) {
+      throw new Error("Followup has no retained original caller policy.");
+    }
+    const policyClient = {
+      ...client,
+      connect: { ...client.connect, scopes: [...(client.connect.scopes ?? [])] },
+      internal: { ...client.internal, operatorRoleActor: { ...actor } },
+    };
+    const profile =
+      actor.kind === "operator"
+        ? await prepareUserProfileRoleAuthority(actor.profileId)
+        : undefined;
+    if (actor.kind === "operator" && (!profile || profile.profileId !== actor.profileId)) {
+      throw new FollowupAccessChangedError("Followup requester profile is unavailable.");
+    }
+    assertInvocation?.();
+    for (const target of [
+      { agentId: params.requesterAgentId, sessionKey: params.requesterSessionKey },
+      { agentId: params.targetAgentId, sessionKey: params.targetSessionKey },
+    ]) {
+      facts.push(await prepareSessionMutationFacts({ cfg, ...target }));
+      assertInvocation?.();
+      captured.run(() => {});
+    }
+    const identities = facts.map((read) => {
+      const target = read.readCurrent(cfg).target;
+      if (!target?.entry || target.entry.archivedAt !== undefined) {
+        throw new Error("Followup requires existing unarchived conversations.");
+      }
+      return {
+        agentId: target.agentId,
+        storePath: target.storePath,
+        key: target.canonicalKey,
+        sessionId: target.entry.sessionId,
+        lifecycleRevision: target.entry.lifecycleRevision,
+      };
+    });
+    const assertCurrent = () => {
+      signal.throwIfAborted();
+      if (released) {
+        throw new Error("Followup completion custody was released.");
+      }
+      captured.run(() => {});
+      if (profile && !profile.isCurrent()) {
+        throw new FollowupAccessChangedError("Followup requester identity changed.");
+      }
+      const currentConfig = getRuntimeConfig();
+      for (const [index, read] of facts.entries()) {
+        const expected = identities[index]!;
+        const currentFacts = read.readCurrent(currentConfig);
+        const current = currentFacts.target;
+        if (
+          !current?.entry ||
+          current.entry.archivedAt !== undefined ||
+          current.agentId !== expected.agentId ||
+          current.storePath !== expected.storePath ||
+          current.canonicalKey !== expected.key ||
+          current.entry.sessionId !== expected.sessionId ||
+          current.entry.lifecycleRevision !== expected.lifecycleRevision
+        ) {
+          throw new FollowupAccessChangedError(
+            "Followup conversation incarnation was replaced or archived.",
+          );
+        }
+        const denied = authorizePreparedSessionMutation(
+          {
+            cfg: currentConfig,
+            client: policyClient,
+            sessionKey: expected.key,
+            agentId: expected.agentId,
+          },
+          currentFacts,
+          {
+            policy:
+              actor.kind === "system"
+                ? undefined
+                : resolveOperatorRolePolicyForAssignment(
+                    actor.profileId,
+                    profile?.role ?? null,
+                    currentConfig,
+                  ),
+            aliases: new Set(profile?.aliases ?? []),
+          },
+        );
+        if (denied) {
+          throw new FollowupAccessChangedError("Followup session access was revoked.");
+        }
+      }
+    };
+    assertCurrent();
+    stopAccessWatch = sessionChanges.subscribe((change) => {
+      if (
+        "sessionKey" in change &&
+        !identities.some((identity) => identity.key === change.sessionKey)
+      ) {
+        return;
+      }
+      try {
+        assertCurrent();
+      } catch (error) {
+        // Pending metadata remains fenced. A committed denial is irreversible for this capture.
+        if (
+          !(error instanceof SessionMutationFactsUnavailableError) &&
+          error instanceof FollowupAccessChangedError
+        ) {
+          revoked.abort(error);
+        }
+      }
+    });
+    return {
+      runId: params.runId,
+      requesterSessionKey: params.requesterSessionKey,
+      requesterSessionId: identities[0]!.sessionId,
+      requesterAgentId: params.requesterAgentId,
+      targetSessionKey: params.targetSessionKey,
+      targetAgentId: params.targetAgentId,
+      custody: {
+        signal,
+        assertCurrent,
+        release,
+        run<T>(work: () => T): T {
+          assertCurrent();
+          return captured.run(work);
+        },
+      },
+    };
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
+/** Reconcile only the original admission; an uncertain ACK never starts a replacement. */
+export async function startSessionsSendFollowup(
+  request: FollowupRequest | undefined,
+  params: Parameters<typeof startSessionsSendAgentRun>[0],
+) {
+  const dispatch = () => startSessionsSendAgentRun(params);
+  const start = request ? await withFollowupRequest(request, dispatch) : await dispatch();
+  const completion = request?.completion;
+  if (!start.ok) {
+    if (completion?.accepted && request) {
+      // The live owner proves acceptance even when its transport ACK was lost.
+      // Preserve that one result obligation; never dispatch another target run.
+      startSessionsSendReplyFlow({
+        runId: request.runId,
+        completion,
+        skip: false,
+        callGateway: params.callGateway,
+        targetSessionKey: request.targetSessionKey,
+        targetAgentId: params.sendParams.agentId,
+        displayKey: params.sessionKey,
+        message: params.sendParams.message,
+        announceTimeoutMs: params.deliveryTimeoutMs ?? 30_000,
+        maxPingPongTurns: 0,
+        replyMode: "one-way",
+        requesterAgentId: request.requesterAgentId,
+        requesterSessionKey: request.requesterSessionKey,
+        notifyRequesterOnWaitFailure: true,
+      });
+      return {
+        start: {
+          ...start,
+          result: jsonResult({
+            ...(isRecord(start.result.details) ? start.result.details : {}),
+            sentBeforeError: true,
+          }),
+        },
+        completion,
+      };
+    }
+    completion?.close();
+    if (!completion) {
+      request?.custody.release();
+    }
+    return { start, completion };
+  }
+  if (request && !completion) {
+    request.custody.release();
+    throw new Error("Gateway did not retain followup result custody; inspect the accepted run.");
+  }
+  return { start, completion };
+}

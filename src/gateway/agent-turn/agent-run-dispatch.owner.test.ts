@@ -1,11 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
+import type { AgentCommandDeliveryResult } from "../../agents/command/delivery-result.js";
 import type { AgentCommandOpts } from "../../agents/command/types.js";
+import type { SubagentRunRecord } from "../../agents/subagents/registry/subagent-registry.types.js";
 import type { CreatedDetachedTaskRun } from "../../tasks/detached-task-runtime-contract.js";
+import { TaskFollowupCompletion } from "../../tasks/task-followup-completion.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";
 import type { TaskRunOwner } from "../../tasks/task-run-owner.types.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { setGatewayDedupeEntries } from "./agent-dedupe.js";
+import { createDispatchFollowupRequest } from "./agent-run-dispatch-followup.test-support.js";
 import { dispatchAgentRunFromGateway } from "./agent-run-dispatch.js";
 import { createTrackedDispatch } from "./agent-run-dispatch.test-support.js";
 
@@ -13,10 +17,18 @@ const mocks = vi.hoisted(() => ({
   createTaskReceipt:
     vi.fn<(params: unknown, assertCurrent: () => void) => Promise<CreatedDetachedTaskRun | null>>(),
   createRunningTaskRun: vi.fn<() => TaskRecord | null>(),
-  agentCommand: vi.fn(async (options: Pick<AgentCommandOpts, "onExecutionStarted">) => {
-    await options.onExecutionStarted?.();
-    return { payloads: [], meta: {} };
-  }),
+  agentCommand: vi.fn(
+    async (
+      options: Pick<AgentCommandOpts, "onExecutionStarted">,
+    ): Promise<
+      Pick<AgentCommandDeliveryResult, "payloads"> & {
+        meta: Partial<AgentCommandDeliveryResult["meta"]>;
+      }
+    > => {
+      await options.onExecutionStarted?.();
+      return { payloads: [], meta: {} };
+    },
+  ),
   taskRunOwners: new Map<string, TaskRunOwner>(),
   bindTaskRunOwner: vi.fn<(task: TaskRecord, cancel: TaskRunOwner["cancel"]) => () => void>(),
   getTaskRunOwner: vi.fn<(task: TaskRecord) => TaskRunOwner | undefined>(),
@@ -57,13 +69,13 @@ vi.mock("../../tasks/task-run-owner.js", () => ({
 vi.mock("../server-methods/agent-task-tracking.js", () => ({
   tryFinalizeTrackedAgentTask: mocks.finalizeTrackedTask,
 }));
-vi.mock(import("../../infra/agent-run-registry.js"), async (importOriginal) => ({
-  ...(await importOriginal()),
+vi.mock("../../infra/agent-run-registry.js", () => ({
   clearAgentRunContext: mocks.clearAgentRunContext,
   validateAgentRunDelegatedAuthority: () => true,
 }));
-vi.mock(import("../../infra/agent-events.js"), async (importOriginal) => ({
-  ...(await importOriginal()),
+vi.mock("../../infra/agent-events.js", () => ({
+  onAgentEvent: vi.fn(),
+  onAgentRunLifecycleGenerationRotation: vi.fn(),
   isAgentEventLifecycleGenerationCurrent: () => true,
 }));
 vi.mock("../../agents/cron-creator-authority-context.js", () => ({
@@ -106,7 +118,7 @@ describe("Gateway dispatch task creation ownership", () => {
       Object.assign(task, terminal);
     });
     mocks.bindTaskRunOwner.mockImplementation((task, cancel) => {
-      const owner = { task, cancel };
+      const owner = { task, cancel, assertCurrent: vi.fn(), readCurrent: () => task };
       mocks.taskRunOwners.set(task.taskId, owner);
       return () => {
         if (mocks.taskRunOwners.get(task.taskId) === owner) {
@@ -768,6 +780,239 @@ describe("Gateway dispatch task creation ownership", () => {
       } finally {
         resume.resolve();
         await completion;
+      }
+    },
+  );
+
+  it("keeps one logical owner across yield and delivers only the admitted successor reply", async () => {
+    const f = createTrackedDispatch();
+    const request = createDispatchFollowupRequest(f);
+    const receipt = taskReceipt(
+      f.task,
+      vi.fn(async () => true),
+    );
+    const binding = vi.spyOn(receipt, "bindRunOwner");
+    const owner = await TaskFollowupCompletion.bind(request, receipt);
+    const logicalOwner = mocks.getTaskRunOwner(f.task);
+    const entries: SubagentRunRecord[] = [
+      {
+        runId: "descendant",
+        childSessionKey: "agent:main:descendant",
+        requesterSessionKey: f.sessionKey,
+        requesterDisplayKey: f.sessionKey,
+        task: "descendant",
+        cleanup: "keep",
+        createdAt: 1,
+        execution: { status: "terminal" },
+        requesterSettleWake: {
+          status: "pending",
+          attemptCount: 0,
+          rearmGeneration: 1,
+          requesterYieldBatch: true,
+        },
+      },
+    ];
+    owner.promoteYield(f.runId, entries, 1);
+    const dispatch = (runId: string, entry: ChatAbortControllerEntry) =>
+      dispatchAgentRunFromGateway({
+        admittedRunEntry: entry,
+        ingressOpts: {
+          message: "followup",
+          sessionKey: f.sessionKey,
+          allowModelOverride: false,
+          abortSignal: entry.controller.signal,
+        },
+        runId,
+        dedupeKeys: [],
+        abortController: entry.controller,
+        cleanupAbortController: vi.fn(),
+        io: { emitAcceptance: vi.fn(), emitFinal: vi.fn() },
+        context: f.context,
+        taskTrackingMode: { kind: "receipt", ...receipt, completion: owner },
+        assertSettlementCurrent: vi.fn(),
+      });
+    try {
+      mocks.agentCommand.mockResolvedValueOnce({
+        payloads: [],
+        meta: { yielded: true, terminalReply: { disposition: "empty" } },
+      });
+      await dispatch(f.runId, f.entry);
+      expect(f.task.status).toBe("running");
+      expect(mocks.finalizeActive).not.toHaveBeenCalled();
+      expect(mocks.getTaskRunOwner(f.task)).toBe(logicalOwner);
+      const successor = owner.successor(entries, "exact-successor", vi.fn());
+      await owner.prepareSuccessor(successor);
+      owner.adopt(successor);
+      const successorEntry = {
+        ...f.entry,
+        controller: new AbortController(),
+        operationalRunInstance: { runId: successor.runId, instanceId: "successor-instance" },
+      };
+      f.context.chatAbortControllers.set(successor.runId, successorEntry);
+      mocks.agentCommand.mockImplementationOnce(async (opts) => {
+        expect(opts).toMatchObject({ onPostAdmittedRunContext: undefined });
+        await opts.onExecutionStarted?.();
+        return {
+          payloads: [{ text: "not canonical", mediaUrl: null }],
+          meta: { terminalReply: { disposition: "visible", text: "B_YIELD_DONE" } },
+        };
+      });
+      await dispatch(successor.runId, successorEntry);
+      await expect(owner.take()).resolves.toMatchObject({
+        status: "ok",
+        replyText: "B_YIELD_DONE",
+        terminalReply: { disposition: "visible", text: "B_YIELD_DONE" },
+      });
+      expect(binding).toHaveBeenCalledOnce();
+      expect(mocks.createTaskReceipt).not.toHaveBeenCalled();
+      expect(f.task.runId).toBe(f.runId);
+      expect(f.task.status).toBe("succeeded");
+      expect(mocks.getTaskRunOwner(f.task)).toBe(logicalOwner);
+    } finally {
+      owner.close();
+    }
+  });
+
+  it.each([
+    {
+      name: "provider failure",
+      meta: { error: { kind: "incomplete_turn" as const, message: "provider failed" } },
+      status: "error",
+      stopReason: undefined,
+    },
+    {
+      name: "RPC cancellation",
+      meta: { aborted: true, stopReason: "rpc" },
+      status: "error",
+      stopReason: "rpc",
+    },
+    {
+      name: "timeout",
+      meta: { aborted: true, stopReason: "timeout" },
+      status: "timeout",
+      stopReason: "timeout",
+    },
+  ])(
+    "passes canonical $name rather than wire status to the completion owner",
+    async ({ meta, status, stopReason }) => {
+      const f = createTrackedDispatch();
+      const request = createDispatchFollowupRequest(f);
+      const receipt = taskReceipt(
+        f.task,
+        vi.fn(async () => true),
+      );
+      const owner = await TaskFollowupCompletion.bind(request, receipt);
+      const settle = vi.spyOn(owner, "settle");
+      mocks.agentCommand.mockResolvedValueOnce({ payloads: [], meta });
+      try {
+        await dispatchAgentRunFromGateway({
+          admittedRunEntry: f.entry,
+          ingressOpts: {
+            message: "followup",
+            sessionKey: f.sessionKey,
+            allowModelOverride: false,
+            abortSignal: f.entry.controller.signal,
+          },
+          runId: f.runId,
+          dedupeKeys: [],
+          abortController: f.entry.controller,
+          cleanupAbortController: vi.fn(),
+          io: { emitAcceptance: vi.fn(), emitFinal: vi.fn() },
+          context: f.context,
+          taskTrackingMode: { kind: "receipt", ...receipt, completion: owner },
+          assertSettlementCurrent: vi.fn(),
+        });
+        expect(settle).toHaveBeenCalledWith(
+          f.runId,
+          expect.objectContaining({ status, ...(stopReason ? { stopReason } : {}) }),
+          expect.any(Function),
+        );
+        expect(f.task.status).toBe(
+          stopReason === "rpc" ? "cancelled" : status === "timeout" ? "timed_out" : "failed",
+        );
+      } finally {
+        owner.close();
+      }
+    },
+  );
+
+  it("settles an admitted followup that fails before physical activation", async () => {
+    const f = createTrackedDispatch();
+    const request = createDispatchFollowupRequest(f);
+    const receipt = taskReceipt(
+      f.task,
+      vi.fn(async () => true),
+    );
+    const owner = await TaskFollowupCompletion.bind(request, receipt);
+    try {
+      await dispatchAgentRunFromGateway({
+        assertCurrent: () => {
+          throw new Error("activation denied");
+        },
+        admittedRunEntry: f.entry,
+        ingressOpts: {
+          message: "followup",
+          sessionKey: f.sessionKey,
+          allowModelOverride: false,
+          abortSignal: f.entry.controller.signal,
+        },
+        runId: f.runId,
+        dedupeKeys: [],
+        abortController: f.entry.controller,
+        cleanupAbortController: vi.fn(),
+        io: { emitAcceptance: vi.fn(), emitFinal: vi.fn() },
+        context: f.context,
+        taskTrackingMode: { kind: "receipt", ...receipt, completion: owner },
+        assertSettlementCurrent: vi.fn(),
+      });
+      expect(mocks.agentCommand).not.toHaveBeenCalled();
+      expect(f.task.status).toBe("failed");
+      await expect(owner.take()).resolves.toMatchObject({
+        status: "error",
+        error: "activation denied",
+      });
+    } finally {
+      owner.close();
+    }
+  });
+
+  it.each(["silent", "empty"] as const)(
+    "does not invent reply text for a canonical %s reply",
+    async (disposition) => {
+      const f = createTrackedDispatch();
+      const request = createDispatchFollowupRequest(f);
+      const receipt = taskReceipt(
+        f.task,
+        vi.fn(async () => true),
+      );
+      const owner = await TaskFollowupCompletion.bind(request, receipt);
+      mocks.agentCommand.mockResolvedValueOnce({
+        payloads: [{ text: "payload is not canonical", mediaUrl: null }],
+        meta: { terminalReply: { disposition } },
+      });
+      try {
+        await dispatchAgentRunFromGateway({
+          admittedRunEntry: f.entry,
+          ingressOpts: {
+            message: "followup",
+            sessionKey: f.sessionKey,
+            allowModelOverride: false,
+            abortSignal: f.entry.controller.signal,
+          },
+          runId: f.runId,
+          dedupeKeys: [],
+          abortController: f.entry.controller,
+          cleanupAbortController: vi.fn(),
+          io: { emitAcceptance: vi.fn(), emitFinal: vi.fn() },
+          context: f.context,
+          taskTrackingMode: { kind: "receipt", ...receipt, completion: owner },
+          assertSettlementCurrent: vi.fn(),
+        });
+        const result = await owner.take();
+        expect(result?.terminalReply).toEqual({ disposition });
+        expect(result?.replyText).toBeUndefined();
+      } finally {
+        owner.close();
       }
     },
   );

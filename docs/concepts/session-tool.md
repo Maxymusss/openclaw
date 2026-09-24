@@ -175,6 +175,14 @@ has been saved. If registration fails, the send returns an error and the child
 does not start. A requested state watch is installed only after successful
 admission.
 
+For in-process native-child followups with one-way result delivery, yielding to
+accepted children keeps the same logical result obligation. Its exact admitted continuation returns
+one final result; an empty yielded predecessor is not a completed `no_reply`.
+A positive wait can transfer to asynchronous delivery without a second consumer.
+This custody is process-local: it does not restore caller authority after a
+Gateway restart, and it closes when that authority or either conversation changes.
+The original paused child task remains separate from an explicit followup.
+
 A retry cannot restart a follow-up whose task record is already terminal.
 Completed input receipts are reconciled before rejecting the retry.
 

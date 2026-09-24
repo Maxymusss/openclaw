@@ -53,6 +53,7 @@ import {
   setTaskCleanupAfterById,
 } from "./runtime-internal.js";
 import { readTaskBackingInstance } from "./task-backing-authority.js";
+import { hasActiveCliRun, hasCliRunIdentity } from "./task-cli-run-liveness.js";
 import { runTaskFlowRegistryMaintenance } from "./task-flow-registry.maintenance.js";
 import {
   cleanupOrphanedParentOwnedAcpSessions,
@@ -271,21 +272,6 @@ function resolveDurableCronTaskRecovery(
     ...(row.terminalSummary !== undefined ? { terminalSummary: row.terminalSummary } : {}),
     ...(row.detail !== undefined ? { detail: row.detail } : {}),
   };
-}
-
-function hasActiveCliRun(task: TaskRecord): boolean {
-  const candidateRunIds = [task.sourceId, task.runId];
-  for (const candidate of candidateRunIds) {
-    const runId = candidate?.trim();
-    if (runId && getAgentRunContext(runId)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function hasCliRunIdentity(task: TaskRecord): boolean {
-  return [task.sourceId, task.runId].some((candidate) => Boolean(candidate?.trim()));
 }
 
 function hasBackingSession(task: TaskRecord, context: BackingSessionLookupContext): boolean {
