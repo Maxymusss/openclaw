@@ -47,7 +47,11 @@ import {
 import type { CronCreatorAuthorityGrant } from "../cron-creator-authority-grant.types.js";
 import { getGatewayProcessInstanceId } from "../process-instance.js";
 import * as cronCallerScope from "./cron-caller-scope.js";
-import { createCronTestContext, createCronJob } from "./cron.validation.test-support.js";
+import {
+  createCronTestContext,
+  createCronJob,
+  setCronValidationTestRegistry,
+} from "./cron.validation.test-support.js";
 import type { GatewayClient } from "./types.js";
 
 const cronLogger = createNoopLogger();
@@ -114,84 +118,6 @@ vi.mock("../../cron/delivery-preview.js", () => ({
 }));
 
 import { cronHandlers } from "./cron.js";
-
-function createPrefixOnlyChannelPlugin(
-  id: string,
-  targetPrefixes: readonly string[],
-  aliases?: readonly string[],
-): ChannelPlugin {
-  const base = createChannelTestPluginBase({
-    id,
-    config: {
-      isConfigured: (_account, cfg) => {
-        const channelConfig = cfg.channels?.[id];
-        return Boolean(channelConfig && channelConfig.enabled !== false);
-      },
-    },
-  });
-  return {
-    ...base,
-    meta: {
-      ...base.meta,
-      ...(aliases ? { aliases } : {}),
-    },
-    messaging: { targetPrefixes },
-  };
-}
-
-function createEnablementHostileChannelPlugin(id: string): ChannelPlugin {
-  const base = createPrefixOnlyChannelPlugin(id, [id]);
-  return {
-    ...base,
-    config: {
-      ...base.config,
-      // Mirrors twitch/discord: an unlisted or credential-suppressed account
-      // resolves to a not-enabled account, which must NOT read as operator intent.
-      isEnabled: () => false,
-    },
-  };
-}
-
-function setCronValidationTestRegistry(): void {
-  setActivePluginRegistry(
-    createTestRegistry([
-      {
-        pluginId: "discord",
-        plugin: createPrefixOnlyChannelPlugin("discord", ["discord"]),
-        source: "test:discord",
-      },
-      {
-        pluginId: "telegram",
-        plugin: createPrefixOnlyChannelPlugin("telegram", ["telegram", "tg"]),
-        source: "test:telegram",
-      },
-      {
-        pluginId: "slack",
-        plugin: createPrefixOnlyChannelPlugin("slack", ["slack"]),
-        source: "test:slack",
-      },
-      {
-        pluginId: "twitch",
-        plugin: createEnablementHostileChannelPlugin("twitch"),
-        source: "test:twitch",
-      },
-      {
-        pluginId: "msteams",
-        plugin: createPrefixOnlyChannelPlugin("msteams", ["msteams", "teams"], ["teams"]),
-        source: "test:msteams",
-      },
-      {
-        pluginId: "synology-chat",
-        plugin: createPrefixOnlyChannelPlugin("synology-chat", [
-          "synology-chat",
-          "synology_chat",
-          "synology",
-        ]),
-        source: "test:synology-chat",
-      },
-    ]),
-  );
-}
 
 function createCronContext(currentJobs?: CronJob | CronJob[]) {
   return createCronTestContext(currentJobs, getRuntimeConfig);
@@ -868,25 +794,17 @@ describe("cron method validation", () => {
     expect(JSON.stringify(respond.mock.calls)).not.toContain("deploy");
   });
 
-  it("returns INVALID_REQUEST when cron.get cannot find the job", async () => {
+  it("keeps the exact cron.get missing wording older CLI matchers parse", async () => {
     const { respond } = await invokeCronGet({ jobId: "missing" });
 
+    expect(respond).toHaveBeenCalledOnce();
     expectResponseError(respond, {
       code: "INVALID_REQUEST",
       messageIncludes: "cron job not found: missing",
     });
-  });
-
-  it("keeps the exact cron.get missing wording older CLI matchers parse", async () => {
-    const { respond } = await invokeCronGet({ jobId: "missing" });
-
-    // Wire contract: shipped CLIs detect a missing job via
-    // error.message.includes(`cron job not found: ${id}`) before falling back to
-    // name lookup (isMissingCronGetError). Rewording the server message strands
-    // older clients, so pin the legacy-matcher form here.
-    const error = respond.mock.calls.at(-1)?.[2];
-    expect(String(error?.message)).toContain("cron job not found: missing");
-    expect(String(error?.message)).not.toContain("automation not found");
+    // Shipped CLI missing-job matchers use this wording before trying name lookup.
+    const error = expectDefined(respond.mock.calls[0], "missing cron response")[2];
+    expect(String(error.message)).not.toContain("automation not found");
   });
 
   describe("cron.list request diagnostics", () => {
@@ -3284,61 +3202,90 @@ describe("cron method validation", () => {
     expectCronSuccess(respond);
   });
 
-  it("accepts an unlisted accountId on a channel whose isEnabled reports it disabled", async () => {
-    // twitch/discord resolve an unlisted or credential-suppressed account to a
-    // not-enabled account. That is not the operator disabling a route, so cron
-    // creation must not be blocked by it - only a config-declared enabled:false is.
-    setRuntimeConfig({
-      channels: { twitch: { accounts: { main: { accessToken: "t" } } } },
-      plugins: pluginEntries("twitch"),
-    } as OpenClawConfig);
-
-    const { respond } = await invokeCronAdd(
-      agentTurnCronParams({
-        name: "enablement-hostile channel account",
-        delivery: {
-          mode: "announce",
-          channel: "twitch",
-          to: "twitch:room",
-          accountId: "unlisted-account",
-        },
-      }),
-    );
-
-    const call = respond.mock.calls.at(0);
-    // The channel itself may be judged unconfigured in this fixture; what must not
-    // happen is a rejection naming delivery.accountId.
-    expect(String(call?.[2] ? (call[2] as { message?: unknown }).message : "")).not.toContain(
-      "delivery.accountId",
-    );
-  });
-
-  it("accepts a named account when only the top-level channel config is disabled", async () => {
-    // A top-level `channels.<id>.enabled: false` is not uniformly channel-wide:
-    // twitch resolves named accounts from `accounts` alone, so a disabled root
-    // block must not make every account on that channel unschedulable.
-    setRuntimeConfig({
-      channels: {
-        twitch: { enabled: false, accounts: { main: { accessToken: "t" } } },
+  it.each([
+    {
+      // twitch/discord resolve an unlisted or credential-suppressed account to a
+      // not-enabled account. That is not the operator disabling a route, so cron
+      // creation must not be blocked by it - only a config-declared enabled:false is.
+      title: "accepts an unlisted accountId on a channel whose isEnabled reports it disabled",
+      config: {
+        channels: { twitch: { accounts: { main: { accessToken: "t" } } } },
+        plugins: pluginEntries("twitch"),
       },
-      plugins: pluginEntries("twitch"),
-    } as OpenClawConfig);
+      jobName: "enablement-hostile channel account",
+      accountId: "unlisted-account",
+      expectedDelivery: {
+        mode: "announce",
+        channel: "twitch",
+        to: "twitch:room",
+        accountId: "unlisted-account",
+      },
+    },
+    {
+      // A top-level `channels.<id>.enabled: false` is not uniformly channel-wide:
+      // twitch resolves named accounts from `accounts` alone, so a disabled root
+      // block must not make every account on that channel unschedulable.
+      title: "accepts a named account when only the top-level channel config is disabled",
+      config: {
+        channels: { twitch: { enabled: false, accounts: { main: { accessToken: "t" } } } },
+        plugins: pluginEntries("twitch"),
+      },
+      jobName: "named account under disabled root",
+      accountId: "main",
+      expectedDelivery: {
+        mode: "announce",
+        channel: "twitch",
+        to: "twitch:room",
+        accountId: "main",
+      },
+    },
+  ] satisfies Array<{
+    title: string;
+    config: OpenClawConfig;
+    jobName: string;
+    accountId: string;
+    expectedDelivery: CronDelivery;
+  }>)("$title", async ({ config, jobName, accountId, expectedDelivery }) => {
+    setRuntimeConfig(config);
 
-    const { respond } = await invokeCronAdd(
+    const resolveAccount = vi.fn((_cfg: OpenClawConfig, accountId?: string | null) =>
+      accountId === "main"
+        ? { accountId: "main", enabled: true, configured: true }
+        : { accountId: "unlisted-account", enabled: false, configured: false },
+    );
+    const isEnabled = vi.fn((account: { enabled: boolean }) => account.enabled);
+    const isConfigured = vi.fn((account: { configured: boolean }) => account.configured);
+    const plugin: ChannelPlugin = {
+      ...createChannelTestPluginBase({
+        id: "twitch",
+        config: { listAccountIds: () => ["main"], resolveAccount, isEnabled, isConfigured },
+      }),
+      messaging: { targetPrefixes: ["twitch"] },
+    };
+    setActivePluginRegistry(
+      createTestRegistry([{ pluginId: "twitch", plugin, source: "test:twitch" }]),
+    );
+
+    const { context, respond } = await invokeCronAdd(
       agentTurnCronParams({
-        name: "named account under disabled root",
-        delivery: {
-          mode: "announce",
-          channel: "twitch",
-          to: "twitch:room",
-          accountId: "main",
-        },
+        name: jobName,
+        delivery: { mode: "announce", channel: "twitch", to: "twitch:room", accountId },
       }),
     );
 
-    const call = respond.mock.calls.at(0);
-    expect(String(call?.[2] ? (call[2] as { message?: unknown }).message : "")).not.toContain(
-      "delivery.accountId",
+    expect(context.cron.add).toHaveBeenCalledOnce();
+    expect(requireCronAddPayload(context).delivery).toStrictEqual(expectedDelivery);
+    expect(respond).toHaveBeenCalledOnce();
+    expectCronSuccess(respond);
+    expect(resolveAccount).toHaveBeenCalledWith(expect.any(Object), "main");
+    expect(resolveAccount.mock.calls.map(([, id]) => id)).not.toContain("unlisted-account");
+    expect(isEnabled).toHaveBeenCalledWith(
+      { accountId: "main", enabled: true, configured: true },
+      expect.any(Object),
+    );
+    expect(isConfigured).toHaveBeenCalledWith(
+      { accountId: "main", enabled: true, configured: true },
+      expect.any(Object),
     );
   });
 
