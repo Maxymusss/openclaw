@@ -177,8 +177,9 @@ describe("macOS packaging checkpoint boundary", () => {
     expect(readFileSync(path.join(f.root, "dist/OpenClaw-2026.8.2.dmg"), "utf8")).toBe(
       "dmgsignedstapled",
     );
-    for (const suffix of ["zip", "dSYM.zip"])
+    for (const suffix of ["zip", "dSYM.zip"]) {
       expect(existsSync(path.join(f.root, `dist/OpenClaw-2026.8.2.${suffix}`))).toBe(true);
+    }
     expect(
       JSON.parse(readFileSync(path.join(f.checkpoint, "manifest.json"), "utf8")).completed,
     ).toBe(true);
@@ -206,9 +207,15 @@ describe("macOS packaging checkpoint boundary", () => {
       const f = makeCheckpointFixture();
       const built = f.run("--checkpoint-only");
       expect(built.status, built.stderr).toBe(0);
-      if (failure === "tampered app") writeFileSync(path.join(f.checkpoint, "app.zip"), "tampered");
-      if (failure === "missing DMG") rmSync(path.join(f.checkpoint, "app.dmg"));
-      if (failure === "audit") writeFileSync(path.join(f.root, "reject-audit"), "");
+      if (failure === "tampered app") {
+        writeFileSync(path.join(f.checkpoint, "app.zip"), "tampered");
+      }
+      if (failure === "missing DMG") {
+        rmSync(path.join(f.checkpoint, "app.dmg"));
+      }
+      if (failure === "audit") {
+        writeFileSync(path.join(f.root, "reject-audit"), "");
+      }
       const resumed = f.run(
         "--resume-notarization",
         failure.startsWith("release")
