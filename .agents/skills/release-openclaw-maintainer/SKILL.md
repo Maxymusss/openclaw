@@ -41,9 +41,12 @@ alongside artifact producers; candidate consumers start as soon as the candidate
 is ready. Independently sealed green children can be reused for the same exact
 target and inputs even when their parent failed, was cancelled, or remains active;
 verify their original trusted-main workflow SHA and current attempt. The sealed
-manifest supplies publisher SDK acknowledgement, npm publication decisions, and
-approved soak-waiver defaults. Explicit publisher inputs are overrides; the
-candidate helper still validates its explicit SDK acknowledgement when needed.
+manifest supplies the SDK evidence digest, npm publication decisions, and
+approved soak-waiver defaults; it never acknowledges SDK API changes, so supply
+`plugin_sdk_api_acknowledgement` whenever the SDK report contains changes. The
+sealed waiver applies only while the repository variable still holds it. Explicit
+publisher inputs are overrides; the candidate helper still validates its explicit
+SDK acknowledgement when needed.
 
 Explicit approval is required for version changes and irreversible publication.
 A request to cut, publish, or complete a named release carries through its

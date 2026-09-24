@@ -1169,6 +1169,7 @@ function resolveInheritedIncludeScope(
 
 function createBoundedExtensionPlans(
   plan: VitestRunPlan,
+  cwd: string,
   env?: NodeJS.ProcessEnv,
   ownedTargets?: ReadonlySet<string>,
 ) {
@@ -1223,6 +1224,7 @@ function createBoundedExtensionPlans(
       ? plan.includePatterns
       : roots,
     forwardedArgs,
+    cwd,
   );
   if (chunks.length === 0) {
     // Preserve exact requests for Vitest's existing empty-test diagnostic, never a broad fallback.
@@ -4212,6 +4214,7 @@ export function buildVitestRunPlans(
             includePatterns: null,
             watchMode,
           },
+          cwd,
           options.env,
         ),
       );
@@ -4409,7 +4412,7 @@ export function buildVitestRunPlans(
           includePatterns: null,
           watchMode,
         };
-        plans.push(...createBoundedExtensionPlans(plan, options.env));
+        plans.push(...createBoundedExtensionPlans(plan, cwd, options.env));
       }
       continue;
     }
@@ -4488,6 +4491,7 @@ export function buildVitestRunPlans(
               includePatterns,
               watchMode,
             },
+            cwd,
             options.env,
             ownedTargets,
           )
@@ -4575,7 +4579,7 @@ export function buildFullSuiteVitestRunPlans(args: string[], cwd = process.cwd()
         } else {
           const roots = EXTENSION_TEST_PROCESS_ROOTS.get(config);
           if (roots) {
-            chunks = createExtensionTestProcessTargetChunks(config, roots, forwardedArgs);
+            chunks = createExtensionTestProcessTargetChunks(config, roots, forwardedArgs, cwd);
           }
         }
         if (chunks !== null) {

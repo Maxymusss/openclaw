@@ -144,6 +144,62 @@ describe("release publication control admission", () => {
     ]);
   });
 
+  it("keeps a revoked sealed soak waiver revoked at the publisher gate", () => {
+    const root = tempRoots.make("release-publish-gates-revoked-");
+    const manifestPath = join(root, "manifest.json");
+    const output = join(root, "output");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        ...manifest,
+        runReleaseSoak: "false",
+        controls: { performanceBlocking: false },
+        sourceAdmission: {
+          validationPurpose: "publish",
+          publicationSelection: { npmDistTag: "latest" },
+          projection: { packages: [] },
+        },
+        publishInputs: {
+          version: 1,
+          targetSha,
+          npmDistTag: "latest",
+          pluginSdkApiEvidenceDigest: "a".repeat(64),
+          pluginSdkApiAcknowledgement: "",
+          stableSoakWaiver: "approved earlier",
+          npmDecisions: [],
+        },
+      }),
+    );
+    const run = (currentVariable: string) =>
+      spawnSync(
+        process.execPath,
+        [
+          resolve("scripts/lib/release-publish-gates.mts"),
+          "--consumer",
+          "publisher",
+          "--manifest",
+          manifestPath,
+        ],
+        {
+          cwd: root,
+          encoding: "utf8",
+          env: {
+            PATH: process.env.PATH,
+            RELEASE_TAG: "v2026.9.5",
+            RELEASE_NPM_DIST_TAG: "latest",
+            EXPECTED_SHA: targetSha,
+            EXPECTED_RELEASE_PROFILE: "from-validation",
+            OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: currentVariable,
+            GITHUB_OUTPUT: output,
+          },
+        },
+      );
+    expect(run("approved earlier").status).toBe(0);
+    const revoked = run("");
+    expect(revoked.status).not.toBe(0);
+    expect(revoked.stderr).toContain("Stable releases require Full Release Validation");
+  });
+
   it.each(["legacy", "sealed", "whitespace"] as const)(
     "resolves escaped workflow outputs without installed dependencies (sealed=%s)",
     (mode) => {

@@ -34,6 +34,7 @@ export function evaluateReleasePublishGates(input: {
   stableSoakWaiver?: string;
   laneWaiver?: string;
   consumer: ReleasePublishConsumer;
+  currentStableSoakWaiver?: string;
   expectedSha?: string;
   expectedReleaseProfile?: string;
 }): ReleasePublishGate[] {
@@ -50,8 +51,10 @@ export function evaluateReleasePublishGates(input: {
   const profile = scalar(field(manifest, "releaseProfile"));
   let waiver = input.stableSoakWaiver?.trim();
   try {
+    // Re-resolve with the live variable so a revoked sealed waiver is not regranted here.
     waiver = resolveReleasePublishInputs(manifest, {
       stableSoakWaiver: input.stableSoakWaiver,
+      currentStableSoakWaiver: input.currentStableSoakWaiver,
       targetSha: input.expectedSha,
       npmDistTag: input.npmDistTag,
     }).stableSoakWaiver;
@@ -233,6 +236,7 @@ function main() {
     releaseTag: env.RELEASE_TAG ?? "",
     npmDistTag: env.RELEASE_NPM_DIST_TAG ?? "",
     stableSoakWaiver: resolved.stableSoakWaiver,
+    currentStableSoakWaiver: env.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER ?? "",
     laneWaiver: env.LANE_WAIVER,
     expectedSha: env.EXPECTED_SHA,
     expectedReleaseProfile: env.EXPECTED_RELEASE_PROFILE,
