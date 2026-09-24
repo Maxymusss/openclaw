@@ -75,7 +75,12 @@ async function completed(
   await withForegroundTurnDiagnostics(fixture, observed, runId, turn, () =>
     expect.poll(() => hasTerminalEvent(observed, runId)).toBe(true),
   );
-  await expect.poll(() => thread(page).getByText(reply, { exact: true }).count()).toBe(1);
+  // Transcript counts exclude the pane's separate screen-reader announcement.
+  await expect
+    .poll(() =>
+      thread(page).locator(".chat-thread-inner").getByText(reply, { exact: true }).count(),
+    )
+    .toBe(1);
   await waitForReleasedThread(page, key);
   return runId;
 }
@@ -121,7 +126,9 @@ async function deniedSend(page: Page, observed: Observation, text: string, messa
 }
 
 async function expectRestartNotice(page: Page, key: string) {
-  const notices = thread(page).getByText(restartNotice, { exact: true });
+  const notices = thread(page)
+    .locator(".chat-thread-inner")
+    .getByText(restartNotice, { exact: true });
   try {
     await expect.poll(() => notices.count()).toBe(1);
   } catch (error) {
@@ -129,7 +136,8 @@ async function expectRestartNotice(page: Page, key: string) {
     const activeThreads = await thread(page)
       .count()
       .catch(() => null);
-    const dom = await notices
+    const dom = await thread(page)
+      .getByText(restartNotice, { exact: true })
       .evaluateAll((elements) => ({
         count: elements.length,
         matches: elements.slice(0, 8).map((element) => {
