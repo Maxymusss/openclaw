@@ -124,6 +124,9 @@ export function combineNativeSessionBindingAuthority(
   ...authorities: readonly (NativeSessionBindingAuthority | undefined)[]
 ): NativeSessionBindingAuthority {
   const present = authorities.filter((authority) => authority !== undefined);
+  if (present.length === 1) {
+    return present[0]!;
+  }
   return createNativeSessionBindingAuthority(
     present.flatMap(({ lineage }) => lineage),
     () => {

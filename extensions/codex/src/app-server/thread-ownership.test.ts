@@ -1,3 +1,4 @@
+import { combineNativeSessionBindingAuthority } from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it, vi } from "vitest";
 import type { CodexBindingAuthority } from "./session-binding.js";
@@ -19,15 +20,19 @@ describe("Codex retained subscription authority", () => {
     const reject = createDeferred<never>();
     let background = false;
     const write = vi.fn(() => "retained");
+    const rowAuthority = createAuthority(async () => {
+      entered.resolve();
+      return await reject.promise;
+    });
     const authority = createCodexAppServerRetentionAuthority({
-      authority: createAuthority(async () => {
-        entered.resolve();
-        return await reject.promise;
-      }),
+      // Native binding leases compose this sole authority before acquisition.
+      authority: combineNativeSessionBindingAuthority(rowAuthority),
       hasBackgroundCustody: () => background,
     });
     const retention = authority.withCurrent(write);
-    await entered.promise;
+    await expect(
+      Promise.race([entered.promise.then(() => "entered"), retention.then(() => "retained")]),
+    ).resolves.toBe("entered");
     background = true;
     reject.reject(new Error("session row was replaced"));
     await expect(retention).resolves.toBe("retained");
