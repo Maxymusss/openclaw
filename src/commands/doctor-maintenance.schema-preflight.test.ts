@@ -240,13 +240,14 @@ it.each(["missing-index", "wrong-index", "missing-table"] as const)(
   },
 );
 
-it("explicit Doctor repair preserves and rebuilds a quarantined audit index before config reads", async () => {
+it("explicit Doctor rebuilds a quarantined audit index before recovering missing deletion history", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const initial = openOpenClawStateDatabase({ env: state.env });
     initial.db.exec(`INSERT INTO audit_events
       (event_id, source_id, source_sequence, occurred_at, kind, action, status, actor_type, actor_id)
       VALUES ('index-original', 'fixture-source', 1, 1, 'message', 'received', 'ok', 'system', 'fixture')`);
     const rows = initial.db.prepare("SELECT * FROM audit_events NOT INDEXED").all();
+    initial.db.exec("DROP TABLE agent_deletion_journal");
     closeOpenClawStateDatabaseForTest();
     const index = "sqlite_autoindex_audit_events_1";
     corruptSqliteIndexKey(initial.path, index, "index-original", "index-damaged!");
@@ -296,6 +297,7 @@ it("explicit Doctor repair preserves and rebuilds a quarantined audit index befo
       await runCommandWithRuntime(runtime, () =>
         runDoctorHealthFlow(runtime, { repair: true, nonInteractive: true }),
       );
+      expect(runtime.exit, runtime.error.mock.calls.flat().join("\n")).not.toHaveBeenCalled();
       expect(removalFailures).toBeGreaterThan(0);
       expect(snapshotPath && fs.existsSync(snapshotPath)).toBe(true);
       await testApi.flushFileLogQueueForTests();
@@ -335,6 +337,7 @@ it("explicit Doctor repair preserves and rebuilds a quarantined audit index befo
       { integrity_check: "ok" },
     ]);
     expect(repaired.db.prepare("SELECT * FROM audit_events NOT INDEXED").all()).toEqual(rows);
+    expect(repaired.db.prepare("SELECT * FROM agent_deletion_journal").all()).toEqual([]);
 
     // Model a committed REINDEX whose quarantine finalization was interrupted.
     closeOpenClawStateDatabaseForTest();
