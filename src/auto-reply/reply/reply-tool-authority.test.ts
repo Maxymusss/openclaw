@@ -473,7 +473,7 @@ describe("reply tool authority", () => {
         });
         expect(queueMessage).toHaveBeenCalledTimes(2);
       } finally {
-        for (const release of cleanups.reverse()) {
+        for (const release of cleanups.toReversed()) {
           release();
         }
       }
