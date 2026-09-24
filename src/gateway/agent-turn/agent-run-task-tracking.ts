@@ -18,8 +18,11 @@ import {
   readFollowupRequest,
   readFollowupSuccessor,
   TaskFollowupCompletion,
-  type FollowupSuccessor,
 } from "../../tasks/task-followup-completion.js";
+import type {
+  FollowupCompletionOwner,
+  FollowupSuccessor,
+} from "../../tasks/task-followup-completion.types.js";
 import { mapAgentRunTerminalOutcomeToTaskStatus } from "../../tasks/task-registry-common.js";
 import { isTerminalTaskStatus, type TaskRecord } from "../../tasks/task-registry.types.js";
 import { getTaskRunOwner } from "../../tasks/task-run-owner.js";
@@ -38,7 +41,7 @@ import type { AgentTurnContext, AgentTurnPrincipal } from "./types.js";
 
 export type RegisteredGatewayAgentTask =
   | (Extract<PreparedDetachedTaskRun, { kind: "legacy" }> & { task: TaskRecord })
-  | (CreatedDetachedTaskRun & { kind: "receipt"; completion?: TaskFollowupCompletion });
+  | (CreatedDetachedTaskRun & { kind: "receipt"; completion?: FollowupCompletionOwner });
 
 export type GatewayAgentDispatchTaskTracking = "cli" | "none" | RegisteredGatewayAgentTask;
 

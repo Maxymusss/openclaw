@@ -2,7 +2,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { err, ok, type Result } from "@openclaw/normalization-core/result";
 import { buildAgentRunTerminalOutcomeFromWaitResult } from "../agents/agent-run-terminal-outcome.js";
-import type { AgentWaitResult } from "../agents/run-wait.types.js";
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createDeferredCore, type Deferred } from "../shared/deferred.js";
@@ -11,35 +10,18 @@ import type { CreatedDetachedTaskRun } from "./detached-task-runtime-contract.js
 import { captureTaskCancellationControl } from "./task-cancellation-context.js";
 import { cancelFollowupCohort } from "./task-followup-cancellation.js";
 import { getFollowupCohortOwner, bindFollowupCohortOwner } from "./task-followup-cohort.js";
+import type {
+  FollowupCohort as Cohort,
+  FollowupCompletionOwner,
+  FollowupReply,
+  FollowupRequest,
+  FollowupSuccessor,
+} from "./task-followup-completion.types.js";
 import { mapAgentRunTerminalOutcomeToTaskStatus } from "./task-registry-common.js";
 import type { TaskRecord } from "./task-registry.types.js";
 import { getTaskRunOwner } from "./task-run-owner.js";
 import type { TaskRunOwnerBinding, TaskRunOwner } from "./task-run-owner.types.js";
 
-export type FollowupReply = AgentWaitResult & { replyText?: string };
-export type FollowupCustody = {
-  run<T>(work: () => T): T;
-  assertCurrent(): void;
-  signal: AbortSignal;
-  release(): void;
-};
-export type FollowupRequest = {
-  runId: string;
-  requesterSessionKey: string;
-  requesterSessionId: string;
-  requesterAgentId: string;
-  targetSessionKey: string;
-  targetAgentId: string;
-  custody: FollowupCustody;
-  completion?: TaskFollowupCompletion;
-};
-type Cohort = { entries: readonly SubagentRunRecord[]; generation: number };
-export type FollowupSuccessor = {
-  owner: TaskFollowupCompletion;
-  cohort: Cohort;
-  runId: string;
-  assertCurrent(): void;
-};
 const state = resolveGlobalSingleton(Symbol.for("openclaw.tasks.followupCompletion"), () => ({
   requests: new AsyncLocalStorage<FollowupRequest>(),
   successors: new AsyncLocalStorage<FollowupSuccessor>(),
@@ -86,7 +68,7 @@ export function withFollowupSuccessor<T>(successor: FollowupSuccessor, run: () =
   return successor.owner.request.custody.run(() => state.successors.run(successor, run));
 }
 
-export class TaskFollowupCompletion {
+export class TaskFollowupCompletion implements FollowupCompletionOwner {
   readonly request: FollowupRequest;
   readonly receipt: CreatedDetachedTaskRun;
   private binding?: TaskRunOwnerBinding;

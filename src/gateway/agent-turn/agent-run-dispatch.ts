@@ -36,7 +36,7 @@ import {
 } from "../../tasks/detached-task-runtime.js";
 import { getTaskById } from "../../tasks/runtime-internal.js";
 import { captureTaskCancellationControl } from "../../tasks/task-cancellation-context.js";
-import type { FollowupReply } from "../../tasks/task-followup-completion.js";
+import type { FollowupReply } from "../../tasks/task-followup-completion.types.js";
 import { mapAgentRunTerminalOutcomeToTaskStatus } from "../../tasks/task-registry-common.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";
 import { bindTaskRunOwner, getTaskRunOwner } from "../../tasks/task-run-owner.js";

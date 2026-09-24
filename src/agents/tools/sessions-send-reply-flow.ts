@@ -5,8 +5,8 @@ import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { runWithGatewayDetachedWorkContinuation } from "../../process/gateway-work-admission.js";
 import type {
   FollowupReply,
-  TaskFollowupCompletion,
-} from "../../tasks/task-followup-completion.js";
+  FollowupCompletionOwner,
+} from "../../tasks/task-followup-completion.types.js";
 import { runOutsidePreparedModelRuntimePluginGenerationScope } from "../prepared-model-runtime-generation-scope.js";
 import {
   runWithGatewayToolContinuationContext,
@@ -21,7 +21,7 @@ export function startSessionsSendReplyFlow(
     runId: string;
     skip: boolean;
     reply?: FollowupReply;
-    completion?: TaskFollowupCompletion;
+    completion?: FollowupCompletionOwner;
   },
 ) {
   if (params.skip) {

@@ -1,5 +1,5 @@
 import { vi } from "vitest";
-import type { FollowupRequest } from "../../tasks/task-followup-completion.js";
+import type { FollowupRequest } from "../../tasks/task-followup-completion.types.js";
 
 export function createDispatchFollowupRequest({
   runId,

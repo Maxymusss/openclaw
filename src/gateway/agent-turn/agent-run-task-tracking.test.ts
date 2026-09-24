@@ -7,8 +7,8 @@ import type { PreparedDetachedTaskRun } from "../../tasks/detached-task-runtime.
 import {
   withFollowupRequest,
   withFollowupSuccessor,
-  type FollowupRequest,
 } from "../../tasks/task-followup-completion.js";
+import type { FollowupRequest } from "../../tasks/task-followup-completion.types.js";
 import type { TaskRecord } from "../../tasks/task-registry.types.js";
 import type { TaskRunOwner } from "../../tasks/task-run-owner.types.js";
 import { bindInProcessSubagentResume } from "../in-process-subagent-resume.js";

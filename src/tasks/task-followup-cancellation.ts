@@ -1,6 +1,6 @@
 import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import { getRuntimeConfig } from "../config/config.js";
-import type { FollowupRequest } from "./task-followup-completion.js";
+import type { FollowupRequest } from "./task-followup-completion.types.js";
 
 /** Stop only this accepted cohort; the unrelated original task in the same session is not a root. */
 export async function cancelFollowupCohort(params: {

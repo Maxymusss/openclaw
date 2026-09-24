@@ -4,7 +4,7 @@ import type { GatewayClient } from "../../gateway/server-methods/types.js";
 import type { PreparedSessionMutationFacts } from "../../gateway/session-sharing-policy.js";
 import { rolePolicyConfig, sharingPolicyClient } from "../../gateway/session-sharing.test-utils.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
-import type { FollowupRequest } from "../../tasks/task-followup-completion.js";
+import type { FollowupRequest } from "../../tasks/task-followup-completion.types.js";
 import { prepareSessionsSendFollowup } from "./sessions-send-followup.js";
 const mocks = vi.hoisted(() => ({
   config: vi.fn<() => OpenClawConfig>(),

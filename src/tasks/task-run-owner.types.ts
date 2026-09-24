@@ -1,9 +1,9 @@
 import type { Result } from "@openclaw/normalization-core/result";
-import type { TaskFollowupCompletion } from "./task-followup-completion.js";
 import type { TaskRecord } from "./task-registry.types.js";
 
 export type TaskRunOwner = {
-  followupCompletion?: TaskFollowupCompletion;
+  /** Liveness projection only; execution and result operations stay with the followup owner. */
+  followupCompletion?: { isLive(): boolean };
   /** Live creation-receipt custody, including its physical database and exact task generation. */
   assertCurrent?: () => void;
   readCurrent?: () => Readonly<TaskRecord>;

@@ -13,7 +13,8 @@ import {
 import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { prepareUserProfileRoleAuthority } from "../../state/user-channel-identity-operations.js";
-import { withFollowupRequest, type FollowupRequest } from "../../tasks/task-followup-completion.js";
+import { withFollowupRequest } from "../../tasks/task-followup-completion.js";
+import type { FollowupRequest } from "../../tasks/task-followup-completion.types.js";
 import {
   captureGatewayToolCallerAssertion,
   getGatewayToolCallerIdentity,
