@@ -1,6 +1,7 @@
 import { setImmediate } from "node:timers/promises";
 import { queryObjects } from "node:v8";
 import { expect, test } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { createChatMetadataHarness } from "./chat-metadata-runtime.test-support.js";
 
 test.each(["metadata", "startup"] as const)(
@@ -125,7 +126,10 @@ test("keeps project command catalogs separate while sharing model projections", 
   };
   try {
     await harness.runtime.refresh();
-    expect((await harness.runtime.read(project)).commands).toEqual([{ name: "/projects/first" }]);
+    await harness.runtime.read({ agentId: "main" });
+    expect((await harness.runtime.readStartup(project))?.metadata?.commands).toEqual([
+      { name: "/projects/first" },
+    ]);
     expect((await harness.runtime.read(other)).commands).toEqual([{ name: "/projects/second" }]);
     expect((await harness.runtime.read({ agentId: "main" })).commands).toEqual([
       { name: "agent-only" },
@@ -144,6 +148,35 @@ test("keeps project command catalogs separate while sharing model projections", 
     expect((await harness.runtime.read(project)).commands).toEqual([{ name: "/projects/rebound" }]);
     expect(harness.buildCommands).toHaveBeenCalledTimes(5);
   } finally {
+    await harness.runtime.stop();
+  }
+});
+
+test("omits neutral startup metadata invalidated during project command preparation", async () => {
+  const harness = createChatMetadataHarness();
+  const entered = createDeferred();
+  const release = createDeferred();
+  try {
+    await harness.runtime.refresh();
+    await harness.runtime.read({ agentId: "main" });
+    harness.buildCommands.mockImplementationOnce(async () => {
+      entered.resolve();
+      await release.promise;
+      return { commands: [{ name: "retired-project" }] };
+    });
+    const startup = harness.runtime.readStartup({
+      agentId: "main",
+      sessionKey: "agent:main:project",
+      sessionEntry: { spawnedCwd: "/projects/first" },
+    });
+    await entered.promise;
+    harness.runtime.invalidate();
+    release.resolve();
+    await expect(startup).resolves.toBeUndefined();
+    expect(harness.buildProjection).toHaveBeenCalledOnce();
+  } finally {
+    release.resolve();
+    harness.runtime.fail(new Error("test cleanup"));
     await harness.runtime.stop();
   }
 });

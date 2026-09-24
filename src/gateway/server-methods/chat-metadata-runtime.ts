@@ -26,7 +26,6 @@ import { isUserModelAuthProfileId } from "../../state/user-model-account-id.js";
 import { listUserProfileAuthLinks } from "../../state/user-model-accounts.js";
 import { resolveChatAccountSelection } from "./chat-account-selection.js";
 import {
-  commandProjectionKey,
   prepareChatCommandProjection,
   type CommandProjectionEntry,
 } from "./chat-metadata-command-projection.js";
@@ -645,18 +644,15 @@ export function createGatewayChatMetadataRuntime(params: {
         read: () => assemble(readNeutral, readSession, commands),
       };
     };
-    if (
-      readParams.readPolicy !== "ready" &&
-      (hasSessionContext || readParams.sessionKey || readParams.sessionEntry)
-    ) {
+    if (readParams.readPolicy !== "ready" && hasSessionContext) {
       return readCurrent(projectStartup);
     }
     if (isUserModelAuthProfileId(profiles.preferredProfileId ?? "")) {
       return undefined;
     }
     const generation = current;
-    // Optional reads consume only settled exact-profile facts. Never start preparation
-    // or wait for a lifecycle replacement just to decorate an available transcript.
+    // Optional reads consume settled model facts, without preparing a model projection
+    // or waiting for a lifecycle replacement just to decorate an available transcript.
     if (!generation || replacement || pending || !isCurrentGeneration(generation)) {
       return undefined;
     }
@@ -682,12 +678,17 @@ export function createGatewayChatMetadataRuntime(params: {
     ) {
       return undefined;
     }
-    const commands = generation.commandsByScope.get(commandProjectionKey(readParams));
-    return assemble(
-      neutral.projection,
-      session.projection,
-      commands?.state === "ready" ? commands.commands : undefined,
-    );
+    const commands =
+      readParams.readPolicy === "ready" ? undefined : await prepareCommands(generation, readParams);
+    // Command discovery may yield; a neutral startup must not follow a replacement wait.
+    if (
+      !isCurrentGeneration(generation) ||
+      !neutral.projection.isCurrent() ||
+      !session.projection.isCurrent()
+    ) {
+      return undefined;
+    }
+    return assemble(neutral.projection, session.projection, commands);
   };
 
   const invalidate = () => {
