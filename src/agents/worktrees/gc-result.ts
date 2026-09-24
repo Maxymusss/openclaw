@@ -12,6 +12,7 @@ export function formatWorktreeGcResult(result: ManagedWorktreeGcResult): string 
       `Managed worktree cleanup ${result.outcome}: removed ${result.removed.length}`,
       `deleted ${result.orphansDeleted} orphans`,
       `retired ${result.orphansRetired} orphan records`,
+      ...result.retiredCheckoutPaths.map((checkoutPath) => `preserved checkout: ${checkoutPath}`),
       `pruned ${result.snapshotsPruned} snapshots`,
       `protected ${result.protectedCount}`,
       ...Object.entries(result.protectionReasons).map(([reason, count]) => `${reason}: ${count}`),

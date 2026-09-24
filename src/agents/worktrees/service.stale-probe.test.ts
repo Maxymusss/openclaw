@@ -39,6 +39,7 @@ describe("ManagedWorktreeService missing-path observations", () => {
     protectedCount: 0,
     protectionReasons: {},
     orphansRetired: 0,
+    retiredCheckoutPaths: [],
     limitsSatisfied: true,
   };
 

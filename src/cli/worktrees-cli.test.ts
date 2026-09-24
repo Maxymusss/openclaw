@@ -263,6 +263,7 @@ describe("worktrees cli", () => {
       protectedCount: 0,
       protectionReasons: {},
       orphansRetired: 0,
+      retiredCheckoutPaths: [],
       limitsSatisfied: true,
     });
     vi.spyOn(defaultRuntime, "log").mockImplementation(() => undefined);
@@ -297,6 +298,7 @@ describe("worktrees cli", () => {
       protectedCount: 0,
       protectionReasons: {},
       orphansRetired: 0,
+      retiredCheckoutPaths: [],
       limitsSatisfied: false,
     };
     vi.spyOn(managedWorktrees, "gc").mockResolvedValue(result);

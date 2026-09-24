@@ -4,6 +4,7 @@ import { withWorktreeAllocationLease } from "./allocation.js";
 import { hasMissingManagedWorktreeGitdir } from "./checkout-inspection.js";
 import type { WorktreeGcProgress } from "./gc-progress.js";
 import {
+  assertWorktreeRemovalClaim,
   getRegistryWorktree,
   retireMissingRegistryWorktree,
   WorktreeRemovalContentionError,
@@ -70,6 +71,7 @@ export function createWorktreeGcErrorHandler(context: {
                   );
                 }
                 guard.commitGuard?.();
+                assertWorktreeRemovalClaim(env, record.id, token);
                 const retired = retireMissingRegistryWorktree(env, record, now);
                 if (retired?.removedAt !== now) {
                   throw new WorktreeRemovalLockError(
@@ -78,6 +80,7 @@ export function createWorktreeGcErrorHandler(context: {
                   );
                 }
                 progress.result.orphansRetired += 1;
+                progress.result.retiredCheckoutPaths.push(record.path);
                 progress.record(
                   "orphans",
                   "retired",

@@ -3,8 +3,9 @@ import path from "node:path";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { runGitWorkerOperation } from "../../infra/git-worker.js";
 import { withManagedWorktreeGit } from "./checkout-policy.js";
-import { requireGit, worktreePathExists } from "./git.js";
+import { worktreePathExists } from "./git.js";
 import { getRegistryWorktreeProvisionedPaths } from "./registry.js";
+import { resolveRepository } from "./service-preparation.js";
 import type { ManagedWorktreeRecord } from "./types.js";
 
 /** A broken link is orphaned only when its original repository is still available. */
@@ -18,12 +19,11 @@ export async function hasMissingManagedWorktreeGitdir(record: ManagedWorktreeRec
   if (await worktreePathExists(gitdir)) {
     return false;
   }
-  const common = await requireGit(record.repoRoot, [
-    "rev-parse",
-    "--path-format=absolute",
-    "--git-common-dir",
-  ]);
-  return path.dirname(gitdir) === path.join(common, "worktrees");
+  const repository = await resolveRepository(record.repoRoot);
+  return (
+    repository.fingerprint === record.repoFingerprint &&
+    path.dirname(gitdir) === path.join(repository.commonDir, "worktrees")
+  );
 }
 
 export async function inspectManagedWorktreeCheckout(

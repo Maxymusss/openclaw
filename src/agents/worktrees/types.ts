@@ -116,6 +116,8 @@ export type ManagedWorktreeGcResult = {
   removed: string[];
   orphansDeleted: number;
   orphansRetired: number;
+  /** Complete recovery locations, even when individual issue details are omitted. */
+  retiredCheckoutPaths: string[];
   snapshotsPruned: number;
   outcome: "completed" | "deferred" | "partial";
   /** Bounded per-worktree cleanup disposition; issueCount includes omitted entries. */

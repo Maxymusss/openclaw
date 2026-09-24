@@ -11,6 +11,7 @@ export class WorktreeGcProgress {
     removed: [],
     orphansDeleted: 0,
     orphansRetired: 0,
+    retiredCheckoutPaths: [],
     snapshotsPruned: 0,
     outcome: "completed",
     issues: [],
@@ -49,7 +50,8 @@ export class WorktreeGcProgress {
     }
     if (outcome === "failed") {
       this.result.outcome = "partial";
-    } else if (outcome === "deferred" && this.result.outcome === "completed") {
+    } else if (this.result.outcome === "completed") {
+      // Retired checkout files still need manual recovery.
       this.result.outcome = "deferred";
     }
   }
