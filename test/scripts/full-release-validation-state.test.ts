@@ -1643,6 +1643,38 @@ describe("release decision policy", () => {
     },
   );
 
+  it("keeps a failed package integrity check blocking through its aggregators", () => {
+    const result = classifyReleaseSnapshot({
+      children: [
+        child("releaseChecks", {
+          conclusion: "failure",
+          jobs: [
+            {
+              conclusion: "failure",
+              name: "Run package acceptance / Package integrity",
+              status: "completed",
+            },
+            {
+              conclusion: "failure",
+              name: "Run package acceptance / Verify package acceptance",
+              status: "completed",
+            },
+            { conclusion: "failure", name: "Verify release checks", status: "completed" },
+          ],
+          status: "completed",
+        }),
+      ],
+      releaseProfile: "stable",
+      workflowRef: "main",
+    });
+    expect(result.blockers.map((blocker) => blocker.job)).toEqual([
+      "Run package acceptance / Package integrity",
+      "Run package acceptance / Verify package acceptance",
+      "Verify release checks",
+    ]);
+    expect(result.state).toBe("blocked_complete");
+  });
+
   it("keeps non-Telegram failures and Telegram provenance errors strict", () => {
     const result = classifyReleaseSnapshot({
       children: [

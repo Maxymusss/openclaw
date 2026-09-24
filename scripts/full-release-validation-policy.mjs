@@ -1587,6 +1587,7 @@ const REQUIRED_PROOF_JOB_PATTERNS = [
   /upgrade-survivor/u,
   /update-first-hop-compat/u,
   /pack budget|npm-pack|Qualify release npm/iu,
+  /Package integrity/u,
   /resolve_target/u,
 ];
 const DERIVATIVE_GATE_JOB_PATTERN =

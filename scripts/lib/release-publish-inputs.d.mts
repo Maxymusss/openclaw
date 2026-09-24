@@ -25,6 +25,7 @@ export function resolveReleasePublishInputs(
   overrides?: {
     pluginSdkApiAcknowledgement?: string;
     stableSoakWaiver?: string;
+    currentStableSoakWaiver?: string;
     targetSha?: string;
     npmDistTag?: string;
   },

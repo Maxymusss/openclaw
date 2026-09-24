@@ -223,6 +223,7 @@ function main() {
   const resolved = resolveReleasePublishInputs(manifest, {
     pluginSdkApiAcknowledgement: env.PLUGIN_SDK_API_ACKNOWLEDGEMENT,
     stableSoakWaiver: env.STABLE_SOAK_WAIVER,
+    currentStableSoakWaiver: env.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER ?? "",
     targetSha: env.EXPECTED_SHA,
     npmDistTag: env.RELEASE_NPM_DIST_TAG,
   });

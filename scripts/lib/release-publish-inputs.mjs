@@ -95,10 +95,16 @@ export function resolveReleasePublishInputs(manifest, overrides = {}) {
   }
   const acknowledgement = overrideAcknowledgement || sealed.pluginSdkApiAcknowledgement;
   requireValue(acknowledgement === "" || /^[a-f0-9]{8}$/u.test(acknowledgement), "SDK override");
+  const sealedWaiver = waiver(sealed.stableSoakWaiver);
+  // A sealed waiver stays authoritative only while the repository variable
+  // still holds the same text; clearing it before publication revokes it.
+  const current = overrides.currentStableSoakWaiver;
+  const defaultWaiver =
+    current === undefined || waiver(current) === sealedWaiver ? sealedWaiver : "";
   return {
     ...sealed,
     pluginSdkApiAcknowledgement: acknowledgement,
-    stableSoakWaiver: overrideWaiver || waiver(sealed.stableSoakWaiver),
+    stableSoakWaiver: overrideWaiver || defaultWaiver,
   };
 }
 
@@ -182,7 +188,9 @@ export async function createReleasePublishInputs({ manifest, npmManifest, stable
       version: 1,
       targetSha: manifest.targetSha,
       npmDistTag,
-      pluginSdkApiAcknowledgement: sdk.acknowledgement ?? "",
+      // The sealed digest is evidence only. SDK API changes still need an
+      // operator-supplied acknowledgement at publication.
+      pluginSdkApiAcknowledgement: "",
       pluginSdkApiEvidenceDigest: sdk.digest,
       stableSoakWaiver,
       npmDecisions,

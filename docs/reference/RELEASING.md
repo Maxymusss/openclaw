@@ -415,11 +415,13 @@ execution plan still binds every selected child, and publication still requires
 qualified artifacts. Non-proof execution lanes are advisory by default; performance
 never gates npm or ClawHub publication.
 
-The sealed manifest also carries `publishInputs`: the Plugin SDK API acknowledgement
-derived from the qualified npm artifact, each package's registry publication
+The sealed manifest also carries `publishInputs`: the Plugin SDK API evidence
+digest from the qualified npm artifact, each package's registry publication
 decision, and any `OPENCLAW_RELEASE_STABLE_SOAK_WAIVER` repository-variable text.
 Publishing and read-only preflight consume these defaults; the existing SDK and
-soak inputs are explicit overrides. Preflight reuses the sealed registry plan;
+soak inputs are explicit overrides. The digest is evidence only, so SDK API
+changes still require an operator-supplied acknowledgement, and the sealed waiver
+is honored only while the repository variable still holds the same text. Preflight reuses the sealed registry plan;
 publication still rechecks live authority, immutable bytes, and registry selectors
 at each mutation boundary. Clear a temporary soak-waiver variable after closeout.
 
@@ -1592,7 +1594,7 @@ release. Existing approval and provenance checks still apply.
 
 Stable publication requires Full Release Validation with `runReleaseSoak=true` or an approved non-empty soak-waiver reason from sealed `publishInputs` or the explicit `stable_soak_waiver` override. Performance is advisory independently of that waiver. The reason is recorded in postpublish evidence and the release verification tail, and all other evidence checks remain required. For regular stable tags published to `latest`, the waiver also authorizes first-time plugin npm bootstrap with beta-profile validation and is recorded in the attested bootstrap approval. The [fast path](#fast-path-default) records the approved waiver before publication; omit the override when the sealed value applies or soak actually ran:
 
-**Advisory publication policy.** npm and ClawHub require artifact children, install smoke, upgrade-survivor and published-upgrade-survivor, every `update-first-hop-compat*` lane, pack budget/npm qualification, and target resolution. Verify aggregators block when their required inputs fail or their failure is unexplained. Normal CI tests (including Windows, macOS, and UI), plugin prerelease tests, cross-OS checks, performance, and QA are advisory and recorded without an operator waiver. Identity, provenance, and complete evidence checks still apply. The narrow first-hop escape hatch remains: `OPENCLAW_FRV_LANE_WAIVER="<target version> <reason>"` can waive a lost first-hop lane only when survivor lanes in the same child succeeded. Publishing that exception requires `lane_waiver=<reason>`; clear the variable afterward. The publish receipt records `laneWaiver`, `laneWaiverAcknowledgement`, and `waivedJobs` next to `stableSoakWaiver`.
+**Advisory publication policy.** npm and ClawHub require artifact children, install smoke, upgrade-survivor and published-upgrade-survivor, every `update-first-hop-compat*` lane, pack budget/npm qualification, package integrity, and target resolution. Verify aggregators block when their required inputs fail or their failure is unexplained. Normal CI tests (including Windows, macOS, and UI), plugin prerelease tests, cross-OS checks, performance, and QA are advisory and recorded without an operator waiver. Identity, provenance, and complete evidence checks still apply. The narrow first-hop escape hatch remains: `OPENCLAW_FRV_LANE_WAIVER="<target version> <reason>"` can waive a lost first-hop lane only when survivor lanes in the same child succeeded. Publishing that exception requires `lane_waiver=<reason>`; clear the variable afterward. The publish receipt records `laneWaiver`, `laneWaiverAcknowledgement`, and `waivedJobs` next to `stableSoakWaiver`.
 
 ```bash
 gh workflow run openclaw-release-publish.yml \

@@ -57,8 +57,9 @@ Use this with `$release-openclaw-maintainer` and `$openclaw-testing` when a rele
   are advisory for npm/ClawHub in every profile. Flaky tests in those suites never
   hold publication; record failures without requiring a lane waiver or green
   rerun. A passing replay alone does not prove a fix. Required artifact,
-  install-smoke, survivor, first-hop, pack/npm qualification, target-resolution,
-  and corresponding aggregator proofs remain enforced with exact provenance.
+  install-smoke, survivor, first-hop, pack/npm qualification, package-integrity,
+  target-resolution, and corresponding aggregator proofs remain enforced with
+  exact provenance.
 - Native macOS, Windows, Linux, and Android publication is independent of
   npm/ClawHub, GitHub finalization, and main closeout. Each platform retains
   its own signing, qualification, artifact, and updater requirements; report
@@ -513,11 +514,13 @@ postpublish confidence with the exact published package and
 release soak. Native artifact publication still requires its own build,
 signing, notarization, and promotion gates. Use a narrow `rerun_group` after
 focused fixes; never widen automatically.
-At seal time the parent derives the SDK acknowledgement from the exact qualified
+At seal time the parent records the SDK evidence digest from the exact qualified
 npm receipt, resolves per-package npm plans against the registry, and captures
 `vars.OPENCLAW_RELEASE_STABLE_SOAK_WAIVER` when configured. The manifest's
 `publishInputs` supplies publisher/preflight defaults; explicit SDK and soak
-inputs override them. Mutation owners still recheck live publication authority,
+inputs override them. The sealed digest is evidence only: SDK API changes still
+need an operator-supplied `plugin_sdk_api_acknowledgement` at publication, and
+the sealed waiver applies only while the repository variable still holds it. Mutation owners still recheck live publication authority,
 registry selectors, and immutable bytes. Clear temporary waiver text at closeout.
 
 Publish with `openclaw-release-publish.yml` using `release_profile=from-validation`

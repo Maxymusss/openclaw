@@ -51,7 +51,7 @@ describe("sealed publication inputs", () => {
     { published: false, latest: "2026.9.5", decision: "plan", route: null },
     { published: true, latest: version, decision: "already-published", route: "npm-readback" },
     { published: true, latest: "2026.9.7", decision: "superseded", route: "npm-readback" },
-  ])("seals registry decision $decision and derives the exact SDK acknowledgement", async (row) => {
+  ])("seals registry decision $decision without acknowledging the SDK evidence", async (row) => {
     const input = fixture();
     const fetchImpl = vi.fn(async () =>
       Response.json({
@@ -69,7 +69,7 @@ describe("sealed publication inputs", () => {
       version: 1,
       targetSha,
       npmDistTag: "latest",
-      pluginSdkApiAcknowledgement: input.digest.slice(0, 8),
+      pluginSdkApiAcknowledgement: "",
       pluginSdkApiEvidenceDigest: input.digest,
       stableSoakWaiver: "approved\nreason",
       npmDecisions: [
@@ -84,9 +84,7 @@ describe("sealed publication inputs", () => {
       ],
     });
     const manifest = { ...input.manifest, publishInputs: sealed };
-    expect(resolveReleasePublishInputs(manifest).pluginSdkApiAcknowledgement).toBe(
-      input.digest.slice(0, 8),
-    );
+    expect(resolveReleasePublishInputs(manifest).pluginSdkApiAcknowledgement).toBe("");
     expect(
       resolveReleasePublishInputs(manifest, {
         stableSoakWaiver: " \n ",
@@ -94,7 +92,7 @@ describe("sealed publication inputs", () => {
       }),
     ).toMatchObject({
       stableSoakWaiver: "approved\nreason",
-      pluginSdkApiAcknowledgement: input.digest.slice(0, 8),
+      pluginSdkApiAcknowledgement: "",
     });
     expect(
       resolveReleasePublishInputs(manifest, { pluginSdkApiAcknowledgement: " 12345678 " })
@@ -181,6 +179,31 @@ describe("sealed publication inputs", () => {
         },
       ),
     ).toThrow("SDK override");
+  });
+
+  it("revokes a sealed soak waiver once the repository variable no longer holds it", () => {
+    const { manifest: base } = fixture();
+    const manifest = {
+      ...base,
+      sourceAdmission: { ...base.sourceAdmission, projection: { packages: [] } },
+      publishInputs: {
+        version: 1,
+        targetSha,
+        npmDistTag: "latest",
+        pluginSdkApiAcknowledgement: "",
+        pluginSdkApiEvidenceDigest: "a".repeat(64),
+        stableSoakWaiver: "approved\nreason",
+        npmDecisions: [],
+      },
+    };
+    const resolve = (currentStableSoakWaiver?: string, stableSoakWaiver?: string) =>
+      resolveReleasePublishInputs(manifest, { currentStableSoakWaiver, stableSoakWaiver })
+        .stableSoakWaiver;
+    expect(resolve(undefined)).toBe("approved\nreason");
+    expect(resolve("approved\nreason")).toBe("approved\nreason");
+    expect(resolve("")).toBe("");
+    expect(resolve("2026.9.7 other")).toBe("");
+    expect(resolve("", "explicit override")).toBe("explicit override");
   });
 
   it("leaves historical manifest planning with its existing observer", () => {

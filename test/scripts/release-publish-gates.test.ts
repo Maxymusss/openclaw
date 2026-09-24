@@ -202,6 +202,7 @@ describe("release publication control admission", () => {
               : sealed
                 ? {}
                 : { STABLE_SOAK_WAIVER: waiver }),
+            ...(sealed ? { OPENCLAW_RELEASE_STABLE_SOAK_WAIVER: waiver } : {}),
             GITHUB_OUTPUT: output,
             GITHUB_STEP_SUMMARY: summary,
           },

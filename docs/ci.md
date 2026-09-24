@@ -83,13 +83,15 @@ use the candidate source, so current shard budgets do not replace release bytes.
 The npm/ClawHub release decision treats normal CI tests, plugin prerelease,
 cross-OS, performance, and QA lanes as advisory recorded evidence. Artifact,
 install-smoke, survivor, all first-hop compatibility, pack/npm qualification,
-and target-resolution proofs remain required. Aggregators follow required inputs;
+package-integrity, and target-resolution proofs remain required. Aggregators follow required inputs;
 identity and provenance verification still apply.
 
-For publication, the sealed manifest supplies the SDK acknowledgement digest,
+For publication, the sealed manifest supplies the SDK evidence digest,
 per-package npm decisions, and any approved `OPENCLAW_RELEASE_STABLE_SOAK_WAIVER`
 text. Explicit publisher inputs override those defaults; historical manifests
-retain their existing input contract. Publishers still validate live authority,
+retain their existing input contract. SDK API changes still need an
+operator-supplied acknowledgement, and the sealed waiver applies only while the
+repository variable still holds the same text. Publishers still validate live authority,
 artifact bytes, and registry state at the mutation boundary.
 
 Flaky tests never block npm/ClawHub publication: record advisory failures and
