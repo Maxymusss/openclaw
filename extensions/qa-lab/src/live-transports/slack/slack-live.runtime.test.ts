@@ -1414,111 +1414,76 @@ describe("Slack live QA runtime helpers", () => {
     expect(message.length).toBeLessThan(700);
   });
 
-  it("reports the real Slack error when the fallback request fails", async () => {
-    const postMessage = vi.fn(async () => {
-      throw Object.assign(new Error("do not persist this raw platform detail"), {
-        data: { error: "invalid_arguments", ok: false },
-      });
-    });
-    const sutWriteClient = { chat: { postMessage } };
-    const cfg = testing.buildSlackQaConfig(
-      {},
-      {
-        channelId: "C123456789",
-        driverBotUserId: "U111111111",
-        sutAccountId: "sut",
-        sutAppToken: "xapp-sut",
-        sutBotToken: "xoxb-sut",
-      },
-    );
-
-    await expect(
-      testing.runSlackTableInvalidBlocksFallbackScenario({
-        cfg,
-        channelId: "C123456789",
-        sutAccountId: "sut",
-        sutIdentity: { userId: "U999999999" },
-        sutReadClient: { conversations: { history: vi.fn() } } as never,
-        sutWriteClient: sutWriteClient as never,
-        timeoutMs: 0,
-      }),
-    ).rejects.toThrow(
-      "Slack fallback part 1 failed after invalid_blocks; observed invalid_arguments",
-    );
-    expect(sutWriteClient.chat.postMessage).toBe(postMessage);
-  });
-
-  it("does not expose an untrusted Slack fallback error value", async () => {
-    const postMessage = vi.fn(async () => {
-      throw Object.assign(new Error("private platform detail"), {
-        data: { error: "unsafe private detail", ok: false },
-      });
-    });
-    const sutWriteClient = { chat: { postMessage } };
-    const cfg = testing.buildSlackQaConfig(
-      {},
-      {
-        channelId: "C123456789",
-        driverBotUserId: "U111111111",
-        sutAccountId: "sut",
-        sutAppToken: "xapp-sut",
-        sutBotToken: "xoxb-sut",
-      },
-    );
-
-    await expect(
-      testing.runSlackTableInvalidBlocksFallbackScenario({
-        cfg,
-        channelId: "C123456789",
-        sutAccountId: "sut",
-        sutIdentity: { userId: "U999999999" },
-        sutReadClient: { conversations: { history: vi.fn() } } as never,
-        sutWriteClient: sutWriteClient as never,
-        timeoutMs: 0,
-      }),
-    ).rejects.toThrow(
-      "Slack fallback part 1 failed after invalid_blocks; observed no fallback API failure code",
-    );
-    expect(sutWriteClient.chat.postMessage).toBe(postMessage);
-  });
-
-  it("reports a later Slack fallback chunk failure", async () => {
-    const postMessage = vi
-      .fn()
-      .mockResolvedValueOnce({ channel: "C123456789", ok: true, ts: "2.000001" })
-      .mockRejectedValueOnce(
-        Object.assign(new Error("do not persist this raw platform detail"), {
-          data: { error: "invalid_arguments", ok: false },
+  for (const { title, createPostMessage, expectedError, expectedCalls } of [
+    {
+      title: "reports the real Slack error when the fallback request fails",
+      createPostMessage: () =>
+        vi.fn(async () => {
+          throw Object.assign(new Error("do not persist this raw platform detail"), {
+            data: { error: "invalid_arguments", ok: false },
+          });
         }),
+      expectedError:
+        "Slack fallback part 1 failed after invalid_blocks; observed invalid_arguments",
+      expectedCalls: 1,
+    },
+    {
+      title: "does not expose an untrusted Slack fallback error value",
+      createPostMessage: () =>
+        vi.fn(async () => {
+          throw Object.assign(new Error("private platform detail"), {
+            data: { error: "unsafe private detail", ok: false },
+          });
+        }),
+      expectedError:
+        "Slack fallback part 1 failed after invalid_blocks; observed no fallback API failure code",
+      expectedCalls: 1,
+    },
+    {
+      title: "reports a later Slack fallback chunk failure",
+      createPostMessage: () =>
+        vi
+          .fn()
+          .mockResolvedValueOnce({ channel: "C123456789", ok: true, ts: "2.000001" })
+          .mockRejectedValueOnce(
+            Object.assign(new Error("do not persist this raw platform detail"), {
+              data: { error: "invalid_arguments", ok: false },
+            }),
+          ),
+      expectedError:
+        "Slack fallback part 2 failed after invalid_blocks; observed invalid_arguments",
+      expectedCalls: 2,
+    },
+  ]) {
+    it(title, async () => {
+      const postMessage = createPostMessage();
+      const sutWriteClient = { chat: { postMessage } };
+      const cfg = testing.buildSlackQaConfig(
+        {},
+        {
+          channelId: "C123456789",
+          driverBotUserId: "U111111111",
+          sutAccountId: "sut",
+          sutAppToken: "xapp-sut",
+          sutBotToken: "xoxb-sut",
+        },
       );
-    const sutWriteClient = { chat: { postMessage } };
-    const cfg = testing.buildSlackQaConfig(
-      {},
-      {
-        channelId: "C123456789",
-        driverBotUserId: "U111111111",
-        sutAccountId: "sut",
-        sutAppToken: "xapp-sut",
-        sutBotToken: "xoxb-sut",
-      },
-    );
 
-    await expect(
-      testing.runSlackTableInvalidBlocksFallbackScenario({
-        cfg,
-        channelId: "C123456789",
-        sutAccountId: "sut",
-        sutIdentity: { userId: "U999999999" },
-        sutReadClient: { conversations: { history: vi.fn() } } as never,
-        sutWriteClient: sutWriteClient as never,
-        timeoutMs: 0,
-      }),
-    ).rejects.toThrow(
-      "Slack fallback part 2 failed after invalid_blocks; observed invalid_arguments",
-    );
-    expect(postMessage).toHaveBeenCalledTimes(2);
-    expect(sutWriteClient.chat.postMessage).toBe(postMessage);
-  });
+      await expect(
+        testing.runSlackTableInvalidBlocksFallbackScenario({
+          cfg,
+          channelId: "C123456789",
+          sutAccountId: "sut",
+          sutIdentity: { userId: "U999999999" },
+          sutReadClient: { conversations: { history: vi.fn() } } as never,
+          sutWriteClient: sutWriteClient as never,
+          timeoutMs: 0,
+        }),
+      ).rejects.toThrow(new Error(expectedError));
+      expect(postMessage).toHaveBeenCalledTimes(expectedCalls);
+      expect(sutWriteClient.chat.postMessage).toBe(postMessage);
+    });
+  }
 
   it("enables the message tool for the live reaction scenario", () => {
     const scenario = testing.findScenario(["slack-reaction-glyph-native"])[0];

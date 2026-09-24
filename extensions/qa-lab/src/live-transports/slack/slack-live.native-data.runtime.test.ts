@@ -145,47 +145,6 @@ describe("Slack native data QA scenarios", () => {
     });
   });
 
-  it("rejects fallback-only Slack chart delivery", async () => {
-    vi.useFakeTimers();
-    const scenario = findScenario(["slack-chart-presentation-native"])[0];
-    const run = scenario?.buildRun("U999999999");
-    const input = run && "input" in run ? run.input : "";
-    const summaryText = input.match(/SLACK_QA_CHART_SUMMARY_[A-Z0-9]+/u)?.[0];
-    const afterReply = run && "afterReply" in run ? run.afterReply : undefined;
-    const captureBeforeReply =
-      run && "captureBeforeReply" in run ? run.captureBeforeReply : undefined;
-    if (!summaryText || !afterReply || !captureBeforeReply) {
-      throw new Error("missing Slack chart scenario verifier");
-    }
-    const accessibleText = renderExpectedSlackChartAccessibleText(summaryText);
-    const history = vi.fn(async () => ({
-      messages: [
-        {
-          text: accessibleText.replace(/\s+/gu, " "),
-          ts: "2.000000",
-          user: "U999999999",
-        },
-      ],
-    }));
-    expect(
-      captureBeforeReply([{ channelId: "C123456789", text: summaryText, ts: "2.000000" }]),
-    ).toBe(true);
-    const result = expect(
-      afterReply(
-        {} as never,
-        {
-          channelId: "C123456789",
-          sentTs: "1.000000",
-          sutIdentity: { userId: "U999999999" },
-          sutReadClient: { conversations: { history } },
-        } as never,
-      ),
-    ).rejects.toThrow("waiting for Slack message");
-
-    await vi.advanceTimersByTimeAsync(16_000);
-    await result;
-  });
-
   it("drives the live native table scenario through a portable message-tool presentation", () => {
     const scenario = findScenario(["slack-table-presentation-native"])[0];
     const run = scenario?.buildRun("U999999999");
@@ -386,43 +345,60 @@ describe("Slack native data QA scenarios", () => {
     },
   );
 
-  it("rejects fallback-only Slack table delivery", async () => {
-    vi.useFakeTimers();
-    const scenario = findScenario(["slack-table-presentation-native"])[0];
-    const run = scenario?.buildRun("U999999999");
-    const input = run && "input" in run ? run.input : "";
-    const summaryText = input.match(/SLACK_QA_TABLE_SUMMARY_[A-Z0-9]+/u)?.[0];
-    const afterReply = run && "afterReply" in run ? run.afterReply : undefined;
-    const captureBeforeReply =
-      run && "captureBeforeReply" in run ? run.captureBeforeReply : undefined;
-    if (!summaryText || !afterReply || !captureBeforeReply) {
-      throw new Error("missing Slack table scenario verifier");
-    }
-    const history = vi.fn(async () => ({
-      messages: [
-        {
-          text: renderExpectedSlackTableAccessibleText(summaryText).replace(/\s+/gu, " "),
-          ts: "2.000000",
-          user: "U999999999",
-        },
-      ],
-    }));
-    expect(
-      captureBeforeReply([{ channelId: "C123456789", text: summaryText, ts: "2.000000" }]),
-    ).toBe(true);
-    const result = expect(
-      afterReply(
-        {} as never,
-        {
-          channelId: "C123456789",
-          sentTs: "1.000000",
-          sutIdentity: { userId: "U999999999" },
-          sutReadClient: { conversations: { history } },
-        } as never,
-      ),
-    ).rejects.toThrow("waiting for Slack message");
+  for (const { title, scenarioId, summaryPattern, renderAccessibleText, verifierError } of [
+    {
+      title: "rejects fallback-only Slack chart delivery",
+      scenarioId: "slack-chart-presentation-native",
+      summaryPattern: /SLACK_QA_CHART_SUMMARY_[A-Z0-9]+/u,
+      renderAccessibleText: renderExpectedSlackChartAccessibleText,
+      verifierError: "missing Slack chart scenario verifier",
+    },
+    {
+      title: "rejects fallback-only Slack table delivery",
+      scenarioId: "slack-table-presentation-native",
+      summaryPattern: /SLACK_QA_TABLE_SUMMARY_[A-Z0-9]+/u,
+      renderAccessibleText: renderExpectedSlackTableAccessibleText,
+      verifierError: "missing Slack table scenario verifier",
+    },
+  ]) {
+    it(title, async () => {
+      vi.useFakeTimers();
+      const scenario = findScenario([scenarioId])[0];
+      const run = scenario?.buildRun("U999999999");
+      const input = run && "input" in run ? run.input : "";
+      const summaryText = input.match(summaryPattern)?.[0];
+      const afterReply = run && "afterReply" in run ? run.afterReply : undefined;
+      const captureBeforeReply =
+        run && "captureBeforeReply" in run ? run.captureBeforeReply : undefined;
+      if (!summaryText || !afterReply || !captureBeforeReply) {
+        throw new Error(verifierError);
+      }
+      const history = vi.fn(async () => ({
+        messages: [
+          {
+            text: renderAccessibleText(summaryText).replace(/\s+/gu, " "),
+            ts: "2.000000",
+            user: "U999999999",
+          },
+        ],
+      }));
+      expect(
+        captureBeforeReply([{ channelId: "C123456789", text: summaryText, ts: "2.000000" }]),
+      ).toBe(true);
+      const result = expect(
+        afterReply(
+          {} as never,
+          {
+            channelId: "C123456789",
+            sentTs: "1.000000",
+            sutIdentity: { userId: "U999999999" },
+            sutReadClient: { conversations: { history } },
+          } as never,
+        ),
+      ).rejects.toThrow("waiting for Slack message");
 
-    await vi.advanceTimersByTimeAsync(16_000);
-    await result;
-  });
+      await vi.advanceTimersByTimeAsync(16_000);
+      await result;
+    });
+  }
 });
