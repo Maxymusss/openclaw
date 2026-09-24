@@ -272,7 +272,7 @@ describe("controlUi.sessionPreview", () => {
       lastMessagePreview: `  OPENAI_API_KEY=${secret} ${"x".repeat(240)}  `,
       archived: false,
     });
-    const handlers = createControlUiHandlers(vi.fn(), loadSessionPreview);
+    const handlers = createControlUiHandlers(loadSessionPreview);
     const respond = vi.fn<RespondFn>();
 
     await expectDefined(
@@ -306,7 +306,7 @@ describe("controlUi.sessionPreview", () => {
   });
 
   it("returns unavailable for an unknown session", async () => {
-    const handlers = createControlUiHandlers(vi.fn(), vi.fn().mockReturnValue(null));
+    const handlers = createControlUiHandlers(vi.fn().mockReturnValue(null));
     const respond = vi.fn<RespondFn>();
 
     await expectDefined(
@@ -319,7 +319,7 @@ describe("controlUi.sessionPreview", () => {
 
   it("rejects malformed preview params", async () => {
     const loadSessionPreview = vi.fn();
-    const handlers = createControlUiHandlers(vi.fn(), loadSessionPreview);
+    const handlers = createControlUiHandlers(loadSessionPreview);
     const respond = vi.fn<RespondFn>();
 
     await expectDefined(

@@ -9,6 +9,51 @@ import {
 describe("Control UI GitHub failures", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("keeps credentials on the API origin and revalidates every redirect dispatch", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(null, { status: 301, headers: { location: "/repositories/123" } }),
+      )
+      .mockResolvedValueOnce(new Response("{}"));
+    const identity = { revalidate: vi.fn(async () => {}), assertSelected: vi.fn() };
+    const beforeRedirect = vi.fn(async () => {});
+    await gitHubPublicApi.fetchGitHubApi(
+      "https://api.github.com/repos/owner/repo",
+      fetchImpl,
+      "synthetic-api-token",
+      beforeRedirect,
+      identity,
+    );
+    expect(beforeRedirect).toHaveBeenCalledExactlyOnceWith(
+      new URL("https://api.github.com/repositories/123"),
+    );
+    expect(identity.revalidate).toHaveBeenCalledTimes(2);
+    expect(identity.assertSelected).toHaveBeenCalledTimes(2);
+    for (const [, init] of fetchImpl.mock.calls) {
+      expect(new Headers(init?.headers).get("Authorization")).toBe("Bearer synthetic-api-token");
+      expect(init?.redirect).toBe("manual");
+    }
+  });
+
+  it.each([
+    "https://example.com/private",
+    "https://api.github.com:8443/private",
+    "https://user@api.github.com/private",
+  ])("rejects an unsafe redirect without forwarding credentials: %s", async (location) => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 302, headers: { location } }));
+    await expect(
+      gitHubPublicApi.fetchGitHubApi(
+        "https://api.github.com/repos/owner/repo",
+        fetchImpl,
+        "synthetic-api-token",
+      ),
+    ).rejects.toMatchObject({ statusCode: 502, message: "GitHub API returned an unsafe redirect" });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+  });
+
   it.each(["before admission", "during credential revalidation"])(
     "does not dispatch a caller cancelled %s",
     async (phase) => {

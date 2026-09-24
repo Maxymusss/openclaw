@@ -171,7 +171,6 @@ function renderCardLink(
 export function renderLoading(card: HTMLDivElement): void {
   card.dataset.loading = "true";
   card.removeAttribute("data-state");
-  card.removeAttribute("data-cached");
   card.setAttribute("aria-label", t("linkReader.loadingPreview"));
   const rows = [
     ["header", ["badge", "subtitle", "time"]],
@@ -196,7 +195,6 @@ export function renderPreviewError(
   message: string,
 ): void {
   card.dataset.loading = "false";
-  card.removeAttribute("data-cached");
   card.removeAttribute("data-state");
   card.setAttribute("aria-label", t("linkReader.previewUnavailable"));
   render(
@@ -207,14 +205,8 @@ export function renderPreviewError(
   );
 }
 
-export function renderPreview(
-  card: HTMLDivElement,
-  preview: LinkPreview,
-  seeded = false,
-  error?: string,
-): void {
+export function renderPreview(card: HTMLDivElement, preview: LinkPreview): void {
   card.dataset.loading = "false";
-  card.dataset.cached = String(seeded);
   card.dataset.state = preview.badge?.tone ?? "neutral";
   const timestamp = preview.updatedAt ?? preview.createdAt;
   const authorHref = linkReaderAuthorHref(preview.authorUrl, preview.href);
@@ -223,7 +215,7 @@ export function renderPreview(
     html`<div class="link-reader-hovercard__header">
         ${preview.badge ? html`<span class="link-reader-hovercard__state" data-tone=${preview.badge.tone}><span class="link-reader-hovercard__state-dot" aria-hidden="true"></span>${preview.badge.label}</span>` : nothing}
         ${renderCardLink("link-reader-hovercard__subtitle", preview.href, preview.subtitle ?? preview.reader.label)}
-        ${seeded ? html`<span class="link-reader-hovercard__time">${t("linkReader.cachedPreview")}</span>` : timestamp ? html`<time class="link-reader-hovercard__time" datetime=${timestamp}>${formatRelativeTimestamp(Date.parse(timestamp))}</time>` : nothing}
+        ${timestamp ? html`<time class="link-reader-hovercard__time" datetime=${timestamp}>${formatRelativeTimestamp(Date.parse(timestamp))}</time>` : nothing}
       </div>
       ${renderCardLink("link-reader-hovercard__title", preview.href, preview.title)}
       <div class="link-reader-hovercard__footer">
@@ -238,15 +230,13 @@ export function renderPreview(
         <span class="link-reader-hovercard__metadata"
           >${preview.metadata?.map(({ label, value, tone }) => html`<span class="link-reader-hovercard__metric" data-tone=${tone ?? nothing}>${label ? label + ": " : ""}${value}</span>`)}</span
         >
-      </div>
-      ${error ? renderErrorNotice(error) : nothing}`,
+      </div>`,
     card,
   );
   card.setAttribute("aria-label", t("linkReader.previewAriaLabel", { title: preview.title }));
 }
 
 export type CacheEntry = {
-  preview?: ControlUiLinkReaderPreview;
   expiresAt: number;
   promise: Promise<ControlUiLinkReaderPreview>;
   controller: AbortController;

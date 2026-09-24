@@ -1896,17 +1896,15 @@ describe("config plugin validation", () => {
     expect(res.ok).toBe(true);
   });
 
-  it.each([true, false])("warns for removed legacy plugin ids with enabled=%s", (enabled) => {
-    const removedId = "google-antigravity-auth";
-    const res = validateRemovedPluginConfig(removedId, enabled);
-    expectRemovedPluginWarnings(res, removedId, removedId);
-  });
-
-  it("warns for removed google gemini auth plugin ids instead of failing validation", () => {
-    const removedId = "google-gemini-cli-auth";
-    const res = validateRemovedPluginConfig(removedId);
-    expectRemovedPluginWarnings(res, removedId, removedId);
-  });
+  it.each(["google-antigravity-auth", "google-gemini-cli-auth", "github"])(
+    "warns for retired %s config instead of blocking startup",
+    (removedId) => {
+      for (const enabled of [true, false]) {
+        const res = validateRemovedPluginConfig(removedId, enabled);
+        expectRemovedPluginWarnings(res, removedId, removedId);
+      }
+    },
+  );
 
   it("warns for removed skill-workshop plugin id instead of failing validation", () => {
     const removedId = "skill-workshop";

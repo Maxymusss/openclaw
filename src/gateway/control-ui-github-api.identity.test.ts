@@ -24,7 +24,7 @@ describe("Control UI GitHub credential", () => {
     { entries: { github: { enabled: false } } },
     { allow: ["another-plugin"] },
   ])(
-    "keeps the packaged host read library available independently of plugin activation: %j",
+    "keeps core GitHub API access available independently of plugin activation: %j",
     async (plugins) => {
       setRuntimeConfigSnapshot({ plugins });
       const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(
@@ -40,7 +40,7 @@ describe("Control UI GitHub credential", () => {
     },
   );
 
-  it("keeps the explicit preview credential separate and preserves ambient fallback by omission", () => {
+  it("keeps the explicit API credential separate and preserves ambient fallback by omission", () => {
     const env = { GH_TOKEN: "ambient-gh", GITHUB_TOKEN: "ambient-github" };
 
     expect(githubApiToken(env, {})).toBe("ambient-gh");

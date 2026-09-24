@@ -125,7 +125,7 @@ describe("doctor stale plugin config helpers", () => {
     });
   });
 
-  it.each(["thread-ownership", "open-prose"])(
+  it.each(["thread-ownership", "open-prose", "github"])(
     "removes retired %s config while retaining valid plugin ids",
     (retiredPluginId) => {
       const result = maybeRepairStalePluginConfig({

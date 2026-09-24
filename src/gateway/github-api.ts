@@ -1,15 +1,9 @@
 import { createHash } from "node:crypto";
-import { pruneMapToMaxSize } from "openclaw/plugin-sdk/collection-runtime";
-import { readResponseWithLimit } from "openclaw/plugin-sdk/response-limit-runtime";
-import { parseRetryAfterHeaderSeconds } from "openclaw/plugin-sdk/retry-runtime";
-import {
-  asFiniteNumber,
-  isRecord,
-  parseStrictNonNegativeInteger,
-  readNonBlankString,
-} from "openclaw/plugin-sdk/string-coerce-runtime";
-
-export { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { parseStrictNonNegativeInteger } from "@openclaw/normalization-core/number-coercion";
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { readResponseWithLimit } from "../infra/http-response-body.js";
+import { pruneMapToMaxSize } from "../infra/map-size.js";
+import { parseRetryAfterHeaderSeconds } from "../infra/retry-after.js";
 
 export const GITHUB_API_ORIGIN = "https://api.github.com";
 const GITHUB_JSON_MAX_BYTES = 256 * 1024;
@@ -45,7 +39,7 @@ export class ControlUiGitHubError extends Error {
   }
 
   get retryAfterMs(): number | undefined {
-    // Cached failures must keep the original reset time when a hovercard reopens.
+    // Cached failures must keep the original reset time when a caller retries.
     return this.retryAtMs === undefined ? undefined : Math.max(0, this.retryAtMs - Date.now());
   }
 }
@@ -65,7 +59,7 @@ export class GitHubGraphQLUnavailableError extends ControlUiGitHubError {
   }
 }
 
-export function formatControlUiGitHubPreviewError(error: unknown): {
+export function formatGitHubApiError(error: unknown): {
   message: string;
   retryable: boolean;
   retryAfterMs?: number;
@@ -115,32 +109,13 @@ export function formatControlUiGitHubPreviewError(error: unknown): {
   }
   // Credential subprocess errors and arbitrary transport diagnostics can contain secrets.
   return {
-    message: "GitHub preview could not be loaded. Retry or check the server logs.",
+    message: "GitHub request could not be completed. Retry or check the server logs.",
     retryable: false,
   };
 }
 
 export function githubApiCredentialCacheScope(token: string | undefined): string {
   return token ? createHash("sha256").update(token).digest("hex") : "anonymous";
-}
-
-export function requiredString(record: Record<string, unknown>, key: string): string {
-  const value = readNonBlankString(record[key]);
-  if (value === undefined) {
-    throw new ControlUiGitHubError(502, `GitHub response omitted ${key}`);
-  }
-  return value;
-}
-
-export function readOptionalGitHubString(
-  record: Record<string, unknown>,
-  key: string,
-): string | undefined {
-  return readNonBlankString(record[key]);
-}
-
-export function optionalNumber(record: Record<string, unknown>, key: string): number | undefined {
-  return asFiniteNumber(record[key]);
 }
 
 function githubApiResource(url: URL): string {

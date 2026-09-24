@@ -365,7 +365,6 @@ function renderSessionLink(
     <openclaw-activity-session-git
       .context=${context}
       .sessionKey=${scopedSessionArtifactKey(row.key, agentId)}
-      .agentId=${agentId}
     ></openclaw-activity-session-git>
     <openclaw-activity-session-media
       .context=${context}

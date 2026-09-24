@@ -400,7 +400,14 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   // advertised method indices stay stable for older clients; new methods append.
   ["terminal.attach", "terminal", "operator.admin", "2026.7"],
   ["terminal.list", "terminal", "operator.admin", "2026.7"],
-  ["controlUi.githubPreview", "control-ui", "operator.read", "<=2026.7"],
+  // Removed reader: preserve the shipped method position with a terminal UNAVAILABLE response.
+  [
+    "controlUi.githubPreview",
+    "control-ui",
+    "operator.read",
+    "<=2026.7",
+    { description: "Removed GitHub link reader; returns UNAVAILABLE. Open links on GitHub." },
+  ],
   // Additive discovery methods append here so older clients keep stable indices.
   ["system.info", "system", "operator.read", "<=2026.7"],
   // Workspace contents stay in the documented trusted operator domain, like session and log
@@ -711,7 +718,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["themes.get", "themes", "operator.read", "2026.9"],
   ["themes.set", "themes", "operator.write", "2026.9"],
   ["themes.import", "themes", "operator.write", "2026.9"],
-  ["controlUi.githubDetail", "control-ui", "operator.read", "2026.9"],
   ["progressCard.refresh", "progress-card", "operator.write", "2026.9"],
   ["webSearch.status", "web-search", "operator.read", "2026.9"],
   ["webSearch.test", "web-search", "operator.admin", "2026.9"],

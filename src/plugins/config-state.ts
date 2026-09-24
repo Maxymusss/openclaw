@@ -36,6 +36,7 @@ const BUILT_IN_PLUGIN_ALIAS_LOOKUP = new Map<string, string>([
   ...BUILT_IN_PLUGIN_ALIAS_FALLBACKS.map(([, pluginId]) => [pluginId, pluginId] as const),
 ]);
 const RETIRED_PLUGIN_IDS = new Set([
+  "github",
   "google-antigravity-auth",
   "google-gemini-cli-auth",
   "skill-workshop",

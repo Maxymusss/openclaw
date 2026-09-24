@@ -1262,12 +1262,6 @@ importers:
         specifier: workspace:*
         version: link:../../packages/plugin-sdk
 
-  extensions/github:
-    devDependencies:
-      '@openclaw/plugin-sdk':
-        specifier: workspace:*
-        version: link:../../packages/plugin-sdk
-
   extensions/github-copilot:
     devDependencies:
       '@openclaw/plugin-sdk':

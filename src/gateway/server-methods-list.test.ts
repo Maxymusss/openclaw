@@ -232,7 +232,6 @@ describe("listGatewayMethods", () => {
       "themes.get",
       "themes.set",
       "themes.import",
-      "controlUi.githubDetail",
       "progressCard.refresh",
       "webSearch.status",
       "webSearch.test",
@@ -297,7 +296,6 @@ describe("listGatewayMethods", () => {
       "themes.get",
       "themes.set",
       "themes.import",
-      "controlUi.githubDetail",
       "progressCard.refresh",
       "webSearch.status",
       "webSearch.test",
@@ -319,8 +317,18 @@ describe("listGatewayMethods", () => {
     expect(methods).toContain("skills.skillCard");
   });
 
-  it("advertises Control UI GitHub previews", () => {
+  it("retains the shipped preview retirement stub but not the removed reader methods", () => {
     expect(listGatewayMethods()).toContain("controlUi.githubPreview");
+    expect(coreGatewayHandlers["controlUi.githubPreview"]).toBeTypeOf("function");
+    for (const method of [
+      "controlUi.githubDetail",
+      "github.preview",
+      "github.detail",
+      "github.image",
+    ]) {
+      expect(listGatewayMethods()).not.toContain(method);
+      expect(coreGatewayHandlers).not.toHaveProperty(method);
+    }
   });
 
   it("advertises Control UI session pull request detection", () => {
@@ -491,7 +499,6 @@ describe("listGatewayMethods", () => {
       "themes.get",
       "themes.set",
       "themes.import",
-      "controlUi.githubDetail",
       "progressCard.refresh",
       "webSearch.status",
       "webSearch.test",

@@ -468,25 +468,15 @@ export async function loadAndMaybeMigrateDoctorConfig(params: {
     });
   }
 
-  const [
-    { collectPluginToolAllowlistWarnings },
-    { collectGitHubUpgradeWarnings },
-    { normalizePluginsConfig },
-  ] = await Promise.all([
-    import("./doctor/shared/plugin-tool-allowlist-warnings.js"),
-    import("./doctor/shared/github-preview-upgrade.js"),
-    import("../plugins/config-state.js"),
-  ]);
+  const { collectPluginToolAllowlistWarnings } =
+    await import("./doctor/shared/plugin-tool-allowlist-warnings.js");
   const pluginToolAllowlistWarnings = runWithCurrentPluginMetadata(state.candidate, () =>
     collectPluginToolAllowlistWarnings({
       cfg: state.candidate,
       env: process.env,
     }),
   );
-  const pluginWarnings = [
-    ...pluginToolAllowlistWarnings,
-    ...collectGitHubUpgradeWarnings(normalizePluginsConfig(state.candidate.plugins)),
-  ];
+  const pluginWarnings = pluginToolAllowlistWarnings;
   if (pluginWarnings.length > 0) {
     note(sanitizeDoctorNote(pluginWarnings.join("\n")), "Doctor warnings");
   }

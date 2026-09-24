@@ -1,10 +1,7 @@
 import { html, nothing } from "lit";
 import { property } from "lit/decorators.js";
 import type { ControlUiSessionPullRequest } from "../../../../src/gateway/control-ui-contract.js";
-import type { ControlUiLinkReaderPreview } from "../../../../src/shared/control-ui-link-reader.js";
 import type { ApplicationContext } from "../../app/context.ts";
-import "../../components/link-reader-hovercard-registration.ts";
-import { availableLinkPreviewReaders } from "../../app/link-reader-routing.ts";
 import { icons } from "../../components/icons.ts";
 import { t } from "../../i18n/index.ts";
 import { registerActivityEnglish } from "../../i18n/locales/en-activity.ts";
@@ -24,37 +21,6 @@ function renderDiff(item: { additions?: number; deletions?: number }) {
       ? nothing
       : html`<span class="activity-feed__deletions">−${item.deletions.toLocaleString()}</span>`
   }`;
-}
-
-function pullRequestPreview(pr: ControlUiSessionPullRequest): ControlUiLinkReaderPreview {
-  return {
-    url: pr.url,
-    title: pr.title,
-    subtitle: pr.owner + "/" + pr.repo + " #" + pr.number,
-    badge: {
-      label: t("activity.git." + pr.state),
-      tone:
-        pr.state === "merged"
-          ? "accent"
-          : pr.state === "open"
-            ? "positive"
-            : pr.state === "closed"
-              ? "negative"
-              : "neutral",
-    },
-    author: pr.author?.login,
-    authorUrl: pr.author?.login
-      ? "https://github.com/" + encodeURIComponent(pr.author.login)
-      : undefined,
-    metadata: [
-      ...(pr.additions === undefined
-        ? []
-        : [{ label: "", value: "+" + pr.additions, tone: "positive" as const }]),
-      ...(pr.deletions === undefined
-        ? []
-        : [{ label: "", value: "−" + pr.deletions, tone: "negative" as const }]),
-    ],
-  };
 }
 
 function renderPullRequest(pr: ControlUiSessionPullRequest) {
@@ -86,7 +52,6 @@ function renderPullRequest(pr: ControlUiSessionPullRequest) {
 class ActivitySessionGit extends OpenClawLightDomElement {
   @property({ attribute: false }) context!: ApplicationContext;
   @property() sessionKey = "";
-  @property() agentId = "";
 
   private readonly subscriptions = new SubscriptionsController(this).effect(
     () => this.context?.gateway,
@@ -129,39 +94,32 @@ class ActivitySessionGit extends OpenClawLightDomElement {
       return nothing;
     }
     const stale = snapshot.status !== "ready" || gateway.snapshot.phase !== "connected";
-    return html`<openclaw-link-reader-hovercard-provider
-      .client=${gateway.snapshot.phase === "connected" ? gateway.snapshot.client : null}
-      .readers=${availableLinkPreviewReaders(gateway.snapshot)}
-      .agentId=${this.agentId}
-      .previewSeeds=${snapshot.pullRequests.map(pullRequestPreview)}
-    >
-      <div class="activity-feed__git">
-        ${
-          branch
-            ? html`<span
-                class="activity-feed__branch"
-                title=${t("activity.git.branchDiff", { branch: branch.branch })}
-              >
-                <span class="activity-feed__git-icon" aria-hidden="true">${icons.gitBranch}</span>
-                <span class="activity-feed__git-label">${branch.branch}</span>
-                ${renderDiff(branch)}
-              </span>`
-            : nothing
-        }
-        ${snapshot.pullRequests.map(renderPullRequest)}
-        ${
-          stale
-            ? html`<span
-                class="activity-feed__git-stale"
-                role="img"
-                aria-label=${t("activity.git.stale")}
-                title=${t("activity.git.stale")}
-                >${icons.alertTriangle}</span
-              >`
-            : nothing
-        }
-      </div>
-    </openclaw-link-reader-hovercard-provider>`;
+    return html`<div class="activity-feed__git">
+      ${
+        branch
+          ? html`<span
+              class="activity-feed__branch"
+              title=${t("activity.git.branchDiff", { branch: branch.branch })}
+            >
+              <span class="activity-feed__git-icon" aria-hidden="true">${icons.gitBranch}</span>
+              <span class="activity-feed__git-label">${branch.branch}</span>
+              ${renderDiff(branch)}
+            </span>`
+          : nothing
+      }
+      ${snapshot.pullRequests.map(renderPullRequest)}
+      ${
+        stale
+          ? html`<span
+              class="activity-feed__git-stale"
+              role="img"
+              aria-label=${t("activity.git.stale")}
+              title=${t("activity.git.stale")}
+              >${icons.alertTriangle}</span
+            >`
+          : nothing
+      }
+    </div>`;
   }
 }
 

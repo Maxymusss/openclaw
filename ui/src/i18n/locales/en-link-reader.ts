@@ -3,7 +3,6 @@ import { en } from "./en.ts";
 
 const enLinkReader = {
   linkReader: {
-    cachedPreview: "Cached details",
     previewAriaLabel: "Preview: {title}",
     newTab: "New reader tab",
     openUrl: "Open URL",
