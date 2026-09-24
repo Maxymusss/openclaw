@@ -1,0 +1,82 @@
+name: MV1 iOS screenshot proof
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  screenshots:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        family: [iphone, ipad-13]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      BUNDLE_DEPLOYMENT: "true"
+      BUNDLE_GEMFILE: ${{ github.workspace }}/apps/ios/Gemfile
+      OPENCLAW_SNAPSHOT_DEVICE_FAMILY: ${{ matrix.family }}
+      OPENCLAW_SNAPSHOT_SKIP_WATCH: ${{ matrix.family == 'iphone' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: ruby/setup-ruby@984c0c890880bbf811283d6f09c4607c62d210a4
+        with:
+          ruby-version: "3.4.10"
+          bundler: "2.6.9"
+          bundler-cache: false
+          working-directory: apps/ios
+      - name: Install locked Fastlane bundle
+        working-directory: apps/ios
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          bundle _2.6.9_ install --jobs 4 --retry 3
+          bundle _2.6.9_ check
+      - uses: ./.github/actions/setup-node-env
+        with:
+          cache-mode: restore
+          install-bun: "false"
+          node-version: "24.16.0"
+      - name: Install native tooling
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          xcodebuild -version
+          swift_tools_dir="$RUNNER_TEMP/openclaw-swift-tools"
+          ./scripts/install-xcodegen.sh "$swift_tools_dir"
+          ./scripts/install-swift-tools.sh "$swift_tools_dir"
+          echo "$swift_tools_dir" >> "$GITHUB_PATH"
+          export PATH="$HOME/.cargo/bin:$PATH"
+          watch_toolchain="$(awk -F '"' '/^channel =/ { print $2; exit }' apps/shared/OpenClawWatchRTC/rust-toolchain.toml)"
+          rustup toolchain install "$watch_toolchain" --profile minimal --component rust-src
+      - name: Measure settings query without fastlane retries
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          bash scripts/ios-configure-signing.sh
+          bash scripts/ios-write-version-xcconfig.sh
+          node scripts/ios-write-swift-filelist.mjs
+          xcodegen generate --spec apps/ios/project.yml --project apps/ios
+          mkdir -p apps/ios/build/MV1Timings
+          /usr/bin/time -p xcodebuild -resolvePackageDependencies -scheme OpenClawUITests -project apps/ios/OpenClaw.xcodeproj -configuration Debug -derivedDataPath apps/ios/build/SnapshotDerivedData > apps/ios/build/MV1Timings/packages.log 2>&1
+          /usr/bin/time -p xcodebuild -showBuildSettings -scheme OpenClawUITests -project apps/ios/OpenClaw.xcodeproj -configuration Debug -derivedDataPath apps/ios/build/SnapshotDerivedData > apps/ios/build/MV1Timings/settings.log 2>&1
+          tail -3 apps/ios/build/MV1Timings/settings.log
+      - name: Run full screenshot shard
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          pnpm ios:screenshots
+      - name: Repeat native captures against the same built products
+        run: |
+          export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+          cat .github/mv1-ios-replay.rb >> apps/ios/fastlane/Fastfile
+          cd apps/ios
+          bundle _2.6.9_ exec fastlane ios mv1_replay
+      - name: Upload native proof
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: mv1-ios-${{ matrix.family }}
+          path: |
+            apps/ios/build/MV1Timings
+            apps/ios/build/MV1Replay
+            apps/ios/build/SnapshotTestResults
+            apps/ios/fastlane/screenshots/en-US
+          retention-days: 7
