@@ -45,10 +45,11 @@ The built-in `tts` agent tool is explicit-intent only: ordinary chat stays
 text unless the user asks for audio, uses `/tts`, or enables Auto-TTS/directive
 speech.
 
-Channels that send native voice notes (Feishu, WhatsApp) need `ffmpeg` installed
-on the Gateway host so OpenClaw can transcode the provider's output to Ogg/Opus.
-Without it, Feishu falls back to a plain file attachment and the WhatsApp send
-fails. See [TTS output](/tools/tts/output) for the transcoding rules.
+Feishu and WhatsApp voice notes need `ffmpeg` on the Gateway host when the
+channel must convert the provider's audio to Ogg/Opus. Already-compatible
+audio skips this conversion. If conversion fails, Feishu sends the original
+audio as a file attachment; the WhatsApp send fails. See
+[TTS output](/tools/tts/output) for the transcoding rules.
 </Note>
 
 ## Supported providers
