@@ -20,12 +20,20 @@ export async function attestCodexThreadToolSurface(
     assertCurrent: () => void;
   },
 ): Promise<void> {
-  params.assertCurrent();
+  if (params.withCurrent) {
+    await params.withCurrent(params.assertCurrent);
+  } else {
+    params.assertCurrent();
+  }
   if (params.appIds.length > 0) {
     await params.lifecycleTiming.measure("plugin-app-attestation", () =>
       checkCodexThreadAppAvailability(params),
     );
-    params.assertCurrent();
+    if (params.withCurrent) {
+      await params.withCurrent(params.assertCurrent);
+    } else {
+      params.assertCurrent();
+    }
   }
   if (params.restrictedToolSurface) {
     // Codex exposes admitted account apps through its built-in codex_apps server.
@@ -38,7 +46,11 @@ export async function attestCodexThreadToolSurface(
         params.appIds.length > 0 ? ["codex_apps"] : [],
       ),
     );
-    params.assertCurrent();
+    if (params.withCurrent) {
+      await params.withCurrent(params.assertCurrent);
+    } else {
+      params.assertCurrent();
+    }
   }
 }
 
@@ -55,6 +67,7 @@ export async function checkCodexThreadAppAvailability(params: {
   threadId: string;
   appIds: readonly string[];
   signal?: AbortSignal;
+  withCurrent?: (write: () => void) => Promise<void>;
 }): Promise<void> {
   const appIds = Array.from(new Set(params.appIds.filter(Boolean))).toSorted();
   if (appIds.length === 0) {
@@ -66,7 +79,7 @@ export async function checkCodexThreadAppAvailability(params: {
     response = await params.client.request(
       "app/installed",
       { threadId: params.threadId, forceRefresh: false },
-      { signal: params.signal },
+      { signal: params.signal, withCurrent: params.withCurrent },
     );
   } catch (error) {
     params.signal?.throwIfAborted();

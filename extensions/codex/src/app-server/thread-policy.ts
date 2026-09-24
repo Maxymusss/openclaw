@@ -49,6 +49,7 @@ export async function refreshCodexThreadPolicy(params: {
   timeoutMs: number;
   signal?: AbortSignal;
   assertCurrent: () => void;
+  withCurrent?: (write: () => void) => Promise<void>;
 }): Promise<void> {
   const notice =
     "The following is the complete current OpenClaw-supplied generic instruction policy. It replaces earlier OpenClaw-supplied generic policy, including sections removed from that generic policy. Parent-local instructions supplied for the current inference request are outside this policy replacement. Independently supplied native managed, guardian, security, collaboration, and project instructions retain their authority. User requests retain their own authority.\n\n";
@@ -68,7 +69,11 @@ export async function refreshCodexThreadPolicy(params: {
       },
     });
     outcome = "acknowledged";
-    params.assertCurrent();
+    if (params.withCurrent) {
+      await params.withCurrent(params.assertCurrent);
+    } else {
+      params.assertCurrent();
+    }
     params.signal?.throwIfAborted();
   } catch (cause) {
     if (
@@ -116,7 +121,7 @@ export async function assertAdoptedCodexThreadResumeAllowed(
     params.client.request(
       "thread/read",
       { threadId, includeTurns: false },
-      { signal: params.signal, assertCurrent },
+      { signal: params.signal, assertCurrent, withCurrent: params.authority?.withCurrent },
     ),
   );
   context.throwIfAborted();

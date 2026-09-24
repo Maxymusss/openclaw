@@ -28,6 +28,7 @@ export async function resumeCodexAppServerThread(params: {
   timeoutMs?: number;
   signal?: AbortSignal;
   assertCurrent?: () => void;
+  withCurrent?: (write: () => void) => Promise<void>;
   onSubscriptionReleased?: () => void;
   requestResume?: (request: CodexThreadResumeParams) => Promise<unknown>;
 }): Promise<CodexThreadResumeResponse> {
@@ -45,6 +46,22 @@ export async function resumeCodexAppServerThread(params: {
         throw error;
       }
     });
+  const withCurrent =
+    params.withCurrent &&
+    (async (write: () => void) => {
+      let admitted = false;
+      try {
+        await params.withCurrent!(() => {
+          admitted = true;
+          write();
+        });
+      } catch (error) {
+        if (!admitted) {
+          ownershipRejected = true;
+        }
+        throw error;
+      }
+    });
   try {
     response = assertCodexThreadResumeResponse(
       await (params.requestResume
@@ -53,6 +70,7 @@ export async function resumeCodexAppServerThread(params: {
             ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
             ...(params.signal ? { signal: params.signal } : {}),
             assertCurrent,
+            withCurrent,
           })),
     );
     assertCodexThreadResumeSubscription(threadId, response.thread.id);
@@ -75,6 +93,7 @@ export async function resumeCodexAppServerThread(params: {
         threadId,
         timeoutMs: CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
         assertCurrent: params.assertCurrent,
+        withCurrent: params.withCurrent,
       }).catch(() => false);
       if (subscriptionReleased) {
         params.onSubscriptionReleased?.();

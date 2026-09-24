@@ -1,4 +1,3 @@
-import path from "node:path";
 import { embeddedAgentLog } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { codexCatalogHomeId } from "../session-catalog-home-id.js";
 import {
@@ -28,7 +27,6 @@ import {
   assertCodexThreadAcceptsDirectInput,
   assertCodexThreadStartResponse,
 } from "./protocol-validators.js";
-import type { CodexThread } from "./protocol.js";
 import { isCodexThreadReadMissingError } from "./rpc-error.js";
 import type { CodexAppServerThreadBinding } from "./session-binding.js";
 import { getCurrentSharedClientEntry } from "./shared-client-lifecycle.js";
@@ -53,20 +51,8 @@ import { resolveCodexAppServerModelProvider } from "./thread-model-selection.js"
 import { CodexThreadPolicyHandoffError, refreshCodexThreadPolicy } from "./thread-policy.js";
 import { buildThreadResumeParams, buildThreadStartParams } from "./thread-requests.js";
 import { resumeCodexAppServerThread } from "./thread-resume.js";
+import { resolveCodexThreadRolloutPath } from "./thread-rollout-path.js";
 import { hasCodexAppServerSiblingRouteWork } from "./turn-router.js";
-
-function resolveCodexThreadRolloutPath(thread: CodexThread): string | undefined {
-  const rolloutPath = thread.path?.trim();
-  if (
-    !rolloutPath ||
-    !path.isAbsolute(rolloutPath) ||
-    path.extname(rolloutPath) !== ".jsonl" ||
-    !path.basename(rolloutPath).includes(thread.id)
-  ) {
-    return undefined;
-  }
-  return rolloutPath;
-}
 
 export async function resumeExistingCodexThread(
   params: CodexStartOrResumeThreadParams,
@@ -203,6 +189,7 @@ export async function resumeExistingCodexThread(
         abandonClient,
         request: resumeParams,
         signal: params.signal,
+        withCurrent: params.authority?.withCurrent,
         assertCurrent: () => {
           configuration.assertCurrent();
           assertCodexInferenceRouteConfig(
@@ -250,6 +237,7 @@ export async function resumeExistingCodexThread(
       restrictedToolSurface,
       lifecycleTiming,
       assertCurrent: assertHandoffCurrent,
+      withCurrent: params.authority?.withCurrent,
     });
     throwIfAborted();
     await refreshCodexThreadPolicy({
@@ -259,6 +247,7 @@ export async function resumeExistingCodexThread(
       timeoutMs: params.appServer.requestTimeoutMs,
       signal: params.signal,
       assertCurrent: assertHandoffCurrent,
+      withCurrent: params.authority?.withCurrent,
     });
     policyOutcome = "acknowledged";
     assertHandoffCurrent();
@@ -315,6 +304,7 @@ export async function resumeExistingCodexThread(
         bindingIdentity,
         { kind: "patch", threadId: resumeBinding.threadId, patch: resumePatch },
         assertHandoffCurrent,
+        params.authority,
       ),
     );
     if (!committed) {
@@ -397,6 +387,7 @@ export async function resumeExistingCodexThread(
         threadId: resumeBinding.threadId,
         timeoutMs: CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
         assertCurrent: acceptedConfiguration.assertCurrent,
+        withCurrent: params.authority?.withCurrent,
       }).catch(() => false);
       if (
         !subscriptionReleased ||
@@ -553,6 +544,7 @@ export async function startFreshCodexThread(
       return await params.client.request("thread/start", startParams, {
         signal: params.signal,
         assertCurrent: assertInferenceCurrent,
+        withCurrent: params.authority?.withCurrent,
       });
     } catch (error) {
       if (error instanceof CodexAppServerRpcError) {
@@ -589,6 +581,7 @@ export async function startFreshCodexThread(
       restrictedToolSurface,
       lifecycleTiming,
       assertCurrent,
+      withCurrent: params.authority?.withCurrent,
     });
     assertCurrent();
   } catch (error) {
@@ -665,6 +658,7 @@ export async function startFreshCodexThread(
               }
             : { kind: "set", if: { kind: "absent" }, binding: nextBinding },
           assertCurrent,
+          params.authority,
         ),
       );
     } catch (error) {

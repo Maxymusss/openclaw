@@ -29,6 +29,7 @@ type CodexAppServerClientRequestParams = {
   timeoutMs?: number;
   signal?: AbortSignal;
   assertCurrent?: () => void;
+  withCurrent?: (write: () => void) => Promise<void>;
   config?: Parameters<typeof resolveCodexAppServerAuthProfileIdForAgent>[0]["config"];
   sessionKey?: string;
   sessionId?: string;
@@ -94,9 +95,29 @@ export async function requestCodexAppServerClientJson<T = JsonValue | undefined>
     const requestParams = params.requestParams;
     const attemptWaiterFinished =
       method === "thread/list" ? params.controlObservation?.attemptWaiterFinished : undefined;
+    const withCurrent = params.withCurrent;
     const options = {
       timeoutMs,
       signal: params.signal,
+      withCurrent: withCurrent
+        ? async (write: () => void) => {
+            let admitted = false;
+            try {
+              await withCurrent(() => {
+                admitted = true;
+                write();
+              });
+            } catch (cause) {
+              if (!admitted) {
+                throw new CodexAppServerScopedRequestRejectedError(
+                  cause instanceof Error ? cause.message : String(cause),
+                  { cause },
+                );
+              }
+              throw cause;
+            }
+          }
+        : undefined,
       ...(attemptWaiterFinished ? { attemptWaiterFinished } : {}),
       ...(params.assertCurrent
         ? { assertCurrent: () => assertRequestOwnerCurrent(params.assertCurrent) }

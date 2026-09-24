@@ -231,10 +231,13 @@ export function createCodexLifecycleTurnHarness(
     await Promise.all(pendingNotifications);
   };
   const waitForMethod = async (method: string, timeoutMs: number = params.wait.timeout) => {
-    await vi.waitFor(() => expect(requests.map((entry) => entry.method)).toContain(method), {
-      interval: 1,
-      timeout: timeoutMs,
-    });
+    await vi.waitFor(
+      () => expect(wire.writes.map((line) => JSON.parse(line).method)).toContain(method),
+      {
+        interval: 1,
+        timeout: timeoutMs,
+      },
+    );
   };
   const handleServerRequest = async (incoming: {
     id: string | number;
@@ -259,6 +262,7 @@ export function createCodexLifecycleTurnHarness(
     client,
     request,
     requests,
+    writes: wire.writes,
     waitForMethod,
     notify,
     handleServerRequest,

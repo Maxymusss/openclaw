@@ -232,6 +232,7 @@ export async function unsubscribeCodexThreadBestEffort(
     threadId: string;
     timeoutMs: number;
     assertCurrent?: () => void;
+    withCurrent?: (write: () => void) => Promise<void>;
   },
 ): Promise<boolean> {
   try {
@@ -240,6 +241,7 @@ export async function unsubscribeCodexThreadBestEffort(
       params.threadId,
       params.timeoutMs,
       params.assertCurrent,
+      params.withCurrent,
     );
     return true;
   } catch (error) {

@@ -17,6 +17,7 @@ import { buildCodexContinuityCalibration } from "./context-engine-projection.js"
 import { flattenCodexDynamicToolFunctions } from "./protocol.js";
 import { readCodexRateLimitsRevision, readRecentCodexRateLimits } from "./rate-limit-cache.js";
 import type { CodexAttemptActiveTurn } from "./run-attempt-active-turn.js";
+import { canClearCodexBindingForRecovery } from "./run-attempt-binding-recovery.js";
 import type { CodexAttemptLifecycleController } from "./run-attempt-lifecycle-controller.js";
 import {
   emitCodexAppServerEvent,
@@ -33,7 +34,6 @@ import {
 } from "./run-attempt-state.js";
 import type { prepareCodexAttemptTurnRequest } from "./run-attempt-turn-request.js";
 import type { CodexAttemptTurnState } from "./run-attempt-turn-state.js";
-import { assertCodexBindingMayBeReplaced } from "./session-binding.js";
 import { captureCodexSettledTurnFinalizationContext } from "./settled-turn-context.js";
 import { normalizeCodexTrajectoryError, recordCodexTrajectoryCompletion } from "./trajectory.js";
 import { codexTranscriptMirrorRuntime } from "./transcript-mirror.js";
@@ -76,21 +76,12 @@ export async function finalizeCodexAttempt(
     startupAuthProfileId,
   } = connection;
   const { toolBridge, toolState } = attemptTools;
-  const canClearBindingForRecovery = (operation: string) => {
-    if (params.expectedSessionRuntimeOwnership) {
-      // Optional recovery preserves both native ownership and the completed turn's outcome.
-      embeddedAgentLog.warn(
-        "codex app-server preserved native binding instead of recovery rotation",
-        {
-          threadId: resourceState.thread.threadId,
-          operation,
-        },
-      );
-      return false;
-    }
-    assertCodexBindingMayBeReplaced(resourceState.thread, operation);
-    return true;
-  };
+  const canClearBindingForRecovery = (operation: string) =>
+    canClearCodexBindingForRecovery(
+      resourceState.thread,
+      Boolean(params.expectedSessionRuntimeOwnership),
+      operation,
+    );
   const { state, completion } = turnRuntime;
   const { emitLifecycleTerminal, buildLifecycleTerminalMeta } = lifecycle;
   const { codexModelCallDiagnostics } = requestRuntime;
@@ -399,7 +390,8 @@ export async function finalizeCodexAttempt(
             config: params.config,
             message: toolState.yieldMessage,
             assertCurrent: () => {
-              connection.assertCurrent();
+              // The SDK invokes this guard inside its synchronous persistence commit.
+              connection.assertLegacyCurrent();
               if (!isSettlementActive() || !projectTerminalOutcome().turnSucceeded) {
                 throw new Error("Codex yield settlement is no longer active");
               }
@@ -483,6 +475,7 @@ export async function finalizeCodexAttempt(
               turnId: activeTurnId,
               signal: params.abortSignal,
               assertActive: connection.assertCurrent,
+              withCurrent: connection.withCurrent,
             })
           : undefined) ?? Object.freeze({ source: "unavailable" as const }))
       : undefined;
@@ -583,6 +576,7 @@ export async function finalizeCodexAttempt(
             },
           },
           connection.assertCurrent,
+          connection.authority,
         );
       } catch (error) {
         if (resourceState.thread.connectionScope === "supervision") {
@@ -593,6 +587,7 @@ export async function finalizeCodexAttempt(
             bindingIdentity,
             { kind: "clear", threadId: resourceState.thread.threadId },
             connection.assertCurrent,
+            connection.authority,
           );
           if (!cleared) {
             throw error;

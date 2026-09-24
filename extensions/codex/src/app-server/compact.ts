@@ -1,14 +1,13 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import {
   embeddedAgentLog,
   resolveCompactionTimeoutMs,
   type CompactEmbeddedAgentSessionParams,
   type EmbeddedAgentCompactResult,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { createNativeSessionBindingAuthority } from "openclaw/plugin-sdk/agent-harness-session-runtime";
 import { resolveAgentDir } from "openclaw/plugin-sdk/agent-runtime";
 import { createDedupeCache } from "openclaw/plugin-sdk/dedupe-runtime";
 import { coerceErrorMessage } from "openclaw/plugin-sdk/error-runtime";
-import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { SandboxContext } from "openclaw/plugin-sdk/sandbox";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { isIncognitoSessionKey } from "../incognito-session.js";
@@ -16,10 +15,8 @@ import {
   CODEX_APP_SERVER_UNSUBSCRIBE_TIMEOUT_MS,
   closeCodexStartupClientBestEffort,
   CodexAppServerUnsafeSubscriptionError,
-  isCodexNoActiveTurnInterruptError,
   unsubscribeCodexThreadBestEffort,
 } from "./attempt-client-cleanup.js";
-import { readCodexNotificationItem } from "./attempt-notifications.js";
 import { resolveCodexBindingAppServerConnection } from "./binding-connection.js";
 import {
   consumeCodexAppServerLiveThread,
@@ -29,15 +26,13 @@ import {
 import {
   CodexAppServerRpcError,
   isCodexAppServerPrewriteRequestCancellationError,
-  type CodexAppServerClient,
 } from "./client.js";
-import { persistCodexContextCompactionActivity } from "./context-compaction-activity.js";
-import { readCodexThreadContextSnapshot } from "./event-projector-usage.js";
 import {
-  readCodexNotificationThreadId,
-  readCodexNotificationTurnId,
-} from "./notification-correlation.js";
-import { isJsonObject, type JsonObject } from "./protocol.js";
+  runExclusiveCodexNativeCompaction,
+  watchCodexNativeCompactionCompletion,
+} from "./compact-lifecycle.js";
+import { persistCodexContextCompactionActivity } from "./context-compaction-activity.js";
+import type { JsonObject } from "./protocol.js";
 import { resolveCodexNativeExecutionBlock } from "./sandbox-guard.js";
 import {
   CODEX_APP_SERVER_BINDING_GUARDED_REQUEST_TIMEOUT_MS,
@@ -45,6 +40,7 @@ import {
   resolveCodexSessionBinding,
   type CodexAppServerBindingIdentity,
   type CodexAppServerBindingStore,
+  type CodexBindingAuthority,
   type CodexAppServerThreadBinding,
 } from "./session-binding.js";
 import {
@@ -52,10 +48,7 @@ import {
   releaseLeasedSharedCodexAppServerClient,
   type CodexAppServerClientFactory,
 } from "./shared-client.js";
-import {
-  isSameCodexAppServerThreadOwner,
-  withCodexAppServerThreadMutation,
-} from "./thread-ownership.js";
+import { isSameCodexAppServerThreadOwner } from "./thread-ownership.js";
 import { assertCodexSupervisionThreadLineage } from "./thread-policy.js";
 import { resumeCodexAppServerThread } from "./thread-resume.js";
 
@@ -72,272 +65,6 @@ type CodexAppServerCompactOptions = {
   nativeCompletionTimeoutMs?: number;
   nativeInterruptGraceMs?: number;
 };
-
-type CodexNativeCompactionCompletion =
-  | { completed: true; turnId?: string; itemId?: string; tokensAfter?: number }
-  | { completed: false; reason: string };
-
-function watchCodexNativeCompactionCompletion(params: {
-  client: CodexAppServerClient;
-  threadId: string;
-  signal?: AbortSignal;
-  timeoutMs: number;
-  interruptGraceMs: number;
-  retireUnconfirmed: () => Promise<void>;
-}) {
-  const runOutsideBindingLease = AsyncLocalStorage.snapshot();
-  let settled = false;
-  let requestStarted = false;
-  let abortRequested = false;
-  let interruptRequested = false;
-  let retirementStarted = false;
-  let compactionTurnId: string | undefined;
-  let compactionItemId: string | undefined;
-  let compactionItemCompleted = false;
-  let tokensAfter: number | undefined;
-  const { promise: completion, resolve: resolveCompletion } =
-    createDeferred<CodexNativeCompactionCompletion>();
-  let removeNotificationHandler = () => {};
-  let removeCloseHandler = () => {};
-  let removeAbortHandler = () => {};
-  let completionTimeout: ReturnType<typeof setTimeout> | undefined;
-  let interruptGraceTimeout: ReturnType<typeof setTimeout> | undefined;
-  const finish = (result: CodexNativeCompactionCompletion) => {
-    if (settled) {
-      return;
-    }
-    settled = true;
-    removeNotificationHandler();
-    removeCloseHandler();
-    removeAbortHandler();
-    clearTimeout(completionTimeout);
-    clearTimeout(interruptGraceTimeout);
-    resolveCompletion(result);
-  };
-  const complete = () =>
-    finish({
-      completed: true,
-      ...(compactionTurnId ? { turnId: compactionTurnId } : {}),
-      ...(compactionItemId ? { itemId: compactionItemId } : {}),
-      ...(tokensAfter !== undefined ? { tokensAfter } : {}),
-    });
-  const fail = (reason: string) => finish({ completed: false, reason });
-  const retireUnconfirmed = (reason: string) => {
-    if (settled || retirementStarted) {
-      return;
-    }
-    retirementStarted = true;
-    // Timers started under the short-lived binding lease inherit its async
-    // owner. Remote retirement must not reuse that already-released token.
-    void runOutsideBindingLease(() => params.retireUnconfirmed())
-      .then(() => fail(reason))
-      .catch((error: unknown) => {
-        embeddedAgentLog.error("failed to retire unconfirmed codex app-server compaction", {
-          threadId: params.threadId,
-          turnId: compactionTurnId,
-          reason: coerceErrorMessage(error),
-        });
-        // Keep the lifecycle fence held when neither terminal state nor thread
-        // retirement can be proven. Releasing would permit same-thread overlap.
-      });
-  };
-  const requestInterrupt = () => {
-    if (settled || !requestStarted || !abortRequested || !compactionTurnId || interruptRequested) {
-      return;
-    }
-    interruptRequested = true;
-    void params.client
-      .request(
-        "turn/interrupt",
-        {
-          threadId: params.threadId,
-          turnId: compactionTurnId,
-        },
-        { timeoutMs: Math.max(1, params.interruptGraceMs) },
-      )
-      .catch((error: unknown) => {
-        if (isCodexNoActiveTurnInterruptError(error)) {
-          // Native records terminal state before sending its notification; only
-          // the terminal status or retirement can settle this compaction.
-          return;
-        }
-        embeddedAgentLog.warn("codex app-server compaction interrupt request failed", {
-          threadId: params.threadId,
-          turnId: compactionTurnId,
-          reason: coerceErrorMessage(error),
-        });
-      });
-  };
-  const beginInterruptGrace = () => {
-    if (settled || !requestStarted || interruptGraceTimeout) {
-      return;
-    }
-    requestInterrupt();
-    interruptGraceTimeout = setTimeout(
-      () => {
-        embeddedAgentLog.warn(
-          "codex app-server compaction did not reach terminal state after interruption",
-          {
-            threadId: params.threadId,
-            turnId: compactionTurnId,
-            interruptGraceMs: params.interruptGraceMs,
-          },
-        );
-        retireUnconfirmed(
-          "codex app-server compaction did not reach terminal state after interruption",
-        );
-      },
-      Math.max(1, params.interruptGraceMs),
-    );
-    interruptGraceTimeout.unref?.();
-  };
-  const beginCompletionTimeout = () => {
-    completionTimeout = setTimeout(
-      () => {
-        abortRequested = true;
-        beginInterruptGrace();
-        // Keep the shared client lease and per-thread fence through terminal state or
-        // forced process retirement; releasing earlier could overlap the same transcript.
-        embeddedAgentLog.warn("codex app-server compaction exceeded its completion budget", {
-          threadId: params.threadId,
-          timeoutMs: params.timeoutMs,
-          interruptRequested,
-        });
-      },
-      Math.max(1, params.timeoutMs),
-    );
-    completionTimeout.unref?.();
-  };
-  removeNotificationHandler = params.client.addNotificationHandler((notification) => {
-    if (!requestStarted) {
-      return;
-    }
-    if (!isJsonObject(notification.params)) {
-      return;
-    }
-    if (readCodexNotificationThreadId(notification.params) !== params.threadId) {
-      return;
-    }
-    const notificationTurnId = readCodexNotificationTurnId(notification.params);
-    if (notification.method === "turn/started") {
-      compactionTurnId = notificationTurnId;
-      requestInterrupt();
-      return;
-    }
-    if (compactionTurnId && notificationTurnId !== compactionTurnId) {
-      return;
-    }
-    if (notification.method === "thread/tokenUsage/updated") {
-      tokensAfter =
-        readCodexThreadContextSnapshot(notification.params).activeContextTokens ?? tokensAfter;
-      return;
-    }
-    const item = readCodexNotificationItem(notification.params);
-    if (item?.type === "contextCompaction") {
-      if (notification.method === "item/started") {
-        compactionTurnId = compactionTurnId ?? notificationTurnId;
-        compactionItemId = item.id;
-        requestInterrupt();
-        return;
-      }
-      if (notification.method === "item/completed" && compactionItemId === item.id) {
-        compactionItemCompleted = true;
-        return;
-      }
-    }
-    if (
-      notification.method !== "turn/completed" ||
-      !compactionTurnId ||
-      notificationTurnId !== compactionTurnId
-    ) {
-      return;
-    }
-    const turn = isJsonObject(notification.params.turn) ? notification.params.turn : undefined;
-    const status = typeof turn?.status === "string" ? turn.status : undefined;
-    if (status !== "completed") {
-      fail(`codex app-server compaction turn ended with status ${status ?? "unknown"}`);
-      return;
-    }
-    const incompleteReason = !compactionItemId
-      ? "codex app-server compaction turn completed without a compaction item"
-      : !compactionItemCompleted
-        ? "codex app-server compaction turn completed before its compaction item"
-        : undefined;
-    if (incompleteReason) {
-      fail(incompleteReason);
-      return;
-    }
-    complete();
-  });
-  removeCloseHandler = params.client.addCloseHandler(() => {
-    retireUnconfirmed("codex app-server closed before native compaction completed");
-  });
-  if (params.signal) {
-    const onAbort = () => {
-      abortRequested = true;
-      beginInterruptGrace();
-    };
-    params.signal.addEventListener("abort", onAbort, { once: true });
-    removeAbortHandler = () => params.signal?.removeEventListener("abort", onAbort);
-    if (params.signal.aborted) {
-      onAbort();
-    }
-  }
-  return {
-    completion,
-    beginRequest: () => {
-      requestStarted = true;
-      beginCompletionTimeout();
-      if (abortRequested) {
-        beginInterruptGrace();
-      }
-    },
-    confirmRequestRejected: () => fail("codex app-server rejected the compaction request"),
-    retireUnconfirmedRequest: async (reason: string) => {
-      retireUnconfirmed(reason);
-      return await completion;
-    },
-    cancel: () => {
-      if (!requestStarted) {
-        fail("compaction request did not start");
-      }
-    },
-  };
-}
-
-async function runExclusiveCodexNativeCompaction<T>(
-  threadId: string,
-  signal: AbortSignal | undefined,
-  run: () => Promise<T>,
-): Promise<T> {
-  signal?.throwIfAborted();
-  let started = false;
-  const queued = withCodexAppServerThreadMutation(threadId, async () => {
-    started = true;
-    signal?.throwIfAborted();
-    return run();
-  });
-  if (!signal) {
-    return queued;
-  }
-  let removeAbortListener = () => {};
-  const aborted = new Promise<never>((_, reject) => {
-    const onAbort = () => {
-      if (!started) {
-        reject(signal.reason instanceof Error ? signal.reason : new Error("compaction aborted"));
-      }
-    };
-    removeAbortListener = () => signal.removeEventListener("abort", onAbort);
-    signal.addEventListener("abort", onAbort, { once: true });
-  });
-  try {
-    // The canceled promise settles immediately, but its queued task remains
-    // behind its predecessor so later compactions cannot overtake active work.
-    return await Promise.race([queued, aborted]);
-  } finally {
-    removeAbortListener();
-  }
-}
 
 /**
  * Starts native Codex compaction for a manually requested bound session, or
@@ -450,7 +177,13 @@ async function compactCodexNativeThread(
     }
     return abortedResult(options.bindingStore.read(bindingIdentity)?.threadId);
   }
-  const { binding: initialBinding, assertCurrent } = resolvedBinding;
+  const { binding: initialBinding, authority } = resolvedBinding;
+  const assertCurrent = authority.assertCurrent;
+  // Once the native request is written, caller cancellation requests an interrupt but no
+  // longer revokes custody of its terminal outcome. Keep exact captured lineage without
+  // reusing the canceled caller signal while that outcome settles.
+  const settlementAuthority = createNativeSessionBindingAuthority(authority.lineage, () => {});
+  const assertSettlementCurrent = settlementAuthority.assertLegacyCurrent;
   if (!initialBinding?.threadId) {
     return failedCodexThreadBindingCompactionResult(params, {
       reason: "no codex app-server thread binding",
@@ -536,12 +269,13 @@ async function compactCodexNativeThread(
             : { authProfileId: connection.clientAuthProfileId }),
           agentDir: params.agentDir,
           config: params.config,
-          assertCurrent,
+          assertCurrent: authority.assertLegacyCurrent,
         });
         let releaseThreadSubscription: (() => Promise<void>) | undefined;
         let retainedThreadOwnership: CodexAppServerLiveThreadOwnership | undefined;
         let compactionSucceeded = false;
         let compactionRequestDefinitelyRejected = false;
+        let nativeRequestNeedsSettlement = false;
         let tokensAfter: number | undefined;
         const releaseCompactionThread = async (threadId: string) => {
           if (
@@ -591,6 +325,7 @@ async function compactCodexNativeThread(
               bindingIdentity,
               { kind: "clear", threadId: binding.threadId },
               assertCurrent,
+              authority,
             );
             if (bindingCleared) {
               return;
@@ -617,6 +352,7 @@ async function compactCodexNativeThread(
                 request: { threadId: binding.threadId, excludeTurns: true },
                 timeoutMs: timeoutMs ?? appServer.requestTimeoutMs,
                 assertCurrent,
+                withCurrent: authority.withCurrent,
                 ...(params.abortSignal ? { signal: params.abortSignal } : {}),
               });
               releaseThreadSubscription = async () => releaseCompactionThread(binding.threadId);
@@ -630,7 +366,7 @@ async function compactCodexNativeThread(
                   threadId: binding.threadId,
                   includeTurns: false,
                 },
-                { assertCurrent },
+                { assertCurrent, withCurrent: authority.withCurrent },
               );
               assertCurrent();
               retainedThreadOwnership.assertCurrent();
@@ -640,118 +376,148 @@ async function compactCodexNativeThread(
           }
         };
         try {
-          const guardedResult = await options.bindingStore.withLease(bindingIdentity, async () => {
-            const currentBinding = options.bindingStore.read(bindingIdentity);
-            if (params.abortSignal?.aborted) {
-              if (!options.allowNonManualNativeRequest) {
-                params.abortSignal.throwIfAborted();
-              }
-              return {
-                started: false as const,
-                result: skippedCodexNativeCompactionResult(params, {
-                  reason: "codex app-server compaction aborted before native compaction",
-                  code: "aborted_before_native_compaction",
-                  request: options.nativeCompactionRequest ?? "after_context_engine",
-                  expectedThreadId: binding.threadId,
-                  currentThreadId: currentBinding?.threadId,
-                }),
-              };
-            }
-            assertCurrent();
-            if (!currentBinding || !isSameNativeCompactionBinding(currentBinding, binding)) {
-              embeddedAgentLog.warn(
-                "codex app-server compaction could not use the thread binding because it changed",
-                {
-                  sessionId: params.sessionId,
-                  sessionKey: params.sessionKey,
-                  expectedThreadId: binding.threadId,
-                  currentThreadId: currentBinding?.threadId,
-                },
-              );
-              // A binding change between the initial read and the native request
-              // is a stale-binding race. For required-preflight (and the
-              // non-manual CLI path) it must surface as the canonical
-              // recoverable failure so the caller falls back to the context
-              // engine instead of treating an uncompacted ok:true skip as a
-              // completed turn. Only a genuine post-context-engine request may
-              // skip, because the context engine has already compacted.
-              const isRequiredPreflight = options.nativeCompactionRequest === "required_preflight";
-              return {
-                started: false as const,
-                result:
-                  options.allowNonManualNativeRequest && !isRequiredPreflight
-                    ? skippedCodexNativeCompactionResult(params, {
-                        reason: "codex app-server binding changed before native compaction",
-                        code: "binding_changed_before_native_compaction",
-                        request: options.nativeCompactionRequest ?? "after_context_engine",
-                        expectedThreadId: binding.threadId,
-                        currentThreadId: currentBinding?.threadId,
-                      })
-                    : failedCodexThreadBindingCompactionResult(params, {
-                        threadId: currentBinding?.threadId ?? binding.threadId,
-                        reason: "codex app-server binding changed before native compaction",
-                        recovery: "stale_thread_binding",
-                      }),
-              };
-            }
-            binding = currentBinding;
-            const guardedRequestTimeoutMs = options.allowNonManualNativeRequest
-              ? Math.min(
-                  appServer.requestTimeoutMs,
-                  CODEX_APP_SERVER_BINDING_GUARDED_REQUEST_TIMEOUT_MS,
-                )
-              : undefined;
-            await acquireThreadSubscription(guardedRequestTimeoutMs);
-            await clearContextEngineProjectionBeforeNativeCompaction({
-              sessionId: params.sessionId,
-              bindingStore: options.bindingStore,
-              identity: bindingIdentity,
-              binding,
-              assertCurrent,
-            });
-            assertCurrent();
-            try {
-              completionWatch.beginRequest();
-              await client.request(
-                "thread/compact/start",
-                { threadId: binding.threadId },
-                {
-                  ...(guardedRequestTimeoutMs === undefined
-                    ? {}
-                    : { timeoutMs: guardedRequestTimeoutMs }),
-                  assertCurrent: () => {
-                    try {
-                      assertCurrent();
-                    } catch (error) {
-                      // This physical pre-write rejection proves no compaction
-                      // started, including retries after ingress overload.
-                      compactionRequestDefinitelyRejected = true;
-                      throw error;
-                    }
-                  },
-                },
-              );
-              return { started: true as const, accepted: true as const };
-            } catch (error) {
-              compactionRequestDefinitelyRejected ||=
-                isCodexAppServerPrewriteRequestCancellationError(error);
-              if (compactionRequestDefinitelyRejected || error instanceof CodexAppServerRpcError) {
-                // Settle a definite rejection before restoration so a refused
-                // write cannot strand the watcher waiting for a nonexistent turn.
-                completionWatch.confirmRequestRejected();
-                if (!compactionRequestDefinitelyRejected) {
-                  await options.bindingStore.mutate(
-                    bindingIdentity,
-                    { kind: "set", binding },
-                    assertCurrent,
-                  );
-                  compactionRequestDefinitelyRejected = !isCodexThreadNotFoundError(error);
+          const guardedResult = await options.bindingStore.withLease(
+            bindingIdentity,
+            async () => {
+              const currentBinding = options.bindingStore.read(bindingIdentity);
+              if (params.abortSignal?.aborted) {
+                if (!options.allowNonManualNativeRequest) {
+                  params.abortSignal.throwIfAborted();
                 }
+                return {
+                  started: false as const,
+                  result: skippedCodexNativeCompactionResult(params, {
+                    reason: "codex app-server compaction aborted before native compaction",
+                    code: "aborted_before_native_compaction",
+                    request: options.nativeCompactionRequest ?? "after_context_engine",
+                    expectedThreadId: binding.threadId,
+                    currentThreadId: currentBinding?.threadId,
+                  }),
+                };
               }
-              // Retirement can acquire this same generation lease.
-              return { started: true as const, accepted: false as const, error };
-            }
-          });
+              assertCurrent();
+              if (!currentBinding || !isSameNativeCompactionBinding(currentBinding, binding)) {
+                embeddedAgentLog.warn(
+                  "codex app-server compaction could not use the thread binding because it changed",
+                  {
+                    sessionId: params.sessionId,
+                    sessionKey: params.sessionKey,
+                    expectedThreadId: binding.threadId,
+                    currentThreadId: currentBinding?.threadId,
+                  },
+                );
+                // A binding change between the initial read and the native request
+                // is a stale-binding race. For required-preflight (and the
+                // non-manual CLI path) it must surface as the canonical
+                // recoverable failure so the caller falls back to the context
+                // engine instead of treating an uncompacted ok:true skip as a
+                // completed turn. Only a genuine post-context-engine request may
+                // skip, because the context engine has already compacted.
+                const isRequiredPreflight =
+                  options.nativeCompactionRequest === "required_preflight";
+                return {
+                  started: false as const,
+                  result:
+                    options.allowNonManualNativeRequest && !isRequiredPreflight
+                      ? skippedCodexNativeCompactionResult(params, {
+                          reason: "codex app-server binding changed before native compaction",
+                          code: "binding_changed_before_native_compaction",
+                          request: options.nativeCompactionRequest ?? "after_context_engine",
+                          expectedThreadId: binding.threadId,
+                          currentThreadId: currentBinding?.threadId,
+                        })
+                      : failedCodexThreadBindingCompactionResult(params, {
+                          threadId: currentBinding?.threadId ?? binding.threadId,
+                          reason: "codex app-server binding changed before native compaction",
+                          recovery: "stale_thread_binding",
+                        }),
+                };
+              }
+              binding = currentBinding;
+              const guardedRequestTimeoutMs = options.allowNonManualNativeRequest
+                ? Math.min(
+                    appServer.requestTimeoutMs,
+                    CODEX_APP_SERVER_BINDING_GUARDED_REQUEST_TIMEOUT_MS,
+                  )
+                : undefined;
+              await acquireThreadSubscription(guardedRequestTimeoutMs);
+              await clearContextEngineProjectionBeforeNativeCompaction({
+                sessionId: params.sessionId,
+                bindingStore: options.bindingStore,
+                identity: bindingIdentity,
+                binding,
+                assertCurrent,
+                authority,
+              });
+              assertCurrent();
+              try {
+                completionWatch.beginRequest();
+                nativeRequestNeedsSettlement = true;
+                await client.request(
+                  "thread/compact/start",
+                  { threadId: binding.threadId },
+                  {
+                    ...(guardedRequestTimeoutMs === undefined
+                      ? {}
+                      : { timeoutMs: guardedRequestTimeoutMs }),
+                    withCurrent: async (write) => {
+                      let admitted = false;
+                      try {
+                        await authority.withCurrent(() => {
+                          admitted = true;
+                          write();
+                        });
+                      } catch (error) {
+                        if (!admitted) {
+                          compactionRequestDefinitelyRejected = true;
+                        }
+                        throw error;
+                      }
+                    },
+                    assertCurrent: () => {
+                      try {
+                        assertCurrent();
+                      } catch (error) {
+                        // This physical pre-write rejection proves no compaction
+                        // started, including retries after ingress overload.
+                        compactionRequestDefinitelyRejected = true;
+                        throw error;
+                      }
+                    },
+                  },
+                );
+                return { started: true as const, accepted: true as const };
+              } catch (error) {
+                compactionRequestDefinitelyRejected ||=
+                  isCodexAppServerPrewriteRequestCancellationError(error);
+                if (
+                  compactionRequestDefinitelyRejected ||
+                  error instanceof CodexAppServerRpcError
+                ) {
+                  // Settle a definite rejection before restoration so a refused
+                  // write cannot strand the watcher waiting for a nonexistent turn.
+                  completionWatch.confirmRequestRejected();
+                  nativeRequestNeedsSettlement = false;
+                  if (!compactionRequestDefinitelyRejected) {
+                    await options.bindingStore.mutate(
+                      bindingIdentity,
+                      { kind: "set", binding },
+                      assertCurrent,
+                      authority,
+                    );
+                    compactionRequestDefinitelyRejected = !isCodexThreadNotFoundError(error);
+                  }
+                }
+                // Retirement can acquire this same generation lease.
+                return { started: true as const, accepted: false as const, error };
+              }
+            },
+            {
+              assertCurrent: () =>
+                nativeRequestNeedsSettlement ? assertSettlementCurrent() : assertCurrent(),
+              authority,
+            },
+          );
           if (!guardedResult.started) {
             return guardedResult.result;
           }
@@ -765,6 +531,7 @@ async function compactCodexNativeThread(
               await completionWatch.retireUnconfirmedRequest(
                 `codex app-server compaction start was unconfirmed: ${coerceErrorMessage(guardedResult.error)}`,
               );
+              nativeRequestNeedsSettlement = false;
             }
             throw guardedResult.error;
           }
@@ -773,7 +540,8 @@ async function compactCodexNativeThread(
             threadId: binding.threadId,
           });
           const completion = await completionWatch.completion;
-          assertCurrent();
+          nativeRequestNeedsSettlement = false;
+          assertSettlementCurrent();
           if (!completion.completed) {
             throw new Error(completion.reason);
           }
@@ -790,13 +558,22 @@ async function compactCodexNativeThread(
               timestamp: Date.now(),
             });
           }
-          assertCurrent();
+          assertSettlementCurrent();
           embeddedAgentLog.info("completed codex app-server compaction", {
             sessionId: params.sessionId,
             threadId: binding.threadId,
           });
           compactionSucceeded = true;
         } catch (error) {
+          // A lease can fail after its callback already sent native compaction.
+          // Preserve that outcome and settle the native operation before the
+          // enclosing mutation fence exits; unsubscribe alone cannot cancel it.
+          if (nativeRequestNeedsSettlement) {
+            await completionWatch.retireUnconfirmedRequest(
+              `codex app-server compaction ownership failed after request admission: ${coerceErrorMessage(error)}`,
+            );
+            nativeRequestNeedsSettlement = false;
+          }
           if (isCodexThreadNotFoundError(error)) {
             return failedCodexThreadBindingCompactionResult(params, {
               threadId: binding.threadId,
@@ -826,6 +603,8 @@ async function compactCodexNativeThread(
               const currentBinding = options.bindingStore.read(bindingIdentity);
               // Reset uses this same generation lease; without it compaction
               // could return an obsolete subscription after its owner ended.
+              // Returning the borrowed idle subscription is cleanup: bind it to
+              // the exact native/binding owner, independently of revoked run lineage.
               const retained =
                 isSameCodexAppServerThreadOwner(currentBinding, binding) &&
                 (await options.bindingStore.withLease(bindingIdentity, async () => {
@@ -952,6 +731,7 @@ async function clearContextEngineProjectionBeforeNativeCompaction(params: {
   identity: CodexAppServerBindingIdentity;
   binding: CodexAppServerThreadBinding;
   assertCurrent: () => void;
+  authority: CodexBindingAuthority;
 }): Promise<void> {
   const contextEngineBinding = params.binding.contextEngine;
   if (!contextEngineBinding?.projection) {
@@ -972,6 +752,7 @@ async function clearContextEngineProjectionBeforeNativeCompaction(params: {
       },
     },
     params.assertCurrent,
+    params.authority,
   );
   embeddedAgentLog.info("cleared codex context-engine projection before native compaction", {
     sessionId: params.sessionId,

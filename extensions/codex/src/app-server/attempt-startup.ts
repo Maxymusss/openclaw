@@ -64,7 +64,7 @@ import {
   type CodexSandboxExecEnvironment,
 } from "./sandbox-exec-server.js";
 import { buildScheduledCodexAppAuthorityInputFingerprint } from "./scheduled-app-authority.js";
-import type { CodexAppServerBindingStore } from "./session-binding.js";
+import type { CodexBindingAuthority, CodexAppServerBindingStore } from "./session-binding.js";
 import {
   clearSharedCodexAppServerClientIfCurrent,
   clearSharedCodexAppServerClientIfCurrentAndUnclaimed,
@@ -128,6 +128,7 @@ type StartCodexAttemptThreadResult = {
  */
 export async function startCodexAttemptThread(params: {
   assertCurrent?: () => void;
+  authority?: CodexBindingAuthority;
   attemptClientFactory: CodexAppServerClientFactory;
   bindingStore: CodexAppServerBindingStore;
   runtime?: PluginRuntime;
@@ -251,7 +252,12 @@ export async function startCodexAttemptThread(params: {
               throw new CodexAppServerStartupError("aborted");
             }
             startupClient = await params.attemptClientFactory({
-              assertCurrent: params.assertCurrent,
+              // Process startup retains its synchronous admission contract. Ordinary
+              // native requests use the retained worker authority at wire admission.
+              assertCurrent: () => {
+                params.assertCurrent?.();
+                params.authority?.assertLegacyCurrent();
+              },
               startOptions: params.appServer.start,
               pluginConfig: params.pluginConfig,
               ...(params.startupPreparedAuth
@@ -477,6 +483,7 @@ export async function startCodexAttemptThread(params: {
                 reserveResumeThread,
                 bindingStore: params.bindingStore,
                 assertCurrent: params.assertCurrent,
+                authority: params.authority,
                 params: params.buildAttemptParams(),
                 runtimeModelId: params.runtimeModelId,
                 agentId: params.sessionAgentId,

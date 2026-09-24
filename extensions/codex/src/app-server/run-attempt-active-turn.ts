@@ -122,6 +122,8 @@ export function activateCodexAttemptTurn(
               connection.assertCurrent();
               const file = await readBoundedCodexRemoteWorkspaceFile({
                 client: replyMediaClient,
+                assertCurrent: connection.assertCurrent,
+                withCurrent: connection.withCurrent,
                 path: mapCodexAppServerRemoteWorkspacePath({
                   value: path.resolve(params.workspaceDir, relativePath),
                   localWorkspaceRoot: params.workspaceDir,
@@ -196,6 +198,8 @@ export function activateCodexAttemptTurn(
       readRemoteWorkspaceFile: ({ path: remotePath, maxBytes, signal, timeoutMs }) =>
         readBoundedCodexRemoteWorkspaceFile({
           client: resourceState.client,
+          assertCurrent: connection.assertCurrent,
+          withCurrent: connection.withCurrent,
           path: remotePath,
           maxBytes,
           signal,
@@ -368,6 +372,7 @@ export function activateCodexAttemptTurn(
     requestTimeoutMs: connection.appServer.requestTimeoutMs,
     signal: runAbortController.signal,
     assertActive: assertSteeringActive,
+    withCurrent: connection.withCurrent,
     prepareMessage: async (text, options, assertMessageCurrent) => {
       const attachmentNote = await connection.prepareInputAttachments({
         maxChars: Math.max(0, CODEX_TURN_START_TEXT_INPUT_MAX_CHARS - text.length - 2),
@@ -433,7 +438,11 @@ export function activateCodexAttemptTurn(
       const messages = activeProjector.buildSteeringTranscriptPrefix();
       if (params.sessionTarget && messages.length > 0) {
         await codexTranscriptMirrorRuntime.mirror({
-          assertCurrent: assertSteeringActive,
+          // Transcript SDK commit callback must remain synchronous.
+          assertCurrent: () => {
+            connection.assertLegacyCurrent();
+            assertSteeringActive();
+          },
           agentId: sessionAgentId,
           sessionKey: contextSessionKey,
           sessionId: params.sessionId,

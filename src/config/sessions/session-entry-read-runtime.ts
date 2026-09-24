@@ -7,6 +7,7 @@ import {
   normalizeAgentId,
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { assertAgentDatabaseAdmitted } from "../../state/agent-database-admission.js";
 import {
   listOpenIncognitoAgentDatabases,
@@ -16,6 +17,7 @@ import {
   isIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
 } from "../../state/openclaw-agent-db.paths.js";
+import { runOpenClawAgentWriteAdmissions } from "../../state/openclaw-agent-write-admission.js";
 import { cloneEnvWithPlatformSemantics } from "../config-env-vars.js";
 import { resolveStateDir } from "../state-dir.js";
 import { loadSessionEntryReadOnlyResultInScope } from "./session-accessor.sqlite-entry.js";
@@ -256,7 +258,11 @@ export type PreparedSessionEntryWorkerRead = {
 export async function withSessionEntriesFromStoresInWorker<T>(
   inputs: readonly SessionEntryWorkerRead[],
   consume: (reads: readonly PreparedSessionEntryWorkerRead[]) => T,
+  options?: { ordered?: boolean },
 ): Promise<T> {
+  if (options?.ordered) {
+    return withOrderedSessionEntriesInWorker(inputs, consume);
+  }
   const reads: PreparedSessionEntryWorkerRead[] = [];
   const enter = (index: number): Promise<T> => {
     const input = inputs[index];
@@ -295,6 +301,111 @@ export async function withSessionEntriesFromStoresInWorker<T>(
     } finally {
       active = false;
     }
+  };
+  return enter(0);
+}
+
+/** Native effects retain existing writer FIFO order through their synchronous consumer. */
+async function withOrderedSessionEntriesInWorker<T>(
+  inputs: readonly SessionEntryWorkerRead[],
+  consume: (reads: readonly PreparedSessionEntryWorkerRead[]) => T,
+): Promise<T> {
+  const selected: Array<{
+    input: SessionEntryWorkerRead;
+    owner: SessionHistoryWorkerDatabase;
+    database: PreparedSessionEntryWorkerRead["database"];
+    continuation: CanonicalSessionReaderContinuation | undefined;
+    assertCurrent: () => void;
+  }> = [];
+  const enter = (index: number): Promise<T> => {
+    const input = inputs[index];
+    if (input) {
+      return withSessionStoreReaderInWorker(
+        input,
+        async (owner, database, continuation, assertCurrent) => {
+          selected.push({ input, owner, database, continuation, assertCurrent });
+          try {
+            return await enter(index + 1);
+          } finally {
+            selected.pop();
+          }
+        },
+      );
+    }
+    return runOpenClawAgentWriteAdmissions(
+      selected.map(({ database }) => database),
+      async () => {
+        let changed = false;
+        const unsubscribe = sessionChanges.subscribe((change) => {
+          if (change.scope === "runtime" || change.scope === "agent-runs") {
+            return;
+          }
+          if ("all" in change) {
+            changed = true;
+            return;
+          }
+          if (
+            !selected.some(({ input: selectedInput }) =>
+              selectedInput.sessionKeys.includes(change.sessionKey),
+            )
+          ) {
+            return;
+          }
+          try {
+            const physicalPath = change.storePath
+              ? captureSessionStoreReadCandidate(
+                  resolveUnsuffixedSqliteTargetFromSessionStorePath(change.storePath).path,
+                ).physicalPath
+              : undefined;
+            changed ||= selected.some(
+              ({ input: selectedInput, database }) =>
+                selectedInput.sessionKeys.includes(change.sessionKey) &&
+                (!physicalPath || physicalPath === database.path),
+            );
+          } catch {
+            changed = true;
+          }
+        });
+        let active = true;
+        const assertCurrent = () => {
+          if (!active) {
+            throw new Error("Session entry read consumer is no longer active");
+          }
+          for (const read of selected) {
+            read.assertCurrent();
+          }
+          if (changed) {
+            throw new Error("Session entry changed during read");
+          }
+        };
+        try {
+          const reads: PreparedSessionEntryWorkerRead[] = [];
+          for (const { input: selectedInput, owner, database, continuation } of selected) {
+            assertCurrent();
+            const result = await owner.readExactEntries({
+              sessionKeys: [...new Set(selectedInput.sessionKeys)],
+              lifecycleSessionKey: selectedInput.lifecycleSessionKey,
+              projection: selectedInput.projection,
+              includeMembers: selectedInput.includeMembers,
+              includeAuthorization: selectedInput.includeAuthorization,
+              env: database.env,
+              continuation,
+            });
+            assertCurrent();
+            reads.push({ result, database, assertCurrent });
+          }
+          const result = consume(reads);
+          if (isPromiseLike(result)) {
+            void Promise.resolve(result).catch(() => {});
+            throw new Error("Session entry read consumers must remain synchronous");
+          }
+          return result;
+        } finally {
+          active = false;
+          unsubscribe();
+        }
+      },
+    );
   };
   return enter(0);
 }

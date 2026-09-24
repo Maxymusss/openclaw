@@ -4,6 +4,7 @@ import { expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import * as boardStore from "../../boards/sqlite-board-store.kernel.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
+import { sessionChanges } from "../../sessions/session-row-changes.js";
 import { closeOpenClawAgentDatabaseByPathAsync } from "../../state/openclaw-agent-db-lifecycle.js";
 import { OpenClawAgentDatabaseReadOnlyScope } from "../../state/openclaw-agent-db-readonly-scope.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
@@ -11,6 +12,7 @@ import {
   openOpenClawAgentDatabase,
   resolveOpenClawAgentSqlitePath,
 } from "../../state/openclaw-agent-db.js";
+import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { writeSessionEntry } from "./session-accessor.sqlite-entry-store.js";
 import { readSessionBackingFacts } from "./session-backing-facts.js";
@@ -246,5 +248,34 @@ it("closes worker-prepared authority synchronously before queued consumers can r
     await expect(withSessionEntriesFromStoresInWorker([input], async () => {})).rejects.toThrow(
       "consumers must remain synchronous",
     );
+  });
+});
+
+it("orders native reads with writers and ignores runtime-only invalidations", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const database = openOpenClawAgentDatabase({ agentId: "main", env });
+    const sessionKey = "agent:main:ordered-consumer";
+    writeSessionEntry(database, sessionKey, { sessionId: "ordered-session", updatedAt: 1 });
+    const input = { agentId: "main", storePath: database.path, sessionKeys: [sessionKey], env };
+    let escaped: (() => void) | undefined;
+    await withSessionEntriesFromStoresInWorker(
+      [input],
+      ([read]) => {
+        escaped = read!.assertCurrent;
+        sessionChanges.emit({ sessionKey, scope: "runtime" });
+        sessionChanges.emit({ all: true, scope: "agent-runs" });
+        read!.assertCurrent();
+        expect(read!.result.entries[0]?.entry.sessionId).toBe("ordered-session");
+        sessionChanges.emit({ sessionKey, storePath: database.path });
+        expect(read!.assertCurrent).toThrow("Session entry changed during read");
+      },
+      { ordered: true },
+    );
+    expect(escaped).toThrow("consumer is no longer active");
+    await expect(
+      runOpenClawAgentWriteAdmission({ agentId: "main", path: database.path, env }, () =>
+        withSessionEntriesFromStoresInWorker([input], () => {}, { ordered: true }),
+      ),
+    ).rejects.toThrow("cannot reenter an active SQLite writer admission");
   });
 });
