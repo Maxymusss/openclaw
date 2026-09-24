@@ -1,4 +1,4 @@
-import { MENTION_INBOX_MAX_ITEMS } from "../../packages/gateway-protocol/src/index.js";
+import { MENTION_INBOX_MAX_ITEMS } from "../../packages/gateway-protocol/src/schema/human-mentions.js";
 import { requestSqliteWorkerOperationAdmission } from "../infra/sqlite-worker-operation-admission.js";
 import {
   runOpenClawStateWriteTransaction,
@@ -6,12 +6,12 @@ import {
 } from "../state/openclaw-state-db.js";
 import { readHumanMentionPolicyInDatabase } from "./human-mention-policy-read.kernel.js";
 import { MAX_MENTION_POLICY_PROFILES_PER_READ } from "./human-mention-policy-read.types.js";
+import type { MentionStoreSource } from "./mention-inbox-store.codec.js";
 import {
   MAX_MENTION_SOURCES,
   MENTION_RETENTION_MS,
   readMentionStoreSnapshotInDatabase,
   writeMentionStoreChanges,
-  type MentionStoreSource,
 } from "./mention-inbox-store.js";
 import type {
   MentionInboxMutation,

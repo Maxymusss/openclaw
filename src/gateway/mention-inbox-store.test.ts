@@ -4,10 +4,10 @@ import { expect, it } from "vitest";
 import { trackSqliteStatementExecutions } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { clearNodeSqliteKyselyCacheForDatabase } from "../infra/kysely-sync.js";
 import { runSqliteImmediateTransactionSync } from "../infra/sqlite-transaction.js";
+import type { MentionStoreSource } from "./mention-inbox-store.codec.js";
 import {
   readMentionStoreSnapshotInDatabase,
   writeMentionStoreChanges,
-  type MentionStoreSource,
 } from "./mention-inbox-store.js";
 
 it("deletes an expiry cohort with bounded SQL while retaining unrelated sources", () => {

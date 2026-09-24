@@ -1,6 +1,4 @@
 import type { DatabaseSync } from "node:sqlite";
-import { z } from "zod";
-import { MAX_HUMAN_MENTIONS } from "../../packages/gateway-protocol/src/index.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -11,6 +9,13 @@ import { runSqliteDeferredTransactionSync } from "../infra/sqlite-transaction.js
 import type { ConfigMachineStateDatabase } from "../state/config-machine-state.js";
 import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
+import {
+  mentionStoreHeadSchema,
+  mentionStoreSourceSchema,
+  type MentionStoreHead,
+  type MentionStoreSource,
+  type MentionStoreSnapshot,
+} from "./mention-inbox-store.codec.js";
 
 export const MENTION_RETENTION_MS = 7 * 24 * 60 * 60_000;
 export const MAX_MENTION_SOURCES = 10_000;
@@ -18,51 +23,6 @@ export const MAX_MENTION_SOURCES = 10_000;
 const HEAD_KEY = "notifications.mentions.head";
 const SOURCE_PREFIX = "notifications.mentions.source.";
 const SOURCE_END = "notifications.mentions.source/";
-const reference = z.string().min(1).max(256);
-const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-const headSchema = z.object({ revision: timestamp, nextSequence: timestamp });
-const recipientExcerptSchema = z
-  .object({
-    profileId: reference,
-    excerpt: z.string().max(280),
-    excerptMention: z.object({
-      start: z.number().int().min(0).max(279),
-      end: z.number().int().min(1).max(280),
-    }),
-  })
-  .refine(
-    ({ excerpt, excerptMention }) =>
-      excerptMention.start < excerptMention.end && excerptMention.end <= excerpt.length,
-  );
-const messageSchema = z.object({
-  sessionId: reference,
-  content: z.object({
-    senderProfileId: reference,
-    sessionKey: z.string().min(1).max(512),
-    agentId: reference,
-    messageId: reference,
-    createdAt: timestamp,
-    excerpt: z.string().max(280).optional(),
-  }),
-  recipientExcerpts: z.array(recipientExcerptSchema).max(MAX_HUMAN_MENTIONS).optional(),
-});
-const sourceSchema = z.object({
-  key: z.string().regex(/^[a-f0-9]{64}$/),
-  sequence: timestamp,
-  expiresAt: timestamp,
-  recipients: z.array(z.tuple([reference, reference.nullable()])).max(MAX_HUMAN_MENTIONS),
-  message: messageSchema.optional(),
-});
-
-export type MentionStoreHead = z.infer<typeof headSchema>;
-export type MentionStoreSource = z.infer<typeof sourceSchema>;
-export type MentionStoreMessage = z.infer<typeof messageSchema>;
-export type MentionStoreExcerpt = Omit<z.infer<typeof recipientExcerptSchema>, "profileId">;
-export type MentionStoreSnapshot = {
-  head: MentionStoreHead;
-  sources: MentionStoreSource[];
-};
-
 /** The existing machine-state primary key owns lookup; this feature creates no schema. */
 export function readMentionStoreSnapshotInDatabase(
   revision: number,
@@ -83,7 +43,7 @@ function readMentionStoreSnapshotRows(
     db.selectFrom("config_machine_state").select("value_json").where("state_key", "=", HEAD_KEY),
   );
   const head = headRow
-    ? headSchema.parse(JSON.parse(headRow.value_json))
+    ? mentionStoreHeadSchema.parse(JSON.parse(headRow.value_json))
     : { revision: 0, nextSequence: 0 };
   if (head.revision === revision) {
     return undefined;
@@ -108,7 +68,7 @@ function readMentionStoreSnapshotRows(
     if (row.value_json.length > 32_768) {
       throw new Error("Mention source exceeds its record budget");
     }
-    const source = sourceSchema.parse(JSON.parse(row.value_json));
+    const source = mentionStoreSourceSchema.parse(JSON.parse(row.value_json));
     if (
       row.state_key !== `${SOURCE_PREFIX}${source.key}` ||
       source.sequence >= head.nextSequence ||
@@ -180,7 +140,7 @@ export function writeMentionStoreChanges(
   if (changes.size === 0) {
     return head;
   }
-  const next = headSchema.parse({ ...head, revision: head.revision + 1 });
+  const next = mentionStoreHeadSchema.parse({ ...head, revision: head.revision + 1 });
   const db = getNodeSqliteKysely<ConfigMachineStateDatabase>(database);
   const updatedAtMs = Date.now();
   const deletedKeys: string[] = [];

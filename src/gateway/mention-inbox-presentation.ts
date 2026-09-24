@@ -2,7 +2,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { MentionInboxItem } from "../../packages/gateway-protocol/src/index.js";
 import type { SessionEntry } from "../config/sessions.js";
 import { humanMentionDisplayLabel } from "./human-mention-policy.js";
-import type { MentionStoreExcerpt, MentionStoreMessage } from "./mention-inbox-store.js";
+import type { MentionStoreExcerpt, MentionStoreMessage } from "./mention-inbox-store.codec.js";
 import { deriveSessionTitle } from "./session-utils-core.js";
 
 /** Strip recipient routing metadata when materializing one retained display value. */

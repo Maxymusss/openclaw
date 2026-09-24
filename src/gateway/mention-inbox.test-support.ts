@@ -10,10 +10,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import { ensureProfileForEmail, setDisplayName } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
+import type { MentionStoreSource } from "./mention-inbox-store.codec.js";
 import {
   readMentionStoreSnapshotInDatabase,
   writeMentionStoreChanges,
-  type MentionStoreSource,
 } from "./mention-inbox-store.js";
 import { createMentionInbox } from "./mention-inbox.js";
 import type { MentionCommittedInput, MentionInbox } from "./mention-inbox.types.js";

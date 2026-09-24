@@ -23,7 +23,7 @@ import type {
   HumanMentionPolicyReadInput,
   HumanMentionPolicyReadResult,
 } from "../gateway/human-mention-policy-read.types.js";
-import type { MentionStoreSnapshot } from "../gateway/mention-inbox-store.js";
+import type { MentionStoreSnapshot } from "../gateway/mention-inbox-store.codec.js";
 import type {
   ListTerminalOperatorApprovalsInput,
   ListTerminalOperatorApprovalsResult,

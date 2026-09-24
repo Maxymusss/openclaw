@@ -21,13 +21,13 @@ import { createHumanMentionPolicy } from "./human-mention-policy.js";
 import { createCommittedMentionAuthority } from "./mention-committed-authority.js";
 import { prepareMentionExcerpts } from "./mention-excerpt.js";
 import { projectMentionExcerpt, projectMentionInboxItem } from "./mention-inbox-presentation.js";
-import {
-  readMentionStoreSnapshot,
-  type MentionStoreExcerpt,
-  type MentionStoreHead,
-  type MentionStoreMessage,
-  type MentionStoreSnapshot,
-} from "./mention-inbox-store.js";
+import type {
+  MentionStoreExcerpt,
+  MentionStoreHead,
+  MentionStoreMessage,
+  MentionStoreSnapshot,
+} from "./mention-inbox-store.codec.js";
+import { readMentionStoreSnapshot } from "./mention-inbox-store.js";
 import { mutateMentionInbox } from "./mention-inbox.persistence.js";
 import type { MentionCommittedInput, MentionInbox } from "./mention-inbox.types.js";
 import type { MentionInboxMutation } from "./mention-inbox.worker-contract.js";

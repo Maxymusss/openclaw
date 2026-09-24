@@ -1,4 +1,4 @@
-import type { CurrentUserProfileDisplay } from "./current-user-profile-display.js";
+import type { CurrentUserProfileDisplay } from "./current-user-profile-display.types.js";
 
 // Read/discovery budgets, not a limit on the complete retained Inbox cohort.
 export const MAX_MENTION_POLICY_PROFILES_PER_READ = 10_000;

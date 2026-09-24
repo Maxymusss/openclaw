@@ -20,7 +20,7 @@ import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import { executeExistingOpenClawStateRead } from "../state/openclaw-state-db-readonly.js";
 import { captureOpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { readUserProfileVersion } from "../state/user-profile-events.js";
-import type { CurrentUserProfileDisplay } from "./current-user-profile-display.js";
+import type { CurrentUserProfileDisplay } from "./current-user-profile-display.types.js";
 import {
   MAX_MENTION_POLICY_PROFILES_PER_READ,
   MAX_MENTION_POLICY_TARGETS,

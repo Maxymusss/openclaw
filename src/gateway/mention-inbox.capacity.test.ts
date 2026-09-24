@@ -4,10 +4,10 @@ import { MAX_HUMAN_MENTIONS } from "../../packages/gateway-protocol/src/index.js
 import { createDeferred } from "../../test/helpers/promise.js";
 import * as policyReads from "../state/openclaw-state-db-readonly.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import type { MentionStoreSource } from "./mention-inbox-store.codec.js";
 import {
   readMentionStoreSnapshotInDatabase,
   writeMentionStoreChanges,
-  type MentionStoreSource,
 } from "./mention-inbox-store.js";
 import {
   dismissMentionInbox,

@@ -1,4 +1,4 @@
-import type { MentionStoreMessage, MentionStoreSnapshot } from "./mention-inbox-store.js";
+import type { MentionStoreMessage, MentionStoreSnapshot } from "./mention-inbox-store.codec.js";
 
 export type MentionInboxMutation = {
   now: number;
