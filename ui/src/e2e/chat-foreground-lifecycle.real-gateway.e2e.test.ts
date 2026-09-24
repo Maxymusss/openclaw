@@ -120,6 +120,91 @@ async function deniedSend(page: Page, observed: Observation, text: string, messa
   return { failed, status, rowKey, diagnostic: response.error.message };
 }
 
+async function expectRestartNotice(page: Page, key: string) {
+  const notices = thread(page).getByText(restartNotice, { exact: true });
+  try {
+    await expect.poll(() => notices.count()).toBe(1);
+  } catch (error) {
+    // History can reconcile the live transcript; capture the failed DOM first.
+    const activeThreads = await thread(page)
+      .count()
+      .catch(() => null);
+    const dom = await notices
+      .evaluateAll((elements) => ({
+        count: elements.length,
+        matches: elements.slice(0, 8).map((element) => {
+          const attribute = (owner: Element | null, name: string) =>
+            owner?.getAttribute(name)?.slice(0, 160) ?? null;
+          const details = element.closest("details");
+          const alert = element.closest('[role="alert"]');
+          const pane = element.closest("openclaw-chat-pane");
+          const bounds = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
+          return {
+            tag: element.tagName.toLowerCase().slice(0, 32),
+            class: attribute(element, "class"),
+            bounds: { width: bounds.width, height: bounds.height },
+            computedStyle: { visibility: style.visibility, display: style.display },
+            messageId: attribute(element.closest("[data-message-id]"), "data-message-id"),
+            entryId: attribute(element.closest("[data-entry-id]"), "data-entry-id"),
+            rowKey: attribute(element.closest("[data-chat-row-key]"), "data-chat-row-key"),
+            details: details
+              ? { class: attribute(details, "class"), open: details.hasAttribute("open") }
+              : null,
+            alert: alert
+              ? { tag: alert.tagName.toLowerCase().slice(0, 32), class: attribute(alert, "class") }
+              : null,
+            pane: pane
+              ? {
+                  index: Array.from(document.querySelectorAll("openclaw-chat-pane")).indexOf(pane),
+                  class: attribute(pane, "class"),
+                  ariaHidden: attribute(pane, "aria-hidden"),
+                  hidden: pane.hasAttribute("hidden"),
+                  inert: pane.hasAttribute("inert"),
+                }
+              : null,
+          };
+        }),
+      }))
+      .catch(() => ({ unavailable: true }));
+    const firstThreadScreenshot = await thread(page)
+      .first()
+      .screenshot({
+        path: path.join(suite.artifactDir, "restart-notice.png"),
+        animations: "disabled",
+      })
+      .then(
+        () => true,
+        () => false,
+      );
+    const stored = await history(page, key)
+      .then(({ messages }) => {
+        const matching = messages.filter((message) =>
+          historyText([message]).includes(restartNotice),
+        );
+        const identity = (value: unknown) =>
+          typeof value === "string" ? value.slice(0, 160) : null;
+        return {
+          count: historyText(messages).filter((text) => text === restartNotice).length,
+          messageCount: matching.length,
+          messages: matching.slice(0, 8).map((message) => {
+            const metadata = asNullableRecord(asNullableRecord(message)?.__openclaw);
+            return {
+              id: identity(metadata?.id),
+              runId: identity(metadata?.runId),
+              idempotencyKey: identity(metadata?.idempotencyKey),
+            };
+          }),
+        };
+      })
+      .catch(() => ({ unavailable: true }));
+    throw new Error(
+      `Restart notice assertion failed: ${JSON.stringify({ activeThreads, dom, firstThreadScreenshot, stored })}`,
+      { cause: error },
+    );
+  }
+}
+
 suite.define(() => {
   it("refreshes model policy on the same narrow guest connection without synthesizing forbidden choices", async (context) => {
     await suite.runScenario(context, {
@@ -501,9 +586,7 @@ suite.define(() => {
             expect(child?.exitCode).toBeNull();
             expect(fixture.instance.stateDir).toBe(stateDir);
             expect(await fixture.savedModelPreference("restart")).toEqual(savedModelPreference);
-            await expect
-              .poll(() => thread(page).getByText(restartNotice, { exact: true }).count())
-              .toBe(1);
+            await expectRestartNotice(page, key);
             const recovered = await history(page, key);
             expect(
               historyText(recovered.messages).filter((text) => text === restartNotice),
@@ -515,9 +598,7 @@ suite.define(() => {
             expect(await composer(page).inputValue()).toBe(draft);
             await page.reload();
             await waitForControlUiGatewayReady(page);
-            await expect
-              .poll(() => thread(page).getByText(restartNotice, { exact: true }).count())
-              .toBe(1);
+            await expectRestartNotice(page, key);
             expect(
               historyText((await history(page, key)).messages).filter(
                 (text) => text === restartNotice,
