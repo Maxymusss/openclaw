@@ -23,7 +23,6 @@ import { readWorkspaceStateSnapshotForDirectoryInDatabase } from "../agents/work
 import { ExecutionDecisionCursorError } from "../audit/execution-decision-receipts.js";
 import { inspectExecutionIdentityRunInDatabase } from "../audit/execution-identity-context.js";
 import { observeCronRunRecoveryInDatabase } from "../cron/store/run-recovery.read.js";
-import { getFleetCellInDatabase, listFleetCellsInDatabase } from "../fleet/registry.kernel.js";
 import {
   readGitHubPublicationRequest,
   readKnownGitHubPublicationPullRequestUrlsInDatabase,
@@ -66,7 +65,10 @@ import {
   readTaskRegistryMutationSnapshotInDatabase,
   readTaskRegistrySnapshot,
 } from "../tasks/task-registry.store.kernel.js";
-import { executeAgentDeletionRead } from "./agent-deletion-journal.read.js";
+import {
+  readAgentDatabaseDeletionSnapshotInDatabase,
+  readAgentDeletionJournalStatusInDatabase,
+} from "./agent-deletion-journal.read.js";
 import { readConfigMachineStateRowInDatabase } from "./config-machine-state.js";
 import { readGitHubPublicationSessionLifecycle } from "./github-publication-session-lifecycles.js";
 import { readOnboardingRecommendationsInDatabase } from "./onboarding-recommendations.kernel.js";
@@ -78,6 +80,7 @@ import {
   withOpenClawStateReadOnlyLocation,
 } from "./openclaw-state-db-read-connection.js";
 import { tableExists } from "./openclaw-state-db-schema-helpers.js";
+import { readStateRegistryCommand } from "./openclaw-state-read-registry.js";
 import type { OpenClawStateReadReply } from "./openclaw-state-read.types.js";
 import { isReadRequest } from "./openclaw-state-read.validation.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
@@ -180,13 +183,20 @@ serveOwnedWorkerTasks(
             return withOpenClawStateReadOnlyLocation(
               ({ db }) => {
                 sourceAdmitted = true;
-                if (
-                  command.type === "agentDatabaseDeletion.snapshot" ||
-                  command.type === "agentDeletionJournal.status"
-                ) {
+                if (command.type === "agentDatabaseDeletion.snapshot") {
                   return {
-                    ...executeAgentDeletionRead(db, input.databasePath, command),
+                    ok: true,
+                    type: command.type,
                     sourceAdmitted,
+                    snapshot: readAgentDatabaseDeletionSnapshotInDatabase(db, input.databasePath),
+                  };
+                }
+                if (command.type === "agentDeletionJournal.status") {
+                  return {
+                    ok: true,
+                    type: command.type,
+                    sourceAdmitted,
+                    status: readAgentDeletionJournalStatusInDatabase(db, command.agentId),
                   };
                 }
                 if (command.type === "acpSessions.metadata") {
@@ -663,19 +673,7 @@ serveOwnedWorkerTasks(
                     ),
                   };
                 }
-                return command.type === "fleet.list"
-                  ? {
-                      ok: true,
-                      type: "fleet.list",
-                      sourceAdmitted,
-                      cells: listFleetCellsInDatabase(db),
-                    }
-                  : {
-                      ok: true,
-                      type: "fleet.get",
-                      sourceAdmitted,
-                      cell: getFleetCellInDatabase(db, command.tenantId),
-                    };
+                return readStateRegistryCommand(db, command);
               },
               ...locationArgs,
             );
