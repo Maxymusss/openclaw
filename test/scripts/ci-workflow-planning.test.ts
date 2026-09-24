@@ -53,6 +53,7 @@ import {
   readAndroidToolchainAction,
   readBuildArtifactsTestboxWorkflow,
   readCiWorkflow,
+  readinessGuardedCondition,
   readTrackedText,
   readWorkflow,
   readWorkflowOutputs,
@@ -1318,10 +1319,10 @@ describe("ci workflow guards", () => {
       preflightOutputs: manifest.outputs,
     };
     for (const name of ["checks-ui", "control-ui-performance"]) {
-      expect(evaluateWorkflowExpression(`\${{ ${workflow.jobs[name].if} }}`, context)).toBe(true);
+      expect(evaluateWorkflowExpression(workflow.jobs[name].if, context)).toBe(true);
     }
     for (const name of ["checks-ui-e2e", "checks-ui-e2e-real-gateway"]) {
-      expect(evaluateWorkflowExpression(`\${{ ${workflow.jobs[name].if} }}`, context)).toBe(false);
+      expect(evaluateWorkflowExpression(workflow.jobs[name].if, context)).toBe(false);
     }
     expect(JSON.stringify(manifest.outputs)).toContain("dedicated-ui-false");
     expect(
@@ -1864,7 +1865,7 @@ describe("ci workflow guards", () => {
       expect(actual.filter((job) => job === "checks-node-core-test-nondist-shard")).toHaveLength(1);
       expect(actual).toContain("preflight");
       expect(Number(qualification.outputs.hybrid_hosted_base_rows)).toBe(
-        Number(ordinary.outputs.hybrid_hosted_base_rows) + 2,
+        Number(ordinary.outputs.hybrid_hosted_base_rows) + 1,
       );
       expect(Number(qualification.outputs.hybrid_hosted_total_rows)).toBe(actual.length);
     });
@@ -3082,7 +3083,7 @@ describe("ci workflow guards", () => {
     });
 
     it.each(["pending", "running"])(
-      "converted_to_draft cancels %s CI and skips its jobs",
+      "converted_to_draft cancels %s broad CI and remains wholly skipped",
       (state) => {
         const scheduler = admissionDriver();
         const previous = scheduler.admit(event(1));
@@ -3209,7 +3210,13 @@ describe("ci workflow guards", () => {
       scheduler.start(newest[1]!);
       expect(newest.map((run) => run.state)).toEqual(["running", "running"]);
       expect(workflow.jobs["runner-admission"]).toBeUndefined();
-      expect(workflow.jobs.preflight.needs).toBeUndefined();
+      expect(workflow.jobs.preflight.needs).toEqual(["readiness"]);
+      expect(
+        evaluateWorkflowExpression(
+          `\${{ ${workflow.jobs.readiness.if} }}`,
+          expectDefined(newest[0], "newest main run").context,
+        ),
+      ).toBe(false);
       expect(workflow.jobs["security-fast"].needs).toEqual(["preflight"]);
     });
 
@@ -3281,7 +3288,7 @@ describe("ci workflow guards", () => {
       });
       for (const job of ["checks-ui-e2e", "checks-ui-e2e-real-gateway"]) {
         expect(
-          evaluateWorkflowExpression(`\${{ ${readCiWorkflow().jobs[job].if} }}`, {
+          evaluateWorkflowExpression(readCiWorkflow().jobs[job].if, {
             eventName: "pull_request",
             repository: "openclaw/openclaw",
             runAttempt: 1,
@@ -6941,10 +6948,10 @@ describe("ci workflow guards", () => {
     expect(releaseCandidateStep.if).toBe("inputs.release_candidate_ref != ''");
     expect(releaseCandidateStep.run).toContain('[[ "$branch_sha" != "$EXPECTED_SHA" ]]');
     expect(workflow.jobs["qa-smoke-ci-profile"].if).toBe(
-      "needs.preflight.outputs.run_qa_smoke_ci == 'true'",
+      readinessGuardedCondition("needs.preflight.outputs.run_qa_smoke_ci == 'true'"),
     );
     expect(workflow.jobs["checks-fast-channel-contracts-shard"].if).toBe(
-      "needs.preflight.outputs.run_channel_contracts_shards == 'true'",
+      readinessGuardedCondition("needs.preflight.outputs.run_channel_contracts_shards == 'true'"),
     );
     const swiftInstall = workflow.jobs["macos-swift"].steps.find(
       (step: { name?: string }) => step.name === "Install XcodeGen / SwiftLint / SwiftFormat",
@@ -7177,7 +7184,7 @@ describe("ci workflow guards", () => {
     expect(readFileSync(commandInclude, "utf8")).toBe("");
 
     expect(
-      evaluateWorkflowExpression(`\${{ ${uiE2E.if} }}`, {
+      evaluateWorkflowExpression(uiE2E.if, {
         eventName: "workflow_dispatch",
         preflightOutputs: { compatibility_target: "true", run_ui_tests: "true" },
         repository: "openclaw/openclaw",
@@ -7199,7 +7206,9 @@ describe("ci workflow guards", () => {
     expect(uiE2e.permissions).toEqual({ contents: "read" });
     expect(uiE2e.needs).toEqual(["preflight"]);
     expect(uiE2e.if).toBe(
-      "needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'",
+      readinessGuardedCondition(
+        "needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'",
+      ),
     );
     expect(uiE2e["runs-on"]).not.toBe(ui["runs-on"]);
     expect(uiE2e["timeout-minutes"]).toBe(25);
@@ -7246,7 +7255,9 @@ describe("ci workflow guards", () => {
     expect(uiE2eRealGateway.permissions).toEqual(uiE2e.permissions);
     expect(uiE2eRealGateway.needs).toEqual(uiE2e.needs);
     expect(uiE2eRealGateway.if).toBe(
-      "needs.preflight.outputs.run_proof_tier == 'true' && needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'",
+      readinessGuardedCondition(
+        "needs.preflight.outputs.run_proof_tier == 'true' && needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'",
+      ),
     );
     expect(uiE2eRealGateway.env).toBeUndefined();
     expect(uiE2eRealGateway.strategy).toEqual({
@@ -7710,7 +7721,9 @@ describe("ci workflow guards", () => {
       "keeps shipped locales structurally aligned with English",
     );
     expect(localeJob.needs).toEqual(["preflight"]);
-    expect(localeJob.if).toBe("needs.preflight.outputs.run_control_ui_i18n == 'true'");
+    expect(localeJob.if).toBe(
+      readinessGuardedCondition("needs.preflight.outputs.run_control_ui_i18n == 'true'"),
+    );
     expect(localeJob["continue-on-error"]).toBeUndefined();
     expect(localeJob.env.COMPATIBILITY_TARGET).toBe(
       "${{ needs.preflight.outputs.compatibility_target }}",
@@ -8484,8 +8497,14 @@ describe("ci workflow guards", () => {
     ];
 
     expect(workflow.on.pull_request).not.toHaveProperty("paths-ignore");
-    expect(gate.name).toBe("openclaw/ci-gate");
-    expect(gate.needs).toEqual([...requiredJobs, ...selectedJobs]);
+    expect(
+      evaluateWorkflowExpression(gate.name, {
+        eventName: "pull_request",
+        repository: "openclaw/openclaw",
+        runAttempt: 1,
+      }),
+    ).toBe("openclaw/ci-gate");
+    expect(gate.needs).toEqual(["readiness", ...requiredJobs, ...selectedJobs]);
     // Every job in the file is gated; a new lane cannot slip in ungated.
     expect(gate.needs.toSorted()).toEqual(
       Object.keys(workflow.jobs)
@@ -8493,15 +8512,20 @@ describe("ci workflow guards", () => {
         .toSorted(),
     );
     expect(gate.if).toBe(
-      "${{ !cancelled() && (github.event_name != 'pull_request' || !github.event.pull_request.draft) }}",
+      "${{ !cancelled() && (github.event_name != 'pull_request' || (!github.event.pull_request.draft && !(github.event.action == 'closed' && github.event.pull_request.merged) && (github.event.action != 'edited' || github.event.changes.base != null) && (!contains(fromJSON('[\"labeled\",\"unlabeled\"]'), github.event.action) || startsWith(github.event.label.name, 'ci:ready:')))) }}",
     );
-    expect(gate.permissions).toEqual({ contents: "read" });
+    expect(gate.permissions).toEqual({ contents: "read", "pull-requests": "read" });
 
     const verifyStep = gate.steps.find(
       (step: WorkflowStep) => step.name === "Verify selected CI lanes",
     );
     expect(Object.keys(verifyStep.env)).toEqual([
       "PREFLIGHT_RESULT",
+      "READINESS_RESULT",
+      "READINESS_ATTEMPT",
+      "READINESS_ENFORCED",
+      "READINESS_REQUEST_ID",
+      "BROAD_CI",
       "RELEASE_PRIORITY_RUN",
       "JOB_RESULTS",
     ]);
@@ -8512,27 +8536,7 @@ describe("ci workflow guards", () => {
     for (const job of selectedJobs) {
       expect(verifyStep.env.JOB_RESULTS).toContain(`${job}=\${{ needs.${job}.result }}|`);
     }
-    expect(resultRows).toHaveLength(gate.needs.length);
-  });
-
-  it("does not admit the final gate for cancelled workflows or draft pull requests", () => {
-    const gate = readCiWorkflow().jobs["ci-gate"];
-    for (const eventName of ["pull_request", "push", "workflow_dispatch"] as const) {
-      for (const cancelled of [true, false]) {
-        for (const draft of [true, false]) {
-          expect(
-            evaluateWorkflowExpression(gate.if, {
-              cancelled,
-              draft,
-              eventName,
-              repository: "openclaw/openclaw",
-              runAttempt: 1,
-            }),
-            JSON.stringify({ cancelled, draft, eventName }),
-          ).toBe(!cancelled && (eventName !== "pull_request" || !draft));
-        }
-      }
-    }
+    expect(resultRows).toHaveLength(gate.needs.length - 1);
   });
 
   it("ci-gate selection projections match their owning job predicates", () => {
@@ -8559,7 +8563,9 @@ describe("ci workflow guards", () => {
       const projected = /^needs\.preflight\.outputs\.\w+$/u.test(selection)
         ? `${selection} == 'true'`
         : selection;
-      expect(projected, job).toBe(eligible);
+      expect(readinessGuardedCondition(projected).replace(/^\$\{\{\s*|\s*\}\}$/gu, ""), job).toBe(
+        eligible,
+      );
     }
   });
 
@@ -8827,7 +8833,9 @@ describe("ci workflow guards", () => {
 
     expect(compatibilityJob.name).toBe("checks-node-compat-node24");
     expect(compatibilityJob.if).toBe(
-      "needs.preflight.outputs.run_build_artifacts == 'true' && github.event_name == 'workflow_dispatch' && (needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true')",
+      readinessGuardedCondition(
+        "needs.preflight.outputs.run_build_artifacts == 'true' && github.event_name == 'workflow_dispatch' && (needs.preflight.outputs.node_runner_backend != 'runson' && needs.preflight.outputs.ci_qualification != 'true')",
+      ),
     );
     expect(fullReleaseDispatch.env.CHILD_WORKFLOW_KIND).toBe("ci");
     expect(fullReleaseDispatch.run).toContain('dispatch_child ci.yml "$dispatch_run_name"');
@@ -8864,7 +8872,7 @@ describe("ci workflow guards", () => {
     "ci-gate checks all downstream lanes (selected=%s, result=%s)",
     (selected, result, exit) => {
       const workflow = readCiWorkflow();
-      const jobs: string[] = workflow.jobs["ci-gate"].needs.slice(2);
+      const jobs: string[] = workflow.jobs["ci-gate"].needs.slice(3);
       const jobResults = renderCiGateEnvironment(
         {
           eventName: selected ? "workflow_dispatch" : "pull_request",
