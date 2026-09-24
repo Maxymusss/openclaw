@@ -1,4 +1,4 @@
-import { html, nothing } from "lit";
+import { html, nothing, type TemplateResult } from "lit";
 import { AsyncDirective } from "lit/async-directive.js";
 import { directive, type ElementPart } from "lit/directive.js";
 import { icons } from "../../../components/icons.ts";
@@ -103,6 +103,7 @@ export function renderSelectedHumanMentions(
   mentions: readonly HumanMention[] | undefined,
   onRemove: () => void,
   avatarUrls?: ReadonlyMap<string, string>,
+  audienceControl: TemplateResult | typeof nothing = nothing,
 ) {
   if (!mentions?.length) {
     return nothing;
@@ -112,7 +113,10 @@ export function renderSelectedHumanMentions(
     const label = text.slice(mention.start, mention.end);
     return { profileId: mention.profileId, label, name: label.replace(/^@/u, "") };
   });
-  return html`<div class="chat-reply-preview composer-context-strip" role="status">
+  return html`<div
+    class="chat-reply-preview composer-context-strip ${audienceControl === nothing ? "" : "composer-context-strip--audience"}"
+    role="status"
+  >
     <span class="composer-context-strip__label">
       <span class="composer-context-strip__icon" aria-hidden="true">${icons.bell}</span>
       <span class="composer-context-strip__label-text">${t("chat.mentions.selectedLabel")}</span>
@@ -141,5 +145,6 @@ export function renderSelectedHumanMentions(
     >
       ${icons.x}
     </button>
+    ${audienceControl}
   </div>`;
 }

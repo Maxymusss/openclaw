@@ -98,6 +98,7 @@ type ChatComposerViewContext = {
   slashMenuListboxId: string;
   slashMenuAnnouncementId: string;
   goalComposer: GoalComposerController;
+  audienceControl: TemplateResult | typeof nothing;
 };
 
 export function renderChatComposerView(context: ChatComposerViewContext) {
@@ -141,6 +142,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
     slashMenuListboxId,
     slashMenuAnnouncementId,
     goalComposer,
+    audienceControl,
   } = context;
   const disabledBanner = props.disabledBanner
     ? html`
@@ -419,6 +421,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                     requestUpdate();
                   },
                   state.mentionMenu.selectedAvatarUrls,
+                  audienceControl,
                 )}
                 ${
                   props.replyTarget
@@ -439,6 +442,7 @@ export function renderChatComposerView(context: ChatComposerViewContext) {
                               props.replyTarget.text.length > 120 ? "..." : ""
                             }</span
                           >
+                          ${props.mentions?.length ? nothing : audienceControl}
                           <button
                             type="button"
                             class="chat-reply-preview__dismiss composer-context-strip__dismiss"
