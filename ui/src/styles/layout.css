@@ -1071,6 +1071,12 @@ openclaw-settings-save-indicator:empty {
   display: none;
 }
 
+/* Unlike in-flow splitters, the navigation handle shares the nav grid cell.
+   Reserve its track so it cannot cover the sidebar's native scrollbar. */
+.shell:not(.shell--mobile-nav):has(> .sidebar-resizer) > .shell-nav {
+  padding-inline-end: var(--resize-handle-size);
+}
+
 /* The shell owns the resting boundary. The wider resize target takes over
    that same edge during interaction, avoiding a doubled divider. */
 .sidebar-resizer {
