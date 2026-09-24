@@ -198,5 +198,9 @@ describe("remote model catalog store", () => {
     expect(readConfigMachineState("modelCatalog.remote.v2", options)).toBeUndefined();
     // Until this client stores its own row, it keeps following the older client's slot.
     expect(readRemoteModelCatalog(options)).toEqual({ id: 1, ...newer });
+    expect(readConfigMachineState("modelCatalog.remote", options)).toEqual(newer);
+    const latest = { ...newer, generated_at: 300, etag: '"latest"' };
+    writeConfigMachineState("modelCatalog.remote", latest, options);
+    expect(readRemoteModelCatalog(options)).toEqual({ id: 1, ...latest });
   });
 });
