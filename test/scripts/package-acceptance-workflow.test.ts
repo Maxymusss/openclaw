@@ -7326,7 +7326,9 @@ NODE
     expect(run.indexOf("release-tooling-identity.mjs verify")).toBeLessThan(
       run.indexOf("actions/variables/OPENCLAW_RELEASE_STABLE_SOAK_WAIVER"),
     );
-    expect(run.indexOf("assertStableSoakWaiverStillHeld")).toBeLessThan(run.indexOf("npm publish"));
+    expect(run.indexOf("assertStableSoakWaiverStillHeld")).toBeLessThan(
+      run.indexOf('npm publish "$TARBALL_PATH"'),
+    );
     expect(run).toContain('grep -q "HTTP 404"');
   });
 
