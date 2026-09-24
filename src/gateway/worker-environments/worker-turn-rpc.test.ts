@@ -864,69 +864,76 @@ describe("worker environment service", () => {
     expect(applyTranscriptCommit).toHaveBeenCalledOnce();
   });
 
-  it("denies Gateway inference for a stored runtime-local placement after exact binding", async () => {
-    const executeInference = vi.fn<WorkerEnvironmentServiceOptions["executeInference"]>();
-    const { identity, placementStore, workerService } = await support.placementHarness(
-      "worker-runtime-local-proxy-denial",
-      "session-runtime-local-proxy-denial",
-      { executeInference },
-    );
-    // Seed immutable profile facts through the same transaction/publication owner
-    // as the other placement fixtures; do not mutate live config or mock the gate.
-    runOpenClawStateWriteTransaction(
-      ({ db }) => {
-        executeSqliteQuerySync(
-          db,
-          getNodeSqliteKysely<StateDatabase>(db)
-            .updateTable("worker_environments")
-            .set({
-              provider_id: "device",
-              node_device_id: "paired-inference-node",
-              shared_host: 1,
-              ssh_host: null,
-              ssh_port: null,
-              ssh_user: null,
-              ssh_host_key: null,
-              ssh_key_ref_json: null,
-              profile_snapshot_json: JSON.stringify({ settings: { inference: "runtime-local" } }),
-            })
-            .where("environment_id", "=", identity.environmentId),
-        );
-        publishWorkerEnvironmentFixture(db, identity.environmentId);
-      },
-      { database: support.testState.stateDb },
-    );
-    expect(support.testState.store.get(identity.environmentId)).toMatchObject({
-      providerId: "device",
-      profileSnapshot: { settings: { inference: "runtime-local" } },
-    });
-    expect(workerService.validateWorkerConnection(identity)).toBeNull();
-    const request = support.inferenceRequest(identity);
-    const send = vi.fn();
-    const sink = { connectionId: "runtime-local-proxy-attempt", send };
+  it.each(["worker", "runtime-local"])(
+    "denies Gateway inference for stored %s placement after exact binding",
+    async (inference) => {
+      const executeInference = vi.fn<WorkerEnvironmentServiceOptions["executeInference"]>();
+      const { identity, placementStore, workerService } = await support.placementHarness(
+        "worker-runtime-local-proxy-denial",
+        "session-runtime-local-proxy-denial",
+        { executeInference },
+      );
+      // Seed immutable profile facts through the same transaction/publication owner
+      // as the other placement fixtures; do not mutate live config or mock the gate.
+      runOpenClawStateWriteTransaction(
+        ({ db }) => {
+          executeSqliteQuerySync(
+            db,
+            getNodeSqliteKysely<StateDatabase>(db)
+              .updateTable("worker_environments")
+              .set({
+                provider_id: "device",
+                node_device_id: "paired-inference-node",
+                shared_host: 1,
+                ssh_host: null,
+                ssh_port: null,
+                ssh_user: null,
+                ssh_host_key: null,
+                ssh_key_ref_json: null,
+                profile_snapshot_json: JSON.stringify({ settings: { inference } }),
+              })
+              .where("environment_id", "=", identity.environmentId),
+          );
+          publishWorkerEnvironmentFixture(db, identity.environmentId);
+        },
+        { database: support.testState.stateDb },
+      );
+      expect(support.testState.store.get(identity.environmentId)).toMatchObject({
+        providerId: "device",
+        profileSnapshot: { settings: { inference } },
+      });
+      expect(workerService.validateWorkerConnection(identity)).toBeNull();
+      const request = support.inferenceRequest(identity);
+      const send = vi.fn();
+      const sink = { connectionId: "runtime-local-proxy-attempt", send };
 
-    expect(
-      workerService.startInference(identity, { ...request, sessionId: "session-other" }, sink),
-    ).toEqual({ ok: false, reason: "session-not-attached" });
-    expect(
-      workerService.startInference(identity, { ...request, runId: "run-other" }, sink),
-    ).toEqual({ ok: false, reason: "session-not-attached" });
-    expect(
-      workerService.startInference(identity, { ...request, runEpoch: request.runEpoch + 1 }, sink),
-    ).toEqual({ ok: false, reason: "epoch-mismatch" });
-    placementStore.validateWorkerTurn.mockReturnValue(false);
-    expect(workerService.startInference(identity, request, sink)).toEqual({
-      ok: false,
-      closeReason: "placement-mismatch",
-    });
-    placementStore.validateWorkerTurn.mockReturnValue(true);
-    expect(workerService.startInference(identity, request, sink)).toEqual({
-      ok: false,
-      reason: "model-not-approved",
-    });
-    expect(executeInference).not.toHaveBeenCalled();
-    expect(send).not.toHaveBeenCalled();
-  });
+      expect(
+        workerService.startInference(identity, { ...request, sessionId: "session-other" }, sink),
+      ).toEqual({ ok: false, reason: "session-not-attached" });
+      expect(
+        workerService.startInference(identity, { ...request, runId: "run-other" }, sink),
+      ).toEqual({ ok: false, reason: "session-not-attached" });
+      expect(
+        workerService.startInference(
+          identity,
+          { ...request, runEpoch: request.runEpoch + 1 },
+          sink,
+        ),
+      ).toEqual({ ok: false, reason: "epoch-mismatch" });
+      placementStore.validateWorkerTurn.mockReturnValue(false);
+      expect(workerService.startInference(identity, request, sink)).toEqual({
+        ok: false,
+        closeReason: "placement-mismatch",
+      });
+      placementStore.validateWorkerTurn.mockReturnValue(true);
+      expect(workerService.startInference(identity, request, sink)).toEqual({
+        ok: false,
+        reason: "model-not-approved",
+      });
+      expect(executeInference).not.toHaveBeenCalled();
+      expect(send).not.toHaveBeenCalled();
+    },
+  );
 
   it("fences inference by epoch and the durable session credential", async () => {
     const executeInference = vi.fn<WorkerEnvironmentServiceOptions["executeInference"]>(

@@ -439,7 +439,10 @@ export class NewSessionModelControl {
       : undefined;
   }
 
-  modelSelectionBlockedReason(agent: GatewayAgentRow | undefined): string | undefined {
+  modelSelectionBlockedReason(
+    agent: GatewayAgentRow | undefined,
+    inference?: "worker",
+  ): string | undefined {
     if (
       this.agentRuntime &&
       this.metadataState.hasSnapshot &&
@@ -462,7 +465,16 @@ export class NewSessionModelControl {
         );
       }
     }
-    return chatModelUnavailableMessage(this.modelUnavailableReason(agent));
+    // Explicit selections still require Gateway runtime availability before dispatch.
+    return chatModelUnavailableMessage(
+      this.modelUnavailableReason(agent),
+      !this.modelForSubmission() &&
+        !this.agentRuntime &&
+        this.resolveAgentRuntime({ agent, context: this.pendingContext })
+          ?.cloudPlacementExecutionMode === "worker-turn"
+        ? inference
+        : undefined,
+    );
   }
 
   modelForSubmission(): string {

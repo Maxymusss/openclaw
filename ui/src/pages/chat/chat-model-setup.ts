@@ -1,4 +1,4 @@
-import type { ModelCatalogEntry } from "../../api/types.ts";
+import type { GatewaySessionRow, ModelCatalogEntry } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
 import {
   chatModelUnavailableMessage,
@@ -38,9 +38,11 @@ export function chatModelUnavailableBanner(
   provider: string | null | undefined,
   catalog: ModelCatalogEntry[],
   onSetup: () => void,
+  placement?: GatewaySessionRow["placement"],
 ): ChatComposerDisabledBanner | undefined {
   const message = chatModelUnavailableMessage(
     resolveChatModelUnavailableReason(model, provider, catalog),
+    placement?.state === "active" ? placement.inference : undefined,
   );
   return message ? createChatModelSetupBanner(onSetup, message) : undefined;
 }

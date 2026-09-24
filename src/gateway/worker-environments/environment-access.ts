@@ -7,6 +7,7 @@ import {
   verifyWorkerAdmissionHandshake,
   type ExpectedWorkerBuild,
 } from "./admission.js";
+import { workerInferenceMetadata } from "./inference-placement.js";
 import type { WorkerNodeDesktopCarrier } from "./node-desktop-carrier.js";
 import type { NodeWorkerTunnelManager } from "./node-worker-tunnel.js";
 import { readWorkerProjectPreparation } from "./preparation-identity.js";
@@ -156,6 +157,7 @@ export function createWorkerEnvironmentAccess(options: WorkerEnvironmentAccessOp
     const nodeTunnelStatus = nodeTunnels?.status(record.environmentId);
     return {
       ...record,
+      ...workerInferenceMetadata(record),
       ...((record.state === "failed" || record.state === "orphaned") && record.lastError
         ? { error: boundedError(record.lastError) }
         : {}),

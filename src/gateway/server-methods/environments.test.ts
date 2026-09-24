@@ -70,6 +70,41 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks());
 
 describe("environment gateway methods", () => {
+  it("projects only validated device inference without leaking settings or hiding other profiles", async () => {
+    const profiles = {
+      canonical: { provider: "device", settings: { device: "paired-node", inference: "worker" } },
+      legacy: {
+        provider: "device",
+        settings: { device: "paired-node", inference: "runtime-local" },
+      },
+      default: { provider: "device", settings: { device: "paired-node" } },
+      gateway: { provider: "device", settings: { device: "paired-node", inference: "gateway" } },
+      invalid: { provider: "device", settings: { device: "paired-node", inference: "unknown" } },
+      "missing-device": { provider: "device", settings: { inference: "worker" } },
+      foreign: { provider: "static-ssh", settings: { inference: "worker" } },
+    };
+    const respond = vi.fn();
+    await environmentsHandlers["environments.list"]?.({
+      params: { projection: "profiles" },
+      respond,
+      context: {
+        ...mockContext(workerService()),
+        getRuntimeConfig: () => ({ cloudWorkers: { profiles } }),
+      },
+    } as never);
+    expect(respond.mock.calls[0]?.[0]).toBe(true);
+    expect(respond.mock.calls[0]?.[1]).toEqual({
+      environments: [],
+      profiles: Object.entries(profiles)
+        .map(([id, profile]) => ({
+          id,
+          providerId: profile.provider,
+          ...(["canonical", "legacy"].includes(id) ? { inference: "worker" } : {}),
+        }))
+        .toSorted((a, b) => a.id.localeCompare(b.id)),
+    });
+  });
+
   it("probes disabled host setup only when requested without advertising or granting desktop access", async () => {
     const probe = vi.spyOn(rfbProbe, "probeRfbServer").mockResolvedValue({
       kind: "rfb",
@@ -124,7 +159,7 @@ describe("environment gateway methods", () => {
     expect(probe).not.toHaveBeenCalled();
   });
 
-  it("advertises a named runtime-local device profile using the core provider without allocating", async () => {
+  it("advertises a named worker-inference device profile using the core provider without allocating", async () => {
     const root = tempDirs.make("openclaw-environments-named-device-");
     const database = openOpenClawStateDatabase({ env: { OPENCLAW_STATE_DIR: root } });
     const store = await createWorkerEnvironmentStore({ database });
@@ -133,7 +168,7 @@ describe("environment gateway methods", () => {
         profiles: {
           "dedicated-native": {
             provider: "device",
-            settings: { device: "scenario2-paired-node", inference: "runtime-local" },
+            settings: { device: "paired-node", inference: "worker" },
           },
         },
       },
@@ -166,6 +201,7 @@ describe("environment gateway methods", () => {
             {
               id: "dedicated-native",
               providerId: "device",
+              inference: "worker",
               executionMode: "worker-turn",
               executionModes: ["worker-turn", "remote-exec"],
             },

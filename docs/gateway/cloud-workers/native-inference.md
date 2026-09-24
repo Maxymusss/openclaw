@@ -1,5 +1,5 @@
 ---
-summary: "Runtime-local inference on an externally managed paired worker host"
+summary: "Worker inference on an externally managed paired worker host"
 title: "Worker-local inference"
 read_when:
   - Hosting a dedicated native worker on an externally managed machine
@@ -9,7 +9,7 @@ read_when:
 # Worker-local inference
 
 Worker turns normally proxy model requests through the Gateway. A configured
-paired-device profile can instead select **runtime-local inference**, using the
+paired-device profile can instead select **worker inference**, using the
 same admission, turn claims, local coding tools, transcript commits, live events,
 and node supervisor. There is no separate runtime server or network protocol.
 
@@ -116,7 +116,7 @@ Configure an explicit device profile with the paired device ID:
         provider: "device",
         settings: {
           device: "PAIRED_DEVICE_ID",
-          inference: "runtime-local",
+          inference: "worker",
         },
       },
     },
@@ -155,15 +155,19 @@ instead, still omitting an initial message and explicit model/runtime selection.
 Select `profileId`, not the ordinary paired-device target: ordinary device
 placement remains proxied.
 
+In the Control UI, choose the named worker-inference profile and keep the agent's
+configured model and OpenClaw runtime defaults. The profile and active placement
+identify worker inference without exposing provider settings or credentials.
+Existing sessions use their bound environment's recorded choice, not later edits
+to the profile. Stopped, reclaimed, and inexact placements do not establish a
+current worker-inference binding.
+
 **Current limitation:** explicit model/runtime selection still uses Gateway
 model availability and auth checks; node-local credentials do not satisfy those
-checks. In particular, an explicit `agentRuntime` requires an explicit canonical
-`model` and an available Gateway runtime choice. The Control UI model picker and
-New Session submission also use Gateway readiness and can report `missing-auth`
-or block Start even when the node is configured correctly. Choosing
-**Cloud → dedicated-native** does not remove that limitation. The configured-default
-CLI/API flow above is the supported node-only-credential path; do not copy node
-credentials to the Gateway or disable auth checks to make the picker pass.
+checks. An explicit `agentRuntime` requires an explicit canonical `model` and an
+available Gateway runtime choice. The model picker is not a catalog of the node's
+local registry. Use the configured-default flow above; do not copy node
+credentials to the Gateway or disable auth checks to make an explicit selection pass.
 Gateway authentication, agent/model authorization, tool permissions, session and
 placement access, and current-run authority still apply.
 
@@ -174,6 +178,15 @@ closed. The worker and Gateway both reject proxy fallback for local turns.
 Omitting `settings.inference`, or setting it to `gateway`, preserves the default.
 
 ## Upgrade and downgrade
+
+The canonical profile values are `gateway` and `worker`; omission means `gateway`.
+`openclaw doctor --fix` renames the earlier device-profile spelling `runtime-local`
+to `worker`. Gateway startup uses that same shared migration when eligible;
+[config migration safeguards](/gateway/doctor/config-migrations) still apply.
+Already allocated environments retain their original snapshots. Both recorded
+spellings mean worker inference until those environments retire; neither silently
+selects Gateway inference. No database rewrite or schema-version change is needed.
+The internal worker launch spelling and capability remain unchanged.
 
 Upgrade the Gateway and node service to compatible builds that support
 worker-local inference before enabling the profile. The Gateway installs its

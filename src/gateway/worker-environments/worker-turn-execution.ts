@@ -90,7 +90,7 @@ export async function executeWorkerTurn(
     );
   }
   const inferencePlacement = workerInferencePlacement(environment);
-  if (inferencePlacement === "runtime-local") {
+  if (inferencePlacement === "worker") {
     const policy = createModelVisibilityPolicy({
       cfg: turn.config ?? {},
       catalog: [],
@@ -102,11 +102,11 @@ export async function executeWorkerTurn(
     }
   }
   if (
-    inferencePlacement === "runtime-local" &&
+    inferencePlacement === "worker" &&
     (!environment.nodeDeviceId ||
       !bootstrapReceipt.protocolFeatures.includes(WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE))
   ) {
-    throw new Error("Runtime-local inference requires a matching capable paired-node worker build");
+    throw new Error("Worker inference requires a matching capable paired-node worker build");
   }
   await recoverWorkspaceBeforeTurn(params);
   const github = await prepareWorkerGitHubBinding({
@@ -412,7 +412,7 @@ export async function executeWorkerTurn(
                 }
               : {}),
             modelRef,
-            ...(inferencePlacement === "runtime-local" ? { inference: "runtime-local" } : {}),
+            ...(inferencePlacement === "worker" ? { inference: "runtime-local" } : {}),
             inferenceOptions: reasoning ? { reasoning } : {},
             systemPrompt,
             initialMessages: windowedMessages,

@@ -519,7 +519,7 @@ describe("worker turn execution", () => {
     });
   });
 
-  it.each([undefined, "gateway", "runtime-local"] as const)(
+  it.each([undefined, "gateway", "worker", "runtime-local"] as const)(
     "dispatches a registered paired-device turn with inference placement %s",
     async (inference) => {
       seedActivePlacement();
@@ -587,7 +587,7 @@ describe("worker turn execution", () => {
       expect(environments.startTunnel).toHaveBeenCalledOnce();
       expect(runLocal).not.toHaveBeenCalled();
       expect(descriptor?.assignment.modelRef).toEqual({ provider: "openai", model: "gpt-test" });
-      if (inference === "runtime-local") {
+      if (inference === "worker" || inference === "runtime-local") {
         expect(descriptor?.assignment.inference).toBe("runtime-local");
       } else {
         expect(descriptor?.assignment).not.toHaveProperty("inference");
@@ -601,14 +601,14 @@ describe("worker turn execution", () => {
   );
 
   it.each(["missing-feature", "missing-node", "model-policy"] as const)(
-    "rejects runtime-local %s before credential, tunnel, or dispatch without local fallback",
+    "rejects worker inference %s before credential, tunnel, or dispatch without local fallback",
     async (rejection) => {
       seedActivePlacement();
       const environment = attachedEnvironment();
       environment.providerId = "device";
       environment.nodeDeviceId = rejection === "missing-node" ? null : "paired-inference-node";
       environment.sshEndpoint = null;
-      environment.profileSnapshot = { settings: { inference: "runtime-local" } };
+      environment.profileSnapshot = { settings: { inference: "worker" } };
       if (rejection !== "missing-feature") {
         environment.bootstrapReceipt!.protocolFeatures.push(
           WORKER_LOCAL_INFERENCE_PROTOCOL_FEATURE,
@@ -652,7 +652,7 @@ describe("worker turn execution", () => {
       ).rejects.toThrow(
         rejection === "model-policy"
           ? "Model is not approved for this worker agent"
-          : "Runtime-local inference requires a matching capable paired-node worker build",
+          : "Worker inference requires a matching capable paired-node worker build",
       );
       expect(environments.acquireTurnCredential).not.toHaveBeenCalled();
       expect(environments.startTunnel).not.toHaveBeenCalled();
