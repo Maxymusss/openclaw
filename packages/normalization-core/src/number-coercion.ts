@@ -72,7 +72,8 @@ function parseStrictNumericValue(
     if (!pattern.test(normalized)) {
       return undefined;
     }
-    value = Number(normalized);
+    const parsed = Number(normalized);
+    return isValid(parsed) ? parsed : undefined;
   }
   return typeof value === "number" && isValid(value) ? value : undefined;
 }
