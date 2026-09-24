@@ -5,6 +5,7 @@ import { pathToFileURL } from "node:url";
 import { normalizeModelCatalog } from "@openclaw/model-catalog-core/model-catalog-normalize";
 import {
   MODEL_PRICING_SOURCES,
+  MODELS_DEV_CATALOG_URL,
   normalizeModelPricingCatalog,
   normalizeModelPricingProvider,
   normalizeOpenRouterModelPricing,
@@ -74,7 +75,6 @@ const MODEL_CATALOG_MIN_VERSION = "2026.7.0";
 export const MODEL_CATALOG_MIN_MODELS = 200;
 
 const SCRIPT_LABEL = "publish-model-catalog";
-const MODELS_DEV_CATALOG_URL = "https://models.opencode.ai/api.json";
 const PRICING_FETCH_TIMEOUT_MS = 60_000;
 const MAX_PRICING_CATALOG_BYTES = 5 * 1024 * 1024;
 const BUNDLE_SIZE_WARNING_BYTES = 2 * 1024 * 1024;
@@ -348,8 +348,10 @@ function buildPricingCandidates(
   if (seen.has(ref) || !policy) {
     return [];
   }
+  // models.dev prices are pre-keyed by OpenClaw provider; `provider` only picks the entry.
+  const namespace = source.id === "modelsDev" ? providerId : (policy.provider ?? providerId);
   const candidates = modelIdVariants(modelId, policy.modelIdTransforms).map(
-    (id) => `${policy.provider ?? providerId}/${id}`,
+    (id) => `${namespace}/${id}`,
   );
   const slash = modelId.indexOf("/");
   if (policy.passthroughProviderModel && slash > 0) {
@@ -379,6 +381,29 @@ function readPricingPolicies(manifests: ModelCatalogManifestInput[]): PricingPol
     }
   }
   return policies;
+}
+
+/** Maps each OpenClaw provider to the models.dev entry that bills it. */
+function readModelsDevPricingProviders(
+  manifests: ModelCatalogManifestInput[],
+  policies: PricingPolicies,
+): Map<string, string> {
+  const providers = new Map<string, string>();
+  for (const { manifest } of manifests) {
+    const ownedProviders = new Set((manifest.providers ?? []).map(normalizeModelCatalogProviderId));
+    // The metadata mapping names the same billing entry unless pricing policy overrides it.
+    const mapped = normalizeModelCatalog(manifest.modelCatalog, { ownedProviders })?.modelsDev;
+    for (const providerId of ownedProviders) {
+      const policy = policies.get(providerId)?.modelsDev;
+      const named = (policy && policy.provider) || mapped?.[providerId];
+      // A pass-through gateway has its own price list only when its manifest names one;
+      // otherwise it bills the vendor's rate (Cloudflare Unified Billing, for example).
+      if (named || !(policy && policy.passthroughProviderModel)) {
+        providers.set(providerId, named || providerId);
+      }
+    }
+  }
+  return providers;
 }
 
 async function readJsonResponse(response: Response, source: string) {
@@ -583,6 +608,7 @@ async function parsePricingCatalog(
   source: PricingSource,
   body: unknown,
   policies: PricingPolicies,
+  modelsDevProviders: ReadonlyMap<string, string>,
 ): Promise<LoadedPricingSource> {
   const catalog: PricingCatalog = new Map();
   const aliases: string[][] = [];
@@ -629,14 +655,43 @@ async function parsePricingCatalog(
         catalog.set(`${upstreamId}/${id}`, pricing);
       }
     }
+  } else if (source.id === "modelsDev") {
+    // Each OpenClaw provider reads the models.dev entry that bills it, keyed in its own
+    // namespace so gateways passing through `vendor/model` find the vendor's own price.
+    for (const [providerId, upstreamId] of modelsDevProviders) {
+      if (!sourcePolicy(policies, providerId, source)) {
+        continue;
+      }
+      const provider = body[upstreamId];
+      if (!isRecord(provider) || provider.id !== upstreamId || !isRecord(provider.models)) {
+        continue;
+      }
+      const rows = Object.entries(provider.models).map(([id, model]) =>
+        isRecord(model) && model.id === id ? model : undefined,
+      );
+      const prices = normalizeModelPricingCatalog(rows, normalizeUpstreamModelPricing, {
+        readPricing: (model) => model.cost,
+      });
+      if (!prices) {
+        process.stderr.write(
+          `[${SCRIPT_LABEL}] warning: models.dev pricing malformed for provider ${upstreamId}; skipping it\n`,
+        );
+        continue;
+      }
+      for (const [id, pricing] of prices) {
+        catalog.set(`${providerId}/${id}`, pricing);
+      }
+    }
   } else if (source.id === "openRouter") {
+    // OpenRouter's feed is OpenRouter's billing, promotions included. Its IDs look like
+    // vendor keys (`openai/gpt-…`), so namespace them to price only OpenRouter routes.
     for (const row of Array.isArray(body.data) ? body.data : []) {
       if (!isRecord(row)) {
         continue;
       }
       const pricing = normalizeOpenRouterModelPricing(row.pricing);
       if (typeof row.id === "string" && pricing) {
-        catalog.set(row.id, pricing);
+        catalog.set(`openrouter/${row.id}`, pricing);
       }
     }
   } else {
@@ -661,6 +716,7 @@ async function parsePricingCatalog(
 async function fetchPricingSources(
   loadSource: ModelCatalogSourceLoader,
   policies: PricingPolicies,
+  modelsDevProviders: ReadonlyMap<string, string>,
 ) {
   const sources = MODEL_PRICING_SOURCES.filter(
     (source) =>
@@ -671,7 +727,7 @@ async function fetchPricingSources(
     sources.map(async (source) => {
       try {
         const body = await loadSource(source.url, source.label);
-        return await parsePricingCatalog(source, body, policies);
+        return await parsePricingCatalog(source, body, policies, modelsDevProviders);
       } catch (cause) {
         return {
           source,
@@ -708,11 +764,26 @@ function selectProviderPricingSources(
   return native ? [native] : eligible;
 }
 
+/** Providers that charge a vendor's price for `vendor/model` IDs, such as gateways. */
+function readPassthroughProviders(policies: PricingPolicies): Set<string> {
+  return new Set(
+    [...policies].flatMap(([id, policy]) =>
+      MODEL_PRICING_SOURCES.some(({ id: source }) => {
+        const selected = policy[source];
+        return selected && selected.passthroughProviderModel;
+      })
+        ? [id]
+        : [],
+    ),
+  );
+}
+
 function materializePolicyRuntimePricing(
   hosted: PricingCatalog,
   policies: PricingPolicies,
   sources: LoadedPricingSource[],
   metadataOwnedKeys: Set<string>,
+  gateways: ReadonlySet<string>,
   providerPrices?: StandalonePricing["provider"],
 ): void {
   for (const [providerId] of policies) {
@@ -721,32 +792,39 @@ function materializePolicyRuntimePricing(
         hosted.delete(key);
       }
     }
-    for (const source of selectProviderPricingSources(providerId, sources, policies)) {
-      const policy = sourcePolicy(policies, providerId, source);
-      if (!policy) {
-        continue;
-      }
-      for (const [key, pricing] of source.catalog) {
-        if (!source.authoritative && !hasKnownPricing(pricing)) {
+    const providerSources = selectProviderPricingSources(providerId, sources, policies);
+    // A provider's own price from any source beats the vendor price it passes through.
+    for (const passthrough of [false, true]) {
+      for (const source of providerSources) {
+        const policy = sourcePolicy(policies, providerId, source);
+        if (!policy || (passthrough && !policy.passthroughProviderModel)) {
           continue;
         }
-        const slash = key.indexOf("/");
-        if (slash <= 0 || slash === key.length - 1) {
-          continue;
-        }
-        const ownerKeys =
-          key.slice(0, slash) === (policy.provider ?? providerId)
-            ? modelIdVariants(key.slice(slash + 1), policy.modelIdTransforms, true).map(
-                (id) => `${providerId}/${id}`,
-              )
-            : [];
-        const passthroughKey = policy.passthroughProviderModel ? `${providerId}/${key}` : undefined;
-        for (const runtimeKey of passthroughKey ? [...ownerKeys, passthroughKey] : ownerKeys) {
-          if (!metadataOwnedKeys.has(runtimeKey) && !hosted.has(runtimeKey)) {
-            hosted.set(runtimeKey, pricing);
-            // V2 resolves passthrough keys from the upstream table at lookup time.
-            if (runtimeKey !== passthroughKey) {
-              providerPrices?.set(runtimeKey, { source: source.id, pricing });
+        const namespace = source.id === "modelsDev" ? providerId : (policy.provider ?? providerId);
+        for (const [key, pricing] of source.catalog) {
+          if (!source.authoritative && !hasKnownPricing(pricing)) {
+            continue;
+          }
+          const slash = key.indexOf("/");
+          if (slash <= 0 || slash === key.length - 1) {
+            continue;
+          }
+          const runtimeKeys = passthrough
+            ? gateways.has(key.slice(0, slash))
+              ? []
+              : [`${providerId}/${key}`]
+            : key.slice(0, slash) === namespace
+              ? modelIdVariants(key.slice(slash + 1), policy.modelIdTransforms, true).map(
+                  (id) => `${providerId}/${id}`,
+                )
+              : [];
+          for (const runtimeKey of runtimeKeys) {
+            if (!metadataOwnedKeys.has(runtimeKey) && !hosted.has(runtimeKey)) {
+              hosted.set(runtimeKey, pricing);
+              // V2 resolves passthrough keys from the upstream table at lookup time.
+              if (!passthrough) {
+                providerPrices?.set(runtimeKey, { source: source.id, pricing });
+              }
             }
           }
         }
@@ -767,6 +845,7 @@ export async function enrichModelCatalogPricing(options: {
   const sources = await fetchPricingSources(
     options.loadSource ?? createModelCatalogSourceLoader(options.fetchImpl),
     policies,
+    readModelsDevPricingProviders(options.manifests, policies),
   );
   let enriched = 0;
   const coveredKeys = new Set<string>();
@@ -817,6 +896,7 @@ export async function enrichModelCatalogPricing(options: {
     }
   }
 
+  const gateways = readPassthroughProviders(policies);
   const hosted: PricingCatalog = new Map();
   for (const source of sources) {
     // Opted-in feeds only enter the owner's mapped namespace, never the global fallback map.
@@ -826,8 +906,15 @@ export async function enrichModelCatalogPricing(options: {
         if (!existing || !hasKnownPricing(existing)) {
           hosted.set(key, pricing);
         }
-        // Unpruned: gateways pass through to catalogued vendor models too.
-        if (options.standalonePricing && key.indexOf("/") > 0 && hasKnownPricing(pricing)) {
+        // Unpruned: gateways pass through to catalogued vendor models too. A gateway's own
+        // keys are its billing, served from providerPricing rather than as vendor prices.
+        const slash = key.indexOf("/");
+        if (
+          options.standalonePricing &&
+          slash > 0 &&
+          !gateways.has(key.slice(0, slash)) &&
+          hasKnownPricing(pricing)
+        ) {
           const upstream = options.standalonePricing.upstream.get(key);
           if (!upstream) {
             options.standalonePricing.upstream.set(key, { source: source.id, pricing });
@@ -861,6 +948,7 @@ export async function enrichModelCatalogPricing(options: {
     policies,
     sources,
     metadataOwnedKeys,
+    gateways,
     options.standalonePricing?.provider,
   );
   options.bundle.pricing = Object.fromEntries(

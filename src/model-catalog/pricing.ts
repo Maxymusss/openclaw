@@ -320,17 +320,25 @@ export function resolveModelPricing(
     if (policy?.external === false) {
       return undefined;
     }
-    // Gateways charge the vendor's rate: `gateway/vendor/model` reads `vendor/model` upstream
-    // from the first source the gateway's policy allows.
-    const passthrough = policy?.passthroughSources.length
-      ? context.upstream[pricingKey.slice(provider.length + 1)]?.rates.find(({ source }) =>
-          policy.passthroughSources.includes(source),
-        )
+    // Pass-through gateways bill `gateway/vendor/model`: their own published price wins,
+    // then the vendor's own catalog row, then the first upstream vendor rate from a source
+    // the gateway's policy allows.
+    const vendorKey = policy?.passthroughSources.length
+      ? pricingKey.slice(provider.length + 1)
       : undefined;
+    const vendorRow = vendorKey ? context.catalog.get(vendorKey) : undefined;
+    const passthrough =
+      vendorRow && hasKnownPricing(vendorRow)
+        ? vendorRow
+        : vendorKey
+          ? context.upstream[vendorKey]?.rates.find(({ source }) =>
+              policy?.passthroughSources.includes(source),
+            )?.cost
+          : undefined;
     const hosted =
       context.hosted[pricingKey] ??
       (policy
-        ? passthrough && { cost: passthrough.cost, explicit: false }
+        ? passthrough && { cost: passthrough, explicit: false }
         : context.normalizedHosted.get(pricingKey));
     // V2 known rates belong to an admitted catalog row. V1 mirrors still need
     // exact owner policy to distinguish a free rate from a zero placeholder.

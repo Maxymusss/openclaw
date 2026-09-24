@@ -31,7 +31,13 @@ beforeEach(() => {
           providers: ["litegate"],
           modelPricing: { providers: { litegate: { openRouter: false, liteLLM: passthrough } } },
         },
-        { id: "vendor", providers: ["vendor"] },
+        {
+          id: "vendor",
+          providers: ["vendor"],
+          modelCatalog: {
+            providers: { vendor: { models: [{ id: "catalogued" }, { id: "rowpriced" }] } },
+          },
+        },
         {
           id: "owner",
           providers: ["owner"],
@@ -50,7 +56,20 @@ beforeEach(() => {
         generatedAt: 200,
         sourceCommit: "v2-standalone-test",
         providers: { vendor: {} },
-        models: [{ id: "catalogued", provider: "vendor", pricing: { status: "unknown" } }],
+        models: [
+          { id: "catalogued", provider: "vendor", pricing: { status: "unknown" } },
+          {
+            id: "rowpriced",
+            provider: "vendor",
+            pricing: {
+              status: "known",
+              currency: "USD",
+              unit: "million_tokens",
+              input: 4,
+              output: 20,
+            },
+          },
+        ],
         upstreamPricing: {
           "vendor/listed": {
             input: 2,
@@ -65,10 +84,19 @@ beforeEach(() => {
             source: "openRouter",
             passthroughOnly: true,
           },
+          // A reseller's promotional rate for a vendor model that has its own catalog row.
+          "vendor/rowpriced": {
+            input: 2,
+            output: 10,
+            source: "openRouter",
+            passthroughOnly: true,
+          },
+          "vendor/own": { input: 1, output: 2, source: "openRouter" },
         },
         providerPricing: {
           "owner/extra": { input: 6, output: 12, source: "openCode" },
           "owner/free": { input: 0, output: 0, source: "openCode" },
+          "gateway/vendor/own": { input: 3, output: 9, source: "modelsDev" },
         },
       }),
       generated_at: 200,
@@ -91,6 +119,16 @@ const rates = (input: number, output: number) => ({ input, output, cacheRead: 0,
 
 it.each([
   { name: "gateway passes through a vendor rate", ref: "gateway/vendor/listed", cost: rates(2, 4) },
+  {
+    name: "gateway uses the vendor's own row over an upstream promotion",
+    ref: "gateway/vendor/rowpriced",
+    cost: rates(4, 20),
+  },
+  {
+    name: "gateway's own published price beats the vendor rate",
+    ref: "gateway/vendor/own",
+    cost: rates(3, 9),
+  },
   {
     name: "gateway accepts its allowed LiteLLM source",
     ref: "gateway/vendor/litellm-only",
